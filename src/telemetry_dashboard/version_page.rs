@@ -3,7 +3,7 @@ use once_cell::sync::Lazy;
 
 const FRONTEND_CARGO_TOML: &str = include_str!("../../Cargo.toml");
 const DIOXUS_TOML: &str = include_str!("../../Dioxus.toml");
-const WORKSPACE_CARGO_LOCK: &str = include_str!("../../../Cargo.lock");
+const WORKSPACE_CARGO_LOCK: &str = include_str!("../../Cargo.lock");
 
 static VERSION_INFO: Lazy<VersionInfo> = Lazy::new(VersionInfo::load);
 

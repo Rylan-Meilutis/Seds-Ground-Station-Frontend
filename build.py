@@ -1761,7 +1761,11 @@ def rename_android_artifacts(frontend_dir: Path) -> None:
 
     renamed_any = False
     for item in sorted(dist.iterdir()):
+        if not item.is_file():
+            continue
         name = item.name
+        if item.suffix.lower() not in {".apk", ".aab", ".apks"}:
+            continue
         if not (
                 name.startswith("app-debug")
                 or name.startswith("app-release")
@@ -2698,6 +2702,38 @@ def clear_app_bundle(frontend_dir: Path) -> None:
     remove_legacy_dmgs(frontend_dir)
 
 
+def clear_ios_staging_bundle(frontend_dir: Path) -> None:
+    dist = dist_dir(frontend_dir)
+    bundles = [dist / APP_BUNDLE_NAME, dist / MACOS_ALT_APP_BUNDLE_NAME, dist / LEGACY_APP_BUNDLE_NAME]
+    for bundle in bundles:
+        if bundle.exists():
+            print(f"Removing existing iOS staging bundle: {bundle}")
+            shutil.rmtree(bundle)
+
+
+def clear_android_staging_artifacts(frontend_dir: Path) -> None:
+    dist = dist_dir(frontend_dir)
+    if not dist.exists():
+        return
+
+    for item in sorted(dist.iterdir()):
+        if not item.is_file():
+            continue
+        name = item.name
+        if not (
+                name.startswith("app-debug")
+                or name.startswith("app-release")
+                or name.startswith(f"{LEGACY_APP_NAME}-")
+                or name.startswith(f"{APP_NAME}-")
+                or name.startswith(f"{ANDROID_APP_NAME}-")
+        ):
+            continue
+        if item.suffix.lower() not in {".apk", ".aab", ".apks"}:
+            continue
+        print(f"Removing existing Android staging artifact: {item}")
+        item.unlink()
+
+
 def rename_macos_dmg(frontend_dir: Path) -> Optional[Path]:
     dist = dist_dir(frontend_dir)
     expected = dist / f"{APP_NAME}.dmg"
@@ -2799,7 +2835,11 @@ def _macos_entitlements_path(frontend_dir: Path) -> Optional[Path]:
     return p
 
 
-def sign_macos_app_and_dmg(frontend_dir: Path) -> None:
+def sign_macos_app_and_dmg(
+        frontend_dir: Path,
+        include_dmg: bool = True,
+        **_ignored: object,
+) -> None:
     if platform.system() != "Darwin":
         print("Error: macOS signing requires macOS.", file=sys.stderr)
         sys.exit(1)
@@ -2827,6 +2867,9 @@ def sign_macos_app_and_dmg(frontend_dir: Path) -> None:
         sign_cmd.extend(["--entitlements", str(entitlements)])
     sign_cmd.extend(["--deep", str(app)])
     run(sign_cmd, cwd=frontend_dir)
+
+    if not include_dmg:
+        return
 
     dmg = rebuild_macos_dmg(frontend_dir)
     if not dmg:
@@ -3428,6 +3471,36 @@ def _dx_bundle_env(frontend_dir: Path) -> dict[str, str]:
     return env
 
 
+def _append_rustflags(env: dict[str, str], extra_flags: list[str]) -> None:
+    current = env.get("RUSTFLAGS", os.environ.get("RUSTFLAGS", "")).strip()
+    merged = " ".join(part for part in [current, *extra_flags] if part).strip()
+    env["RUSTFLAGS"] = merged
+
+
+def _ensure_ios_deployment_env(
+        frontend_dir: Path,
+        env: Optional[dict[str, str]],
+        rust_target: Optional[str],
+) -> dict[str, str]:
+    env = dict(env or os.environ.copy())
+    min_ios = "13.0"
+    env.setdefault("IPHONEOS_DEPLOYMENT_TARGET", min_ios)
+
+    is_sim = bool(rust_target and ("ios-sim" in rust_target or "simulator" in rust_target))
+    target_triple = "arm64-apple-ios13.0-simulator" if is_sim else "arm64-apple-ios13.0"
+
+    _append_rustflags(
+        env,
+        [
+            "-C",
+            "link-arg=-target",
+            "-C",
+            f"link-arg={target_triple}",
+        ],
+    )
+    return env
+
+
 # -----------------------------
 # Signing / packaging helpers
 # -----------------------------
@@ -3839,6 +3912,10 @@ def _android_tool_paths(sdk_root: Path, ndk_root: Optional[Path]) -> list[Path]:
 
 def _ensure_android_env(frontend_dir: Path, env: Optional[dict[str, str]]) -> dict[str, str]:
     merged = dict(env or os.environ.copy())
+    gradle_user_home = frontend_dir / ".gradle-user-home"
+    gradle_user_home.mkdir(parents=True, exist_ok=True)
+    merged["GRADLE_USER_HOME"] = str(gradle_user_home)
+
     sdk_root = _detect_android_sdk_root()
     if sdk_root is None:
         print(
@@ -4154,6 +4231,8 @@ def build_frontend(
         debug_mode: bool = False,
         max_size: bool = False,
         android_package_type: Optional[str] = None,
+        macos_include_dmg: bool = True,
+        sign_macos: bool = True,
 ) -> None:
     try:
         linux_bundle_partial = False
@@ -4167,15 +4246,20 @@ def build_frontend(
             _clear_dx_web_cache(frontend_dir)
         elif platform_name == "android":
             clear_generated_android_project(frontend_dir, debug_mode)
+            clear_android_staging_artifacts(frontend_dir)
+        elif platform_name == "ios":
+            clear_ios_staging_bundle(frontend_dir)
         else:
             _ensure_bundle_icon_compat(frontend_dir)
 
-        if not is_web_build:
+        if platform_name == "macos":
             clear_app_bundle(frontend_dir)
 
         env = _dx_bundle_env(frontend_dir) if (is_container() or in_docker_build()) else None
         if platform_name == "android":
             env = _ensure_android_env(frontend_dir, env)
+        elif platform_name == "ios":
+            env = _ensure_ios_deployment_env(frontend_dir, env, rust_target)
         elif platform_name == "windows":
             if env is None:
                 env = os.environ.copy()
@@ -4228,12 +4312,9 @@ def build_frontend(
         if platform_name:
             cmd.extend(["--platform", platform_name])
             if platform_name == "ios":
-                is_ios_sim_target = bool(rust_target and ("ios-sim" in rust_target or "simulator" in rust_target))
-                if is_ios_sim_target:
-                    cmd.extend(["--package-types", "ios"])
-                else:
-                    cmd.extend(["--package-types", "ipa"])
-                    cmd.extend(["--device", "true"])
+                # Build an app bundle only. Final IPA signing/packaging is handled by our
+                # repo-local scripts so dx should not attempt automatic Apple signing here.
+                cmd.extend(["--package-types", "ios"])
             elif platform_name == "windows":
                 _ensure_windows_icon_compat(frontend_dir)
                 cmd.extend(["--windows-subsystem", "WINDOWS"])
@@ -4306,7 +4387,8 @@ def build_frontend(
             remove_legacy_app_bundle(frontend_dir)
             remove_legacy_dmgs(frontend_dir)
             _patch_macos_bundle_icon(frontend_dir)
-            sign_macos_app_and_dmg(frontend_dir)
+            if sign_macos:
+                sign_macos_app_and_dmg(frontend_dir, include_dmg=macos_include_dmg)
         elif platform_name in {"windows", "linux"}:
             if not (platform_name == "linux" and linux_bundle_partial):
                 rename_windows_linux_artifacts(frontend_dir, platform_name)
@@ -4368,8 +4450,8 @@ def print_usage(exit_code: int = 1) -> None:
     print("")
     print("Usage:")
     print(f"  {build_script} frontend_web|web [debug] [max_size] [existing] [log=<path>]")
-    print(f"  {build_script} ios|ios_sim|macos|windows|android|linux [debug] [existing] [log=<path>]")
-    print(f"  {build_script} android [apk|aab] [debug] [existing] [log=<path>]")
+    print(f"  {build_script} ios|ios_sim|macos|windows|android|linux [debug] [existing] [no_sign] [log=<path>]")
+    print(f"  {build_script} android [apk|aab] [debug] [existing] [no_sign] [log=<path>]")
     print("")
     print("Frontend packaging and deploy actions:")
     print(f"  {build_script} ios_deploy [debug] [existing]")
@@ -4388,8 +4470,8 @@ def print_usage(exit_code: int = 1) -> None:
         f"  {build_script} publisher_screenshots [debug] [existing] [screenshot_delay=<seconds>] ["
         "screenshot_out=<path>] [desktop_window=<width>x<height>] [ios_window=<width>x<height>] ["
         "android_window=<width>x<height>]")
-    print(f"  {build_script} macos_deploy [debug] [existing]")
-    print(f"  {build_script} macos_sign [debug] [existing]")
+    print(f"  {build_script} macos_deploy [debug] [existing] [no_sign]")
+    print(f"  {build_script} macos_sign [debug] [existing] [no_sign]")
     print(f"  {build_script} macos_notarize [debug] [existing]")
     print("")
     print("What this script owns:")
@@ -4405,6 +4487,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("  debug                             # skip --release")
     print("  max_size                          # extra wasm size optimization for web")
     print("  existing                          # reuse existing build artifacts when action allows it")
+    print("  no_sign                           # skip macOS bundle signing/dmg signing")
     print("  apk|aab                           # Android package type")
     print("  log=<path>                        # tee command output into a log file")
     print("  screenshot_delay=<seconds>        # wait before capturing screenshot")
@@ -4447,6 +4530,7 @@ def main() -> None:
     debug_mode = False
     max_size_mode = False
     use_existing = False
+    no_sign_mode = False
     log_file_arg: Optional[str] = None
     android_package_type: Optional[str] = None
     screenshot_delay_arg: Optional[str] = None
@@ -4491,6 +4575,8 @@ def main() -> None:
             max_size_mode = True
         elif arg == "existing":
             use_existing = True
+        elif arg == "no_sign":
+            no_sign_mode = True
         elif arg in {"apk", "aab"}:
             android_package_type = arg
         elif arg.startswith("log="):
@@ -4706,8 +4792,9 @@ def main() -> None:
                     rust_target=None,
                     debug_mode=debug_mode,
                     max_size=max_size_mode,
+                    macos_include_dmg=False,
+                    sign_macos=not no_sign_mode,
                 )
-            sign_macos_app_and_dmg(frontend_dir)
             deployed = macos_deploy(frontend_dir)
             print(f"Installed into /Applications: {deployed}")
             return
@@ -4720,8 +4807,12 @@ def main() -> None:
                     rust_target=None,
                     debug_mode=debug_mode,
                     max_size=max_size_mode,
+                    sign_macos=not no_sign_mode,
                 )
-            sign_macos_app_and_dmg(frontend_dir)
+            if no_sign_mode:
+                print("Skipped macOS signing.")
+            else:
+                sign_macos_app_and_dmg(frontend_dir)
             print("Signed macOS app and dmg")
             return
 
@@ -4756,6 +4847,7 @@ def main() -> None:
         debug_mode=debug_mode,
         max_size=max_size_mode,
         android_package_type=android_package_type,
+        sign_macos=not no_sign_mode,
     )
 
 

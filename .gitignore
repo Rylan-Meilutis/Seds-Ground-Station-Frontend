@@ -20,3 +20,4 @@ __pycache__/
 !.mobileprovision
 Groundstation_26.mobileprovision
 /artifacts/
+.gradle-user-home/
