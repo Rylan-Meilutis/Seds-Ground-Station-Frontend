@@ -1,0 +1,36 @@
+{
+  "generated_ms": 1750000002500,
+  "simulated": false,
+  "nodes": [
+    {
+      "id": "gs",
+      "label": "Ground Station",
+      "kind": "board",
+      "status": "online",
+      "group": "ground",
+      "sender_id": "GS",
+      "endpoints": ["ui", "commands"],
+      "show_in_details": true,
+      "detail": "Operator console"
+    },
+    {
+      "id": "fc",
+      "label": "Flight Computer",
+      "kind": "board",
+      "status": "online",
+      "group": "airframe",
+      "sender_id": "FC",
+      "endpoints": ["telemetry"],
+      "show_in_details": true,
+      "detail": "Primary avionics"
+    }
+  ],
+  "links": [
+    {
+      "source": "gs",
+      "target": "fc",
+      "label": "RF",
+      "status": "online"
+    }
+  ]
+}

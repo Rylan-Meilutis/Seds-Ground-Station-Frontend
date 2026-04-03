@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "nitrogen": {
+    "target_mass_kg": 12.5,
+    "target_pressure_psi": 450.0
+  },
+  "nitrous": {
+    "target_mass_kg": 18.0,
+    "target_pressure_psi": 760.0
+  }
+}

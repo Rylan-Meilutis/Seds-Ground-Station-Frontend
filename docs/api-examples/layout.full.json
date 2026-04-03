@@ -1,0 +1,230 @@
+{
+  "version": 1,
+  "branding": {
+    "app_name": "UBSEDS GS",
+    "dashboard_title": "UBSEDS Ground Station",
+    "tab_labels": {
+      "state": "State",
+      "connection-status": "Connection",
+      "map": "Recovery Map",
+      "actions": "Actions",
+      "calibration": "Calibration",
+      "notifications": "Notifications",
+      "warnings": "Warnings",
+      "errors": "Errors",
+      "data": "Telemetry",
+      "network-topology": "Topology",
+      "detailed": "Detailed"
+    }
+  },
+  "theme": {
+    "app_background": "#020617",
+    "panel_background": "#0b1220",
+    "panel_background_alt": "#0f172a",
+    "overlay_background": "#020617ee",
+    "border": "#334155",
+    "border_strong": "#4b5563",
+    "border_soft": "#1f2937",
+    "text_primary": "#e5e7eb",
+    "text_secondary": "#cbd5e1",
+    "text_muted": "#94a3b8",
+    "text_soft": "#9ca3af",
+    "button_background": "#111827",
+    "button_border": "#334155",
+    "button_text": "#e5e7eb",
+    "tab_shell_background": "#020617ee",
+    "tab_shell_border": "#4b5563",
+    "info_accent": "#60a5fa",
+    "info_background": "#0b1a33",
+    "info_text": "#bfdbfe",
+    "success_text": "#22c55e",
+    "warning_background": "#451a03",
+    "warning_border": "#f59e0b",
+    "warning_text": "#fde68a",
+    "error_background": "#450a0a",
+    "error_border": "#ef4444",
+    "error_text": "#fecaca",
+    "notification_background": "#0b1f4d",
+    "notification_border": "#2563eb",
+    "notification_text": "#bfdbfe",
+    "main_tab_accents": {
+      "state": "#38bdf8",
+      "connection-status": "#06b6d4",
+      "map": "#22c55e",
+      "actions": "#a78bfa",
+      "calibration": "#14b8a6",
+      "notifications": "#3b82f6",
+      "warnings": "#facc15",
+      "errors": "#ef4444",
+      "data": "#f97316",
+      "network-topology": "#8b5cf6",
+      "detailed": "#0ea5e9"
+    }
+  },
+  "main_tabs": [
+    "state",
+    "connection-status",
+    "map",
+    "actions",
+    "calibration",
+    "notifications",
+    "warnings",
+    "errors",
+    "data",
+    "network-topology",
+    "detailed"
+  ],
+  "connection_tab": {
+    "sections": [
+      {
+        "kind": "board_status",
+        "title": "Board Status"
+      },
+      {
+        "kind": "latency",
+        "title": "Latency"
+      }
+    ]
+  },
+  "network_tab": {
+    "enabled": true,
+    "title": "Network Topology",
+    "expected_boards": ["GS", "FC", "RF", "PB", "VB", "GW", "AB", "DAQ"]
+  },
+  "actions_tab": {
+    "disable_actions_by_default": false,
+    "show_flight_setup": true,
+    "show_fill_targets": true,
+    "fill_targets_require_actions_enabled": true,
+    "actions": [
+      {
+        "label": "Abort",
+        "cmd": "Abort",
+        "border": "#ef4444",
+        "bg": "#450a0a",
+        "fg": "#fecaca"
+      },
+      {
+        "label": "Arm",
+        "cmd": "Arm",
+        "border": "#22c55e",
+        "bg": "#052e16",
+        "fg": "#bbf7d0"
+      },
+      {
+        "label": "Ignite",
+        "cmd": "Ignite",
+        "border": "#f97316",
+        "bg": "#431407",
+        "fg": "#fed7aa"
+      }
+    ]
+  },
+  "data_tab": {
+    "tabs": [
+      {
+        "id": "GPS",
+        "label": "GPS",
+        "channels": ["Latitude", "Longitude", "Altitude"],
+        "chart": {
+          "enabled": true
+        }
+      },
+      {
+        "id": "ACCEL",
+        "label": "Acceleration",
+        "channels": ["X", "Y", "Z"],
+        "chart": {
+          "enabled": true
+        },
+        "chart_groups": [
+          {
+            "title": "Acceleration",
+            "channels": [0, 1, 2],
+            "labels": ["X", "Y", "Z"],
+            "scale_mode": "shared"
+          }
+        ]
+      }
+    ]
+  },
+  "state_tab": {
+    "states": [
+      {
+        "states": ["Startup", "Idle", "Armed"],
+        "sections": [
+          {
+            "title": "Board Status",
+            "widgets": [
+              {
+                "kind": "board_status"
+              }
+            ]
+          },
+          {
+            "title": "Summary",
+            "widgets": [
+              {
+                "kind": "summary",
+                "data_type": "BATTERY_VOLTAGE",
+                "items": [
+                  {
+                    "label": "Battery",
+                    "index": 0,
+                    "formatter": {
+                      "kind": "number",
+                      "precision": 2,
+                      "suffix": " V"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "states": ["Flight"],
+        "sections": [
+          {
+            "title": "Map",
+            "widgets": [
+              {
+                "kind": "map"
+              }
+            ]
+          },
+          {
+            "title": "Actions",
+            "widgets": [
+              {
+                "kind": "actions",
+                "actions": ["Abort"]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "battery": {
+    "estimator": {
+      "window_seconds": 300,
+      "min_drop_rate_v_per_min": 0.005
+    },
+    "sources": [
+      {
+        "id": "flight_battery",
+        "label": "Flight Battery",
+        "sender_id": "FC",
+        "input_data_type": "BATTERY_VOLTAGE",
+        "percent_data_type": "BATTERY_PERCENT",
+        "drop_rate_data_type": "BATTERY_DROP_RATE",
+        "remaining_minutes_data_type": "BATTERY_REMAINING_MINUTES",
+        "empty_voltage": 9.0,
+        "full_voltage": 12.6,
+        "curve_exponent": 1.2
+      }
+    ]
+  }
+}

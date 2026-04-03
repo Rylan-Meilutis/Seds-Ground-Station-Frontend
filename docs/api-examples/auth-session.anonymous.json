@@ -1,0 +1,12 @@
+{
+  "authenticated": false,
+  "username": null,
+  "permissions": {
+    "view_data": true,
+    "send_commands": false
+  },
+  "expires_at_ms": null,
+  "anonymous": true,
+  "session_type": "anonymous",
+  "allowed_commands": []
+}

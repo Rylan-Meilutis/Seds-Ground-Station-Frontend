@@ -1,0 +1,26 @@
+{
+  "capture_target_samples": 200,
+  "sensors": [
+    {
+      "id": "KG50",
+      "label": "50kg",
+      "data_type": "KG50",
+      "channel": "ch0",
+      "fit_modes": ["best", "linear", "linear_zero", "parabolic"]
+    },
+    {
+      "id": "KG1000",
+      "label": "1000kg",
+      "data_type": "KG1000",
+      "channel": "ch1",
+      "fit_modes": ["best", "linear", "linear_zero", "parabolic"]
+    },
+    {
+      "id": "IADC",
+      "label": "Tank Pressure",
+      "data_type": "FUEL_TANK_PRESSURE",
+      "channel": "iadc",
+      "fit_modes": ["best", "linear", "parabolic"]
+    }
+  ]
+}

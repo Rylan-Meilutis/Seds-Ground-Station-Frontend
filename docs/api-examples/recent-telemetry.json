@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp_ms": 1750000000000,
+    "data_type": "GPS",
+    "sender_id": "FC",
+    "values": [42.9586, -78.8119, 1200.0]
+  },
+  {
+    "timestamp_ms": 1750000000100,
+    "data_type": "ACCEL",
+    "sender_id": "FC",
+    "values": [0.1, 0.0, 9.8]
+  },
+  {
+    "timestamp_ms": 1750000000200,
+    "data_type": "BATTERY_VOLTAGE",
+    "sender_id": "FC",
+    "values": [12.4]
+  }
+]

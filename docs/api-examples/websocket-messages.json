@@ -1,0 +1,125 @@
+[
+  {
+    "ty": "Telemetry",
+    "data": {
+      "timestamp_ms": 1750000000000,
+      "data_type": "GPS",
+      "sender_id": "FC",
+      "values": [42.9586, -78.8119, 1200.0]
+    }
+  },
+  {
+    "ty": "TelemetryBatch",
+    "data": [
+      {
+        "timestamp_ms": 1750000000100,
+        "data_type": "ACCEL",
+        "sender_id": "FC",
+        "values": [0.1, 0.0, 9.8]
+      },
+      {
+        "timestamp_ms": 1750000000200,
+        "data_type": "BATTERY_VOLTAGE",
+        "sender_id": "FC",
+        "values": [12.4]
+      }
+    ]
+  },
+  {
+    "ty": "FlightState",
+    "data": {
+      "state": "Armed"
+    }
+  },
+  {
+    "ty": "Warning",
+    "data": {
+      "timestamp_ms": 1750000001000,
+      "message": "Tank pressure high"
+    }
+  },
+  {
+    "ty": "Error",
+    "data": {
+      "timestamp_ms": 1750000002000,
+      "message": "Igniter continuity lost"
+    }
+  },
+  {
+    "ty": "BoardStatus",
+    "data": {
+      "boards": [
+        {
+          "board": "FlightComputer",
+          "board_label": "Flight Computer",
+          "sender_id": "FC",
+          "seen": true,
+          "last_seen_ms": 1750000002200,
+          "age_ms": 120
+        }
+      ]
+    }
+  },
+  {
+    "ty": "NetworkTopology",
+    "data": {
+      "generated_ms": 1750000002500,
+      "simulated": false,
+      "nodes": [
+        {
+          "id": "fc",
+          "label": "Flight Computer",
+          "kind": "board",
+          "status": "online",
+          "group": "airframe",
+          "sender_id": "FC",
+          "endpoints": ["telemetry", "commands"],
+          "show_in_details": true,
+          "detail": "Primary flight controller"
+        }
+      ],
+      "links": [
+        {
+          "source": "fc",
+          "target": "rf",
+          "label": "UART",
+          "status": "online"
+        }
+      ]
+    }
+  },
+  {
+    "ty": "Notifications",
+    "data": [
+      {
+        "id": 101,
+        "timestamp_ms": 1750000003000,
+        "message": "Checklist item pending",
+        "persistent": true,
+        "action_label": "Abort",
+        "action_cmd": "Abort"
+      }
+    ]
+  },
+  {
+    "ty": "ActionPolicy",
+    "data": {
+      "key_enabled": true,
+      "software_buttons_enabled": true,
+      "controls": [
+        {
+          "cmd": "Abort",
+          "enabled": true,
+          "blink": "fast",
+          "actuated": false
+        }
+      ]
+    }
+  },
+  {
+    "ty": "NetworkTime",
+    "data": {
+      "timestamp_ms": 1750000003500
+    }
+  }
+]

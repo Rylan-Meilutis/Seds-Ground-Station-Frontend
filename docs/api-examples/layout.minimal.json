@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "branding": {
+    "app_name": "UBSEDS GS",
+    "dashboard_title": "Ground Station",
+    "tab_labels": {
+      "state": "State",
+      "connection-status": "Connection",
+      "data": "Telemetry"
+    }
+  },
+  "main_tabs": [
+    "state",
+    "connection-status",
+    "map",
+    "actions",
+    "data"
+  ],
+  "connection_tab": {
+    "sections": [
+      {
+        "kind": "board_status",
+        "title": "Boards"
+      },
+      {
+        "kind": "latency",
+        "title": "Latency"
+      }
+    ]
+  },
+  "network_tab": {
+    "enabled": true,
+    "title": "Network",
+    "expected_boards": ["GS", "FC", "RF", "PB"]
+  },
+  "actions_tab": {
+    "disable_actions_by_default": false,
+    "show_flight_setup": true,
+    "show_fill_targets": true,
+    "fill_targets_require_actions_enabled": true,
+    "actions": [
+      {
+        "label": "Abort",
+        "cmd": "Abort",
+        "border": "#ef4444",
+        "bg": "#450a0a",
+        "fg": "#fecaca"
+      },
+      {
+        "label": "Arm",
+        "cmd": "Arm",
+        "border": "#22c55e",
+        "bg": "#052e16",
+        "fg": "#bbf7d0"
+      }
+    ]
+  },
+  "data_tab": {
+    "tabs": [
+      {
+        "id": "GPS",
+        "label": "GPS",
+        "channels": ["Latitude", "Longitude", "Altitude"],
+        "chart": {
+          "enabled": true
+        }
+      },
+      {
+        "id": "BATTERY_VOLTAGE",
+        "label": "Battery",
+        "channels": ["Volts"],
+        "chart": {
+          "enabled": true
+        }
+      }
+    ]
+  },
+  "state_tab": {
+    "states": [
+      {
+        "states": ["Startup", "Idle", "Armed", "Flight"],
+        "sections": [
+          {
+            "title": "Connected Boards",
+            "widgets": [
+              {
+                "kind": "board_status"
+              }
+            ]
+          },
+          {
+            "title": "Live Summary",
+            "widgets": [
+              {
+                "kind": "summary",
+                "data_type": "BATTERY_VOLTAGE",
+                "items": [
+                  {
+                    "label": "Battery",
+                    "index": 0,
+                    "formatter": {
+                      "kind": "number",
+                      "precision": 2,
+                      "suffix": " V"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "battery": {
+    "estimator": {
+      "window_seconds": 300,
+      "min_drop_rate_v_per_min": 0.005
+    },
+    "sources": []
+  }
+}

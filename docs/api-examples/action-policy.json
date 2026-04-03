@@ -1,0 +1,24 @@
+{
+  "key_enabled": true,
+  "software_buttons_enabled": true,
+  "controls": [
+    {
+      "cmd": "Abort",
+      "enabled": true,
+      "blink": "fast",
+      "actuated": false
+    },
+    {
+      "cmd": "Arm",
+      "enabled": true,
+      "blink": "slow",
+      "actuated": true
+    },
+    {
+      "cmd": "Ignite",
+      "enabled": false,
+      "blink": "none",
+      "actuated": null
+    }
+  ]
+}

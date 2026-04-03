@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "selected_profile_id": "nominal",
+  "profiles": [
+    {
+      "id": "nominal",
+      "label": "Nominal",
+      "wind_level": 2,
+      "kalman": {
+        "process_position_variance": 1.0,
+        "process_velocity_variance": 1.0,
+        "accel_variance": 0.5,
+        "baro_altitude_variance": 2.0,
+        "gps_altitude_variance": 5.0,
+        "gps_velocity_variance": 1.5
+      }
+    }
+  ]
+}

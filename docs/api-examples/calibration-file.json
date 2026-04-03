@@ -1,0 +1,47 @@
+{
+  "full_mass_kg": 10.0,
+  "ch0": {
+    "m": 1.0,
+    "b": 0.0
+  },
+  "ch1": {
+    "m": 1.0,
+    "b": 0.0
+  },
+  "iadc": {
+    "m": 1.0,
+    "b": 0.0
+  },
+  "ch0_zero_raw": 0.0,
+  "ch1_zero_raw": 0.0,
+  "iadc_zero_raw": 0.0,
+  "points": [
+    {
+      "kg": 5.0,
+      "ch0_raw": 123.4
+    }
+  ],
+  "points_ch1": [
+    {
+      "kg": 25.0,
+      "ch1_raw": 456.7
+    }
+  ],
+  "points_iadc": [
+    {
+      "expected": 300.0,
+      "iadc_raw": 789.0
+    }
+  ],
+  "ch0_fit": {
+    "type": "linear",
+    "a": 1.0,
+    "b": 0.0,
+    "c": null,
+    "d": null,
+    "x0": null
+  },
+  "ch1_fit": null,
+  "iadc_fit": null,
+  "weights_kg": [0.0, 5.0, 10.0]
+}

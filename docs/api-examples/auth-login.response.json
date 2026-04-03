@@ -1,0 +1,15 @@
+{
+  "token": "opaque-session-token",
+  "session": {
+    "authenticated": true,
+    "username": "operator",
+    "permissions": {
+      "view_data": true,
+      "send_commands": true
+    },
+    "expires_at_ms": 1760000000000,
+    "anonymous": false,
+    "session_type": "operator",
+    "allowed_commands": ["Abort", "Arm", "Ignite"]
+  }
+}

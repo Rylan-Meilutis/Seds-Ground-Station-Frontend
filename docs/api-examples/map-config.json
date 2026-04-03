@@ -1,0 +1,8 @@
+{
+  "max_native_zoom": 12,
+  "default_center_lat": 31.0,
+  "default_center_lon": -99.0,
+  "default_zoom": 7.0,
+  "map_title": "Recovery Map",
+  "tracked_asset_label": "Rocket"
+}
