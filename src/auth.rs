@@ -185,7 +185,12 @@ pub(crate) fn build_native_http_client(
             .http1_only()
     };
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     if !skip_tls_verify {
         use rustls_platform_verifier::ConfigVerifierExt;
         if let Ok(tls_config) = rustls::ClientConfig::with_platform_verifier() {
