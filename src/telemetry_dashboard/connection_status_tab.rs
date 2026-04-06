@@ -293,68 +293,72 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64) -> Elemen
         };
     }
 
+    let y_mid = (y_min + y_max) * 0.5;
+    let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
+    let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
+
     rsx! {
         div { style: "display:flex; flex-direction:column;",
-            svg {
-                style: "width:100%; height:auto; display:block; background:#020617; border-radius:10px; border:1px solid #1f2937;",
-                view_box: "0 0 {width} {height}",
+            div { style: "position:relative; width:100%; aspect-ratio:{width}/{height};",
+                svg {
+                    style: "position:absolute; inset:0; width:100%; height:100%; display:block; background:#020617; border-radius:10px; border:1px solid #1f2937;",
+                    view_box: "0 0 {width} {height}",
 
-                // gridlines
-                for i in 1..=5 {
-                    line {
-                        x1:"{left}", y1:"{pad_top + grid_y_step * (i as f64)}",
-                        x2:"{right}", y2:"{pad_top + grid_y_step * (i as f64)}",
-                        stroke: "#1f2937",
-                        "stroke-width": "1"
+                    // gridlines
+                    for i in 1..=5 {
+                        line {
+                            x1:"{left}", y1:"{pad_top + grid_y_step * (i as f64)}",
+                            x2:"{right}", y2:"{pad_top + grid_y_step * (i as f64)}",
+                            stroke: "#1f2937",
+                            "stroke-width": "1"
+                        }
                     }
-                }
-                for i in 1..=5 {
-                    line {
-                        x1:"{left + grid_x_step * (i as f64)}", y1:"{pad_top}",
-                        x2:"{left + grid_x_step * (i as f64)}", y2:"{height - pad_bottom}",
-                        stroke: "#1f2937",
-                        "stroke-width": "1"
+                    for i in 1..=5 {
+                        line {
+                            x1:"{left + grid_x_step * (i as f64)}", y1:"{pad_top}",
+                            x2:"{left + grid_x_step * (i as f64)}", y2:"{height - pad_bottom}",
+                            stroke: "#1f2937",
+                            "stroke-width": "1"
+                        }
                     }
-                }
 
-                // axes
-                line { x1:"{left}", y1:"{height - pad_bottom}", x2:"{right}", y2:"{height - pad_bottom}", stroke:"#334155", "stroke-width":"1" }
-                line { x1:"{left}", y1:"{pad_top}",  x2:"{left}",   y2:"{height - pad_bottom}", stroke:"#334155", "stroke-width":"1" }
+                    // axes
+                    line { x1:"{left}", y1:"{height - pad_bottom}", x2:"{right}", y2:"{height - pad_bottom}", stroke:"#334155", "stroke-width":"1" }
+                    line { x1:"{left}", y1:"{pad_top}",  x2:"{left}",   y2:"{height - pad_bottom}", stroke:"#334155", "stroke-width":"1" }
 
-                // y labels
-                text { x:"10", y:"{pad_top + 6.0}", fill:"#94a3b8", "font-size":"10", text_length:"56", length_adjust:"spacingAndGlyphs", {format!("{y_max}")} }
-                text { x:"10", y:"{pad_top + inner_h / 2.0 + 4.0}", fill:"#94a3b8", "font-size":"10", text_length:"56", length_adjust:"spacingAndGlyphs", {format!("{}", (y_min + y_max) / 2f64)} }
-                text { x:"10", y:"{height - pad_bottom + 2.0}", fill:"#94a3b8", "font-size":"10", text_length:"56", length_adjust:"spacingAndGlyphs", {format!("{y_min}")} }
-
-                // x labels (span in minutes)
-                text { x:"{left + 16.0}",   y:"{height - 8.0}", fill:"#94a3b8", "font-size":"10", {format!("-{:.1} min", span_min)} }
-                text { x:"{width * 0.5}",  y:"{height - 8.0}", fill:"#94a3b8", "font-size":"10", "text-anchor":"middle", {format!("-{:.1} min", span_min * 0.5)} }
-                text { x:"{right - 52.0}", y:"{height - 8.0}", fill:"#94a3b8", "font-size":"10", "now" }
-
-                for pts in solid.iter() {
-                    if !pts.is_empty() {
-                        polyline {
-                            points: "{pts}",
-                            fill: "none",
-                            stroke: "#22d3ee",
-                            "stroke-width": "2",
-                            "stroke-linejoin": "round",
-                            "stroke-linecap": "round",
+                    for pts in solid.iter() {
+                        if !pts.is_empty() {
+                            polyline {
+                                points: "{pts}",
+                                fill: "none",
+                                stroke: "#22d3ee",
+                                "stroke-width": "2",
+                                "stroke-linejoin": "round",
+                                "stroke-linecap": "round",
+                            }
+                        }
+                    }
+                    for pts in dotted.iter() {
+                        if !pts.is_empty() {
+                            polyline {
+                                points: "{pts}",
+                                fill: "none",
+                                stroke: "#fbbf24",
+                                "stroke-width": "2",
+                                stroke_dasharray: "4 4",
+                                "stroke-linejoin": "round",
+                                "stroke-linecap": "round",
+                            }
                         }
                     }
                 }
-                for pts in dotted.iter() {
-                    if !pts.is_empty() {
-                        polyline {
-                            points: "{pts}",
-                            fill: "none",
-                            stroke: "#fbbf24",
-                            "stroke-width": "2",
-                            stroke_dasharray: "4 4",
-                            "stroke-linejoin": "round",
-                            "stroke-linecap": "round",
-                        }
-                    }
+                div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:#94a3b8;",
+                    span { style: "position:absolute; left:10px; top:{y_pct(pad_top + 6.0, height)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
+                    span { style: "position:absolute; left:10px; top:{y_pct(pad_top + inner_h / 2.0 + 4.0, height)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
+                    span { style: "position:absolute; left:10px; top:{y_pct(height - pad_bottom + 2.0, height)}; transform:translateY(-100%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
+                    span { style: "position:absolute; left:{x_pct(left + 16.0, width)}; bottom:8px;", {format!("-{:.1} min", span_min)} }
+                    span { style: "position:absolute; left:{x_pct(width * 0.5, width)}; bottom:8px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
+                    span { style: "position:absolute; left:{x_pct(right - 52.0, width)}; bottom:8px;", "now" }
                 }
             }
             div { style: "margin-top:8px; display:flex; gap:12px; align-items:center; font-size:12px; color:#cbd5f5;",
