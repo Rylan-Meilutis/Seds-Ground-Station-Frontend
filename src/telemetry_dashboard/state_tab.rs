@@ -14,8 +14,8 @@ use super::layout::{
 };
 use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
-    latest_telemetry_row, latest_telemetry_value, translate_text, ui_telemetry_rows_snapshot, ActionPolicyMsg,
-    BlinkMode, HISTORY_MS, TELEMETRY_RENDER_EPOCH,
+    latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text,
+    ui_telemetry_rows_snapshot, ActionPolicyMsg, BlinkMode, HISTORY_MS, TELEMETRY_RENDER_EPOCH,
 };
 
 use crate::telemetry_dashboard::data_chart::{
@@ -768,11 +768,30 @@ fn combined_state_chart_cached(
     let y_mid = (y_min + y_max) * 0.5;
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
+    let reseed_note = reseed_status_note();
 
     rsx! {
         div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:6px; display:flex; flex-direction:column; gap:4px;",
             if let Some(t) = title {
                 div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
+            }
+            if let Some((kind, note)) = reseed_note.as_ref() {
+                {
+                    let (background, border, text) = match *kind {
+                        "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                        "success" => (
+                            &theme.notification_background,
+                            &theme.notification_border,
+                            &theme.notification_text,
+                        ),
+                        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                    };
+                    rsx! {
+                        div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                            "{translate_text(note)}"
+                        }
+                    }
+                }
             }
             div { style: "display:flex; gap:6px; align-items:stretch;",
                 if normalize_per_series {

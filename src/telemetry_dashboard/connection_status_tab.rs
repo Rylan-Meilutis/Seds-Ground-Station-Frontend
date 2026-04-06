@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use super::layout::{ConnectionSectionKind, ConnectionTabLayout, ThemeConfig};
 use super::types::BoardStatusEntry;
+use super::{reseed_status_note, translate_text};
 
 const LATENCY_WINDOW_MS: i64 = 20 * 60_000;
 const LATENCY_MAX_POINTS: usize = 2000;
@@ -298,9 +299,28 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64, theme: &T
     let y_mid = (y_min + y_max) * 0.5;
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
+    let reseed_note = reseed_status_note();
 
     rsx! {
         div { style: "display:flex; flex-direction:column;",
+            if let Some((kind, note)) = reseed_note.as_ref() {
+                {
+                    let (background, border, text) = match *kind {
+                        "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                        "success" => (
+                            &theme.notification_background,
+                            &theme.notification_border,
+                            &theme.notification_text,
+                        ),
+                        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                    };
+                    rsx! {
+                        div { style: "margin-bottom:8px; padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                            "{translate_text(note)}"
+                        }
+                    }
+                }
+            }
             div { style: "position:relative; width:100%; aspect-ratio:{width}/{height};",
                 svg {
                     style: "position:absolute; inset:0; width:100%; height:100%; display:block; background:{theme.app_background}; border-radius:10px; border:1px solid {theme.border_soft};",

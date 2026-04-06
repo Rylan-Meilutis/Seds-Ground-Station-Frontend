@@ -138,7 +138,7 @@ The frontend sends a POST and only needs a success status code.
 
 ### `GET /api/recent`
 
-Response type:
+Response types:
 
 ```json
 [
@@ -149,6 +149,13 @@ Response type:
     "values": [42.9586, -78.8119, 1200.0]
   }
 ]
+```
+
+Or streamed newline-delimited JSON on native builds:
+
+```text
+{"timestamp_ms":1750000000000,"data_type":"GPS","sender_id":"FC","values":[42.9586,-78.8119,1200.0]}
+{"timestamp_ms":1750000000100,"data_type":"ACCEL","sender_id":"FC","values":[0.1,0.2,9.7]}
 ```
 
 Schema:
@@ -162,6 +169,9 @@ Notes:
 
 - the frontend uses `values[0]` and `values[1]` as latitude/longitude for `GPS`, `GPS_DATA`, or `ROCKET_GPS`
 - an empty array is acceptable
+- native builds accept either the array response or NDJSON-style streaming for faster reseed startup
+- if you stream, emit one complete telemetry row per line and start sending bytes promptly
+- web builds should still be treated as requiring the array response path for compatibility
 
 ### `GET /api/alerts`
 
@@ -552,6 +562,12 @@ Response:
 ### `GET /api/layout`
 
 This is the largest payload in the frontend contract. It controls tab visibility, actions, data labels, state widgets, theming, and some battery estimation settings.
+
+Theme behavior notes:
+
+- Ground Station-provided theme colors are only used when the user selects the `backend` preset
+- built-in presets such as `default`, `light`, `sunset`, `forest`, and `high_contrast` come from the app's compiled theme catalog
+- operators can edit built-in theme presets in [`assets/themes/presets.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/assets/themes/presets.json), which is compiled into the app during build
 
 A minimal valid example is provided in:
 

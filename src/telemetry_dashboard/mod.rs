@@ -30,8 +30,6 @@ pub mod warnings_tab;
 
 use crate::app::Route;
 use crate::auth;
-#[cfg(not(target_arch = "wasm32"))]
-use data_chart::charts_cache_reset_and_ingest;
 use data_chart::{
     charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build,
     charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_request_refit,
@@ -60,7 +58,7 @@ use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, Ordering}, Arc,
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering}, Arc,
     Mutex,
 };
 
@@ -75,6 +73,9 @@ static TELEMETRY_QUEUE: Lazy<Mutex<VecDeque<TelemetryRow>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
 static RESEED_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static RESEED_LIVE_BUFFER: Lazy<Mutex<Vec<TelemetryRow>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static RESEED_STATUS: AtomicU8 = AtomicU8::new(0);
+static RESEED_STATUS_TOKEN: AtomicU64 = AtomicU64::new(0);
+static RESEED_STATUS_DETAIL: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static DASHBOARD_HAS_CONNECTED: AtomicBool = AtomicBool::new(false);
 static LAST_WS_CONNECT_WARNING: Lazy<Mutex<Option<(String, i64)>>> = Lazy::new(|| Mutex::new(None));
 static FRONTEND_NETWORK_METRICS_STATE: Lazy<Mutex<FrontendNetworkMetrics>> =
@@ -790,11 +791,6 @@ struct UiTelemetryStore {
 }
 
 impl UiTelemetryStore {
-    /// Clears all compacted UI telemetry rows.
-    fn clear(&mut self) {
-        self.rows.clear();
-    }
-
     /// Replaces the compacted UI store with a fresh telemetry snapshot.
     fn replace_from_rows(&mut self, rows: &[TelemetryRow]) {
         self.rows.clear();
@@ -957,21 +953,6 @@ pub(crate) fn latest_telemetry_value(
         .and_then(|row| row.values.get(index).copied().flatten())
 }
 
-/// Clears all telemetry runtime buffers used by the dashboard.
-fn clear_ui_telemetry_store() {
-    if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-        store.clear();
-    }
-    if let Ok(mut latest) = LATEST_TELEMETRY.lock() {
-        latest.clear();
-    }
-    if let Ok(mut latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
-        latest_by_type.clear();
-    }
-    let mut epoch = TELEMETRY_RENDER_EPOCH.write();
-    *epoch = epoch.wrapping_add(1);
-}
-
 /// Returns the compacted UI telemetry store as a snapshot vector.
 pub(crate) fn ui_telemetry_rows_snapshot() -> Vec<TelemetryRow> {
     if let Ok(store) = UI_TELEMETRY_STORE.lock() {
@@ -1024,6 +1005,66 @@ static BUILTIN_THEME_CATALOG: Lazy<layout::ThemePresetCatalog> = Lazy::new(|| {
 static WS_RAW: GlobalSignal<Option<web_sys::WebSocket>> = Signal::global(|| None);
 // Force re-seed of graphs/history from backend.
 static SEED_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+
+fn bump_render_epoch() {
+    let mut render_epoch = TELEMETRY_RENDER_EPOCH.write();
+    *render_epoch = render_epoch.wrapping_add(1);
+}
+
+fn set_reseed_status(status: u8, detail: Option<String>) {
+    RESEED_STATUS_TOKEN.fetch_add(1, Ordering::Relaxed);
+    RESEED_STATUS.store(status, Ordering::Relaxed);
+    if let Ok(mut slot) = RESEED_STATUS_DETAIL.lock() {
+        *slot = detail;
+    }
+    bump_render_epoch();
+}
+
+fn set_reseed_status_running() {
+    set_reseed_status(1, Some("Getting past data from the Ground Station...".to_string()));
+}
+
+fn set_reseed_status_ok(_rows: usize) {
+    set_reseed_status(2, Some("Past data loaded.".to_string()));
+    let token = RESEED_STATUS_TOKEN.load(Ordering::Relaxed);
+    spawn(async move {
+        #[cfg(target_arch = "wasm32")]
+        gloo_timers::future::TimeoutFuture::new(5_000).await;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        if RESEED_STATUS.load(Ordering::Relaxed) == 2
+            && RESEED_STATUS_TOKEN.load(Ordering::Relaxed) == token
+        {
+            set_reseed_status(0, None);
+        }
+    });
+}
+
+fn set_reseed_status_failed(message: impl Into<String>) {
+    set_reseed_status(3, Some(message.into()));
+}
+
+pub(crate) fn reseed_status_note() -> Option<(&'static str, String)> {
+    let kind = match RESEED_STATUS.load(Ordering::Relaxed) {
+        1 => "info",
+        2 => "success",
+        3 => "error",
+        _ => return None,
+    };
+    let text = RESEED_STATUS_DETAIL
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(|| match kind {
+            "info" => "Getting past data from the Ground Station...".to_string(),
+            "success" => "Past data loaded.".to_string(),
+            "error" => "Could not get past data from the Ground Station.".to_string(),
+            _ => String::new(),
+        });
+    Some((kind, text))
+}
 
 /// Normalizes a stored base URL down to `scheme://host[:port]`.
 fn normalize_base_url(mut url: String) -> String {
@@ -1732,12 +1773,6 @@ pub fn clear_and_reconnect_after_connect() {
     clear_telemetry_runtime_buffers();
     charts_cache_request_refit();
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        clear_ui_telemetry_store();
-        charts_cache_reset_and_ingest(&[]);
-    }
-
     reconnect_and_reload_ui();
 }
 
@@ -1772,7 +1807,6 @@ fn clear_telemetry_runtime_buffers() {
     if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
         q.clear();
     }
-    clear_ui_telemetry_store();
 }
 
 // ---------- Cross-platform WS handle ----------
@@ -2411,6 +2445,7 @@ fn TelemetryDashboardInner() -> Element {
                         && alive.load(Ordering::Relaxed)
                         && *SEED_EPOCH.read() == seed_epoch
                     {
+                        set_reseed_status_failed(format!("Reseed failed: {e}"));
                         log!("seed_from_db failed after retries: {e}");
                     }
                 }
@@ -3363,9 +3398,10 @@ fn TelemetryDashboardInner() -> Element {
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
-                                border:1px solid {theme.error_border};
-                                background:{theme.error_background};
-                                color:{theme.error_text};
+                                border:1px solid #ef4444;
+                                background:#450a0a;
+                                color:#fecaca;
+                                box-shadow:0 0 0 1px rgba(239,68,68,0.16), 0 10px 24px rgba(69,10,10,0.35);
                                 font-weight:900;
                                 cursor:pointer;
                             "
@@ -3374,13 +3410,12 @@ fn TelemetryDashboardInner() -> Element {
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
-                                border:1px solid {theme.border_soft};
-                                background:{theme.panel_background_alt};
-                                color:{theme.text_muted};
+                                border:1px solid #991b1b;
+                                background:#2b0b0b;
+                                color:#fca5a5;
                                 font-weight:900;
                                 cursor:not-allowed;
-                                opacity:0.55;
-                                filter:grayscale(0.25) brightness(0.9);
+                                opacity:0.72;
                             "
                                 };
                                 rsx! {
@@ -4027,6 +4062,102 @@ fn native_http_timeouts(path: &str) -> (std::time::Duration, std::time::Duration
     )
 }
 
+#[cfg(target_arch = "wasm32")]
+async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
+    http_get_json::<Vec<TelemetryRow>>("/api/recent").await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
+    use futures_util::StreamExt;
+
+    let path = "/api/recent".to_string();
+    let base = UrlConfig::base_http();
+    let url = if base.is_empty() {
+        format!("http://localhost:3000{path}")
+    } else {
+        format!("{base}{path}")
+    };
+    let (connect_timeout, timeout) = native_http_timeouts(&path);
+    let client =
+        auth::build_native_http_client(UrlConfig::_skip_tls_verify(), connect_timeout, timeout)?;
+    let skip_tls = UrlConfig::_skip_tls_verify();
+
+    let mut request = client.get(url);
+    if let Some(token) = auth::current_token() {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await.map_err(|e| {
+        format!(
+            "request send failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
+            UrlConfig::base_http()
+        )
+    })?;
+
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if !status.is_success() {
+        let body = response.text().await.map_err(|e| {
+            format!(
+                "response body read failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
+                UrlConfig::base_http()
+            )
+        })?;
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            auth::clear_current_session();
+        }
+        let snippet: String = body.chars().take(200).collect();
+        return Err(format!("HTTP {}: {}", status, snippet.trim()));
+    }
+
+    let is_ndjson = content_type.contains("ndjson") || content_type.contains("json-seq");
+    if !is_ndjson {
+        let body = response.text().await.map_err(|e| {
+            format!(
+                "response body read failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
+                UrlConfig::base_http()
+            )
+        })?;
+        return serde_json::from_str::<Vec<TelemetryRow>>(&body).map_err(|e| {
+            let snippet: String = body.chars().take(200).collect();
+            format!("invalid JSON ({e}): {}", snippet.trim())
+        });
+    }
+
+    let mut rows = Vec::<TelemetryRow>::new();
+    let mut buffered = Vec::<u8>::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("stream read failed: {e}"))?;
+        buffered.extend_from_slice(&chunk);
+        while let Some(newline_idx) = buffered.iter().position(|b| *b == b'\n') {
+            let line = buffered.drain(..=newline_idx).collect::<Vec<_>>();
+            let text = String::from_utf8_lossy(&line);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let row = serde_json::from_str::<TelemetryRow>(trimmed)
+                .map_err(|e| format!("invalid NDJSON row ({e}): {}", trimmed.chars().take(200).collect::<String>()))?;
+            rows.push(row);
+        }
+    }
+    let tail = String::from_utf8_lossy(&buffered);
+    let trimmed = tail.trim();
+    if !trimmed.is_empty() {
+        let row = serde_json::from_str::<TelemetryRow>(trimmed)
+            .map_err(|e| format!("invalid NDJSON tail ({e}): {}", trimmed.chars().take(200).collect::<String>()))?;
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
     let path = if path.starts_with('/') {
@@ -4510,6 +4641,7 @@ async fn seed_from_db(
         }
     }
     RESEED_IN_PROGRESS.store(true, Ordering::Relaxed);
+    set_reseed_status_running();
     if let Ok(mut v) = RESEED_LIVE_BUFFER.lock() {
         v.clear();
     }
@@ -4543,7 +4675,7 @@ async fn seed_from_db(
         "[seed] /api/recent begin existing_rows_before_seed={}",
         existing_rows_before_seed.len()
     );
-    match http_get_json::<Vec<TelemetryRow>>("/api/recent").await {
+    match fetch_recent_rows_for_reseed().await {
         Ok(mut list) => {
             if !alive.load(Ordering::Relaxed) {
                 return Ok(());
@@ -4622,14 +4754,19 @@ async fn seed_from_db(
             if !list.is_empty() {
                 DASHBOARD_HAS_CONNECTED.store(true, Ordering::Relaxed);
             }
-            let mut render_epoch = TELEMETRY_RENDER_EPOCH.write();
-            *render_epoch = render_epoch.wrapping_add(1);
+            set_reseed_status_ok(list.len());
         }
         Err(err) => {
             log!("[seed] /api/recent failed: {err}");
             if existing_rows_before_seed.is_empty() {
+                set_reseed_status_failed(format!(
+                    "Could not get past data from the Ground Station: {err}"
+                ));
                 return Err(format!("telemetry reseed failed: {err}"));
             }
+            set_reseed_status_failed(format!(
+                "Could not refresh past data from the Ground Station. Keeping the data already shown: {err}"
+            ));
             log!("telemetry reseed failed (keeping existing history): {err}");
         }
     }

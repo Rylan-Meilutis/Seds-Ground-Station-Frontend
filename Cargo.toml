@@ -55,7 +55,7 @@ dioxus-signals = "0.7.4"
 dioxus-desktop = "0.7.4"
 chrono = { version = "0.4.44", default-features = false, features = ["std", "clock"] }
 tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "time"] }
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "blocking", "rustls"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "blocking", "rustls", "stream"] }
 rustls = "0.23"
 rustls-platform-verifier = "0.6.2"
 futures-util = "0.3.32"

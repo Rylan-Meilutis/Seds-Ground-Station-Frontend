@@ -13,7 +13,7 @@ use super::data_chart::{
     CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
     CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
-use super::{latest_telemetry_row, latest_telemetry_value, translate_text, TELEMETRY_RENDER_EPOCH};
+use super::{latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text, TELEMETRY_RENDER_EPOCH};
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
 const _ACTIVE_SUBTAB_STORAGE_KEY: &str = "gs26_active_data_subtab";
@@ -789,11 +789,30 @@ fn render_chart_group(
         })
         .filter(|(_, label)| !label.is_empty())
         .collect();
+    let reseed_note = reseed_status_note();
 
     rsx! {
         div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(title) = group.title.as_ref() {
                 div { style: "font-size:13px; font-weight:600; color:{theme.text_primary};", "{translate_text(title)}" }
+            }
+            if let Some((kind, note)) = reseed_note.as_ref() {
+                {
+                    let (background, border, text) = match *kind {
+                        "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                        "success" => (
+                            &theme.notification_background,
+                            &theme.notification_border,
+                            &theme.notification_text,
+                        ),
+                        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                    };
+                    rsx! {
+                        div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                            "{translate_text(note)}"
+                        }
+                    }
+                }
             }
             div { style: "display:flex; gap:6px; align-items:stretch;",
                 if per_series_scale {
