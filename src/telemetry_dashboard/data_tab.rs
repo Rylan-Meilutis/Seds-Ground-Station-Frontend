@@ -13,7 +13,7 @@ use super::data_chart::{
     CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
     CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
-use super::{latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text, TELEMETRY_RENDER_EPOCH};
+use super::{latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH};
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
 const _ACTIVE_SUBTAB_STORAGE_KEY: &str = "gs26_active_data_subtab";
@@ -611,7 +611,7 @@ fn DataGraphPanel(
     is_fullscreen: Signal<bool>,
     show_chart: Signal<bool>,
 ) -> Element {
-    let _ = *TELEMETRY_RENDER_EPOCH.read();
+    let _ = *CHART_RENDER_EPOCH.read();
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     let on_toggle_fullscreen = move |_: Event<MouseData>| {

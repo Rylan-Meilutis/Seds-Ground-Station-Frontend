@@ -15,7 +15,8 @@ use super::layout::{
 use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
     latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text,
-    ui_telemetry_rows_snapshot, ActionPolicyMsg, BlinkMode, HISTORY_MS, TELEMETRY_RENDER_EPOCH,
+    ui_telemetry_rows_snapshot, ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, HISTORY_MS,
+    TELEMETRY_RENDER_EPOCH,
 };
 
 use crate::telemetry_dashboard::data_chart::{
@@ -285,7 +286,7 @@ fn StateChartPanel(
     view_w: f64,
     view_h: f64,
 ) -> Element {
-    let _ = *TELEMETRY_RENDER_EPOCH.read();
+    let _ = *CHART_RENDER_EPOCH.read();
     let mut is_fullscreen = use_signal(|| false);
     let on_toggle_fullscreen = move |_| {
         let next = !*is_fullscreen.read();

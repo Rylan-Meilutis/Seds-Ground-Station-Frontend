@@ -72,8 +72,9 @@ const LOD_BUCKET_MS_LEVELS: &[(i64, i64)] = &[
     (2 * 60_000, BUCKET_MS),
     (5 * 60_000, 50),
     (10 * 60_000, 100),
-    (15 * 60_000, 200),
-    (HISTORY_MS, 500),
+    (15 * 60_000, 250),
+    (18 * 60_000, 500),
+    (HISTORY_MS, 1_000),
 ];
 
 pub const CHART_GRID_LEFT: f64 = 96.0;
@@ -97,7 +98,7 @@ const MAX_INTERP_POINTS_PER_GAP: i64 = 64;
 // Only bridge short gaps (packet jitter). Large gaps should remain visually broken.
 const MAX_INTERP_GAP_BUCKETS: i64 = 6;
 const CURVE_MIN_DELTA_PX: f32 = 0.35;
-const RENDER_CHUNK_MS: i64 = 20_000;
+const RENDER_CHUNK_MS: i64 = 30_000;
 const SMOOTHING_MAX_POINTS_PER_SEGMENT: usize = 240;
 
 // Avoid zero span

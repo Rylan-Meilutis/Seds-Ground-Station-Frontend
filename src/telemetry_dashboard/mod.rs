@@ -983,6 +983,7 @@ const MAX_NOTIFICATION_HISTORY: usize = 500;
 // When this number changes, we tear down and rebuild the websocket connection.
 static WS_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static PREFERRED_LANGUAGE: GlobalSignal<String> = Signal::global(|| "en".to_string());
 static TRANSLATION_CATALOG: GlobalSignal<HashMap<String, String>> = Signal::global(HashMap::new);
 pub(crate) static APP_THEME_CONFIG: GlobalSignal<layout::ThemeConfig> = Signal::global(|| {
@@ -1007,9 +1008,19 @@ static WS_RAW: GlobalSignal<Option<web_sys::WebSocket>> = Signal::global(|| None
 // Force re-seed of graphs/history from backend.
 static SEED_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 
-fn bump_render_epoch() {
+fn bump_telemetry_render_epoch() {
     let mut render_epoch = TELEMETRY_RENDER_EPOCH.write();
     *render_epoch = render_epoch.wrapping_add(1);
+}
+
+fn bump_chart_render_epoch() {
+    let mut render_epoch = CHART_RENDER_EPOCH.write();
+    *render_epoch = render_epoch.wrapping_add(1);
+}
+
+fn bump_render_epoch() {
+    bump_telemetry_render_epoch();
+    bump_chart_render_epoch();
 }
 
 fn set_reseed_status(status: u8, detail: Option<String>) {
@@ -2330,12 +2341,20 @@ fn TelemetryDashboardInner() -> Element {
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
-                // Default to ~60 FPS; Linux WebKitGTK tends to degrade when we flush harder.
+                // Keep telemetry and charts responsive by default; operators can still override
+                // cadence through env vars on slower devices.
                 let tick_ms: u32 = std::env::var("GS_UI_TICK_MS")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(16)
+                    .unwrap_or(8)
                     .clamp(1, 50);
+                let chart_tick_ms: u32 = std::env::var("GS_CHART_TICK_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(tick_ms)
+                    .clamp(1, 500);
+                let chart_every = chart_tick_ms.div_ceil(tick_ms).max(1);
+                let mut chart_tick_counter: u32 = 0;
 
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
                     #[cfg(target_arch = "wasm32")]
@@ -2363,8 +2382,12 @@ fn TelemetryDashboardInner() -> Element {
                     if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
                         store.apply_rows(drained);
                     }
-                    let mut render_epoch = TELEMETRY_RENDER_EPOCH.write();
-                    *render_epoch = render_epoch.wrapping_add(1);
+                    bump_telemetry_render_epoch();
+                    chart_tick_counter = chart_tick_counter.saturating_add(1);
+                    if chart_tick_counter >= chart_every {
+                        bump_chart_render_epoch();
+                        chart_tick_counter = 0;
+                    }
                 }
             });
         });

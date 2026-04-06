@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover
 
 from pathlib import Path
 from subprocess import DEVNULL
-from typing import Optional, Literal, BinaryIO, cast
+from typing import Optional, Literal, BinaryIO, cast, Callable
 
 APP_NAME = "UBSEDS GS"
 WINDOWS_APP_NAME = "UBSEDS GroundStation"
@@ -266,6 +266,77 @@ def run(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> None
         for line in proc.stdout:
             print(line, end="")
             _append_log(line)
+        rc = proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        raise
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, cmd)
+
+
+def run_filtered(
+    cmd: list[str],
+    cwd: Path,
+    env: Optional[dict[str, str]] = None,
+    line_filter: Optional[Callable[[str], list[str]]] = None,
+) -> None:
+    cmd = [str(part) for part in cmd]
+    cmd_line = f"Running: {' '.join(cmd)} (cwd={cwd})"
+    print(cmd_line)
+    _append_log(cmd_line + "\n")
+    merged = os.environ.copy()
+    if env:
+        merged.update(env)
+    if LOG_FILE is None:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=merged,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        try:
+            for raw_line in proc.stdout:
+                lines = line_filter(raw_line) if line_filter else [raw_line]
+                for line in lines:
+                    print(line, end="")
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise
+        if rc != 0:
+            raise subprocess.CalledProcessError(rc, cmd)
+        return
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=merged,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    try:
+        for raw_line in proc.stdout:
+            lines = line_filter(raw_line) if line_filter else [raw_line]
+            for line in lines:
+                print(line, end="")
+                _append_log(line)
         rc = proc.wait()
     except KeyboardInterrupt:
         proc.terminate()
@@ -3294,6 +3365,116 @@ def _extract_wasm_bindgen_version_hint(text: str) -> Optional[str]:
     return None
 
 
+def _parse_semver(version: str) -> Optional[tuple[int, int, int, str]]:
+    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.\-]+))?\s*$", version)
+    if not match:
+        return None
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3)),
+        match.group(4) or "",
+    )
+
+
+def _installed_dx_version(frontend_dir: Path, env: Optional[dict[str, str]]) -> Optional[str]:
+    path_value = (env or {}).get("PATH", os.environ.get("PATH", ""))
+    dx_path = _find_dx(path_value)
+    if dx_path is None:
+        return None
+    try:
+        out = run_capture([str(dx_path), "--version"], cwd=frontend_dir, env=env).strip()
+    except Exception:
+        return None
+    match = re.search(r"(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)", out)
+    return match.group(1) if match else None
+
+
+def _workspace_dioxus_versions(frontend_dir: Path) -> list[str]:
+    lock_path = _workspace_root(frontend_dir) / "Cargo.lock"
+    if not lock_path.exists():
+        return []
+
+    raw = lock_path.read_text(encoding="utf-8", errors="replace")
+    versions: list[str] = []
+
+    if tomllib is not None:
+        try:
+            data = tomllib.loads(raw)
+            for pkg in data.get("package", []):
+                if pkg.get("name") == "dioxus":
+                    version = str(pkg.get("version", "")).strip()
+                    if version:
+                        versions.append(version)
+        except Exception:
+            pass
+
+    if not versions:
+        blocks = raw.split("[[package]]")
+        for block in blocks:
+            if 'name = "dioxus"' not in block:
+                continue
+            match = re.search(r'version\s*=\s*"([^"]+)"', block)
+            if match:
+                versions.append(match.group(1))
+
+    return sorted(set(versions), key=lambda v: (_parse_semver_triplet(v) or (0, 0, 0), v))
+
+
+def _dx_patch_ahead_but_compatible(dx_version: Optional[str], dioxus_versions: list[str]) -> bool:
+    if not dx_version or not dioxus_versions:
+        return False
+
+    dx_semver = _parse_semver(dx_version)
+    if dx_semver is None:
+        return False
+
+    parsed_versions = [_parse_semver(v) for v in dioxus_versions]
+    if any(v is None for v in parsed_versions):
+        return False
+
+    dx_major, dx_minor, dx_patch, dx_pre = dx_semver
+    for parsed in parsed_versions:
+        assert parsed is not None
+        major, minor, patch, pre = parsed
+        if major != dx_major or minor != dx_minor or pre != dx_pre:
+            return False
+        if patch > dx_patch:
+            return False
+
+    return any(parsed[2] < dx_patch for parsed in parsed_versions if parsed is not None)
+
+
+def _dx_version_line_filter(dx_version: Optional[str], dioxus_versions: list[str]):
+    allow_patch_ahead = _dx_patch_ahead_but_compatible(dx_version, dioxus_versions)
+    if not allow_patch_ahead:
+        return None
+
+    state = {"skip": 0, "emitted": False}
+
+    def _filter(line: str) -> list[str]:
+        if state["skip"] > 0:
+            state["skip"] -= 1
+            return []
+
+        if "dx and dioxus versions are incompatible!" in line:
+            state["skip"] = 2
+            if state["emitted"]:
+                return []
+            state["emitted"] = True
+            versions = ", ".join(dioxus_versions)
+            return [
+                (
+                    f"Info: allowing Dioxus patch-version skew "
+                    f"(dx {dx_version}, workspace dioxus {versions}) because they share the same major/minor release line.\n"
+                )
+            ]
+
+        return [line]
+
+    return _filter
+
+
 def _looks_like_wasm_bindgen_failure(text: str) -> bool:
     low = text.lower()
     if "wasm-bindgen" not in low:
@@ -4467,6 +4648,9 @@ def build_frontend(
             cmd = [str(dx_path), "bundle"]
         else:
             cmd = ["dx", "bundle"]
+        dx_version = _installed_dx_version(frontend_dir, env)
+        dioxus_versions = _workspace_dioxus_versions(frontend_dir)
+        dx_line_filter = _dx_version_line_filter(dx_version, dioxus_versions)
 
         if not debug_mode:
             cmd.append("--release")
@@ -4498,7 +4682,10 @@ def build_frontend(
 
         try:
             android_bundle_partial = False
-            run(cmd, cwd=frontend_dir, env=env)
+            if dx_line_filter is not None:
+                run_filtered(cmd, cwd=frontend_dir, env=env, line_filter=dx_line_filter)
+            else:
+                run(cmd, cwd=frontend_dir, env=env)
         except subprocess.CalledProcessError:
             err_text = _tail_log_text()
             if not err_text:
@@ -4522,7 +4709,10 @@ def build_frontend(
                         env["DIOXUS_WASM_BINDGEN"] = str(ensured)
                         env["DIOXUS_WASM_BINDGEN_PATH"] = str(ensured)
                     print("Retrying frontend build after wasm-bindgen-cli fix")
-                    run(cmd, cwd=frontend_dir, env=env)
+                    if dx_line_filter is not None:
+                        run_filtered(cmd, cwd=frontend_dir, env=env, line_filter=dx_line_filter)
+                    else:
+                        run(cmd, cwd=frontend_dir, env=env)
                 finally:
                     if hinted:
                         if prior_override is None:

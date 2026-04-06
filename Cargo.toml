@@ -8,11 +8,11 @@ license-file = "LICENSE"
 repository = "https://github.com/Rylan-Meilutis/Seds-Ground-Station-Frontend"
 
 [dependencies]
-dioxus = { version = "0.7", default-features = false }
-dioxus-router = "0.7"
+dioxus = { version = "0.7.4", default-features = false }
+dioxus-router = "0.7.4"
 
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 
 web-sys = "0.3.94"
 gloo-net = "0.7.0"
@@ -52,7 +52,7 @@ web-sys = { version = "0.3.94", features = [
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dioxus = { version = "0.7.4", features = ["desktop", "macro"] }
 dioxus-signals = "0.7.4"
-dioxus-desktop = "0.7.4"
+dioxus-desktop = "0.7.5"
 chrono = { version = "0.4.44", default-features = false, features = ["std", "clock"] }
 tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "time"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "blocking", "rustls", "stream"] }
