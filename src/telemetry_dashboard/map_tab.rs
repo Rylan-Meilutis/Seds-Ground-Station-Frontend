@@ -98,6 +98,18 @@ pub fn MapTab(
     let has_centered_on_user = use_signal(|| false);
     let map_config = use_signal(MapConfig::default);
     let theme = theme.unwrap_or_default();
+    let primary_button_style = format!(
+        "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.85rem; cursor:pointer;",
+        theme.info_accent, theme.info_background, theme.info_text
+    );
+    let warning_button_style = format!(
+        "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.85rem; cursor:pointer;",
+        theme.warning_border, theme.warning_background, theme.warning_text
+    );
+    let neutral_button_style = format!(
+        "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.85rem; cursor:pointer;",
+        theme.button_border, theme.button_background, theme.button_text
+    );
     let resolved_title = if title.as_deref().unwrap_or_default().trim().is_empty() {
         map_config.read().map_title.clone()
     } else {
@@ -366,33 +378,33 @@ pub fn MapTab(
             div { style: "position:fixed; inset:0; z-index:9999; padding:16px; background:{theme.app_background}; display:flex; flex-direction:column; gap:12px;",
                 div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:space-between;",
                     div { style: "display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;",
-                        h2 { style: "margin:0; color:#22c55e;", "{resolved_title}" }
+                        h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
                         if let Some(distance_text) = distance_text.clone() {
-                            span { style: "color:#fecaca; font-size:0.95rem; font-weight:700;", "(Distance: {distance_text})" }
+                            span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "(Distance: {distance_text})" }
                         }
                     }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",
                         button {
-                            style: "padding:6px 12px; border-radius:999px; border:1px solid #22c55e; background:#022c22; color:#bbf7d0; font-size:0.85rem; cursor:pointer;",
+                            style: "{primary_button_style}",
                             onclick: on_center_me,
                             "Center on Me"
                         }
                         if cfg!(target_os = "ios") && *show_enable_compass.read() {
                             button {
-                                style: "padding:6px 12px; border-radius:999px; border:1px solid #f59e0b; background:#3f2a06; color:#fde68a; font-size:0.85rem; cursor:pointer;",
+                                style: "{warning_button_style}",
                                 onclick: on_enable_compass,
                                 "Enable Compass"
                             }
                         }
                         button {
-                            style: "padding:6px 12px; border-radius:999px; border:1px solid #60a5fa; background:#0b1a33; color:#bfdbfe; font-size:0.85rem; cursor:pointer;",
+                            style: "{neutral_button_style}",
                             onclick: on_toggle_fullscreen,
                             "Exit Fullscreen"
                         }
                     }
                 }
                 if let Some(warning_text) = diagnostics_warning.clone() {
-                    div { style: "padding:10px 12px; border-radius:12px; border:1px solid #f59e0b; background:#451a03; color:#fde68a; font-size:0.92rem; font-weight:700;",
+                    div { style: "padding:10px 12px; border-radius:12px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:0.92rem; font-weight:700;",
                         "{warning_text}"
                     }
                 }
@@ -419,30 +431,30 @@ pub fn MapTab(
                         box-shadow:0 10px 25px rgba(0,0,0,0.45);",
                 div {
                     style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
-                    h2 { style: "margin:0; color:#22c55e;", "{resolved_title}" }
+                    h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
                     if let Some(distance_text) = distance_text {
-                        span { style: "color:#fecaca; font-size:0.95rem; font-weight:700;", "(Distance: {distance_text})" }
+                        span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "(Distance: {distance_text})" }
                     }
                     button {
-                        style: "padding:6px 12px; border-radius:999px; border:1px solid #22c55e; background:#022c22; color:#bbf7d0; font-size:0.85rem; cursor:pointer;",
+                        style: "{primary_button_style}",
                         onclick: on_center_me,
                         "Center on Me"
                     }
                     if cfg!(target_os = "ios") && *show_enable_compass.read() {
                         button {
-                            style: "padding:6px 12px; border-radius:999px; border:1px solid #f59e0b; background:#3f2a06; color:#fde68a; font-size:0.85rem; cursor:pointer;",
+                            style: "{warning_button_style}",
                             onclick: on_enable_compass,
                             "Enable Compass"
                         }
                     }
                     button {
-                        style: "padding:6px 12px; border-radius:999px; border:1px solid #60a5fa; background:#0b1a33; color:#bfdbfe; font-size:0.85rem; cursor:pointer;",
+                        style: "{neutral_button_style}",
                         onclick: on_toggle_fullscreen,
                         "Fullscreen"
                     }
                 }
                 if let Some(warning_text) = diagnostics_warning {
-                    div { style: "margin:0 12px; padding:10px 12px; border-radius:12px; border:1px solid #f59e0b; background:#451a03; color:#fde68a; font-size:0.92rem; font-weight:700;",
+                    div { style: "margin:0 12px; padding:10px 12px; border-radius:12px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:0.92rem; font-weight:700;",
                         "{warning_text}"
                     }
                 }

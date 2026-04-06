@@ -130,7 +130,7 @@ pub fn ConnectionStatusTab(
                                 }
                             }
                             if *show_board.read() {
-                                {render_board_table(&merged_boards)}
+                                {render_board_table(&merged_boards, &theme)}
                             }
                         }
                     },
@@ -163,13 +163,14 @@ pub fn ConnectionStatusTab(
                             if *show_latency.read() {
                                 div { style: latency_list_style(),
                                     for entry in merged_boards.iter() {
-                                        div { style: latency_card_style(),
-                                            div { style: "font-size:12px; color:#94a3b8; margin-bottom:6px;",
+                                        div { style: latency_card_style(&theme),
+                                            div { style: "font-size:12px; color:{theme.text_muted}; margin-bottom:6px;",
                                                 "{entry.display_name()} ({entry.sender_id})"
                                             }
                                             {render_latency_chart(
                                                 history.read().get(&entry.sender_id),
                                                 LATENCY_CHART_HEIGHT_PX as f64,
+                                                &theme,
                                             )}
                                         }
                                     }
@@ -191,7 +192,7 @@ pub fn ConnectionStatusTab(
                         "Exit Fullscreen"
                     }
                 }
-                {render_board_table(&merged_boards)}
+                {render_board_table(&merged_boards, &theme)}
             }
         }
 
@@ -207,13 +208,14 @@ pub fn ConnectionStatusTab(
                 }
                 div { style: latency_list_style(),
                     for entry in merged_boards.iter() {
-                        div { style: latency_card_style(),
-                            div { style: "font-size:12px; color:#94a3b8; margin-bottom:6px;",
+                        div { style: latency_card_style(&theme),
+                            div { style: "font-size:12px; color:{theme.text_muted}; margin-bottom:6px;",
                                 "{entry.display_name()} ({entry.sender_id})"
                             }
                             {render_latency_chart(
                                 history.read().get(&entry.sender_id),
                                 LATENCY_FULLSCREEN_CHART_HEIGHT_PX as f64,
+                                &theme,
                             )}
                         }
                     }
@@ -263,16 +265,16 @@ fn js_now_ms() -> i64 {
     }
 }
 
-fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64) -> Element {
+fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64, theme: &ThemeConfig) -> Element {
     let Some(points) = points else {
         return rsx! {
-            div { style: "color:#64748b; font-size:12px;", "No data yet" }
+            div { style: "color:{theme.text_muted}; font-size:12px;", "No data yet" }
         };
     };
 
     if points.len() < 2 {
         return rsx! {
-            div { style: "color:#64748b; font-size:12px;", "Collecting…" }
+            div { style: "color:{theme.text_muted}; font-size:12px;", "Collecting…" }
         };
     }
 
@@ -289,7 +291,7 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64) -> Elemen
         build_latency_polylines(points.as_slice(), width, height, Some(LATENCY_WINDOW_MS));
     if solid.is_empty() && dotted.is_empty() {
         return rsx! {
-            div { style: "color:#64748b; font-size:12px;", "Collecting…" }
+            div { style: "color:{theme.text_muted}; font-size:12px;", "Collecting…" }
         };
     }
 
@@ -301,7 +303,7 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64) -> Elemen
         div { style: "display:flex; flex-direction:column;",
             div { style: "position:relative; width:100%; aspect-ratio:{width}/{height};",
                 svg {
-                    style: "position:absolute; inset:0; width:100%; height:100%; display:block; background:#020617; border-radius:10px; border:1px solid #1f2937;",
+                    style: "position:absolute; inset:0; width:100%; height:100%; display:block; background:{theme.app_background}; border-radius:10px; border:1px solid {theme.border_soft};",
                     view_box: "0 0 {width} {height}",
 
                     // gridlines
@@ -309,7 +311,7 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64) -> Elemen
                         line {
                             x1:"{left}", y1:"{pad_top + grid_y_step * (i as f64)}",
                             x2:"{right}", y2:"{pad_top + grid_y_step * (i as f64)}",
-                            stroke: "#1f2937",
+                            stroke: "{theme.border_soft}",
                             "stroke-width": "1"
                         }
                     }
@@ -317,14 +319,14 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64) -> Elemen
                         line {
                             x1:"{left + grid_x_step * (i as f64)}", y1:"{pad_top}",
                             x2:"{left + grid_x_step * (i as f64)}", y2:"{height - pad_bottom}",
-                            stroke: "#1f2937",
+                            stroke: "{theme.border_soft}",
                             "stroke-width": "1"
                         }
                     }
 
                     // axes
-                    line { x1:"{left}", y1:"{height - pad_bottom}", x2:"{right}", y2:"{height - pad_bottom}", stroke:"#334155", "stroke-width":"1" }
-                    line { x1:"{left}", y1:"{pad_top}",  x2:"{left}",   y2:"{height - pad_bottom}", stroke:"#334155", "stroke-width":"1" }
+                    line { x1:"{left}", y1:"{height - pad_bottom}", x2:"{right}", y2:"{height - pad_bottom}", stroke:"{theme.border}", "stroke-width":"1" }
+                    line { x1:"{left}", y1:"{pad_top}",  x2:"{left}",   y2:"{height - pad_bottom}", stroke:"{theme.border}", "stroke-width":"1" }
 
                     for pts in solid.iter() {
                         if !pts.is_empty() {
@@ -352,7 +354,7 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64) -> Elemen
                         }
                     }
                 }
-                div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:#94a3b8;",
+                div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
                     span { style: "position:absolute; left:10px; top:{y_pct(pad_top + 6.0, height)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
                     span { style: "position:absolute; left:10px; top:{y_pct(pad_top + inner_h / 2.0 + 4.0, height)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
                     span { style: "position:absolute; left:10px; top:{y_pct(height - pad_bottom + 2.0, height)}; transform:translateY(-100%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
@@ -361,7 +363,7 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64) -> Elemen
                     span { style: "position:absolute; left:{x_pct(right - 52.0, width)}; bottom:8px;", "now" }
                 }
             }
-            div { style: "margin-top:8px; display:flex; gap:12px; align-items:center; font-size:12px; color:#cbd5f5;",
+            div { style: "margin-top:8px; display:flex; gap:12px; align-items:center; font-size:12px; color:{theme.text_secondary};",
                 div { style: "display:flex; align-items:center; gap:6px;",
                     svg { width:"26", height:"8", view_box:"0 0 26 8",
                         line { x1:"1", y1:"4", x2:"25", y2:"4", stroke:"#22d3ee", stroke_width:"2", stroke_linecap:"round" }
@@ -383,8 +385,11 @@ fn latency_list_style() -> &'static str {
     "display:flex; flex-direction:column; gap:10px; width:100%;"
 }
 
-fn latency_card_style() -> &'static str {
-    "padding:10px; border:1px solid #1f2937; border-radius:10px; background:#020617; width:100%; min-width:0;"
+fn latency_card_style(theme: &ThemeConfig) -> String {
+    format!(
+        "padding:10px; border:1px solid {}; border-radius:10px; background:{}; width:100%; min-width:0;",
+        theme.border_soft, theme.panel_background_alt
+    )
 }
 
 fn build_latency_polylines(
@@ -485,30 +490,30 @@ fn build_latency_polylines(
     (solid, dotted, y_min, y_max, span_min)
 }
 
-fn render_board_table(boards: &[BoardStatusEntry]) -> Element {
+fn render_board_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Element {
     if boards.is_empty() {
         return rsx! {
-            div { style: "color:#94a3b8;", "No board status yet." }
+            div { style: "color:{theme.text_muted};", "No board status yet." }
         };
     }
 
     rsx! {
-        div { style: "border:1px solid #1f2937; border-radius:10px; overflow:hidden;",
-            div { style: "display:grid; grid-template-columns: 1.1fr 1.1fr 0.7fr 1fr 1fr; font-size:13px; color:#cbd5f5;",
-                div { style: "font-weight:600; color:#e2e8f0; padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;", "Board" }
-                div { style: "font-weight:600; color:#e2e8f0; padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;", "Sender ID" }
-                div { style: "font-weight:600; color:#e2e8f0; padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;", "Seen" }
-                div { style: "font-weight:600; color:#e2e8f0; padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;", "Last Seen (ms)" }
-                div { style: "font-weight:600; color:#e2e8f0; padding:8px; border-bottom:1px solid #1f2937;", "Age (ms)" }
+        div { style: "border:1px solid {theme.border_soft}; border-radius:10px; overflow:hidden;",
+            div { style: "display:grid; grid-template-columns: 1.1fr 1.1fr 0.7fr 1fr 1fr; font-size:13px; color:{theme.text_secondary}; background:{theme.app_background};",
+                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft};", "Board" }
+                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft};", "Sender ID" }
+                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft};", "Seen" }
+                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft};", "Last Seen (ms)" }
+                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft};", "Age (ms)" }
 
                 for entry in boards.iter() {
-                    div { style: "padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;", "{entry.display_name()}" }
-                    div { style: "padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;", "{entry.sender_id}" }
-                    div { style: "padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;", if entry.seen { "yes" } else { "no" } }
-                    div { style: "padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;",
+                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};", "{entry.display_name()}" }
+                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};", "{entry.sender_id}" }
+                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};", if entry.seen { "yes" } else { "no" } }
+                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};",
                         "{format_last_seen(entry.last_seen_ms)}"
                     }
-                    div { style: "padding:8px; border-bottom:1px solid #1f2937;",
+                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};",
                         if let Some(age) = entry.age_ms { "{age}" } else { "—" }
                     }
                 }

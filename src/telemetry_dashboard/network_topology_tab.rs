@@ -10,7 +10,7 @@ const GRAPH_SURFACE_FULLSCREEN_ID: &str = "network-topology-surface-fullscreen";
 const GRAPH_CANVAS_FULLSCREEN_ID: &str = "network-topology-canvas-fullscreen";
 
 use super::js_eval;
-use super::layout::NetworkTabLayout;
+use super::layout::{NetworkTabLayout, ThemeConfig};
 use super::types::{
     NetworkTopologyLink, NetworkTopologyMsg, NetworkTopologyNode, NetworkTopologyNodeKind,
     NetworkTopologyStatus,
@@ -52,7 +52,12 @@ const ZOOM_MAX: f32 = 2.2;
 const ZOOM_STEP: f32 = 0.2;
 const GRAPH_LINK_CHANNEL_COLOR: &str = "#243447";
 
-fn graph_viewport_style(min_height_px: i32, max_height: Option<&str>, fullscreen: bool) -> String {
+fn graph_viewport_style(
+    theme: &ThemeConfig,
+    min_height_px: i32,
+    max_height: Option<&str>,
+    fullscreen: bool,
+) -> String {
     let size_constraints = if fullscreen {
         "flex:1; min-height:0;".to_string()
     } else {
@@ -63,7 +68,11 @@ fn graph_viewport_style(min_height_px: i32, max_height: Option<&str>, fullscreen
         style
     };
     format!(
-        "{size_constraints} border:1px solid #334155; border-radius:20px; background:radial-gradient(circle at top, #122033 0%, #0b1220 45%, #020617 100%); overflow:auto; cursor:grab; user-select:none; touch-action:none; overscroll-behavior:contain; scrollbar-width:none; -ms-overflow-style:none; box-shadow:0 24px 60px rgba(0,0,0,0.45);"
+        "{size_constraints} border:1px solid {border}; border-radius:20px; background:radial-gradient(circle at top, {panel_alt} 0%, {panel} 45%, {app} 100%); overflow:auto; cursor:grab; user-select:none; touch-action:none; overscroll-behavior:contain; scrollbar-width:none; -ms-overflow-style:none; box-shadow:0 24px 60px rgba(0,0,0,0.45);",
+        border = theme.border,
+        panel_alt = theme.panel_background_alt,
+        panel = theme.panel_background,
+        app = theme.app_background,
     )
 }
 
@@ -72,6 +81,7 @@ pub fn NetworkTopologyTab(
     topology: Signal<NetworkTopologyMsg>,
     layout: NetworkTabLayout,
     flow_animation_enabled: bool,
+    theme: ThemeConfig,
 ) -> Element {
     let snapshot = topology.read().clone();
     let expanded_node_id = use_signal(|| None::<String>);
@@ -258,44 +268,44 @@ pub fn NetworkTopologyTab(
         if *is_fullscreen.read() {
             div {
                 key: "network-fullscreen-{fullscreen_state}",
-                style: "position:fixed; inset:0; z-index:9999; padding:16px; background:rgba(2, 6, 23, 0.96); display:flex; flex-direction:column; gap:12px;",
+                style: "position:fixed; inset:0; z-index:9999; padding:16px; background:{theme.overlay_background}; display:flex; flex-direction:column; gap:12px;",
                 div {
                     style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:space-between;",
-                    h2 { style: "margin:0; color:#8b5cf6;", "{title}" }
+                    h2 { style: "margin:0; color:{theme.main_tab_accents.get(\"network-topology\").map(String::as_str).unwrap_or(theme.info_accent.as_str())};", "{title}" }
                     div {
-                        style: "display:flex; align-items:center; gap:10px; color:#cbd5e1; flex-wrap:wrap;",
+                        style: "display:flex; align-items:center; gap:10px; color:{theme.text_secondary}; flex-wrap:wrap;",
                         button {
-                            style: zoom_button_style(),
+                            style: zoom_button_style(&theme),
                             onclick: move |_| graph_zoom_delta(-ZOOM_STEP),
                             "Zoom Out"
                         }
                         button {
-                            style: zoom_button_style(),
+                            style: zoom_button_style(&theme),
                             onclick: move |_| graph_zoom_reset(),
                             "Reset"
                         }
                         button {
-                            style: zoom_button_style(),
+                            style: zoom_button_style(&theme),
                             onclick: move |_| graph_zoom_delta(ZOOM_STEP),
                             "Zoom In"
                         }
                         button {
-                            style: "padding:6px 12px; border-radius:999px; border:1px solid #60a5fa; background:#0b1a33; color:#bfdbfe; font-size:0.85rem; cursor:pointer;",
+                            style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                             onclick: on_toggle_fullscreen,
                             "Exit Fullscreen"
                         }
                     }
                 }
                 p {
-                    style: "margin:0; color:#94a3b8; font-size:0.95rem;",
+                    style: "margin:0; color:{theme.text_muted}; font-size:0.95rem;",
                     if snapshot.simulated {
                         "Topology graph is running in testing-mode simulation."
                     } else {
-                        "Topology graph is built from backend topology and live node/link status."
+                        "Topology graph is built from Ground Station topology and live node/link status."
                     }
                 }
                 div {
-                    style: "{graph_viewport_style(EMBEDDED_GRAPH_MIN_HEIGHT, None, true)}",
+                    style: "{graph_viewport_style(&theme, EMBEDDED_GRAPH_MIN_HEIGHT, None, true)}",
                     id: "{viewport_id}",
                     div {
                             id: "{surface_id}",
@@ -315,6 +325,7 @@ pub fn NetworkTopologyTab(
 
                             for node in graph_nodes.iter() {
                                 {render_node(
+                                    &theme,
                                     node,
                                     &graph_links,
                                     &snapshot.nodes,
@@ -331,46 +342,46 @@ pub fn NetworkTopologyTab(
             div {
                 key: "network-embedded-{fullscreen_state}",
                 style: "padding:10px 14px 14px 14px; display:flex; flex-direction:column; gap:12px; height:100%; min-height:{EMBEDDED_GRAPH_MIN_HEIGHT}px; overflow-y:auto;",
-                h2 { style: "margin:0; color:#e5e7eb;", "{title}" }
+                h2 { style: "margin:0; color:{theme.text_primary};", "{title}" }
                 p {
-                    style: "margin:0; color:#94a3b8; font-size:0.95rem;",
+                    style: "margin:0; color:{theme.text_muted}; font-size:0.95rem;",
                     if snapshot.simulated {
                         "Router graph is running in testing-mode simulation."
                     } else {
-                        "Router graph is built from the backend SEDSprintf topology and live board/link status."
+                        "Router graph is built from the Ground Station SEDSprintf topology and live board/link status."
                     }
                 }
                 div {
-                    style: "display:flex; align-items:center; gap:10px; color:#cbd5e1; flex-wrap:wrap;",
+                    style: "display:flex; align-items:center; gap:10px; color:{theme.text_secondary}; flex-wrap:wrap;",
                     button {
-                        style: zoom_button_style(),
+                        style: zoom_button_style(&theme),
                         onclick: move |_| graph_zoom_delta(-ZOOM_STEP),
                         "Zoom Out"
                     }
                     button {
-                        style: zoom_button_style(),
+                        style: zoom_button_style(&theme),
                         onclick: move |_| graph_zoom_reset(),
                         "Reset"
                     }
                     button {
-                        style: zoom_button_style(),
+                        style: zoom_button_style(&theme),
                         onclick: move |_| graph_zoom_delta(ZOOM_STEP),
                         "Zoom In"
                     }
                     button {
-                        style: "padding:6px 12px; border-radius:999px; border:1px solid #60a5fa; background:#0b1a33; color:#bfdbfe; font-size:0.85rem; cursor:pointer;",
+                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                         onclick: on_toggle_fullscreen,
                         "Fullscreen"
                     }
                     span {
-                        style: "font-size:0.85rem; color:#94a3b8;",
+                        style: "font-size:0.85rem; color:{theme.text_muted};",
                         "Pinch or drag to navigate"
                     }
                 }
 
                 div {
                     id: "{viewport_id}",
-                    style: "padding:8px; {graph_viewport_style(EMBEDDED_GRAPH_MIN_HEIGHT, Some(\"calc(var(--gs26-app-height) - 260px)\"), false)}",
+                    style: "padding:8px; {graph_viewport_style(&theme, EMBEDDED_GRAPH_MIN_HEIGHT, Some(\"calc(var(--gs26-app-height) - 260px)\"), false)}",
                     div {
                         id: "{surface_id}",
                         style: "position:relative; width:{render_width}px; height:{render_height}px; min-width:{render_width}px; min-height:{render_height}px;",
@@ -389,6 +400,7 @@ pub fn NetworkTopologyTab(
 
                             for node in graph_nodes.iter() {
                                 {render_node(
+                                    &theme,
                                     node,
                                     &graph_links,
                                     &snapshot.nodes,
@@ -400,33 +412,33 @@ pub fn NetworkTopologyTab(
                         }
                     }
                 }
-                {render_endpoint_section(&endpoint_rows)}
+                {render_endpoint_section(&endpoint_rows, &theme)}
             }
         }
     }
 }
 
-fn render_endpoint_section(endpoint_rows: &[(String, Vec<String>)]) -> Element {
+fn render_endpoint_section(endpoint_rows: &[(String, Vec<String>)], theme: &ThemeConfig) -> Element {
     rsx! {
         div {
-            style: "border:1px solid #334155; border-radius:18px; background:#07121f; padding:14px;",
-            h3 { style: "margin:0 0 10px 0; color:#e5e7eb;", "Endpoint Ownership" }
+            style: "border:1px solid {theme.border}; border-radius:18px; background:{theme.panel_background}; padding:14px;",
+            h3 { style: "margin:0 0 10px 0; color:{theme.text_primary};", "Endpoint Ownership" }
             p {
-                style: "margin:0 0 12px 0; color:#94a3b8; font-size:0.9rem;",
+                style: "margin:0 0 12px 0; color:{theme.text_muted}; font-size:0.9rem;",
                 "One row per endpoint, with every board or local node that currently owns or advertises it."
             }
             table { style: "width:100%; border-collapse:collapse; font-size:0.92rem;",
                 thead {
                     tr {
-                        th { style: topology_th_style(), "Endpoint" }
-                        th { style: topology_th_style(), "Owners" }
+                        th { style: topology_th_style(theme), "Endpoint" }
+                        th { style: topology_th_style(theme), "Owners" }
                     }
                 }
                 tbody {
                     for (endpoint, owners) in endpoint_rows.iter() {
                         tr {
-                            td { style: topology_td_style(true), "{endpoint}" }
-                            td { style: topology_td_style(false), "{owners.join(\", \")}" }
+                            td { style: topology_td_style(theme, true), "{endpoint}" }
+                            td { style: topology_td_style(theme, false), "{owners.join(\", \")}" }
                         }
                     }
                 }
@@ -435,8 +447,11 @@ fn render_endpoint_section(endpoint_rows: &[(String, Vec<String>)]) -> Element {
     }
 }
 
-fn zoom_button_style() -> &'static str {
-    "padding:6px 10px; border-radius:10px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; font-size:0.82rem; cursor:pointer;"
+fn zoom_button_style(theme: &ThemeConfig) -> String {
+    format!(
+        "padding:6px 10px; border-radius:10px; border:1px solid {}; background:{}; color:{}; font-size:0.82rem; cursor:pointer;",
+        theme.button_border, theme.button_background, theme.button_text
+    )
 }
 
 fn graph_zoom_delta(delta: f32) {
@@ -1058,6 +1073,7 @@ fn render_link(
 }
 
 fn render_node(
+    theme: &ThemeConfig,
     node: &NetworkTopologyNode,
     links: &[NetworkTopologyLink],
     nodes: &[NetworkTopologyNode],
@@ -1068,7 +1084,7 @@ fn render_node(
     let Some(placement) = placement_for(&node.id, placements) else {
         return rsx! { div {} };
     };
-    let (ring, bg, fg, chip_bg, chip_fg, status_label) = node_style(node.status);
+    let (ring, bg, fg, chip_bg, chip_fg, status_label) = node_style(theme, node.status);
     let neighbors = neighbor_labels(node, links, nodes);
     let is_expanded = expanded_node_id
         .read()
@@ -1120,14 +1136,14 @@ fn render_node(
             if let Some(sender_id) = &node.sender_id {
                 div { style: "font-size:0.72rem; color:#93c5fd; text-transform:uppercase; letter-spacing:0.08em;", "{sender_id}" }
             } else {
-                div { style: "font-size:0.72rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em;", "{kind}" }
+                div { style: "font-size:0.72rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{kind}" }
             }
             span {
                 style: "padding:2px 8px; border-radius:999px; background:{chip_bg}; color:{chip_fg}; font-size:0.7rem; font-weight:700;",
                 "{status_label}"
             }
             div {
-                style: "font-size:0.68rem; color:#94a3b8; max-width:100%; line-height:1.2;",
+                style: "font-size:0.68rem; color:{theme.text_muted}; max-width:100%; line-height:1.2;",
                 if node.endpoints.is_empty() {
                     "Tap for details"
                 } else {
@@ -1138,30 +1154,30 @@ fn render_node(
                 div {
                     "data-network-panel": "true",
                     style: "position:absolute; left:{panel_left}; right:{panel_right}; top:50%; transform:translateY(-50%); width:240px; padding:12px 14px; border-radius:14px; \
-                            border:1px solid #334155; background:#020617; box-shadow:0 20px 40px rgba(2, 6, 23, 0.55); z-index:4; text-align:left;",
-                    div { style: "font-size:0.73rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em;", "{kind} details" }
-                    div { style: "font-size:0.95rem; color:#e2e8f0; font-weight:700; margin:4px 0 10px 0;", "{node.label}" }
-                    div { style: "font-size:0.73rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Connected to" }
+                            border:1px solid {theme.border}; background:{theme.panel_background}; box-shadow:0 20px 40px rgba(2, 6, 23, 0.55); z-index:4; text-align:left;",
+                    div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{kind} details" }
+                    div { style: "font-size:0.95rem; color:{theme.text_primary}; font-weight:700; margin:4px 0 10px 0;", "{node.label}" }
+                    div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Connected to" }
                     if neighbors.is_empty() {
-                        div { style: "font-size:0.82rem; color:#64748b; margin-bottom:12px;", "No active links." }
+                        div { style: "font-size:0.82rem; color:{theme.text_muted}; margin-bottom:12px;", "No active links." }
                     } else {
                         div { style: "display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px;",
                             for neighbor in neighbors.iter() {
                                 span {
-                                    style: "padding:4px 8px; border-radius:999px; background:rgba(15, 23, 42, 0.6); border:1px solid rgba(148, 163, 184, 0.22); color:#cbd5e1; font-size:0.72rem;",
+                                    style: "padding:4px 8px; border-radius:999px; background:{theme.panel_background_alt}; border:1px solid {theme.border_soft}; color:{theme.text_secondary}; font-size:0.72rem;",
                                     "{neighbor}"
                                 }
                             }
                         }
                     }
-                    div { style: "font-size:0.73rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Endpoints" }
+                    div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Endpoints" }
                     if node.endpoints.is_empty() {
-                        div { style: "font-size:0.82rem; color:#64748b;", "No discovered endpoints for this node." }
+                        div { style: "font-size:0.82rem; color:{theme.text_muted};", "No discovered endpoints for this node." }
                     } else {
                         div { style: "display:flex; flex-direction:column; gap:6px; max-height:240px; overflow-y:auto; padding-right:4px;",
                             for endpoint in node.endpoints.iter() {
                                 div {
-                                    style: "padding:6px 8px; border-radius:10px; border:1px solid #1f2937; background:#0b1220; color:#dbeafe; font-size:0.8rem;",
+                                    style: "padding:6px 8px; border-radius:10px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:0.8rem;",
                                     "{endpoint}"
                                 }
                             }
@@ -1226,50 +1242,69 @@ fn link_color(link: &NetworkTopologyLink, default: &'static str) -> &'static str
     default
 }
 
-fn topology_th_style() -> &'static str {
-    "text-align:left; color:#8fb3c9; border-bottom:1px solid #243447; padding:8px 6px;"
+fn topology_th_style(theme: &ThemeConfig) -> String {
+    format!(
+        "text-align:left; color:{}; border-bottom:1px solid {}; padding:8px 6px;",
+        theme.text_muted, theme.border_soft
+    )
 }
 
-fn topology_td_style(mono: bool) -> &'static str {
+fn topology_td_style(theme: &ThemeConfig, mono: bool) -> String {
     if mono {
-        "padding:8px 6px; border-bottom:1px solid #132738; color:#dbe7f3; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;"
+        format!(
+            "padding:8px 6px; border-bottom:1px solid {}; color:{}; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;",
+            theme.border_soft, theme.text_secondary
+        )
     } else {
-        "padding:8px 6px; border-bottom:1px solid #132738; color:#dbe7f3;"
+        format!(
+            "padding:8px 6px; border-bottom:1px solid {}; color:{};",
+            theme.border_soft, theme.text_secondary
+        )
     }
 }
 
 fn node_style(
+    theme: &ThemeConfig,
     status: NetworkTopologyStatus,
 ) -> (
     &'static str,
+    String,
     &'static str,
-    &'static str,
-    &'static str,
+    String,
     &'static str,
     &'static str,
 ) {
     match status {
         NetworkTopologyStatus::Online => (
             "#22c55e",
-            "radial-gradient(circle at 30% 30%, #14532d 0%, #0b1220 72%)",
+            format!(
+                "radial-gradient(circle at 30% 30%, #14532d 0%, {} 72%)",
+                theme.panel_background
+            ),
             "#dcfce7",
-            "rgba(34, 197, 94, 0.18)",
+            "rgba(34, 197, 94, 0.18)".to_string(),
             "#bbf7d0",
             "Online",
         ),
         NetworkTopologyStatus::Offline => (
             "#ef4444",
-            "radial-gradient(circle at 30% 30%, #4c0519 0%, #0b1220 72%)",
+            format!(
+                "radial-gradient(circle at 30% 30%, #4c0519 0%, {} 72%)",
+                theme.panel_background
+            ),
             "#fee2e2",
-            "rgba(239, 68, 68, 0.18)",
+            "rgba(239, 68, 68, 0.18)".to_string(),
             "#fecaca",
             "Offline",
         ),
         NetworkTopologyStatus::Simulated => (
             "#8b5cf6",
-            "radial-gradient(circle at 30% 30%, #312e81 0%, #0b1220 72%)",
+            format!(
+                "radial-gradient(circle at 30% 30%, #312e81 0%, {} 72%)",
+                theme.panel_background
+            ),
             "#ede9fe",
-            "rgba(139, 92, 246, 0.18)",
+            "rgba(139, 92, 246, 0.18)".to_string(),
             "#ddd6fe",
             "Simulated",
         ),

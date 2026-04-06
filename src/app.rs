@@ -11,7 +11,7 @@ use crate::telemetry_dashboard::layout::ThemeConfig;
 use dioxus::prelude::*;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 use dioxus_desktop::use_window;
-use dioxus_router::{use_navigator, Routable, Router};
+use dioxus_router::{Routable, Router, use_navigator};
 
 #[allow(unused_imports)]
 use crate::telemetry_dashboard::{self, UrlConfig};
@@ -76,6 +76,15 @@ fn all_tests_passed(checks: &[RouteCheck], ws_probe: &Option<Result<String, Stri
 const GLOBAL_CSS: &str = r#"
 :root {
     --gs26-app-height: 100dvh;
+    --gs26-app-background: #020617;
+    --gs26-app-text: #e5e7eb;
+    --gs26-panel-background: #0b1220;
+    --gs26-panel-alt-background: #0f172a;
+    --gs26-border: #334155;
+    --gs26-text-muted: #94a3b8;
+    --gs26-text-secondary: #cbd5e1;
+    --gs26-button-background: #111827;
+    --gs26-button-text: #e5e7eb;
 }
 
 @supports not (height: 100dvh) {
@@ -90,7 +99,8 @@ html, body {
     width: 100%;
     min-height: var(--gs26-app-height);
     height: var(--gs26-app-height);
-    background: #020617;
+    background: var(--gs26-app-background);
+    color: var(--gs26-app-text);
     overflow: hidden;
 }
 
@@ -102,7 +112,8 @@ html, body {
     width: 100%;
     min-height: var(--gs26-app-height);
     height: var(--gs26-app-height);
-    background: #020617;
+    background: var(--gs26-app-background);
+    color: var(--gs26-app-text);
 }
 
 * { box-sizing: border-box; }
@@ -183,7 +194,7 @@ fn format_session_load_error(err: &str) -> String {
         err.to_string()
     } else {
         format!(
-            "{}\n\nThe app could not load the backend session endpoint. Check that the backend URL is correct and that the proxy or server is healthy.",
+            "{}\n\nThe app could not load the Ground Station session endpoint. Check that the Ground Station URL is correct and that the proxy or server is healthy.",
             err
         )
     }
@@ -282,7 +293,7 @@ mod persist {
     /// Resolves the Android app-private files directory when the JNI context is available.
     fn android_storage_dir() -> Option<std::path::PathBuf> {
         use ::jni::objects::{JObject, JString};
-        use ::jni::{jni_sig, jni_str, JavaVM};
+        use ::jni::{JavaVM, jni_sig, jni_str};
         use ndk_context::android_context;
 
         let ctx = android_context();
@@ -783,7 +794,7 @@ fn format_route_report_host_only(
     // ⭐ All-tests-passed banner
     if all_tests_passed(checks, &ws_probe) {
         s.push_str("🎉 ALL CONNECTION TESTS PASSED\n");
-        s.push_str("    Backend is reachable, HTTP routes OK, WebSocket OK.\n");
+        s.push_str("    Ground Station is reachable, HTTP routes OK, WebSocket OK.\n");
         s.push_str("--------------------------------------------------------\n\n");
     }
 
@@ -857,6 +868,13 @@ pub fn App() -> Element {
             window.set_title(APP_DISPLAY_NAME);
         });
     }
+    let theme = shell_theme();
+    {
+        let theme = theme.clone();
+        use_effect(move || {
+            telemetry_dashboard::apply_window_theme(&theme);
+        });
+    }
     let map_assets: Element = {
         rsx! {
             document::Style { "{INLINE_LEAFLET_CSS}" }
@@ -870,7 +888,7 @@ pub fn App() -> Element {
         {map_assets}
 
         div {
-            style: "min-height: var(--gs26-app-height); width: 100%; background: #020617; color: #e5e7eb;",
+            style: "min-height: var(--gs26-app-height); width: 100%; background: var(--gs26-app-background); color: var(--gs26-app-text);",
             Router::<Route> {}
         }
     }
@@ -931,7 +949,7 @@ fn LoginCard(
     let mut submit_login = move || {
         let base = UrlConfig::base_http();
         if base.trim().is_empty() {
-            status.set("Configure the backend URL first.".to_string());
+            status.set("Configure the Ground Station URL first.".to_string());
             return;
         }
         let username_value = username();
@@ -1014,7 +1032,7 @@ fn LoginCard(
                     if base.trim().is_empty() {
                         div {
                             style: shell_warning_style(&theme),
-                            "Configure the backend URL before logging in."
+                            "Configure the Ground Station URL before logging in."
                         }
                     }
 
@@ -1052,7 +1070,7 @@ fn LoginCard(
                                 remember_me.set(next);
                             },
                         }
-                        div { style: "font-size:13px; color:{theme.text_muted};", "Remember this device until the backend session expires" }
+                        div { style: "font-size:13px; color:{theme.text_muted};", "Remember this device until the Ground Station session expires" }
                     }
 
                     if !status().is_empty() {
@@ -1187,7 +1205,7 @@ pub fn Login() -> Element {
         rsx! {
             LoginOverlay {
                 title: "Sign In".to_string(),
-                subtitle: "Authenticate with the backend to view protected data or send commands.".to_string(),
+                subtitle: "Authenticate with the Ground Station to view protected data or send commands.".to_string(),
                 allow_back_to_connect: true,
                 on_success_route: authenticated_route(),
             }
@@ -1196,7 +1214,7 @@ pub fn Login() -> Element {
         rsx! {
             LoginCard {
                 title: "Sign In".to_string(),
-                subtitle: "Authenticate with the backend to view protected data or send commands.".to_string(),
+                subtitle: "Authenticate with the Ground Station to view protected data or send commands.".to_string(),
                 allow_back_to_connect: true,
                 on_success_route: authenticated_route(),
             }
@@ -1211,7 +1229,8 @@ pub fn Connect() -> Element {
     let nav = use_navigator();
 
     let initial =
-        UrlConfig::_stored_base_url().unwrap_or_else(|| "https://your-backend-url.com".to_string());
+        UrlConfig::_stored_base_url()
+            .unwrap_or_else(|| "https://your-ground-station-url.com".to_string());
     let initial_skip_tls = UrlConfig::_skip_tls_verify_for_base(&initial);
 
     let mut url_edit = use_signal(|| initial);
@@ -1238,8 +1257,8 @@ pub fn Connect() -> Element {
                     }
                 }
                 p { style: "margin:0 0 16px 0; color:{theme.text_muted};",
-                    "Enter the backend URL (including http:// or https://). Example: ",
-                    code { "https://your-backend-url.com" }
+                    "Enter the Ground Station URL (including http:// or https://). Example: ",
+                    code { "https://your-GroundStation-url.com" }
                 }
 
                 input {
@@ -1370,7 +1389,7 @@ pub fn Connect() -> Element {
                             UrlConfig::_set_skip_tls_verify_for_base(&u_norm, *skip_tls.read());
                             if UrlConfig::_stored_base_url().as_deref() != Some(u_norm.as_str()) {
                                 test_status.set(
-                                    "Failed to save the backend URL on this device. The app stayed disconnected."
+                                    "Failed to save the Ground Station URL on this device. The app stayed disconnected."
                                         .to_string(),
                                 );
                                 return;
@@ -1421,7 +1440,7 @@ pub fn Version() -> Element {
                         "Back"
                     }
                 }
-                crate::telemetry_dashboard::version_page::VersionTab {}
+                crate::telemetry_dashboard::version_page::VersionTab { theme: theme.clone() }
             }
         }
     }
@@ -1444,7 +1463,7 @@ pub fn Dashboard() -> Element {
                     div {
                         style: shell_card_style(&theme, "min(560px, 92vw)"),
                         h1 { style: "margin:0 0 12px 0; font-size:18px;", "Not connected" }
-                        p { style: "margin:0 0 16px 0; color:{theme.text_muted};", "Please configure the backend URL on the Connect screen." }
+                        p { style: "margin:0 0 16px 0; color:{theme.text_muted};", "Please configure the Ground Station URL on the Connect screen." }
                         button {
                             style: shell_button_style(&theme),
                             onclick: move |_| {
@@ -1484,7 +1503,7 @@ pub fn Dashboard() -> Element {
                 div {
                     style: format!("padding:20px; border:1px solid {}; border-radius:16px; background:{}; min-width:min(560px, 92vw);", shell_theme().border_strong, shell_theme().panel_background),
                     h1 { style: "margin:0 0 10px 0; font-size:22px;", "Checking session..." }
-                    p { style: format!("margin:0 0 16px 0; color:{};", shell_theme().text_muted), "Contacting the backend session endpoint." }
+                    p { style: format!("margin:0 0 16px 0; color:{};", shell_theme().text_muted), "Contacting the Ground Station session endpoint." }
                     div { style: "display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap;",
                         button {
                             style: shell_button_style(&shell_theme()),
@@ -1506,7 +1525,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginCard {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This backend does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
                         allow_back_to_connect: true,
                         on_success_route: authenticated_route(),
                     }
@@ -1517,7 +1536,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginOverlay {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This backend does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
                         allow_back_to_connect: true,
                         on_success_route: authenticated_route(),
                     }
@@ -1526,7 +1545,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginCard {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This backend does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
                         allow_back_to_connect: true,
                         on_success_route: authenticated_route(),
                     }

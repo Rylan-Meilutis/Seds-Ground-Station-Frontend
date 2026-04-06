@@ -1,2 +1,11 @@
 -keep class com.ubseds.gs26.LocationShim { *; }
 -keep,includedescriptorclasses class org.rustls.platformverifier.** { *; }
+-keep public class com.google.vending.licensing.ILicensingService { void <init>(); }
+-keep public class com.android.vending.licensing.ILicensingService { void <init>(); }
+-keep public class com.google.android.vending.licensing.ILicensingService { void <init>(); }
+-keep class android.support.annotation.Keep { void <init>(); }
+-keep,allowshrinking public class androidx.webkit.WebViewClientCompat { void <init>(); }
+-keep !interface * implements androidx.lifecycle.LifecycleObserver { void <init>(); }
+-keep class * implements androidx.versionedparcelable.VersionedParcelable { void <init>(); }
+-keep public class androidx.versionedparcelable.ParcelImpl { void <init>(); }
+-keep,allowshrinking class * extends androidx.startup.Initializer { void <init>(); }

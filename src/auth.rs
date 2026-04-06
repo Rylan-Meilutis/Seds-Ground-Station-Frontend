@@ -233,11 +233,11 @@ fn format_native_auth_error(raw: &str, skip_tls_verify: bool) -> String {
             format!("SSL/TLS connection failed even with certificate verification disabled.\n{raw}")
         } else {
             format!(
-                "SSL/TLS certificate verification failed.\nEnable 'Skip SSL verification' for this backend if you trust the certificate.\n{raw}"
+                "SSL/TLS certificate verification failed.\nEnable 'Skip SSL verification' for this Ground Station if you trust the certificate.\n{raw}"
             )
         }
     } else if lower.contains("timed out") {
-        format!("Backend session check timed out.\n{raw}")
+        format!("Ground Station session check timed out.\n{raw}")
     } else {
         raw.to_string()
     }
@@ -296,7 +296,7 @@ fn format_http_error(status: u16, body: &str) -> String {
         format!("{headline}\n{details}")
     } else {
         format!(
-            "{headline}\nThe backend returned an error page instead of the expected API response."
+            "{headline}\nThe Ground Station returned an error page instead of the expected API response."
         )
     }
 }
@@ -312,7 +312,7 @@ fn format_http_error(status: reqwest::StatusCode, body: &str) -> String {
         format!("{headline}\n{details}")
     } else {
         format!(
-            "{headline}\nThe backend returned an error page instead of the expected API response."
+            "{headline}\nThe Ground Station returned an error page instead of the expected API response."
         )
     }
 }

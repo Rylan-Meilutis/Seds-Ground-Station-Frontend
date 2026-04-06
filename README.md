@@ -86,6 +86,18 @@ python3 build.py web
 
 Use `python3 build.py` for the full build helper usage.
 
+## Editing Themes
+
+Built-in theme presets live in [`assets/themes/presets.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/assets/themes/presets.json). They are validated in `build.rs` and compiled into the app at build time, so there is no runtime file dependency.
+
+For easier editing or adding presets, use the local Tkinter editor:
+
+```bash
+python3 scripts/theme_editor.py
+```
+
+The editor writes back to `assets/themes/presets.json`. After saving, rebuild the frontend normally and the updated theme catalog will be embedded into the app.
+
 ## Notes For Backend Authors
 
 - Route paths are hardcoded in the frontend. Matching them exactly is the easiest path to compatibility.

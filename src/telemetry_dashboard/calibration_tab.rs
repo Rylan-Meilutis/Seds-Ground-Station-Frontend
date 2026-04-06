@@ -1,8 +1,8 @@
 #![allow(clippy::redundant_locals)]
 
 use super::{
-    TELEMETRY_RENDER_EPOCH, http_get_json, http_post_json, latest_telemetry_row,
-    latest_telemetry_value, translate_text,
+    http_get_json, http_post_json, latest_telemetry_row, latest_telemetry_value,
+    layout::ThemeConfig, translate_text, TELEMETRY_RENDER_EPOCH,
 };
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -482,7 +482,7 @@ fn fit_details_text(cfg: &CalibrationFile, channel: Channel) -> Option<String> {
 }
 
 #[component]
-pub fn CalibrationTab() -> Element {
+pub fn CalibrationTab(theme: ThemeConfig) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
     let layout_cfg = use_signal(|| None::<CalibrationTabLayout>);
     let sensors = layout_cfg
@@ -813,19 +813,50 @@ pub fn CalibrationTab() -> Element {
         })
         .unwrap_or_default();
 
+    let sensor_button_style = |active: bool| {
+        if active {
+            format!(
+                "padding:6px 10px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
+                theme.info_accent, theme.info_background, theme.info_text
+            )
+        } else {
+            format!(
+                "padding:6px 10px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
+                theme.button_border, theme.button_background, theme.button_text
+            )
+        }
+    };
+    let neutral_button_style = format!(
+        "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
+        theme.button_border, theme.button_background, theme.button_text
+    );
+    let success_button_style = format!(
+        "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
+        theme.notification_border, theme.notification_background, theme.notification_text
+    );
+    let warning_button_style = format!(
+        "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
+        theme.warning_border, theme.warning_background, theme.warning_text
+    );
+    let error_button_style = format!(
+        "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
+        theme.error_border, theme.error_background, theme.error_text
+    );
+    let input_style = format!(
+        "padding:8px 10px; border-radius:10px; border:1px solid {}; background:{}; color:{};",
+        theme.border, theme.panel_background_alt, theme.text_primary
+    );
+    let select_style = input_style.clone();
+
     rsx! {
-        div { style: "padding:16px; display:flex; flex-direction:column; gap:10px; min-height:100%; overflow:visible;",
-            h2 { style: "margin:0; color:#14b8a6;", "Calibration Sequence" }
+        div { style: "padding:16px; display:flex; flex-direction:column; gap:10px; min-height:100%; overflow:visible; color:{theme.text_primary}; background:{theme.app_background};",
+            h2 { style: "margin:0; color:{theme.info_accent};", "Calibration Sequence" }
 
             div { style: "display:flex; gap:8px; flex-wrap:wrap; align-items:center;",
-                span { "Sensors" }
+                span { style: "color:{theme.text_secondary};", "Sensors" }
                 for sensor in sensors.iter().cloned() {
                     button {
-                        style: if sensor.id == selected_id {
-                            "padding:6px 10px; border-radius:999px; border:1px solid #22d3ee; background:#0c1f2b; color:#a5f3fc; cursor:pointer;"
-                        } else {
-                            "padding:6px 10px; border-radius:999px; border:1px solid #334155; background:#111827; color:#cbd5e1; cursor:pointer;"
-                        },
+                        style: "{sensor_button_style(sensor.id == selected_id)}",
                         onclick: {
                             let mut selected_sensor_id = selected_sensor_id;
                             let mut selected_point_idx = selected_point_idx;
@@ -841,15 +872,16 @@ pub fn CalibrationTab() -> Element {
             }
 
             div { style: "display:grid; gap:8px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
-                {metric_card("Last Timestamp (ms)", ts_live_s.clone())}
-                {metric_card("Live Raw", raw_live_s.clone())}
-                {metric_card("Calibrated Value", calibrated_live_s.clone())}
-                {metric_card("Active Fit", fit_type_s.clone())}
+                {metric_card(&theme, "Last Timestamp (ms)", ts_live_s.clone())}
+                {metric_card(&theme, "Live Raw", raw_live_s.clone())}
+                {metric_card(&theme, "Calibrated Value", calibrated_live_s.clone())}
+                {metric_card(&theme, "Active Fit", fit_type_s.clone())}
             }
 
             div { style: "display:flex; gap:8px; flex-wrap:wrap; align-items:center;",
-                span { "Regression" }
+                span { style: "color:{theme.text_secondary};", "Regression" }
                 select {
+                    style: "{select_style}",
                     value: "{fit_mode.read()}",
                     onchange: {
                         let mut fit_mode = fit_mode;
@@ -860,7 +892,7 @@ pub fn CalibrationTab() -> Element {
                     }
                 }
                 button {
-                    style: "padding:6px 12px; border-radius:999px; border:1px solid #60a5fa; background:#0b1a33; color:#bfdbfe; cursor:pointer;",
+                    style: "{neutral_button_style}",
                     disabled: cfg.read().is_none(),
                     onclick: {
                         let mut cfg = cfg;
@@ -895,6 +927,7 @@ pub fn CalibrationTab() -> Element {
 
             div { style: "display:flex; gap:8px; flex-wrap:wrap; align-items:center;",
                 input {
+                    style: "{input_style}",
                     r#type: "number",
                     step: "0.01",
                     value: "{manual_kg.read()}",
@@ -904,6 +937,7 @@ pub fn CalibrationTab() -> Element {
                     }
                 }
                 input {
+                    style: "{input_style}",
                     r#type: "number",
                     step: "0.000001",
                     placeholder: "raw value",
@@ -914,7 +948,7 @@ pub fn CalibrationTab() -> Element {
                     }
                 }
                 button {
-                    style: "padding:6px 12px; border-radius:999px; border:1px solid #22c55e; background:#052e16; color:#bbf7d0; cursor:pointer;",
+                    style: "{success_button_style}",
                     disabled: cfg.read().is_none(),
                     onclick: {
                         let mut cfg = cfg;
@@ -964,7 +998,7 @@ pub fn CalibrationTab() -> Element {
                     "Add/Update Point"
                 }
                 button {
-                    style: "padding:6px 12px; border-radius:999px; border:1px solid #a78bfa; background:#22153c; color:#ddd6fe; cursor:pointer;",
+                    style: "{neutral_button_style}",
                     disabled: cfg.read().is_none() || selected_point_idx.read().is_none(),
                     onclick: {
                         let mut cfg = cfg;
@@ -1024,6 +1058,7 @@ pub fn CalibrationTab() -> Element {
 
             div { style: "display:flex; gap:8px; flex-wrap:wrap; align-items:center;",
                 input {
+                    style: "{input_style}",
                     r#type: "number",
                     step: "0.01",
                     value: "{known_kg.read()}",
@@ -1033,7 +1068,7 @@ pub fn CalibrationTab() -> Element {
                     }
                 }
                 button {
-                    style: "padding:6px 12px; border-radius:999px; border:1px solid #f59e0b; background:#3f2500; color:#fde68a; cursor:pointer;",
+                    style: "{warning_button_style}",
                     disabled: *capture_active.read(),
                     onclick: {
                         let mut capture_active = capture_active;
@@ -1050,7 +1085,7 @@ pub fn CalibrationTab() -> Element {
                     "Start New Sequence (0kg)"
                 }
                 button {
-                    style: "padding:6px 12px; border-radius:999px; border:1px solid #60a5fa; background:#0b1a33; color:#bfdbfe; cursor:pointer;",
+                    style: "{neutral_button_style}",
                     disabled: *capture_active.read() || !sequence_started,
                     onclick: {
                         let mut capture_active = capture_active;
@@ -1077,13 +1112,13 @@ pub fn CalibrationTab() -> Element {
                     "Continue Sequence"
                 }
                 if *capture_active.read() {
-                    span { style: "color:#facc15;", "Capturing {capture_vals.read().len()}/{capture_target}" }
+                    span { style: "color:{theme.warning_text};", "Capturing {capture_vals.read().len()}/{capture_target}" }
                 }
             }
 
             div { style: "display:flex; gap:8px; flex-wrap:wrap; align-items:flex-start;",
                 button {
-                    style: "padding:6px 12px; border-radius:999px; border:1px solid #ef4444; background:#450a0a; color:#fecaca; cursor:pointer;",
+                    style: "{error_button_style}",
                     disabled: cfg.read().is_none() || selected_point_idx.read().is_none(),
                     onclick: {
                         let mut cfg = cfg;
@@ -1122,7 +1157,7 @@ pub fn CalibrationTab() -> Element {
                     "Remove Selected"
                 }
                 button {
-                    style: "padding:6px 12px; border-radius:999px; border:1px solid #ef4444; background:#450a0a; color:#fecaca; cursor:pointer;",
+                    style: "{error_button_style}",
                     disabled: cfg.read().is_none(),
                     onclick: {
                         let mut cfg = cfg;
@@ -1155,13 +1190,19 @@ pub fn CalibrationTab() -> Element {
                 }
             }
 
-            div { style: "display:grid; grid-template-columns:1fr; gap:6px; border:1px solid #334155; border-radius:10px; padding:10px; background:#0f172a;",
+            div { style: "display:grid; grid-template-columns:1fr; gap:6px; border:1px solid {theme.border}; border-radius:10px; padding:10px; background:{theme.panel_background};",
                 for (idx, (raw, expected)) in points.clone().into_iter().enumerate() {
                     button {
                         style: if *selected_point_idx.read() == Some(idx) {
-                            "text-align:left; padding:8px; border-radius:8px; border:1px solid #38bdf8; background:#0b1a33; color:#e2e8f0; cursor:pointer;"
+                            format!(
+                                "text-align:left; padding:8px; border-radius:8px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
+                                theme.info_accent, theme.info_background, theme.info_text
+                            )
                         } else {
-                            "text-align:left; padding:8px; border-radius:8px; border:1px solid #334155; background:#111827; color:#e2e8f0; cursor:pointer;"
+                            format!(
+                                "text-align:left; padding:8px; border-radius:8px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
+                                theme.border_soft, theme.panel_background_alt, theme.text_primary
+                            )
                         },
                         onclick: {
                             let mut selected_point_idx = selected_point_idx;
@@ -1177,11 +1218,11 @@ pub fn CalibrationTab() -> Element {
                     }
                 }
                 if points.is_empty() {
-                    div { style: "color:#94a3b8;", "(no points for this channel)" }
+                    div { style: "color:{theme.text_muted};", "(no points for this channel)" }
                 }
             }
 
-            div { style: "border:1px solid #334155; border-radius:10px; padding:8px; background:#020617;",
+            div { style: "border:1px solid {theme.border}; border-radius:10px; padding:8px; background:{theme.panel_background};",
                 div {
                     style: "display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:6px 8px 10px 8px;",
                     svg { width: "30", height: "10", view_box: "0 0 30 10", style: "display:block; flex:0 0 auto;",
@@ -1197,33 +1238,33 @@ pub fn CalibrationTab() -> Element {
                     }
                 }
                 svg { view_box: "0 0 {plot_w} {plot_h}", style: "width:100%; height:260px; display:block;",
-                    rect { x:"0", y:"0", width:"{plot_w}", height:"{plot_h}", fill:"#020617" }
-                    line { x1:"{pad_l}", y1:"{pad_t}", x2:"{pad_l}", y2:"{plot_h - pad_b}", stroke:"#334155", "stroke-width":"1" }
-                    line { x1:"{pad_l}", y1:"{plot_h - pad_b}", x2:"{plot_w - pad_r}", y2:"{plot_h - pad_b}", stroke:"#334155", "stroke-width":"1" }
+                    rect { x:"0", y:"0", width:"{plot_w}", height:"{plot_h}", fill:"{theme.panel_background_alt}" }
+                    line { x1:"{pad_l}", y1:"{pad_t}", x2:"{pad_l}", y2:"{plot_h - pad_b}", stroke:"{theme.border_strong}", "stroke-width":"1" }
+                    line { x1:"{pad_l}", y1:"{plot_h - pad_b}", x2:"{plot_w - pad_r}", y2:"{plot_h - pad_b}", stroke:"{theme.border_strong}", "stroke-width":"1" }
                     if !fit_path.is_empty() {
                         path { d: "{fit_path}", fill:"none", stroke:"{fit_color}", "stroke-width":"2.5" }
                     }
                     for (cx, cy) in scatter_xy.iter() {
-                        circle { cx:"{cx}", cy:"{cy}", r:"3.5", fill:"#f59e0b" }
+                        circle { cx:"{cx}", cy:"{cy}", r:"3.5", fill:"{theme.warning_text}" }
                     }
-                    text { x:"6", y:"14", fill:"#94a3b8", "font-size":"11", {format!("y max {:.3}", y_max)} }
-                    text { x:"6", y:"{plot_h - pad_b + 4.0}", fill:"#94a3b8", "font-size":"11", {format!("y min {:.3}", y_min)} }
-                    text { x:"{pad_l}", y:"{plot_h - 6.0}", fill:"#94a3b8", "font-size":"11", {format!("x min {:.3}", x_min)} }
-                    text { x:"{plot_w - 130.0}", y:"{plot_h - 6.0}", fill:"#94a3b8", "font-size":"11", {format!("x max {:.3}", x_max)} }
+                    text { x:"6", y:"14", fill:"{theme.text_muted}", "font-size":"11", {format!("y max {:.3}", y_max)} }
+                    text { x:"6", y:"{plot_h - pad_b + 4.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("y min {:.3}", y_min)} }
+                    text { x:"{pad_l}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x min {:.3}", x_min)} }
+                    text { x:"{plot_w - 130.0}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x max {:.3}", x_max)} }
                 }
             }
 
-            div { style: "font-size:13px; color:#94a3b8;", "{status.read()}" }
+            div { style: "font-size:13px; color:{theme.text_muted};", "{status.read()}" }
         }
     }
 }
 
-fn metric_card(label: &str, value: String) -> Element {
+fn metric_card(theme: &ThemeConfig, label: &str, value: String) -> Element {
     rsx! {
-        div { style: "padding:8px 10px; border:1px solid #334155; border-radius:10px; background:#0f172a;",
-            div { style: "font-size:11px; color:#94a3b8; margin-bottom:2px;", "{label}" }
+        div { style: "padding:8px 10px; border:1px solid {theme.border}; border-radius:10px; background:{theme.panel_background};",
+            div { style: "font-size:11px; color:{theme.text_muted}; margin-bottom:2px;", "{label}" }
             div {
-                style: "font-size:14px; color:#e2e8f0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; min-width:14ch; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums;",
+                style: "font-size:14px; color:{theme.text_primary}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; min-width:14ch; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums;",
                 "{value}"
             }
         }

@@ -279,6 +279,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                         max: None,
                         value: summary_item_value(item),
                         color: summary_color(i),
+                        theme: theme.clone(),
                     }
                 }
             }
@@ -309,6 +310,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                                         format_value(vals.get(i).copied().flatten(), channel_formatters.and_then(|list| list.get(i)))
                                     },
                                     color: summary_color(i),
+                                    theme: theme.clone(),
                                 }
                             }
                         }
@@ -865,6 +867,7 @@ fn SummaryCard(
     min: Option<String>,
     max: Option<String>,
     color: &'static str,
+    theme: ThemeConfig,
 ) -> Element {
     let mm = match (min.as_deref(), max.as_deref()) {
         (Some(mi), Some(ma)) => Some(format!(
@@ -876,11 +879,11 @@ fn SummaryCard(
     };
 
     rsx! {
-        div { style: "padding:10px; border-radius:12px; background:#0f172a; border:1px solid #334155; width:100%; min-width:0; box-sizing:border-box;",
+        div { style: "padding:10px; border-radius:12px; background:{theme.panel_background_alt}; border:1px solid {theme.border}; width:100%; min-width:0; box-sizing:border-box;",
             div { style: "font-size:12px; color:{color};", "{label}" }
-            div { style: "font-size:18px; color:#e5e7eb; line-height:1.1;", "{value}" }
+            div { style: "font-size:18px; color:{theme.text_primary}; line-height:1.1;", "{value}" }
             if let Some(t) = mm {
-                div { style: "font-size:11px; color:#94a3b8; margin-top:4px;", "{t}" }
+                div { style: "font-size:11px; color:{theme.text_muted}; margin-top:4px;", "{t}" }
             }
         }
     }

@@ -1,3 +1,4 @@
+use super::layout::ThemeConfig;
 use dioxus::prelude::*;
 use once_cell::sync::Lazy;
 
@@ -92,15 +93,16 @@ fn critical_packages() -> Vec<(&'static str, String)> {
 }
 
 #[component]
-pub fn VersionTab() -> Element {
+pub fn VersionTab(theme: ThemeConfig) -> Element {
     let info = &*VERSION_INFO;
 
     rsx! {
-        div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:inherit;",
-            h2 { style: "margin:0 0 14px 0;", "Version & Credits" }
+        div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
+            h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "Version & Credits" }
 
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px;",
                 SectionCard {
+                    theme: theme.clone(),
                     title: "Build",
                     rows: vec![
                         ("App", info.app_name.clone()),
@@ -111,6 +113,7 @@ pub fn VersionTab() -> Element {
                     ],
                 }
                 SectionCard {
+                    theme: theme.clone(),
                     title: "Credits",
                     rows: vec![
                         ("Project", info.app_title.clone()),
@@ -121,13 +124,13 @@ pub fn VersionTab() -> Element {
                 }
             }
 
-            div { style: "margin-top:12px; padding:14px; border:1px solid #334155; border-radius:14px; background:#0b1220;",
-                div { style: "font-size:14px; color:#94a3b8; margin-bottom:10px;", "Critical Package Info" }
+            div { style: "margin-top:12px; padding:14px; border:1px solid {theme.border}; border-radius:14px; background:{theme.panel_background};",
+                div { style: "font-size:14px; color:{theme.text_muted}; margin-bottom:10px;", "Critical Package Info" }
                 div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px;",
                     for (name, version) in info.critical_packages.iter() {
-                        div { style: "padding:10px 12px; border:1px solid #1f2937; border-radius:10px; background:#020617;",
-                            div { style: "font-size:12px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.05em;", "{name}" }
-                            div { style: "margin-top:4px; font-size:15px; color:#e2e8f0; font-weight:700;", "{version}" }
+                        div { style: "padding:10px 12px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background_alt};",
+                            div { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.05em;", "{name}" }
+                            div { style: "margin-top:4px; font-size:15px; color:{theme.text_primary}; font-weight:700;", "{version}" }
                         }
                     }
                 }
@@ -137,15 +140,15 @@ pub fn VersionTab() -> Element {
 }
 
 #[component]
-fn SectionCard(title: &'static str, rows: Vec<(&'static str, String)>) -> Element {
+fn SectionCard(theme: ThemeConfig, title: &'static str, rows: Vec<(&'static str, String)>) -> Element {
     rsx! {
-        div { style: "padding:14px; border:1px solid #334155; border-radius:14px; background:#0b1220; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:inherit;",
-            div { style: "font-size:14px; color:#94a3b8; margin-bottom:10px;", "{title}" }
+        div { style: "padding:14px; border:1px solid {theme.border}; border-radius:14px; background:{theme.panel_background}; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
+            div { style: "font-size:14px; color:{theme.text_muted}; margin-bottom:10px;", "{title}" }
             div { style: "display:flex; flex-direction:column; gap:10px;",
                 for (label, value) in rows {
-                    div { style: "padding:10px 12px; border:1px solid #1f2937; border-radius:10px; background:#020617;",
-                        div { style: "font-size:12px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.05em;", "{label}" }
-                        div { style: "margin-top:4px; font-size:15px; color:#e2e8f0; font-weight:700; word-break:break-word;", "{value}" }
+                    div { style: "padding:10px 12px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background_alt};",
+                        div { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.05em;", "{label}" }
+                        div { style: "margin-top:4px; font-size:15px; color:{theme.text_primary}; font-weight:700; word-break:break-word;", "{value}" }
                     }
                 }
             }

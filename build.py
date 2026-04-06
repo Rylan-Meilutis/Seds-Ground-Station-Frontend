@@ -2091,6 +2091,14 @@ def _configure_android_app_gradle(frontend_dir: Path, project_dir: Path) -> None
     raw = re.sub(r"targetSdk\s*=\s*\d+", f"targetSdk = {target_sdk}", raw)
     raw = re.sub(r'versionCode\s*=\s*\d+', f"versionCode = {version_code}", raw)
     raw = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{version_name}"', raw)
+    if "org.jetbrains.kotlin.gradle.dsl.JvmTarget" not in raw:
+        raw = 'import org.jetbrains.kotlin.gradle.dsl.JvmTarget\n\n' + raw
+    raw = re.sub(
+        r"\n\s*kotlinOptions\s*\{\s*\n\s*jvmTarget\s*=\s*\"17\"\s*\n\s*\}\n",
+        "\n    kotlin {\n        compilerOptions {\n            jvmTarget.set(JvmTarget.JVM_17)\n        }\n    }\n",
+        raw,
+        flags=re.MULTILINE,
+    )
     maven_dir = _find_rustls_platform_verifier_maven(frontend_dir)
     if maven_dir is not None:
         maven_path = str(maven_dir)
@@ -2139,6 +2147,39 @@ def _configure_android_app_gradle(frontend_dir: Path, project_dir: Path) -> None
         f"minSdk={min_sdk}, targetSdk={target_sdk}, compileSdk={compile_sdk}, "
         f"versionCode={version_code}, versionName={version_name}"
     )
+
+
+def _configure_android_gradle_properties(project_dir: Path) -> None:
+    gradle_props = project_dir / "gradle.properties"
+    if not gradle_props.exists():
+        return
+    raw = gradle_props.read_text(encoding="utf-8")
+    next_raw = "\n".join(
+        line
+        for line in raw.splitlines()
+        if line.strip() != "android.defaults.buildfeatures.buildconfig=true"
+    )
+    if raw.endswith("\n"):
+        next_raw += "\n"
+    gradle_props.write_text(next_raw, encoding="utf-8")
+
+
+def _patch_generated_android_sources(project_dir: Path) -> None:
+    rust_webview = (
+        project_dir
+        / "app"
+        / "src"
+        / "main"
+        / "kotlin"
+        / "dev"
+        / "dioxus"
+        / "main"
+        / "RustWebView.kt"
+    )
+    if rust_webview.exists():
+        raw = rust_webview.read_text(encoding="utf-8")
+        raw = raw.replace("        settings.databaseEnabled = true\n", "")
+        rust_webview.write_text(raw, encoding="utf-8")
 
 
 def _configure_android_signing(frontend_dir: Path, project_dir: Path) -> bool:
@@ -2239,7 +2280,9 @@ def patch_generated_android_project(frontend_dir: Path, debug_mode: bool) -> Pat
     _merge_tree(overlay_root / "kotlin", app_src_main / "kotlin")
     _ensure_android_icon_compat(frontend_dir, app_src_main)
     _configure_android_app_gradle(frontend_dir, project_dir)
+    _configure_android_gradle_properties(project_dir)
     _configure_android_signing(frontend_dir, project_dir)
+    _patch_generated_android_sources(project_dir)
     proguard_src = overlay_root / "proguard-rules.pro"
     if proguard_src.exists():
         shutil.copy2(proguard_src, project_dir / "app" / "proguard-rules.pro")

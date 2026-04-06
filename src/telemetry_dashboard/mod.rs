@@ -1012,6 +1012,13 @@ pub(crate) static APP_THEME_CONFIG: GlobalSignal<layout::ThemeConfig> = Signal::
     };
     localized_theme(&layout::ThemeConfig::default(), preset)
 });
+static BUILTIN_THEME_CATALOG: Lazy<layout::ThemePresetCatalog> = Lazy::new(|| {
+    serde_json::from_str(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/theme_presets.json"
+    )))
+    .expect("compiled theme preset catalog must be valid JSON")
+});
 
 #[cfg(target_arch = "wasm32")]
 static WS_RAW: GlobalSignal<Option<web_sys::WebSocket>> = Signal::global(|| None);
@@ -1200,102 +1207,13 @@ fn merge_translation_map(items: HashMap<String, String>) {
 
 fn localized_theme(base: &layout::ThemeConfig, preset: &str) -> layout::ThemeConfig {
     if preset == "backend" || preset == "layout" {
-        return base.clone();
+        return normalize_theme_for_contrast(base);
     }
-
-    let mut out = if preset == "default" {
-        layout::ThemeConfig::default()
-    } else {
-        base.clone()
-    };
-    match preset {
-        "sunset" => {
-            out.app_background = "#140d0c".to_string();
-            out.panel_background = "#201514".to_string();
-            out.panel_background_alt = "#2b1c1a".to_string();
-            out.overlay_background = "#140d0cf0".to_string();
-            out.border = "#6d4538".to_string();
-            out.border_strong = "#8c5a48".to_string();
-            out.border_soft = "#3b2622".to_string();
-            out.text_primary = "#f5e7dd".to_string();
-            out.text_secondary = "#ddc3b4".to_string();
-            out.text_muted = "#b99582".to_string();
-            out.text_soft = "#d8a15f".to_string();
-            out.button_background = "#32211d".to_string();
-            out.button_border = "#9d6a50".to_string();
-            out.button_text = "#f8ece3".to_string();
-            out.tab_shell_background = "#201514ee".to_string();
-            out.tab_shell_border = "#9d6a50".to_string();
-            out.info_accent = "#e59b57".to_string();
-            out.info_background = "#37201a".to_string();
-            out.info_text = "#f3c79d".to_string();
-            out.success_text = "#9fd28e".to_string();
-            out.warning_background = "#402616".to_string();
-            out.warning_border = "#d7a15c".to_string();
-            out.warning_text = "#f4ddaf".to_string();
-            out.error_background = "#3a171d".to_string();
-            out.error_border = "#d9888f".to_string();
-            out.error_text = "#f4c7cb".to_string();
-        }
-        "forest" => {
-            out.app_background = "#091311".to_string();
-            out.panel_background = "#101c19".to_string();
-            out.panel_background_alt = "#162723".to_string();
-            out.overlay_background = "#091311f0".to_string();
-            out.border = "#335248".to_string();
-            out.border_strong = "#4b6f62".to_string();
-            out.border_soft = "#213630".to_string();
-            out.text_primary = "#e6f0eb".to_string();
-            out.text_secondary = "#bfd2c8".to_string();
-            out.text_muted = "#8eafa2".to_string();
-            out.text_soft = "#75a58d".to_string();
-            out.button_background = "#1b2d28".to_string();
-            out.button_border = "#5d8677".to_string();
-            out.button_text = "#edf5f1".to_string();
-            out.tab_shell_background = "#101c19ee".to_string();
-            out.tab_shell_border = "#5d8677".to_string();
-            out.info_accent = "#7cc7a5".to_string();
-            out.info_background = "#17312a".to_string();
-            out.info_text = "#c2ecd8".to_string();
-            out.success_text = "#93d39f".to_string();
-            out.warning_background = "#3b3320".to_string();
-            out.warning_border = "#c9ad63".to_string();
-            out.warning_text = "#efe0b2".to_string();
-            out.error_background = "#34181d".to_string();
-            out.error_border = "#cf8790".to_string();
-            out.error_text = "#f0c7cc".to_string();
-        }
-        "high_contrast" => {
-            out.app_background = "#000000".to_string();
-            out.panel_background = "#0b0b0b".to_string();
-            out.panel_background_alt = "#171717".to_string();
-            out.overlay_background = "#000000f2".to_string();
-            out.border = "#ffffff".to_string();
-            out.border_strong = "#ffffff".to_string();
-            out.border_soft = "#6b7280".to_string();
-            out.text_primary = "#ffffff".to_string();
-            out.text_secondary = "#f3f4f6".to_string();
-            out.text_muted = "#d1d5db".to_string();
-            out.text_soft = "#e5e7eb".to_string();
-            out.button_background = "#111111".to_string();
-            out.button_border = "#ffffff".to_string();
-            out.button_text = "#ffffff".to_string();
-            out.tab_shell_background = "#050505f2".to_string();
-            out.tab_shell_border = "#ffffff".to_string();
-            out.info_accent = "#60a5fa".to_string();
-            out.info_background = "#0f172a".to_string();
-            out.info_text = "#dbeafe".to_string();
-            out.success_text = "#4ade80".to_string();
-            out.warning_background = "#2b1800".to_string();
-            out.warning_border = "#facc15".to_string();
-            out.warning_text = "#fef08a".to_string();
-            out.error_background = "#2b0a0a".to_string();
-            out.error_border = "#f87171".to_string();
-            out.error_text = "#fee2e2".to_string();
-        }
-        _ => {}
-    }
-    out
+    builtin_theme_presets()
+        .iter()
+        .find(|definition| definition.id == preset)
+        .map(|definition| normalize_theme_for_contrast(&definition.theme))
+        .unwrap_or_else(|| normalize_theme_for_contrast(&layout::ThemeConfig::default()))
 }
 
 /// Returns the app-shell theme derived from the persisted preset.
@@ -1304,6 +1222,149 @@ fn localized_theme(base: &layout::ThemeConfig, preset: &str) -> layout::ThemeCon
 /// the "backend" preset falls back to the default theme config for shell styling.
 pub fn app_shell_theme() -> layout::ThemeConfig {
     APP_THEME_CONFIG.read().clone()
+}
+
+pub(crate) fn builtin_theme_presets() -> &'static [layout::ThemePresetDefinition] {
+    &BUILTIN_THEME_CATALOG.presets
+}
+
+pub(crate) fn theme_preset_uses_backend_colors(preset: &str) -> bool {
+    matches!(preset, "backend" | "layout")
+}
+
+fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
+    let raw = value.trim().trim_start_matches('#');
+    match raw.len() {
+        6 => {
+            let r = u8::from_str_radix(&raw[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&raw[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&raw[4..6], 16).ok()?;
+            Some((r, g, b))
+        }
+        8 => {
+            let r = u8::from_str_radix(&raw[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&raw[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&raw[4..6], 16).ok()?;
+            Some((r, g, b))
+        }
+        _ => None,
+    }
+}
+
+fn color_to_hex((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+fn mix_color((r, g, b): (u8, u8, u8), target: (u8, u8, u8), amount: f64) -> (u8, u8, u8) {
+    let blend = |from: u8, to: u8| -> u8 {
+        let value = from as f64 + (to as f64 - from as f64) * amount;
+        value.round().clamp(0.0, 255.0) as u8
+    };
+    (blend(r, target.0), blend(g, target.1), blend(b, target.2))
+}
+
+fn relative_luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    let channel = |value: u8| -> f64 {
+        let srgb = value as f64 / 255.0;
+        if srgb <= 0.04045 {
+            srgb / 12.92
+        } else {
+            ((srgb + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+fn contrast_ratio(foreground: (u8, u8, u8), background: (u8, u8, u8)) -> f64 {
+    let fg = relative_luminance(foreground);
+    let bg = relative_luminance(background);
+    let (lighter, darker) = if fg >= bg { (fg, bg) } else { (bg, fg) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn ensure_text_contrast(foreground: &str, background: &str, minimum: f64) -> String {
+    let Some(fg) = parse_hex_color(foreground) else {
+        return foreground.to_string();
+    };
+    let Some(bg) = parse_hex_color(background) else {
+        return foreground.to_string();
+    };
+    if contrast_ratio(fg, bg) >= minimum {
+        return color_to_hex(fg);
+    }
+
+    let bg_luminance = relative_luminance(bg);
+    let target = if bg_luminance > 0.4 {
+        (0_u8, 0_u8, 0_u8)
+    } else {
+        (255_u8, 255_u8, 255_u8)
+    };
+    let mut best = fg;
+    for step in 1..=20 {
+        let amount = step as f64 / 20.0;
+        let candidate = mix_color(fg, target, amount);
+        if contrast_ratio(candidate, bg) >= minimum {
+            best = candidate;
+            break;
+        }
+        best = candidate;
+    }
+    color_to_hex(best)
+}
+
+fn normalize_theme_for_contrast(theme: &layout::ThemeConfig) -> layout::ThemeConfig {
+    let mut out = theme.clone();
+    out.text_primary = ensure_text_contrast(&out.text_primary, &out.app_background, 7.0);
+    out.text_secondary = ensure_text_contrast(&out.text_secondary, &out.app_background, 5.0);
+    out.text_muted = ensure_text_contrast(&out.text_muted, &out.app_background, 4.5);
+    out.text_soft = ensure_text_contrast(&out.text_soft, &out.app_background, 4.5);
+    out.button_text = ensure_text_contrast(&out.button_text, &out.button_background, 4.5);
+    out.info_text = ensure_text_contrast(&out.info_text, &out.info_background, 4.5);
+    out.warning_text = ensure_text_contrast(&out.warning_text, &out.warning_background, 4.5);
+    out.error_text = ensure_text_contrast(&out.error_text, &out.error_background, 4.5);
+    out.notification_text =
+        ensure_text_contrast(&out.notification_text, &out.notification_background, 4.5);
+    out
+}
+
+pub(crate) fn apply_window_theme(theme: &layout::ThemeConfig) {
+    js_eval(&format!(
+        r#"
+        (function() {{
+          try {{
+            const vars = {{
+              '--gs26-app-background': {app_background:?},
+              '--gs26-app-text': {text_primary:?},
+              '--gs26-panel-background': {panel_background:?},
+              '--gs26-panel-alt-background': {panel_background_alt:?},
+              '--gs26-border': {border:?},
+              '--gs26-text-muted': {text_muted:?},
+              '--gs26-text-secondary': {text_secondary:?},
+              '--gs26-button-background': {button_background:?},
+              '--gs26-button-text': {button_text:?},
+            }};
+            const targets = [document.documentElement, document.body, document.getElementById('main')];
+            for (const target of targets) {{
+              if (!target) continue;
+              for (const [key, value] of Object.entries(vars)) {{
+                target.style.setProperty(key, value);
+              }}
+              target.style.backgroundColor = vars['--gs26-app-background'];
+              target.style.color = vars['--gs26-app-text'];
+            }}
+          }} catch (_) {{}}
+        }})();
+        "#,
+        app_background = theme.app_background,
+        text_primary = theme.text_primary,
+        panel_background = theme.panel_background,
+        panel_background_alt = theme.panel_background_alt,
+        border = theme.border,
+        text_muted = theme.text_muted,
+        text_secondary = theme.text_secondary,
+        button_background = theme.button_background,
+        button_text = theme.button_text,
+    ));
 }
 
 #[component]
@@ -2482,7 +2543,9 @@ fn TelemetryDashboardInner() -> Element {
         .map(|cfg| cfg.theme.clone())
         .unwrap_or_default();
     let language_snapshot = language_code.read().clone();
-    let theme = localized_theme(&base_theme, theme_preset.read().as_str());
+    let theme_preset_value = theme_preset.read().clone();
+    let theme = localized_theme(&base_theme, theme_preset_value.as_str());
+    let use_layout_theme_overrides = theme_preset_uses_backend_colors(theme_preset_value.as_str());
     {
         let layout_config = layout_config;
         let theme_preset = theme_preset;
@@ -2494,35 +2557,7 @@ fn TelemetryDashboardInner() -> Element {
                 .unwrap_or_default();
             let theme = localized_theme(&base_theme, theme_preset.read().as_str());
             *APP_THEME_CONFIG.write() = theme.clone();
-            js_eval(&format!(
-                r#"
-                (function() {{
-                  try {{
-                    const bg = {bg:?};
-                    const fg = {fg:?};
-                    document.documentElement.style.setProperty('--gs26-app-background', bg);
-                    document.documentElement.style.setProperty('--gs26-app-text', fg);
-                    document.documentElement.style.backgroundColor = bg;
-                    document.documentElement.style.color = fg;
-                    if (document.body) {{
-                      document.body.style.setProperty('--gs26-app-background', bg);
-                      document.body.style.setProperty('--gs26-app-text', fg);
-                      document.body.style.backgroundColor = bg;
-                      document.body.style.color = fg;
-                    }}
-                    const main = document.getElementById("main");
-                    if (main) {{
-                      main.style.setProperty('--gs26-app-background', bg);
-                      main.style.setProperty('--gs26-app-text', fg);
-                      main.style.backgroundColor = bg;
-                      main.style.color = fg;
-                    }}
-                  }} catch (_) {{}}
-                }})();
-                "#,
-                bg = theme.app_background,
-                fg = theme.text_primary,
-            ));
+            apply_window_theme(&theme);
         });
     }
     let main_tab_accent = |tab_id: &str, fallback: &str| {
@@ -2899,7 +2934,7 @@ fn TelemetryDashboardInner() -> Element {
                                     "{close_button_label}"
                                 }
                             }
-                            VersionTab {}
+                            VersionTab { theme: theme.clone() }
                         }
                     }
                 }
@@ -3092,9 +3127,9 @@ fn TelemetryDashboardInner() -> Element {
                  word-break:break-word;
                  padding:0.7rem 0.9rem;
                  border-radius:0.75rem;
-                 border:1px solid #334155;
-                 background:#0f172a;
-                 color:#e5e7eb;
+                 border:1px solid var(--gs26-header-menu-border);
+                 background:var(--gs26-header-menu-background);
+                 color:var(--gs26-header-menu-text);
                  font-weight:800;
                  cursor:pointer;
                }}
@@ -3135,8 +3170,8 @@ fn TelemetryDashboardInner() -> Element {
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:10px; align-items:center;",
-                            div { style: "font-size:22px; font-weight:800; color:#f97316;", "Loading layout..." }
-                            div { style: "font-size:14px; color:#94a3b8;", "Waiting for layout from backend" }
+                            div { style: "font-size:22px; font-weight:800; color:{theme.info_accent};", "Loading layout..." }
+                            div { style: "font-size:14px; color:{theme.text_muted};", "Waiting for layout from Ground Station" }
                             div { style: "display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:4px;",
                                 {version_button}
                                 {connect_button}
@@ -3158,9 +3193,9 @@ fn TelemetryDashboardInner() -> Element {
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
-                            div { style: "font-size:20px; font-weight:800; color:#ef4444;", "Layout failed to load" }
+                            div { style: "font-size:20px; font-weight:800; color:{theme.error_text};", "Layout failed to load" }
                             if let Some(msg) = layout_error_snapshot.clone() {
-                                div { style: "font-size:13px; color:#94a3b8;", "{msg}" }
+                                div { style: "font-size:13px; color:{theme.text_muted};", "{msg}" }
                             }
                             div { style: "display:flex; gap:10px; flex-wrap:wrap; justify-content:center;",
                                 {reload_button}
@@ -3198,7 +3233,7 @@ fn TelemetryDashboardInner() -> Element {
                     position:relative;
                     z-index:2000;
                 ",
-                        h1 { style: "color:#f97316; margin:0; font-size:22px; font-weight:800;", "{_dashboard_title(&layout)}" }
+                        h1 { style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;", "{_dashboard_title(&layout)}" }
 
                         {
                             let show_disable_actions = _actions_tab_has_visible_actions(&layout, *abort_only_mode.read());
@@ -3234,9 +3269,9 @@ fn TelemetryDashboardInner() -> Element {
                                     "
                                         padding:0.45rem 0.85rem;
                                         border-radius:0.75rem;
-                                        border:1px solid #ef4444;
-                                        background:#4c0519;
-                                        color:#fecdd3;
+                                        border:1px solid {theme.error_border};
+                                        background:{theme.error_background};
+                                        color:{theme.error_text};
                                         box-shadow:0 0 0 1px rgba(239,68,68,0.15), 0 8px 20px rgba(76,5,25,0.35);
                                         font-weight:800;
                                         cursor:pointer;
@@ -3245,9 +3280,9 @@ fn TelemetryDashboardInner() -> Element {
                                     "
                                         padding:0.45rem 0.85rem;
                                         border-radius:0.75rem;
-                                        border:1px solid #475569;
-                                        background:#0f172a;
-                                        color:#cbd5e1;
+                                        border:1px solid {theme.button_border};
+                                        background:{theme.button_background};
+                                        color:{theme.button_text};
                                         font-weight:800;
                                         cursor:pointer;
                                     "
@@ -3281,9 +3316,9 @@ fn TelemetryDashboardInner() -> Element {
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
-                                border:1px solid #ef4444;
-                                background:#450a0a;
-                                color:#fecaca;
+                                border:1px solid {theme.error_border};
+                                background:{theme.error_background};
+                                color:{theme.error_text};
                                 font-weight:900;
                                 cursor:pointer;
                             "
@@ -3292,9 +3327,9 @@ fn TelemetryDashboardInner() -> Element {
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
-                                border:1px solid #7f1d1d;
-                                background:#1f2937;
-                                color:#fca5a5;
+                                border:1px solid {theme.border_soft};
+                                background:{theme.panel_background_alt};
+                                color:{theme.text_muted};
                                 font-weight:900;
                                 cursor:not-allowed;
                                 opacity:0.55;
@@ -3327,7 +3362,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
 
                     if let Some(msg) = layout_error_snapshot.clone() {
-                        div { style: "margin-bottom:12px; padding:10px 12px; border-radius:10px; border:1px solid #ef4444; background:#450a0a; color:#fecaca; font-size:12px;",
+                        div { style: "margin-bottom:12px; padding:10px 12px; border-radius:10px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:12px;",
                             "{msg}"
                         }
                     }
@@ -3683,13 +3718,13 @@ fn TelemetryDashboardInner() -> Element {
                             style: "display:flex; flex-direction:column; gap:8px; margin-bottom:10px;",
                             for n in notifications.read().iter() {
                                 div {
-                                    style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid #2563eb; border-radius:10px; background:#0b1f4d; color:#bfdbfe;",
+                                    style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text};",
                                     span { style: "flex:1;", {translate_text(&n.message)} }
                                     if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
                                         && auth::can_send_command(action_cmd)
                                     {
                                         button {
-                                            style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid #60a5fa; background:#1e3a8a; color:#dbeafe; font-size:0.75rem; cursor:pointer;",
+                                            style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; cursor:pointer;",
                                             onclick: {
                                                 let cmd = action_cmd.to_string();
                                                 move |_| {
@@ -3700,7 +3735,7 @@ fn TelemetryDashboardInner() -> Element {
                                         }
                                     }
                                     button {
-                                        style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid #1d4ed8; background:#111827; color:#bfdbfe; font-size:0.75rem; cursor:pointer;",
+                                        style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; cursor:pointer;",
                                         onclick: {
                                             let id = n.id;
                                             let ts = n.timestamp_ms;
@@ -3758,6 +3793,7 @@ fn TelemetryDashboardInner() -> Element {
                                                 .and_then(|t| t.boolean_labels.clone()),
                                             abort_only_mode: *abort_only_mode.read(),
                                             theme: theme.clone(),
+                                            use_layout_theme_overrides: use_layout_theme_overrides,
                                         }
                                     }
                             },
@@ -3780,6 +3816,7 @@ fn TelemetryDashboardInner() -> Element {
                                     errors: errors,
                                     notifications: notifications,
                                     network_time: network_time,
+                                    theme: theme.clone(),
                                 }
                             },
                             MainTab::NetworkTopology => rsx! {
@@ -3788,6 +3825,7 @@ fn TelemetryDashboardInner() -> Element {
                                         topology: network_topology,
                                         layout: layout.network_tab.clone(),
                                         flow_animation_enabled: *network_flow_animation_enabled.read(),
+                                        theme: theme.clone(),
                                     }
                                 }
                             },
@@ -3813,22 +3851,22 @@ fn TelemetryDashboardInner() -> Element {
                             },
                             MainTab::Calibration => rsx! {
                                 div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
-                                    CalibrationTab {}
+                                    CalibrationTab { theme: theme.clone() }
                                 }
                             },
                             MainTab::Notifications => rsx! {
                                 div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
-                                    NotificationsTab { history: notification_history }
+                                    NotificationsTab { history: notification_history, theme: theme.clone() }
                                 }
                             },
                             MainTab::Warnings => rsx! {
                                 div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
-                                    WarningsTab { warnings: warnings }
+                                    WarningsTab { warnings: warnings, theme: theme.clone() }
                                 }
                             },
                             MainTab::Errors => rsx! {
                                 div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
-                                    ErrorsTab { errors: errors }
+                                    ErrorsTab { errors: errors, theme: theme.clone() }
                                 }
                             },
                             MainTab::Data => rsx! {

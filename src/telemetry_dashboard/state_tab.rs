@@ -83,6 +83,7 @@ pub fn StateTab(
     default_valve_labels: Option<BooleanLabels>,
     abort_only_mode: bool,
     theme: ThemeConfig,
+    use_layout_theme_overrides: bool,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
 
@@ -109,6 +110,7 @@ pub fn StateTab(
                     user_gps,
                     abort_only_mode,
                     &theme,
+                    use_layout_theme_overrides,
                 )}
             }
         }
@@ -131,19 +133,37 @@ pub fn StateTab(
 }
 
 #[component]
-fn Section(title: String, style: Option<StateSectionStyle>, children: Element) -> Element {
-    let background = style
-        .as_ref()
-        .and_then(|style| style.background.as_deref())
-        .unwrap_or("#0b1220");
-    let border = style
-        .as_ref()
-        .and_then(|style| style.border.as_deref())
-        .unwrap_or("#334155");
-    let title_color = style
-        .as_ref()
-        .and_then(|style| style.title_color.as_deref())
-        .unwrap_or("#cbd5f5");
+fn Section(
+    title: String,
+    style: Option<StateSectionStyle>,
+    theme: ThemeConfig,
+    use_layout_theme_overrides: bool,
+    children: Element,
+) -> Element {
+    let background = if use_layout_theme_overrides {
+        style
+            .as_ref()
+            .and_then(|style| style.background.as_deref())
+            .unwrap_or(theme.panel_background.as_str())
+    } else {
+        theme.panel_background.as_str()
+    };
+    let border = if use_layout_theme_overrides {
+        style
+            .as_ref()
+            .and_then(|style| style.border.as_deref())
+            .unwrap_or(theme.border.as_str())
+    } else {
+        theme.border.as_str()
+    };
+    let title_color = if use_layout_theme_overrides {
+        style
+            .as_ref()
+            .and_then(|style| style.title_color.as_deref())
+            .unwrap_or(theme.text_secondary.as_str())
+    } else {
+        theme.text_secondary.as_str()
+    };
 
     rsx! {
         div { style: "padding:14px; border:1px solid {border}; border-radius:14px; background:{background};",
@@ -164,6 +184,7 @@ fn render_state_section(
     user_gps: Signal<Option<(f64, f64)>>,
     abort_only_mode: bool,
     theme: &ThemeConfig,
+    use_layout_theme_overrides: bool,
 ) -> Element {
     if !section_has_content(section, actions, abort_only_mode) {
         return rsx! { div {} };
@@ -175,7 +196,7 @@ fn render_state_section(
         .unwrap_or_else(|| translate_text("Section"));
 
     rsx! {
-        Section { title: title, style: section.style.clone(),
+        Section { title: title, style: section.style.clone(), theme: theme.clone(), use_layout_theme_overrides: use_layout_theme_overrides,
             for widget in section.widgets.iter() {
                 {render_state_widget(
                     widget,
@@ -188,6 +209,7 @@ fn render_state_section(
                     user_gps,
                     abort_only_mode,
                     theme,
+                    use_layout_theme_overrides,
                 )}
             }
         }
@@ -205,16 +227,17 @@ fn render_state_widget(
     user_gps: Signal<Option<(f64, f64)>>,
     abort_only_mode: bool,
     theme: &ThemeConfig,
+    use_layout_theme_overrides: bool,
 ) -> Element {
     match widget.kind {
-        StateWidgetKind::BoardStatus => rsx! { {board_status_table(boards)} },
+        StateWidgetKind::BoardStatus => rsx! { {board_status_table(boards, theme)} },
         StateWidgetKind::Summary => {
             let dt = widget.data_type.as_deref().unwrap_or("");
             let items = widget.items.as_deref().unwrap_or(&[]);
             if dt.is_empty() {
                 rsx! { div { style: "color:#94a3b8; font-size:12px;", "{translate_text(\"Missing summary data_type\")}" } }
             } else {
-                rsx! { {summary_row(dt, items, widget.summary_style.as_ref())} }
+                rsx! { {summary_row(dt, items, widget.summary_style.as_ref(), theme, use_layout_theme_overrides)} }
             }
         }
         StateWidgetKind::Chart => {
@@ -237,6 +260,8 @@ fn render_state_widget(
                 widget.valve_colors.as_ref(),
                 labels,
                 widget.valve_labels.as_deref(),
+                theme,
+                use_layout_theme_overrides,
             )} }
         }
         StateWidgetKind::Map => rsx! {
@@ -286,6 +311,7 @@ fn StateChartPanel(
             },
             widget.chart_title.as_deref(),
             &data_layout,
+            &theme,
         )
     } else {
         let dt = widget.data_type.as_deref().unwrap_or("");
@@ -303,6 +329,7 @@ fn StateChartPanel(
                 },
                 widget.chart_title.as_deref(),
                 &labels,
+                &theme,
             )
         }
     };
@@ -371,6 +398,7 @@ fn data_style_chart_cached(
     view_h: f64,
     title: Option<&str>,
     labels: &[String],
+    theme: &ThemeConfig,
 ) -> Element {
     let w = view_w as f32;
     let h = view_h as f32;
@@ -389,9 +417,9 @@ fn data_style_chart_cached(
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
 
     rsx! {
-        div { style: "width:100%; background:#020617; border-radius:14px; border:1px solid #334155; padding:12px; display:flex; flex-direction:column; gap:8px;",
+        div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(t) = title {
-                div { style: "color:#e5e7eb; font-weight:700; font-size:14px;", "{translate_text(t)}" }
+                div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
 
             div { style: "position:relative; width:100%; aspect-ratio:{view_w}/{view_h};",
@@ -405,7 +433,7 @@ fn data_style_chart_cached(
                     grid_bottom: None,
                     style: "position:absolute; inset:0; width:100%; height:100%; display:block;".to_string(),
                 }
-                div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:#94a3b8;",
+                div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
                     span { style: "position:absolute; left:10px; top:{y_pct(top + 6.0, view_h)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
                     span { style: "position:absolute; left:10px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
                     span { style: "position:absolute; left:10px; top:{y_pct(bottom + 2.0, view_h)}; transform:translateY(-100%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
@@ -415,10 +443,10 @@ fn data_style_chart_cached(
                 }
             }
 
-            div { style: "display:flex; flex-wrap:wrap; gap:8px; padding:6px 10px; background:rgba(2,6,23,0.75); border:1px solid #1f2937; border-radius:10px;",
+            div { style: "display:flex; flex-wrap:wrap; gap:8px; padding:6px 10px; background:{theme.app_background}; border:1px solid {theme.border_soft}; border-radius:10px;",
                 for (i, label) in labels.iter().enumerate() {
                     if !label.is_empty() {
-                        div { style: "display:flex; align-items:center; gap:6px; font-size:12px; color:#cbd5f5;",
+                        div { style: "display:flex; align-items:center; gap:6px; font-size:12px; color:{theme.text_secondary};",
                             svg { width:"26", height:"8", view_box:"0 0 26 8",
                                 line { x1:"1", y1:"4", x2:"25", y2:"4", stroke:"{series_color(i)}", stroke_width:"2", stroke_linecap:"round" }
                             }
@@ -724,6 +752,7 @@ fn combined_state_chart_cached(
     view_h: f64,
     title: Option<&str>,
     data_layout: &DataTabLayout,
+    theme: &ThemeConfig,
 ) -> Element {
     let Some((chunks, y_min, y_max, span_min, labels, normalize_per_series, series_scales)) =
         combined_chart_payload(specs, data_layout, view_w, view_h)
@@ -741,9 +770,9 @@ fn combined_state_chart_cached(
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
 
     rsx! {
-        div { style: "width:100%; background:#020617; border-radius:14px; border:1px solid #334155; padding:6px; display:flex; flex-direction:column; gap:4px;",
+        div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:6px; display:flex; flex-direction:column; gap:4px;",
             if let Some(t) = title {
-                div { style: "color:#e5e7eb; font-weight:700; font-size:14px;", "{translate_text(t)}" }
+                div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
             div { style: "display:flex; gap:6px; align-items:stretch;",
                 if normalize_per_series {
@@ -782,7 +811,7 @@ fn combined_state_chart_cached(
                         grid_bottom: Some(bottom),
                         style: "position:absolute; inset:0; width:100%; height:100%; display:block;".to_string(),
                     }
-                    div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:#94a3b8;",
+                    div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
                         if !normalize_per_series {
                             span { style: "position:absolute; left:10px; top:{y_pct(top + 6.0, view_h)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
                             span { style: "position:absolute; left:10px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
@@ -794,13 +823,13 @@ fn combined_state_chart_cached(
                     }
                 }
             }
-            div { style: "display:flex; flex-wrap:wrap; gap:6px; padding:4px 6px; background:rgba(2,6,23,0.75); border:1px solid #1f2937; border-radius:10px;",
+            div { style: "display:flex; flex-wrap:wrap; gap:6px; padding:4px 6px; background:{theme.app_background}; border:1px solid {theme.border_soft}; border-radius:10px;",
                 if normalize_per_series {
-                    div { style: "font-size:11px; color:#94a3b8; margin-right:6px;", "{translate_text(\"Scaled per series\")}" }
+                    div { style: "font-size:11px; color:{theme.text_muted}; margin-right:6px;", "{translate_text(\"Scaled per series\")}" }
                 }
                 for (i, label) in labels.iter().enumerate() {
                     if !label.is_empty() {
-                        div { style: "display:flex; align-items:center; gap:5px; font-size:11px; color:#cbd5f5;",
+                        div { style: "display:flex; align-items:center; gap:5px; font-size:11px; color:{theme.text_secondary};",
                             svg { width:"26", height:"8", view_box:"0 0 26 8",
                                 line { x1:"1", y1:"4", x2:"25", y2:"4", stroke:"{series_color(i)}", stroke_width:"2", stroke_linecap:"round" }
                             }
@@ -849,6 +878,8 @@ fn valve_state_grid(
     colors: Option<&ValveColorSet>,
     labels: Option<&BooleanLabels>,
     valve_labels: Option<&[BooleanLabels]>,
+    theme: &ThemeConfig,
+    use_layout_theme_overrides: bool,
 ) -> Element {
     let latest = latest_telemetry_row("VALVE_STATE", None);
 
@@ -905,7 +936,7 @@ fn valve_state_grid(
             .collect(),
     };
 
-    let (open, closed, unknown) = valve_colors(colors);
+    let (open, closed, unknown) = valve_colors(colors, theme, use_layout_theme_overrides);
 
     rsx! {
         div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:12px;",
@@ -974,30 +1005,42 @@ fn ValveStateCard(
     }
 }
 
-fn valve_colors(colors: Option<&ValveColorSet>) -> (ValveColor, ValveColor, ValveColor) {
+fn valve_colors(
+    colors: Option<&ValveColorSet>,
+    theme: &ThemeConfig,
+    use_layout_theme_overrides: bool,
+) -> (ValveColor, ValveColor, ValveColor) {
     let default_open = ValveColor {
         bg: "#052e16".to_string(),
         border: "#22c55e".to_string(),
         fg: "#bbf7d0".to_string(),
     };
     let default_closed = ValveColor {
-        bg: "#1f2937".to_string(),
-        border: "#94a3b8".to_string(),
-        fg: "#e2e8f0".to_string(),
+        bg: theme.panel_background_alt.clone(),
+        border: theme.border.clone(),
+        fg: theme.text_secondary.clone(),
     };
     let default_unknown = ValveColor {
-        bg: "#0b1220".to_string(),
-        border: "#475569".to_string(),
-        fg: "#94a3b8".to_string(),
+        bg: theme.panel_background.clone(),
+        border: theme.border_soft.clone(),
+        fg: theme.text_muted.clone(),
     };
 
-    let open = colors.and_then(|c| c.open.clone()).unwrap_or(default_open);
-    let closed = colors
-        .and_then(|c| c.closed.clone())
-        .unwrap_or(default_closed);
-    let unknown = colors
-        .and_then(|c| c.unknown.clone())
-        .unwrap_or(default_unknown);
+    let open = if use_layout_theme_overrides {
+        colors.and_then(|c| c.open.clone()).unwrap_or(default_open)
+    } else {
+        default_open
+    };
+    let closed = if use_layout_theme_overrides {
+        colors.and_then(|c| c.closed.clone()).unwrap_or(default_closed)
+    } else {
+        default_closed
+    };
+    let unknown = if use_layout_theme_overrides {
+        colors.and_then(|c| c.unknown.clone()).unwrap_or(default_unknown)
+    } else {
+        default_unknown
+    };
     (open, closed, unknown)
 }
 
@@ -1130,7 +1173,13 @@ fn action_style(
     )
 }
 
-fn summary_row(dt: &str, items: &[SummaryItem], style: Option<&SummaryCardStyle>) -> Element {
+fn summary_row(
+    dt: &str,
+    items: &[SummaryItem],
+    style: Option<&SummaryCardStyle>,
+    theme: &ThemeConfig,
+    use_layout_theme_overrides: bool,
+) -> Element {
     let want_minmax = dt != "VALVE_STATE" && dt != "GPS_DATA";
 
     let (chan_min, chan_max) = if want_minmax {
@@ -1160,6 +1209,8 @@ fn summary_row(dt: &str, items: &[SummaryItem], style: Option<&SummaryCardStyle>
                     min: if want_minmax { chan_min.get(idx).copied().flatten().map(|v| format_summary_value(Some(v), formatter)) } else { None },
                     max: if want_minmax { chan_max.get(idx).copied().flatten().map(|v| format_summary_value(Some(v), formatter)) } else { None },
                     style: style.cloned(),
+                    theme: theme.clone(),
+                    use_layout_theme_overrides: use_layout_theme_overrides,
                 }
             }
         }
@@ -1173,6 +1224,8 @@ fn SummaryCard(
     min: Option<String>,
     max: Option<String>,
     style: Option<SummaryCardStyle>,
+    theme: ThemeConfig,
+    use_layout_theme_overrides: bool,
 ) -> Element {
     let mm = match (min.as_deref(), max.as_deref()) {
         (Some(mi), Some(ma)) => Some(format!(
@@ -1182,29 +1235,45 @@ fn SummaryCard(
         )),
         _ => None,
     };
-    let background = style
-        .as_ref()
-        .and_then(|style| style.background.as_deref())
-        .unwrap_or("#0f172a");
-    let border = style
-        .as_ref()
-        .and_then(|style| style.border.as_deref())
-        .unwrap_or("#334155");
-    let label_color = style
-        .as_ref()
-        .and_then(|style| style.label_color.as_deref())
-        .unwrap_or("#93c5fd");
-    let value_color = style
-        .as_ref()
-        .and_then(|style| style.value_color.as_deref())
-        .unwrap_or("#e5e7eb");
+    let background = if use_layout_theme_overrides {
+        style
+            .as_ref()
+            .and_then(|style| style.background.as_deref())
+            .unwrap_or(theme.panel_background_alt.as_str())
+    } else {
+        theme.panel_background_alt.as_str()
+    };
+    let border = if use_layout_theme_overrides {
+        style
+            .as_ref()
+            .and_then(|style| style.border.as_deref())
+            .unwrap_or(theme.border.as_str())
+    } else {
+        theme.border.as_str()
+    };
+    let label_color = if use_layout_theme_overrides {
+        style
+            .as_ref()
+            .and_then(|style| style.label_color.as_deref())
+            .unwrap_or(theme.info_accent.as_str())
+    } else {
+        theme.info_accent.as_str()
+    };
+    let value_color = if use_layout_theme_overrides {
+        style
+            .as_ref()
+            .and_then(|style| style.value_color.as_deref())
+            .unwrap_or(theme.text_primary.as_str())
+    } else {
+        theme.text_primary.as_str()
+    };
 
     rsx! {
         div { style: "padding:10px; border-radius:12px; background:{background}; border:1px solid {border}; width:100%; min-width:0; box-sizing:border-box;",
             div { style: "font-size:12px; color:{label_color};", "{translate_text(&label)}" }
             div { style: "font-size:18px; color:{value_color}; line-height:1.1;", "{value}" }
             if let Some(t) = mm {
-                div { style: "font-size:11px; color:#94a3b8; margin-top:4px;", "{t}" }
+                div { style: "font-size:11px; color:{theme.text_muted}; margin-top:4px;", "{t}" }
             }
         }
     }
@@ -1242,37 +1311,43 @@ fn format_summary_value(v: Option<f32>, formatter: Option<&ValueFormatter>) -> S
     }
 }
 
-fn board_status_table(boards: &[BoardStatusEntry]) -> Element {
+fn board_status_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Element {
     if boards.is_empty() {
-        return rsx! { div { style: "color:#94a3b8;", "No board status yet." } };
+        return rsx! { div { style: "color:{theme.text_muted};", "No board status yet." } };
     }
 
     rsx! {
-        div { style: "border:1px solid #1f2937; border-radius:10px; overflow:hidden;",
-            div { style: "display:grid; grid-template-columns:1.4fr 0.8fr 0.6fr 0.8fr 0.8fr; background:#020617;",
-                div { style: header_cell_style(), "Board" }
-                div { style: header_cell_style(), "Sender ID" }
-                div { style: header_cell_style(), "Seen" }
-                div { style: header_cell_style(), "Last Seen (ms)" }
-                div { style: header_cell_style(), "Age (ms)" }
+        div { style: "border:1px solid {theme.border_soft}; border-radius:10px; overflow:hidden;",
+            div { style: "display:grid; grid-template-columns:1.4fr 0.8fr 0.6fr 0.8fr 0.8fr; background:{theme.app_background};",
+                div { style: header_cell_style(theme), "Board" }
+                div { style: header_cell_style(theme), "Sender ID" }
+                div { style: header_cell_style(theme), "Seen" }
+                div { style: header_cell_style(theme), "Last Seen (ms)" }
+                div { style: header_cell_style(theme), "Age (ms)" }
             }
             for entry in boards.iter() {
-                div { style: "display:grid; grid-template-columns:1.4fr 0.8fr 0.6fr 0.8fr 0.8fr; background:#020617;",
-                    div { style: cell_style(), "{entry.display_name()}" }
-                    div { style: cell_style(), "{entry.sender_id}" }
-                    div { style: cell_style(), if entry.seen { "yes" } else { "no" } }
-                    div { style: cell_style(), "{entry.last_seen_ms.map(|v| v.to_string()).unwrap_or_else(|| \"-\".into())}" }
-                    div { style: cell_style(), "{entry.age_ms.map(|v| v.to_string()).unwrap_or_else(|| \"-\".into())}" }
+                div { style: "display:grid; grid-template-columns:1.4fr 0.8fr 0.6fr 0.8fr 0.8fr; background:{theme.app_background};",
+                    div { style: cell_style(theme), "{entry.display_name()}" }
+                    div { style: cell_style(theme), "{entry.sender_id}" }
+                    div { style: cell_style(theme), if entry.seen { "yes" } else { "no" } }
+                    div { style: cell_style(theme), "{entry.last_seen_ms.map(|v| v.to_string()).unwrap_or_else(|| \"-\".into())}" }
+                    div { style: cell_style(theme), "{entry.age_ms.map(|v| v.to_string()).unwrap_or_else(|| \"-\".into())}" }
                 }
             }
         }
     }
 }
 
-fn header_cell_style() -> &'static str {
-    "font-weight:600; color:#e2e8f0; padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937;"
+fn header_cell_style(theme: &ThemeConfig) -> String {
+    format!(
+        "font-weight:600; color:{}; padding:8px; border-bottom:1px solid {}; border-right:1px solid {};",
+        theme.text_secondary, theme.border_soft, theme.border_soft
+    )
 }
 
-fn cell_style() -> &'static str {
-    "padding:8px; border-bottom:1px solid #1f2937; border-right:1px solid #1f2937; color:#e5e7eb;"
+fn cell_style(theme: &ThemeConfig) -> String {
+    format!(
+        "padding:8px; border-bottom:1px solid {}; border-right:1px solid {}; color:{};",
+        theme.border_soft, theme.border_soft, theme.text_primary
+    )
 }

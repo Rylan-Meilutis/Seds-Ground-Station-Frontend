@@ -1,4 +1,4 @@
-use super::{layout::ThemeConfig, localized_copy, set_preferred_language};
+use super::{builtin_theme_presets, layout::ThemeConfig, localized_copy, set_preferred_language};
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
 
@@ -47,9 +47,9 @@ pub fn SettingsPage(
     let theme_title = localized_copy(&language, "Theme Preset", "Tema", "Theme");
     let theme_desc = localized_copy(
         &language,
-        "Choose between the built-in default theme, the backend theme, or local overrides.",
-        "Elige entre el tema por defecto, el tema del backend o variantes locales.",
-        "Choisissez entre le theme par defaut, le theme backend ou des variantes locales.",
+        "Choose between the built-in default theme, the Ground Station theme, or local overrides.",
+        "Elige entre el tema predeterminado integrado, el tema de la Estacion terrestre o variantes locales.",
+        "Choisissez entre le theme integre par defaut, le theme de la Station au sol ou des variantes locales.",
     );
     let units_title = localized_copy(
         &language,
@@ -94,26 +94,13 @@ pub fn SettingsPage(
     let english_label = "English".to_string();
     let spanish_label = "Español".to_string();
     let french_label = "Français".to_string();
-    let default_theme_label = localized_copy(
-        &language,
-        "Default Theme",
-        "Tema por defecto",
-        "Theme par defaut",
-    );
     let backend_theme_label = localized_copy(
         &language,
-        "Backend Theme",
-        "Tema del backend",
-        "Theme backend",
+        "Ground Station Theme",
+        "Tema de la Estacion terrestre",
+        "Theme de la Station au sol",
     );
-    let sunset_theme_label = localized_copy(&language, "Sunset", "Atardecer", "Coucher");
-    let forest_theme_label = localized_copy(&language, "Forest", "Bosque", "Foret");
-    let contrast_theme_label = localized_copy(
-        &language,
-        "High Contrast",
-        "Alto contraste",
-        "Contraste fort",
-    );
+    let theme_presets = builtin_theme_presets();
 
     rsx! {
         div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
@@ -165,25 +152,16 @@ pub fn SettingsPage(
                             onclick: move |_| theme_preset.set("backend".to_string()),
                             "{backend_theme_label}"
                         }
-                        button {
-                            style: if selected_theme == "default" { chip_selected.clone() } else { chip_idle.clone() },
-                            onclick: move |_| theme_preset.set("default".to_string()),
-                            "{default_theme_label}"
-                        }
-                        button {
-                            style: if selected_theme == "sunset" { chip_selected.clone() } else { chip_idle.clone() },
-                            onclick: move |_| theme_preset.set("sunset".to_string()),
-                            "{sunset_theme_label}"
-                        }
-                        button {
-                            style: if selected_theme == "forest" { chip_selected.clone() } else { chip_idle.clone() },
-                            onclick: move |_| theme_preset.set("forest".to_string()),
-                            "{forest_theme_label}"
-                        }
-                        button {
-                            style: if selected_theme == "high_contrast" { chip_selected.clone() } else { chip_idle.clone() },
-                            onclick: move |_| theme_preset.set("high_contrast".to_string()),
-                            "{contrast_theme_label}"
+                        for preset in theme_presets.iter() {
+                            button {
+                                key: "{preset.id}",
+                                style: if selected_theme == preset.id.as_str() { chip_selected.clone() } else { chip_idle.clone() },
+                                onclick: {
+                                    let id = preset.id.clone();
+                                    move |_| theme_preset.set(id.clone())
+                                },
+                                "{preset.label.localized(&language, &preset.id)}"
+                            }
                         }
                     }
                 }

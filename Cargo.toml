@@ -1,9 +1,9 @@
 [package]
 name = "groundstation_frontend"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 authors = ["Rylan Meilutis <rylan.meilutis@gmail.com>"]
-description = "Dioxus "
+description = "Dioxus powered frontend for easy irec rocket control and managment over Web, Desktop, and Mobile."
 license-file = "LICENSE"
 repository = "https://github.com/Rylan-Meilutis/Seds-Ground-Station-Frontend"
 
@@ -82,4 +82,5 @@ mobile = ["dioxus/mobile"]
 
 [build-dependencies]
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }
+serde_json = "1.0.149"
 winres = "0.1.12"

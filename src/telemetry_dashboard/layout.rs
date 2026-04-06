@@ -44,6 +44,43 @@ pub struct BrandingConfig {
     pub tab_labels: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ThemePresetLabel {
+    #[serde(default)]
+    pub en: String,
+    #[serde(default)]
+    pub es: String,
+    #[serde(default)]
+    pub fr: String,
+}
+
+impl ThemePresetLabel {
+    pub fn localized(&self, language: &str, fallback: &str) -> String {
+        let candidate = match language {
+            "es" if !self.es.trim().is_empty() => self.es.trim(),
+            "fr" if !self.fr.trim().is_empty() => self.fr.trim(),
+            _ if !self.en.trim().is_empty() => self.en.trim(),
+            _ => fallback,
+        };
+        candidate.to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThemePresetDefinition {
+    pub id: String,
+    #[serde(default)]
+    pub label: ThemePresetLabel,
+    #[serde(default)]
+    pub theme: ThemeConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ThemePresetCatalog {
+    #[serde(default)]
+    pub presets: Vec<ThemePresetDefinition>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThemeConfig {
     #[serde(default = "default_app_background")]
@@ -146,105 +183,105 @@ impl Default for ThemeConfig {
 }
 
 fn default_app_background() -> String {
-    "#020617".to_string()
+    "#030712".to_string()
 }
 fn default_panel_background() -> String {
-    "#0b1220".to_string()
+    "#0b1628".to_string()
 }
 fn default_panel_background_alt() -> String {
-    "#0f172a".to_string()
+    "#142033".to_string()
 }
 fn default_overlay_background() -> String {
-    "#020617ee".to_string()
+    "#030712ee".to_string()
 }
 fn default_border() -> String {
-    "#334155".to_string()
+    "#314156".to_string()
 }
 fn default_border_strong() -> String {
-    "#4b5563".to_string()
+    "#50627c".to_string()
 }
 fn default_border_soft() -> String {
-    "#1f2937".to_string()
+    "#1a2638".to_string()
 }
 fn default_text_primary() -> String {
-    "#e5e7eb".to_string()
+    "#edf3ff".to_string()
 }
 fn default_text_secondary() -> String {
-    "#cbd5e1".to_string()
+    "#d3def1".to_string()
 }
 fn default_text_muted() -> String {
-    "#94a3b8".to_string()
+    "#9fb0c7".to_string()
 }
 fn default_text_soft() -> String {
-    "#9ca3af".to_string()
+    "#7f94b2".to_string()
 }
 fn default_button_background() -> String {
-    "#111827".to_string()
+    "#162235".to_string()
 }
 fn default_button_border() -> String {
-    "#334155".to_string()
+    "#42536d".to_string()
 }
 fn default_button_text() -> String {
-    "#e5e7eb".to_string()
+    "#f3f7ff".to_string()
 }
 fn default_tab_shell_background() -> String {
-    "#020617ee".to_string()
+    "#08111dee".to_string()
 }
 fn default_tab_shell_border() -> String {
-    "#4b5563".to_string()
+    "#42536d".to_string()
 }
 fn default_info_accent() -> String {
-    "#60a5fa".to_string()
+    "#7cc6ff".to_string()
 }
 fn default_info_background() -> String {
-    "#0b1a33".to_string()
+    "#11233a".to_string()
 }
 fn default_info_text() -> String {
-    "#bfdbfe".to_string()
+    "#d8eeff".to_string()
 }
 fn default_success_text() -> String {
-    "#22c55e".to_string()
+    "#6ee7b7".to_string()
 }
 fn default_warning_background() -> String {
-    "#451a03".to_string()
+    "#3a2a0f".to_string()
 }
 fn default_warning_border() -> String {
-    "#f59e0b".to_string()
+    "#f4b860".to_string()
 }
 fn default_warning_text() -> String {
-    "#fde68a".to_string()
+    "#fde7b0".to_string()
 }
 fn default_error_background() -> String {
-    "#450a0a".to_string()
+    "#3a1620".to_string()
 }
 fn default_error_border() -> String {
-    "#ef4444".to_string()
+    "#f07c96".to_string()
 }
 fn default_error_text() -> String {
-    "#fecaca".to_string()
+    "#ffd1db".to_string()
 }
 fn default_notification_background() -> String {
-    "#0b1f4d".to_string()
+    "#102748".to_string()
 }
 fn default_notification_border() -> String {
-    "#2563eb".to_string()
+    "#4b8bff".to_string()
 }
 fn default_notification_text() -> String {
-    "#bfdbfe".to_string()
+    "#d9ebff".to_string()
 }
 fn default_main_tab_accents() -> HashMap<String, String> {
     HashMap::from([
-        ("state".to_string(), "#38bdf8".to_string()),
-        ("connection-status".to_string(), "#06b6d4".to_string()),
-        ("detailed".to_string(), "#0ea5e9".to_string()),
-        ("map".to_string(), "#22c55e".to_string()),
-        ("actions".to_string(), "#a78bfa".to_string()),
-        ("calibration".to_string(), "#14b8a6".to_string()),
-        ("notifications".to_string(), "#3b82f6".to_string()),
-        ("warnings".to_string(), "#facc15".to_string()),
-        ("errors".to_string(), "#ef4444".to_string()),
-        ("data".to_string(), "#f97316".to_string()),
-        ("network-topology".to_string(), "#8b5cf6".to_string()),
+        ("state".to_string(), "#67c8ff".to_string()),
+        ("connection-status".to_string(), "#3ccfdc".to_string()),
+        ("detailed".to_string(), "#4ab4ff".to_string()),
+        ("map".to_string(), "#58d68d".to_string()),
+        ("actions".to_string(), "#b8a0ff".to_string()),
+        ("calibration".to_string(), "#40d4c4".to_string()),
+        ("notifications".to_string(), "#63a4ff".to_string()),
+        ("warnings".to_string(), "#f3c969".to_string()),
+        ("errors".to_string(), "#ff8ca1".to_string()),
+        ("data".to_string(), "#ff9b5c".to_string()),
+        ("network-topology".to_string(), "#9f7cff".to_string()),
     ])
 }
 

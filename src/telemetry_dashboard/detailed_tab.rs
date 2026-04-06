@@ -7,9 +7,9 @@ use super::types::{
     NetworkTopologyStatus,
 };
 use super::{
-    AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
     compensated_network_time_ms, format_network_time, format_timestamp_ms_clock, monotonic_now_ms,
-    translate_text,
+    translate_text, AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, current_language,
+    layout::ThemeConfig, localized_copy, PersistentNotification,
 };
 
 #[component]
@@ -22,6 +22,7 @@ pub fn DetailedTab(
     errors: Signal<Vec<AlertMsg>>,
     notifications: Signal<Vec<PersistentNotification>>,
     network_time: Signal<Option<NetworkTimeSync>>,
+    theme: ThemeConfig,
 ) -> Element {
     let tick = use_signal(|| 0u64);
     {
@@ -139,12 +140,20 @@ pub fn DetailedTab(
     let endpoint_rows = collect_endpoint_rows(&topology.nodes, &topology.links);
     let board_route_rows =
         collect_board_route_rows(&visible_topology_nodes, &visible_topology_links);
+    let language = current_language();
+    let app_ground_station_title = localized_copy(
+        &language,
+        "App ↔ Ground Station",
+        "Aplicacion ↔ Estacion terrestre",
+        "Application ↔ Station au sol",
+    );
 
     rsx! {
-        div { style: "padding:18px; height:100%; overflow-y:auto; overflow-x:hidden; color:#dbe7f3;",
+        div { style: "padding:18px; height:100%; overflow-y:auto; overflow-x:hidden; color:{theme.text_primary}; background:{theme.app_background};",
             div { style: "display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); margin-bottom:14px; align-items:start;",
                 {metric_card(
-                    "Frontend ↔ Backend",
+                    &theme,
+                    &app_ground_station_title,
                     vec![
                         ("Status", if metrics_snapshot.ws_connected { translate_text("Connected") } else { translate_text("Disconnected") }),
                         ("Base URL", metrics_snapshot.base_http.clone()),
@@ -155,6 +164,7 @@ pub fn DetailedTab(
                     ],
                 )}
                 {metric_card(
+                    &theme,
                     "Traffic",
                     vec![
                         ("Inbound messages", metrics_snapshot.ws_messages_total.to_string()),
@@ -168,6 +178,7 @@ pub fn DetailedTab(
                     ],
                 )}
                 {metric_card(
+                    &theme,
                     "Session",
                     vec![
                         ("Rows per second", format!("{:.1}/s", metrics_snapshot.rows_per_sec)),
@@ -180,6 +191,7 @@ pub fn DetailedTab(
                     ],
                 )}
                 {metric_card(
+                    &theme,
                     "Mission State",
                     vec![
                         ("Flight state", translate_text(&flight_state.read().to_string())),
@@ -192,6 +204,7 @@ pub fn DetailedTab(
                     ],
                 )}
                 {metric_card(
+                    &theme,
                     "Topology",
                     vec![
                         ("Boards seen", board_seen.to_string()),
@@ -209,6 +222,7 @@ pub fn DetailedTab(
                     ],
                 )}
                 {metric_card(
+                    &theme,
                     "Board Timing",
                     vec![
                         ("Fastest board", opt_u64_ms(min_board_age_ms)),
@@ -219,62 +233,62 @@ pub fn DetailedTab(
 
             div { style: "display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(min(100%, 340px), 1fr)); align-items:start; width:100%;",
                 div { style: "display:flex; flex-direction:column; gap:14px; min-width:0;",
-                    div { style: section_style(),
-                    h3 { style: section_title_style(), "Board Latency Detail" }
+                    div { style: "{section_style(&theme)}",
+                    h3 { style: "{section_title_style(&theme)}", "Board Latency Detail" }
                     div { style: "width:100%; overflow-x:auto;",
-                    table { style: table_style(),
+                    table { style: "{table_style()}",
                         thead {
                             tr {
-                                th { style: th_style(), "Board" }
-                                th { style: th_style(), "Sender" }
-                                th { style: th_style(), "Seen" }
-                                th { style: th_style(), "Age" }
-                                th { style: th_style(), "Last Seen" }
+                                th { style: "{th_style(&theme)}", "Board" }
+                                th { style: "{th_style(&theme)}", "Sender" }
+                                th { style: "{th_style(&theme)}", "Seen" }
+                                th { style: "{th_style(&theme)}", "Age" }
+                                th { style: "{th_style(&theme)}", "Last Seen" }
                             }
                         }
                         tbody {
                             for board in seen_boards.iter() {
                                 tr {
-                                    td { style: td_style(), "{board.display_name()}" }
-                                    td { style: td_style_mono(), "{board.sender_id}" }
-                                    td { style: td_style(), "yes" }
-                                    td { style: td_style_mono(), "{opt_i64_ms(board.age_ms.map(|v| v as i64))}" }
-                                    td { style: td_style_mono(), "{board.last_seen_ms.map(|ts| format_timestamp_ms_clock(ts as i64)).unwrap_or_else(|| \"--\".to_string())}" }
+                                    td { style: "{td_style(&theme)}", "{board.display_name()}" }
+                                    td { style: "{td_style_mono(&theme)}", "{board.sender_id}" }
+                                    td { style: "{td_style(&theme)}", "yes" }
+                                    td { style: "{td_style_mono(&theme)}", "{opt_i64_ms(board.age_ms.map(|v| v as i64))}" }
+                                    td { style: "{td_style_mono(&theme)}", "{board.last_seen_ms.map(|ts| format_timestamp_ms_clock(ts as i64)).unwrap_or_else(|| \"--\".to_string())}" }
                                 }
                             }
                             if seen_boards.is_empty() {
                                 tr {
-                                    td { style: td_style(), colspan: "5", "No boards have been observed yet." }
+                                    td { style: "{td_style(&theme)}", colspan: "5", "No boards have been observed yet." }
                                 }
                             }
                         }
                     }
                     }
                 }
-                    div { style: section_style(),
-                    h3 { style: section_title_style(), "Board Routes" }
+                    div { style: "{section_style(&theme)}",
+                    h3 { style: "{section_title_style(&theme)}", "Board Routes" }
                     div { style: "width:100%; overflow-x:auto;",
-                    table { style: table_style(),
+                    table { style: "{table_style()}",
                         thead {
                             tr {
-                                th { style: th_style(), "Board" }
-                                th { style: th_style(), "Upstream" }
-                                th { style: th_style(), "Status" }
-                                th { style: th_style(), "Sender" }
+                                th { style: "{th_style(&theme)}", "Board" }
+                                th { style: "{th_style(&theme)}", "Upstream" }
+                                th { style: "{th_style(&theme)}", "Status" }
+                                th { style: "{th_style(&theme)}", "Sender" }
                             }
                         }
                         tbody {
                             for (label, upstream, status, sender_id) in board_route_rows.iter() {
                                 tr {
-                                    td { style: td_style(), "{label}" }
-                                    td { style: td_style(), "{upstream}" }
-                                    td { style: td_style(), "{format_status(*status)}" }
-                                    td { style: td_style_mono(), "{sender_id}" }
+                                    td { style: "{td_style(&theme)}", "{label}" }
+                                    td { style: "{td_style(&theme)}", "{upstream}" }
+                                    td { style: "{td_style(&theme)}", "{format_status(*status)}" }
+                                    td { style: "{td_style_mono(&theme)}", "{sender_id}" }
                                 }
                             }
                             if board_route_rows.is_empty() {
                                 tr {
-                                    td { style: td_style(), colspan: "4", "No board routes are visible yet." }
+                                    td { style: "{td_style(&theme)}", colspan: "4", "No board routes are visible yet." }
                                 }
                             }
                         }
@@ -283,52 +297,52 @@ pub fn DetailedTab(
                     }
                 }
                 div { style: "display:flex; flex-direction:column; gap:14px; min-width:0;",
-                    div { style: section_style(),
-                        h3 { style: section_title_style(), "Endpoint Ownership" }
+                    div { style: "{section_style(&theme)}",
+                        h3 { style: "{section_title_style(&theme)}", "Endpoint Ownership" }
                         div { style: "width:100%; overflow-x:auto;",
-                        table { style: table_style(),
+                        table { style: "{table_style()}",
                             thead {
                                 tr {
-                                    th { style: th_style(), "Endpoint" }
-                                    th { style: th_style(), "Host" }
+                                    th { style: "{th_style(&theme)}", "Endpoint" }
+                                    th { style: "{th_style(&theme)}", "Host" }
                                 }
                             }
                             tbody {
                                 for (endpoint, owners) in endpoint_rows.iter() {
                                     tr {
-                                        td { style: td_style_mono(), "{endpoint}" }
-                                        td { style: td_style(), "{owners.join(\", \")}" }
+                                        td { style: "{td_style_mono(&theme)}", "{endpoint}" }
+                                        td { style: "{td_style(&theme)}", "{owners.join(\", \")}" }
                                     }
                                 }
                                 if endpoint_rows.is_empty() {
                                     tr {
-                                        td { style: td_style(), colspan: "2", "No endpoint ownership data available." }
+                                        td { style: "{td_style(&theme)}", colspan: "2", "No endpoint ownership data available." }
                                     }
                                 }
                             }
                         }
                         }
                     }
-                    div { style: section_style(),
-                        h3 { style: section_title_style(), "Topology Links" }
+                    div { style: "{section_style(&theme)}",
+                        h3 { style: "{section_title_style(&theme)}", "Topology Links" }
                         div { style: "width:100%; overflow-x:auto;",
-                        table { style: table_style(),
+                        table { style: "{table_style()}",
                             thead {
                                 tr {
-                                    th { style: th_style(), "Path" }
-                                    th { style: th_style(), "Status" }
+                                    th { style: "{th_style(&theme)}", "Path" }
+                                    th { style: "{th_style(&theme)}", "Status" }
                                 }
                             }
                             tbody {
                                 for (source, target, status) in topology_links_preview.iter() {
                                     tr {
-                                        td { style: td_style_mono(), "{node_label(source, &visible_topology_nodes)} -> {node_label(target, &visible_topology_nodes)}" }
-                                        td { style: td_style(), "{format_status(*status)}" }
+                                        td { style: "{td_style_mono(&theme)}", "{node_label(source, &visible_topology_nodes)} -> {node_label(target, &visible_topology_nodes)}" }
+                                        td { style: "{td_style(&theme)}", "{format_status(*status)}" }
                                     }
                                 }
                                 if topology_links_preview.is_empty() {
                                     tr {
-                                        td { style: td_style(), colspan: "2", "No topology links are visible yet." }
+                                        td { style: "{td_style(&theme)}", colspan: "2", "No topology links are visible yet." }
                                     }
                                 }
                             }
@@ -341,15 +355,15 @@ pub fn DetailedTab(
     }
 }
 
-fn metric_card(title: &'static str, rows: Vec<(&'static str, String)>) -> Element {
+fn metric_card(theme: &ThemeConfig, title: &str, rows: Vec<(&'static str, String)>) -> Element {
     rsx! {
-        div { style: "border:1px solid #274154; border-radius:16px; padding:14px; background:linear-gradient(180deg, #071521 0%, #0d1b2a 100%); box-shadow:0 14px 30px rgba(2, 6, 23, 0.28); min-width:0;",
-            h3 { style: "margin:0 0 10px 0; color:#f8fafc; font-size:15px; letter-spacing:0.02em;", "{title}" }
+        div { style: "border:1px solid {theme.border}; border-radius:16px; padding:14px; background:linear-gradient(180deg, {theme.panel_background} 0%, {theme.panel_background_alt} 100%); box-shadow:0 14px 30px rgba(2, 6, 23, 0.28); min-width:0;",
+            h3 { style: "margin:0 0 10px 0; color:{theme.text_primary}; font-size:15px; letter-spacing:0.02em;", "{title}" }
             div { style: "display:flex; flex-direction:column; gap:8px;",
                 for (label, value) in rows {
                     div { style: "display:flex; justify-content:space-between; gap:16px; align-items:flex-start; min-width:0;",
-                        span { style: "color:#8fb3c9; font-size:12px; flex:0 0 auto;", "{label}" }
-                        span { style: "color:#eef6ff; font-size:13px; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
+                        span { style: "color:{theme.text_muted}; font-size:12px; flex:0 0 auto;", "{label}" }
+                        span { style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
                     }
                 }
             }
@@ -406,28 +420,43 @@ fn human_bytes_f64(bytes: f64) -> String {
     }
 }
 
-fn section_style() -> &'static str {
-    "border:1px solid #274154; border-radius:16px; padding:14px; background:#081521; min-width:0;"
+fn section_style(theme: &ThemeConfig) -> String {
+    format!(
+        "border:1px solid {}; border-radius:16px; padding:14px; background:{}; min-width:0;",
+        theme.border, theme.panel_background
+    )
 }
 
-fn section_title_style() -> &'static str {
-    "margin:0 0 12px 0; color:#f8fafc; font-size:15px;"
+fn section_title_style(theme: &ThemeConfig) -> String {
+    format!(
+        "margin:0 0 12px 0; color:{}; font-size:15px;",
+        theme.text_primary
+    )
 }
 
 fn table_style() -> &'static str {
     "width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed;"
 }
 
-fn th_style() -> &'static str {
-    "text-align:left; color:#8fb3c9; border-bottom:1px solid #274154; padding:8px 6px;"
+fn th_style(theme: &ThemeConfig) -> String {
+    format!(
+        "text-align:left; color:{}; border-bottom:1px solid {}; padding:8px 6px;",
+        theme.text_muted, theme.border
+    )
 }
 
-fn td_style() -> &'static str {
-    "padding:8px 6px; border-bottom:1px solid #132738; color:#dbe7f3;"
+fn td_style(theme: &ThemeConfig) -> String {
+    format!(
+        "padding:8px 6px; border-bottom:1px solid {}; color:{};",
+        theme.border_soft, theme.text_secondary
+    )
 }
 
-fn td_style_mono() -> &'static str {
-    "padding:8px 6px; border-bottom:1px solid #132738; color:#dbe7f3; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; white-space:normal; overflow-wrap:anywhere; word-break:break-word;"
+fn td_style_mono(theme: &ThemeConfig) -> String {
+    format!(
+        "padding:8px 6px; border-bottom:1px solid {}; color:{}; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; white-space:normal; overflow-wrap:anywhere; word-break:break-word;",
+        theme.border_soft, theme.text_secondary
+    )
 }
 
 fn format_status(status: NetworkTopologyStatus) -> &'static str {

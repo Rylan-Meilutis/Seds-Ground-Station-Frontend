@@ -1,6 +1,42 @@
 use std::process::Output;
 use std::{env, fs, io::Write, path::Path, path::PathBuf, process::Command};
 
+fn compile_theme_catalog(manifest_dir: &Path) {
+    let src = manifest_dir
+        .join("assets")
+        .join("themes")
+        .join("presets.json");
+    println!("cargo:rerun-if-changed={}", src.display());
+    let raw = fs::read_to_string(&src)
+        .unwrap_or_else(|e| panic!("failed to read theme catalog {}: {e}", src.display()));
+
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("theme catalog JSON is invalid ({}): {e}", src.display()));
+    let presets = parsed
+        .get("presets")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("theme catalog must contain a top-level 'presets' array"));
+    if presets.is_empty() {
+        panic!("theme catalog must contain at least one preset");
+    }
+    for preset in presets {
+        let id = preset
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("each theme preset must contain a string 'id'"));
+        if id.trim().is_empty() {
+            panic!("theme preset ids must not be empty");
+        }
+        if preset.get("theme").is_none() {
+            panic!("theme preset '{id}' is missing its 'theme' object");
+        }
+    }
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    write_if_changed(&out_dir.join("theme_presets.json"), &raw)
+        .unwrap_or_else(|e| panic!("failed to write compiled theme catalog: {e}"));
+}
+
 fn build_apple_objc(manifest_dir: &Path, target: &str) {
     if !target.contains("apple-") {
         return;
@@ -174,6 +210,7 @@ fn main() {
 
     build_apple_objc(&manifest_dir, &target);
     build_windows_resources(&manifest_dir, &target);
+    compile_theme_catalog(&manifest_dir);
     // Re-run if this file changes
     println!("cargo:rerun-if-changed=build.rs");
 

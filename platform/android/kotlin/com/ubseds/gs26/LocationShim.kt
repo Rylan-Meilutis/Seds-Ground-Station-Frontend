@@ -195,6 +195,7 @@ object LocationShim : LocationListener, SensorEventListener {
 
     override fun onProviderDisabled(provider: String) {}
 
+    @Deprecated("Deprecated in Android framework; kept for compatibility with older LocationListener APIs.")
     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
 
     override fun onSensorChanged(event: SensorEvent) {
