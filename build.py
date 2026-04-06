@@ -106,9 +106,18 @@ def _print_command_failure(context: str, err: subprocess.CalledProcessError, cwd
         print(f"  Log file: {LOG_FILE}", file=sys.stderr)
 
     cmd_s = _cmd_to_str(err.cmd).lower()
+    log_text = _tail_log_text()
+    printed_specific = False
+    for line in _contextual_failure_hints(cmd_s, log_text):
+        print(line, file=sys.stderr)
+        printed_specific = True
+
+    if printed_specific:
+        return
     if "dx bundle" in cmd_s:
-        print("Hint: check that `dx` is installed and matches your project setup.", file=sys.stderr)
-        print("      If needed: `cargo install dioxus-cli`.", file=sys.stderr)
+        print("Hint: `dx` launched successfully; the failure came from a downstream build step.", file=sys.stderr)
+        print("      Read the Gradle/Android error block above for the actual cause.", file=sys.stderr)
+        print("      This usually means an Android SDK/Gradle/project issue, not a missing Dioxus install.", file=sys.stderr)
     elif "cargo build" in cmd_s:
         print("Hint: run `cargo build` directly in the same cwd for full compiler diagnostics.", file=sys.stderr)
     elif "docker" in cmd_s:
@@ -135,6 +144,97 @@ def _print_missing_tool(context: str, err: FileNotFoundError, cwd: Path) -> None
         print("      Example: https://rustup.rs", file=sys.stderr)
     elif low in {"bash", "/bin/bash"}:
         print("Hint: bash is required by parts of the build scripts.", file=sys.stderr)
+
+
+def _contextual_failure_hints(cmd_s: str, text: str) -> list[str]:
+    low = text.lower()
+    hints: list[str] = []
+
+    if "dx bundle" in cmd_s:
+        if "gradle could not start your build" in low or "filelockcontentionhandler" in low:
+            hints.append(
+                "Hint: Gradle failed to start inside the current environment."
+            )
+            hints.append(
+                "      This is usually a sandbox/permissions problem around Gradle file locking, not a Dioxus issue."
+            )
+            return hints
+        if "immutable workspace" in low:
+            hints.append(
+                "Hint: Gradle detected a corrupted local cache workspace."
+            )
+            hints.append(
+                "      Reset the repo-local `.gradle-user-home` cache and rerun the Android build."
+            )
+            return hints
+        if "aar-metadata.properties" in low and "no such file or directory" in low:
+            hints.append(
+                "Hint: the repo-local Gradle cache is incomplete or stale."
+            )
+            hints.append(
+                "      Reset `.gradle-user-home` and let Gradle repopulate it on the next Android build."
+            )
+            return hints
+        if "gradle wrapper" in low and "could not create service" in low:
+            hints.append(
+                "Hint: Gradle initialization failed before the Android build actually started."
+            )
+            hints.append(
+                "      Check the Java/Gradle environment and any sandbox restrictions first."
+            )
+            return hints
+        if "compiledebugkotlin" in low and "classpath-snapshot" in low:
+            hints.append(
+                "Hint: Kotlin incremental compilation failed in the generated Android project."
+            )
+            hints.append(
+                "      Inspect the generated `target/dx/.../android/app` Gradle project and retry the patched rebuild path."
+            )
+            return hints
+
+    if "gradlew" in cmd_s:
+        if "bundletool" in low and "unsafe" in low:
+            hints.append(
+                "Hint: bundletool emitted JVM deprecation warnings, but those are not the root build failure."
+            )
+        if "deprecated gradle features were used" in low:
+            hints.append(
+                "Hint: run the same Gradle task with `--warning-mode all` to isolate the Gradle 10 deprecations that still come from this repo."
+            )
+        if "task ':app:minifyreleasewithr8'" in low and "warning:" in low:
+            hints.append(
+                "Hint: the remaining R8 constructor warnings come from AGP/AndroidX rule files, not this repo's own ProGuard rules."
+            )
+            return hints
+
+    if "cargo build" in cmd_s and "linker" in low:
+        hints.append(
+            "Hint: this is a Rust linker/toolchain failure."
+        )
+        hints.append(
+            "      Re-run `cargo build` directly to inspect the linker invocation and missing native dependencies."
+        )
+        return hints
+
+    if ("adb" in cmd_s or "android_install" in cmd_s) and "no android emulator/device found" in low:
+        hints.append(
+            "Hint: no Android device is connected."
+        )
+        hints.append(
+            "      Start one emulator or connect one physical device, then rerun the install step."
+        )
+        return hints
+
+    if "bundletool" in cmd_s and "universal.apk" in low:
+        hints.append(
+            "Hint: bundletool ran, but it did not produce the expected universal APK entry."
+        )
+        hints.append(
+            "      Inspect the generated `.apks` archive contents and bundletool version."
+        )
+        return hints
+
+    return hints
 
 
 def run(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> None:
@@ -2154,11 +2254,12 @@ def _configure_android_gradle_properties(project_dir: Path) -> None:
     if not gradle_props.exists():
         return
     raw = gradle_props.read_text(encoding="utf-8")
-    next_raw = "\n".join(
+    filtered_lines = [
         line
         for line in raw.splitlines()
         if line.strip() != "android.defaults.buildfeatures.buildconfig=true"
-    )
+    ]
+    next_raw = "\n".join(filtered_lines)
     if raw.endswith("\n"):
         next_raw += "\n"
     gradle_props.write_text(next_raw, encoding="utf-8")
@@ -3990,6 +4091,24 @@ def _ensure_android_env(frontend_dir: Path, env: Optional[dict[str, str]]) -> di
     return merged
 
 
+def _reset_android_gradle_home(frontend_dir: Path) -> None:
+    gradle_user_home = frontend_dir / ".gradle-user-home"
+    if not gradle_user_home.exists():
+        return
+    shutil.rmtree(gradle_user_home, ignore_errors=True)
+    gradle_user_home.mkdir(parents=True, exist_ok=True)
+    print("Reset local Android Gradle home to recover from cache corruption.")
+
+
+def _looks_like_android_gradle_cache_corruption(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "immutable workspace" in lowered
+        or ("aar-metadata.properties" in lowered and ".gradle-user-home/caches" in lowered)
+        or ("the contents of the immutable workspace" in lowered)
+    )
+
+
 def _default_rust_target_for_frontend(platform_name: Optional[str]) -> Optional[str]:
     if platform_name is None or platform_name == "web":
         return None
@@ -4378,6 +4497,7 @@ def build_frontend(
             cmd.extend(["--target", rust_target])
 
         try:
+            android_bundle_partial = False
             run(cmd, cwd=frontend_dir, env=env)
         except subprocess.CalledProcessError:
             err_text = _tail_log_text()
@@ -4385,7 +4505,12 @@ def build_frontend(
                 # Fallback: try to grab current stderr context if no logfile is configured.
                 err_text = "dx bundle failed"
 
-            if _looks_like_wasm_bindgen_failure(err_text):
+            if platform_name == "android" and _looks_like_android_gradle_cache_corruption(err_text):
+                _reset_android_gradle_home(frontend_dir)
+                env = _ensure_android_env(frontend_dir, env)
+                print("Retrying Android build after resetting local Gradle cache state")
+                run(cmd, cwd=frontend_dir, env=env)
+            elif _looks_like_wasm_bindgen_failure(err_text):
                 hinted = _extract_wasm_bindgen_version_hint(err_text)
                 prior_override = os.environ.get("GS_WASM_BINDGEN_CLI_VERSION")
                 if hinted:
@@ -4405,9 +4530,20 @@ def build_frontend(
                         else:
                             os.environ["GS_WASM_BINDGEN_CLI_VERSION"] = prior_override
             elif (
-                    platform_name == "linux"
-                    and (_target_root(frontend_dir) / "dx" / _frontend_package_name(frontend_dir) / (
-                    "debug" if debug_mode else "release") / "linux" / "app").exists()
+                platform_name == "android"
+                and (_generated_android_app_dir(frontend_dir, debug_mode) / "app" / "src" / "main").exists()
+            ):
+                print(
+                    "Warning: dx android bundler failed after staging the Gradle project; falling back to repo-managed "
+                    "Android rebuild.",
+                    file=sys.stderr,
+                )
+                android_bundle_partial = True
+            elif (
+                platform_name == "linux"
+                and (_target_root(frontend_dir) / "dx" / _frontend_package_name(frontend_dir) / (
+                    "debug" if debug_mode else "release"
+                ) / "linux" / "app").exists()
             ):
                 print(
                     "Warning: dx linux bundler failed after staging the app payload; falling back to manual AppImage "
@@ -4901,12 +5037,8 @@ if __name__ == "__main__":
         print("\nFrontend build interrupted.", file=sys.stderr)
         sys.exit(INTERRUPTED_EXIT_CODE)
     except FileNotFoundError as e:
-        missing = e.filename or "<unknown>"
-        print("\nError: frontend build failed because a required tool/file is missing.", file=sys.stderr)
-        print(f"  Missing: {missing}", file=sys.stderr)
+        _print_missing_tool("Frontend build", e, Path.cwd())
         sys.exit(127)
     except subprocess.CalledProcessError as e:
-        print("\nError: frontend build command failed.", file=sys.stderr)
-        print(f"  Command : {' '.join(str(x) for x in e.cmd)}", file=sys.stderr)
-        print(f"  Exit    : {e.returncode}", file=sys.stderr)
+        _print_command_failure("Frontend build", e, Path.cwd())
         sys.exit(e.returncode)

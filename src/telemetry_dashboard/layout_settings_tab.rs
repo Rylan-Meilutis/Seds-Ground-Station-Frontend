@@ -30,7 +30,7 @@ pub fn SettingsPage(
     );
     let chip_idle = format!(
         "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:600; cursor:pointer;",
-        theme.border, theme.button_background, theme.text_secondary
+        theme.button_border, theme.button_background, theme.button_text
     );
 
     let section_general = localized_copy(&language, "General", "General", "General");

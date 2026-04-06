@@ -1312,8 +1312,55 @@ fn ensure_text_contrast(foreground: &str, background: &str, minimum: f64) -> Str
     color_to_hex(best)
 }
 
+fn ensure_surface_separation(color: &str, against: &str, minimum: f64) -> String {
+    let Some(base) = parse_hex_color(color) else {
+        return color.to_string();
+    };
+    let Some(other) = parse_hex_color(against) else {
+        return color.to_string();
+    };
+    if contrast_ratio(base, other) >= minimum {
+        return color_to_hex(base);
+    }
+
+    let toward_dark = (0_u8, 0_u8, 0_u8);
+    let toward_light = (255_u8, 255_u8, 255_u8);
+    let mut best = base;
+    for step in 1..=24 {
+        let amount = step as f64 / 24.0;
+        let dark_candidate = mix_color(base, toward_dark, amount);
+        if contrast_ratio(dark_candidate, other) >= minimum {
+            return color_to_hex(dark_candidate);
+        }
+        let light_candidate = mix_color(base, toward_light, amount);
+        if contrast_ratio(light_candidate, other) >= minimum {
+            return color_to_hex(light_candidate);
+        }
+        best = if contrast_ratio(light_candidate, other) > contrast_ratio(dark_candidate, other) {
+            light_candidate
+        } else {
+            dark_candidate
+        };
+    }
+    color_to_hex(best)
+}
+
 fn normalize_theme_for_contrast(theme: &layout::ThemeConfig) -> layout::ThemeConfig {
     let mut out = theme.clone();
+    out.panel_background = ensure_surface_separation(&out.panel_background, &out.app_background, 1.08);
+    out.panel_background_alt =
+        ensure_surface_separation(&out.panel_background_alt, &out.panel_background, 1.12);
+    out.tab_shell_background =
+        ensure_surface_separation(&out.tab_shell_background, &out.app_background, 1.08);
+    out.tab_shell_border =
+        ensure_surface_separation(&out.tab_shell_border, &out.tab_shell_background, 1.35);
+    out.button_background =
+        ensure_surface_separation(&out.button_background, &out.tab_shell_background, 1.18);
+    out.button_border =
+        ensure_surface_separation(&out.button_border, &out.button_background, 1.45);
+    out.border = ensure_surface_separation(&out.border, &out.panel_background, 1.22);
+    out.border_soft = ensure_surface_separation(&out.border_soft, &out.panel_background, 1.12);
+    out.border_strong = ensure_surface_separation(&out.border_strong, &out.panel_background, 1.35);
     out.text_primary = ensure_text_contrast(&out.text_primary, &out.app_background, 7.0);
     out.text_secondary = ensure_text_contrast(&out.text_secondary, &out.app_background, 5.0);
     out.text_muted = ensure_text_contrast(&out.text_muted, &out.app_background, 4.5);
@@ -2588,7 +2635,7 @@ fn TelemetryDashboardInner() -> Element {
          white-space:normal; overflow-wrap:anywhere; word-break:break-word;\
          border:1px solid {}; background:{};\
          color:{}; cursor:pointer;",
-        theme.tab_shell_border, theme.app_background, theme.text_primary
+        theme.button_border, theme.button_background, theme.button_text
     );
     let dashboard_font_stack = "system-ui, -apple-system, BlinkMacSystemFont";
 
@@ -3243,8 +3290,8 @@ fn TelemetryDashboardInner() -> Element {
                             "data-expanded": if *header_actions_expanded.read() { "true" } else { "false" },
                             style: "
                                 margin-left:auto;
-                                --gs26-header-menu-background:{theme.tab_shell_background};
-                                --gs26-header-menu-border:{theme.tab_shell_border};
+                                --gs26-header-menu-background:{theme.button_background};
+                                --gs26-header-menu-border:{theme.button_border};
                                 --gs26-header-menu-text:{theme.button_text};
                             ",
                             button {
@@ -3388,6 +3435,9 @@ fn TelemetryDashboardInner() -> Element {
                             "data-expanded": if *tabs_expanded.read() { "true" } else { "false" },
                             style: "
                         flex:1 1 520px;
+                        --gs26-header-menu-background:{theme.button_background};
+                        --gs26-header-menu-border:{theme.button_border};
+                        --gs26-header-menu-text:{theme.button_text};
                         display:flex;
                         align-items:center;
                         padding:0.85rem;
