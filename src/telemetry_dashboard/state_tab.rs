@@ -404,6 +404,7 @@ fn data_style_chart_cached(
     let h = view_h as f32;
 
     let (chunks, y_min, y_max, span_min) = charts_cache_get(dt, w, h);
+    let reseed_note = reseed_status_note();
 
     let left = 74.0_f64;
     let right = view_w - 20.0_f64;
@@ -421,25 +422,47 @@ fn data_style_chart_cached(
             if let Some(t) = title {
                 div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
-
-            div { style: "position:relative; width:100%; aspect-ratio:{view_w}/{view_h};",
-                ChartCanvas {
-                    view_w: view_w,
-                    view_h: view_h,
-                    chunks: chunks.into(),
-                    grid_left: None,
-                    grid_right: None,
-                    grid_top: None,
-                    grid_bottom: None,
-                    style: "position:absolute; inset:0; width:100%; height:100%; display:block;".to_string(),
+            if let Some((kind, note)) = reseed_note.as_ref() {
+                {
+                    let (background, border, text) = match *kind {
+                        "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                        "success" => (
+                            &theme.notification_background,
+                            &theme.notification_border,
+                            &theme.notification_text,
+                        ),
+                        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                    };
+                    rsx! {
+                        div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                            "{translate_text(note)}"
+                        }
+                    }
                 }
-                div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
-                    span { style: "position:absolute; left:10px; top:{y_pct(top + 6.0, view_h)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
-                    span { style: "position:absolute; left:10px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
-                    span { style: "position:absolute; left:10px; top:{y_pct(bottom + 2.0, view_h)}; transform:translateY(-100%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
-                    span { style: "position:absolute; left:{x_pct(left + 16.0, view_w)}; bottom:8px;", {format!("-{:.1} min", span_min)} }
-                    span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:8px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
-                    span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:8px;", "{translate_text(\"now\")}" }
+            }
+
+            if chunks.is_empty() {
+                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No chart data yet.\")}" }
+            } else {
+                div { style: "position:relative; width:100%; aspect-ratio:{view_w}/{view_h};",
+                    ChartCanvas {
+                        view_w: view_w,
+                        view_h: view_h,
+                        chunks: chunks.into(),
+                        grid_left: None,
+                        grid_right: None,
+                        grid_top: None,
+                        grid_bottom: None,
+                        style: "position:absolute; inset:0; width:100%; height:100%; display:block;".to_string(),
+                    }
+                    div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
+                        span { style: "position:absolute; left:10px; top:{y_pct(top + 6.0, view_h)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
+                        span { style: "position:absolute; left:10px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
+                        span { style: "position:absolute; left:10px; top:{y_pct(bottom + 2.0, view_h)}; transform:translateY(-100%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
+                        span { style: "position:absolute; left:{x_pct(left + 16.0, view_w)}; bottom:8px;", {format!("-{:.1} min", span_min)} }
+                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:8px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
+                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:8px;", "{translate_text(\"now\")}" }
+                    }
                 }
             }
 
@@ -754,10 +777,36 @@ fn combined_state_chart_cached(
     data_layout: &DataTabLayout,
     theme: &ThemeConfig,
 ) -> Element {
+    let reseed_note = reseed_status_note();
     let Some((chunks, y_min, y_max, span_min, labels, normalize_per_series, series_scales)) =
         combined_chart_payload(specs, data_layout, view_w, view_h)
     else {
-        return rsx! { div { style: "color:#94a3b8; font-size:12px;", "No chart data yet." } };
+        return rsx! {
+            div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:6px; display:flex; flex-direction:column; gap:4px;",
+                if let Some(t) = title {
+                    div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
+                }
+                if let Some((kind, note)) = reseed_note.as_ref() {
+                    {
+                        let (background, border, text) = match *kind {
+                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                            "success" => (
+                                &theme.notification_background,
+                                &theme.notification_border,
+                                &theme.notification_text,
+                            ),
+                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                        };
+                        rsx! {
+                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                                "{translate_text(note)}"
+                            }
+                        }
+                    }
+                }
+                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No chart data yet.\")}" }
+            }
+        };
     };
 
     let left = 74.0_f64;
@@ -768,8 +817,6 @@ fn combined_state_chart_cached(
     let y_mid = (y_min + y_max) * 0.5;
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
-    let reseed_note = reseed_status_note();
-
     rsx! {
         div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:6px; display:flex; flex-direction:column; gap:4px;",
             if let Some(t) = title {

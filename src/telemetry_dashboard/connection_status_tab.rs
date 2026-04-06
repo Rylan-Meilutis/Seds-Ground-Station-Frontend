@@ -267,15 +267,56 @@ fn js_now_ms() -> i64 {
 }
 
 fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64, theme: &ThemeConfig) -> Element {
+    let reseed_note = reseed_status_note();
     let Some(points) = points else {
         return rsx! {
-            div { style: "color:{theme.text_muted}; font-size:12px;", "No data yet" }
+            div { style: "display:flex; flex-direction:column; gap:8px;",
+                if let Some((kind, note)) = reseed_note.as_ref() {
+                    {
+                        let (background, border, text) = match *kind {
+                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                            "success" => (
+                                &theme.notification_background,
+                                &theme.notification_border,
+                                &theme.notification_text,
+                            ),
+                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                        };
+                        rsx! {
+                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                                "{translate_text(note)}"
+                            }
+                        }
+                    }
+                }
+                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No data yet\")}" }
+            }
         };
     };
 
     if points.len() < 2 {
         return rsx! {
-            div { style: "color:{theme.text_muted}; font-size:12px;", "Collecting…" }
+            div { style: "display:flex; flex-direction:column; gap:8px;",
+                if let Some((kind, note)) = reseed_note.as_ref() {
+                    {
+                        let (background, border, text) = match *kind {
+                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                            "success" => (
+                                &theme.notification_background,
+                                &theme.notification_border,
+                                &theme.notification_text,
+                            ),
+                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                        };
+                        rsx! {
+                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                                "{translate_text(note)}"
+                            }
+                        }
+                    }
+                }
+                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"Collecting...\")}" }
+            }
         };
     }
 
@@ -292,15 +333,33 @@ fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64, theme: &T
         build_latency_polylines(points.as_slice(), width, height, Some(LATENCY_WINDOW_MS));
     if solid.is_empty() && dotted.is_empty() {
         return rsx! {
-            div { style: "color:{theme.text_muted}; font-size:12px;", "Collecting…" }
+            div { style: "display:flex; flex-direction:column; gap:8px;",
+                if let Some((kind, note)) = reseed_note.as_ref() {
+                    {
+                        let (background, border, text) = match *kind {
+                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                            "success" => (
+                                &theme.notification_background,
+                                &theme.notification_border,
+                                &theme.notification_text,
+                            ),
+                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                        };
+                        rsx! {
+                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                                "{translate_text(note)}"
+                            }
+                        }
+                    }
+                }
+                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"Collecting...\")}" }
+            }
         };
     }
 
     let y_mid = (y_min + y_max) * 0.5;
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
-    let reseed_note = reseed_status_note();
-
     rsx! {
         div { style: "display:flex; flex-direction:column;",
             if let Some((kind, note)) = reseed_note.as_ref() {

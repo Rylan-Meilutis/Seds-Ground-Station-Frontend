@@ -223,11 +223,12 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     } else {
         latest_row.is_some()
     };
+    let show_reseed_banner = reseed_status_note().is_some();
     let is_graph_allowed = chart_enabled
-        && has_telemetry
         && current != "GPS_DATA"
         && !is_valve_state
-        && effective_source.is_some();
+        && effective_source.is_some()
+        && (has_telemetry || show_reseed_banner);
 
     // Viewport constants
     let view_w = 1200.0_f64;
@@ -767,8 +768,34 @@ fn render_chart_group(
             charts_cache_get_subset(&chart_key, &group.channels, view_w as f32, view_h as f32);
         (chunks, y_min, y_max, span_min, Rc::new(Vec::new()))
     };
+    let reseed_note = reseed_status_note();
     if filtered_chunks.is_empty() {
-        return rsx! {};
+        return rsx! {
+            div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
+                if let Some(title) = group.title.as_ref() {
+                    div { style: "font-size:13px; font-weight:600; color:{theme.text_primary};", "{translate_text(title)}" }
+                }
+                if let Some((kind, note)) = reseed_note.as_ref() {
+                    {
+                        let (background, border, text) = match *kind {
+                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
+                            "success" => (
+                                &theme.notification_background,
+                                &theme.notification_border,
+                                &theme.notification_text,
+                            ),
+                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+                        };
+                        rsx! {
+                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+                                "{translate_text(note)}"
+                            }
+                        }
+                    }
+                }
+                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No chart data yet.\")}" }
+            }
+        };
     }
     let x_left_s = fmt_span(span_min);
     let x_mid_s = fmt_span(span_min * 0.5);
@@ -789,8 +816,6 @@ fn render_chart_group(
         })
         .filter(|(_, label)| !label.is_empty())
         .collect();
-    let reseed_note = reseed_status_note();
-
     rsx! {
         div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(title) = group.title.as_ref() {

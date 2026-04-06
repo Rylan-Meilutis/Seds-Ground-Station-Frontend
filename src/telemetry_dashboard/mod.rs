@@ -1773,6 +1773,7 @@ fn reconnect_and_reload_ui() {
 pub fn clear_and_reconnect_after_connect() {
     clear_telemetry_runtime_buffers();
     clear_visible_telemetry_history();
+    set_reseed_status_running();
     charts_cache_request_refit();
 
     reconnect_and_reload_ui();
@@ -2122,6 +2123,10 @@ fn TelemetryDashboardInner() -> Element {
 
             let alive = alive.clone();
             spawn(async move {
+                if ui_telemetry_rows_snapshot().is_empty() {
+                    set_reseed_status_running();
+                }
+
                 let delay_ms: u64 = std::env::var("GS_UI_STARTUP_SEED_DELAY_MS")
                     .ok()
                     .and_then(|v| v.parse().ok())
@@ -4664,7 +4669,6 @@ async fn seed_from_db(
         }
     }
     RESEED_IN_PROGRESS.store(true, Ordering::Relaxed);
-    set_reseed_status_running();
     if let Ok(mut v) = RESEED_LIVE_BUFFER.lock() {
         v.clear();
     }
@@ -4699,6 +4703,9 @@ async fn seed_from_db(
     } else {
         Vec::new()
     };
+    if existing_rows_before_seed.is_empty() {
+        set_reseed_status_running();
+    }
     log!(
         "[seed] /api/recent begin existing_rows_before_seed={}",
         existing_rows_before_seed.len()
