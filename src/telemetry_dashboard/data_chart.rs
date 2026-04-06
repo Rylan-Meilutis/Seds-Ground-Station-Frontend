@@ -116,6 +116,12 @@ pub fn charts_cache_request_refit() {
     CHARTS_CACHE.with(|c| c.borrow_mut().request_refit());
 }
 
+pub fn charts_cache_clear_active() {
+    CHARTS_CACHE.with(|c| {
+        *c.borrow_mut() = ChartsCache::new();
+    });
+}
+
 // ============================================================
 // Global cache
 // ============================================================

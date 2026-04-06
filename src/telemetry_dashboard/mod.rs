@@ -31,7 +31,7 @@ pub mod warnings_tab;
 use crate::app::Route;
 use crate::auth;
 use data_chart::{
-    charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build,
+    charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build, charts_cache_clear_active,
     charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_request_refit,
     charts_cache_reseed_ingest_row,
 };
@@ -73,6 +73,7 @@ static TELEMETRY_QUEUE: Lazy<Mutex<VecDeque<TelemetryRow>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
 static RESEED_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static RESEED_LIVE_BUFFER: Lazy<Mutex<Vec<TelemetryRow>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static RESEED_HISTORY_BRIDGE: Lazy<Mutex<Vec<TelemetryRow>>> = Lazy::new(|| Mutex::new(Vec::new()));
 static RESEED_STATUS: AtomicU8 = AtomicU8::new(0);
 static RESEED_STATUS_TOKEN: AtomicU64 = AtomicU64::new(0);
 static RESEED_STATUS_DETAIL: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
@@ -1771,6 +1772,7 @@ fn reconnect_and_reload_ui() {
 /// Mirrors the explicit reload button behavior before reconnecting to a backend.
 pub fn clear_and_reconnect_after_connect() {
     clear_telemetry_runtime_buffers();
+    clear_visible_telemetry_history();
     charts_cache_request_refit();
 
     reconnect_and_reload_ui();
@@ -1807,6 +1809,27 @@ fn clear_telemetry_runtime_buffers() {
     if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
         q.clear();
     }
+}
+
+fn clear_visible_telemetry_history() {
+    let snapshot = ui_telemetry_rows_snapshot();
+    if let Ok(mut bridge) = RESEED_HISTORY_BRIDGE.lock() {
+        if let Some(last) = snapshot.last() {
+            let cutoff = last.timestamp_ms - 15_000;
+            *bridge = snapshot
+                .into_iter()
+                .filter(|row| row.timestamp_ms >= cutoff)
+                .collect();
+        } else {
+            bridge.clear();
+        }
+    }
+    if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+        store.replace_from_rows(&[]);
+    }
+    reset_latest_telemetry(&[]);
+    charts_cache_clear_active();
+    bump_render_epoch();
 }
 
 // ---------- Cross-platform WS handle ----------
@@ -4671,6 +4694,11 @@ async fn seed_from_db(
 
     // ---- Telemetry history (/api/recent) ----
     let existing_rows_before_seed = ui_telemetry_rows_snapshot();
+    let bridge_rows = if let Ok(mut rows) = RESEED_HISTORY_BRIDGE.lock() {
+        std::mem::take(&mut *rows)
+    } else {
+        Vec::new()
+    };
     log!(
         "[seed] /api/recent begin existing_rows_before_seed={}",
         existing_rows_before_seed.len()
@@ -4685,6 +4713,11 @@ async fn seed_from_db(
             prune_history(&mut list);
             list = compact_rows_for_ui(list);
             log!("[seed] /api/recent ok compacted_rows={}", list.len());
+
+            if !bridge_rows.is_empty() {
+                log!("[seed] /api/recent merging bridge_rows={}", bridge_rows.len());
+                list = merge_db_and_live(list, bridge_rows.clone());
+            }
 
             // Capture rows that arrived while reseed was running and keep them.
             let mut live_rows = ui_telemetry_rows_snapshot();
