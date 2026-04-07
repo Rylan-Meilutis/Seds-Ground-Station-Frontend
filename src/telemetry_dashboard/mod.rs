@@ -2988,24 +2988,17 @@ fn TelemetryDashboardInner() -> Element {
                         let base = base.clone();
                         spawn(async move {
                             let _ = auth::logout(&base, skip_tls).await;
-                            match auth::fetch_logged_out_session_status(&base, skip_tls).await {
-                                Ok(status) if status.permissions.view_data => {
-                                    auth::set_logged_out_status(status);
-                                    reconnect_and_reseed_after_auth_change();
-                                }
-                                Ok(_) | Err(_) => {
-                                    auth::clear_current_session();
-                                    _set_dashboard_alive(false);
-                                    bump_ws_epoch();
-                                    reconnect_and_reseed_after_auth_change();
-                                    let _ = nav.push(Route::Login {});
-                                }
-                            }
+                            auth::clear_current_session();
+                            _set_dashboard_alive(false);
+                            bump_ws_epoch();
+                            reconnect_and_reseed_after_auth_change();
+                            let _ = nav.replace(Route::Login {});
                         });
                     } else {
                         _set_dashboard_alive(false);
                         bump_ws_epoch();
-                        let _ = nav.push(Route::Login {});
+                        auth::clear_current_session();
+                        let _ = nav.replace(Route::Login {});
                     }
                 },
                 "{auth_label}"
