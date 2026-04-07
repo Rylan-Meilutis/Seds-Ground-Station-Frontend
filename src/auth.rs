@@ -709,9 +709,53 @@ fn now_ms() -> u64 {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn auth_storage_path() -> std::path::PathBuf {
+    auth_storage_dir().join("auth_session.json")
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
+fn auth_storage_dir() -> std::path::PathBuf {
+    use ::jni::objects::{JObject, JString};
+    use ::jni::{JavaVM, jni_sig, jni_str};
+    use ndk_context::android_context;
+
+    let ctx = android_context();
+    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| -> ::jni::errors::Result<std::path::PathBuf> {
+        let context = unsafe { JObject::from_raw(env, ctx.context().cast()) };
+
+        let files_dir = env
+            .call_method(
+                &context,
+                jni_str!("getFilesDir"),
+                jni_sig!("()Ljava/io/File;"),
+                &[],
+            )?
+            .l()?;
+        let path_obj = env
+            .call_method(
+                &files_dir,
+                jni_str!("getAbsolutePath"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )?
+            .l()?;
+        let path = env.as_cast::<JString>(&path_obj)?.try_to_string(env)?;
+
+        let _ = context.into_raw();
+        Ok(std::path::PathBuf::from(path).join("gs26"))
+    })
+    .unwrap_or_else(|_| fallback_auth_storage_dir())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+fn auth_storage_dir() -> std::path::PathBuf {
+    fallback_auth_storage_dir()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fallback_auth_storage_dir() -> std::path::PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::data_dir)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
         .join("gs26")
-        .join("auth_session.json")
 }

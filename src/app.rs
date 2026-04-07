@@ -66,9 +66,9 @@ mod keep_awake {
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Returns whether every HTTP probe and the WebSocket handshake succeeded.
-fn all_tests_passed(checks: &[RouteCheck], ws_probe: &Option<Result<String, String>>) -> bool {
+fn all_tests_passed(checks: &[RouteCheck], ws_probe: &WsProbeStatus) -> bool {
     let routes_ok = checks.iter().all(|c| c.ok);
-    let ws_ok = matches!(ws_probe, Some(Ok(_)));
+    let ws_ok = ws_probe.ok;
     routes_ok && ws_ok
 }
 
@@ -218,6 +218,10 @@ pub enum Route {
     #[cfg(not(target_arch = "wasm32"))]
     #[route("/version")]
     Version {},
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[route("/settings")]
+    Settings {},
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -390,7 +394,7 @@ fn normalize_base_url(mut base: String) -> String {
         }
     }
 
-    base.trim_end_matches('/').trim().to_string()
+    base.trim_end_matches('/').trim().to_ascii_lowercase()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -404,7 +408,7 @@ fn join_url(base: &str, path: &str) -> String {
 #[cfg(not(target_arch = "wasm32"))]
 /// Parses a backend base URL into the pieces needed for HTTP and WebSocket probes.
 fn parse_base_url(url: &str) -> Result<ParsedBaseUrl, String> {
-    let u = url.trim();
+    let u = url.trim().to_ascii_lowercase();
     let (scheme, rest) = if let Some(x) = u.strip_prefix("http://") {
         ("http".to_string(), x)
     } else if let Some(x) = u.strip_prefix("https://") {
@@ -427,6 +431,28 @@ fn parse_base_url(url: &str) -> Result<ParsedBaseUrl, String> {
         .unwrap_or_else(|| if scheme == "https" { 443 } else { 80 });
 
     Ok(ParsedBaseUrl { scheme, host, port })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn split_base_url_for_connect(url: &str) -> (&'static str, String) {
+    let normalized = normalize_base_url(url.to_string());
+    if let Some(rest) = normalized.strip_prefix("https://") {
+        ("https://", rest.to_string())
+    } else if let Some(rest) = normalized.strip_prefix("http://") {
+        ("http://", rest.to_string())
+    } else {
+        ("https://", normalized)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn compose_base_url_for_connect(scheme: &str, host_input: &str) -> String {
+    let host = host_input.trim().to_ascii_lowercase();
+    if host.is_empty() {
+        String::new()
+    } else {
+        normalize_base_url(format!("{scheme}{host}"))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -456,7 +482,63 @@ fn snip(mut s: String, max: usize) -> String {
 // -------------------------
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
+struct RouteProbeSpec {
+    path: &'static str,
+    method: &'static str,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const ROUTE_PROBE_SPECS: &[RouteProbeSpec] = &[
+    RouteProbeSpec {
+        path: "/api/auth/session",
+        method: "GET",
+    },
+    RouteProbeSpec {
+        path: "/api/auth/login",
+        method: "POST",
+    },
+    RouteProbeSpec {
+        path: "/api/auth/logout",
+        method: "POST",
+    },
+    RouteProbeSpec {
+        path: "/api/recent",
+        method: "GET",
+    },
+    RouteProbeSpec {
+        path: "/api/alerts",
+        method: "GET",
+    },
+    RouteProbeSpec {
+        path: "/api/layout",
+        method: "GET",
+    },
+    RouteProbeSpec {
+        path: "/api/map_config",
+        method: "GET",
+    },
+    RouteProbeSpec {
+        path: "/flightstate",
+        method: "GET",
+    },
+    RouteProbeSpec {
+        path: "/api/gps",
+        method: "GET",
+    },
+    RouteProbeSpec {
+        path: "/tiles",
+        method: "GET",
+    },
+    RouteProbeSpec {
+        path: "/ws",
+        method: "GET",
+    },
+];
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
 struct RouteCheck {
+    method: &'static str,
     path: &'static str,
     url: String,
     ok: bool,
@@ -467,16 +549,50 @@ struct RouteCheck {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct WsProbeStatus {
+    ok: bool,
+    url: String,
+    status: Option<u16>,
+    note: String,
+    err: Option<String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct ConnectionTestReport {
+    original_base: String,
+    parsed_host: String,
+    parsed_port: u16,
+    parsed_scheme: String,
+    checks: Vec<RouteCheck>,
+    ws_probe: WsProbeStatus,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Evaluates whether a route returned the status code expected by the connection tester.
-fn status_ok_for_path(path: &str, status: u16) -> (bool, &'static str) {
-    match path {
-        "/api/recent" | "/api/alerts" | "/api/layout" | "/api/map_config" | "/flightstate"
-        | "/api/gps" => (status == 200, "expected 200"),
-        "/ws" => match status {
+fn status_ok_for_path(method: &str, path: &str, status: u16) -> (bool, &'static str) {
+    match (method, path) {
+        ("GET", "/api/auth/session") => (status == 200, "expected 200"),
+        ("POST", "/api/auth/login") => match status {
+            200 | 400 | 401 | 403 | 415 => (true, "reachable (auth login endpoint responded)"),
+            _ => (false, "unexpected status for auth login"),
+        },
+        ("POST", "/api/auth/logout") => match status {
+            200 | 204 | 401 | 403 => (true, "reachable (auth logout endpoint responded)"),
+            _ => (false, "unexpected status for auth logout"),
+        },
+        ("GET", "/api/recent")
+        | ("GET", "/api/alerts")
+        | ("GET", "/api/layout")
+        | ("GET", "/api/map_config")
+        | ("GET", "/flightstate")
+        | ("GET", "/api/gps") => (status == 200, "expected 200"),
+        (_, "/ws") => match status {
             101 | 400 | 426 => (true, "reachable (ws upgrade required)"),
             _ => (false, "unexpected status for ws route"),
         },
-        "/tiles" => match status {
+        (_, "/tiles") => match status {
             200 | 403 | 404 => (true, "reachable (tile may not exist)"),
             _ => (false, "unexpected status for tiles"),
         },
@@ -530,32 +646,64 @@ fn build_probe_client(skip_tls_verify: bool) -> Result<reqwest::Client, String> 
 /// Executes a single HTTP probe and captures a small body snippet for diagnostics.
 async fn http_probe_with_client(
     client: &reqwest::Client,
+    method: &'static str,
+    path: &'static str,
     url: String,
 ) -> Result<(u16, String), String> {
-    const MAX_BODY_BYTES: usize = 4096;
+    use tokio::time::{Duration, timeout};
 
-    let resp = client
-        .get(&url)
+    const MAX_BODY_BYTES: usize = 4096;
+    const BODY_SNIP_TIMEOUT_MS: u64 = 400;
+
+    let mut request = match method {
+        "POST" => client.post(&url),
+        _ => client.get(&url),
+    };
+    if method == "GET" && path == "/api/recent" {
+        request = request.header(reqwest::header::ACCEPT, "application/x-ndjson");
+    }
+    let mut resp = request
         .send()
         .await
         .map_err(|e| format!("send failed: {} | kind={}", e, classify_reqwest_error(&e)))?;
 
     let status = resp.status().as_u16();
-
-    // Cap body download so routes like /tiles don't slow the "test connection" UI.
-    // We only need enough to help debugging / confirm "responding".
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("read body failed: {e}"))?;
-
-    let mut slice = bytes.as_ref();
-    if slice.len() > MAX_BODY_BYTES {
-        slice = &slice[..MAX_BODY_BYTES];
+    if resp.status().is_success() {
+        return Ok((status, String::new()));
     }
 
-    let body = String::from_utf8_lossy(slice).to_string();
-    Ok((status, snip(body, 300)))
+    // Only sample a small error body snippet, and do not let it hold up the probe UI.
+    let body = match timeout(Duration::from_millis(BODY_SNIP_TIMEOUT_MS), async {
+        let mut out = Vec::new();
+        while out.len() < MAX_BODY_BYTES {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    let remaining = MAX_BODY_BYTES - out.len();
+                    out.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                    if out.len() >= MAX_BODY_BYTES {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => return Err(format!("read body failed: {e}")),
+            }
+        }
+        Ok::<String, String>(String::from_utf8_lossy(&out).to_string())
+    })
+    .await
+    {
+        Ok(Ok(text)) => text,
+        Ok(Err(err)) => return Err(err),
+        Err(_) => "<body omitted: timed out reading error snippet>".to_string(),
+    };
+
+    let body = if body.is_empty() {
+        String::new()
+    } else {
+        snip(body, 300)
+    }
+    ;
+    Ok((status, body))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -563,26 +711,16 @@ async fn http_probe_with_client(
 async fn test_routes_host_only(base: &str, skip_tls_verify: bool) -> Vec<RouteCheck> {
     use futures_util::future::join_all;
 
-    let probes: &[&str] = &[
-        "/api/recent",
-        "/api/alerts",
-        "/api/layout",
-        "/api/map_config",
-        "/flightstate",
-        "/api/gps",
-        "/tiles",
-        "/ws",
-    ];
-
     let client = match build_probe_client(skip_tls_verify) {
         Ok(c) => c,
         Err(e) => {
             // If client build failed, mark everything failed quickly.
-            return probes
+            return ROUTE_PROBE_SPECS
                 .iter()
-                .map(|path| RouteCheck {
-                    path,
-                    url: join_url(base, path),
+                .map(|probe| RouteCheck {
+                    method: probe.method,
+                    path: probe.path,
+                    url: join_url(base, probe.path),
                     ok: false,
                     status: None,
                     body_snip: "".to_string(),
@@ -594,16 +732,18 @@ async fn test_routes_host_only(base: &str, skip_tls_verify: bool) -> Vec<RouteCh
     };
 
     // Run all probes concurrently.
-    let futs = probes.iter().map(|path| {
-        let url = join_url(base, path);
-        let path = *path;
+    let futs = ROUTE_PROBE_SPECS.iter().map(|probe| {
+        let url = join_url(base, probe.path);
+        let path = probe.path;
+        let method = probe.method;
         let client = &client;
 
         async move {
-            match http_probe_with_client(client, url.clone()).await {
+            match http_probe_with_client(client, method, path, url.clone()).await {
                 Ok((status, body_snip)) => {
-                    let (ok, note) = status_ok_for_path(path, status);
+                    let (ok, note) = status_ok_for_path(method, path, status);
                     RouteCheck {
+                        method,
                         path,
                         url,
                         ok,
@@ -614,6 +754,7 @@ async fn test_routes_host_only(base: &str, skip_tls_verify: bool) -> Vec<RouteCh
                     }
                 }
                 Err(e) => RouteCheck {
+                    method,
                     path,
                     url,
                     ok: false,
@@ -782,73 +923,47 @@ async fn ws_connect_probe(parsed: &ParsedBaseUrl, skip_tls_verify: bool) -> Resu
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Formats the combined HTTP and WebSocket probe results for display.
-fn format_route_report_host_only(
+fn ws_probe_status(parsed: &ParsedBaseUrl, ws_probe: Result<String, String>) -> WsProbeStatus {
+    let url = format!("{}/ws", ws_origin_for_base(parsed));
+    match ws_probe {
+        Ok(message) => {
+            let status = message
+                .lines()
+                .find_map(|line| line.strip_prefix("    HTTP: "))
+                .and_then(|value| value.trim().parse::<u16>().ok());
+            WsProbeStatus {
+                ok: true,
+                url,
+                status,
+                note: "websocket handshake ok".to_string(),
+                err: None,
+            }
+        }
+        Err(err) => WsProbeStatus {
+            ok: false,
+            url,
+            status: None,
+            note: "websocket handshake failed".to_string(),
+            err: Some(err),
+        },
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_connection_test_report(
     original_base: &str,
     parsed: &ParsedBaseUrl,
-    checks: &[RouteCheck],
-    ws_probe: Option<Result<String, String>>,
-) -> String {
-    let mut s = String::new();
-
-    // ⭐ All-tests-passed banner
-    if all_tests_passed(checks, &ws_probe) {
-        s.push_str("🎉 ALL CONNECTION TESTS PASSED\n");
-        s.push_str("    Ground Station is reachable, HTTP routes OK, WebSocket OK.\n");
-        s.push_str("--------------------------------------------------------\n\n");
+    checks: Vec<RouteCheck>,
+    ws_probe: Result<String, String>,
+) -> ConnectionTestReport {
+    ConnectionTestReport {
+        original_base: original_base.to_string(),
+        parsed_host: parsed.host.clone(),
+        parsed_port: parsed.port,
+        parsed_scheme: parsed.scheme.clone(),
+        checks,
+        ws_probe: ws_probe_status(parsed, ws_probe),
     }
-
-    s.push_str(&format!("Original base: {original_base}\n"));
-    s.push_str(&format!(
-        "Parsed host: {}  port: {}  scheme: {}\n\n",
-        parsed.host, parsed.port, parsed.scheme
-    ));
-
-    s.push_str("=== Probing via host (concurrent, short timeouts) ===\n\n");
-
-    for c in checks {
-        let icon = if c.ok { "✅" } else { "❌" };
-        let status_str = c
-            .status
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "—".into());
-
-        s.push_str(&format!(
-            "{icon} {:30} status {:>3}  {}\n    URL: {}\n",
-            c.path, status_str, c.note, c.url
-        ));
-
-        if let Some(e) = &c.err {
-            s.push_str(&format!("    ERROR: {e}\n"));
-        }
-        if !c.body_snip.trim().is_empty() {
-            s.push_str(&format!("    BODY: {}\n", c.body_snip.trim()));
-        }
-        s.push('\n');
-    }
-
-    s.push_str("=== WebSocket probe ===\n\n");
-    match ws_probe {
-        Some(Ok(msg)) => {
-            s.push_str(&msg);
-            s.push('\n');
-        }
-        Some(Err(e)) => {
-            s.push_str(&e);
-            s.push('\n');
-        }
-        None => {
-            s.push_str("(not run)\n");
-        }
-    }
-
-    s.push_str("\nNotes:\n");
-    s.push_str("- Tests are concurrent; worst-case time ~= the slowest single probe, not sum of all probes.\n");
-    s.push_str("- If HTTP routes are OK but WebSocket fails: likely TLS/cert/SNI issue for wss, or WS is blocked by server/proxy.\n");
-    s.push_str("- If /ws HTTP probe shows 400/426 but WS probe fails: server is reachable, handshake is failing.\n");
-    s.push_str("- Local Network prompt on iOS triggers only for LAN access; this test uses hostname only.\n");
-
-    s
 }
 
 // -------------------------
@@ -1231,94 +1346,271 @@ pub fn Connect() -> Element {
     let initial =
         UrlConfig::_stored_base_url()
             .unwrap_or_else(|| "https://your-ground-station-url.com".to_string());
+    let (initial_scheme, initial_host) = split_base_url_for_connect(&initial);
     let initial_skip_tls = UrlConfig::_skip_tls_verify_for_base(&initial);
 
-    let mut url_edit = use_signal(|| initial);
+    let mut scheme_edit = use_signal(|| initial_scheme.to_string());
+    let mut host_edit = use_signal(|| initial_host);
     let mut skip_tls = use_signal(|| initial_skip_tls);
 
-    let mut test_status = use_signal(|| "".to_string());
+    let mut test_status = use_signal(String::new);
+    let mut test_report = use_signal(|| None::<ConnectionTestReport>);
     let mut testing = use_signal(|| false);
+    let has_test_report = test_report.read().is_some();
 
     rsx! {
         div {
-            style: shell_page_style(&theme),
+            style: format!(
+                "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+                theme.app_background, theme.text_primary
+            ),
             div {
-                style: shell_card_style(&theme, "min(900px, 94vw)"),
+                style: format!(
+                    "{} display:flex; flex-direction:column; overflow:hidden; {};",
+                    shell_card_style(
+                        &theme,
+                        if has_test_report { "min(900px, 94vw)" } else { "min(760px, 92vw)" }
+                    ),
+                    if has_test_report {
+                        "height:min(900px, calc(var(--gs26-app-height) - 48px)); max-height:min(900px, calc(var(--gs26-app-height) - 48px));"
+                    } else {
+                        "height:auto; max-height:min(520px, calc(var(--gs26-app-height) - 48px));"
+                    }
+                ),
 
                 div {
                     style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px;",
                     h1 { style: "margin:0; font-size:20px;", "{APP_DISPLAY_NAME}" }
-                    button {
-                        style: shell_button_style(&theme),
-                        onclick: move |_| {
-                            let _ = nav.push(Route::Version {});
-                        },
-                        "Version"
+                    div {
+                        style: "display:flex; gap:10px; flex-wrap:wrap;",
+                        button {
+                            style: shell_button_style(&theme),
+                            onclick: move |_| {
+                                let _ = nav.push(Route::Settings {});
+                            },
+                            "Settings"
+                        }
+                        button {
+                            style: shell_button_style(&theme),
+                            onclick: move |_| {
+                                let _ = nav.push(Route::Version {});
+                            },
+                            "Version"
+                        }
                     }
                 }
-                p { style: "margin:0 0 16px 0; color:{theme.text_muted};",
-                    "Enter the Ground Station URL (including http:// or https://). Example: ",
-                    code { "https://your-GroundStation-url.com" }
-                }
+                div {
+                    style: format!(
+                        "flex:1 1 auto; min-height:0; {} padding-right:4px;",
+                        if has_test_report {
+                            "overflow:auto;"
+                        } else {
+                            "overflow:visible;"
+                        }
+                    ),
+                    p { style: "margin:0 0 16px 0; color:{theme.text_muted};",
+                        "Enter the Ground Station host and port. Example: ",
+                        code { "your-ground-station-url.com" }
+                    }
 
-                input {
-                    style: shell_input_style(&theme, false),
-                    value: "{url_edit()}",
-                    oninput: move |evt| {
-                        url_edit.set(evt.value());
-                        test_status.set("".to_string());
-                    },
-                }
+                    div {
+                        style: format!(
+                            "display:flex; align-items:stretch; min-height:48px; border:1px solid {}; border-radius:12px; background:{}; color:{}; overflow:hidden;",
+                            theme.border, theme.app_background, theme.text_primary
+                        ),
+                        div {
+                            style: format!(
+                                "position:relative; flex:0 0 118px; border-right:1px solid {}; background:{};",
+                                theme.border, theme.panel_background
+                            ),
+                            select {
+                                style: format!(
+                                    "width:100%; height:100%; padding:0 30px 0 14px; border:none; border-radius:0; background:transparent; color:{}; appearance:none; -webkit-appearance:none; font-size:14px; outline:none; cursor:pointer;",
+                                    theme.text_primary
+                                ),
+                                value: "{scheme_edit()}",
+                                onchange: move |evt| {
+                                    scheme_edit.set(evt.value());
+                                    test_status.set(String::new());
+                                    test_report.set(None);
+                                },
+                                option { value: "https://", "https" },
+                                option { value: "http://", "http" },
+                            },
+                            div {
+                                style: format!(
+                                    "position:absolute; right:12px; top:50%; transform:translateY(-50%); color:{}; font-size:11px; pointer-events:none;",
+                                    theme.text_muted
+                                ),
+                                "▼"
+                            },
+                        },
 
-                div { style: "margin-top:12px; display:flex; align-items:center; gap:10px;",
-                    input {
-                        r#type: "checkbox",
-                        checked: *skip_tls.read(),
-                        onclick: move |_| {
-                            let next = !*skip_tls.read();
-                            skip_tls.set(next);
-                            let base = normalize_base_url(url_edit().trim().to_string());
-                            if !base.is_empty() {
-                                UrlConfig::_set_skip_tls_verify_for_base(&base, next);
+                        input {
+                            style: format!(
+                                "flex:1 1 auto; min-width:0; padding:12px 14px; border:none; background:transparent; color:{}; outline:none; font-size:14px;",
+                                theme.text_primary
+                            ),
+                            placeholder: "your-ground-station-url.com",
+                            value: "{host_edit()}",
+                            autocapitalize: "none",
+                            spellcheck: "false",
+                            oninput: move |evt| {
+                                host_edit.set(evt.value().to_ascii_lowercase());
+                                test_status.set(String::new());
+                                test_report.set(None);
+                            },
+                        }
+                    }
+
+                    div { style: "margin-top:12px; display:flex; align-items:center; gap:10px;",
+                        input {
+                            r#type: "checkbox",
+                            checked: *skip_tls.read(),
+                            onclick: move |_| {
+                                let next = !*skip_tls.read();
+                                skip_tls.set(next);
+                                let base = compose_base_url_for_connect(&scheme_edit(), &host_edit());
+                                if !base.is_empty() {
+                                    UrlConfig::_set_skip_tls_verify_for_base(&base, next);
+                                }
+                            }
+                        }
+                        div { style: "font-size:13px; color:{theme.text_muted};",
+                            "Disable TLS certificate verification for this host (self-signed certs)"
+                        }
+                    }
+
+                    if !test_status().is_empty() {
+                        div {
+                            style: shell_notice_style(&theme),
+                            "{test_status()}"
+                        }
+                    }
+
+                    if let Some(report) = test_report.read().as_ref() {
+                        div {
+                            style: "margin-top:14px; display:flex; flex-direction:column; gap:12px;",
+                            if all_tests_passed(&report.checks, &report.ws_probe) {
+                                div {
+                                    style: format!(
+                                        "padding:14px 16px; border-radius:14px; border:1px solid {}; background:{}; color:{};",
+                                        theme.border, theme.info_background, theme.success_text
+                                    ),
+                                    div { style: "font-weight:700; margin-bottom:4px;", "All Connection Tests Passed" }
+                                    div { style: "font-size:13px;", "Ground Station HTTP routes and WebSocket handshake are reachable." }
+                                }
+                            } else {
+                                div {
+                                    style: format!(
+                                        "padding:14px 16px; border-radius:14px; border:1px solid {}; background:{}; color:{};",
+                                        theme.warning_border, theme.warning_background, theme.warning_text
+                                    ),
+                                    div { style: "font-weight:700; margin-bottom:4px;", "Connection Test Found Issues" }
+                                    div { style: "font-size:13px;", "Review the endpoint list below to see which routes failed or responded unexpectedly." }
+                                }
+                            }
+
+                            div {
+                                style: format!(
+                                    "padding:12px; border-radius:12px; border:1px solid {}; background:{}; color:{}; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:8px 12px;",
+                                    theme.border, theme.app_background, theme.text_secondary
+                                ),
+                                div { style: "font-size:12px;", "Base" }
+                                div { style: "font-size:13px; color:{theme.text_primary}; overflow-wrap:anywhere;", "{report.original_base}" }
+                                div { style: "font-size:12px;", "Parsed Host" }
+                                div { style: "font-size:13px; color:{theme.text_primary};", "{report.parsed_host}" }
+                                div { style: "font-size:12px;", "Port" }
+                                div { style: "font-size:13px; color:{theme.text_primary};", "{report.parsed_port}" }
+                                div { style: "font-size:12px;", "Scheme" }
+                                div { style: "font-size:13px; color:{theme.text_primary};", "{report.parsed_scheme}" }
+                            }
+
+                            div {
+                                style: "display:flex; flex-direction:column; gap:10px;",
+                                for check in &report.checks {
+                                    div {
+                                        key: "{check.method}:{check.path}",
+                                        style: format!(
+                                            "padding:12px; border-radius:12px; border:1px solid {}; background:{}; color:{};",
+                                            theme.border,
+                                            if check.ok { &theme.panel_background } else { &theme.panel_background_alt },
+                                            theme.text_primary
+                                        ),
+                                        div {
+                                            style: "display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;",
+                                            div { style: "display:flex; align-items:center; gap:10px; flex-wrap:wrap;",
+                                                div {
+                                                    style: format!(
+                                                        "min-width:22px; height:22px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; background:{}; color:{};",
+                                                        if check.ok { &theme.info_background } else { &theme.warning_background },
+                                                        if check.ok { &theme.success_text } else { &theme.warning_text }
+                                                    ),
+                                                    if check.ok { "OK" } else { "X" }
+                                                }
+                                                code { "{check.method}" }
+                                                div { style: "font-weight:600;", "{check.path}" }
+                                            }
+                                            div { style: "font-size:12px; color:{theme.text_muted};",
+                                                "Status ",
+                                                {check.status.map(|s| s.to_string()).unwrap_or_else(|| "—".to_string())}
+                                            }
+                                        }
+                                        div { style: "margin-top:6px; font-size:13px; color:{theme.text_secondary};", "{check.note}" }
+                                        div { style: "margin-top:6px; font-size:12px; color:{theme.text_muted}; overflow-wrap:anywhere;", "{check.url}" }
+                                        if let Some(err) = &check.err {
+                                            div { style: "margin-top:8px; font-size:12px; color:{theme.warning_text}; overflow-wrap:anywhere;", "{err}" }
+                                        }
+                                        if !check.body_snip.trim().is_empty() {
+                                            div { style: "margin-top:8px; font-size:12px; color:{theme.text_muted}; overflow-wrap:anywhere;", "{check.body_snip.trim()}" }
+                                        }
+                                    }
+                                }
+
+                                div {
+                                    style: format!(
+                                        "padding:12px; border-radius:12px; border:1px solid {}; background:{}; color:{};",
+                                        theme.border,
+                                        if report.ws_probe.ok { &theme.panel_background } else { &theme.panel_background_alt },
+                                        theme.text_primary
+                                    ),
+                                    div {
+                                        style: "display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;",
+                                        div { style: "display:flex; align-items:center; gap:10px; flex-wrap:wrap;",
+                                            div {
+                                                style: format!(
+                                                    "min-width:22px; height:22px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; background:{}; color:{};",
+                                                    if report.ws_probe.ok { &theme.info_background } else { &theme.warning_background },
+                                                    if report.ws_probe.ok { &theme.success_text } else { &theme.warning_text }
+                                                ),
+                                                if report.ws_probe.ok { "OK" } else { "X" }
+                                            }
+                                            code { "WS" }
+                                            div { style: "font-weight:600;", "/ws handshake" }
+                                        }
+                                        if let Some(status) = report.ws_probe.status {
+                                            div { style: "font-size:12px; color:{theme.text_muted};", "HTTP {status}" }
+                                        }
+                                    }
+                                    div { style: "margin-top:6px; font-size:13px; color:{theme.text_secondary};", "{report.ws_probe.note}" }
+                                    div { style: "margin-top:6px; font-size:12px; color:{theme.text_muted}; overflow-wrap:anywhere;", "{report.ws_probe.url}" }
+                                    if let Some(err) = &report.ws_probe.err {
+                                        div { style: "margin-top:8px; font-size:12px; color:{theme.warning_text}; overflow-wrap:anywhere; white-space:pre-wrap;", "{err}" }
+                                    }
+                                }
                             }
                         }
                     }
-                    div { style: "font-size:13px; color:{theme.text_muted};",
-                        "Disable TLS certificate verification for this host (self-signed certs)"
-                    }
                 }
 
-                if !test_status().is_empty() {
-                    pre {
-                        style: "
-                            margin:14px 0 0 0;
-                            padding:12px;
-                            border-radius:12px;
-                            border:1px solid {theme.border};
-                            background:{theme.app_background};
-                            color:{theme.text_secondary};
-                            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-                            font-size:12px;
-                            line-height:1.35;
-                            max-height:420px;
-                            overflow:auto;
-                            white-space:pre;
-                        ",
-                        "{test_status()}"
-                    }
-                }
-
-                div { style: "display:flex; gap:12px; margin-top:16px; justify-content:flex-end; flex-wrap:wrap;",
+                div { style: format!("display:flex; gap:12px; margin-top:16px; padding-top:16px; justify-content:flex-end; flex-wrap:wrap; border-top:1px solid {};", theme.border_soft),
                     button {
                         style: shell_button_style(&theme),
                         onclick: move |_| {
-                            let u_norm = normalize_base_url(url_edit().trim().to_string());
+                            let u_norm = compose_base_url_for_connect(&scheme_edit(), &host_edit());
                             if u_norm.is_empty() {
                                 test_status.set("Enter a URL first.".to_string());
-                                return;
-                            }
-                            if !(u_norm.starts_with("http://") || u_norm.starts_with("https://")) {
-                                test_status.set("URL must start with http:// or https://".to_string());
+                                test_report.set(None);
                                 return;
                             }
 
@@ -1335,9 +1627,10 @@ pub fn Connect() -> Element {
                         style: shell_button_alt_style(&theme),
                         disabled: testing(),
                         onclick: move |_| {
-                            let u_norm = normalize_base_url(url_edit().trim().to_string());
+                            let u_norm = compose_base_url_for_connect(&scheme_edit(), &host_edit());
                             if u_norm.is_empty() {
                                 test_status.set("Enter a URL first.".to_string());
+                                test_report.set(None);
                                 return;
                             }
 
@@ -1345,26 +1638,29 @@ pub fn Connect() -> Element {
                                 Ok(p) => p,
                                 Err(e) => {
                                     test_status.set(e);
+                                    test_report.set(None);
                                     return;
                                 }
                             };
 
                             testing.set(true);
                             test_status.set("Testing connection (fast probes)...".to_string());
+                            test_report.set(None);
 
                             objc_poke::poke_url(&u_norm);
 
                             let skip_tls_verify = *skip_tls.read();
                             spawn(async move {
-                                let checks = test_routes_host_only(&u_norm, skip_tls_verify).await;
-
-                                let ws_probe = Some(ws_connect_probe(&parsed, skip_tls_verify).await);
+                                let (checks, ws_probe) = futures_util::join!(
+                                    test_routes_host_only(&u_norm, skip_tls_verify),
+                                    ws_connect_probe(&parsed, skip_tls_verify)
+                                );
 
                                 let report =
-                                    format_route_report_host_only(&u_norm, &parsed, &checks, ws_probe);
-
+                                    build_connection_test_report(&u_norm, &parsed, checks, ws_probe);
                                 testing.set(false);
-                                test_status.set(report);
+                                test_status.set(String::new());
+                                test_report.set(Some(report));
                             });
                         },
                         if testing() { "Testing..." } else { "Test Connection" }
@@ -1373,13 +1669,9 @@ pub fn Connect() -> Element {
                     button {
                         style: shell_button_style(&theme),
                         onclick: move |_| {
-                            let u_norm = normalize_base_url(url_edit().trim().to_string());
+                            let u_norm = compose_base_url_for_connect(&scheme_edit(), &host_edit());
                             if u_norm.is_empty() {
                                 test_status.set("Enter a URL first.".to_string());
-                                return;
-                            }
-                            if !(u_norm.starts_with("http://") || u_norm.starts_with("https://")) {
-                                test_status.set("URL must start with http:// or https://".to_string());
                                 return;
                             }
 
@@ -1400,6 +1692,46 @@ pub fn Connect() -> Element {
                         },
                         "Connect"
                     }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[component]
+pub fn Settings() -> Element {
+    let theme = shell_theme();
+    let nav = use_navigator();
+
+    rsx! {
+        div {
+            style: format!(
+                "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+                theme.app_background, theme.text_primary
+            ),
+            div {
+                style: format!(
+                    "{} display:flex; flex-direction:column; width:min(980px, 94vw); height:min(900px, calc(var(--gs26-app-height) - 48px)); max-height:min(900px, calc(var(--gs26-app-height) - 48px)); overflow:hidden;",
+                    shell_card_style(&theme, "min(980px, 94vw)")
+                ),
+                div {
+                    style: format!(
+                        "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; padding-bottom:12px; flex-wrap:wrap; border-bottom:1px solid {};",
+                        theme.border_soft
+                    ),
+                    h1 { style: "margin:0; font-size:20px;", "Settings" }
+                    button {
+                        style: shell_button_style(&theme),
+                        onclick: move |_| {
+                            let _ = nav.push(Route::Connect {});
+                        },
+                        "Back"
+                    }
+                }
+                div {
+                    style: "flex:1 1 auto; min-height:0; overflow:auto; padding-right:4px;",
+                    crate::telemetry_dashboard::NativeSettingsPage {}
                 }
             }
         }

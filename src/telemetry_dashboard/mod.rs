@@ -1089,7 +1089,7 @@ fn normalize_base_url(mut url: String) -> String {
             url.truncate(scheme_end + 3 + slash);
         }
     }
-    url.trim_end_matches('/').to_string()
+    url.trim_end_matches('/').trim().to_ascii_lowercase()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1275,6 +1275,92 @@ fn localized_theme(base: &layout::ThemeConfig, preset: &str) -> layout::ThemeCon
 /// the "backend" preset falls back to the default theme config for shell styling.
 pub fn app_shell_theme() -> layout::ThemeConfig {
     APP_THEME_CONFIG.read().clone()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[component]
+pub fn NativeSettingsPage() -> Element {
+    let distance_units_metric = use_signal(|| {
+        persist::get_string(MAP_DISTANCE_UNITS_STORAGE_KEY)
+            .map(|v| v == "metric")
+            .unwrap_or(false)
+    });
+    let theme_preset = use_signal(|| {
+        let stored = persist::get_or(THEME_PRESET_STORAGE_KEY, "default");
+        if stored == "layout" {
+            "backend".to_string()
+        } else {
+            stored
+        }
+    });
+    let language_code = use_signal(|| persist::get_or(LANGUAGE_STORAGE_KEY, "en"));
+    let network_flow_animation_enabled =
+        use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
+
+    {
+        let distance_units_metric = distance_units_metric;
+        use_effect(move || {
+            let value = if *distance_units_metric.read() {
+                "metric"
+            } else {
+                "imperial"
+            };
+            persist::set_string(MAP_DISTANCE_UNITS_STORAGE_KEY, value);
+        });
+    }
+    {
+        let theme_preset = theme_preset;
+        use_effect(move || {
+            let value = theme_preset.read().clone();
+            persist::set_string(THEME_PRESET_STORAGE_KEY, &value);
+        });
+    }
+    {
+        let language_code = language_code;
+        use_effect(move || {
+            let value = language_code.read().clone();
+            *PREFERRED_LANGUAGE.write() = value.clone();
+            persist::set_string(LANGUAGE_STORAGE_KEY, &value);
+        });
+    }
+    {
+        let network_flow_animation_enabled = network_flow_animation_enabled;
+        use_effect(move || {
+            let value = if *network_flow_animation_enabled.read() {
+                "on"
+            } else {
+                "off"
+            };
+            persist::set_string(NETWORK_FLOW_ANIMATION_STORAGE_KEY, value);
+        });
+    }
+    {
+        let theme_preset = theme_preset;
+        use_effect(move || {
+            let theme = localized_theme(&layout::ThemeConfig::default(), theme_preset.read().as_str());
+            *APP_THEME_CONFIG.write() = theme.clone();
+            apply_window_theme(&theme);
+        });
+    }
+
+    let theme = app_shell_theme();
+    let title = localized_copy(
+        &language_code.read().clone(),
+        "Settings",
+        "Ajustes",
+        "Parametres",
+    );
+
+    rsx! {
+        SettingsPage {
+            distance_units_metric,
+            theme_preset,
+            language_code,
+            network_flow_animation_enabled,
+            theme,
+            title,
+        }
+    }
 }
 
 pub(crate) fn builtin_theme_presets() -> &'static [layout::ThemePresetDefinition] {
