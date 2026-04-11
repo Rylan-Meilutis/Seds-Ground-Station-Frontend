@@ -104,7 +104,7 @@ fn btn_style(
     format!(
         "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
          text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
-         font-weight:800; box-shadow:{box_shadow};"
+         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation;"
     )
 }
 
@@ -299,11 +299,27 @@ pub fn ActionsTab(
                                 button {
                                     style: "{btn_style(&action.border, &action.bg, &action.fg, blink_now_ms, enabled, blink, actuated)}",
                                     disabled: !enabled,
+                                    onmousedown: {
+                                        let cmd = action.cmd.clone();
+                                        move |_| {
+                                            if enabled {
+                                                crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                                            }
+                                        }
+                                    },
+                                    ontouchstart: {
+                                        let cmd = action.cmd.clone();
+                                        move |_| {
+                                            if enabled {
+                                                crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                                            }
+                                        }
+                                    },
                                     onclick: {
                                         let cmd = action.cmd.clone();
                                         move |_| {
                                             if enabled {
-                                                crate::telemetry_dashboard::send_cmd(&cmd)
+                                                crate::telemetry_dashboard::send_cmd_from_click(&cmd)
                                             }
                                         }
                                     },

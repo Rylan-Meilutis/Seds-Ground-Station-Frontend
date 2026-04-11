@@ -84,6 +84,9 @@ static FRONTEND_NETWORK_METRICS_STATE: Lazy<Mutex<FrontendNetworkMetrics>> =
 static TRANSLATION_MISS_QUEUE: Lazy<Mutex<HashSet<String>>> =
     Lazy::new(|| Mutex::new(HashSet::new()));
 static TRANSLATION_REQUEST_ACTIVE: AtomicBool = AtomicBool::new(false);
+static LAST_COMMAND_ACTIVATION: Lazy<Mutex<Option<(String, f64)>>> = Lazy::new(|| Mutex::new(None));
+
+const COMMAND_ACTIVATION_DEDUP_MS: f64 = 450.0;
 
 // ============================================================================
 // Dashboard lifetime: STATIC + ALWAYS PRESENT (never Option)
@@ -3551,15 +3554,33 @@ fn TelemetryDashboardInner() -> Element {
                                 rsx! {
                                     if abort_visible {
                                         button {
-                                            style: "{abort_style}",
+                                            style: "{abort_style} touch-action:manipulation;",
                                             disabled: !abort_allowed,
+                                            onmousedown: {
+                                                let mut header_actions_expanded = header_actions_expanded;
+                                                move |_| {
+                                                    header_actions_expanded.set(false);
+                                                    if abort_allowed {
+                                                        send_cmd_from_press("Abort")
+                                                    }
+                                                }
+                                            },
+                                            ontouchstart: {
+                                                let mut header_actions_expanded = header_actions_expanded;
+                                                move |_| {
+                                                    header_actions_expanded.set(false);
+                                                    if abort_allowed {
+                                                        send_cmd_from_press("Abort")
+                                                    }
+                                                }
+                                            },
                                             onclick: {
                                                 let mut header_actions_expanded = header_actions_expanded;
                                                 move |_| {
                                                     header_actions_expanded.set(false);
-                                                if abort_allowed {
-                                                    send_cmd("Abort")
-                                                }
+                                                    if abort_allowed {
+                                                        send_cmd_from_click("Abort")
+                                                    }
                                                 }
                                             },
                                             "ABORT"
@@ -3939,11 +3960,23 @@ fn TelemetryDashboardInner() -> Element {
                                         && auth::can_send_command(action_cmd)
                                     {
                                         button {
-                                            style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; cursor:pointer;",
+                                            style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; cursor:pointer; touch-action:manipulation;",
+                                            onmousedown: {
+                                                let cmd = action_cmd.to_string();
+                                                move |_| {
+                                                    send_cmd_from_press(&cmd);
+                                                }
+                                            },
+                                            ontouchstart: {
+                                                let cmd = action_cmd.to_string();
+                                                move |_| {
+                                                    send_cmd_from_press(&cmd);
+                                                }
+                                            },
                                             onclick: {
                                                 let cmd = action_cmd.to_string();
                                                 move |_| {
-                                                    send_cmd(&cmd);
+                                                    send_cmd_from_click(&cmd);
                                                 }
                                             },
                                             {translate_text(action_label)}
@@ -4108,6 +4141,37 @@ fn send_cmd(cmd: &str) {
         && let Err(e) = sender.send_cmd(cmd)
     {
         log!("[CMD] ws send failed for '{cmd}': {e}");
+    }
+}
+
+fn should_send_command_activation(cmd: &str) -> bool {
+    let now = monotonic_now_ms();
+    let Ok(mut last) = LAST_COMMAND_ACTIVATION.lock() else {
+        return true;
+    };
+    if let Some((last_cmd, last_ts)) = last.as_ref()
+        && last_cmd == cmd
+        && now - *last_ts <= COMMAND_ACTIVATION_DEDUP_MS
+    {
+        return false;
+    }
+    *last = Some((cmd.to_string(), now));
+    true
+}
+
+pub(crate) fn send_cmd_from_press(cmd: &str) {
+    let Ok(mut last) = LAST_COMMAND_ACTIVATION.lock() else {
+        send_cmd(cmd);
+        return;
+    };
+    *last = Some((cmd.to_string(), monotonic_now_ms()));
+    drop(last);
+    send_cmd(cmd);
+}
+
+pub(crate) fn send_cmd_from_click(cmd: &str) {
+    if should_send_command_activation(cmd) {
+        send_cmd(cmd);
     }
 }
 
