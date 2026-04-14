@@ -27,11 +27,12 @@
 use super::types::TelemetryRow;
 use dioxus::prelude::*;
 use serde::Serialize;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use super::HISTORY_MS;
 
@@ -1361,7 +1362,7 @@ pub fn SeriesSwatch(index: usize) -> Element {
                 x2:"25",
                 y2:"4",
                 stroke:"rgba(15, 23, 42, 0.9)",
-                stroke_width:"5",
+                stroke_width:"3.4",
                 stroke_linecap:"round"
             }
             line {
@@ -1370,7 +1371,7 @@ pub fn SeriesSwatch(index: usize) -> Element {
                 x2:"25",
                 y2:"4",
                 stroke:"rgba(248, 250, 252, 0.78)",
-                stroke_width:"3.25",
+                stroke_width:"2.45",
                 stroke_linecap:"round"
             }
             line {
@@ -1379,7 +1380,7 @@ pub fn SeriesSwatch(index: usize) -> Element {
                 x2:"25",
                 y2:"4",
                 stroke:"{color}",
-                stroke_width:"2.1",
+                stroke_width:"1.8",
                 stroke_linecap:"round"
             }
         }
@@ -1387,6 +1388,8 @@ pub fn SeriesSwatch(index: usize) -> Element {
 }
 
 static NEXT_CANVAS_ID: AtomicU64 = AtomicU64::new(1);
+static CHART_CANVAS_RENDERER_INSTALLED: AtomicBool = AtomicBool::new(false);
+static CHART_CANVAS_RENDERER_BOOTSTRAP: OnceLock<String> = OnceLock::new();
 
 fn should_smooth_chunk(chunk_width: f32, chunk_bucket_count: i64) -> bool {
     chunk_width >= 220.0 && chunk_bucket_count <= SMOOTHING_MAX_POINTS_PER_SEGMENT as i64
@@ -1458,6 +1461,355 @@ struct CanvasChartPayload<'a> {
     signature: u64,
 }
 
+fn chart_canvas_renderer_bootstrap() -> &'static str {
+    CHART_CANVAS_RENDERER_BOOTSTRAP.get_or_init(|| {
+        format!(
+            r##"
+                (function() {{
+                  if (typeof window.__gs26DrawChartCanvas === "function") return;
+                  window.__gs26DrawChartCanvas = function(canvasId, data) {{
+                    const isWindows = /Windows/i.test(navigator.userAgent || navigator.platform || "");
+                    const cacheRoot = window.__gs26ChartCanvasCache || (window.__gs26ChartCanvasCache = new Map());
+                    const draw = () => {{
+                      const el = document.getElementById(canvasId);
+                      if (!el || !data) return;
+
+                      const rect = el.getBoundingClientRect();
+                      const cssW = Math.max(1, Math.round(rect.width || data.view_w || 1));
+                      const cssH = Math.max(1, Math.round(rect.height || data.view_h || 1));
+                      const mobilePlatform = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || navigator.platform || "");
+                      const maxDpr = mobilePlatform ? 3 : 5;
+                      const dpr = Math.max(1, Math.min(maxDpr, (window.devicePixelRatio || 1)));
+                      const qualityBoost = 1.0;
+                      const maxCanvasEdge = 16384;
+                      let renderScale = dpr * qualityBoost;
+                      if (cssW * renderScale > maxCanvasEdge) {{
+                        renderScale = Math.min(renderScale, maxCanvasEdge / Math.max(1, cssW));
+                      }}
+                      if (cssH * renderScale > maxCanvasEdge) {{
+                        renderScale = Math.min(renderScale, maxCanvasEdge / Math.max(1, cssH));
+                      }}
+                      renderScale = Math.max(1, renderScale);
+                      const pxW = Math.max(1, Math.round(cssW * renderScale));
+                      const pxH = Math.max(1, Math.round(cssH * renderScale));
+                      const renderSignature = [
+                        data.signature,
+                        pxW,
+                        pxH,
+                        data.grid_left,
+                        data.grid_right,
+                        data.grid_top,
+                        data.grid_bottom
+                      ].join("|");
+                      if (el.__gs26RenderSignature === renderSignature) return;
+                      el.__gs26RenderSignature = renderSignature;
+
+                      if (el.width !== pxW) el.width = pxW;
+                      if (el.height !== pxH) el.height = pxH;
+
+                      const get2d = (canvas) => {{
+                        return canvas.getContext("2d", isWindows
+                          ? {{ alpha: true }}
+                          : {{ alpha: true, desynchronized: true }});
+                      }};
+                      const ctx = get2d(el);
+                      if (!ctx) return;
+                      function buildPath2d(path) {{
+                        if (!path) return null;
+                        const tokens = path.trim().split(/[ \t\r\n]+/);
+                        if (!tokens.length) return null;
+                        const p = new Path2D();
+                        let mode = "";
+                        for (let i = 0; i < tokens.length; ) {{
+                          const tok = tokens[i];
+                          if (tok === "M" || tok === "L" || tok === "Q") {{
+                            mode = tok;
+                            i += 1;
+                            continue;
+                          }}
+                          const x = Number(tok);
+                          const y = Number(tokens[i + 1]);
+                          if (!Number.isFinite(x) || !Number.isFinite(y)) break;
+                          if (mode === "M") {{
+                            p.moveTo(x, y);
+                            mode = "L";
+                          }} else if (mode === "Q") {{
+                            const cpx = x;
+                            const cpy = y;
+                            const qx = Number(tokens[i + 2]);
+                            const qy = Number(tokens[i + 3]);
+                            if (!Number.isFinite(qx) || !Number.isFinite(qy)) break;
+                            p.quadraticCurveTo(cpx, cpy, qx, qy);
+                            i += 4;
+                            continue;
+                          }} else {{
+                            p.lineTo(x, y);
+                          }}
+                          i += 2;
+                        }}
+                        return p;
+                      }}
+                      const left = Number.isFinite(data.grid_left) ? data.grid_left : {chart_grid_left};
+                      const right = Number.isFinite(data.grid_right) ? data.grid_right : (data.view_w - {chart_grid_right_pad});
+                      const top = Number.isFinite(data.grid_top) ? data.grid_top : {chart_grid_top};
+                      const bottom = Number.isFinite(data.grid_bottom) ? data.grid_bottom : (data.view_h - {chart_grid_bottom_pad});
+                      const drawGrid = (targetCtx, widthPx, heightPx) => {{
+                        if (typeof targetCtx.resetTransform === "function") {{
+                          targetCtx.resetTransform();
+                        }} else {{
+                          targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+                        }}
+                        targetCtx.clearRect(0, 0, widthPx, heightPx);
+                        targetCtx.scale(widthPx / data.view_w, heightPx / data.view_h);
+
+                        const gridXStep = (right - left) / 6.0;
+                        const gridYStep = (bottom - top) / 6.0;
+
+                        targetCtx.save();
+                        targetCtx.strokeStyle = "#1f2937";
+                        targetCtx.lineWidth = 1;
+                        for (let i = 1; i <= 5; i += 1) {{
+                          const y = top + gridYStep * i;
+                          targetCtx.beginPath();
+                          targetCtx.moveTo(left, y);
+                          targetCtx.lineTo(right, y);
+                          targetCtx.stroke();
+                        }}
+                        for (let i = 1; i <= 5; i += 1) {{
+                          const x = left + gridXStep * i;
+                          targetCtx.beginPath();
+                          targetCtx.moveTo(x, top);
+                          targetCtx.lineTo(x, bottom);
+                          targetCtx.stroke();
+                        }}
+
+                        targetCtx.strokeStyle = "#334155";
+                        targetCtx.beginPath();
+                        targetCtx.moveTo(left, top);
+                        targetCtx.lineTo(left, bottom);
+                        targetCtx.lineTo(right, bottom);
+                        targetCtx.stroke();
+                        targetCtx.restore();
+                        if (typeof targetCtx.resetTransform === "function") {{
+                          targetCtx.resetTransform();
+                        }} else {{
+                          targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+                        }}
+                      }};
+                      const drawChunkDirect = (targetCtx, chunk, destX, destW) => {{
+                        const strokeWithContrast = (ctx2, path2d, color, width, alpha = 1.0) => {{
+                          ctx2.save();
+                          ctx2.globalAlpha = Math.max(0.12, alpha * 0.42);
+                          ctx2.strokeStyle = "rgba(15, 23, 42, 0.88)";
+                          ctx2.lineWidth = width + 1.8;
+                          ctx2.lineJoin = "round";
+                          ctx2.lineCap = "round";
+                          ctx2.stroke(path2d);
+                          ctx2.restore();
+
+                          ctx2.save();
+                          ctx2.globalAlpha = Math.max(0.08, alpha * 0.20);
+                          ctx2.strokeStyle = "rgba(248, 250, 252, 0.68)";
+                          ctx2.lineWidth = width + 0.9;
+                          ctx2.lineJoin = "round";
+                          ctx2.lineCap = "round";
+                          ctx2.stroke(path2d);
+                          ctx2.restore();
+
+                          ctx2.save();
+                          ctx2.globalAlpha = alpha;
+                          ctx2.strokeStyle = color;
+                          ctx2.lineWidth = width;
+                          ctx2.lineJoin = "round";
+                          ctx2.lineCap = "round";
+                          ctx2.stroke(path2d);
+                          ctx2.restore();
+                        }};
+                        targetCtx.save();
+                        targetCtx.translate(destX, 0);
+                        targetCtx.scale(destW / Math.max(1, chunk.width), pxH / data.view_h);
+                        targetCtx.imageSmoothingEnabled = false;
+                        for (let i = 0; i < chunk.paths.length; i += 1) {{
+                          const path2d = buildPath2d(chunk.paths[i]);
+                          if (!path2d) continue;
+                          strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 2.0, 1.0);
+                        }}
+                        for (let i = 0; i < chunk.gap_paths.length; i += 1) {{
+                          const path2d = buildPath2d(chunk.gap_paths[i]);
+                          if (!path2d) continue;
+                          targetCtx.save();
+                          targetCtx.setLineDash([7, 6]);
+                          strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 1.7, 0.74);
+                          targetCtx.restore();
+                        }}
+                        targetCtx.restore();
+                      }};
+                      let cache = cacheRoot.get(canvasId);
+                      const cacheMiss = !cache
+                          || cache.signature !== data.signature
+                          || cache.pxW !== pxW
+                          || cache.pxH !== pxH;
+
+                      if (isWindows) {{
+                        if (typeof ctx.resetTransform === "function") {{
+                          ctx.resetTransform();
+                        }} else {{
+                          ctx.setTransform(1, 0, 0, 1, 0, 0);
+                        }}
+                        ctx.clearRect(0, 0, el.width, el.height);
+                        ctx.imageSmoothingEnabled = false;
+                        drawGrid(ctx, pxW, pxH);
+                        const scaleX = pxW / data.view_w;
+                        const firstChunk = data.chunks.length ? data.chunks[0] : null;
+                        const alignOffset = firstChunk
+                          ? Math.round(firstChunk.x * scaleX) - (firstChunk.x * scaleX)
+                          : 0;
+                        for (let i = 0; i < data.chunks.length; i += 1) {{
+                          const chunk = data.chunks[i];
+                          const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
+                          const destX = Math.round(chunk.x * scaleX + alignOffset);
+                          const rawRight = next
+                            ? Math.round(next.x * scaleX + alignOffset)
+                            : Math.round(chunk.right * scaleX + alignOffset);
+                          const destRight = Math.max(destX + 1, rawRight);
+                          const destW = Math.max(1, destRight - destX);
+                          drawChunkDirect(ctx, chunk, destX, destW);
+                        }}
+                        return;
+                      }}
+
+                      if (cacheMiss) {{
+                        const gridBuffer = document.createElement("canvas");
+                        gridBuffer.width = pxW;
+                        gridBuffer.height = pxH;
+                        const bctx = get2d(gridBuffer);
+                        if (!bctx) return;
+                        drawGrid(bctx, gridBuffer.width, gridBuffer.height);
+
+                        cache = {{
+                          signature: data.signature,
+                          pxW,
+                          pxH,
+                          gridBuffer,
+                          chunkCache: new Map(),
+                          historyBuffer: null,
+                          historyKey: null,
+                        }};
+                        cacheRoot.set(canvasId, cache);
+                      }}
+
+                      function buildChunkBuffer(chunk, destW) {{
+                        const key = `${{chunk.id}}:${{chunk.signature}}:${{pxH}}:${{destW}}`;
+                        let chunkBuffer = cache.chunkCache.get(key);
+                        if (chunkBuffer) return chunkBuffer;
+
+                        const widthPx = Math.max(1, destW);
+                        const buffer = document.createElement("canvas");
+                        buffer.width = widthPx;
+                        buffer.height = pxH;
+                        const bctx = get2d(buffer);
+                        if (!bctx) return null;
+                        if (typeof bctx.resetTransform === "function") {{
+                          bctx.resetTransform();
+                        }} else {{
+                          bctx.setTransform(1, 0, 0, 1, 0, 0);
+                        }}
+                        bctx.clearRect(0, 0, buffer.width, buffer.height);
+                        drawChunkDirect(bctx, chunk, 0, widthPx);
+
+                        chunkBuffer = buffer;
+                        cache.chunkCache.set(key, chunkBuffer);
+                        return chunkBuffer;
+                      }}
+
+                      if (typeof ctx.resetTransform === "function") {{
+                        ctx.resetTransform();
+                      }} else {{
+                        ctx.setTransform(1, 0, 0, 1, 0, 0);
+                      }}
+                      ctx.clearRect(0, 0, el.width, el.height);
+                      ctx.imageSmoothingEnabled = false;
+                      ctx.drawImage(cache.gridBuffer, 0, 0);
+                      const scaleX = pxW / data.view_w;
+                      const firstChunk = data.chunks.length ? data.chunks[0] : null;
+                      const alignOffset = firstChunk
+                        ? Math.round(firstChunk.x * scaleX) - (firstChunk.x * scaleX)
+                        : 0;
+                      const historyKey = data.chunks
+                        .filter(chunk => !chunk.live)
+                        .map(chunk => `${{chunk.id}}:${{chunk.signature}}:${{chunk.x.toFixed(3)}}:${{chunk.right.toFixed(3)}}`)
+                        .join("|");
+                      if (!cache.historyBuffer || cache.historyKey !== historyKey) {{
+                        const historyBuffer = document.createElement("canvas");
+                        historyBuffer.width = pxW;
+                        historyBuffer.height = pxH;
+                        const hctx = historyBuffer.getContext("2d", {{ alpha: true, desynchronized: true }});
+                        if (!hctx) return;
+                        hctx.clearRect(0, 0, historyBuffer.width, historyBuffer.height);
+                        hctx.imageSmoothingEnabled = false;
+                        for (let i = 0; i < data.chunks.length; i += 1) {{
+                          const chunk = data.chunks[i];
+                          if (chunk.live) continue;
+                          const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
+                          const destX = Math.round(chunk.x * scaleX + alignOffset);
+                          const rawRight = next
+                            ? Math.round(next.x * scaleX + alignOffset)
+                            : Math.round(chunk.right * scaleX + alignOffset);
+                          const destRight = Math.max(destX + 1, rawRight);
+                          const destW = Math.max(1, destRight - destX);
+                          const chunkBuffer = buildChunkBuffer(chunk, destW);
+                          if (!chunkBuffer) continue;
+                          hctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
+                        }}
+                        cache.historyBuffer = historyBuffer;
+                        cache.historyKey = historyKey;
+                      }}
+                      if (cache.historyBuffer) {{
+                        ctx.imageSmoothingEnabled = false;
+                        ctx.drawImage(cache.historyBuffer, 0, 0);
+                      }}
+                      for (let i = 0; i < data.chunks.length; i += 1) {{
+                        const chunk = data.chunks[i];
+                        if (!chunk.live) continue;
+                        const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
+                        const destX = Math.round(chunk.x * scaleX + alignOffset);
+                        const rawRight = next
+                          ? Math.round(next.x * scaleX + alignOffset)
+                          : Math.round(chunk.right * scaleX + alignOffset);
+                        const destRight = Math.max(destX + 1, rawRight);
+                        const destW = Math.max(1, destRight - destX);
+                        const chunkBuffer = buildChunkBuffer(chunk, destW);
+                        if (!chunkBuffer) continue;
+                        ctx.imageSmoothingEnabled = false;
+                        ctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
+                      }}
+                    }};
+
+                    if (typeof requestAnimationFrame === "function") {{
+                      requestAnimationFrame(draw);
+                    }} else {{
+                      setTimeout(draw, 0);
+                    }}
+                  }};
+                }})();
+            "##,
+            chart_grid_left = CHART_GRID_LEFT,
+            chart_grid_right_pad = CHART_GRID_RIGHT_PAD,
+            chart_grid_top = CHART_GRID_TOP,
+            chart_grid_bottom_pad = CHART_GRID_BOTTOM_PAD,
+        )
+    })
+}
+
+fn ensure_chart_canvas_renderer_installed() {
+    if CHART_CANVAS_RENDERER_INSTALLED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        super::js_eval(chart_canvas_renderer_bootstrap());
+    }
+}
+
 #[component]
 pub fn ChartCanvas(
     view_w: f64,
@@ -1469,16 +1821,23 @@ pub fn ChartCanvas(
     grid_bottom: Option<f64>,
     style: String,
 ) -> Element {
+    ensure_chart_canvas_renderer_installed();
+
     let canvas_id = use_hook(|| {
         format!(
             "gs26-chart-canvas-{}",
             NEXT_CANVAS_ID.fetch_add(1, Ordering::Relaxed)
         )
     });
+    let last_draw_signature = use_hook(|| Cell::new(0_u64));
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     view_w.to_bits().hash(&mut hasher);
     view_h.to_bits().hash(&mut hasher);
+    grid_left.map(f64::to_bits).hash(&mut hasher);
+    grid_right.map(f64::to_bits).hash(&mut hasher);
+    grid_top.map(f64::to_bits).hash(&mut hasher);
+    grid_bottom.map(f64::to_bits).hash(&mut hasher);
     for chunk in chunks.iter() {
         chunk.id.hash(&mut hasher);
         chunk.signature.hash(&mut hasher);
@@ -1486,6 +1845,7 @@ pub fn ChartCanvas(
         chunk.width.to_bits().hash(&mut hasher);
         chunk.right.to_bits().hash(&mut hasher);
     }
+    let render_signature = hasher.finish();
 
     let payload = CanvasChartPayload {
         view_w,
@@ -1496,337 +1856,27 @@ pub fn ChartCanvas(
         grid_top,
         grid_bottom,
         chunks: chunks.as_slice(),
-        signature: hasher.finish(),
+        signature: render_signature,
     };
-    let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
-    let id_json = serde_json::to_string(&canvas_id).unwrap_or_else(|_| "\"\"".to_string());
-
-    let draw_js = format!(
-        r##"
+    if last_draw_signature.get() != render_signature {
+        let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+        let id_json = serde_json::to_string(&canvas_id).unwrap_or_else(|_| "\"\"".to_string());
+        let draw_js = format!(
+            r#"
                 (function() {{
-                  const canvasId = {id_json};
-                  const data = {payload_json};
-                  const isWindows = /Windows/i.test(navigator.userAgent || navigator.platform || "");
-                  const cacheRoot = window.__gs26ChartCanvasCache || (window.__gs26ChartCanvasCache = new Map());
-                  const draw = () => {{
-                    const el = document.getElementById(canvasId);
-                    if (!el) return;
-
-                    const rect = el.getBoundingClientRect();
-                    const cssW = Math.max(1, Math.round(rect.width || data.view_w || 1));
-                    const cssH = Math.max(1, Math.round(rect.height || data.view_h || 1));
-                    const mobilePlatform = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || navigator.platform || "");
-                    const maxDpr = mobilePlatform ? 3 : 5;
-                    const dpr = Math.max(1, Math.min(maxDpr, (window.devicePixelRatio || 1)));
-                    const qualityBoost = 1.0;
-                    const maxCanvasEdge = 16384;
-                    let renderScale = dpr * qualityBoost;
-                    if (cssW * renderScale > maxCanvasEdge) {{
-                      renderScale = Math.min(renderScale, maxCanvasEdge / Math.max(1, cssW));
+                  try {{
+                    if (typeof window.__gs26DrawChartCanvas === "function") {{
+                      window.__gs26DrawChartCanvas({id_json}, {payload_json});
                     }}
-                    if (cssH * renderScale > maxCanvasEdge) {{
-                      renderScale = Math.min(renderScale, maxCanvasEdge / Math.max(1, cssH));
-                    }}
-                    renderScale = Math.max(1, renderScale);
-                    const pxW = Math.max(1, Math.round(cssW * renderScale));
-                    const pxH = Math.max(1, Math.round(cssH * renderScale));
-
-                    if (el.width !== pxW) el.width = pxW;
-                    if (el.height !== pxH) el.height = pxH;
-
-                  const get2d = (canvas) => {{
-                    return canvas.getContext("2d", isWindows
-                      ? {{ alpha: true }}
-                      : {{ alpha: true, desynchronized: true }});
-                  }};
-                  const ctx = get2d(el);
-                  if (!ctx) return;
-                  function buildPath2d(path) {{
-                    if (!path) return null;
-                    const tokens = path.trim().split(/[ \t\r\n]+/);
-                    if (!tokens.length) return null;
-                    const p = new Path2D();
-                    let mode = "";
-                    for (let i = 0; i < tokens.length; ) {{
-                      const tok = tokens[i];
-                      if (tok === "M" || tok === "L" || tok === "Q") {{
-                        mode = tok;
-                        i += 1;
-                        continue;
-                      }}
-                      const x = Number(tok);
-                      const y = Number(tokens[i + 1]);
-                      if (!Number.isFinite(x) || !Number.isFinite(y)) break;
-                      if (mode === "M") {{
-                        p.moveTo(x, y);
-                        mode = "L";
-                      }} else if (mode === "Q") {{
-                        const cpx = x;
-                        const cpy = y;
-                        const qx = Number(tokens[i + 2]);
-                        const qy = Number(tokens[i + 3]);
-                        if (!Number.isFinite(qx) || !Number.isFinite(qy)) break;
-                        p.quadraticCurveTo(cpx, cpy, qx, qy);
-                        i += 4;
-                        continue;
-                      }} else {{
-                        p.lineTo(x, y);
-                      }}
-                      i += 2;
-                    }}
-                    return p;
-                  }}
-                  const left = Number.isFinite(data.grid_left) ? data.grid_left : {chart_grid_left};
-                  const right = Number.isFinite(data.grid_right) ? data.grid_right : (data.view_w - {chart_grid_right_pad});
-                  const top = Number.isFinite(data.grid_top) ? data.grid_top : {chart_grid_top};
-                  const bottom = Number.isFinite(data.grid_bottom) ? data.grid_bottom : (data.view_h - {chart_grid_bottom_pad});
-                  const drawGrid = (targetCtx, widthPx, heightPx) => {{
-                    if (typeof targetCtx.resetTransform === "function") {{
-                      targetCtx.resetTransform();
-                    }} else {{
-                      targetCtx.setTransform(1, 0, 0, 1, 0, 0);
-                    }}
-                    targetCtx.clearRect(0, 0, widthPx, heightPx);
-                    targetCtx.scale(widthPx / data.view_w, heightPx / data.view_h);
-
-                    const gridXStep = (right - left) / 6.0;
-                    const gridYStep = (bottom - top) / 6.0;
-
-                    targetCtx.save();
-                    targetCtx.strokeStyle = "#1f2937";
-                    targetCtx.lineWidth = 1;
-                    for (let i = 1; i <= 5; i += 1) {{
-                      const y = top + gridYStep * i;
-                      targetCtx.beginPath();
-                      targetCtx.moveTo(left, y);
-                      targetCtx.lineTo(right, y);
-                      targetCtx.stroke();
-                    }}
-                    for (let i = 1; i <= 5; i += 1) {{
-                      const x = left + gridXStep * i;
-                      targetCtx.beginPath();
-                      targetCtx.moveTo(x, top);
-                      targetCtx.lineTo(x, bottom);
-                      targetCtx.stroke();
-                    }}
-
-                    targetCtx.strokeStyle = "#334155";
-                    targetCtx.beginPath();
-                    targetCtx.moveTo(left, top);
-                    targetCtx.lineTo(left, bottom);
-                    targetCtx.lineTo(right, bottom);
-                    targetCtx.stroke();
-                    targetCtx.restore();
-                    if (typeof targetCtx.resetTransform === "function") {{
-                      targetCtx.resetTransform();
-                    }} else {{
-                      targetCtx.setTransform(1, 0, 0, 1, 0, 0);
-                    }}
-                  }};
-                  const drawChunkDirect = (targetCtx, chunk, destX, destW) => {{
-                    const strokeWithContrast = (ctx, path2d, color, width, alpha = 1.0) => {{
-                      ctx.save();
-                      ctx.globalAlpha = Math.max(0.22, alpha * 0.88);
-                      ctx.strokeStyle = "rgba(15, 23, 42, 0.92)";
-                      ctx.lineWidth = width + 4.0;
-                      ctx.lineJoin = "round";
-                      ctx.lineCap = "round";
-                      ctx.stroke(path2d);
-                      ctx.restore();
-
-                      ctx.save();
-                      ctx.globalAlpha = Math.max(0.18, alpha * 0.72);
-                      ctx.strokeStyle = "rgba(248, 250, 252, 0.78)";
-                      ctx.lineWidth = width + 2.1;
-                      ctx.lineJoin = "round";
-                      ctx.lineCap = "round";
-                      ctx.stroke(path2d);
-                      ctx.restore();
-
-                      ctx.save();
-                      ctx.globalAlpha = alpha;
-                      ctx.strokeStyle = color;
-                      ctx.lineWidth = width;
-                      ctx.lineJoin = "round";
-                      ctx.lineCap = "round";
-                      ctx.stroke(path2d);
-                      ctx.restore();
-                    }};
-                    targetCtx.save();
-                    targetCtx.translate(destX, 0);
-                    targetCtx.scale(destW / Math.max(1, chunk.width), pxH / data.view_h);
-                    targetCtx.imageSmoothingEnabled = true;
-                    for (let i = 0; i < chunk.paths.length; i += 1) {{
-                      const path2d = buildPath2d(chunk.paths[i]);
-                      if (!path2d) continue;
-                      strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 2.25, 1.0);
-                    }}
-                    for (let i = 0; i < chunk.gap_paths.length; i += 1) {{
-                      const path2d = buildPath2d(chunk.gap_paths[i]);
-                      if (!path2d) continue;
-                      targetCtx.save();
-                      targetCtx.setLineDash([7, 6]);
-                      strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 2.0, 0.74);
-                      targetCtx.restore();
-                    }}
-                    targetCtx.restore();
-                  }};
-                  let cache = cacheRoot.get(canvasId);
-                  const cacheMiss = !cache
-                      || cache.signature !== data.signature
-                      || cache.pxW !== pxW
-                      || cache.pxH !== pxH;
-
-                    if (isWindows) {{
-                      if (typeof ctx.resetTransform === "function") {{
-                        ctx.resetTransform();
-                      }} else {{
-                        ctx.setTransform(1, 0, 0, 1, 0, 0);
-                      }}
-                      ctx.clearRect(0, 0, el.width, el.height);
-                      ctx.imageSmoothingEnabled = true;
-                      drawGrid(ctx, pxW, pxH);
-                      const scaleX = pxW / data.view_w;
-                      const firstChunk = data.chunks.length ? data.chunks[0] : null;
-                      const alignOffset = firstChunk
-                        ? Math.round(firstChunk.x * scaleX) - (firstChunk.x * scaleX)
-                        : 0;
-                      for (let i = 0; i < data.chunks.length; i += 1) {{
-                        const chunk = data.chunks[i];
-                        const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
-                        const destX = Math.round(chunk.x * scaleX + alignOffset);
-                        const rawRight = next
-                          ? Math.round(next.x * scaleX + alignOffset)
-                          : Math.round(chunk.right * scaleX + alignOffset);
-                        const destRight = Math.max(destX + 1, rawRight);
-                        const destW = Math.max(1, destRight - destX);
-                        drawChunkDirect(ctx, chunk, destX, destW);
-                      }}
-                      return;
-                    }}
-
-                    if (cacheMiss) {{
-                      const gridBuffer = document.createElement("canvas");
-                      gridBuffer.width = pxW;
-                      gridBuffer.height = pxH;
-                      const bctx = get2d(gridBuffer);
-                      if (!bctx) return;
-                      drawGrid(bctx, gridBuffer.width, gridBuffer.height);
-
-                      cache = {{
-                        signature: data.signature,
-                        pxW,
-                        pxH,
-                        gridBuffer,
-                        // Do not carry old per-signature chunk buffers forward indefinitely.
-                        // The live chart signature changes often, and reusing the previous map
-                        // causes unbounded canvas growth in the browser over long runs.
-                        chunkCache: new Map(),
-                        historyBuffer: null,
-                        historyKey: null,
-                      }};
-                      cacheRoot.set(canvasId, cache);
-                    }}
-
-                    function buildChunkBuffer(chunk, destW) {{
-                      const key = `${{chunk.id}}:${{chunk.signature}}:${{pxH}}:${{destW}}`;
-                      let chunkBuffer = cache.chunkCache.get(key);
-                      if (chunkBuffer) return chunkBuffer;
-
-                      const widthPx = Math.max(1, destW);
-                      const buffer = document.createElement("canvas");
-                      buffer.width = widthPx;
-                      buffer.height = pxH;
-                      const bctx = get2d(buffer);
-                      if (!bctx) return null;
-                      if (typeof bctx.resetTransform === "function") {{
-                        bctx.resetTransform();
-                      }} else {{
-                        bctx.setTransform(1, 0, 0, 1, 0, 0);
-                      }}
-                      bctx.clearRect(0, 0, buffer.width, buffer.height);
-                      drawChunkDirect(bctx, chunk, 0, widthPx);
-
-                      chunkBuffer = buffer;
-                      cache.chunkCache.set(key, chunkBuffer);
-                      return chunkBuffer;
-                    }}
-
-                    if (typeof ctx.resetTransform === "function") {{
-                      ctx.resetTransform();
-                    }} else {{
-                      ctx.setTransform(1, 0, 0, 1, 0, 0);
-                    }}
-                    ctx.clearRect(0, 0, el.width, el.height);
-                    ctx.imageSmoothingEnabled = true;
-                    ctx.drawImage(cache.gridBuffer, 0, 0);
-                    const scaleX = pxW / data.view_w;
-                    const firstChunk = data.chunks.length ? data.chunks[0] : null;
-                    const alignOffset = firstChunk
-                      ? Math.round(firstChunk.x * scaleX) - (firstChunk.x * scaleX)
-                      : 0;
-                    const historyKey = data.chunks
-                      .filter(chunk => !chunk.live)
-                      .map(chunk => `${{chunk.id}}:${{chunk.signature}}:${{chunk.x.toFixed(3)}}:${{chunk.right.toFixed(3)}}`)
-                      .join("|");
-                    if (!cache.historyBuffer || cache.historyKey !== historyKey) {{
-                      const historyBuffer = document.createElement("canvas");
-                      historyBuffer.width = pxW;
-                      historyBuffer.height = pxH;
-                      const hctx = historyBuffer.getContext("2d", {{ alpha: true, desynchronized: true }});
-                      if (!hctx) return;
-                      hctx.clearRect(0, 0, historyBuffer.width, historyBuffer.height);
-                      hctx.imageSmoothingEnabled = true;
-                      for (let i = 0; i < data.chunks.length; i += 1) {{
-                        const chunk = data.chunks[i];
-                        if (chunk.live) continue;
-                        const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
-                        const destX = Math.round(chunk.x * scaleX + alignOffset);
-                        const rawRight = next
-                          ? Math.round(next.x * scaleX + alignOffset)
-                          : Math.round(chunk.right * scaleX + alignOffset);
-                        const destRight = Math.max(destX + 1, rawRight);
-                        const destW = Math.max(1, destRight - destX);
-                        const chunkBuffer = buildChunkBuffer(chunk, destW);
-                        if (!chunkBuffer) continue;
-                        hctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
-                      }}
-                      cache.historyBuffer = historyBuffer;
-                      cache.historyKey = historyKey;
-                    }}
-                    if (cache.historyBuffer) {{
-                      ctx.drawImage(cache.historyBuffer, 0, 0);
-                    }}
-                    for (let i = 0; i < data.chunks.length; i += 1) {{
-                      const chunk = data.chunks[i];
-                      if (!chunk.live) continue;
-                      const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
-                      const destX = Math.round(chunk.x * scaleX + alignOffset);
-                      const rawRight = next
-                        ? Math.round(next.x * scaleX + alignOffset)
-                        : Math.round(chunk.right * scaleX + alignOffset);
-                      const destRight = Math.max(destX + 1, rawRight);
-                      const destW = Math.max(1, destRight - destX);
-                      const chunkBuffer = buildChunkBuffer(chunk, destW);
-                      if (!chunkBuffer) continue;
-                      ctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
-                    }}
-                  }};
-
-                  if (typeof requestAnimationFrame === "function") {{
-                    requestAnimationFrame(draw);
-                  }} else {{
-                    setTimeout(draw, 0);
+                  }} catch (e) {{
+                    console.warn("chart canvas draw failed", e);
                   }}
                 }})();
-        "##,
-        chart_grid_left = CHART_GRID_LEFT,
-        chart_grid_right_pad = CHART_GRID_RIGHT_PAD,
-        chart_grid_top = CHART_GRID_TOP,
-        chart_grid_bottom_pad = CHART_GRID_BOTTOM_PAD,
-    );
-
-    super::js_eval(&draw_js);
+            "#,
+        );
+        super::js_eval(&draw_js);
+        last_draw_signature.set(render_signature);
+    }
 
     rsx! {
         canvas {
