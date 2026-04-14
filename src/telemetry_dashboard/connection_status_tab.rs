@@ -266,7 +266,11 @@ fn js_now_ms() -> i64 {
     }
 }
 
-fn render_latency_chart(points: Option<&Vec<(i64, f64)>>, height: f64, theme: &ThemeConfig) -> Element {
+fn render_latency_chart(
+    points: Option<&Vec<(i64, f64)>>,
+    height: f64,
+    theme: &ThemeConfig,
+) -> Element {
     let reseed_note = reseed_status_note();
     let Some(points) = points else {
         return rsx! {

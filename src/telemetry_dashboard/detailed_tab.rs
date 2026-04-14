@@ -7,9 +7,9 @@ use super::types::{
     NetworkTopologyStatus,
 };
 use super::{
-    compensated_network_time_ms, format_network_time, format_timestamp_ms_clock, monotonic_now_ms,
-    translate_text, AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, current_language,
-    layout::ThemeConfig, localized_copy, PersistentNotification,
+    compensated_network_time_ms, current_language, format_network_time, format_timestamp_ms_clock,
+    layout::ThemeConfig, localized_copy, monotonic_now_ms, translate_text,
+    AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
 };
 
 #[component]

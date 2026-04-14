@@ -140,7 +140,11 @@ pub fn VersionTab(theme: ThemeConfig) -> Element {
 }
 
 #[component]
-fn SectionCard(theme: ThemeConfig, title: &'static str, rows: Vec<(&'static str, String)>) -> Element {
+fn SectionCard(
+    theme: ThemeConfig,
+    title: &'static str,
+    rows: Vec<(&'static str, String)>,
+) -> Element {
     rsx! {
         div { style: "padding:14px; border:1px solid {theme.border}; border-radius:14px; background:{theme.panel_background}; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
             div { style: "font-size:14px; color:{theme.text_muted}; margin-bottom:10px;", "{title}" }

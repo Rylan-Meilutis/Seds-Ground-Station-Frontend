@@ -107,6 +107,10 @@ pub fn can_send_command(cmd: &str) -> bool {
     status.allowed_commands.is_empty() || status.allowed_commands.iter().any(|item| item == cmd)
 }
 
+pub fn can_view_actions() -> bool {
+    current_status().permissions.send_commands
+}
+
 pub fn set_current_session(session: StoredAuthSession) {
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
@@ -175,40 +179,13 @@ pub(crate) fn build_native_http_client(
     connect_timeout: std::time::Duration,
     timeout: std::time::Duration,
 ) -> Result<reqwest::Client, String> {
-    let make_builder = || {
-        reqwest::Client::builder()
-            .danger_accept_invalid_certs(skip_tls_verify)
-            .connect_timeout(connect_timeout)
-            .timeout(timeout)
-            // Keep native HTTPS aligned with the successful WebSocket/upgrade path.
-            // Some proxies behave differently for reqwest+rustrls over HTTP/2.
-            .http1_only()
-    };
-
-    #[cfg(any(
-        target_os = "android",
-        target_os = "ios",
-        target_os = "macos",
-        target_os = "windows"
-    ))]
-    if !skip_tls_verify {
-        use rustls_platform_verifier::ConfigVerifierExt;
-        if let Ok(tls_config) = rustls::ClientConfig::with_platform_verifier() {
-            match make_builder()
-                .use_preconfigured_tls(std::sync::Arc::new(tls_config))
-                .build()
-            {
-                Ok(client) => return Ok(client),
-                Err(err) => {
-                    eprintln!(
-                        "Platform-verifier TLS client build failed, falling back to default rustls: {err}"
-                    );
-                }
-            }
-        }
-    }
-
-    make_builder()
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(skip_tls_verify)
+        .connect_timeout(connect_timeout)
+        .timeout(timeout)
+        // Keep native HTTPS aligned with the successful WebSocket/upgrade path.
+        // Some proxies behave differently for reqwest+rustrls over HTTP/2.
+        .http1_only()
         .build()
         .map_err(|e| format_native_auth_error(&format!("{e:?}"), skip_tls_verify))
 }
@@ -715,7 +692,7 @@ fn auth_storage_path() -> std::path::PathBuf {
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 fn auth_storage_dir() -> std::path::PathBuf {
     use ::jni::objects::{JObject, JString};
-    use ::jni::{JavaVM, jni_sig, jni_str};
+    use ::jni::{jni_sig, jni_str, JavaVM};
     use ndk_context::android_context;
 
     let ctx = android_context();

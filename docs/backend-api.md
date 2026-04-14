@@ -2,6 +2,8 @@
 
 This document describes the backend contract that the frontend currently expects.
 
+Verified against frontend version `0.3.1`, app build `7`, and the current Dioxus `0.7.4` codebase.
+
 It is derived from the frontend source, not from an external OpenAPI spec. If you change the frontend route usage, update this file.
 
 ## Transport Model
@@ -170,8 +172,11 @@ Notes:
 - the frontend uses `values[0]` and `values[1]` as latitude/longitude for `GPS`, `GPS_DATA`, or `ROCKET_GPS`
 - an empty array is acceptable
 - native builds accept either the array response or NDJSON-style streaming for faster reseed startup
+- native builds advertise `Accept: application/x-ndjson` on this route
 - if you stream, emit one complete telemetry row per line and start sending bytes promptly
+- the native streaming path is enabled when the response content type contains `ndjson` or `json-seq`
 - web builds should still be treated as requiring the array response path for compatibility
+- see [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md) for the current streaming-specific behavior
 
 ### `GET /api/alerts`
 

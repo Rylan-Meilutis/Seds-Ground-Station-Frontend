@@ -418,7 +418,10 @@ pub fn NetworkTopologyTab(
     }
 }
 
-fn render_endpoint_section(endpoint_rows: &[(String, Vec<String>)], theme: &ThemeConfig) -> Element {
+fn render_endpoint_section(
+    endpoint_rows: &[(String, Vec<String>)],
+    theme: &ThemeConfig,
+) -> Element {
     rsx! {
         div {
             style: "border:1px solid {theme.border}; border-radius:18px; background:{theme.panel_background}; padding:14px;",

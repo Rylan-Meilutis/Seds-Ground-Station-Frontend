@@ -14,13 +14,13 @@ use super::layout::{
 };
 use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
-    latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text,
-    ui_telemetry_rows_snapshot, ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, HISTORY_MS,
+    latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text, ui_telemetry_rows_snapshot,
+    ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, HISTORY_MS,
     TELEMETRY_RENDER_EPOCH,
 };
 
 use crate::telemetry_dashboard::data_chart::{
-    charts_cache_get, charts_cache_get_channel_minmax, series_color, ChartCanvas, ChartRenderChunk,
+    charts_cache_get, charts_cache_get_channel_minmax, series_color, ChartCanvas, ChartRenderChunk, SeriesSwatch,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 use std::hash::{Hash, Hasher};
@@ -471,9 +471,7 @@ fn data_style_chart_cached(
                 for (i, label) in labels.iter().enumerate() {
                     if !label.is_empty() {
                         div { style: "display:flex; align-items:center; gap:6px; font-size:12px; color:{theme.text_secondary};",
-                            svg { width:"26", height:"8", view_box:"0 0 26 8",
-                                line { x1:"1", y1:"4", x2:"25", y2:"4", stroke:"{series_color(i)}", stroke_width:"2", stroke_linecap:"round" }
-                            }
+                            SeriesSwatch { index: i }
                             "{translate_text(label)}"
                         }
                     }
@@ -897,9 +895,7 @@ fn combined_state_chart_cached(
                 for (i, label) in labels.iter().enumerate() {
                     if !label.is_empty() {
                         div { style: "display:flex; align-items:center; gap:5px; font-size:11px; color:{theme.text_secondary};",
-                            svg { width:"26", height:"8", view_box:"0 0 26 8",
-                                line { x1:"1", y1:"4", x2:"25", y2:"4", stroke:"{series_color(i)}", stroke_width:"2", stroke_linecap:"round" }
-                            }
+                            SeriesSwatch { index: i }
                             "{translate_text(label)}"
                         }
                     }
@@ -1099,12 +1095,16 @@ fn valve_colors(
         default_open
     };
     let closed = if use_layout_theme_overrides {
-        colors.and_then(|c| c.closed.clone()).unwrap_or(default_closed)
+        colors
+            .and_then(|c| c.closed.clone())
+            .unwrap_or(default_closed)
     } else {
         default_closed
     };
     let unknown = if use_layout_theme_overrides {
-        colors.and_then(|c| c.unknown.clone()).unwrap_or(default_unknown)
+        colors
+            .and_then(|c| c.unknown.clone())
+            .unwrap_or(default_unknown)
     } else {
         default_unknown
     };
@@ -1218,11 +1218,12 @@ fn has_any_actions(
     abort_only_mode: bool,
 ) -> bool {
     let _ = abort_only_mode;
-    !filter_actions(actions, selection).is_empty()
+    auth::can_view_actions() && !filter_actions(actions, selection).is_empty()
 }
 
 fn action_is_visible(action: &ActionSpec) -> bool {
-    auth::can_send_command(action.cmd.as_str())
+    let _ = action;
+    auth::can_view_actions()
 }
 
 fn action_style(

@@ -58,7 +58,7 @@ use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering}, Arc,
+    atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering}, Arc,
     Mutex,
 };
 
@@ -329,12 +329,14 @@ enum WsInMsg {
     Telemetry(TelemetryRow),
     TelemetryBatch(Vec<TelemetryRow>),
     FlightState(FlightStateMsg),
+    LaunchClock(LaunchClockMsg),
     Warning(AlertMsg),
     Error(AlertMsg),
     BoardStatus(BoardStatusMsg),
     NetworkTopology(NetworkTopologyMsg),
     Notifications(Vec<PersistentNotification>),
     ActionPolicy(ActionPolicyMsg),
+    RecordingStatus(RecordingStatusMsg),
     NetworkTime(NetworkTimeMsg),
 }
 
@@ -416,6 +418,27 @@ struct DismissedNotification {
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct NetworkTimeMsg {
     pub timestamp_ms: i64,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum LaunchClockKind {
+    Idle,
+    TMinus,
+    TPlus,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+struct LaunchClockMsg {
+    kind: LaunchClockKind,
+    anchor_timestamp_ms: Option<i64>,
+    duration_ms: Option<i64>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+struct RecordingStatusMsg {
+    mode: String,
+    db_path: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -976,7 +999,7 @@ const MAP_DISTANCE_UNITS_STORAGE_KEY: &str = "gs_map_distance_units";
 const THEME_PRESET_STORAGE_KEY: &str = "gs_theme_preset";
 const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
-const LAYOUT_CACHE_KEY: &str = "gs_layout_cache_v8";
+const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v9_";
 const NOTIFICATION_DISMISSED_STORAGE_KEY: &str = "gs_notification_dismissed_ids_v1";
 const _SKIP_TLS_VERIFY_KEY_PREFIX: &str = "gs_skip_tls_verify_";
 const NOTIFICATION_AUTO_DISMISS_MS: u32 = 5_000;
@@ -1036,7 +1059,10 @@ fn set_reseed_status(status: u8, detail: Option<String>) {
 }
 
 fn set_reseed_status_running() {
-    set_reseed_status(1, Some("Getting past data from the Ground Station...".to_string()));
+    set_reseed_status(
+        1,
+        Some("Getting past data from the Ground Station...".to_string()),
+    );
 }
 
 fn set_reseed_status_ok(_rows: usize) {
@@ -1093,6 +1119,24 @@ fn normalize_base_url(mut url: String) -> String {
         }
     }
     url.trim_end_matches('/').trim().to_ascii_lowercase()
+}
+
+fn layout_cache_key_for_base(base: &str) -> String {
+    let normalized = normalize_base_url(base.to_string());
+    if normalized.is_empty() {
+        return format!("{LAYOUT_CACHE_KEY_PREFIX}default");
+    }
+
+    let mut key = String::with_capacity(LAYOUT_CACHE_KEY_PREFIX.len() + normalized.len());
+    key.push_str(LAYOUT_CACHE_KEY_PREFIX);
+    for ch in normalized.chars() {
+        if ch.is_ascii_alphanumeric() {
+            key.push(ch);
+        } else {
+            key.push('_');
+        }
+    }
+    key
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1340,7 +1384,10 @@ pub fn NativeSettingsPage() -> Element {
     {
         let theme_preset = theme_preset;
         use_effect(move || {
-            let theme = localized_theme(&layout::ThemeConfig::default(), theme_preset.read().as_str());
+            let theme = localized_theme(
+                &layout::ThemeConfig::default(),
+                theme_preset.read().as_str(),
+            );
             *APP_THEME_CONFIG.write() = theme.clone();
             apply_window_theme(&theme);
         });
@@ -1489,7 +1536,8 @@ fn ensure_surface_separation(color: &str, against: &str, minimum: f64) -> String
 
 fn normalize_theme_for_contrast(theme: &layout::ThemeConfig) -> layout::ThemeConfig {
     let mut out = theme.clone();
-    out.panel_background = ensure_surface_separation(&out.panel_background, &out.app_background, 1.08);
+    out.panel_background =
+        ensure_surface_separation(&out.panel_background, &out.app_background, 1.08);
     out.panel_background_alt =
         ensure_surface_separation(&out.panel_background_alt, &out.panel_background, 1.12);
     out.tab_shell_background =
@@ -1498,8 +1546,7 @@ fn normalize_theme_for_contrast(theme: &layout::ThemeConfig) -> layout::ThemeCon
         ensure_surface_separation(&out.tab_shell_border, &out.tab_shell_background, 1.35);
     out.button_background =
         ensure_surface_separation(&out.button_background, &out.tab_shell_background, 1.18);
-    out.button_border =
-        ensure_surface_separation(&out.button_border, &out.button_background, 1.45);
+    out.button_border = ensure_surface_separation(&out.button_border, &out.button_background, 1.45);
     out.border = ensure_surface_separation(&out.border, &out.panel_background, 1.22);
     out.border_soft = ensure_surface_separation(&out.border_soft, &out.panel_background, 1.12);
     out.border_strong = ensure_surface_separation(&out.border_strong, &out.panel_background, 1.35);
@@ -1599,6 +1646,80 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
                     style: "display:inline-flex; align-items:baseline; width:16ch; padding-left:0.4ch; white-space:nowrap; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums;",
                     span { "{ts}" }
                     span { ")" }
+                }
+            }
+        }
+    }
+}
+
+fn format_launch_clock_delta(ms: i64) -> String {
+    let total_tenths = (ms.max(0) + 50) / 100;
+    let minutes = total_tenths / 600;
+    let seconds = (total_tenths / 10) % 60;
+    let tenths = total_tenths % 10;
+    format!("{minutes:02}:{seconds:02}.{tenths}")
+}
+
+#[component]
+fn LaunchClockBadge(
+    launch_clock: Signal<Option<LaunchClockMsg>>,
+    network_time: Signal<Option<NetworkTimeSync>>,
+) -> Element {
+    let tick = use_signal(|| 0u64);
+    {
+        let mut tick = tick;
+        use_effect(move || {
+            spawn(async move {
+                loop {
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_timers::future::TimeoutFuture::new(100).await;
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                    let next = tick.read().wrapping_add(1);
+                    tick.set(next);
+                }
+            });
+        });
+    }
+    let _tick_snapshot = *tick.read();
+    let Some(clock) = launch_clock.read().clone() else {
+        return rsx! { div {} };
+    };
+    let Some(now_ms) = network_time
+        .read()
+        .as_ref()
+        .copied()
+        .map(compensated_network_time_ms)
+    else {
+        return rsx! { div {} };
+    };
+
+    let Some(anchor_ms) = clock.anchor_timestamp_ms else {
+        return rsx! { div {} };
+    };
+    let label = match clock.kind {
+        LaunchClockKind::Idle => return rsx! { div {} },
+        LaunchClockKind::TMinus => "T-",
+        LaunchClockKind::TPlus => "T+",
+    };
+    let display = match clock.kind {
+        LaunchClockKind::Idle => return rsx! { div {} },
+        LaunchClockKind::TMinus => {
+            let duration = clock.duration_ms.unwrap_or(0);
+            format_launch_clock_delta((duration - (now_ms - anchor_ms)).max(0))
+        }
+        LaunchClockKind::TPlus => format_launch_clock_delta(now_ms - anchor_ms),
+    };
+
+    rsx! {
+        div { style: "display:flex; align-items:center; flex:0 0 auto; min-width:0;",
+            span { style: "color:#f8fafc; display:inline-flex; align-items:baseline; white-space:nowrap; font-weight:800;",
+                "{label}"
+                span {
+                    style: "display:inline-flex; align-items:baseline; width:10ch; padding-left:0.35ch; white-space:nowrap; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; color:#facc15;",
+                    "{display}"
                 }
             }
         }
@@ -1712,11 +1833,7 @@ fn _layout_main_tab_enabled(layout: &LayoutConfig, tab: MainTab) -> bool {
 /// Returns whether the actions tab has at least one command the current session may send.
 fn _actions_tab_has_visible_actions(layout: &LayoutConfig, abort_only_mode: bool) -> bool {
     let _ = abort_only_mode;
-    layout
-        .actions_tab
-        .actions
-        .iter()
-        .any(|action| auth::can_send_command(action.cmd.as_str()))
+    auth::can_view_actions() && !layout.actions_tab.actions.is_empty()
 }
 
 /// Computes the final visible tab list after applying layout and auth filtering.
@@ -2023,7 +2140,7 @@ fn TelemetryDashboardInner() -> Element {
     let layout_config = use_signal(|| None::<LayoutConfig>);
     let layout_loading = use_signal(|| true);
     let layout_error = use_signal(|| None::<String>);
-    let did_request_layout = use_signal(|| false);
+    let layout_request_base = use_signal(String::new);
     let startup_seed_ready = use_signal(|| false);
 
     let parse_i64 = |s: &str| s.parse::<i64>().unwrap_or(0);
@@ -2040,6 +2157,7 @@ fn TelemetryDashboardInner() -> Element {
     let unread_notification_ids = use_signal(Vec::<u64>::new);
     let action_policy = use_signal(ActionPolicyMsg::default_locked);
     let network_time = use_signal(|| None::<NetworkTimeSync>);
+    let launch_clock = use_signal(|| None::<LaunchClockMsg>);
     let flight_state = use_signal(|| "Startup".to_string());
     let board_status = use_signal(Vec::<BoardStatusEntry>::new);
     let network_topology = use_signal(NetworkTopologyMsg::default);
@@ -2165,15 +2283,19 @@ fn TelemetryDashboardInner() -> Element {
         let mut layout_config = layout_config;
         let mut layout_loading = layout_loading;
         let mut layout_error = layout_error;
-        let mut did_request_layout = did_request_layout;
+        let mut layout_request_base = layout_request_base;
 
         use_effect(move || {
-            if *did_request_layout.read() {
+            let base = UrlConfig::base_http();
+            if *layout_request_base.read() == base {
                 return;
             }
-            did_request_layout.set(true);
+            layout_request_base.set(base.clone());
+            layout_loading.set(true);
+            layout_error.set(None);
 
-            if let Some(cached) = persist::get_string(LAYOUT_CACHE_KEY)
+            let cache_key = layout_cache_key_for_base(&base);
+            if let Some(cached) = persist::get_string(&cache_key)
                 && let Ok(layout) = serde_json::from_str::<LayoutConfig>(&cached)
                 && let Ok(()) = layout.validate()
             {
@@ -2195,7 +2317,7 @@ fn TelemetryDashboardInner() -> Element {
                         layout_loading.set(false);
                         layout_error.set(None);
                         if let Ok(raw) = serde_json::to_string(&layout) {
-                            persist::set_string(LAYOUT_CACHE_KEY, &raw);
+                            persist::set_string(&cache_key, &raw);
                         }
                     }
                     Err(err) => {
@@ -2497,6 +2619,7 @@ fn TelemetryDashboardInner() -> Element {
         let mut unread_notification_ids_s = unread_notification_ids;
         let mut action_policy_s = action_policy;
         let mut network_time_s = network_time;
+        let mut launch_clock_s = launch_clock;
         let mut network_topology_s = network_topology;
 
         let alive = alive.clone();
@@ -2544,6 +2667,7 @@ fn TelemetryDashboardInner() -> Element {
                             &mut unread_notification_ids_s,
                             &mut action_policy_s,
                             &mut network_time_s,
+                            &mut launch_clock_s,
                             &mut network_topology_s,
                             &mut board_status_s,
                             &mut rocket_gps_s,
@@ -2741,6 +2865,7 @@ fn TelemetryDashboardInner() -> Element {
                     unread_notification_ids,
                     action_policy,
                     network_time,
+                    launch_clock,
                     network_topology,
                     warning_event_counter,
                     error_event_counter,
@@ -3013,9 +3138,11 @@ fn TelemetryDashboardInner() -> Element {
     let mut layout_loading = layout_loading;
     let mut layout_error = layout_error;
     let refresh_layout = move || {
+        let base = UrlConfig::base_http();
+        let cache_key = layout_cache_key_for_base(&base);
         layout_loading.set(true);
         layout_error.set(None);
-        persist::_remove(LAYOUT_CACHE_KEY);
+        persist::_remove(&cache_key);
         let mut layout_config = layout_config;
         let mut layout_loading = layout_loading;
         let mut layout_error = layout_error;
@@ -3033,7 +3160,7 @@ fn TelemetryDashboardInner() -> Element {
                     layout_loading.set(false);
                     layout_error.set(None);
                     if let Ok(raw) = serde_json::to_string(&layout) {
-                        persist::set_string(LAYOUT_CACHE_KEY, &raw);
+                        persist::set_string(&cache_key, &raw);
                     }
                 }
                 Err(err) => {
@@ -3046,8 +3173,7 @@ fn TelemetryDashboardInner() -> Element {
         });
     };
 
-    // Reload button (web: full reload, native: remount inner UI)
-    let mut _refresh_layout = refresh_layout;
+    let mut refresh_layout_on_reload = refresh_layout;
     let reload_button: Element = rsx! {
         button {
             style: format!("
@@ -3060,6 +3186,7 @@ fn TelemetryDashboardInner() -> Element {
                 cursor:pointer;
             ", theme.button_border, theme.button_background, theme.button_text),
             onclick: move |_| {
+                refresh_layout_on_reload();
                 clear_and_reconnect_after_connect();
             },
             "{reload_button_label}"
@@ -3944,6 +4071,7 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
 
+                            LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
                             NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
                         }
                     }
@@ -4337,16 +4465,24 @@ async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
             if trimmed.is_empty() {
                 continue;
             }
-            let row = serde_json::from_str::<TelemetryRow>(trimmed)
-                .map_err(|e| format!("invalid NDJSON row ({e}): {}", trimmed.chars().take(200).collect::<String>()))?;
+            let row = serde_json::from_str::<TelemetryRow>(trimmed).map_err(|e| {
+                format!(
+                    "invalid NDJSON row ({e}): {}",
+                    trimmed.chars().take(200).collect::<String>()
+                )
+            })?;
             rows.push(row);
         }
     }
     let tail = String::from_utf8_lossy(&buffered);
     let trimmed = tail.trim();
     if !trimmed.is_empty() {
-        let row = serde_json::from_str::<TelemetryRow>(trimmed)
-            .map_err(|e| format!("invalid NDJSON tail ({e}): {}", trimmed.chars().take(200).collect::<String>()))?;
+        let row = serde_json::from_str::<TelemetryRow>(trimmed).map_err(|e| {
+            format!(
+                "invalid NDJSON tail ({e}): {}",
+                trimmed.chars().take(200).collect::<String>()
+            )
+        })?;
         rows.push(row);
     }
     Ok(rows)
@@ -4814,6 +4950,7 @@ async fn seed_from_db(
     unread_notification_ids: &mut Signal<Vec<u64>>,
     action_policy: &mut Signal<ActionPolicyMsg>,
     network_time: &mut Signal<Option<NetworkTimeSync>>,
+    launch_clock: &mut Signal<Option<LaunchClockMsg>>,
     network_topology: &mut Signal<NetworkTopologyMsg>,
     board_status: &mut Signal<Vec<BoardStatusEntry>>,
     rocket_gps: &mut Signal<Option<(f64, f64)>>,
@@ -4888,7 +5025,10 @@ async fn seed_from_db(
             log!("[seed] /api/recent ok compacted_rows={}", list.len());
 
             if !bridge_rows.is_empty() {
-                log!("[seed] /api/recent merging bridge_rows={}", bridge_rows.len());
+                log!(
+                    "[seed] /api/recent merging bridge_rows={}",
+                    bridge_rows.len()
+                );
                 list = merge_db_and_live(list, bridge_rows.clone());
             }
 
@@ -5043,6 +5183,12 @@ async fn seed_from_db(
         }));
     }
 
+    if let Ok(clock) = http_get_json::<LaunchClockMsg>("/api/launch_clock").await
+        && alive.load(Ordering::Relaxed)
+    {
+        launch_clock.set(Some(clock));
+    }
+
     if let Ok(topology) = http_get_json::<NetworkTopologyMsg>("/api/network_topology").await
         && alive.load(Ordering::Relaxed)
     {
@@ -5089,6 +5235,7 @@ async fn connect_ws_supervisor(
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
     network_time: Signal<Option<NetworkTimeSync>>,
+    launch_clock: Signal<Option<LaunchClockMsg>>,
     network_topology: Signal<NetworkTopologyMsg>,
     warning_event_counter: Signal<u64>,
     error_event_counter: Signal<u64>,
@@ -5128,6 +5275,7 @@ async fn connect_ws_supervisor(
                     unread_notification_ids,
                     action_policy,
                     network_time,
+                    launch_clock,
                     network_topology,
                     warning_event_counter,
                     error_event_counter,
@@ -5152,6 +5300,7 @@ async fn connect_ws_supervisor(
                     unread_notification_ids,
                     action_policy,
                     network_time,
+                    launch_clock,
                     network_topology,
                     warning_event_counter,
                     error_event_counter,
@@ -5205,6 +5354,7 @@ async fn connect_ws_once_wasm(
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
     network_time: Signal<Option<NetworkTimeSync>>,
+    launch_clock: Signal<Option<LaunchClockMsg>>,
     network_topology: Signal<NetworkTopologyMsg>,
     warning_event_counter: Signal<u64>,
     error_event_counter: Signal<u64>,
@@ -5267,6 +5417,7 @@ async fn connect_ws_once_wasm(
                     unread_notification_ids,
                     action_policy,
                     network_time,
+                    launch_clock,
                     network_topology,
                     warning_event_counter,
                     error_event_counter,
@@ -5454,6 +5605,7 @@ async fn connect_ws_once_native(
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
     network_time: Signal<Option<NetworkTimeSync>>,
+    launch_clock: Signal<Option<LaunchClockMsg>>,
     network_topology: Signal<NetworkTopologyMsg>,
     warning_event_counter: Signal<u64>,
     error_event_counter: Signal<u64>,
@@ -5551,6 +5703,7 @@ async fn connect_ws_once_native(
                 unread_notification_ids,
                 action_policy,
                 network_time,
+                launch_clock,
                 network_topology,
                 warning_event_counter,
                 error_event_counter,
@@ -5584,6 +5737,7 @@ fn handle_ws_message(
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
     network_time: Signal<Option<NetworkTimeSync>>,
+    launch_clock: Signal<Option<LaunchClockMsg>>,
     network_topology: Signal<NetworkTopologyMsg>,
     warning_event_counter: Signal<u64>,
     error_event_counter: Signal<u64>,
@@ -5602,6 +5756,7 @@ fn handle_ws_message(
     let unread_notification_ids = unread_notification_ids;
     let mut action_policy = action_policy;
     let mut network_time = network_time;
+    let mut launch_clock = launch_clock;
     let mut network_topology = network_topology;
     let mut flight_state = flight_state;
     let mut board_status = board_status;
@@ -5671,6 +5826,10 @@ fn handle_ws_message(
             flight_state.set(st.state);
         }
 
+        WsInMsg::LaunchClock(clock) => {
+            launch_clock.set(Some(clock));
+        }
+
         WsInMsg::Warning(w) => {
             let mut v = warnings.read().clone();
             v.insert(0, w.clone());
@@ -5714,6 +5873,8 @@ fn handle_ws_message(
         WsInMsg::ActionPolicy(policy) => {
             action_policy.set(policy);
         }
+
+        WsInMsg::RecordingStatus(_status) => {}
 
         WsInMsg::NetworkTime(t) => {
             network_time.set(Some(NetworkTimeSync {

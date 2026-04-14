@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth;
 
-use super::layout::{ActionsTabLayout, ThemeConfig};
+use super::layout::{ActionSpec, ActionsTabLayout, ThemeConfig};
 use super::{ActionPolicyMsg, BlinkMode};
 
 #[cfg(target_arch = "wasm32")]
@@ -72,6 +72,8 @@ fn action_opacity(
         0.45
     } else if recommended {
         blink_opacity(blink_now_ms, blink, actuated).unwrap_or(1.0)
+    } else if actuated.unwrap_or(false) {
+        1.0
     } else {
         0.62
     }
@@ -91,12 +93,14 @@ fn btn_style(
     let opacity = action_opacity(blink_now_ms, enabled, recommended, blink, actuated);
     let filter = if !enabled {
         "grayscale(0.25) brightness(0.9)"
+    } else if actuated.unwrap_or(false) {
+        "none"
     } else if recommended {
         "none"
     } else {
         "saturate(0.58) brightness(0.82)"
     };
-    let box_shadow = if recommended {
+    let box_shadow = if recommended || actuated.unwrap_or(false) {
         "0 10px 25px rgba(0,0,0,0.25)"
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
@@ -106,6 +110,58 @@ fn btn_style(
          text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
          font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation;"
     )
+}
+
+#[derive(Clone, Copy)]
+enum ActionRowItem<'a> {
+    Action(&'a ActionSpec),
+    Spacer,
+}
+
+enum ActionLayoutRow<'a> {
+    Items(Vec<ActionRowItem<'a>>),
+    Spacer,
+}
+
+fn flush_action_row<'a>(
+    rows: &mut Vec<ActionLayoutRow<'a>>,
+    current_row: &mut Vec<ActionRowItem<'a>>,
+) {
+    if !current_row.is_empty() {
+        rows.push(ActionLayoutRow::Items(std::mem::take(current_row)));
+    }
+}
+
+fn build_action_rows<'a>(actions: &'a [&'a ActionSpec]) -> Vec<ActionLayoutRow<'a>> {
+    let mut rows = Vec::new();
+    let mut current_row = Vec::new();
+
+    for action in actions {
+        if action.new_row_before || action.spacer_row_before {
+            flush_action_row(&mut rows, &mut current_row);
+        }
+        if action.spacer_row_before {
+            rows.push(ActionLayoutRow::Spacer);
+        }
+        if action.spacer_before && !current_row.is_empty() {
+            current_row.push(ActionRowItem::Spacer);
+        }
+
+        current_row.push(ActionRowItem::Action(action));
+
+        if action.spacer_after {
+            current_row.push(ActionRowItem::Spacer);
+        }
+        if action.new_row_after || action.spacer_row_after {
+            flush_action_row(&mut rows, &mut current_row);
+        }
+        if action.spacer_row_after {
+            rows.push(ActionLayoutRow::Spacer);
+        }
+    }
+
+    flush_action_row(&mut rows, &mut current_row);
+    rows
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -234,11 +290,12 @@ pub fn ActionsTab(
     });
     let _blink_tick = *redraw_tick.read();
     let blink_now_ms = blink_epoch_ms();
-    let visible_actions = layout
-        .actions
-        .iter()
-        .filter(|action| auth::can_send_command(action.cmd.as_str()))
-        .collect::<Vec<_>>();
+    let visible_actions = if auth::can_view_actions() {
+        layout.actions.iter().collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let action_rows = build_action_rows(&visible_actions);
     let software_buttons_enabled = action_policy.read().software_buttons_enabled;
     let fill_targets_editable = if layout.fill_targets_require_actions_enabled {
         software_buttons_enabled && !abort_only_mode
@@ -272,58 +329,83 @@ pub fn ActionsTab(
             } else {
                 div {
                     style: "
-                        display:grid;
-                        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                        display:flex;
+                        flex-direction:column;
                         gap:12px;
                     ",
-
-                    for action in visible_actions.iter() {
-                        {
-                            let software_buttons_enabled = action_policy.read().software_buttons_enabled;
-                            let control = action_policy
-                                .read()
-                                .controls
-                                .iter()
-                                .find(|c| c.cmd == action.cmd)
-                                .cloned();
-                            let enabled = software_buttons_enabled
-                                && auth::can_send_command(action.cmd.as_str())
-                                && (!abort_only_mode || action.cmd == "Abort")
-                                && control
-                                    .as_ref()
-                                    .map(|c| c.enabled)
-                                    .unwrap_or(action.cmd == "Abort");
-                            let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
-                            let actuated = control.as_ref().and_then(|c| c.actuated);
-                            rsx! {
-                                button {
-                                    style: "{btn_style(&action.border, &action.bg, &action.fg, blink_now_ms, enabled, blink, actuated)}",
-                                    disabled: !enabled,
-                                    onmousedown: {
-                                        let cmd = action.cmd.clone();
-                                        move |_| {
-                                            if enabled {
-                                                crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                    for row in action_rows.iter() {
+                        match row {
+                            ActionLayoutRow::Spacer => rsx! {
+                                div {
+                                    style: "height:14px;"
+                                }
+                            },
+                            ActionLayoutRow::Items(items) => rsx! {
+                                div {
+                                    style: "
+                                        display:grid;
+                                        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                                        gap:12px;
+                                        align-items:stretch;
+                                    ",
+                                    for item in items.iter() {
+                                        match item {
+                                            ActionRowItem::Spacer => rsx! {
+                                                div {
+                                                    style: "min-width:32px;"
+                                                }
+                                            },
+                                            ActionRowItem::Action(action) => {
+                                                let software_buttons_enabled = action_policy.read().software_buttons_enabled;
+                                                let control = action_policy
+                                                    .read()
+                                                    .controls
+                                                    .iter()
+                                                    .find(|c| c.cmd == action.cmd)
+                                                    .cloned();
+                                                let enabled = software_buttons_enabled
+                                                    && auth::can_send_command(action.cmd.as_str())
+                                                    && (!abort_only_mode || action.cmd == "Abort")
+                                                    && control
+                                                        .as_ref()
+                                                        .map(|c| c.enabled)
+                                                        .unwrap_or(action.cmd == "Abort");
+                                                let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
+                                                let actuated = control.as_ref().and_then(|c| c.actuated);
+                                                rsx! {
+                                                    button {
+                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, blink_now_ms, enabled, blink, actuated)}",
+                                                        disabled: !enabled,
+                                                        onmousedown: {
+                                                            let cmd = action.cmd.clone();
+                                                            move |_| {
+                                                                if enabled {
+                                                                    crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                                                                }
+                                                            }
+                                                        },
+                                                        ontouchstart: {
+                                                            let cmd = action.cmd.clone();
+                                                            move |_| {
+                                                                if enabled {
+                                                                    crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                                                                }
+                                                            }
+                                                        },
+                                                        onclick: {
+                                                            let cmd = action.cmd.clone();
+                                                            move |_| {
+                                                                if enabled {
+                                                                    crate::telemetry_dashboard::send_cmd_from_click(&cmd)
+                                                                }
+                                                            }
+                                                        },
+                                                        "{action.label}"
+                                                    }
+                                                }
                                             }
                                         }
-                                    },
-                                    ontouchstart: {
-                                        let cmd = action.cmd.clone();
-                                        move |_| {
-                                            if enabled {
-                                                crate::telemetry_dashboard::send_cmd_from_press(&cmd)
-                                            }
-                                        }
-                                    },
-                                    onclick: {
-                                        let cmd = action.cmd.clone();
-                                        move |_| {
-                                            if enabled {
-                                                crate::telemetry_dashboard::send_cmd_from_click(&cmd)
-                                            }
-                                        }
-                                    },
-                                    "{action.label}"
+                                    }
                                 }
                             }
                         }

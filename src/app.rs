@@ -11,7 +11,7 @@ use crate::telemetry_dashboard::layout::ThemeConfig;
 use dioxus::prelude::*;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 use dioxus_desktop::use_window;
-use dioxus_router::{Routable, Router, use_navigator};
+use dioxus_router::{use_navigator, Routable, Router};
 
 #[allow(unused_imports)]
 use crate::telemetry_dashboard::{self, UrlConfig};
@@ -297,7 +297,7 @@ mod persist {
     /// Resolves the Android app-private files directory when the JNI context is available.
     fn android_storage_dir() -> Option<std::path::PathBuf> {
         use ::jni::objects::{JObject, JString};
-        use ::jni::{JavaVM, jni_sig, jni_str};
+        use ::jni::{jni_sig, jni_str, JavaVM};
         use ndk_context::android_context;
 
         let ctx = android_context();
@@ -650,7 +650,7 @@ async fn http_probe_with_client(
     path: &'static str,
     url: String,
 ) -> Result<(u16, String), String> {
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     const MAX_BODY_BYTES: usize = 4096;
     const BODY_SNIP_TIMEOUT_MS: u64 = 400;
@@ -701,8 +701,7 @@ async fn http_probe_with_client(
         String::new()
     } else {
         snip(body, 300)
-    }
-    ;
+    };
     Ok((status, body))
 }
 
@@ -1343,9 +1342,8 @@ pub fn Connect() -> Element {
     let theme = shell_theme();
     let nav = use_navigator();
 
-    let initial =
-        UrlConfig::_stored_base_url()
-            .unwrap_or_else(|| "https://your-ground-station-url.com".to_string());
+    let initial = UrlConfig::_stored_base_url()
+        .unwrap_or_else(|| "https://your-ground-station-url.com".to_string());
     let (initial_scheme, initial_host) = split_base_url_for_connect(&initial);
     let initial_skip_tls = UrlConfig::_skip_tls_verify_for_base(&initial);
 

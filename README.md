@@ -2,12 +2,19 @@
 
 This repository contains the Dioxus-based frontend for the UBSEDS ground station UI.
 
+Current release:
+
+- Frontend version: `0.3.1`
+- App build: `7`
+- Dioxus line: `0.7.4`
+- Targets: web, desktop, Android, iOS
+
 If your goal is to build a backend that works with this frontend, start here:
 
 - Backend contract: [`docs/backend-api.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-api.md)
 - Example payloads: [`docs/api-examples`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples)
 - Build helper: [`build.py`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/build.py)
-- Streaming `/api/recent` backend prompt: [`docs/backend_recent_streaming_prompt.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend_recent_streaming_prompt.md)
+- Streaming `/api/recent` notes: [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md)
 
 ## What The Frontend Expects
 
@@ -90,7 +97,7 @@ For a more complete dashboard, also implement:
 Web:
 
 ```bash
-cargo install dioxus-cli
+cargo install dioxus-cli --version 0.7.0
 dx serve
 ```
 
@@ -101,6 +108,8 @@ python3 build.py web
 ```
 
 Use `python3 build.py` for the full build helper usage.
+
+The codebase is currently pinned to Dioxus `0.7.4`. Any compatible `0.7.x` CLI is the safe choice; the helper also contains guards for patch-level CLI/runtime skew.
 
 ## Android Build Notes
 
@@ -146,7 +155,7 @@ When the app reconnects or explicitly reseeds, it keeps existing chart history v
 - reseed status is shown directly on graphs so operators can tell whether it is running, succeeded, or failed
 - if reseed fails after data was already visible, the app keeps the existing visible history instead of blanking the graphs
 
-If you are implementing the backend streaming path, use [`docs/backend_recent_streaming_prompt.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend_recent_streaming_prompt.md).
+If you are implementing the backend streaming path, use [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md).
 
 ## Notes For Backend Authors
 
@@ -161,6 +170,6 @@ If you are implementing the backend streaming path, use [`docs/backend_recent_st
 ## Reference Files
 
 - API reference: [`docs/backend-api.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-api.md)
-- Streaming prompt: [`docs/backend_recent_streaming_prompt.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend_recent_streaming_prompt.md)
+- Streaming notes: [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md)
 - Minimal layout example: [`docs/api-examples/layout.minimal.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/layout.minimal.json)
 - WebSocket examples: [`docs/api-examples/websocket-messages.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/websocket-messages.json)

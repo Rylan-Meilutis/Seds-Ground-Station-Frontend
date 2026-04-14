@@ -1,8 +1,13 @@
-use super::{format_timestamp_ms_clock, layout::ThemeConfig, translate_text, PersistentNotification};
+use super::{
+    format_timestamp_ms_clock, layout::ThemeConfig, translate_text, PersistentNotification,
+};
 use dioxus::prelude::*;
 
 #[component]
-pub fn NotificationsTab(history: Signal<Vec<PersistentNotification>>, theme: ThemeConfig) -> Element {
+pub fn NotificationsTab(
+    history: Signal<Vec<PersistentNotification>>,
+    theme: ThemeConfig,
+) -> Element {
     rsx! {
         div { style: "padding:16px; color:{theme.text_primary};",
             h2 { style: "margin:0 0 12px 0; color:{theme.text_primary};", "{translate_text(\"Notifications History\")}" }

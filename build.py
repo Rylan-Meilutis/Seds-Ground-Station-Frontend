@@ -1985,9 +1985,14 @@ def cleanup_android_dist_artifacts(frontend_dir: Path) -> None:
         return
 
     canonical_apk = f"{ANDROID_APP_NAME}.apk"
+    canonical_aab = f"{ANDROID_APP_NAME}.aab"
     for item in sorted(dist.iterdir()):
-        if item.suffix in {".aab", ".apks"}:
+        if item.suffix == ".apks":
             print(f"Removing android bundle artifact: {item.name}")
+            _remove_path(item)
+            continue
+        if item.suffix == ".aab" and item.name != canonical_aab:
+            print(f"Removing stale android aab artifact: {item.name}")
             _remove_path(item)
             continue
         if item.suffix == ".apk" and item.name != canonical_apk:

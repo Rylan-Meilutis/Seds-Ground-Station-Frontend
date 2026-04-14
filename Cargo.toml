@@ -8,16 +8,16 @@ license-file = "LICENSE"
 repository = "https://github.com/Rylan-Meilutis/Seds-Ground-Station-Frontend"
 
 [dependencies]
-dioxus = { version = "0.7.4", default-features = false }
+dioxus = { version = "0.7.5", default-features = false }
 dioxus-router = "0.7.4"
 
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 
-web-sys = "0.3.94"
+web-sys = "0.3.95"
 gloo-net = "0.7.0"
-wasm-bindgen = "0.2.117"
-js-sys = "0.3.94"
+wasm-bindgen = "0.2.118"
+js-sys = "0.3.95"
 console_error_panic_hook = "0.1.7"
 gloo-timers = "0.4.0"
 dirs = "6.0.0"
@@ -25,15 +25,15 @@ futures-channel = "0.3.32"
 once_cell = "1.21.4"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-dioxus = { version = "0.7.4", features = ["web", "macro"] }
+dioxus = { version = "0.7.5", features = ["web", "macro"] }
 dioxus-signals = "0.7.4"
 dioxus-sdk-geolocation = "0.7.0"
 gloo-net = { version = "0.7.0", features = ["http"] }
 gloo-timers = { version = "0.4.0", features = ["futures"] }
-wasm-bindgen = "0.2.117"
+wasm-bindgen = "0.2.118"
 futures-util = "0.3.32"
-wasm-bindgen-futures = "0.4.67"
-web-sys = { version = "0.3.94", features = [
+wasm-bindgen-futures = "0.4.68"
+web-sys = { version = "0.3.95", features = [
     "Window",
     "Location",
     "WebSocket",
@@ -50,11 +50,11 @@ web-sys = { version = "0.3.94", features = [
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-dioxus = { version = "0.7.4", features = ["desktop", "macro"] }
+dioxus = { version = "0.7.5", features = ["desktop", "macro"] }
 dioxus-signals = "0.7.4"
 dioxus-desktop = "0.7.5"
 chrono = { version = "0.4.44", default-features = false, features = ["std", "clock"] }
-tokio = { version = "1.51.0", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.52.0", features = ["rt-multi-thread", "macros", "time"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "blocking", "rustls", "stream"] }
 rustls = "0.23"
 rustls-platform-verifier = "0.6.2"
@@ -72,6 +72,7 @@ tokio-tungstenite = { version = "0.29.0", default-features = false, features = [
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
+jni021 = { package = "jni", version = "0.21.1" }
 ndk-context = "0.1.1"
 
 [features]

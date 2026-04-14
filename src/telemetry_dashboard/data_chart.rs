@@ -1350,6 +1350,42 @@ pub fn series_color(i: usize) -> &'static str {
     .unwrap_or("#9ca3af")
 }
 
+#[component]
+pub fn SeriesSwatch(index: usize) -> Element {
+    let color = series_color(index);
+    rsx! {
+        svg { width:"26", height:"8", view_box:"0 0 26 8",
+            line {
+                x1:"1",
+                y1:"4",
+                x2:"25",
+                y2:"4",
+                stroke:"rgba(15, 23, 42, 0.9)",
+                stroke_width:"5",
+                stroke_linecap:"round"
+            }
+            line {
+                x1:"1",
+                y1:"4",
+                x2:"25",
+                y2:"4",
+                stroke:"rgba(248, 250, 252, 0.78)",
+                stroke_width:"3.25",
+                stroke_linecap:"round"
+            }
+            line {
+                x1:"1",
+                y1:"4",
+                x2:"25",
+                y2:"4",
+                stroke:"{color}",
+                stroke_width:"2.1",
+                stroke_linecap:"round"
+            }
+        }
+    }
+}
+
 static NEXT_CANVAS_ID: AtomicU64 = AtomicU64::new(1);
 
 fn should_smooth_chunk(chunk_width: f32, chunk_bucket_count: i64) -> bool {
@@ -1588,6 +1624,34 @@ pub fn ChartCanvas(
                     }}
                   }};
                   const drawChunkDirect = (targetCtx, chunk, destX, destW) => {{
+                    const strokeWithContrast = (ctx, path2d, color, width, alpha = 1.0) => {{
+                      ctx.save();
+                      ctx.globalAlpha = Math.max(0.22, alpha * 0.88);
+                      ctx.strokeStyle = "rgba(15, 23, 42, 0.92)";
+                      ctx.lineWidth = width + 4.0;
+                      ctx.lineJoin = "round";
+                      ctx.lineCap = "round";
+                      ctx.stroke(path2d);
+                      ctx.restore();
+
+                      ctx.save();
+                      ctx.globalAlpha = Math.max(0.18, alpha * 0.72);
+                      ctx.strokeStyle = "rgba(248, 250, 252, 0.78)";
+                      ctx.lineWidth = width + 2.1;
+                      ctx.lineJoin = "round";
+                      ctx.lineCap = "round";
+                      ctx.stroke(path2d);
+                      ctx.restore();
+
+                      ctx.save();
+                      ctx.globalAlpha = alpha;
+                      ctx.strokeStyle = color;
+                      ctx.lineWidth = width;
+                      ctx.lineJoin = "round";
+                      ctx.lineCap = "round";
+                      ctx.stroke(path2d);
+                      ctx.restore();
+                    }};
                     targetCtx.save();
                     targetCtx.translate(destX, 0);
                     targetCtx.scale(destW / Math.max(1, chunk.width), pxH / data.view_h);
@@ -1595,23 +1659,14 @@ pub fn ChartCanvas(
                     for (let i = 0; i < chunk.paths.length; i += 1) {{
                       const path2d = buildPath2d(chunk.paths[i]);
                       if (!path2d) continue;
-                      targetCtx.strokeStyle = data.colors[i] || "#9ca3af";
-                      targetCtx.lineWidth = 2.25;
-                      targetCtx.lineJoin = "round";
-                      targetCtx.lineCap = "round";
-                      targetCtx.stroke(path2d);
+                      strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 2.25, 1.0);
                     }}
                     for (let i = 0; i < chunk.gap_paths.length; i += 1) {{
                       const path2d = buildPath2d(chunk.gap_paths[i]);
                       if (!path2d) continue;
                       targetCtx.save();
-                      targetCtx.strokeStyle = data.colors[i] || "#9ca3af";
-                      targetCtx.globalAlpha = 0.7;
-                      targetCtx.lineWidth = 2.0;
-                      targetCtx.lineJoin = "round";
-                      targetCtx.lineCap = "round";
                       targetCtx.setLineDash([7, 6]);
-                      targetCtx.stroke(path2d);
+                      strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 2.0, 0.74);
                       targetCtx.restore();
                     }}
                     targetCtx.restore();

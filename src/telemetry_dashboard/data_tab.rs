@@ -9,11 +9,14 @@ use std::rc::Rc;
 
 use super::data_chart::{
     charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_subset, charts_cache_get_subset_per_series,
-    sender_scoped_chart_key, series_color, ChartCanvas, CHART_GRID_BOTTOM_PAD,
+    sender_scoped_chart_key, series_color, ChartCanvas, SeriesSwatch, CHART_GRID_BOTTOM_PAD,
     CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
     CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
-use super::{latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH};
+use super::{
+    latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text,
+    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
+};
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
 const _ACTIVE_SUBTAB_STORAGE_KEY: &str = "gs26_active_data_subtab";
@@ -892,9 +895,7 @@ fn render_chart_group(
                 div { style: "display:flex; flex-wrap:wrap; gap:8px; padding:6px 10px; background:rgba(2,6,23,0.75); border:1px solid {theme.border_soft}; border-radius:10px;",
                     for (i, label) in legend_rows.iter() {
                         div { style: "display:flex; align-items:center; gap:6px; font-size:12px; color:{theme.text_secondary};",
-                            svg { width:"26", height:"8", view_box:"0 0 26 8",
-                                line { x1:"1", y1:"4", x2:"25", y2:"4", stroke:"{series_color(*i)}", "stroke-width":"2", "stroke-linecap":"round" }
-                            }
+                            SeriesSwatch { index: *i }
                             "{translate_text(label)}"
                         }
                     }

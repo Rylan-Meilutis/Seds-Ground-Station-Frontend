@@ -4,11 +4,11 @@ mod telemetry_dashboard;
 
 use dioxus::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
-use dioxus_desktop::RequestAsyncResponder;
-#[cfg(not(target_arch = "wasm32"))]
 use dioxus_desktop::tao::window::WindowBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use dioxus_desktop::wry::http::{Request as HttpRequest, Response as HttpResponse};
+#[cfg(not(target_arch = "wasm32"))]
+use dioxus_desktop::RequestAsyncResponder;
 #[cfg(not(target_arch = "wasm32"))]
 use image::ImageFormat;
 #[cfg(not(target_arch = "wasm32"))]
@@ -16,7 +16,7 @@ use std::backtrace::Backtrace;
 #[cfg(not(target_arch = "wasm32"))]
 use std::borrow::Cow;
 #[cfg(not(target_arch = "wasm32"))]
-use std::fs::{OpenOptions, create_dir_all};
+use std::fs::{create_dir_all, OpenOptions};
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
@@ -85,29 +85,32 @@ fn append_native_log(message: &str) {
 #[cfg(target_os = "android")]
 /// Initializes rustls-platform-verifier with Android JVM/context handles.
 fn init_android_platform_tls_verifier() {
+    use ::jni021::JavaVM;
+    use ::jni021::objects::JObject;
+
     let ctx = ndk_context::android_context();
-    let vm = match unsafe { dioxus::prelude::jni::JavaVM::from_raw(ctx.vm().cast()) } {
+    let vm = match unsafe { JavaVM::from_raw(ctx.vm().cast()) } {
         Ok(vm) => vm,
         Err(e) => {
             append_native_log(&format!(
-                "[startup] android TLS verifier init failed (JavaVM): {e}"
+                "[startup] android TLS verifier init failed (vm): {e}"
             ));
             return;
         }
     };
 
-    let mut env = match vm.attach_current_thread() {
-        Ok(env) => env,
-        Err(e) => {
-            append_native_log(&format!(
-                "[startup] android TLS verifier init failed (attach): {e}"
-            ));
-            return;
-        }
-    };
-
-    let context = unsafe { dioxus::prelude::jni::objects::JObject::from_raw(ctx.context().cast()) };
-    match rustls_platform_verifier::android::init_with_env(&mut env, context) {
+    match (|| -> ::jni021::errors::Result<()> {
+        let init_vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }?;
+        let mut env = vm.attach_current_thread()?;
+        let context = unsafe { JObject::from_raw(ctx.context().cast()) };
+        let loader = env
+            .call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
+            .l()?;
+        let context = env.new_global_ref(context)?;
+        let loader = env.new_global_ref(loader)?;
+        rustls_platform_verifier::android::init_with_refs(init_vm, context, loader);
+        Ok(())
+    })() {
         Ok(_) => append_native_log("[startup] android TLS verifier initialized"),
         Err(e) => append_native_log(&format!("[startup] android TLS verifier init failed: {e}")),
     }
@@ -137,6 +140,10 @@ fn main() {
             _handle_gs26_protocol_async(request, responder);
         },
     );
+    #[cfg(target_os = "android")]
+    {
+        cfg = cfg.with_custom_head(android_custom_head());
+    }
     cfg = cfg.with_window(WindowBuilder::new().with_title(app::APP_DISPLAY_NAME));
     if let Some(icon) = load_desktop_window_icon() {
         cfg = cfg.with_icon(icon);
@@ -155,6 +162,30 @@ fn load_desktop_window_icon() -> Option<dioxus_desktop::tao::window::Icon> {
             .into_rgba8();
     let (width, height) = image.dimensions();
     dioxus_desktop::tao::window::Icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
+#[cfg(target_os = "android")]
+fn android_custom_head() -> String {
+    r#"
+<script>
+(() => {
+    const normalizeInternalUrl = (value) => {
+        if (typeof value !== "string") {
+            return value;
+        }
+        return value
+            .replace("https://dioxus.index.html//__events", "https://dioxus.index.html/__events")
+            .replace("http://dioxus.index.html//__events", "http://dioxus.index.html/__events");
+    };
+
+    const originalXhrOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        return originalXhrOpen.call(this, method, normalizeInternalUrl(url), ...rest);
+    };
+})();
+</script>
+"#
+    .to_string()
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -20,11 +20,28 @@ let lastMapView = null;
 let currentTilesUrl = null;
 let currentMaxNativeZoom = null;
 let currentMaxZoom = null;
+let tileCacheSweepTimer = null;
+let tilePrefetchTimer = null;
+let currentPrefetchKey = null;
+let tilePrefetchRunId = 0;
+let tilePrefetchState = {
+    key: "",
+    state: "idle",
+    pending: 0,
+    completed: 0,
+    failed: 0,
+    lastStartedAt: 0,
+    lastCompletedAt: 0,
+};
 
 // you currently have tiles for z = 0..8
 const MIN_ZOOM = 0;
 const DEFAULT_MAX_NATIVE_ZOOM = 12;
 const DEFAULT_MAX_OVERZOOM_DELTA = 1;
+const HIGH_RES_PREFETCH_RADIUS_M = 1609.344;
+const HIGH_RES_PREFETCH_MIN_ZOOM_DELTA = 1;
+const HIGH_RES_PREFETCH_MAX_TILES = 192;
+const HIGH_RES_PREFETCH_CONCURRENCY = 6;
 
 // Must match Rust NA_BOUNDS in build.rs
 const NA_BOUNDS = {
@@ -171,6 +188,400 @@ function clampMaxNativeZoom(value) {
     return Math.max(MIN_ZOOM, z);
 }
 
+function tileCacheSupported() {
+    return typeof window !== "undefined"
+        && typeof window.caches !== "undefined"
+        && typeof window.fetch === "function";
+}
+
+function tileCacheName(tilesUrl) {
+    return `gs26-tiles-v1:${String(tilesUrl || "")
+        .replace(/[^a-z0-9]+/gi, "_")
+        .replace(/^_+|_+$/g, "")
+        .toLowerCase() || "default"}`;
+}
+
+function objectUrlFromBlob(blob) {
+    try {
+        return URL.createObjectURL(blob);
+    } catch (e) {
+        console.warn("[GS26 map] failed to create tile object URL", e);
+        return "";
+    }
+}
+
+async function readCachedTileBlob(cacheName, url) {
+    if (!tileCacheSupported() || !url) return null;
+    try {
+        const cache = await caches.open(cacheName);
+        const cached = await cache.match(url, {ignoreVary: true});
+        if (!cached || !cached.ok) return null;
+        return await cached.blob();
+    } catch (e) {
+        console.warn("[GS26 map] cache read failed", url, e);
+        return null;
+    }
+}
+
+async function fetchAndCacheTileBlob(cacheName, url) {
+    if (!url) return null;
+
+    if (!tileCacheSupported()) {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`tile fetch failed: ${response.status}`);
+        return await response.blob();
+    }
+
+    const cache = await caches.open(cacheName);
+    const cached = await cache.match(url, {ignoreVary: true});
+    if (cached && cached.ok) {
+        return await cached.blob();
+    }
+
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`tile fetch failed: ${response.status}`);
+    try {
+        await cache.put(url, response.clone());
+    } catch (e) {
+        console.warn("[GS26 map] cache put failed", url, e);
+    }
+    return await response.blob();
+}
+
+function metersPerDegreeLat() {
+    return 111_320.0;
+}
+
+function metersPerDegreeLon(lat) {
+    const cosLat = Math.cos((lat * Math.PI) / 180.0);
+    return Math.max(1.0, 111_320.0 * Math.max(0.01, Math.abs(cosLat)));
+}
+
+function clampLat(lat) {
+    return Math.max(-85.05112878, Math.min(85.05112878, lat));
+}
+
+function clampLon(lon) {
+    let value = lon;
+    while (value < -180.0) value += 360.0;
+    while (value > 180.0) value -= 360.0;
+    return value;
+}
+
+function latLonToTileXY(lat, lon, zoom) {
+    const scale = Math.pow(2, zoom);
+    const clampedLat = clampLat(lat);
+    const clampedLon = clampLon(lon);
+    const latRad = clampedLat * Math.PI / 180.0;
+    const x = Math.floor(((clampedLon + 180.0) / 360.0) * scale);
+    const y = Math.floor(
+        ((1.0 - Math.log(Math.tan(latRad) + 1.0 / Math.cos(latRad)) / Math.PI) / 2.0) * scale
+    );
+    return {
+        x: Math.max(0, Math.min(scale - 1, x)),
+        y: Math.max(0, Math.min(scale - 1, y)),
+    };
+}
+
+function tileCoordsAround(lat, lon, zoom, radiusM) {
+    const dLat = radiusM / metersPerDegreeLat();
+    const dLon = radiusM / metersPerDegreeLon(lat);
+    const north = lat + dLat;
+    const south = lat - dLat;
+    const east = lon + dLon;
+    const west = lon - dLon;
+    const nw = latLonToTileXY(north, west, zoom);
+    const se = latLonToTileXY(south, east, zoom);
+    const coords = [];
+    for (let x = nw.x; x <= se.x; x++) {
+        for (let y = nw.y; y <= se.y; y++) {
+            coords.push({x, y, z: zoom});
+        }
+    }
+    return coords;
+}
+
+function prefetchZoomLevels(maxNativeZoom) {
+    const top = clampMaxNativeZoom(maxNativeZoom);
+    const min = Math.max(MIN_ZOOM, top - HIGH_RES_PREFETCH_MIN_ZOOM_DELTA);
+    const zooms = [];
+    for (let z = top; z >= min; z--) {
+        zooms.push(z);
+    }
+    return zooms;
+}
+
+function setTilePrefetchState(next) {
+    tilePrefetchState = {
+        ...tilePrefetchState,
+        ...next,
+    };
+    try {
+        window.__gs26_ground_map_cache_state = {...tilePrefetchState};
+        window.__gs26_ground_map_cache_ready = tilePrefetchState.state === "ready";
+    } catch (e) {
+    }
+}
+
+function expandBoundsByRadius(bounds, radiusM) {
+    if (!bounds) return null;
+    const north = bounds.getNorth();
+    const south = bounds.getSouth();
+    const east = bounds.getEast();
+    const west = bounds.getWest();
+    const midLat = (north + south) / 2.0;
+    const dLat = radiusM / metersPerDegreeLat();
+    const dLon = radiusM / metersPerDegreeLon(midLat);
+    return {
+        north: clampLat(north + dLat),
+        south: clampLat(south - dLat),
+        east: clampLon(east + dLon),
+        west: clampLon(west - dLon),
+    };
+}
+
+function tileCoordsForBounds(bounds, zoom) {
+    if (!bounds) return [];
+    const nw = latLonToTileXY(bounds.north, bounds.west, zoom);
+    const se = latLonToTileXY(bounds.south, bounds.east, zoom);
+    const coords = [];
+    for (let x = nw.x; x <= se.x; x++) {
+        for (let y = nw.y; y <= se.y; y++) {
+            coords.push({x, y, z: zoom});
+        }
+    }
+    return coords;
+}
+
+function appendUniqueCoords(target, seen, coords, maxTiles) {
+    for (const coord of coords) {
+        const id = `${coord.z}/${coord.x}/${coord.y}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        target.push(coord);
+        if (target.length >= maxTiles) break;
+    }
+}
+
+function buildHighResPrefetchPlan() {
+    if (!groundTileLayer || !currentTilesUrl) {
+        return {key: "", coords: []};
+    }
+
+    const zooms = prefetchZoomLevels(currentMaxNativeZoom);
+    const coords = [];
+    const seen = new Set();
+    const userLat = Array.isArray(lastUserLatLng) ? lastUserLatLng[0] : NaN;
+    const userLon = Array.isArray(lastUserLatLng) ? lastUserLatLng[1] : NaN;
+    const rocketLat = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[0] : NaN;
+    const rocketLon = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[1] : NaN;
+    const viewport = groundMap
+        ? expandBoundsByRadius(groundMap.getBounds(), HIGH_RES_PREFETCH_RADIUS_M)
+        : null;
+    const viewportKey = viewport
+        ? [
+            viewport.north.toFixed(4),
+            viewport.south.toFixed(4),
+            viewport.east.toFixed(4),
+            viewport.west.toFixed(4),
+        ].join(",")
+        : "";
+    const key = [
+        currentTilesUrl || "",
+        String(currentMaxNativeZoom || ""),
+        Number.isFinite(userLat) ? userLat.toFixed(4) : "",
+        Number.isFinite(userLon) ? userLon.toFixed(4) : "",
+        Number.isFinite(rocketLat) ? rocketLat.toFixed(4) : "",
+        Number.isFinite(rocketLon) ? rocketLon.toFixed(4) : "",
+        viewportKey,
+    ].join("|");
+
+    for (const zoom of zooms) {
+        if (Number.isFinite(userLat) && Number.isFinite(userLon) && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+            appendUniqueCoords(
+                coords,
+                seen,
+                tileCoordsAround(userLat, userLon, zoom, HIGH_RES_PREFETCH_RADIUS_M),
+                HIGH_RES_PREFETCH_MAX_TILES
+            );
+        }
+
+        if (viewport && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+            appendUniqueCoords(
+                coords,
+                seen,
+                tileCoordsForBounds(viewport, zoom),
+                HIGH_RES_PREFETCH_MAX_TILES
+            );
+        }
+
+        if (Number.isFinite(rocketLat) && Number.isFinite(rocketLon) && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+            appendUniqueCoords(
+                coords,
+                seen,
+                tileCoordsAround(rocketLat, rocketLon, zoom, HIGH_RES_PREFETCH_RADIUS_M),
+                HIGH_RES_PREFETCH_MAX_TILES
+            );
+        }
+    }
+
+    return {key, coords};
+}
+
+async function runHighResTilePrefetch(runId, key) {
+    const layer = groundTileLayer;
+    const tilesUrl = currentTilesUrl;
+    if (!layer || !tilesUrl) return;
+
+    const plan = buildHighResPrefetchPlan();
+    if (!plan.coords.length) {
+        setTilePrefetchState({
+            key,
+            state: "ready",
+            pending: 0,
+            completed: 0,
+            failed: 0,
+            lastCompletedAt: Date.now(),
+        });
+        return;
+    }
+
+    const cacheName = tileCacheName(tilesUrl);
+    let nextIndex = 0;
+    let completed = 0;
+    let failed = 0;
+    const total = plan.coords.length;
+
+    setTilePrefetchState({
+        key,
+        state: "warming",
+        pending: total,
+        completed: 0,
+        failed: 0,
+        lastStartedAt: Date.now(),
+    });
+
+    const worker = async () => {
+        while (true) {
+            if (runId !== tilePrefetchRunId || groundTileLayer !== layer || currentTilesUrl !== tilesUrl) {
+                return;
+            }
+            const index = nextIndex++;
+            if (index >= total) return;
+            const coord = plan.coords[index];
+            try {
+                const url = layer.getTileUrl(coord);
+                if (url) {
+                    await fetchAndCacheTileBlob(cacheName, url);
+                }
+            } catch (e) {
+                failed += 1;
+            } finally {
+                completed += 1;
+                if (runId === tilePrefetchRunId) {
+                    setTilePrefetchState({
+                        key,
+                        state: completed >= total ? "ready" : "warming",
+                        pending: Math.max(0, total - completed),
+                        completed,
+                        failed,
+                        lastCompletedAt: completed >= total ? Date.now() : tilePrefetchState.lastCompletedAt,
+                    });
+                }
+            }
+        }
+    };
+
+    const concurrency = Math.max(1, Math.min(HIGH_RES_PREFETCH_CONCURRENCY, total));
+    await Promise.allSettled(Array.from({length: concurrency}, () => worker()));
+
+    if (runId === tilePrefetchRunId) {
+        setTilePrefetchState({
+            key,
+            state: "ready",
+            pending: 0,
+            completed,
+            failed,
+            lastCompletedAt: Date.now(),
+        });
+    }
+}
+
+function scheduleTileCacheSweep(tilesUrl) {
+    if (!tileCacheSupported()) return;
+    if (tileCacheSweepTimer) clearTimeout(tileCacheSweepTimer);
+    tileCacheSweepTimer = setTimeout(async () => {
+        try {
+            const active = tileCacheName(tilesUrl);
+            const keys = await caches.keys();
+            await Promise.all(
+                keys
+                    .filter((key) => key.startsWith("gs26-tiles-v1:") && key !== active)
+                    .map((key) => caches.delete(key))
+            );
+        } catch (e) {
+            console.warn("[GS26 map] cache sweep failed", e);
+        }
+    }, 1000);
+}
+
+function scheduleHighResTilePrefetch() {
+    if (!groundTileLayer || !currentTilesUrl) return;
+    if (!tileCacheSupported()) return;
+
+    const plan = buildHighResPrefetchPlan();
+    const key = plan.key;
+    if (!key) return;
+    if (currentPrefetchKey === key) return;
+    currentPrefetchKey = key;
+
+    if (tilePrefetchTimer) clearTimeout(tilePrefetchTimer);
+    const runId = ++tilePrefetchRunId;
+    setTilePrefetchState({
+        key,
+        state: "queued",
+        pending: plan.coords.length,
+        completed: 0,
+        failed: 0,
+    });
+    tilePrefetchTimer = setTimeout(async () => {
+        await runHighResTilePrefetch(runId, key);
+    }, 350);
+}
+
+function wireTileElement(tile, cacheName, url, done) {
+    let objectUrl = null;
+    const cleanup = () => {
+        if (!objectUrl) return;
+        try {
+            URL.revokeObjectURL(objectUrl);
+        } catch (e) {
+        }
+        objectUrl = null;
+    };
+
+    tile.onload = () => {
+        cleanup();
+        done(null, tile);
+    };
+    tile.onerror = (err) => {
+        cleanup();
+        done(err || new Error("tile load failed"), tile);
+    };
+
+    fetchAndCacheTileBlob(cacheName, url)
+        .then((blob) => {
+            if (!blob) throw new Error("tile blob missing");
+            objectUrl = objectUrlFromBlob(blob);
+            tile.src = objectUrl || url;
+        })
+        .catch(async () => {
+            const cachedBlob = await readCachedTileBlob(cacheName, url);
+            objectUrl = cachedBlob ? objectUrlFromBlob(cachedBlob) : "";
+            tile.src = objectUrl || url;
+        });
+}
+
 function createNaTileLayer(tilesUrl, maxNativeZoom, maxZoom) {
     const L = getLeaflet();
 
@@ -187,6 +598,27 @@ function createNaTileLayer(tilesUrl, maxNativeZoom, maxZoom) {
         noWrap: true,
         attribution: "Local tiles",
     });
+    const cacheName = tileCacheName(tilesUrl);
+    const originalGetTileUrl = layer.getTileUrl.bind(layer);
+
+    layer.createTile = function (coords, done) {
+        const tile = document.createElement("img");
+        tile.alt = "";
+        tile.setAttribute("role", "presentation");
+        tile.decoding = "async";
+        tile.referrerPolicy = "no-referrer";
+
+        const url = originalGetTileUrl(coords);
+        if (!tileCacheSupported()) {
+            tile.onload = () => done(null, tile);
+            tile.onerror = (err) => done(err || new Error("tile load failed"), tile);
+            tile.src = url;
+            return tile;
+        }
+
+        wireTileElement(tile, cacheName, url, done);
+        return tile;
+    };
 
     try {
         console.log("[GS26 map] tile layer created", {
@@ -201,6 +633,8 @@ function createNaTileLayer(tilesUrl, maxNativeZoom, maxZoom) {
     } catch (e) {
         console.warn("[GS26 map] failed to install tile logging", e);
     }
+
+    scheduleTileCacheSweep(tilesUrl);
 
     return layer;
 }
@@ -369,6 +803,7 @@ function initCompassOnce() {
 function centerGroundMapOn(lat, lon) {
     if (!groundMap) return;
     groundMap.setView([lat, lon], groundMap.getZoom());
+    scheduleHighResTilePrefetch();
 }
 
 function getLastUserLatLng() {
@@ -429,6 +864,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
             currentTilesUrl = tilesUrl;
             currentMaxNativeZoom = effectiveMaxNativeZoom;
             currentMaxZoom = effectiveMaxZoom;
+            scheduleHighResTilePrefetch();
 
             const nextZoom = Math.min(
                 effectiveMaxZoom,
@@ -464,7 +900,10 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     currentTilesUrl = tilesUrl;
     currentMaxNativeZoom = effectiveMaxNativeZoom;
     currentMaxZoom = effectiveMaxZoom;
-    groundMap.on("moveend zoomend", rememberMapView);
+    groundMap.on("moveend zoomend", () => {
+        rememberMapView();
+        scheduleHighResTilePrefetch();
+    });
     rememberMapView();
     window.__gs26_ground_map = groundMap;
 
@@ -484,6 +923,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     }
 
     syncRocketGuideLine(lastRocketLatLng, lastUserLatLng);
+    scheduleHighResTilePrefetch();
 }
 
 function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
@@ -525,6 +965,9 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     }
 
     syncRocketGuideLine(hasRocket ? lastRocketLatLng : null, hasUser ? lastUserLatLng : null);
+    if (hasUser || hasRocket) {
+        scheduleHighResTilePrefetch();
+    }
 }
 
 // ---- keep as global script ----
@@ -537,6 +980,7 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     api.updateGroundMapMarkers = updateGroundMapMarkers;
     api.centerGroundMapOn = centerGroundMapOn;
     api.getLastUserLatLng = getLastUserLatLng;
+    api.scheduleHighResTilePrefetch = scheduleHighResTilePrefetch;
 
     // Optional: expose these too (useful for debugging / permissions testing)
     api.initCompassOnce = initCompassOnce;
@@ -598,6 +1042,9 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
         get compassInitialized() {
             return compassInitialized;
         },
+        get tilePrefetchState() {
+            return tilePrefetchState;
+        },
     });
 
     window.initGroundMap = api.initGroundMap;
@@ -606,8 +1053,11 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     window.getLastUserLatLng = api.getLastUserLatLng;
     window.initCompassOnce = api.initCompassOnce;
     window.setGroundMapUserHeading = api.setGroundMapUserHeading;
+    window.scheduleHighResTilePrefetch = api.scheduleHighResTilePrefetch;
 
     // “Loaded” flag
     window.__gs26_ground_station_loaded = true;
+    window.__gs26_ground_map_cache_state = {...tilePrefetchState};
+    window.__gs26_ground_map_cache_ready = false;
     console.log("[GS26] ground_station.js loaded; keys:", Object.keys(api));
 })();
