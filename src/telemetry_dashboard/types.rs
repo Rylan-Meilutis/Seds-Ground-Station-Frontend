@@ -2,6 +2,38 @@ use serde::{Deserialize, Serialize};
 
 pub type FlightState = String;
 
+pub fn display_flight_state(state: &str) -> String {
+    let mut out = String::with_capacity(state.len() + 4);
+    let mut prev: Option<char> = None;
+    let mut chars = state.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if matches!(ch, '_' | '-') {
+            if !out.ends_with(' ') && !out.is_empty() {
+                out.push(' ');
+            }
+            prev = Some(' ');
+            continue;
+        }
+
+        let next = chars.peek().copied();
+        let needs_space = match (prev, next) {
+            (Some(p), _) if p.is_lowercase() && ch.is_uppercase() => true,
+            (Some(p), _) if p.is_ascii_digit() && ch.is_alphabetic() => true,
+            (Some(p), Some(n)) if p.is_uppercase() && ch.is_uppercase() && n.is_lowercase() => true,
+            _ => false,
+        };
+
+        if needs_space && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        out.push(ch);
+        prev = Some(ch);
+    }
+
+    out.trim().to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardStatusEntry {
     pub board: String,
@@ -104,6 +136,24 @@ pub struct NetworkTopologyMsg {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_flight_state;
+
+    #[test]
+    fn displays_camel_case_flight_states_with_spaces() {
+        assert_eq!(display_flight_state("FillTest"), "Fill Test");
+        assert_eq!(display_flight_state("PadIdle"), "Pad Idle");
+        assert_eq!(display_flight_state("MECOState"), "MECO State");
+    }
+
+    #[test]
+    fn displays_delimited_flight_states_with_spaces() {
+        assert_eq!(display_flight_state("fill_test"), "fill test");
+        assert_eq!(display_flight_state("Fill-Test"), "Fill Test");
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

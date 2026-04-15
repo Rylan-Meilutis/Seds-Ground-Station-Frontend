@@ -5,35 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth;
 
+use super::blink::{action_opacity, blink_epoch_ms};
 use super::layout::{ActionSpec, ActionsTabLayout, ThemeConfig};
-use super::{ActionPolicyMsg, BlinkMode};
-
-#[cfg(target_arch = "wasm32")]
-fn blink_epoch_ms() -> u64 {
-    js_sys::Date::now().max(0.0) as u64
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn blink_epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn blink_opacity(blink_now_ms: u64, blink: BlinkMode, actuated: Option<bool>) -> Option<f32> {
-    let (period_ms, dim, bright, invert) = match (blink, actuated.unwrap_or(false)) {
-        (BlinkMode::None, _) => return None,
-        (BlinkMode::Slow, false) => (1_800, 0.2, 1.0, false),
-        (BlinkMode::Slow, true) => (1_800, 0.25, 1.0, true),
-        (BlinkMode::Fast, false) => (600, 0.15, 1.0, false),
-        (BlinkMode::Fast, true) => (600, 0.2, 1.0, true),
-    };
-    let phase = (blink_now_ms % period_ms) as f32 / period_ms as f32;
-    let wave = 0.5 - 0.5 * f32::cos(std::f32::consts::TAU * phase);
-    let pulse = if invert { 1.0 - wave } else { wave };
-    Some(dim + (bright - dim) * pulse)
-}
+use super::{ActionPolicyMsg, BlinkMode, FillTargetsConfig, FluidFillTarget, translate_text};
 
 #[cfg(not(target_arch = "wasm32"))]
 fn target_frame_duration() -> std::time::Duration {
@@ -59,24 +33,6 @@ async fn sleep_for_frame(duration: std::time::Duration) {
 #[cfg(not(target_arch = "wasm32"))]
 async fn sleep_for_frame(duration: std::time::Duration) {
     tokio::time::sleep(duration).await;
-}
-
-fn action_opacity(
-    blink_now_ms: u64,
-    enabled: bool,
-    recommended: bool,
-    blink: BlinkMode,
-    actuated: Option<bool>,
-) -> f32 {
-    if !enabled {
-        0.45
-    } else if recommended {
-        blink_opacity(blink_now_ms, blink, actuated).unwrap_or(1.0)
-    } else if actuated.unwrap_or(false) {
-        1.0
-    } else {
-        0.62
-    }
 }
 
 fn btn_style(
@@ -205,19 +161,6 @@ fn selected_profile(cfg: &FlightSetupConfig) -> Option<&FlightProfileConfig> {
         .find(|profile| profile.id == cfg.selected_profile_id)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct FluidFillTarget {
-    target_mass_kg: f32,
-    target_pressure_psi: f32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct FillTargetsConfig {
-    version: u32,
-    nitrogen: FluidFillTarget,
-    nitrous: FluidFillTarget,
-}
-
 fn setup_panel_style(theme: &ThemeConfig) -> String {
     format!(
         "padding:14px; border-radius:14px; border:1px solid {}; background:{}; display:flex; flex-direction:column; gap:12px;",
@@ -245,6 +188,7 @@ fn apply_button_style(theme: &ThemeConfig, enabled: bool) -> String {
 pub fn ActionsTab(
     layout: ActionsTabLayout,
     action_policy: Signal<ActionPolicyMsg>,
+    backend_fill_targets: Signal<Option<FillTargetsConfig>>,
     abort_only_mode: bool,
     theme: ThemeConfig,
 ) -> Element {
@@ -283,10 +227,23 @@ pub fn ActionsTab(
             )
             .await
             {
-                Ok(cfg) => fill_targets.set(Some(cfg)),
+                Ok(cfg) => {
+                    let mut backend_fill_targets = backend_fill_targets;
+                    backend_fill_targets.set(Some(cfg.clone()));
+                    let mut fill_targets = fill_targets;
+                    fill_targets.set(Some(cfg));
+                }
                 Err(err) => fill_targets_status.set(format!("Fill targets load failed: {err}")),
             }
         });
+    });
+    use_effect(move || {
+        if fill_targets_status.read().starts_with("Unsaved") {
+            return;
+        }
+        if let Some(cfg) = backend_fill_targets.read().clone() {
+            fill_targets.set(Some(cfg));
+        }
     });
     let _blink_tick = *redraw_tick.read();
     let blink_now_ms = blink_epoch_ms();
@@ -310,7 +267,7 @@ pub fn ActionsTab(
                 flex-direction:column;
                 gap:12px;
             ",
-            h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "Actions" }
+            h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "All available actions are available all the time, use with caution as improper use \
                 can and will damage the system."
@@ -318,13 +275,13 @@ pub fn ActionsTab(
             if abort_only_mode {
                 div {
                     style: "margin:0; padding:6px 10px; border-radius:8px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:11px; line-height:1.25;",
-                    "Disable Actions is enabled. All action and flight-state buttons except Abort are disabled."
+                    "{translate_text(\"Disable Actions is enabled. All action and flight-state buttons except Abort are disabled.\")}"
                 }
             }
             if visible_actions.is_empty() {
                 div {
                     style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background}; color:{theme.text_muted}; font-size:13px;",
-                    "No actions are available for this user."
+                    "{translate_text(\"No actions are available for this user.\")}"
                 }
             } else {
                 div {
@@ -415,11 +372,11 @@ pub fn ActionsTab(
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap:12px; align-items:start;",
                 if layout.show_flight_setup {
                     div { style: "{setup_panel_style(&theme)}",
-                    h3 { style: "margin:0; color:{theme.text_primary};", "Flight Setup" }
+                    h3 { style: "margin:0; color:{theme.text_primary};", "{translate_text(\"Flight Setup\")}" }
                     if let Some(cfg) = flight_setup.read().clone() {
                         div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap:12px; align-items:start; min-width:0;",
                             div { style: "display:flex; flex-direction:column; gap:8px; min-width:0;",
-                                label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "Flight profile" }
+                                label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{translate_text(\"Flight profile\")}" }
                                 select {
                                     style: "{input_style(&theme)} max-width:100%; min-width:0;",
                                     value: "{cfg.selected_profile_id}",
@@ -483,7 +440,7 @@ pub fn ActionsTab(
                                             flight_setup_busy.set(false);
                                         });
                                     },
-                                    "Apply To Flight Computer"
+                                    "{translate_text(\"Apply To Flight Computer\")}"
                                 }
                                 if !flight_setup_status.read().is_empty() {
                                     div { style: "font-size:12px; color:{theme.text_muted};", "{flight_setup_status.read().clone()}" }
@@ -503,13 +460,13 @@ pub fn ActionsTab(
                             }
                         }
                     } else {
-                        div { style: "font-size:13px; color:{theme.text_muted};", "Loading flight setup…" }
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{translate_text(\"Loading flight setup…\")}" }
                     }
                 }
                 }
                 if layout.show_fill_targets {
                     div { style: "{setup_panel_style(&theme)}",
-                    h3 { style: "margin:0; color:{theme.text_primary};", "Fill Targets" }
+                    h3 { style: "margin:0; color:{theme.text_primary};", "{translate_text(\"Fill Targets\")}" }
                     if let Some(cfg) = fill_targets.read().clone() {
                         div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap:10px;",
                             {fill_target_editor("Nitrogen", "nitrogen", &cfg.nitrogen, &theme, fill_targets, fill_targets_status, fill_targets_editable)}
@@ -531,11 +488,12 @@ pub fn ActionsTab(
                                     match crate::telemetry_dashboard::http_post_json::<FillTargetsConfig, FillTargetsConfig>(
                                         "/api/fill_targets",
                                         &next_cfg,
-                                    ).await {
-                                        Ok(saved) => {
-                                            fill_targets.set(Some(saved));
-                                            fill_targets_status.set("Fill targets saved.".to_string());
-                                        }
+                                        ).await {
+                                            Ok(saved) => {
+                                                backend_fill_targets.set(Some(saved.clone()));
+                                                fill_targets.set(Some(saved));
+                                                fill_targets_status.set("Fill targets saved.".to_string());
+                                            }
                                         Err(err) => {
                                             fill_targets_status.set(format!("Fill targets save failed: {err}"));
                                         }
@@ -543,16 +501,16 @@ pub fn ActionsTab(
                                     fill_targets_busy.set(false);
                                 });
                             },
-                            "Save Fill Targets"
+                            "{translate_text(\"Save Fill Targets\")}"
                         }
                         if !fill_targets_editable {
-                            div { style: "font-size:12px; color:{theme.text_muted};", "Enable actions to edit fill targets." }
+                            div { style: "font-size:12px; color:{theme.text_muted};", "{translate_text(\"Enable actions to edit fill targets.\")}" }
                         }
                         if !fill_targets_status.read().is_empty() {
                             div { style: "font-size:12px; color:{theme.text_muted};", "{fill_targets_status.read().clone()}" }
                         }
                     } else {
-                        div { style: "font-size:13px; color:{theme.text_muted};", "Loading fill targets…" }
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{translate_text(\"Loading fill targets…\")}" }
                     }
                 }
                 }
@@ -564,7 +522,7 @@ pub fn ActionsTab(
 fn flight_setup_metric(label: &str, value: String, theme: &ThemeConfig) -> Element {
     rsx! {
         div { style: "padding:10px 12px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt};",
-            div { style: "font-size:11px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px;", "{label}" }
+            div { style: "font-size:11px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px;", "{translate_text(label)}" }
             div { style: "font-size:14px; color:{theme.text_primary}; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{value}" }
         }
     }
@@ -585,9 +543,9 @@ fn fill_target_editor(
     let opacity = if enabled { "1.0" } else { "0.6" };
     rsx! {
         div { style: "padding:12px; border-radius:12px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; display:flex; flex-direction:column; gap:10px; opacity:{opacity};",
-            div { style: "font-size:14px; font-weight:700; color:{theme.text_primary};", "{title}" }
+            div { style: "font-size:14px; font-weight:700; color:{theme.text_primary};", "{translate_text(title)}" }
             div { style: "display:flex; flex-direction:column; gap:6px;",
-                label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "Target mass (kg)" }
+                label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{translate_text(\"Target mass (kg)\")}" }
                 input {
                     r#type: "number",
                     step: "0.01",
@@ -615,7 +573,7 @@ fn fill_target_editor(
                 }
             }
             div { style: "display:flex; flex-direction:column; gap:6px;",
-                label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "Target pressure (psi)" }
+                label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{translate_text(\"Target pressure (psi)\")}" }
                 input {
                     r#type: "number",
                     step: "0.1",

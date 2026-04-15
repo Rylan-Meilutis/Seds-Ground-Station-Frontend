@@ -550,6 +550,10 @@ pub struct SummaryItem {
     pub label: String,
     pub index: usize,
     pub formatter: Option<ValueFormatter>,
+    #[serde(default)]
+    pub fill_target_fluid: Option<FillTargetFluid>,
+    #[serde(default)]
+    pub fill_target_kind: Option<FillTargetValueKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -581,6 +585,20 @@ pub enum ValueFormatKind {
     #[default]
     Number,
     Integer,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FillTargetFluid {
+    Nitrogen,
+    Nitrous,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FillTargetValueKind {
+    MassKg,
+    PressurePsi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -664,6 +682,17 @@ impl LayoutConfig {
                     {
                         return Err(format!(
                             "state layout entry {state_idx}, section {section_idx}, widget {widget_idx} is a summary with no items"
+                        ));
+                    }
+                    if matches!(widget.kind, StateWidgetKind::Summary)
+                        && widget.items.as_ref().is_some_and(|items| {
+                            items.iter().any(|item| {
+                                item.fill_target_fluid.is_some() != item.fill_target_kind.is_some()
+                            })
+                        })
+                    {
+                        return Err(format!(
+                            "state layout entry {state_idx}, section {section_idx}, widget {widget_idx} has summary items with incomplete fill target source metadata"
                         ));
                     }
                 }

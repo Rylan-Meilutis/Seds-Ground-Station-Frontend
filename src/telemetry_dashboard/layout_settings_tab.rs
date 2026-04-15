@@ -8,6 +8,7 @@ pub fn SettingsPage(
     theme_preset: Signal<String>,
     language_code: Signal<String>,
     network_flow_animation_enabled: Signal<bool>,
+    state_chart_labels_vertical: Signal<bool>,
     theme: ThemeConfig,
     #[props(default)] title: Option<String>,
 ) -> Element {
@@ -19,6 +20,7 @@ pub fn SettingsPage(
     let selected_theme = theme_preset.read().clone();
     let selected_language = language_code.read().clone();
     let flow_animation_enabled = *network_flow_animation_enabled.read();
+    let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
 
     let card_style = format!(
         "padding:16px; border-radius:14px; border:1px solid {}; background:{}; display:flex; flex-direction:column; gap:12px;",
@@ -37,6 +39,7 @@ pub fn SettingsPage(
     let section_appearance = localized_copy(&language, "Appearance", "Apariencia", "Apparence");
     let section_map = localized_copy(&language, "Map", "Mapa", "Carte");
     let section_network = localized_copy(&language, "Network", "Red", "Reseau");
+    let section_charts = localized_copy(&language, "Charts", "Graficas", "Graphiques");
     let language_title = localized_copy(&language, "Language", "Idioma", "Langue");
     let language_desc = localized_copy(
         &language,
@@ -91,6 +94,20 @@ pub fn SettingsPage(
     );
     let flow_on_label = localized_copy(&language, "On", "Activado", "Active");
     let flow_off_label = localized_copy(&language, "Off", "Desactivado", "Desactive");
+    let chart_labels_title = localized_copy(
+        &language,
+        "State Chart Scale Labels",
+        "Etiquetas de escala del grafico de estado",
+        "Etiquettes d'echelle du graphe d'etat",
+    );
+    let chart_labels_desc = localized_copy(
+        &language,
+        "Reserve a side rail for normalized labels or stack them vertically with guide lines into the Y axis.",
+        "Reserva un riel lateral para las etiquetas normalizadas o apilalas verticalmente con guias hacia el eje Y.",
+        "Reserve un rail lateral pour les etiquettes normalisees ou empilez-les verticalement avec des guides vers l'axe Y.",
+    );
+    let chart_labels_side = localized_copy(&language, "Side Rail", "Riel lateral", "Rail lateral");
+    let chart_labels_vertical = localized_copy(&language, "Vertical", "Vertical", "Vertical");
     let english_label = "English".to_string();
     let spanish_label = "Español".to_string();
     let french_label = "Français".to_string();
@@ -202,6 +219,24 @@ pub fn SettingsPage(
                         style: if !flow_animation_enabled { chip_selected.clone() } else { chip_idle.clone() },
                         onclick: move |_| network_flow_animation_enabled.set(false),
                         "{flow_off_label}"
+                    }
+                }
+            }
+
+            div { style: "margin-top:12px; {card_style}",
+                div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_charts}" }
+                div { style: "font-size:13px; color:{theme.text_muted};", "{chart_labels_title}" }
+                div { style: "font-size:13px; color:{theme.text_soft};", "{chart_labels_desc}" }
+                div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                    button {
+                        style: if !state_chart_labels_vertical_enabled { chip_selected.clone() } else { chip_idle.clone() },
+                        onclick: move |_| state_chart_labels_vertical.set(false),
+                        "{chart_labels_side}"
+                    }
+                    button {
+                        style: if state_chart_labels_vertical_enabled { chip_selected.clone() } else { chip_idle.clone() },
+                        onclick: move |_| state_chart_labels_vertical.set(true),
+                        "{chart_labels_vertical}"
                     }
                 }
             }

@@ -9,12 +9,12 @@ const GRAPH_VIEWPORT_FULLSCREEN_ID: &str = "network-topology-viewport-fullscreen
 const GRAPH_SURFACE_FULLSCREEN_ID: &str = "network-topology-surface-fullscreen";
 const GRAPH_CANVAS_FULLSCREEN_ID: &str = "network-topology-canvas-fullscreen";
 
-use super::js_eval;
 use super::layout::{NetworkTabLayout, ThemeConfig};
 use super::types::{
     NetworkTopologyLink, NetworkTopologyMsg, NetworkTopologyNode, NetworkTopologyNodeKind,
     NetworkTopologyStatus,
 };
+use super::{js_eval, translate_text};
 
 #[derive(Clone, Copy)]
 struct NodePlacement {
@@ -277,65 +277,37 @@ pub fn NetworkTopologyTab(
                         button {
                             style: zoom_button_style(&theme),
                             onclick: move |_| graph_zoom_delta(-ZOOM_STEP),
-                            "Zoom Out"
+                            "{translate_text(\"Zoom Out\")}"
                         }
                         button {
                             style: zoom_button_style(&theme),
                             onclick: move |_| graph_zoom_reset(),
-                            "Reset"
+                            "{translate_text(\"Reset\")}"
                         }
                         button {
                             style: zoom_button_style(&theme),
                             onclick: move |_| graph_zoom_delta(ZOOM_STEP),
-                            "Zoom In"
+                            "{translate_text(\"Zoom In\")}"
                         }
                         button {
                             style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                             onclick: on_toggle_fullscreen,
-                            "Exit Fullscreen"
+                            "{translate_text(\"Exit Fullscreen\")}"
                         }
                     }
                 }
                 p {
                     style: "margin:0; color:{theme.text_muted}; font-size:0.95rem;",
                     if snapshot.simulated {
-                        "Topology graph is running in testing-mode simulation."
+                        "{translate_text(\"Topology graph is running in testing-mode simulation.\")}"
                     } else {
-                        "Topology graph is built from Ground Station topology and live node/link status."
+                        "{translate_text(\"Topology graph is built from Ground Station topology and live node/link status.\")}"
                     }
                 }
                 div {
                     style: "{graph_viewport_style(&theme, EMBEDDED_GRAPH_MIN_HEIGHT, None, true)}",
                     id: "{viewport_id}",
-                    div {
-                            id: "{surface_id}",
-                        style: "position:relative; width:{render_width}px; height:{render_height}px; min-width:{render_width}px; min-height:{render_height}px;",
-                        div {
-                            id: "{canvas_id}",
-                            style: "position:absolute; inset:0 auto auto 0; width:{render_width}px; height:{render_height}px; transform:scale(1); transform-origin:top left;",
-                            svg {
-                                width: "{render_width}",
-                                height: "{render_height}",
-                                view_box: "0 0 {render_width} {render_height}",
-                                style: "position:absolute; inset:0; overflow:visible;",
-                                for link in graph_links.iter() {
-                                    {render_link(link, &snapshot.nodes, &render_placements, flow_animation_enabled)}
-                                }
-                            }
-
-                            for node in graph_nodes.iter() {
-                                {render_node(
-                                    &theme,
-                                    node,
-                                    &graph_links,
-                                    &snapshot.nodes,
-                                    &render_placements,
-                                    render_width,
-                                    expanded_node_id,
-                                )}
-                            }
-                        }
-                    }
+                    {render_graph_surface(&theme, surface_id, canvas_id, render_width, render_height, &graph_links, &graph_nodes, &snapshot.nodes, &render_placements, flow_animation_enabled, expanded_node_id)}
                 }
             }
         } else {
@@ -346,9 +318,9 @@ pub fn NetworkTopologyTab(
                 p {
                     style: "margin:0; color:{theme.text_muted}; font-size:0.95rem;",
                     if snapshot.simulated {
-                        "Router graph is running in testing-mode simulation."
+                        "{translate_text(\"Router graph is running in testing-mode simulation.\")}"
                     } else {
-                        "Router graph is built from the Ground Station SEDSprintf topology and live board/link status."
+                        "{translate_text(\"Router graph is built from the Ground Station SEDSprintf topology and live board/link status.\")}"
                     }
                 }
                 div {
@@ -356,63 +328,82 @@ pub fn NetworkTopologyTab(
                     button {
                         style: zoom_button_style(&theme),
                         onclick: move |_| graph_zoom_delta(-ZOOM_STEP),
-                        "Zoom Out"
+                        "{translate_text(\"Zoom Out\")}"
                     }
                     button {
                         style: zoom_button_style(&theme),
                         onclick: move |_| graph_zoom_reset(),
-                        "Reset"
+                        "{translate_text(\"Reset\")}"
                     }
                     button {
                         style: zoom_button_style(&theme),
                         onclick: move |_| graph_zoom_delta(ZOOM_STEP),
-                        "Zoom In"
+                        "{translate_text(\"Zoom In\")}"
                     }
                     button {
                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                         onclick: on_toggle_fullscreen,
-                        "Fullscreen"
+                        "{translate_text(\"Fullscreen\")}"
                     }
                     span {
                         style: "font-size:0.85rem; color:{theme.text_muted};",
-                        "Pinch or drag to navigate"
+                        "{translate_text(\"Pinch or drag to navigate\")}"
                     }
                 }
 
                 div {
                     id: "{viewport_id}",
                     style: "padding:8px; {graph_viewport_style(&theme, EMBEDDED_GRAPH_MIN_HEIGHT, Some(\"calc(var(--gs26-app-height) - 260px)\"), false)}",
-                    div {
-                        id: "{surface_id}",
-                        style: "position:relative; width:{render_width}px; height:{render_height}px; min-width:{render_width}px; min-height:{render_height}px;",
-                        div {
-                            id: "{canvas_id}",
-                            style: "position:absolute; inset:0 auto auto 0; width:{render_width}px; height:{render_height}px; transform:scale(1); transform-origin:top left;",
-                            svg {
-                                width: "{render_width}",
-                                height: "{render_height}",
-                                view_box: "0 0 {render_width} {render_height}",
-                                style: "position:absolute; inset:0; overflow:visible;",
-                                for link in graph_links.iter() {
-                                    {render_link(link, &snapshot.nodes, &render_placements, flow_animation_enabled)}
-                                }
-                            }
-
-                            for node in graph_nodes.iter() {
-                                {render_node(
-                                    &theme,
-                                    node,
-                                    &graph_links,
-                                    &snapshot.nodes,
-                                    &render_placements,
-                                    render_width,
-                                    expanded_node_id,
-                                )}
-                            }
-                        }
-                    }
+                    {render_graph_surface(&theme, surface_id, canvas_id, render_width, render_height, &graph_links, &graph_nodes, &snapshot.nodes, &render_placements, flow_animation_enabled, expanded_node_id)}
                 }
                 {render_endpoint_section(&endpoint_rows, &theme)}
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_graph_surface(
+    theme: &ThemeConfig,
+    surface_id: &str,
+    canvas_id: &str,
+    render_width: i32,
+    render_height: i32,
+    graph_links: &[NetworkTopologyLink],
+    graph_nodes: &[NetworkTopologyNode],
+    snapshot_nodes: &[NetworkTopologyNode],
+    render_placements: &HashMap<String, NodePlacement>,
+    flow_animation_enabled: bool,
+    expanded_node_id: Signal<Option<String>>,
+) -> Element {
+    rsx! {
+        div {
+            id: "{surface_id}",
+            style: "position:relative; width:{render_width}px; height:{render_height}px; min-width:{render_width}px; min-height:{render_height}px;",
+            div {
+                id: "{canvas_id}",
+                style: "position:absolute; inset:0 auto auto 0; width:{render_width}px; height:{render_height}px; transform:scale(1); transform-origin:top left;",
+                svg {
+                    width: "{render_width}",
+                    height: "{render_height}",
+                    view_box: "0 0 {render_width} {render_height}",
+                    style: "position:absolute; inset:0; overflow:visible;",
+                    for link in graph_links.iter() {
+                        {render_link(link, snapshot_nodes, render_placements, flow_animation_enabled)}
+                    }
+                }
+
+                for node in graph_nodes.iter() {
+                    {render_node(
+                        theme,
+                        node,
+                        graph_links,
+                        snapshot_nodes,
+                        render_placements,
+                        render_width,
+                        expanded_node_id,
+                    )}
+                }
             }
         }
     }
@@ -810,7 +801,7 @@ fn install_drag_handlers(
     ));
 }
 
-fn collect_endpoint_rows(
+pub(crate) fn collect_endpoint_rows(
     nodes: &[NetworkTopologyNode],
     links: &[NetworkTopologyLink],
 ) -> Vec<(String, Vec<String>)> {

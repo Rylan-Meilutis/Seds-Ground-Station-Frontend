@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::layout::{ConnectionSectionKind, ConnectionTabLayout, ThemeConfig};
 use super::types::BoardStatusEntry;
-use super::{reseed_status_note, translate_text};
+use super::{current_wallclock_ms, reseed_note_banner, reseed_status_note, translate_text};
 
 const LATENCY_WINDOW_MS: i64 = 20 * 60_000;
 const LATENCY_MAX_POINTS: usize = 2000;
@@ -47,7 +47,7 @@ pub fn ConnectionStatusTab(
                         continue;
                     }
 
-                    let now_ms = js_now_ms();
+                    let now_ms = current_wallclock_ms();
                     let mut map = history.read().clone();
                     let merged = merged_connection_boards(&boards.read(), &expected_boards);
 
@@ -116,17 +116,17 @@ pub fn ConnectionStatusTab(
                                 )
                             },
                             div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
-                                div { style: "font-size:14px; color:{theme.text_muted};", "{section.title.clone().unwrap_or_else(|| \"Board Status\".to_string())}" }
+                                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Board Status\".to_string()))}" }
                                 div { style: "display:flex; gap:8px; flex-wrap:wrap;",
                                     button {
                                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                                         onclick: toggle_board,
-                                        if *show_board.read() { "Collapse" } else { "Expand" }
+                                        {if *show_board.read() { translate_text("Collapse") } else { translate_text("Expand") }}
                                     }
                                     button {
                                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                                         onclick: toggle_board_fullscreen,
-                                        "Fullscreen"
+                                        "{translate_text(\"Fullscreen\")}"
                                     }
                                 }
                             }
@@ -146,17 +146,17 @@ pub fn ConnectionStatusTab(
                                 )
                             },
                             div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
-                                div { style: "font-size:14px; color:{theme.text_muted};", "{section.title.clone().unwrap_or_else(|| \"Packet Age (ms)\".to_string())}" }
+                                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Packet Age (ms)\".to_string()))}" }
                                 div { style: "display:flex; gap:8px; flex-wrap:wrap;",
                                     button {
                                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                                         onclick: toggle_latency,
-                                        if *show_latency.read() { "Collapse" } else { "Expand" }
+                                        {if *show_latency.read() { translate_text("Collapse") } else { translate_text("Expand") }}
                                     }
                                     button {
                                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                                         onclick: toggle_latency_fullscreen,
-                                        "Fullscreen"
+                                        "{translate_text(\"Fullscreen\")}"
                                     }
                                 }
                             }
@@ -186,11 +186,11 @@ pub fn ConnectionStatusTab(
         if *board_fullscreen.read() {
             div { style: "position:fixed; inset:0; z-index:9998; padding:16px; background:{theme.app_background}; display:flex; flex-direction:column; gap:12px; overflow:auto;",
                 div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px;",
-                    h2 { style: "margin:0; color:{theme.text_secondary};", "Board Status" }
+                    h2 { style: "margin:0; color:{theme.text_secondary};", "{translate_text(\"Board Status\")}" }
                     button {
                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                         onclick: toggle_board_fullscreen,
-                        "Exit Fullscreen"
+                        "{translate_text(\"Exit Fullscreen\")}"
                     }
                 }
                 {render_board_table(&merged_boards, &theme)}
@@ -200,11 +200,11 @@ pub fn ConnectionStatusTab(
         if *latency_fullscreen.read() {
             div { style: "position:fixed; inset:0; z-index:9998; padding:16px; background:{theme.app_background}; display:flex; flex-direction:column; gap:12px; overflow:auto;",
                 div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px;",
-                    h2 { style: "margin:0; color:{theme.text_secondary};", "Packet Age (ms)" }
+                    h2 { style: "margin:0; color:{theme.text_secondary};", "{translate_text(\"Packet Age (ms)\")}" }
                     button {
                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                         onclick: toggle_latency_fullscreen,
-                        "Exit Fullscreen"
+                        "{translate_text(\"Exit Fullscreen\")}"
                     }
                 }
                 div { style: latency_list_style(),
@@ -251,21 +251,6 @@ fn merged_connection_boards(
     rows
 }
 
-fn js_now_ms() -> i64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        return js_sys::Date::now() as i64;
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
-    }
-}
-
 fn render_latency_chart(
     points: Option<&Vec<(i64, f64)>>,
     height: f64,
@@ -273,55 +258,11 @@ fn render_latency_chart(
 ) -> Element {
     let reseed_note = reseed_status_note();
     let Some(points) = points else {
-        return rsx! {
-            div { style: "display:flex; flex-direction:column; gap:8px;",
-                if let Some((kind, note)) = reseed_note.as_ref() {
-                    {
-                        let (background, border, text) = match *kind {
-                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                            "success" => (
-                                &theme.notification_background,
-                                &theme.notification_border,
-                                &theme.notification_text,
-                            ),
-                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                        };
-                        rsx! {
-                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                                "{translate_text(note)}"
-                            }
-                        }
-                    }
-                }
-                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No data yet\")}" }
-            }
-        };
+        return latency_empty_state("No data yet", reseed_note.as_ref(), theme);
     };
 
     if points.len() < 2 {
-        return rsx! {
-            div { style: "display:flex; flex-direction:column; gap:8px;",
-                if let Some((kind, note)) = reseed_note.as_ref() {
-                    {
-                        let (background, border, text) = match *kind {
-                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                            "success" => (
-                                &theme.notification_background,
-                                &theme.notification_border,
-                                &theme.notification_text,
-                            ),
-                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                        };
-                        rsx! {
-                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                                "{translate_text(note)}"
-                            }
-                        }
-                    }
-                }
-                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"Collecting...\")}" }
-            }
-        };
+        return latency_empty_state("Collecting...", reseed_note.as_ref(), theme);
     }
 
     let width = 1200.0_f64;
@@ -336,29 +277,7 @@ fn render_latency_chart(
     let (solid, dotted, y_min, y_max, span_min) =
         build_latency_polylines(points.as_slice(), width, height, Some(LATENCY_WINDOW_MS));
     if solid.is_empty() && dotted.is_empty() {
-        return rsx! {
-            div { style: "display:flex; flex-direction:column; gap:8px;",
-                if let Some((kind, note)) = reseed_note.as_ref() {
-                    {
-                        let (background, border, text) = match *kind {
-                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                            "success" => (
-                                &theme.notification_background,
-                                &theme.notification_border,
-                                &theme.notification_text,
-                            ),
-                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                        };
-                        rsx! {
-                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                                "{translate_text(note)}"
-                            }
-                        }
-                    }
-                }
-                div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"Collecting...\")}" }
-            }
-        };
+        return latency_empty_state("Collecting...", reseed_note.as_ref(), theme);
     }
 
     let y_mid = (y_min + y_max) * 0.5;
@@ -367,22 +286,7 @@ fn render_latency_chart(
     rsx! {
         div { style: "display:flex; flex-direction:column;",
             if let Some((kind, note)) = reseed_note.as_ref() {
-                {
-                    let (background, border, text) = match *kind {
-                        "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                        "success" => (
-                            &theme.notification_background,
-                            &theme.notification_border,
-                            &theme.notification_text,
-                        ),
-                        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                    };
-                    rsx! {
-                        div { style: "margin-bottom:8px; padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                            "{translate_text(note)}"
-                        }
-                    }
-                }
+                {reseed_note_banner(*kind, note, theme, true)}
             }
             div { style: "position:relative; width:100%; aspect-ratio:{width}/{height};",
                 svg {
@@ -460,6 +364,21 @@ fn render_latency_chart(
                     "Interpolated"
                 }
             }
+        }
+    }
+}
+
+fn latency_empty_state(
+    message: &str,
+    reseed_note: Option<&(&'static str, String)>,
+    theme: &ThemeConfig,
+) -> Element {
+    rsx! {
+        div { style: "display:flex; flex-direction:column; gap:8px;",
+            if let Some((kind, note)) = reseed_note {
+                {reseed_note_banner(*kind, note, theme, false)}
+            }
+            div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(message)}" }
         }
     }
 }

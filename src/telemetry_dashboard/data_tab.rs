@@ -8,15 +8,15 @@ use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::rc::Rc;
 
 use super::data_chart::{
-    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_subset, charts_cache_get_subset_per_series,
-    sender_scoped_chart_key, series_color, ChartCanvas, SeriesSwatch,
     CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
-    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT,
-    CHART_Y_LABEL_MAX_WIDTH,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
+    charts_cache_get_subset, charts_cache_get_subset_per_series, sender_scoped_chart_key,
+    series_color,
 };
 use super::{
-    latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text,
-    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
+    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value,
+    reseed_note_banner, reseed_status_note, translate_text,
 };
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
@@ -24,37 +24,50 @@ const _ACTIVE_SUBTAB_STORAGE_KEY: &str = "gs26_active_data_subtab";
 const DATA_TAB_RESPONSIVE_CSS: &str = r#"
 .gs26-data-tab-shell, .gs26-data-subtab-shell { min-width: 0; }
 .gs26-data-tab-toggle, .gs26-data-subtab-toggle { display:none; }
-.gs26-data-tab-nav, .gs26-data-subtab-nav { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.gs26-data-tab-nav, .gs26-data-subtab-nav { display:flex; gap:6px; flex-wrap:wrap; align-items:center; min-width:0; }
+.gs26-data-tab-nav button, .gs26-data-subtab-nav button,
+.gs26-data-tab-toggle, .gs26-data-subtab-toggle {
+  box-sizing:border-box;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+}
 @media (max-width: 720px), (max-height: 780px) {
   .gs26-data-tab-shell, .gs26-data-subtab-shell {
     display:grid;
     grid-template-columns:1fr;
-    gap:0.75rem;
+    gap:0.45rem;
     width:100%;
   }
   .gs26-data-tab-toggle, .gs26-data-subtab-toggle {
     display:inline-flex;
     align-items:center;
     justify-content:center;
-    justify-self:start;
-    padding:0.55rem 0.9rem;
-    border-radius:0.75rem;
+    justify-self:center;
+    max-width:min(100%, 28rem);
+    padding:0.25rem 0.65rem 0.3rem 0.65rem;
+    border-radius:0.65rem;
     border:1px solid var(--gs26-data-toggle-border);
     background:var(--gs26-data-toggle-background);
     color:var(--gs26-data-toggle-text);
     font:inherit;
+    font-size:0.82rem;
     font-weight:800;
+    line-height:1.12;
     cursor:pointer;
+    white-space:normal;
+    overflow-wrap:anywhere;
+    word-break:break-word;
   }
   .gs26-data-tab-nav, .gs26-data-subtab-nav { display:none; width:100%; }
   .gs26-data-tab-shell[data-expanded="true"] .gs26-data-tab-nav,
   .gs26-data-subtab-shell[data-expanded="true"] .gs26-data-subtab-nav {
     display:flex;
     flex-direction:column;
-    align-items:stretch;
+    align-items:center;
   }
   .gs26-data-tab-nav button, .gs26-data-subtab-nav button {
-    width:100%;
+    width:min(100%, 28rem);
   }
 }
 "#;
@@ -75,6 +88,30 @@ fn localstorage_set(key: &str, value: &str) {
             let _ = ls.set_item(key, value);
         }
     }
+}
+
+fn persist_nonempty_selection(key: &str, current: String, last_saved: &mut Signal<String>) {
+    if current.is_empty() || current == *last_saved.read() {
+        return;
+    }
+    last_saved.set(current.clone());
+
+    #[cfg(target_arch = "wasm32")]
+    localstorage_set(key, &current);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = key;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn restore_selection_from_localstorage(key: &str, selection: &mut Signal<String>) -> bool {
+    if let Some(saved) = localstorage_get(key)
+        && !saved.is_empty()
+    {
+        selection.set(saved);
+        return true;
+    }
+    false
 }
 
 #[component]
@@ -103,16 +140,11 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
             }
             did_restore.set(true);
 
-            // 1) Try localStorage
             #[cfg(target_arch = "wasm32")]
-            if let Some(saved) = localstorage_get(_ACTIVE_TAB_STORAGE_KEY) {
-                if !saved.is_empty() {
-                    active_tab.set(saved);
-                    return;
-                }
+            if restore_selection_from_localstorage(_ACTIVE_TAB_STORAGE_KEY, &mut active_tab) {
+                return;
             }
 
-            // 2) Fallback: if empty, pick first layout tab
             if active_tab.read().is_empty()
                 && let Some(first) = layout_tabs.first()
             {
@@ -127,14 +159,11 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         let mut last_saved = last_saved;
 
         move || {
-            let cur = active_tab.read().clone();
-            if cur.is_empty() || cur == *last_saved.read() {
-                return;
-            }
-            last_saved.set(cur.clone());
-
-            #[cfg(target_arch = "wasm32")]
-            localstorage_set(_ACTIVE_TAB_STORAGE_KEY, &cur);
+            persist_nonempty_selection(
+                _ACTIVE_TAB_STORAGE_KEY,
+                active_tab.read().clone(),
+                &mut last_saved,
+            );
         }
     });
 
@@ -142,11 +171,8 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     use_effect({
         let mut active_subtab = active_subtab;
         move || {
-            if active_subtab.read().is_empty()
-                && let Some(saved) = localstorage_get(_ACTIVE_SUBTAB_STORAGE_KEY)
-                && !saved.is_empty()
-            {
-                active_subtab.set(saved);
+            if active_subtab.read().is_empty() {
+                restore_selection_from_localstorage(_ACTIVE_SUBTAB_STORAGE_KEY, &mut active_subtab);
             }
         }
     });
@@ -155,14 +181,11 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         let active_subtab = active_subtab;
         let mut last_saved_subtab = last_saved_subtab;
         move || {
-            let cur = active_subtab.read().clone();
-            if cur.is_empty() || cur == *last_saved_subtab.read() {
-                return;
-            }
-            last_saved_subtab.set(cur.clone());
-
-            #[cfg(target_arch = "wasm32")]
-            localstorage_set(_ACTIVE_SUBTAB_STORAGE_KEY, &cur);
+            persist_nonempty_selection(
+                _ACTIVE_SUBTAB_STORAGE_KEY,
+                active_subtab.read().clone(),
+                &mut last_saved_subtab,
+            );
         }
     });
 
@@ -330,9 +353,9 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
             "{DATA_TAB_RESPONSIVE_CSS}"
         }
         div {
-            style: "padding:16px; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:12px; padding-bottom:10px; --gs26-data-toggle-background:{theme.tab_shell_background}; --gs26-data-toggle-border:{theme.tab_shell_border}; --gs26-data-toggle-text:{theme.button_text};",
+            style: "padding:8px 0 8px 0; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px; --gs26-data-toggle-background:{theme.tab_shell_background}; --gs26-data-toggle-border:{theme.tab_shell_border}; --gs26-data-toggle-text:{theme.button_text};",
 
-            div { style: "display:flex; flex-direction:column; gap:10px;",
+            div { style: "display:flex; flex-direction:column; gap:6px;",
 
                 div {
                     class: "gs26-data-tab-shell",
@@ -359,9 +382,9 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                                         .map(String::as_str)
                                         .unwrap_or("#f97316");
                                     format!(
-                                        "padding:6px 10px; border-radius:999px; border:1px solid {accent}; background:{}; color:{accent}; cursor:pointer;\
+                                        "padding:4px 8px; border-radius:999px; border:1px solid {accent}; background:{}; color:{accent}; cursor:pointer;\
                                          display:inline-flex; align-items:center; justify-content:center;\
-                                         font:inherit;\
+                                         font:inherit; font-size:12px;\
                                          min-width:0; max-width:100%; text-align:center; line-height:1.2;\
                                          white-space:normal; overflow-wrap:anywhere; word-break:break-word;",
                                         theme.button_background
@@ -369,9 +392,9 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                                 }
                             } else {
                                 format!(
-                                    "padding:6px 10px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer;\
+                                    "padding:4px 8px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer;\
                                      display:inline-flex; align-items:center; justify-content:center;\
-                                     font:inherit;\
+                                     font:inherit; font-size:12px;\
                                      min-width:0; max-width:100%; text-align:center; line-height:1.2;\
                                      white-space:normal; overflow-wrap:anywhere; word-break:break-word;",
                                     theme.border, theme.panel_background, theme.text_primary
@@ -420,7 +443,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                                             .map(String::as_str)
                                             .unwrap_or("#f97316");
                                         format!(
-                                            "padding:5px 10px; border-radius:999px; border:1px solid {accent}; background:{}; color:{accent}; cursor:pointer; font-size:12px;\
+                                            "padding:4px 8px; border-radius:999px; border:1px solid {accent}; background:{}; color:{accent}; cursor:pointer; font-size:11px;\
                                              display:inline-flex; align-items:center; justify-content:center;\
                                              font-family:inherit;\
                                              min-width:0; max-width:100%; text-align:center; line-height:1.2;\
@@ -430,7 +453,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                                     }
                                 } else {
                                     format!(
-                                        "padding:5px 10px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer; font-size:12px;\
+                                        "padding:4px 8px; border-radius:999px; border:1px solid {}; background:{}; color:{}; cursor:pointer; font-size:11px;\
                                          display:inline-flex; align-items:center; justify-content:center;\
                                          font-family:inherit;\
                                          min-width:0; max-width:100%; text-align:center; line-height:1.2;\
@@ -780,22 +803,7 @@ fn render_chart_group(
                     div { style: "font-size:13px; font-weight:600; color:{theme.text_primary};", "{translate_text(title)}" }
                 }
                 if let Some((kind, note)) = reseed_note.as_ref() {
-                    {
-                        let (background, border, text) = match *kind {
-                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                            "success" => (
-                                &theme.notification_background,
-                                &theme.notification_border,
-                                &theme.notification_text,
-                            ),
-                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                        };
-                        rsx! {
-                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                                "{translate_text(note)}"
-                            }
-                        }
-                    }
+                    {reseed_note_banner(*kind, note, &theme, false)}
                 }
                 div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No chart data yet.\")}" }
             }
@@ -807,6 +815,7 @@ fn render_chart_group(
     let y_max_s = format!("{:.2}", y_max);
     let y_mid_s = format!("{:.2}", y_mid);
     let y_min_s = format!("{:.2}", y_min);
+    let x_label_top = view_h - pad_bottom + CHART_X_LABEL_BOTTOM;
     let legend_source = group.labels.as_deref().unwrap_or(fallback_labels);
     let legend_rows: Vec<(usize, &str)> = group
         .channels
@@ -820,50 +829,54 @@ fn render_chart_group(
         })
         .filter(|(_, label)| !label.is_empty())
         .collect();
+    let per_series_label_width = if per_series_scale {
+        let visible = per_series_scales
+            .iter()
+            .filter(|scale| scale.is_some())
+            .count()
+            .max(1);
+        (visible as f64 * 31.0) + (visible.saturating_sub(1) as f64 * 4.0) + 14.0
+    } else {
+        0.0
+    };
+    let per_series_chip_style = |i: usize| {
+        format!(
+            "padding:0 4px; line-height:1.1; font-size:clamp(8px, 1.8vw, 10px); border-radius:999px; border:1px solid {border}; background:{bg}; color:{fg}; \
+             box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04); text-shadow:0 1px 1px rgba(2,6,23,0.85);",
+            border = series_color(i),
+            bg = theme.panel_background,
+            fg = series_color(i),
+        )
+    };
     rsx! {
         div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(title) = group.title.as_ref() {
                 div { style: "font-size:13px; font-weight:600; color:{theme.text_primary};", "{translate_text(title)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
-                {
-                    let (background, border, text) = match *kind {
-                        "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                        "success" => (
-                            &theme.notification_background,
-                            &theme.notification_border,
-                            &theme.notification_text,
-                        ),
-                        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                    };
-                    rsx! {
-                        div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                            "{translate_text(note)}"
-                        }
-                    }
-                }
+                {reseed_note_banner(*kind, note, &theme, false)}
             }
             div { style: "display:flex; gap:6px; align-items:stretch;",
                 if per_series_scale {
-                    div { style: "flex:0 0 96px; width:96px; min-width:96px; display:flex; flex-direction:column; justify-content:space-between; align-items:flex-end; font-size:clamp(8px, 1.8vw, 10px); padding-top:4px; padding-bottom:28px; overflow:hidden;",
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
+                    div { style: "flex:0 0 {per_series_label_width}px; width:{per_series_label_width}px; min-width:{per_series_label_width}px; display:flex; flex-direction:column; justify-content:space-between; align-items:flex-end; padding-top:8px; padding-bottom:48px; overflow:visible; container-type:inline-size;",
+                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:clamp(2px, 0.35vw, 4px); white-space:nowrap; width:100%; text-align:right;",
                             for (i, _) in group.channels.iter().enumerate() {
                                 if let Some((_, series_max)) = per_series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "color:{series_color(i)};", {format!("{:.2}", series_max)} }
+                                    div { style: "{per_series_chip_style(i)}", {format!("{:.2}", series_max)} }
                                 }
                             }
                         }
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
+                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:clamp(2px, 0.35vw, 4px); white-space:nowrap; width:100%; text-align:right;",
                             for (i, _) in group.channels.iter().enumerate() {
                                 if let Some((series_min, series_max)) = per_series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "color:{series_color(i)};", {format!("{:.2}", (series_min + series_max) * 0.5)} }
+                                    div { style: "{per_series_chip_style(i)}", {format!("{:.2}", (series_min + series_max) * 0.5)} }
                                 }
                             }
                         }
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
+                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:clamp(2px, 0.35vw, 4px); white-space:nowrap; width:100%; text-align:right;",
                             for (i, _) in group.channels.iter().enumerate() {
                                 if let Some((series_min, _)) = per_series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "color:{series_color(i)};", {format!("{:.2}", series_min)} }
+                                    div { style: "{per_series_chip_style(i)}", {format!("{:.2}", series_min)} }
                                 }
                             }
                         }
@@ -886,9 +899,9 @@ fn render_chart_group(
                             span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(pad_top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{y_mid_s}" }
                             span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(view_h - pad_bottom + 1.0, view_h)}; transform:translateY(-100%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{y_min_s}" }
                         }
-                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; bottom:{CHART_X_LABEL_BOTTOM}px;", "{x_left_s}" }
-                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:{CHART_X_LABEL_BOTTOM}px; transform:translateX(-50%);", "{x_mid_s}" }
-                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:{CHART_X_LABEL_BOTTOM}px;", "{translate_text(\"now\")}" }
+                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; top:{y_pct(x_label_top, view_h)};", "{x_left_s}" }
+                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; top:{y_pct(x_label_top, view_h)}; transform:translateX(-50%);", "{x_mid_s}" }
+                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; top:{y_pct(x_label_top, view_h)};", "{translate_text(\"now\")}" }
                     }
                 }
             }

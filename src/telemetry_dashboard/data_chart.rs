@@ -31,8 +31,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::HISTORY_MS;
 
@@ -81,9 +81,9 @@ const LOD_BUCKET_MS_LEVELS: &[(i64, i64)] = &[
 pub const CHART_GRID_LEFT: f64 = 96.0;
 pub const CHART_GRID_RIGHT_PAD: f64 = 20.0;
 pub const CHART_GRID_TOP: f64 = 20.0;
-pub const CHART_GRID_BOTTOM_PAD: f64 = 40.0;
+pub const CHART_GRID_BOTTOM_PAD: f64 = 52.0;
 pub const CHART_X_LABEL_LEFT_INSET: f64 = 28.0;
-pub const CHART_X_LABEL_BOTTOM: f64 = 10.0;
+pub const CHART_X_LABEL_BOTTOM: f64 = 14.0;
 pub const CHART_Y_LABEL_LEFT: f64 = 10.0;
 pub const CHART_Y_LABEL_MAX_WIDTH: f64 = 64.0;
 
@@ -800,7 +800,6 @@ impl CachedChart {
             let chunk_start_x = left + pw * ((chunk_start_bid - start_view_id) as f32 / total);
             let chunk_end_x = left + pw * ((chunk_end_bid - start_view_id + 1) as f32 / total);
             let chunk_width = (chunk_end_x - chunk_start_x).max(1.0);
-            let allow_interp = true;
             let smooth_chunk =
                 lod_bucket_ms <= 100 && should_smooth_chunk(chunk_width, chunk_bucket_count);
 
@@ -829,32 +828,18 @@ impl CachedChart {
                     let v = b.last[ch];
                     let y = map_y(v);
                     if let Some(prev_bid) = last_bucket_id_drawn[ch] {
-                        let gap_buckets = b.id - prev_bid;
-                        if gap_buckets > 1
-                            && let Some((prev_x, prev_y)) = last_point_drawn[ch]
-                        {
-                            if allow_interp && gap_buckets <= max_interp_gap_buckets {
-                                let missing = gap_buckets - 1;
-                                let interp_pts = missing.clamp(1, MAX_INTERP_POINTS_PER_GAP);
-                                for j in 1..=interp_pts {
-                                    let t = j as f32 / (interp_pts + 1) as f32;
-                                    let xi = prev_x + (x - prev_x) * t;
-                                    let yi = prev_y + (y - prev_y) * t;
-                                    push_segment_point(&mut segment_points[ch], xi, yi);
-                                }
-                            } else {
-                                flush_smoothed_segment(
-                                    &mut paths[ch],
-                                    &segment_points[ch],
-                                    smooth_chunk,
-                                );
-                                segment_points[ch].clear();
-                                gap_paths[ch].push_str(&format!(
-                                    "M {:.2} {:.2} L {:.2} {:.2} ",
-                                    prev_x, prev_y, x, y
-                                ));
-                            }
-                        }
+                        bridge_or_mark_gap(
+                            &mut paths,
+                            &mut gap_paths,
+                            &mut segment_points,
+                            ch,
+                            prev_bid,
+                            b.id,
+                            last_point_drawn[ch],
+                            (x, y),
+                            max_interp_gap_buckets,
+                            smooth_chunk,
+                        );
                     }
 
                     push_segment_point(&mut segment_points[ch], x, y);
@@ -994,32 +979,18 @@ impl CachedChart {
                     let v = b.last[ch];
                     let y = map_y(v);
                     if let Some(prev_bid) = last_bucket_id_drawn[group_idx] {
-                        let gap_buckets = b.id - prev_bid;
-                        if gap_buckets > 1
-                            && let Some((prev_x, prev_y)) = last_point_drawn[group_idx]
-                        {
-                            if gap_buckets <= max_interp_gap_buckets {
-                                let missing = gap_buckets - 1;
-                                let interp_pts = missing.clamp(1, MAX_INTERP_POINTS_PER_GAP);
-                                for j in 1..=interp_pts {
-                                    let t = j as f32 / (interp_pts + 1) as f32;
-                                    let xi = prev_x + (x - prev_x) * t;
-                                    let yi = prev_y + (y - prev_y) * t;
-                                    push_segment_point(&mut segment_points[group_idx], xi, yi);
-                                }
-                            } else {
-                                flush_smoothed_segment(
-                                    &mut paths[group_idx],
-                                    &segment_points[group_idx],
-                                    smooth_chunk,
-                                );
-                                segment_points[group_idx].clear();
-                                gap_paths[group_idx].push_str(&format!(
-                                    "M {:.2} {:.2} L {:.2} {:.2} ",
-                                    prev_x, prev_y, x, y
-                                ));
-                            }
-                        }
+                        bridge_or_mark_gap(
+                            &mut paths,
+                            &mut gap_paths,
+                            &mut segment_points,
+                            group_idx,
+                            prev_bid,
+                            b.id,
+                            last_point_drawn[group_idx],
+                            (x, y),
+                            max_interp_gap_buckets,
+                            smooth_chunk,
+                        );
                     }
 
                     push_segment_point(&mut segment_points[group_idx], x, y);
@@ -1186,32 +1157,18 @@ impl CachedChart {
                         series_scales[group_idx].unwrap_or((global_min, global_max));
                     let y = bottom - (v - series_min) / (series_max - series_min) * ph;
                     if let Some(prev_bid) = last_bucket_id_drawn[group_idx] {
-                        let gap_buckets = b.id - prev_bid;
-                        if gap_buckets > 1
-                            && let Some((prev_x, prev_y)) = last_point_drawn[group_idx]
-                        {
-                            if gap_buckets <= max_interp_gap_buckets {
-                                let missing = gap_buckets - 1;
-                                let interp_pts = missing.clamp(1, MAX_INTERP_POINTS_PER_GAP);
-                                for j in 1..=interp_pts {
-                                    let t = j as f32 / (interp_pts + 1) as f32;
-                                    let xi = prev_x + (x - prev_x) * t;
-                                    let yi = prev_y + (y - prev_y) * t;
-                                    push_segment_point(&mut segment_points[group_idx], xi, yi);
-                                }
-                            } else {
-                                flush_smoothed_segment(
-                                    &mut paths[group_idx],
-                                    &segment_points[group_idx],
-                                    smooth_chunk,
-                                );
-                                segment_points[group_idx].clear();
-                                gap_paths[group_idx].push_str(&format!(
-                                    "M {:.2} {:.2} L {:.2} {:.2} ",
-                                    prev_x, prev_y, x, y
-                                ));
-                            }
-                        }
+                        bridge_or_mark_gap(
+                            &mut paths,
+                            &mut gap_paths,
+                            &mut segment_points,
+                            group_idx,
+                            prev_bid,
+                            b.id,
+                            last_point_drawn[group_idx],
+                            (x, y),
+                            max_interp_gap_buckets,
+                            smooth_chunk,
+                        );
                     }
 
                     push_segment_point(&mut segment_points[group_idx], x, y);
@@ -1305,7 +1262,7 @@ impl SubsetCacheKey {
     }
 }
 
-fn zero_anchor_ratio(min: f32, max: f32) -> f32 {
+pub(crate) fn zero_anchor_ratio(min: f32, max: f32) -> f32 {
     let neg = (-min).max(0.0);
     let pos = max.max(0.0);
     let total = neg + pos;
@@ -1316,7 +1273,7 @@ fn zero_anchor_ratio(min: f32, max: f32) -> f32 {
     }
 }
 
-fn anchored_series_range(min: f32, max: f32, zero_ratio: f32) -> (f32, f32) {
+pub(crate) fn anchored_series_range(min: f32, max: f32, zero_ratio: f32) -> (f32, f32) {
     let neg_needed = (-min).max(0.0);
     let pos_needed = max.max(0.0);
     let ratio = zero_ratio.clamp(0.05, 0.95);
@@ -1336,6 +1293,78 @@ fn anchored_series_range(min: f32, max: f32, zero_ratio: f32) -> (f32, f32) {
     }
     let padded_span = span * 1.06_f32;
     (-padded_span * ratio, padded_span * (1.0 - ratio))
+}
+
+pub(crate) fn padded_chart_range(mut min: f32, mut max: f32) -> (f32, f32) {
+    if !min.is_finite() || !max.is_finite() {
+        return (0.0, 1.0);
+    }
+    if min >= 0.0 {
+        min = 0.0;
+    }
+    if max <= 0.0 {
+        max = 0.0;
+    }
+    if (max - min).abs() < 1e-6 {
+        let center = min;
+        let pad = (center.abs() * 0.05).max(1.0);
+        min = center - pad;
+        max = center + pad;
+    }
+    let r = (max - min).abs().max(1e-6);
+    let pad = (r * 0.06).max(1.0);
+    (min - pad, max + pad)
+}
+
+pub(crate) fn push_curve_point_with_delta(
+    points: &mut Vec<(f32, f32)>,
+    x: f32,
+    y: f32,
+    min_delta_px: f32,
+) {
+    if let Some((px, py)) = points.last().copied()
+        && (px - x).abs() < min_delta_px
+        && (py - y).abs() < min_delta_px
+    {
+        return;
+    }
+    points.push((x, y));
+}
+
+pub(crate) fn flush_curve_segment_with_limit(
+    path: &mut String,
+    points: &[(f32, f32)],
+    smooth: bool,
+    max_smoothing_points: usize,
+) {
+    if points.is_empty() {
+        return;
+    }
+
+    let (x0, y0) = points[0];
+    path.push_str(&format!("M {:.2} {:.2} ", x0, y0));
+
+    if points.len() == 1 {
+        return;
+    }
+
+    if points.len() == 2 || !smooth || points.len() > max_smoothing_points {
+        for &(x, y) in &points[1..] {
+            path.push_str(&format!("L {:.2} {:.2} ", x, y));
+        }
+        return;
+    }
+
+    for i in 1..(points.len() - 1) {
+        let (cx, cy) = points[i];
+        let (nx, ny) = points[i + 1];
+        let mx = (cx + nx) * 0.5;
+        let my = (cy + ny) * 0.5;
+        path.push_str(&format!("Q {:.2} {:.2} {:.2} {:.2} ", cx, cy, mx, my));
+    }
+
+    let (xl, yl) = points[points.len() - 1];
+    path.push_str(&format!("L {:.2} {:.2} ", xl, yl));
 }
 
 // ============================================================
@@ -1396,44 +1425,50 @@ fn should_smooth_chunk(chunk_width: f32, chunk_bucket_count: i64) -> bool {
 }
 
 fn flush_smoothed_segment(path: &mut String, points: &[(f32, f32)], smooth: bool) {
-    if points.is_empty() {
-        return;
-    }
-
-    let (x0, y0) = points[0];
-    path.push_str(&format!("M {:.2} {:.2} ", x0, y0));
-
-    if points.len() == 1 {
-        return;
-    }
-
-    if points.len() == 2 || !smooth || points.len() > SMOOTHING_MAX_POINTS_PER_SEGMENT {
-        for &(x, y) in &points[1..] {
-            path.push_str(&format!("L {:.2} {:.2} ", x, y));
-        }
-        return;
-    }
-
-    for i in 1..(points.len() - 1) {
-        let (cx, cy) = points[i];
-        let (nx, ny) = points[i + 1];
-        let mx = (cx + nx) * 0.5;
-        let my = (cy + ny) * 0.5;
-        path.push_str(&format!("Q {:.2} {:.2} {:.2} {:.2} ", cx, cy, mx, my));
-    }
-
-    let (xl, yl) = points[points.len() - 1];
-    path.push_str(&format!("L {:.2} {:.2} ", xl, yl));
+    flush_curve_segment_with_limit(path, points, smooth, SMOOTHING_MAX_POINTS_PER_SEGMENT);
 }
 
 fn push_segment_point(points: &mut Vec<(f32, f32)>, x: f32, y: f32) {
-    if let Some((px, py)) = points.last().copied()
-        && (px - x).abs() < CURVE_MIN_DELTA_PX
-        && (py - y).abs() < CURVE_MIN_DELTA_PX
-    {
+    push_curve_point_with_delta(points, x, y, CURVE_MIN_DELTA_PX);
+}
+
+fn bridge_or_mark_gap(
+    paths: &mut [String],
+    gap_paths: &mut [String],
+    segment_points: &mut [Vec<(f32, f32)>],
+    idx: usize,
+    prev_bid: i64,
+    current_bid: i64,
+    prev_point: Option<(f32, f32)>,
+    current_point: (f32, f32),
+    max_interp_gap_buckets: i64,
+    smooth_chunk: bool,
+) {
+    let gap_buckets = current_bid - prev_bid;
+    if gap_buckets <= 1 {
         return;
     }
-    points.push((x, y));
+    let Some((prev_x, prev_y)) = prev_point else {
+        return;
+    };
+    let (x, y) = current_point;
+    if gap_buckets <= max_interp_gap_buckets {
+        let missing = gap_buckets - 1;
+        let interp_pts = missing.clamp(1, MAX_INTERP_POINTS_PER_GAP);
+        for j in 1..=interp_pts {
+            let t = j as f32 / (interp_pts + 1) as f32;
+            let xi = prev_x + (x - prev_x) * t;
+            let yi = prev_y + (y - prev_y) * t;
+            push_segment_point(&mut segment_points[idx], xi, yi);
+        }
+    } else {
+        flush_smoothed_segment(&mut paths[idx], &segment_points[idx], smooth_chunk);
+        segment_points[idx].clear();
+        gap_paths[idx].push_str(&format!(
+            "M {:.2} {:.2} L {:.2} {:.2} ",
+            prev_x, prev_y, x, y
+        ));
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize)]
@@ -1590,7 +1625,9 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         const gridYStep = (bottom - top) / 6.0;
 
                         targetCtx.save();
-                        targetCtx.strokeStyle = "#1f2937";
+                        targetCtx.fillStyle = "rgba(3, 12, 24, 0.72)";
+                        targetCtx.fillRect(left, top, Math.max(1, right - left), Math.max(1, bottom - top));
+                        targetCtx.strokeStyle = "rgba(100, 116, 139, 0.72)";
                         targetCtx.lineWidth = 1;
                         for (let i = 1; i <= 5; i += 1) {{
                           const y = top + gridYStep * i;
@@ -1607,11 +1644,14 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           targetCtx.stroke();
                         }}
 
-                        targetCtx.strokeStyle = "#334155";
+                        targetCtx.strokeStyle = "rgba(226, 232, 240, 0.92)";
+                        targetCtx.lineWidth = 1.4;
                         targetCtx.beginPath();
                         targetCtx.moveTo(left, top);
                         targetCtx.lineTo(left, bottom);
                         targetCtx.lineTo(right, bottom);
+                        targetCtx.lineTo(right, top);
+                        targetCtx.closePath();
                         targetCtx.stroke();
                         targetCtx.restore();
                         if (typeof targetCtx.resetTransform === "function") {{
@@ -1724,10 +1764,12 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         cacheRoot.set(canvasId, cache);
                       }}
 
-                      function buildChunkBuffer(chunk, destW) {{
+                      function buildChunkBuffer(chunk, destW, cacheable = true) {{
                         const key = `${{chunk.id}}:${{chunk.signature}}:${{pxH}}:${{destW}}`;
-                        let chunkBuffer = cache.chunkCache.get(key);
-                        if (chunkBuffer) return chunkBuffer;
+                        if (cacheable) {{
+                          let chunkBuffer = cache.chunkCache.get(key);
+                          if (chunkBuffer) return chunkBuffer;
+                        }}
 
                         const widthPx = Math.max(1, destW);
                         const buffer = document.createElement("canvas");
@@ -1743,9 +1785,10 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         bctx.clearRect(0, 0, buffer.width, buffer.height);
                         drawChunkDirect(bctx, chunk, 0, widthPx);
 
-                        chunkBuffer = buffer;
-                        cache.chunkCache.set(key, chunkBuffer);
-                        return chunkBuffer;
+                        if (cacheable) {{
+                          cache.chunkCache.set(key, buffer);
+                        }}
+                        return buffer;
                       }}
 
                       if (typeof ctx.resetTransform === "function") {{
@@ -1765,6 +1808,25 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         .filter(chunk => !chunk.live)
                         .map(chunk => `${{chunk.id}}:${{chunk.signature}}:${{chunk.x.toFixed(3)}}:${{chunk.right.toFixed(3)}}`)
                         .join("|");
+                      const activeChunkKeys = new Set(
+                        data.chunks
+                          .filter(chunk => !chunk.live)
+                          .map((chunk, i) => {{
+                            const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
+                            const destX = Math.round(chunk.x * scaleX + alignOffset);
+                            const rawRight = next
+                              ? Math.round(next.x * scaleX + alignOffset)
+                              : Math.round(chunk.right * scaleX + alignOffset);
+                            const destRight = Math.max(destX + 1, rawRight);
+                            const destW = Math.max(1, destRight - destX);
+                            return `${{chunk.id}}:${{chunk.signature}}:${{pxH}}:${{destW}}`;
+                          }})
+                      );
+                      for (const key of cache.chunkCache.keys()) {{
+                        if (!activeChunkKeys.has(key)) {{
+                          cache.chunkCache.delete(key);
+                        }}
+                      }}
                       if (!cache.historyBuffer || cache.historyKey !== historyKey) {{
                         const historyBuffer = document.createElement("canvas");
                         historyBuffer.width = pxW;
@@ -1783,7 +1845,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                             : Math.round(chunk.right * scaleX + alignOffset);
                           const destRight = Math.max(destX + 1, rawRight);
                           const destW = Math.max(1, destRight - destX);
-                          const chunkBuffer = buildChunkBuffer(chunk, destW);
+                          const chunkBuffer = buildChunkBuffer(chunk, destW, true);
                           if (!chunkBuffer) continue;
                           hctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
                         }}
@@ -1804,7 +1866,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           : Math.round(chunk.right * scaleX + alignOffset);
                         const destRight = Math.max(destX + 1, rawRight);
                         const destW = Math.max(1, destRight - destX);
-                        const chunkBuffer = buildChunkBuffer(chunk, destW);
+                        const chunkBuffer = buildChunkBuffer(chunk, destW, false);
                         if (!chunkBuffer) continue;
                         ctx.imageSmoothingEnabled = false;
                         ctx.drawImage(chunkBuffer, destX, 0, destW, pxH);

@@ -8,6 +8,7 @@ use crate::telemetry_dashboard::gps_apple;
 use crate::telemetry_dashboard::js_read_window_string;
 use crate::telemetry_dashboard::{
     http_get_json, js_eval, js_is_ground_map_ready, layout::ThemeConfig, map_tiles_url,
+    translate_text,
 };
 use dioxus::prelude::*;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
@@ -284,7 +285,9 @@ pub fn MapTab(
         format_distance_label(*rocket_gps.read(), effective_user(), distance_units_metric);
     #[cfg(any(target_os = "ios", target_os = "macos", target_os = "android"))]
     let native_location_warning = if (*user_gps.read()).is_none() {
-        Some("User location unavailable. Native GPS has not provided coordinates yet.".to_string())
+        Some(translate_text(
+            "User location unavailable. Native GPS has not provided coordinates yet.",
+        ))
     } else {
         None
     };
@@ -293,10 +296,9 @@ pub fn MapTab(
     #[cfg(target_os = "ios")]
     let native_compass_warning =
         if gps_apple::latest_heading_deg().is_none() && *show_enable_compass.read() {
-            Some(
-                "Compass unavailable. Orientation permission was denied or has not initialized."
-                    .to_string(),
-            )
+            Some(translate_text(
+                "Compass unavailable. Orientation permission was denied or has not initialized.",
+            ))
         } else {
             None
         };
@@ -380,26 +382,26 @@ pub fn MapTab(
                     div { style: "display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;",
                         h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
                         if let Some(distance_text) = distance_text.clone() {
-                            span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "(Distance: {distance_text})" }
+                            span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "({translate_text(\"Distance\")}: {distance_text})" }
                         }
                     }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",
                         button {
                             style: "{primary_button_style}",
                             onclick: on_center_me,
-                            "Center on Me"
+                            "{translate_text(\"Center on Me\")}"
                         }
                         if cfg!(target_os = "ios") && *show_enable_compass.read() {
                             button {
                                 style: "{warning_button_style}",
                                 onclick: on_enable_compass,
-                                "Enable Compass"
+                                "{translate_text(\"Enable Compass\")}"
                             }
                         }
                         button {
                             style: "{neutral_button_style}",
                             onclick: on_toggle_fullscreen,
-                            "Exit Fullscreen"
+                            "{translate_text(\"Exit Fullscreen\")}"
                         }
                     }
                 }
@@ -409,17 +411,7 @@ pub fn MapTab(
                     }
                 }
                 div { style: "flex:1; min-height:0; width:100%;",
-                    div {
-                        id: "ground-map",
-                        style: "width:100%; height:100%; border-radius:12px; overflow:hidden; background:{theme.panel_background}; border:1px solid {theme.border_strong}; touch-action:manipulation; overscroll-behavior:contain;",
-                        ontouchstart: move |e| {
-                            let touches = e.touches();
-                            if touches.len() > 1 {
-                                e.prevent_default();
-                                e.stop_propagation();
-                            }
-                        },
-                    }
+                    {map_canvas(&theme)}
                 }
             }
         } else {
@@ -433,24 +425,24 @@ pub fn MapTab(
                     style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
                     h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
                     if let Some(distance_text) = distance_text {
-                        span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "(Distance: {distance_text})" }
+                        span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "({translate_text(\"Distance\")}: {distance_text})" }
                     }
                     button {
                         style: "{primary_button_style}",
                         onclick: on_center_me,
-                        "Center on Me"
+                        "{translate_text(\"Center on Me\")}"
                     }
                     if cfg!(target_os = "ios") && *show_enable_compass.read() {
                         button {
                             style: "{warning_button_style}",
                             onclick: on_enable_compass,
-                            "Enable Compass"
+                            "{translate_text(\"Enable Compass\")}"
                         }
                     }
                     button {
                         style: "{neutral_button_style}",
                         onclick: on_toggle_fullscreen,
-                        "Fullscreen"
+                        "{translate_text(\"Fullscreen\")}"
                     }
                 }
                 if let Some(warning_text) = diagnostics_warning {
@@ -460,19 +452,25 @@ pub fn MapTab(
                 }
 
                 div { style: "flex:1; min-height:0; width:100%;",
-                    div {
-                        id: "ground-map",
-                        style: "width:100%; height:100%; border-radius:12px; overflow:hidden; background:{theme.panel_background}; border:1px solid {theme.border_strong}; touch-action:manipulation; overscroll-behavior:contain;",
-                        ontouchstart: move |e| {
-                            let touches = e.touches();
-                            if touches.len() > 1 {
-                                e.prevent_default();
-                                e.stop_propagation();
-                            }
-                        },
-                    }
+                    {map_canvas(&theme)}
                 }
             }
+        }
+    }
+}
+
+fn map_canvas(theme: &ThemeConfig) -> Element {
+    rsx! {
+        div {
+            id: "ground-map",
+            style: "width:100%; height:100%; border-radius:12px; overflow:hidden; background:{theme.panel_background}; border:1px solid {theme.border_strong}; touch-action:manipulation; overscroll-behavior:contain;",
+            ontouchstart: move |e| {
+                let touches = e.touches();
+                if touches.len() > 1 {
+                    e.prevent_default();
+                    e.stop_propagation();
+                }
+            },
         }
     }
 }
@@ -481,14 +479,39 @@ pub fn MapTab(
  * JS bridge helpers (no wasm-bindgen imports)
  * ============================================================================================== */
 
+struct MapJsConfig {
+    tiles: String,
+    max_native_zoom: String,
+    center_lat: String,
+    center_lon: String,
+    zoom: String,
+    tracked_asset_label: String,
+}
+
+fn map_js_config(tiles: &str, config: &MapConfig) -> MapJsConfig {
+    MapJsConfig {
+        tiles: serde_json::to_string(tiles).unwrap_or_else(|_| "\"\"".to_string()),
+        max_native_zoom: config.max_native_zoom.to_string(),
+        center_lat: config.default_center_lat.to_string(),
+        center_lon: config.default_center_lon.to_string(),
+        zoom: config.default_zoom.to_string(),
+        tracked_asset_label: serde_json::to_string(&config.tracked_asset_label)
+            .unwrap_or_else(|_| "\"Tracked Asset\"".to_string()),
+    }
+}
+
+fn apply_map_js_config(script: &str, cfg: &MapJsConfig) -> String {
+    script
+        .replace("__TILES__", &cfg.tiles)
+        .replace("__MAX_NATIVE_ZOOM__", &cfg.max_native_zoom)
+        .replace("__CENTER_LAT__", &cfg.center_lat)
+        .replace("__CENTER_LON__", &cfg.center_lon)
+        .replace("__DEFAULT_ZOOM__", &cfg.zoom)
+        .replace("__TRACKED_ASSET_TITLE__", &cfg.tracked_asset_label)
+}
+
 fn js_setup_js_fullscreen_reinit(tiles: &str, config: &MapConfig) {
-    let tiles_js = serde_json::to_string(tiles).unwrap_or_else(|_| "\"\"".to_string());
-    let max_native_zoom_js = config.max_native_zoom.to_string();
-    let center_lat_js = config.default_center_lat.to_string();
-    let center_lon_js = config.default_center_lon.to_string();
-    let zoom_js = config.default_zoom.to_string();
-    let tracked_asset_label_js = serde_json::to_string(&config.tracked_asset_label)
-        .unwrap_or_else(|_| "\"Tracked Asset\"".to_string());
+    let cfg = map_js_config(tiles, config);
 
     let script = r#"
     (function() {
@@ -560,25 +583,11 @@ fn js_setup_js_fullscreen_reinit(tiles: &str, config: &MapConfig) {
     })();
     "#;
 
-    js_eval(
-        &script
-            .replace("__TILES__", &tiles_js)
-            .replace("__MAX_NATIVE_ZOOM__", &max_native_zoom_js)
-            .replace("__CENTER_LAT__", &center_lat_js)
-            .replace("__CENTER_LON__", &center_lon_js)
-            .replace("__DEFAULT_ZOOM__", &zoom_js)
-            .replace("__TRACKED_ASSET_TITLE__", &tracked_asset_label_js),
-    );
+    js_eval(&apply_map_js_config(script, &cfg));
 }
 
 fn js_force_map_reinit_now(tiles: &str, config: &MapConfig, is_fullscreen: bool, delay_ms: u64) {
-    let tiles_js = serde_json::to_string(tiles).unwrap_or_else(|_| "\"\"".to_string());
-    let max_native_zoom_js = config.max_native_zoom.to_string();
-    let center_lat_js = config.default_center_lat.to_string();
-    let center_lon_js = config.default_center_lon.to_string();
-    let zoom_js = config.default_zoom.to_string();
-    let tracked_asset_label_js = serde_json::to_string(&config.tracked_asset_label)
-        .unwrap_or_else(|_| "\"Tracked Asset\"".to_string());
+    let cfg = map_js_config(tiles, config);
     let fs_js = if is_fullscreen { "true" } else { "false" };
     let delay_js = delay_ms.to_string();
 
@@ -599,26 +608,14 @@ fn js_force_map_reinit_now(tiles: &str, config: &MapConfig, is_fullscreen: bool,
     "#;
 
     js_eval(
-        &script
-            .replace("__TILES__", &tiles_js)
-            .replace("__MAX_NATIVE_ZOOM__", &max_native_zoom_js)
-            .replace("__CENTER_LAT__", &center_lat_js)
-            .replace("__CENTER_LON__", &center_lon_js)
-            .replace("__DEFAULT_ZOOM__", &zoom_js)
-            .replace("__TRACKED_ASSET_TITLE__", &tracked_asset_label_js)
+        &apply_map_js_config(script, &cfg)
             .replace("__FS__", fs_js)
             .replace("__DELAY__", &delay_js),
     );
 }
 
 fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
-    let tiles_js = serde_json::to_string(tiles).unwrap_or_else(|_| "\"\"".to_string());
-    let max_native_zoom_js = config.max_native_zoom.to_string();
-    let center_lat_js = config.default_center_lat.to_string();
-    let center_lon_js = config.default_center_lon.to_string();
-    let zoom_js = config.default_zoom.to_string();
-    let tracked_asset_label_js = serde_json::to_string(&config.tracked_asset_label)
-        .unwrap_or_else(|_| "\"Tracked Asset\"".to_string());
+    let cfg = map_js_config(tiles, config);
 
     let script = r#"
     (function() {
@@ -691,15 +688,7 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
     })();
     "#;
 
-    js_eval(
-        &script
-            .replace("__TILES__", &tiles_js)
-            .replace("__MAX_NATIVE_ZOOM__", &max_native_zoom_js)
-            .replace("__CENTER_LAT__", &center_lat_js)
-            .replace("__CENTER_LON__", &center_lon_js)
-            .replace("__DEFAULT_ZOOM__", &zoom_js)
-            .replace("__TRACKED_ASSET_TITLE__", &tracked_asset_label_js),
-    );
+    js_eval(&apply_map_js_config(script, &cfg));
 }
 
 #[cfg(not(target_os = "android"))]

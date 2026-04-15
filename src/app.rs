@@ -11,7 +11,7 @@ use crate::telemetry_dashboard::layout::ThemeConfig;
 use dioxus::prelude::*;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 use dioxus_desktop::use_window;
-use dioxus_router::{use_navigator, Routable, Router};
+use dioxus_router::{Routable, Router, use_navigator};
 
 #[allow(unused_imports)]
 use crate::telemetry_dashboard::{self, UrlConfig};
@@ -296,37 +296,7 @@ mod persist {
     #[cfg(target_os = "android")]
     /// Resolves the Android app-private files directory when the JNI context is available.
     fn android_storage_dir() -> Option<std::path::PathBuf> {
-        use ::jni::objects::{JObject, JString};
-        use ::jni::{jni_sig, jni_str, JavaVM};
-        use ndk_context::android_context;
-
-        let ctx = android_context();
-        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
-        vm.attach_current_thread(|env| -> ::jni::errors::Result<std::path::PathBuf> {
-            let context = unsafe { JObject::from_raw(env, ctx.context().cast()) };
-
-            let files_dir = env
-                .call_method(
-                    &context,
-                    jni_str!("getFilesDir"),
-                    jni_sig!("()Ljava/io/File;"),
-                    &[],
-                )?
-                .l()?;
-            let path_obj = env
-                .call_method(
-                    &files_dir,
-                    jni_str!("getAbsolutePath"),
-                    jni_sig!("()Ljava/lang/String;"),
-                    &[],
-                )?
-                .l()?;
-            let path = env.as_cast::<JString>(&path_obj)?.try_to_string(env)?;
-
-            let _ = context.into_raw();
-            Ok(std::path::PathBuf::from(path).join("gs26"))
-        })
-        .ok()
+        crate::native_storage::android_files_dir().map(|path| path.join("gs26"))
     }
 
     /// Chooses the best writable native storage directory for simple key-value persistence.
@@ -650,7 +620,7 @@ async fn http_probe_with_client(
     path: &'static str,
     url: String,
 ) -> Result<(u16, String), String> {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     const MAX_BODY_BYTES: usize = 4096;
     const BODY_SNIP_TIMEOUT_MS: u64 = 400;
@@ -1021,14 +991,19 @@ pub fn Root() -> Element {
         let nav = use_navigator();
 
         use_effect(move || {
-            if UrlConfig::_stored_base_url().is_some() {
-                let _ = nav.replace(Route::Dashboard {});
-            } else {
-                let _ = nav.replace(connect_route());
-            }
+            let _ = nav.replace(route_for_configured_connection());
         });
 
         rsx! { div {} }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn route_for_configured_connection() -> Route {
+    if UrlConfig::_stored_base_url().is_some() {
+        Route::Dashboard {}
+    } else {
+        connect_route()
     }
 }
 
@@ -1745,10 +1720,8 @@ pub fn Version() -> Element {
     let back_action = move |_| {
         if can_go_back {
             nav.go_back();
-        } else if UrlConfig::_stored_base_url().is_some() {
-            let _ = nav.replace(Route::Dashboard {});
         } else {
-            let _ = nav.replace(connect_route());
+            let _ = nav.replace(route_for_configured_connection());
         }
     };
 

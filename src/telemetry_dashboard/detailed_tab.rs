@@ -2,14 +2,16 @@ use dioxus::prelude::*;
 use dioxus_signals::Signal;
 use std::collections::{BTreeMap, HashSet};
 
+use super::network_topology_tab::collect_endpoint_rows;
 use super::types::{
     BoardStatusEntry, FlightState, NetworkTopologyMsg, NetworkTopologyNodeKind,
-    NetworkTopologyStatus,
+    NetworkTopologyStatus, display_flight_state,
 };
 use super::{
-    compensated_network_time_ms, current_language, format_network_time, format_timestamp_ms_clock,
-    layout::ThemeConfig, localized_copy, monotonic_now_ms, translate_text,
     AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
+    compensated_network_time_ms, current_language, current_wallclock_ms, format_network_time,
+    format_timestamp_ms_clock, layout::ThemeConfig, localized_copy, monotonic_now_ms,
+    translate_text,
 };
 
 #[component]
@@ -194,7 +196,7 @@ pub fn DetailedTab(
                     &theme,
                     "Mission State",
                     vec![
-                        ("Flight state", translate_text(&flight_state.read().to_string())),
+                        ("Flight state", translate_text(&display_flight_state(&flight_state.read()))),
                         ("Rocket time", network_time_display.unwrap_or_else(|| translate_text("Unavailable"))),
                         ("Clock delta", opt_signed_ms(network_clock_delta_ms)),
                         ("Server time age", opt_i64_ms(network_time_age_ms)),
@@ -538,102 +540,6 @@ fn merge_link_status(a: NetworkTopologyStatus, b: NetworkTopologyStatus) -> Netw
     }
 }
 
-fn collect_endpoint_rows(
-    nodes: &[super::types::NetworkTopologyNode],
-    links: &[super::types::NetworkTopologyLink],
-) -> Vec<(String, Vec<String>)> {
-    let mut by_endpoint = BTreeMap::<String, Vec<String>>::new();
-    let mut adjacency = BTreeMap::<String, Vec<String>>::new();
-    for link in links {
-        adjacency
-            .entry(link.source.clone())
-            .or_default()
-            .push(link.target.clone());
-        adjacency
-            .entry(link.target.clone())
-            .or_default()
-            .push(link.source.clone());
-    }
-
-    for node in nodes {
-        for endpoint in &node.endpoints {
-            if let Some(owner) = endpoint_owner_label(node, endpoint) {
-                by_endpoint
-                    .entry(endpoint.clone())
-                    .or_default()
-                    .push(owner.clone());
-            }
-        }
-
-        if node.kind != NetworkTopologyNodeKind::Endpoint {
-            continue;
-        }
-
-        let endpoint_name = node
-            .endpoints
-            .first()
-            .cloned()
-            .unwrap_or_else(|| node.label.clone());
-        for owner in endpoint_route_owners(node, nodes, &adjacency, &endpoint_name) {
-            by_endpoint
-                .entry(endpoint_name.clone())
-                .or_default()
-                .push(owner);
-        }
-    }
-
-    by_endpoint
-        .into_iter()
-        .map(|(endpoint, mut owners)| {
-            owners.sort();
-            owners.dedup();
-            (endpoint, owners)
-        })
-        .collect()
-}
-
-fn endpoint_route_owners(
-    endpoint_node: &super::types::NetworkTopologyNode,
-    nodes: &[super::types::NetworkTopologyNode],
-    adjacency: &BTreeMap<String, Vec<String>>,
-    endpoint_name: &str,
-) -> Vec<String> {
-    let mut owners = Vec::new();
-    let mut queue = std::collections::VecDeque::<String>::new();
-    let mut visited = HashSet::<String>::new();
-    visited.insert(endpoint_node.id.clone());
-
-    if let Some(neighbors) = adjacency.get(&endpoint_node.id) {
-        for neighbor in neighbors {
-            queue.push_back(neighbor.clone());
-        }
-    }
-
-    while let Some(current) = queue.pop_front() {
-        if !visited.insert(current.clone()) {
-            continue;
-        }
-        let Some(node) = nodes.iter().find(|node| node.id == current) else {
-            continue;
-        };
-        if let Some(owner) = endpoint_owner_label(node, endpoint_name) {
-            owners.push(owner);
-            continue;
-        }
-        if let Some(neighbors) = adjacency.get(&current) {
-            for neighbor in neighbors {
-                if !visited.contains(neighbor) {
-                    queue.push_back(neighbor.clone());
-                }
-            }
-        }
-    }
-
-    owners.sort();
-    owners.dedup();
-    owners
-}
-
 fn collect_board_route_rows(
     nodes: &[super::types::NetworkTopologyNode],
     links: &[super::types::NetworkTopologyLink],
@@ -691,43 +597,10 @@ fn collect_board_route_rows(
     rows
 }
 
-fn endpoint_owner_label(
-    node: &super::types::NetworkTopologyNode,
-    endpoint_name: &str,
-) -> Option<String> {
-    match node.kind {
-        NetworkTopologyNodeKind::Router | NetworkTopologyNodeKind::Board
-            if node
-                .endpoints
-                .iter()
-                .any(|endpoint| endpoint == endpoint_name) =>
-        {
-            Some(node.label.clone())
-        }
-        NetworkTopologyNodeKind::Endpoint | NetworkTopologyNodeKind::Side => None,
-        _ => None,
-    }
-}
-
 fn yes_no(value: bool) -> String {
     if value {
         "yes".to_string()
     } else {
         "no".to_string()
-    }
-}
-
-fn current_wallclock_ms() -> i64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now() as i64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
     }
 }

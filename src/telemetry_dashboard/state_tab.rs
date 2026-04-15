@@ -7,23 +7,26 @@ use dioxus_signals::Signal;
 
 use crate::auth;
 
+use super::blink::{action_opacity, blink_epoch_ms};
 use super::layout::{
-    ActionSpec, ActionsTabLayout, BooleanLabels, ChartSeriesSpec, DataTabLayout, StateSection,
-    StateSectionStyle, StateTabLayout, StateWidget, StateWidgetKind, SummaryCardStyle, SummaryItem,
-    ThemeConfig, ValueFormatKind, ValueFormatter, ValveColor, ValveColorSet,
+    ActionSpec, ActionsTabLayout, BooleanLabels, ChartSeriesSpec, DataTabLayout, FillTargetFluid,
+    FillTargetValueKind, StateSection, StateSectionStyle, StateTabLayout, StateWidget,
+    StateWidgetKind, SummaryCardStyle, SummaryItem, ThemeConfig, ValueFormatKind, ValueFormatter,
+    ValveColor, ValveColorSet,
 };
-use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
+use super::types::{BoardStatusEntry, FlightState, TelemetryRow, display_flight_state};
 use super::{
-    latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text, ui_telemetry_rows_snapshot,
-    ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, HISTORY_MS,
-    TELEMETRY_RENDER_EPOCH,
+    ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, FillTargetsConfig, HISTORY_MS,
+    TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value, reseed_note_banner,
+    reseed_status_note, translate_text, ui_telemetry_rows_snapshot,
 };
 
 use crate::telemetry_dashboard::data_chart::{
-    charts_cache_get, charts_cache_get_channel_minmax, series_color, ChartCanvas,
-    ChartRenderChunk, SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT,
-    CHART_GRID_RIGHT_PAD, CHART_GRID_TOP, CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT,
-    CHART_Y_LABEL_MAX_WIDTH,
+    CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    ChartCanvas, ChartRenderChunk, SeriesSwatch, anchored_series_range, charts_cache_get,
+    charts_cache_get_channel_minmax, flush_curve_segment_with_limit, padded_chart_range,
+    push_curve_point_with_delta, series_color, zero_anchor_ratio,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 use std::hash::{Hash, Hasher};
@@ -31,50 +34,16 @@ use std::hash::{Hash, Hasher};
 const COMBINED_CURVE_MIN_DELTA_PX: f32 = 0.35;
 const COMBINED_SMOOTHING_MAX_POINTS: usize = 240;
 const COMBINED_CHART_GRID_LEFT: f32 = 24.0;
+const VERTICAL_SCALE_LABEL_ROW_GAP: f64 = 17.0;
+const VERTICAL_SCALE_LABEL_RAIL_GAP: f64 = 4.0;
 
-#[cfg(target_arch = "wasm32")]
-fn blink_epoch_ms() -> u64 {
-    js_sys::Date::now().max(0.0) as u64
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn blink_epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn blink_opacity(blink_now_ms: u64, blink: BlinkMode, actuated: Option<bool>) -> Option<f32> {
-    let (period_ms, dim, bright, invert) = match (blink, actuated.unwrap_or(false)) {
-        (BlinkMode::None, _) => return None,
-        (BlinkMode::Slow, false) => (1_800, 0.2, 1.0, false),
-        (BlinkMode::Slow, true) => (1_800, 0.25, 1.0, true),
-        (BlinkMode::Fast, false) => (600, 0.15, 1.0, false),
-        (BlinkMode::Fast, true) => (600, 0.2, 1.0, true),
-    };
-    let phase = (blink_now_ms % period_ms) as f32 / period_ms as f32;
-    let wave = 0.5 - 0.5 * f32::cos(std::f32::consts::TAU * phase);
-    let pulse = if invert { 1.0 - wave } else { wave };
-    Some(dim + (bright - dim) * pulse)
-}
-
-fn action_opacity(
-    blink_now_ms: u64,
-    enabled: bool,
-    recommended: bool,
-    blink: BlinkMode,
-    actuated: Option<bool>,
-) -> f32 {
-    if !enabled {
-        0.45
-    } else if recommended {
-        blink_opacity(blink_now_ms, blink, actuated).unwrap_or(1.0)
-    } else if actuated.unwrap_or(false) {
-        1.0
-    } else {
-        0.62
-    }
+#[derive(Clone)]
+struct ScaleLabelPlacement {
+    series_index: usize,
+    target_y: f64,
+    label_y: f64,
+    rail_column: usize,
+    text: String,
 }
 
 #[component]
@@ -83,12 +52,14 @@ pub fn StateTab(
     board_status: Signal<Vec<BoardStatusEntry>>,
     rocket_gps: Signal<Option<(f64, f64)>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
     layout: StateTabLayout,
     data_layout: DataTabLayout,
     actions: ActionsTabLayout,
     action_policy: Signal<ActionPolicyMsg>,
     default_valve_labels: Option<BooleanLabels>,
     abort_only_mode: bool,
+    state_chart_labels_vertical: bool,
     theme: ThemeConfig,
     use_layout_theme_overrides: bool,
 ) -> Element {
@@ -115,7 +86,9 @@ pub fn StateTab(
                     default_valve_labels.as_ref(),
                     rocket_gps,
                     user_gps,
+                    fill_targets,
                     abort_only_mode,
+                    state_chart_labels_vertical,
                     &theme,
                     use_layout_theme_overrides,
                 )}
@@ -131,7 +104,7 @@ pub fn StateTab(
             div { style: "padding:14px; border:1px solid {theme.border}; border-radius:14px; background:{theme.panel_background};",
                 div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(\"Current Flight State\")}" }
                 div { style: "font-size:22px; font-weight:700; margin-top:6px; color:{theme.text_primary};",
-                    "{translate_text(&state.to_string())}"
+                    "{translate_text(&display_flight_state(&state))}"
                 }
             }
             {content}
@@ -189,7 +162,9 @@ fn render_state_section(
     default_valve_labels: Option<&BooleanLabels>,
     rocket_gps: Signal<Option<(f64, f64)>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
     abort_only_mode: bool,
+    state_chart_labels_vertical: bool,
     theme: &ThemeConfig,
     use_layout_theme_overrides: bool,
 ) -> Element {
@@ -214,7 +189,9 @@ fn render_state_section(
                     default_valve_labels,
                     rocket_gps,
                     user_gps,
+                    fill_targets,
                     abort_only_mode,
+                    state_chart_labels_vertical,
                     theme,
                     use_layout_theme_overrides,
                 )}
@@ -232,7 +209,9 @@ fn render_state_widget(
     default_valve_labels: Option<&BooleanLabels>,
     rocket_gps: Signal<Option<(f64, f64)>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
     abort_only_mode: bool,
+    state_chart_labels_vertical: bool,
     theme: &ThemeConfig,
     use_layout_theme_overrides: bool,
 ) -> Element {
@@ -241,10 +220,20 @@ fn render_state_widget(
         StateWidgetKind::Summary => {
             let dt = widget.data_type.as_deref().unwrap_or("");
             let items = widget.items.as_deref().unwrap_or(&[]);
-            if dt.is_empty() {
+            let has_fill_target_item = items
+                .iter()
+                .any(|item| item.fill_target_fluid.is_some() && item.fill_target_kind.is_some());
+            if dt.is_empty() && !has_fill_target_item {
                 rsx! { div { style: "color:#94a3b8; font-size:12px;", "{translate_text(\"Missing summary data_type\")}" } }
             } else {
-                rsx! { {summary_row(dt, items, widget.summary_style.as_ref(), theme, use_layout_theme_overrides)} }
+                rsx! { {summary_row(
+                    (!dt.is_empty()).then_some(dt),
+                    items,
+                    fill_targets.read().as_ref(),
+                    widget.summary_style.as_ref(),
+                    theme,
+                    use_layout_theme_overrides,
+                )} }
             }
         }
         StateWidgetKind::Chart => {
@@ -254,6 +243,7 @@ fn render_state_widget(
                 StateChartPanel {
                     widget: widget.clone(),
                     data_layout: data_layout.clone(),
+                    state_chart_labels_vertical: state_chart_labels_vertical,
                     theme: theme.clone(),
                     view_w: w,
                     view_h: h,
@@ -288,6 +278,7 @@ fn render_state_widget(
 fn StateChartPanel(
     widget: StateWidget,
     data_layout: DataTabLayout,
+    state_chart_labels_vertical: bool,
     theme: ThemeConfig,
     view_w: f64,
     view_h: f64,
@@ -308,16 +299,22 @@ fn StateChartPanel(
     let chart_body = if let Some(series) = widget.chart_series.as_deref()
         && !series.is_empty()
     {
+        let requested_h = if *is_fullscreen.read() {
+            full_h
+        } else {
+            view_h
+        };
+        let adjusted_h = requested_h.max(min_combined_chart_height_for_labels(
+            series,
+            state_chart_labels_vertical,
+        ));
         combined_state_chart_cached(
             series,
             view_w,
-            if *is_fullscreen.read() {
-                full_h
-            } else {
-                view_h
-            },
+            adjusted_h,
             widget.chart_title.as_deref(),
             &data_layout,
+            state_chart_labels_vertical,
             &theme,
         )
     } else {
@@ -371,6 +368,29 @@ fn StateChartPanel(
     }
 }
 
+fn min_combined_chart_height_for_labels(
+    specs: &[ChartSeriesSpec],
+    state_chart_labels_vertical: bool,
+) -> f64 {
+    if !state_chart_labels_vertical {
+        return 0.0;
+    }
+    let unique_types = specs
+        .iter()
+        .map(|spec| spec.data_type.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    if unique_types <= 1 {
+        return 0.0;
+    }
+
+    let label_rows = specs.len().saturating_mul(3).max(1);
+    CHART_GRID_TOP
+        + CHART_GRID_BOTTOM_PAD
+        + 28.0
+        + label_rows.saturating_sub(1) as f64 * VERTICAL_SCALE_LABEL_ROW_GAP
+}
+
 fn section_has_content(
     section: &StateSection,
     actions: &[ActionSpec],
@@ -421,7 +441,7 @@ fn data_style_chart_cached(
     let inner_h = bottom - top;
 
     let y_mid = (y_min + y_max) * 0.5;
-    let x_label_bottom = CHART_X_LABEL_BOTTOM + 4.0;
+    let x_label_top = bottom + CHART_X_LABEL_BOTTOM;
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
 
@@ -431,22 +451,7 @@ fn data_style_chart_cached(
                 div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
-                {
-                    let (background, border, text) = match *kind {
-                        "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                        "success" => (
-                            &theme.notification_background,
-                            &theme.notification_border,
-                            &theme.notification_text,
-                        ),
-                        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                    };
-                    rsx! {
-                        div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                            "{translate_text(note)}"
-                        }
-                    }
-                }
+                {reseed_note_banner(*kind, note, theme, false)}
             }
 
             if chunks.is_empty() {
@@ -463,21 +468,21 @@ fn data_style_chart_cached(
                         grid_bottom: Some(bottom),
                         style: "position:absolute; inset:0; width:100%; height:100%; display:block;".to_string(),
                     }
-                    div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
+                    div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_secondary}; text-shadow:0 1px 1px rgba(2,6,23,0.75);",
                         span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(top + 6.0, view_h)}; max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
                         span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
                         span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(bottom + 1.0, view_h)}; transform:translateY(-100%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
-                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; bottom:{x_label_bottom}px;", {format!("-{:.1} min", span_min)} }
-                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:{x_label_bottom}px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
-                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:{x_label_bottom}px;", "{translate_text(\"now\")}" }
+                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; top:{y_pct(x_label_top, view_h)};", {format!("-{:.1} min", span_min)} }
+                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; top:{y_pct(x_label_top, view_h)}; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
+                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; top:{y_pct(x_label_top, view_h)};", "{translate_text(\"now\")}" }
                     }
                 }
             }
 
-            div { style: "display:flex; flex-wrap:wrap; gap:8px; padding:6px 10px; background:{theme.app_background}; border:1px solid {theme.border_soft}; border-radius:10px;",
+            div { style: "display:flex; flex-wrap:wrap; gap:8px; padding:6px 10px; background:rgba(2,6,23,0.75); border:1px solid {theme.border_soft}; border-radius:10px;",
                 for (i, label) in labels.iter().enumerate() {
                     if !label.is_empty() {
-                        div { style: "display:flex; align-items:center; gap:6px; font-size:12px; color:{theme.text_secondary};",
+                        div { style: "display:flex; align-items:center; gap:6px; font-size:12px; color:{theme.text_primary};",
                             SeriesSwatch { index: i }
                             "{translate_text(label)}"
                         }
@@ -486,99 +491,6 @@ fn data_style_chart_cached(
             }
         }
     }
-}
-
-fn push_curve_point(points: &mut Vec<(f32, f32)>, x: f32, y: f32) {
-    if let Some((px, py)) = points.last().copied()
-        && (px - x).abs() < COMBINED_CURVE_MIN_DELTA_PX
-        && (py - y).abs() < COMBINED_CURVE_MIN_DELTA_PX
-    {
-        return;
-    }
-    points.push((x, y));
-}
-
-fn flush_curve_segment(path: &mut String, points: &[(f32, f32)], smooth: bool) {
-    if points.is_empty() {
-        return;
-    }
-    let (x0, y0) = points[0];
-    path.push_str(&format!("M {:.2} {:.2} ", x0, y0));
-    if points.len() == 1 {
-        return;
-    }
-    if points.len() == 2 || !smooth || points.len() > COMBINED_SMOOTHING_MAX_POINTS {
-        for &(x, y) in &points[1..] {
-            path.push_str(&format!("L {:.2} {:.2} ", x, y));
-        }
-        return;
-    }
-    for i in 1..(points.len() - 1) {
-        let (cx, cy) = points[i];
-        let (nx, ny) = points[i + 1];
-        let mx = (cx + nx) * 0.5;
-        let my = (cy + ny) * 0.5;
-        path.push_str(&format!("Q {:.2} {:.2} {:.2} {:.2} ", cx, cy, mx, my));
-    }
-    let (xl, yl) = points[points.len() - 1];
-    path.push_str(&format!("L {:.2} {:.2} ", xl, yl));
-}
-
-fn padded_chart_range(mut min: f32, mut max: f32) -> (f32, f32) {
-    if !min.is_finite() || !max.is_finite() {
-        return (0.0, 1.0);
-    }
-    if min >= 0.0 {
-        min = 0.0;
-    }
-    if max <= 0.0 {
-        max = 0.0;
-    }
-    if (max - min).abs() < 1e-6 {
-        let center = min;
-        let pad = (center.abs() * 0.05).max(1.0);
-        min = center - pad;
-        max = center + pad;
-    }
-    let r = (max - min).abs().max(1e-6);
-    let pad = (r * 0.06).max(1.0);
-    (min - pad, max + pad)
-}
-
-fn zero_anchor_ratio(min: f32, max: f32) -> f32 {
-    let neg = (-min).max(0.0);
-    let pos = max.max(0.0);
-    let total = neg + pos;
-    if total <= 1e-6 {
-        0.5
-    } else {
-        (neg / total).clamp(0.0, 1.0)
-    }
-}
-
-fn anchored_series_range(min: f32, max: f32, zero_ratio: f32) -> (f32, f32) {
-    let neg_needed = (-min).max(0.0);
-    let pos_needed = max.max(0.0);
-    let ratio = zero_ratio.clamp(0.05, 0.95);
-    let span_from_neg = if ratio > 1e-6 {
-        neg_needed / ratio
-    } else {
-        0.0
-    };
-    let span_from_pos = if (1.0 - ratio) > 1e-6 {
-        pos_needed / (1.0 - ratio)
-    } else {
-        0.0
-    };
-    let mut span = span_from_neg.max(span_from_pos).max(1.0);
-    if !span.is_finite() {
-        span = 1.0;
-    }
-    let padding_scale = 1.06_f32;
-    let padded_span = span * padding_scale;
-    let range_min = -padded_span * ratio;
-    let range_max = padded_span * (1.0 - ratio);
-    (range_min, range_max)
 }
 
 fn default_series_label(data_layout: &DataTabLayout, spec: &ChartSeriesSpec) -> String {
@@ -602,6 +514,7 @@ fn combined_chart_payload(
     data_layout: &DataTabLayout,
     view_w: f64,
     view_h: f64,
+    grid_left: f32,
 ) -> Option<(
     Vec<ChartRenderChunk>,
     f32,
@@ -615,7 +528,7 @@ fn combined_chart_payload(
     let newest_ts = rows.iter().map(|row| row.timestamp_ms).max()?;
     let history_start_ts = newest_ts.saturating_sub(HISTORY_MS);
 
-    let left = COMBINED_CHART_GRID_LEFT;
+    let left = grid_left;
     let right = (view_w as f32 - CHART_GRID_RIGHT_PAD as f32).max(left + 1.0);
     let top = CHART_GRID_TOP as f32;
     let bottom = (view_h as f32 - CHART_GRID_BOTTOM_PAD as f32).max(top + 1.0);
@@ -715,7 +628,7 @@ fn combined_chart_payload(
             let y = bottom - (*value - series_y_min) / (series_y_max - series_y_min) * ph;
 
             if point_idx == 0 {
-                push_curve_point(&mut curve_points, x, y);
+                push_curve_point_with_delta(&mut curve_points, x, y, COMBINED_CURVE_MIN_DELTA_PX);
                 continue;
             }
 
@@ -724,16 +637,26 @@ fn combined_chart_payload(
             let prev_y = bottom - (prev_value - series_y_min) / (series_y_max - series_y_min) * ph;
             let gap_ms = ts_ms.saturating_sub(prev_ts_ms);
             if gap_ms > gap_threshold_ms {
-                flush_curve_segment(&mut paths[idx], &curve_points, smooth_curves);
+                flush_curve_segment_with_limit(
+                    &mut paths[idx],
+                    &curve_points,
+                    smooth_curves,
+                    COMBINED_SMOOTHING_MAX_POINTS,
+                );
                 curve_points.clear();
                 gap_paths[idx].push_str(&format!(
                     "M {:.2} {:.2} L {:.2} {:.2} ",
                     prev_x, prev_y, x, y
                 ));
             }
-            push_curve_point(&mut curve_points, x, y);
+            push_curve_point_with_delta(&mut curve_points, x, y, COMBINED_CURVE_MIN_DELTA_PX);
         }
-        flush_curve_segment(&mut paths[idx], &curve_points, smooth_curves);
+        flush_curve_segment_with_limit(
+            &mut paths[idx],
+            &curve_points,
+            smooth_curves,
+            COMBINED_SMOOTHING_MAX_POINTS,
+        );
     }
 
     if paths.iter().all(|path| path.is_empty()) && gap_paths.iter().all(|path| path.is_empty()) {
@@ -781,34 +704,20 @@ fn combined_state_chart_cached(
     view_h: f64,
     title: Option<&str>,
     data_layout: &DataTabLayout,
+    state_chart_labels_vertical: bool,
     theme: &ThemeConfig,
 ) -> Element {
     let reseed_note = reseed_status_note();
     let Some((chunks, y_min, y_max, span_min, labels, normalize_per_series, series_scales)) =
-        combined_chart_payload(specs, data_layout, view_w, view_h)
+        combined_chart_payload(specs, data_layout, view_w, view_h, COMBINED_CHART_GRID_LEFT)
     else {
         return rsx! {
-            div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
+            div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
                 if let Some(t) = title {
                     div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
                 }
                 if let Some((kind, note)) = reseed_note.as_ref() {
-                    {
-                        let (background, border, text) = match *kind {
-                            "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                            "success" => (
-                                &theme.notification_background,
-                                &theme.notification_border,
-                                &theme.notification_text,
-                            ),
-                            _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                        };
-                        rsx! {
-                            div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                                "{translate_text(note)}"
-                            }
-                        }
-                    }
+                    {reseed_note_banner(*kind, note, theme, false)}
                 }
                 div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No chart data yet.\")}" }
             }
@@ -821,68 +730,99 @@ fn combined_state_chart_cached(
     let bottom = view_h - CHART_GRID_BOTTOM_PAD;
     let inner_h = bottom - top;
     let y_mid = (y_min + y_max) * 0.5;
-    let x_label_bottom = CHART_X_LABEL_BOTTOM + 4.0;
+    let visible_scale_count = series_scales.iter().filter(|scale| scale.is_some()).count();
+    let scale_label_placements = if normalize_per_series && state_chart_labels_vertical {
+        stacked_scale_label_placements(&series_scales, top, inner_h, view_h)
+    } else {
+        Vec::new()
+    };
+    let widest_scale_label_chars = if state_chart_labels_vertical {
+        scale_label_placements
+            .iter()
+            .map(|entry| entry.text.len())
+            .max()
+            .unwrap_or(5)
+    } else {
+        series_scales
+            .iter()
+            .filter_map(|scale| *scale)
+            .flat_map(|(series_min, series_max)| {
+                [
+                    format!("{:.2}", series_max).len(),
+                    format!("{:.2}", (series_min + series_max) * 0.5).len(),
+                    format!("{:.2}", series_min).len(),
+                ]
+            })
+            .max()
+            .unwrap_or(5)
+    };
+    let scale_chip_width = (widest_scale_label_chars as f64 * 5.6 + 12.0).clamp(34.0, 68.0);
+    let side_rail_width = if normalize_per_series && state_chart_labels_vertical {
+        let columns = scale_label_placements
+            .iter()
+            .map(|entry| entry.rail_column)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        (columns as f64 * scale_chip_width)
+            + (columns.saturating_sub(1) as f64 * VERTICAL_SCALE_LABEL_RAIL_GAP)
+    } else if normalize_per_series {
+        let count = visible_scale_count.max(1);
+        (count as f64 * scale_chip_width) + (count.saturating_sub(1) as f64 * 4.0)
+    } else {
+        0.0
+    };
+    let rendered_chart_height = if normalize_per_series && state_chart_labels_vertical {
+        let rows = scale_label_placements.len().max(1);
+        CHART_GRID_TOP
+            + CHART_GRID_BOTTOM_PAD
+            + 28.0
+            + rows.saturating_sub(1) as f64 * VERTICAL_SCALE_LABEL_ROW_GAP
+    } else {
+        0.0
+    };
+    let chart_shell_size_style = if normalize_per_series && state_chart_labels_vertical {
+        format!("height:{rendered_chart_height}px;")
+    } else {
+        format!("aspect-ratio:{view_w}/{view_h};")
+    };
+    let x_label_top = bottom + CHART_X_LABEL_BOTTOM;
     let scale_chip_style = |i: usize| {
         format!(
-            "padding:0 5px; line-height:1.15; border-radius:999px; border:1px solid {border}; background:{bg}; color:{fg}; \
+            "box-sizing:border-box; min-width:{scale_chip_width}px; max-width:100%; padding:0 4px; line-height:1.1; font-size:clamp(8px, 1.8vw, 10px); text-align:center; font-variant-numeric:tabular-nums; border-radius:999px; border:1px solid {border}; background:{bg}; color:{fg}; \
              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04); text-shadow: 0 1px 1px rgba(2,6,23,0.85);",
             border = series_color(i),
-            bg = theme.panel_background_alt,
+            bg = theme.panel_background,
             fg = series_color(i),
+            scale_chip_width = scale_chip_width,
         )
     };
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     rsx! {
-        div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
+        div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(t) = title {
                 div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
-                {
-                    let (background, border, text) = match *kind {
-                        "error" => (&theme.error_background, &theme.error_border, &theme.error_text),
-                        "success" => (
-                            &theme.notification_background,
-                            &theme.notification_border,
-                            &theme.notification_text,
-                        ),
-                        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
-                    };
-                    rsx! {
-                        div { style: "padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
-                            "{translate_text(note)}"
-                        }
-                    }
-                }
+                {reseed_note_banner(*kind, note, theme, false)}
             }
-            div { style: "display:flex; gap:6px; align-items:stretch;",
+            div { style: "display:flex; align-items:stretch; gap:{VERTICAL_SCALE_LABEL_RAIL_GAP}px; width:100%; {chart_shell_size_style} overflow:hidden;",
                 if normalize_per_series {
-                    div { style: "flex:0 0 132px; width:132px; min-width:132px; display:flex; flex-direction:column; justify-content:space-between; align-items:flex-end; font-size:clamp(8px, 1.8vw, 10px); padding-top:4px; padding-bottom:28px; overflow:visible;",
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
-                            for (i, _) in labels.iter().enumerate() {
-                                if let Some((_, series_max)) = series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_max)} }
-                                }
-                            }
-                        }
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
-                            for (i, _) in labels.iter().enumerate() {
-                                if let Some((series_min, series_max)) = series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "{scale_chip_style(i)}", {format!("{:.2}", (series_min + series_max) * 0.5)} }
-                                }
-                            }
-                        }
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
-                            for (i, _) in labels.iter().enumerate() {
-                                if let Some((series_min, _)) = series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_min)} }
-                                }
-                            }
-                        }
-                    }
+                    {normalized_scale_labels_side(
+                        &labels,
+                        &series_scales,
+                        side_rail_width,
+                        top,
+                        inner_h,
+                        view_h,
+                        state_chart_labels_vertical,
+                        &scale_label_placements,
+                        scale_chip_width,
+                        &scale_chip_style,
+                    )}
                 }
-                div { style: "position:relative; flex:1 1 auto; min-width:0; aspect-ratio:{view_w}/{view_h};",
+                div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%; container-type:inline-size;",
                     ChartCanvas {
                         view_w: view_w,
                         view_h: view_h,
@@ -893,29 +833,208 @@ fn combined_state_chart_cached(
                         grid_bottom: Some(bottom),
                         style: "position:absolute; inset:0; width:100%; height:100%; display:block;".to_string(),
                     }
-                    div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
+                    div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_secondary}; text-shadow:0 1px 1px rgba(2,6,23,0.75);",
                         if !normalize_per_series {
                             span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(top + 6.0, view_h)}; max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
                             span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
                             span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(bottom + 1.0, view_h)}; transform:translateY(-100%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
                         }
-                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; bottom:{x_label_bottom}px;", {format!("-{:.1} min", span_min)} }
-                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:{x_label_bottom}px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
-                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:{x_label_bottom}px;", "{translate_text(\"now\")}" }
+                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; top:{y_pct(x_label_top, view_h)};", {format!("-{:.1} min", span_min)} }
+                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; top:{y_pct(x_label_top, view_h)}; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
+                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; top:{y_pct(x_label_top, view_h)};", "{translate_text(\"now\")}" }
+                    }
+                    if normalize_per_series && state_chart_labels_vertical {
+                        {normalized_scale_connector_overlay(
+                            &scale_label_placements,
+                            left,
+                            VERTICAL_SCALE_LABEL_RAIL_GAP,
+                            scale_chip_width,
+                            view_w,
+                            view_h,
+                        )}
                     }
                 }
             }
-            div { style: "display:flex; flex-wrap:wrap; gap:6px; padding:4px 6px; background:{theme.app_background}; border:1px solid {theme.border_soft}; border-radius:10px;",
+            div { style: "display:flex; flex-wrap:wrap; gap:6px; padding:5px 10px; margin-top:-4px; background:{theme.panel_background}; border:1px solid {theme.border_soft}; border-radius:10px;",
                 if normalize_per_series {
-                    div { style: "font-size:11px; color:{theme.text_muted}; margin-right:6px;", "{translate_text(\"Scaled per series\")}" }
+                    div { style: "font-size:11px; color:{theme.text_secondary}; margin-right:6px;", "{translate_text(\"Scaled per series\")}" }
                 }
                 for (i, label) in labels.iter().enumerate() {
                     if !label.is_empty() {
-                        div { style: "display:flex; align-items:center; gap:5px; font-size:11px; color:{theme.text_secondary};",
+                        div { style: "display:flex; align-items:center; gap:5px; font-size:11px; color:{theme.text_primary};",
                             SeriesSwatch { index: i }
                             "{translate_text(label)}"
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+fn normalized_scale_labels_side<F>(
+    labels: &[String],
+    series_scales: &[Option<(f32, f32)>],
+    label_width: f64,
+    top: f64,
+    inner_h: f64,
+    view_h: f64,
+    vertical_mode: bool,
+    vertical_placements: &[ScaleLabelPlacement],
+    scale_chip_width: f64,
+    scale_chip_style: &F,
+) -> Element
+where
+    F: Fn(usize) -> String,
+{
+    let cols = labels
+        .iter()
+        .enumerate()
+        .filter_map(|(i, _)| {
+            series_scales
+                .get(i)
+                .and_then(|scale| scale.map(|pair| (i, pair)))
+        })
+        .collect::<Vec<_>>();
+    let pct = |value: f64, total: f64| format!("{:.4}%", (value / total) * 100.0);
+    let row_style = |y: f64, transform: &str| {
+        format!(
+            "position:absolute; right:0; top:{}; display:flex; align-items:center; gap:clamp(2px, 0.35vw, 4px); \
+             transform:{transform}; pointer-events:none; white-space:nowrap;",
+            pct(y, view_h)
+        )
+    };
+    let top_row_style = row_style(top + 6.0, "");
+    let mid_row_style = row_style(top + inner_h * 0.5, "translateY(-50%)");
+    let bottom_row_style = row_style(top + inner_h - 6.0, "translateY(-100%)");
+
+    rsx! {
+        div { style: "position:relative; flex:0 0 {label_width}px; width:{label_width}px; min-width:{label_width}px; height:100%; overflow:hidden; container-type:inline-size;",
+            if vertical_mode {
+                for entry in vertical_placements.iter() {
+                    div {
+                        style: "position:absolute; right:{entry.rail_column as f64 * (scale_chip_width + VERTICAL_SCALE_LABEL_RAIL_GAP)}px; top:{pct(entry.label_y, view_h)}; transform:translateY(-50%); pointer-events:none; max-width:{scale_chip_width}px;",
+                        div { style: "{scale_chip_style(entry.series_index)}", "{entry.text}" }
+                    }
+                }
+            } else {
+                div { style: "{top_row_style}",
+                    for (i, (_, series_max)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_max)} }
+                    }
+                }
+                div { style: "{mid_row_style}",
+                    for (i, (series_min, series_max)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", (series_min + series_max) * 0.5)} }
+                    }
+                }
+                div { style: "{bottom_row_style}",
+                    for (i, (series_min, _)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_min)} }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn stacked_scale_label_placements(
+    series_scales: &[Option<(f32, f32)>],
+    top: f64,
+    inner_h: f64,
+    view_h: f64,
+) -> Vec<ScaleLabelPlacement> {
+    let mut entries = Vec::new();
+    let top_y = top + 8.0;
+    let mid_y = top + inner_h * 0.5;
+    let bottom_y = top + inner_h - 8.0;
+
+    for (series_index, scale) in series_scales.iter().enumerate() {
+        let Some((series_min, series_max)) = scale else {
+            continue;
+        };
+        entries.push(ScaleLabelPlacement {
+            series_index,
+            target_y: top_y,
+            label_y: top_y,
+            rail_column: 0,
+            text: format!("{:.2}", series_max),
+        });
+        entries.push(ScaleLabelPlacement {
+            series_index,
+            target_y: mid_y,
+            label_y: mid_y,
+            rail_column: 0,
+            text: format!("{:.2}", (series_min + series_max) * 0.5),
+        });
+        entries.push(ScaleLabelPlacement {
+            series_index,
+            target_y: bottom_y,
+            label_y: bottom_y,
+            rail_column: 0,
+            text: format!("{:.2}", series_min),
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        a.target_y
+            .partial_cmp(&b.target_y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.series_index.cmp(&b.series_index))
+    });
+
+    let min_y = top_y;
+    let max_y = (view_h - CHART_GRID_BOTTOM_PAD - 8.0).max(min_y);
+    let row_gap = VERTICAL_SCALE_LABEL_ROW_GAP;
+    let rows_per_column = (((max_y - min_y) / row_gap).floor() as usize + 1).max(1);
+    let columns = entries.len().div_ceil(rows_per_column).max(1);
+    let rows_in_column = entries.len().div_ceil(columns).max(1);
+    let effective_gap = if rows_in_column > 1 {
+        row_gap.min((max_y - min_y) / (rows_in_column as f64 - 1.0))
+    } else {
+        row_gap
+    };
+
+    for (idx, entry) in entries.iter_mut().enumerate() {
+        let column = idx / rows_in_column;
+        let row = idx % rows_in_column;
+        entry.rail_column = column;
+        entry.label_y = (min_y + row as f64 * effective_gap).clamp(min_y, max_y);
+    }
+
+    entries
+}
+
+fn normalized_scale_connector_overlay(
+    placements: &[ScaleLabelPlacement],
+    y_axis_x: f64,
+    rail_gap: f64,
+    scale_chip_width: f64,
+    view_w: f64,
+    view_h: f64,
+) -> Element {
+    rsx! {
+        svg {
+            style: "position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible;",
+            view_box: "0 0 {view_w} {view_h}",
+            preserve_aspect_ratio: "none",
+            for entry in placements.iter() {
+                line {
+                    x1: "{-(rail_gap + entry.rail_column as f64 * (scale_chip_width + VERTICAL_SCALE_LABEL_RAIL_GAP))}",
+                    y1: "{entry.label_y}",
+                    x2: "{y_axis_x}",
+                    y2: "{entry.target_y}",
+                    stroke: "#fbbf24",
+                    stroke_width: "1.2",
+                    stroke_opacity: "0.72",
+                    vector_effect: "non-scaling-stroke",
+                }
+                circle {
+                    cx: "{y_axis_x}",
+                    cy: "{entry.target_y}",
+                    r: "1.4",
+                    fill: "#fbbf24",
+                    opacity: "0.86",
                 }
             }
         }
@@ -972,36 +1091,50 @@ fn valve_state_grid(
             label: translate_text("Pilot"),
             index: 0,
             formatter: None,
+            fill_target_fluid: None,
+            fill_target_kind: None,
         },
         SummaryItem {
             label: translate_text("NormallyOpen"),
             index: 1,
             formatter: None,
+            fill_target_fluid: None,
+            fill_target_kind: None,
         },
         SummaryItem {
             label: translate_text("Dump"),
             index: 2,
             formatter: None,
+            fill_target_fluid: None,
+            fill_target_kind: None,
         },
         SummaryItem {
             label: translate_text("Igniter"),
             index: 3,
             formatter: None,
+            fill_target_fluid: None,
+            fill_target_kind: None,
         },
         SummaryItem {
             label: translate_text("Nitrogen"),
             index: 4,
             formatter: None,
+            fill_target_fluid: None,
+            fill_target_kind: None,
         },
         SummaryItem {
             label: translate_text("Nitrous"),
             index: 5,
             formatter: None,
+            fill_target_fluid: None,
+            fill_target_kind: None,
         },
         SummaryItem {
             label: translate_text("Fill Lines"),
             index: 6,
             formatter: None,
+            fill_target_fluid: None,
+            fill_target_kind: None,
         },
     ];
 
@@ -1277,16 +1410,17 @@ fn action_style(
 }
 
 fn summary_row(
-    dt: &str,
+    dt: Option<&str>,
     items: &[SummaryItem],
+    fill_targets: Option<&FillTargetsConfig>,
     style: Option<&SummaryCardStyle>,
     theme: &ThemeConfig,
     use_layout_theme_overrides: bool,
 ) -> Element {
-    let want_minmax = dt != "VALVE_STATE" && dt != "GPS_DATA";
+    let want_minmax = dt.is_some_and(|dt| dt != "VALVE_STATE" && dt != "GPS_DATA");
 
     let (chan_min, chan_max) = if want_minmax {
-        charts_cache_get_channel_minmax(dt, 1200.0, 300.0)
+        charts_cache_get_channel_minmax(dt.unwrap_or_default(), 1200.0, 300.0)
     } else {
         (Vec::new(), Vec::new())
     };
@@ -1297,7 +1431,8 @@ fn summary_row(
             (
                 item.label.clone(),
                 item.index,
-                latest_value(dt, item.index),
+                summary_item_value(dt, item, fill_targets),
+                summary_item_fill_target_value_string(item, fill_targets),
                 item.formatter.as_ref(),
             )
         })
@@ -1305,10 +1440,11 @@ fn summary_row(
 
     rsx! {
         div { style: "display:grid; gap:10px; margin-bottom:12px; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); width:100%;",
-            for (label, idx, value, formatter) in latest {
+            for (label, idx, value, target, formatter) in latest {
                 SummaryCard {
                     label: translate_text(&label),
                     value: format_summary_value(value, formatter),
+                    target: target,
                     min: if want_minmax { chan_min.get(idx).copied().flatten().map(|v| format_summary_value(Some(v), formatter)) } else { None },
                     max: if want_minmax { chan_max.get(idx).copied().flatten().map(|v| format_summary_value(Some(v), formatter)) } else { None },
                     style: style.cloned(),
@@ -1324,6 +1460,7 @@ fn summary_row(
 fn SummaryCard(
     label: String,
     value: String,
+    target: Option<String>,
     min: Option<String>,
     max: Option<String>,
     style: Option<SummaryCardStyle>,
@@ -1374,7 +1511,12 @@ fn SummaryCard(
     rsx! {
         div { style: "padding:10px; border-radius:12px; background:{background}; border:1px solid {border}; width:100%; min-width:0; box-sizing:border-box;",
             div { style: "font-size:12px; color:{label_color};", "{translate_text(&label)}" }
-            div { style: "font-size:18px; color:{value_color}; line-height:1.1;", "{value}" }
+            div { style: "display:flex; flex-wrap:wrap; align-items:baseline; column-gap:8px; row-gap:2px; margin-top:2px; max-width:100%; overflow:hidden;" ,
+                div { style: "font-size:18px; color:{value_color}; line-height:1.1; min-width:0; width:10.5ch; max-width:10.5ch; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{value}" }
+                if let Some(target) = target {
+                    div { style: "font-size:11px; color:{theme.info_text}; white-space:nowrap; width:16ch; min-width:min(16ch, 100%); max-width:100%; text-align:left; flex:0 1 16ch; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{target}" }
+                }
+            }
             if let Some(t) = mm {
                 div { style: "font-size:11px; color:{theme.text_muted}; margin-top:4px;", "{t}" }
             }
@@ -1382,8 +1524,61 @@ fn SummaryCard(
     }
 }
 
-fn latest_value(dt: &str, idx: usize) -> Option<f32> {
-    latest_telemetry_value(dt, None, idx)
+fn summary_item_value(
+    dt: Option<&str>,
+    item: &SummaryItem,
+    _fill_targets: Option<&FillTargetsConfig>,
+) -> Option<f32> {
+    dt.and_then(|dt| latest_telemetry_value(dt, None, item.index))
+}
+
+fn summary_item_fill_target_value(item: &SummaryItem, cfg: &FillTargetsConfig) -> Option<f32> {
+    let (fluid, kind) = item
+        .fill_target_fluid
+        .as_ref()
+        .zip(item.fill_target_kind.as_ref())
+        .or_else(|| summary_item_fill_target_fallback(item))?;
+    let target = match fluid {
+        FillTargetFluid::Nitrogen => &cfg.nitrogen,
+        FillTargetFluid::Nitrous => &cfg.nitrous,
+    };
+    Some(match kind {
+        FillTargetValueKind::MassKg => target.target_mass_kg,
+        FillTargetValueKind::PressurePsi => target.target_pressure_psi,
+    })
+}
+
+fn summary_item_fill_target_fallback(
+    item: &SummaryItem,
+) -> Option<(&'static FillTargetFluid, &'static FillTargetValueKind)> {
+    static NITROUS: FillTargetFluid = FillTargetFluid::Nitrous;
+    static PRESSURE: FillTargetValueKind = FillTargetValueKind::PressurePsi;
+    static MASS: FillTargetValueKind = FillTargetValueKind::MassKg;
+
+    match item.label.as_str() {
+        "Tank Pressure" => Some((&NITROUS, &PRESSURE)),
+        "Mass (kg)" => Some((&NITROUS, &MASS)),
+        _ => None,
+    }
+}
+
+fn summary_item_fill_target_value_string(
+    item: &SummaryItem,
+    fill_targets: Option<&FillTargetsConfig>,
+) -> Option<String> {
+    let cfg = fill_targets?;
+    let raw = summary_item_fill_target_value(item, cfg)?;
+    let (_, kind) = item
+        .fill_target_fluid
+        .as_ref()
+        .zip(item.fill_target_kind.as_ref())
+        .or_else(|| summary_item_fill_target_fallback(item))?;
+    let formatted = format_summary_value(Some(raw), item.formatter.as_ref());
+    let label = match kind {
+        FillTargetValueKind::MassKg => translate_text("Target"),
+        FillTargetValueKind::PressurePsi => translate_text("Target"),
+    };
+    Some(format!("{label} {formatted}"))
 }
 
 fn value_at(row: &TelemetryRow, idx: usize) -> Option<f32> {

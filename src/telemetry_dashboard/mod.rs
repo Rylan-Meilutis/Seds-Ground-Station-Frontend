@@ -12,7 +12,6 @@ pub mod errors_tab;
 mod gps;
 pub(crate) mod gps_android;
 mod gps_webview;
-mod latency_chart;
 pub mod layout;
 mod layout_settings_tab;
 mod network_topology_tab;
@@ -51,15 +50,18 @@ use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
-use types::{BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow};
+use types::{
+    BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
+    display_flight_state,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use version_page::VersionTab;
 use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering}, Arc,
-    Mutex,
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
 use once_cell::sync::Lazy;
@@ -78,7 +80,7 @@ static RESEED_STATUS: AtomicU8 = AtomicU8::new(0);
 static RESEED_STATUS_TOKEN: AtomicU64 = AtomicU64::new(0);
 static RESEED_STATUS_DETAIL: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static DASHBOARD_HAS_CONNECTED: AtomicBool = AtomicBool::new(false);
-static LAST_WS_CONNECT_WARNING: Lazy<Mutex<Option<(String, i64)>>> = Lazy::new(|| Mutex::new(None));
+static LAST_WS_CONNECT_WARNING: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static FRONTEND_NETWORK_METRICS_STATE: Lazy<Mutex<FrontendNetworkMetrics>> =
     Lazy::new(|| Mutex::new(FrontendNetworkMetrics::default()));
 static TRANSLATION_MISS_QUEUE: Lazy<Mutex<HashSet<String>>> =
@@ -144,626 +146,25 @@ fn dashboard_gen() -> u64 {
     DASHBOARD_LIFE.read().r#gen
 }
 
+mod blink;
+mod network_metrics;
+
 // ----------------------------
 // Cross-platform persistence
-//  - wasm32: localStorage
-//  - native: JSON file in app data dir
 // ----------------------------
-mod persist {
-    /// Reads a persisted string value from browser storage or the native JSON store.
-    pub fn get_string(key: &str) -> Option<String> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            use web_sys::window;
-            let w = window()?;
-            let ls = w.local_storage().ok()??;
-            return ls.get_item(key).ok().flatten();
-        }
+mod persist;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            native::get_string(key).ok().flatten()
-        }
-    }
+include!("dashboard_messages.rs");
 
-    /// Persists a string value across app launches.
-    pub fn set_string(key: &str, value: &str) {
-        #[cfg(target_arch = "wasm32")]
-        {
-            use web_sys::window;
-            if let Some(w) = window() {
-                if let Ok(Some(ls)) = w.local_storage() {
-                    let _ = ls.set_item(key, value);
-                }
-            }
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = native::set_string(key, value);
-        }
-    }
-
-    /// Removes a persisted key when the current platform supports it.
-    pub fn _remove(key: &str) {
-        #[cfg(target_arch = "wasm32")]
-        {
-            use web_sys::window;
-            if let Some(w) = window() {
-                if let Ok(Some(ls)) = w.local_storage() {
-                    let _ = ls.remove_item(key);
-                }
-            }
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = native::_remove(key);
-        }
-    }
-
-    /// Reads a stored string value or falls back to the provided default.
-    pub fn get_or(key: &str, default: &str) -> String {
-        get_string(key).unwrap_or_else(|| default.to_string())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    mod native {
-        use std::collections::HashMap;
-        use std::io;
-
-        /// Resolves the default native storage root when no platform-specific path is available.
-        fn fallback_storage_base_dir() -> std::path::PathBuf {
-            dirs::data_local_dir()
-                .or_else(dirs::data_dir)
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
-        }
-
-        #[cfg(target_os = "android")]
-        /// Resolves the Android app-private storage root through JNI.
-        fn android_storage_base_dir() -> Option<std::path::PathBuf> {
-            use ::jni::objects::{JObject, JString};
-            use ::jni::{jni_sig, jni_str, JavaVM};
-            use ndk_context::android_context;
-
-            let ctx = android_context();
-            let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
-            vm.attach_current_thread(|env| -> ::jni::errors::Result<std::path::PathBuf> {
-                let context = unsafe { JObject::from_raw(env, ctx.context().cast()) };
-
-                let files_dir = env
-                    .call_method(
-                        &context,
-                        jni_str!("getFilesDir"),
-                        jni_sig!("()Ljava/io/File;"),
-                        &[],
-                    )?
-                    .l()?;
-                let path_obj = env
-                    .call_method(
-                        &files_dir,
-                        jni_str!("getAbsolutePath"),
-                        jni_sig!("()Ljava/lang/String;"),
-                        &[],
-                    )?
-                    .l()?;
-                let path = env.as_cast::<JString>(&path_obj)?.try_to_string(env)?;
-
-                let _ = context.into_raw();
-                Ok(std::path::PathBuf::from(path))
-            })
-            .ok()
-        }
-
-        /// Picks the best native storage root for the JSON persistence file.
-        fn storage_base_dir() -> std::path::PathBuf {
-            #[cfg(target_os = "android")]
-            {
-                if let Some(path) = android_storage_base_dir() {
-                    return path;
-                }
-            }
-
-            fallback_storage_base_dir()
-        }
-
-        /// Returns the full path to the native JSON persistence file.
-        fn storage_path() -> std::path::PathBuf {
-            let mut base = storage_base_dir();
-            base.push("gs26");
-            base.push("storage.json");
-            base
-        }
-
-        /// Loads the native persistence map from disk.
-        fn load_map() -> Result<HashMap<String, String>, io::Error> {
-            let path = storage_path();
-            let bytes = match std::fs::read(&path) {
-                Ok(b) => b,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
-                Err(e) => return Err(e),
-            };
-
-            let map = serde_json::from_slice::<HashMap<String, String>>(&bytes).unwrap_or_default();
-            Ok(map)
-        }
-
-        /// Saves the native persistence map back to disk.
-        fn save_map(map: &HashMap<String, String>) -> Result<(), io::Error> {
-            let path = storage_path();
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let bytes = serde_json::to_vec_pretty(map).unwrap_or_else(|_| b"{}".to_vec());
-            std::fs::write(path, bytes)?;
-            Ok(())
-        }
-
-        /// Reads a string key from the native persistence file.
-        pub fn get_string(key: &str) -> Result<Option<String>, io::Error> {
-            let map = load_map()?;
-            Ok(map.get(key).cloned())
-        }
-
-        /// Writes a string key into the native persistence file.
-        pub fn set_string(key: &str, value: &str) -> Result<(), io::Error> {
-            let mut map = load_map()?;
-            map.insert(key.to_string(), value.to_string());
-            save_map(&map)?;
-            Ok(())
-        }
-
-        /// Removes a key from the native persistence file.
-        pub fn _remove(key: &str) -> Result<(), io::Error> {
-            let mut map = load_map()?;
-            map.remove(key);
-            save_map(&map)?;
-            Ok(())
-        }
-    }
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(tag = "ty", content = "data")]
-enum WsInMsg {
-    Telemetry(TelemetryRow),
-    TelemetryBatch(Vec<TelemetryRow>),
-    FlightState(FlightStateMsg),
-    LaunchClock(LaunchClockMsg),
-    Warning(AlertMsg),
-    Error(AlertMsg),
-    BoardStatus(BoardStatusMsg),
-    NetworkTopology(NetworkTopologyMsg),
-    Notifications(Vec<PersistentNotification>),
-    ActionPolicy(ActionPolicyMsg),
-    RecordingStatus(RecordingStatusMsg),
-    NetworkTime(NetworkTimeMsg),
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct FlightStateMsg {
-    state: FlightState,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct AlertMsg {
-    pub timestamp_ms: i64,
-    pub message: String,
-}
-
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BlinkMode {
-    None,
-    Slow,
-    Fast,
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct ActionControl {
-    pub cmd: String,
-    pub enabled: bool,
-    pub blink: BlinkMode,
-    pub actuated: Option<bool>,
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct ActionPolicyMsg {
-    pub key_enabled: bool,
-    #[serde(default = "default_software_buttons_enabled")]
-    pub software_buttons_enabled: bool,
-    pub controls: Vec<ActionControl>,
-}
-
-impl ActionPolicyMsg {
-    /// Returns the startup action policy before the backend publishes a real one.
-    fn default_locked() -> Self {
-        Self {
-            key_enabled: false,
-            software_buttons_enabled: true,
-            controls: Vec::new(),
-        }
-    }
-}
-
-/// Provides the serde default for software action buttons.
-fn default_software_buttons_enabled() -> bool {
-    true
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct PersistentNotification {
-    pub id: u64,
-    pub timestamp_ms: i64,
-    pub message: String,
-    #[serde(default = "default_notification_persistent")]
-    pub persistent: bool,
-    #[serde(default)]
-    pub action_label: Option<String>,
-    #[serde(default)]
-    pub action_cmd: Option<String>,
-}
-
-/// Provides the serde default for notification persistence.
-fn default_notification_persistent() -> bool {
-    true
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct DismissedNotification {
-    id: u64,
-    timestamp_ms: i64,
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct NetworkTimeMsg {
-    pub timestamp_ms: i64,
-}
-
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum LaunchClockKind {
-    Idle,
-    TMinus,
-    TPlus,
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-struct LaunchClockMsg {
-    kind: LaunchClockKind,
-    anchor_timestamp_ms: Option<i64>,
-    duration_ms: Option<i64>,
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-struct RecordingStatusMsg {
-    mode: String,
-    db_path: Option<String>,
-}
-
-#[derive(Deserialize, Debug, Clone, Default)]
-struct TranslationCatalogResponse {
-    lang: String,
-    translations: HashMap<String, String>,
-}
-
-#[derive(Serialize, Debug, Clone, Default)]
-struct TranslationRequest {
-    target_lang: String,
-    texts: Vec<String>,
-}
-
-#[derive(Deserialize, Debug, Clone, Default)]
-struct TranslationResponse {
-    lang: String,
-    translations: HashMap<String, String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct NetworkTimeSync {
-    network_ms: i64,
-    received_mono_ms: f64,
-}
-
-#[cfg(target_arch = "wasm32")]
-/// Returns a monotonic-ish timestamp source for rate calculations in the browser.
-fn monotonic_now_ms() -> f64 {
-    js_sys::Date::now()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Returns a monotonic timestamp source for rate calculations on native builds.
-fn monotonic_now_ms() -> f64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-
-    static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
-}
-
-#[inline]
-/// Projects the last synced network time forward using monotonic elapsed time.
-fn compensated_network_time_ms(sync: NetworkTimeSync) -> i64 {
-    let elapsed_ms = (monotonic_now_ms() - sync.received_mono_ms)
-        .max(0.0)
-        .round() as i64;
-    sync.network_ms.saturating_add(elapsed_ms)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn format_timestamp_ms_clock(ms_epoch: i64) -> String {
-    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms_epoch as f64));
-    let h24 = d.get_hours();
-    let (h, am_pm) = match h24 {
-        0 => (12, "AM"),
-        1..=11 => (h24, "AM"),
-        12 => (12, "PM"),
-        _ => (h24 - 12, "PM"),
-    };
-    let m = d.get_minutes();
-    let s = d.get_seconds();
-    let cs = (d.get_milliseconds() / 10).clamp(0, 99);
-    format!("{h:02}:{m:02}:{s:02}:{cs:02} {am_pm}")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn format_timestamp_ms_clock(ms_epoch: i64) -> String {
-    use chrono::{Local, TimeZone};
-    let Some(dt) = Local.timestamp_millis_opt(ms_epoch).single() else {
-        return "--:--:--:--".to_string();
-    };
-    let cs = dt.timestamp_subsec_millis() / 10;
-    format!("{}:{cs:02} {}", dt.format("%I:%M:%S"), dt.format("%p"))
-}
-
-/// Formats the network-synchronized wall clock for dashboard display.
-fn format_network_time(ms_epoch: i64) -> String {
-    format_timestamp_ms_clock(ms_epoch)
-}
-
-// --------------------------
-// DB alert DTO (/api/alerts)
-// --------------------------
-#[derive(Deserialize, Debug, Clone)]
-struct AlertDto {
-    pub timestamp_ms: i64,
-    pub severity: String, // "warning" | "error"
-    pub message: String,
-}
-
-// --------------------------
-// GPS DTO (/api/gps)
-// --------------------------
-#[derive(Deserialize, Debug, Clone, Copy)]
-struct GpsPoint {
-    pub lat: f64,
-    pub lon: f64,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct GpsResponse {
-    pub rocket: Option<GpsPoint>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MainTab {
-    State,
-    ConnectionStatus,
-    Detailed,
-    NetworkTopology,
-    Map,
-    Actions,
-    Calibration,
-    Notifications,
-    Warnings,
-    Errors,
-    Data,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct FrontendNetworkMetrics {
-    ws_connected: bool,
-    ws_url: String,
-    base_http: String,
-    ws_epoch: u64,
-    ws_disconnects_total: u64,
-    ws_messages_total: u64,
-    ws_bytes_total: u64,
-    telemetry_rows_total: u64,
-    telemetry_batches_total: u64,
-    bytes_per_sec: f64,
-    msgs_per_sec: f64,
-    rows_per_sec: f64,
-    http_rtt_ms: Option<f64>,
-    http_rtt_ema_ms: Option<f64>,
-    last_connect_wall_ms: Option<i64>,
-    last_disconnect_reason: Option<String>,
-    last_ws_message_wall_ms: Option<i64>,
-    last_rate_sample_mono_ms: f64,
-    bytes_since_last_sample: u64,
-    msgs_since_last_sample: u64,
-    rows_since_last_sample: u64,
-}
-
-impl Default for FrontendNetworkMetrics {
-    fn default() -> Self {
-        Self {
-            ws_connected: false,
-            ws_url: String::new(),
-            base_http: String::new(),
-            ws_epoch: 0,
-            ws_disconnects_total: 0,
-            ws_messages_total: 0,
-            ws_bytes_total: 0,
-            telemetry_rows_total: 0,
-            telemetry_batches_total: 0,
-            bytes_per_sec: 0.0,
-            msgs_per_sec: 0.0,
-            rows_per_sec: 0.0,
-            http_rtt_ms: None,
-            http_rtt_ema_ms: None,
-            last_connect_wall_ms: None,
-            last_disconnect_reason: None,
-            last_ws_message_wall_ms: None,
-            last_rate_sample_mono_ms: 0.0,
-            bytes_since_last_sample: 0,
-            msgs_since_last_sample: 0,
-            rows_since_last_sample: 0,
-        }
-    }
-}
-
-/// Resets the frontend-side WebSocket and HTTP metrics to a clean state.
-fn reset_frontend_network_metrics_state() {
-    if let Ok(mut metrics) = FRONTEND_NETWORK_METRICS_STATE.lock() {
-        *metrics = FrontendNetworkMetrics {
-            base_http: UrlConfig::base_http(),
-            ..FrontendNetworkMetrics::default()
-        };
-    }
-}
-
-/// Returns a snapshot of the frontend network metrics without exposing the mutex guard.
-fn frontend_network_metrics_snapshot() -> FrontendNetworkMetrics {
-    FRONTEND_NETWORK_METRICS_STATE
-        .lock()
-        .map(|metrics| metrics.clone())
-        .unwrap_or_default()
-}
-
-/// Redacts authentication tokens from a WebSocket URL before it is shown in the UI.
-fn redact_ws_url_for_display(ws_url: &str) -> String {
-    if let Some((prefix, query)) = ws_url.split_once('?') {
-        let redacted_query = query
-            .split('&')
-            .map(|part| {
-                if let Some((key, _)) = part.split_once('=') {
-                    if key == "token" {
-                        return format!("{key}=<redacted>");
-                    }
-                } else if part == "token" {
-                    return "token=<redacted>".to_string();
-                }
-                part.to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("&");
-        format!("{prefix}?{redacted_query}")
-    } else {
-        ws_url.to_string()
-    }
-}
-
-/// Records a WebSocket connection or disconnection transition for the dashboard diagnostics.
-fn note_ws_connection_state(connected: bool, ws_url: String, reason: Option<String>, epoch: u64) {
-    if connected {
-        DASHBOARD_HAS_CONNECTED.store(true, Ordering::Relaxed);
-        if let Ok(mut slot) = LAST_WS_CONNECT_WARNING.lock() {
-            *slot = None;
-        }
-    }
-    if let Ok(mut next) = FRONTEND_NETWORK_METRICS_STATE.lock() {
-        let was_connected = next.ws_connected;
-        next.ws_connected = connected;
-        next.ws_url = redact_ws_url_for_display(&ws_url);
-        next.base_http = UrlConfig::base_http();
-        next.ws_epoch = epoch;
-        if connected {
-            next.last_connect_wall_ms = Some(current_wallclock_ms());
-        } else if was_connected {
-            next.ws_disconnects_total = next.ws_disconnects_total.saturating_add(1);
-        }
-        if let Some(reason) = reason {
-            next.last_disconnect_reason = Some(reason);
-        }
-    }
-}
-
-fn note_ws_connect_failure_warning(
-    warnings: &mut Signal<Vec<AlertMsg>>,
-    warning_event_counter: &mut Signal<u64>,
-    ws_url: &str,
-    reason: &str,
-) {
-    let now_ms = current_wallclock_ms();
-    let fingerprint = format!("{}|{}", redact_ws_url_for_display(ws_url), reason.trim());
-    if let Ok(mut slot) = LAST_WS_CONNECT_WARNING.lock() {
-        if let Some((last_fingerprint, last_ts)) = slot.as_ref()
-            && last_fingerprint == &fingerprint
-            && now_ms.saturating_sub(*last_ts) < 15_000
-        {
-            return;
-        }
-        *slot = Some((fingerprint, now_ms));
-    }
-
-    let mut list = warnings.read().clone();
-    list.insert(
-        0,
-        AlertMsg {
-            timestamp_ms: now_ms,
-            message: format!(
-                "WebSocket connection failed.\nURL: {}\nReason: {}",
-                redact_ws_url_for_display(ws_url),
-                reason.trim()
-            ),
-        },
-    );
-    if list.len() > 500 {
-        list.truncate(500);
-    }
-    warnings.set(list);
-    let next = warning_event_counter.read().saturating_add(1);
-    warning_event_counter.set(next);
-}
-
-/// Tracks incoming WebSocket message volume and updates rate calculations.
-fn note_incoming_ws_message(raw_bytes: usize) {
-    if let Ok(mut next) = FRONTEND_NETWORK_METRICS_STATE.lock() {
-        let now_mono = monotonic_now_ms();
-        let now_wall = current_wallclock_ms();
-        if next.last_rate_sample_mono_ms <= 0.0 {
-            next.last_rate_sample_mono_ms = now_mono;
-        }
-        next.ws_messages_total = next.ws_messages_total.saturating_add(1);
-        next.ws_bytes_total = next.ws_bytes_total.saturating_add(raw_bytes as u64);
-        next.bytes_since_last_sample = next
-            .bytes_since_last_sample
-            .saturating_add(raw_bytes as u64);
-        next.msgs_since_last_sample = next.msgs_since_last_sample.saturating_add(1);
-        next.last_ws_message_wall_ms = Some(now_wall);
-
-        let dt_ms = (now_mono - next.last_rate_sample_mono_ms).max(0.0);
-        if dt_ms >= 800.0 {
-            let scale = 1000.0 / dt_ms;
-            next.bytes_per_sec = next.bytes_since_last_sample as f64 * scale;
-            next.msgs_per_sec = next.msgs_since_last_sample as f64 * scale;
-            next.rows_per_sec = next.rows_since_last_sample as f64 * scale;
-            next.bytes_since_last_sample = 0;
-            next.msgs_since_last_sample = 0;
-            next.rows_since_last_sample = 0;
-            next.last_rate_sample_mono_ms = now_mono;
-        }
-    }
-}
-
-/// Tracks telemetry row throughput separately from raw WebSocket message volume.
-fn note_incoming_telemetry_rows(telemetry_rows: usize, telemetry_batch_count: usize) {
-    if let Ok(mut next) = FRONTEND_NETWORK_METRICS_STATE.lock() {
-        next.telemetry_rows_total = next
-            .telemetry_rows_total
-            .saturating_add(telemetry_rows as u64);
-        next.telemetry_batches_total = next
-            .telemetry_batches_total
-            .saturating_add(telemetry_batch_count as u64);
-        next.rows_since_last_sample = next
-            .rows_since_last_sample
-            .saturating_add(telemetry_rows as u64);
-    }
-}
+pub(crate) use network_metrics::FrontendNetworkMetrics;
+use network_metrics::{
+    frontend_network_metrics_snapshot, note_http_rtt_ms, note_incoming_telemetry_rows,
+    note_incoming_ws_message, note_ws_connection_notification, note_ws_connection_state,
+    reset_frontend_network_metrics_state,
+};
 
 /// Returns the current wall-clock time in milliseconds since the Unix epoch.
-fn current_wallclock_ms() -> i64 {
+pub(crate) fn current_wallclock_ms() -> i64 {
     #[cfg(target_arch = "wasm32")]
     {
         js_sys::Date::now() as i64
@@ -999,6 +400,7 @@ const MAP_DISTANCE_UNITS_STORAGE_KEY: &str = "gs_map_distance_units";
 const THEME_PRESET_STORAGE_KEY: &str = "gs_theme_preset";
 const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
+const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
 const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v9_";
 const NOTIFICATION_DISMISSED_STORAGE_KEY: &str = "gs_notification_dismissed_ids_v1";
 const _SKIP_TLS_VERIFY_KEY_PREFIX: &str = "gs_skip_tls_verify_";
@@ -1105,6 +507,37 @@ pub(crate) fn reseed_status_note() -> Option<(&'static str, String)> {
             _ => String::new(),
         });
     Some((kind, text))
+}
+
+pub(crate) fn reseed_note_banner(
+    kind: &'static str,
+    note: &str,
+    theme: &layout::ThemeConfig,
+    margin_bottom: bool,
+) -> Element {
+    let (background, border, text) = match kind {
+        "error" => (
+            &theme.error_background,
+            &theme.error_border,
+            &theme.error_text,
+        ),
+        "success" => (
+            &theme.notification_background,
+            &theme.notification_border,
+            &theme.notification_text,
+        ),
+        _ => (&theme.info_background, &theme.info_accent, &theme.info_text),
+    };
+    let margin = if margin_bottom {
+        "margin-bottom:8px;"
+    } else {
+        ""
+    };
+    rsx! {
+        div { style: "{margin} padding:6px 8px; border-radius:8px; border:1px solid {border}; background:{background}; color:{text}; font-size:11px; line-height:1.35;",
+            "{translate_text(note)}"
+        }
+    }
 }
 
 /// Normalizes a stored base URL down to `scheme://host[:port]`.
@@ -1266,10 +699,127 @@ pub(crate) fn translate_text(input: &str) -> String {
     if let Some(value) = TRANSLATION_CATALOG.read().get(text) {
         return value.clone();
     }
+    if let Some(value) = builtin_translation(&current_language(), text) {
+        return value.to_string();
+    }
     if let Ok(mut pending) = TRANSLATION_MISS_QUEUE.lock() {
         pending.insert(text.to_string());
     }
     input.to_string()
+}
+
+fn builtin_translation(lang: &str, text: &str) -> Option<&'static str> {
+    match lang {
+        "es" => builtin_translation_es(text),
+        "fr" => builtin_translation_fr(text),
+        _ => None,
+    }
+}
+
+fn builtin_translation_es(text: &str) -> Option<&'static str> {
+    Some(match text {
+        "ABORT" => "ABORTAR",
+        "VERSION" => "VERSIÓN",
+        "CONNECT" => "CONECTAR",
+        "RELOAD" => "RECARGAR",
+        "SETTINGS" => "AJUSTES",
+        "SIGN IN" => "INICIAR SESIÓN",
+        "SIGN OUT" => "CERRAR SESIÓN",
+        "Menu" => "Menú",
+        "Close menu" => "Cerrar menú",
+        "Actions disabled" => "Acciones desactivadas",
+        "Actions enabled" => "Acciones activadas",
+        "Close" | "Dismiss" => "Cerrar",
+        "State" => "Estado",
+        "Current Flight State" => "Estado actual de vuelo",
+        "Flight state" => "Estado de vuelo",
+        "Fill Test" => "Prueba de llenado",
+        "Nitrogen Fill" => "Llenado de nitrógeno",
+        "Nitrous Fill" => "Llenado de nitroso",
+        "Fill Metrics" => "Métricas de llenado",
+        "Tank Pressure" => "Presión del tanque",
+        "Mass (kg)" => "Masa (kg)",
+        "Fill Percent" => "Porcentaje de llenado",
+        "Pressure and Loadcell" => "Presión y celda de carga",
+        "Target" => "Objetivo",
+        "Target mass (kg)" => "Masa objetivo (kg)",
+        "Target pressure (psi)" => "Presión objetivo (psi)",
+        "Roll" => "Alabeo",
+        "Pitch" => "Cabeceo",
+        "Yaw" => "Guiñada",
+        "Fullscreen" => "Pantalla completa",
+        "Exit Fullscreen" => "Salir de pantalla completa",
+        "Collapse" => "Colapsar",
+        "Expand" => "Expandir",
+        "Center on Me" => "Centrar en mí",
+        "Enable Compass" => "Activar brújula",
+        "Distance" => "Distancia",
+        "Board Status" => "Estado de placas",
+        "Packet Age (ms)" => "Edad del paquete (ms)",
+        "Zoom Out" => "Alejar",
+        "Zoom In" => "Acercar",
+        "Reset" => "Restablecer",
+        "Pinch or drag to navigate" => "Pellizca o arrastra para navegar",
+        "Actions" => "Acciones",
+        "Flight Setup" => "Configuración de vuelo",
+        "Fill Targets" => "Objetivos de llenado",
+        "Flight profile" => "Perfil de vuelo",
+        "Apply To Flight Computer" => "Aplicar a la computadora de vuelo",
+        "Save Fill Targets" => "Guardar objetivos de llenado",
+        "Enable actions to edit fill targets." => {
+            "Activa las acciones para editar los objetivos de llenado."
+        }
+        "Loading fill targets…" => "Cargando objetivos de llenado…",
+        "Loading flight setup…" => "Cargando configuración de vuelo…",
+        "Disable Actions is enabled. All action and flight-state buttons except Abort are disabled." => {
+            "Desactivar acciones está activado. Todos los botones de acción y estado de vuelo excepto Abortar están desactivados."
+        }
+        "No actions are available for this user." => {
+            "No hay acciones disponibles para este usuario."
+        }
+        "Nitrogen hold check passed. Pressure and loadcell are stable." => {
+            "La verificación de retención de nitrógeno pasó. La presión y la celda de carga están estables."
+        }
+        "User location unavailable. Native GPS has not provided coordinates yet." => {
+            "Ubicación de usuario no disponible. El GPS nativo aún no ha proporcionado coordenadas."
+        }
+        "Compass unavailable. Orientation permission was denied or has not initialized." => {
+            "Brújula no disponible. El permiso de orientación fue denegado o aún no se inicializó."
+        }
+        "Topology graph is running in testing-mode simulation." => {
+            "El grafo de topología está ejecutándose en simulación de modo de prueba."
+        }
+        "Topology graph is built from Ground Station topology and live node/link status." => {
+            "El grafo de topología se construye desde la topología de Ground Station y el estado en vivo de nodos/enlaces."
+        }
+        "Router graph is running in testing-mode simulation." => {
+            "El grafo del router está ejecutándose en simulación de modo de prueba."
+        }
+        "Router graph is built from the Ground Station SEDSprintf topology and live board/link status." => {
+            "El grafo del router se construye desde la topología SEDSprintf de Ground Station y el estado en vivo de placas/enlaces."
+        }
+        _ => return None,
+    })
+}
+
+fn builtin_translation_fr(text: &str) -> Option<&'static str> {
+    Some(match text {
+        "State" => "État",
+        "Current Flight State" => "État de vol actuel",
+        "Flight state" => "État de vol",
+        "Fill Metrics" => "Métriques de remplissage",
+        "Tank Pressure" => "Pression du réservoir",
+        "Mass (kg)" => "Masse (kg)",
+        "Fill Percent" => "Pourcentage de remplissage",
+        "Pressure and Loadcell" => "Pression et cellule de charge",
+        "Target" => "Cible",
+        "Target mass (kg)" => "Masse cible (kg)",
+        "Target pressure (psi)" => "Pression cible (psi)",
+        "Fullscreen" => "Plein écran",
+        "Exit Fullscreen" => "Quitter le plein écran",
+        "Close" | "Dismiss" => "Fermer",
+        _ => return None,
+    })
 }
 
 fn drain_translation_misses(limit: usize, catalog: &HashMap<String, String>) -> Vec<String> {
@@ -1343,6 +893,8 @@ pub fn NativeSettingsPage() -> Element {
     let language_code = use_signal(|| persist::get_or(LANGUAGE_STORAGE_KEY, "en"));
     let network_flow_animation_enabled =
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
+    let state_chart_labels_vertical =
+        use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
 
     {
         let distance_units_metric = distance_units_metric;
@@ -1382,6 +934,17 @@ pub fn NativeSettingsPage() -> Element {
         });
     }
     {
+        let state_chart_labels_vertical = state_chart_labels_vertical;
+        use_effect(move || {
+            let value = if *state_chart_labels_vertical.read() {
+                "on"
+            } else {
+                "off"
+            };
+            persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
         let theme_preset = theme_preset;
         use_effect(move || {
             let theme = localized_theme(
@@ -1407,6 +970,7 @@ pub fn NativeSettingsPage() -> Element {
             theme_preset,
             language_code,
             network_flow_animation_enabled,
+            state_chart_labels_vertical,
             theme,
             title,
         }
@@ -1639,7 +1203,7 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
 
     let label = localized_copy(&language, "Network Time", "Hora de red", "Heure réseau");
     rsx! {
-        div { style: "display:flex; align-items:center; flex:0 0 auto; min-width:0;",
+        span { style: "display:inline-flex; align-items:baseline; flex:0 0 auto; min-width:0; line-height:1; vertical-align:baseline;",
             span { style: "color:#cbd5e1; display:inline-flex; align-items:baseline; white-space:nowrap;",
                 "({label}:"
                 span {
@@ -1653,11 +1217,87 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
 }
 
 fn format_launch_clock_delta(ms: i64) -> String {
-    let total_tenths = (ms.max(0) + 50) / 100;
-    let minutes = total_tenths / 600;
-    let seconds = (total_tenths / 10) % 60;
-    let tenths = total_tenths % 10;
-    format!("{minutes:02}:{seconds:02}.{tenths}")
+    let total_centis = (ms.max(0) + 5) / 10;
+    let minutes = total_centis / 6_000;
+    let seconds = (total_centis / 100) % 60;
+    let centis = total_centis % 100;
+    format!("{minutes:02}:{seconds:02}.{centis:02}")
+}
+
+fn launch_clock_tminus_remaining_ms(clock: &LaunchClockMsg, now_ms: i64) -> Option<i64> {
+    let remaining = match (clock.anchor_timestamp_ms, clock.duration_ms) {
+        // Backend semantics: TMinus anchor is when countdown started, not the T-0 time.
+        // Hold duration before the backend provides an anchor, then clamp at zero until TPlus.
+        (Some(anchor_ms), Some(duration_ms)) => {
+            duration_ms.saturating_sub(now_ms.saturating_sub(anchor_ms))
+        }
+        // Backward-compatible fallback for older payloads that only sent the target T-0 time.
+        (Some(anchor_ms), None) => anchor_ms.saturating_sub(now_ms),
+        (None, Some(duration_ms)) => duration_ms,
+        (None, None) => return None,
+    };
+    Some(remaining.clamp(0, i64::MAX))
+}
+
+fn launch_clock_tplus_anchor_ms(
+    clock: &LaunchClockMsg,
+    now_ms: i64,
+    fallback_anchor_ms: Option<i64>,
+) -> Option<i64> {
+    if let Some(anchor_ms) = clock.anchor_timestamp_ms
+        && anchor_ms <= now_ms.saturating_add(1_000)
+    {
+        return Some(anchor_ms);
+    }
+    fallback_anchor_ms
+}
+
+#[cfg(test)]
+mod launch_clock_tests {
+    use super::{LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms};
+
+    #[test]
+    fn tminus_holds_duration_until_backend_anchor_arrives() {
+        let clock = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: None,
+            duration_ms: Some(10_000),
+        };
+
+        assert_eq!(
+            launch_clock_tminus_remaining_ms(&clock, 123_000),
+            Some(10_000)
+        );
+    }
+
+    #[test]
+    fn tminus_counts_down_from_backend_start_anchor() {
+        let clock = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: Some(100_000),
+            duration_ms: Some(10_000),
+        };
+
+        assert_eq!(
+            launch_clock_tminus_remaining_ms(&clock, 100_000),
+            Some(10_000)
+        );
+        assert_eq!(
+            launch_clock_tminus_remaining_ms(&clock, 104_250),
+            Some(5_750)
+        );
+    }
+
+    #[test]
+    fn tminus_clamps_at_zero_until_tplus_arrives() {
+        let clock = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: Some(100_000),
+            duration_ms: Some(10_000),
+        };
+
+        assert_eq!(launch_clock_tminus_remaining_ms(&clock, 115_000), Some(0));
+    }
 }
 
 #[component]
@@ -1666,6 +1306,7 @@ fn LaunchClockBadge(
     network_time: Signal<Option<NetworkTimeSync>>,
 ) -> Element {
     let tick = use_signal(|| 0u64);
+    let fallback_tplus_anchor_ms = use_signal(|| None::<i64>);
     {
         let mut tick = tick;
         use_effect(move || {
@@ -1683,45 +1324,107 @@ fn LaunchClockBadge(
             });
         });
     }
+    {
+        let launch_clock = launch_clock;
+        let network_time = network_time;
+        let mut fallback_tplus_anchor_ms = fallback_tplus_anchor_ms;
+        use_effect(move || {
+            let clock = launch_clock.read().clone();
+            let now_ms = network_time
+                .read()
+                .as_ref()
+                .copied()
+                .map(compensated_network_time_ms);
+
+            match clock {
+                Some(clock) => match clock.kind {
+                    LaunchClockKind::Idle | LaunchClockKind::TMinus => {
+                        if fallback_tplus_anchor_ms.read().is_some() {
+                            fallback_tplus_anchor_ms.set(None);
+                        }
+                    }
+                    LaunchClockKind::TPlus => {
+                        let backend_anchor = now_ms
+                            .and_then(|now_ms| launch_clock_tplus_anchor_ms(&clock, now_ms, None));
+                        if backend_anchor.is_some() {
+                            if fallback_tplus_anchor_ms.read().is_some() {
+                                fallback_tplus_anchor_ms.set(None);
+                            }
+                        } else if fallback_tplus_anchor_ms.read().is_none() {
+                            fallback_tplus_anchor_ms.set(now_ms);
+                        }
+                    }
+                },
+                None => {
+                    if fallback_tplus_anchor_ms.read().is_some() {
+                        fallback_tplus_anchor_ms.set(None);
+                    }
+                }
+            }
+        });
+    }
     let _tick_snapshot = *tick.read();
-    let Some(clock) = launch_clock.read().clone() else {
-        return rsx! { div {} };
-    };
-    let Some(now_ms) = network_time
+    let clock = launch_clock.read().clone();
+    let now_ms = network_time
         .read()
         .as_ref()
         .copied()
-        .map(compensated_network_time_ms)
-    else {
-        return rsx! { div {} };
+        .map(compensated_network_time_ms);
+
+    let label = match clock.as_ref().map(|clock| clock.kind) {
+        Some(LaunchClockKind::TPlus) => "T+",
+        _ => "T-",
+    };
+    let display = match (clock.as_ref(), now_ms) {
+        (Some(clock), Some(now_ms)) => match clock.kind {
+            LaunchClockKind::Idle => format_launch_clock_delta(
+                clock
+                    .duration_ms
+                    .unwrap_or(DEFAULT_LAUNCH_COUNTDOWN_DURATION_MS),
+            ),
+            LaunchClockKind::TMinus => format_launch_clock_delta(
+                launch_clock_tminus_remaining_ms(clock, now_ms).unwrap_or(0),
+            ),
+            LaunchClockKind::TPlus => {
+                let anchor_ms =
+                    launch_clock_tplus_anchor_ms(clock, now_ms, *fallback_tplus_anchor_ms.read())
+                        .unwrap_or(now_ms);
+                format_launch_clock_delta(now_ms.saturating_sub(anchor_ms))
+            }
+        },
+        (Some(clock), None) => match clock.kind {
+            LaunchClockKind::TMinus => clock
+                .duration_ms
+                .map(format_launch_clock_delta)
+                .unwrap_or_else(|| "--:--.-".to_string()),
+            LaunchClockKind::TPlus => "--:--.-".to_string(),
+            LaunchClockKind::Idle => format_launch_clock_delta(
+                clock
+                    .duration_ms
+                    .unwrap_or(DEFAULT_LAUNCH_COUNTDOWN_DURATION_MS),
+            ),
+        },
+        (None, _) => format_launch_clock_delta(DEFAULT_LAUNCH_COUNTDOWN_DURATION_MS),
     };
 
-    let Some(anchor_ms) = clock.anchor_timestamp_ms else {
-        return rsx! { div {} };
-    };
-    let label = match clock.kind {
-        LaunchClockKind::Idle => return rsx! { div {} },
-        LaunchClockKind::TMinus => "T-",
-        LaunchClockKind::TPlus => "T+",
-    };
-    let display = match clock.kind {
-        LaunchClockKind::Idle => return rsx! { div {} },
-        LaunchClockKind::TMinus => {
-            let duration = clock.duration_ms.unwrap_or(0);
-            format_launch_clock_delta((duration - (now_ms - anchor_ms)).max(0))
+    let value_color = if display.starts_with("--:--") {
+        "#94a3b8"
+    } else {
+        match clock.as_ref().map(|clock| clock.kind) {
+            Some(LaunchClockKind::TPlus) => "#38bdf8",
+            _ => "#2dd4bf",
         }
-        LaunchClockKind::TPlus => format_launch_clock_delta(now_ms - anchor_ms),
     };
 
     rsx! {
-        div { style: "display:flex; align-items:center; flex:0 0 auto; min-width:0;",
-            span { style: "color:#f8fafc; display:inline-flex; align-items:baseline; white-space:nowrap; font-weight:800;",
-                "{label}"
-                span {
-                    style: "display:inline-flex; align-items:baseline; width:10ch; padding-left:0.35ch; white-space:nowrap; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; color:#facc15;",
-                    "{display}"
-                }
+        span { class: "gs26-launch-clock",
+            span { "({label}:" }
+            span {
+                class: "gs26-launch-clock-value",
+                style: "color:{value_color};",
+                "{display}"
             }
+            span { ")" }
         }
     }
 }
@@ -2136,6 +1839,8 @@ fn TelemetryDashboardInner() -> Element {
     let language_code = use_signal(|| persist::get_or(LANGUAGE_STORAGE_KEY, "en"));
     let network_flow_animation_enabled =
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
+    let state_chart_labels_vertical =
+        use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
 
     let layout_config = use_signal(|| None::<LayoutConfig>);
     let layout_loading = use_signal(|| true);
@@ -2156,6 +1861,7 @@ fn TelemetryDashboardInner() -> Element {
     let dismissed_notifications = use_signal(load_dismissed_notifications);
     let unread_notification_ids = use_signal(Vec::<u64>::new);
     let action_policy = use_signal(ActionPolicyMsg::default_locked);
+    let fill_targets = use_signal(|| None::<FillTargetsConfig>);
     let network_time = use_signal(|| None::<NetworkTimeSync>);
     let launch_clock = use_signal(|| None::<LaunchClockMsg>);
     let flight_state = use_signal(|| "Startup".to_string());
@@ -2442,6 +2148,17 @@ fn TelemetryDashboardInner() -> Element {
         });
     }
     {
+        let state_chart_labels_vertical = state_chart_labels_vertical;
+        use_effect(move || {
+            let value = if *state_chart_labels_vertical.read() {
+                "on"
+            } else {
+                "off"
+            };
+            persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
         let language_code = language_code;
         let alive = alive.clone();
         use_effect(move || {
@@ -2618,6 +2335,7 @@ fn TelemetryDashboardInner() -> Element {
         let mut dismissed_notifications_s = dismissed_notifications;
         let mut unread_notification_ids_s = unread_notification_ids;
         let mut action_policy_s = action_policy;
+        let mut fill_targets_s = fill_targets;
         let mut network_time_s = network_time;
         let mut launch_clock_s = launch_clock;
         let mut network_topology_s = network_topology;
@@ -2666,6 +2384,7 @@ fn TelemetryDashboardInner() -> Element {
                             &mut dismissed_notifications_s,
                             &mut unread_notification_ids_s,
                             &mut action_policy_s,
+                            &mut fill_targets_s,
                             &mut network_time_s,
                             &mut launch_clock_s,
                             &mut network_topology_s,
@@ -2772,17 +2491,93 @@ fn TelemetryDashboardInner() -> Element {
         && (latest_error_ts > *ack_error_ts.read()
             || *error_event_counter.read() > *ack_error_count.read());
 
-    let border_style = if has_unacked_errors && *flash_on.read() {
-        "2px solid #ef4444"
+    let border_style = "1px solid transparent";
+    let shell_alert_effect = if has_unacked_errors && *flash_on.read() {
+        "inset 0 0 0 2px #ef4444"
     } else if has_unacked_errors && has_errors {
-        "1px solid #ef4444"
+        "inset 0 0 0 1px #ef4444"
     } else if has_unacked_warnings && *flash_on.read() {
-        "2px solid #facc15"
+        "inset 0 0 0 2px #facc15"
     } else if has_unacked_warnings && has_warnings {
-        "1px solid #facc15"
+        "inset 0 0 0 1px #facc15"
     } else {
-        "1px solid transparent"
+        "none"
     };
+    let warnings_tab_icon_style = if has_unacked_warnings && *flash_on.read() {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:1;".to_string()
+    } else if has_unacked_warnings {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:0.4;".to_string()
+    } else if has_warnings {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1;".to_string()
+    } else {
+        "display:none;".to_string()
+    };
+    let errors_tab_icon_style = if has_unacked_errors && *flash_on.read() {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:1;".to_string()
+    } else if has_unacked_errors {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:0.4;".to_string()
+    } else if has_errors {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1;".to_string()
+    } else {
+        "display:none;".to_string()
+    };
+    let notifications_tab_icon_style = if has_unread_notifications {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#bfdbfe; opacity:1;".to_string()
+    } else {
+        "display:none;".to_string()
+    };
+    let status_label = if !has_warnings && !has_errors {
+        translate_text("Nominal")
+    } else {
+        translate_text("Attention")
+    };
+    let status_label_style = if !has_warnings && !has_errors {
+        "display:inline-flex; align-items:center; min-width:12ch; color:#22c55e; font-weight:600; flex:0 0 auto;"
+    } else {
+        "display:inline-flex; align-items:center; min-width:12ch; color:#e5e7eb; font-weight:600; flex:0 0 auto;"
+    };
+    let errors_status_style = format!(
+        "display:inline-flex; align-items:center; min-width:12ch; color:#fecaca; opacity:{}; flex:0 0 auto;",
+        if has_errors { "1" } else { "0" }
+    );
+    let warnings_status_style = format!(
+        "display:inline-flex; align-items:center; min-width:13ch; color:#fde68a; opacity:{}; flex:0 0 auto;",
+        if has_warnings { "1" } else { "0" }
+    );
+    let show_ack_warnings = *active_main_tab.read() == MainTab::Warnings && has_warnings;
+    let show_ack_errors = *active_main_tab.read() == MainTab::Errors && has_errors;
+    let ack_button_visible = show_ack_warnings || show_ack_errors;
+    let ack_button_label = if show_ack_warnings {
+        translate_text("Acknowledge warnings")
+    } else if show_ack_errors {
+        translate_text("Acknowledge errors")
+    } else {
+        "Acknowledge".to_string()
+    };
+    let ack_button_style = format!(
+        "
+            margin-left:auto;
+            padding:0.25rem 0.7rem;
+            border-radius:999px;
+            border:1px solid #4b5563;
+            background:#020617;
+            color:#e5e7eb;
+            font-size:0.75rem;
+            cursor:{};
+            visibility:{};
+        ",
+        if ack_button_visible {
+            "pointer"
+        } else {
+            "default"
+        },
+        if ack_button_visible {
+            "visible"
+        } else {
+            "hidden"
+        },
+    );
+    let network_time_visible = network_time.read().is_some();
 
     // Initial flightstate (HTTP)
     {
@@ -2864,6 +2659,7 @@ fn TelemetryDashboardInner() -> Element {
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
+                    fill_targets,
                     network_time,
                     launch_clock,
                     network_topology,
@@ -2917,10 +2713,10 @@ fn TelemetryDashboardInner() -> Element {
     // Button styles
     let tab_style_active = |color: &str| {
         format!(
-            "padding:0.4rem 0.8rem; border-radius:0.5rem;\
+            "padding:0.25rem 0.65rem 0.3rem 0.65rem; border-radius:0.5rem;\
              display:inline-flex; align-items:center; justify-content:center; gap:0.35rem;\
              font:inherit;\
-             min-width:0; max-width:100%; text-align:center; line-height:1.2;\
+             min-width:0; max-width:100%; text-align:center; line-height:1.15;\
              white-space:normal; overflow-wrap:anywhere; word-break:break-word;\
              border:1px solid {color}; background:{};\
              color:{color}; cursor:pointer;",
@@ -2928,10 +2724,10 @@ fn TelemetryDashboardInner() -> Element {
         )
     };
     let tab_style_inactive = format!(
-        "padding:0.4rem 0.8rem; border-radius:0.5rem;\
+        "padding:0.25rem 0.65rem 0.3rem 0.65rem; border-radius:0.5rem;\
          display:inline-flex; align-items:center; justify-content:center; gap:0.35rem;\
          font:inherit;\
-         min-width:0; max-width:100%; text-align:center; line-height:1.2;\
+         min-width:0; max-width:100%; text-align:center; line-height:1.15;\
          white-space:normal; overflow-wrap:anywhere; word-break:break-word;\
          border:1px solid {}; background:{};\
          color:{}; cursor:pointer;",
@@ -3023,7 +2819,7 @@ fn TelemetryDashboardInner() -> Element {
                             show_version_overlay.set(true);
                         }
                     },
-                    {localized_copy(&language_snapshot, "VERSION", "VERSION", "VERSION")}
+                    {translate_text("VERSION")}
                 }
             }
         }
@@ -3054,25 +2850,25 @@ fn TelemetryDashboardInner() -> Element {
                         show_settings_overlay.set(true);
                     }
                 },
-                {localized_copy(&language_snapshot, "SETTINGS", "AJUSTES", "PARAMETRES")}
+                {translate_text("SETTINGS")}
             }
         }
     };
 
-    let reload_button_label = localized_copy(&language_snapshot, "RELOAD", "RECARGAR", "RECHARGER");
-    let close_button_label = localized_copy(&language_snapshot, "Close", "Cerrar", "Fermer");
+    let reload_button_label = translate_text("RELOAD");
+    let close_button_label = translate_text("Close");
     let _version_title = localized_copy(&language_snapshot, "UBSEDS GS", "UBSEDS GS", "UBSEDS GS");
     let settings_title = localized_copy(&language_snapshot, "Settings", "Ajustes", "Parametres");
     let sign_in_label = localized_copy(
         &language_snapshot,
         "SIGN IN",
-        "INICIAR SESION",
+        "INICIAR SESIÓN",
         "SE CONNECTER",
     );
     let sign_out_prefix = localized_copy(
         &language_snapshot,
         "SIGN OUT",
-        "CERRAR SESION",
+        "CERRAR SESIÓN",
         "SE DECONNECTER",
     );
     let auth_label = auth::current_session()
@@ -3080,19 +2876,9 @@ fn TelemetryDashboardInner() -> Element {
         .map(|username| format!("{sign_out_prefix} {username}"))
         .unwrap_or(sign_in_label);
     let disable_actions_label = if *abort_only_mode.read() {
-        localized_copy(
-            &language_snapshot,
-            "DISABLE ACTIONS ON",
-            "DESACTIVAR ACCIONES ON",
-            "DESACTIVER ACTIONS ON",
-        )
+        translate_text("Actions disabled")
     } else {
-        localized_copy(
-            &language_snapshot,
-            "DISABLE ACTIONS OFF",
-            "DESACTIVAR ACCIONES OFF",
-            "DESACTIVER ACTIONS OFF",
-        )
+        translate_text("Actions enabled")
     };
 
     let auth_button: Element = {
@@ -3353,6 +3139,7 @@ fn TelemetryDashboardInner() -> Element {
                             theme_preset: theme_preset,
                             language_code: language_code,
                             network_flow_animation_enabled: network_flow_animation_enabled,
+                            state_chart_labels_vertical: state_chart_labels_vertical,
                             theme: theme.clone(),
                             title: settings_title.clone(),
                         }
@@ -3379,6 +3166,135 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-tab-shell {{ min-width:260px; }}
              .gs26-tab-toggle {{ display:none; }}
              .gs26-tab-nav {{ display:flex; gap:0.5rem; flex-wrap:wrap; }}
+             .gs26-status-shell {{ flex:1000 1 520px; display:grid; grid-template-columns:minmax(0, 1fr) max-content; grid-template-rows:auto auto; align-items:center; column-gap:0.75rem; row-gap:0; padding:0.16rem 0.6rem 0.24rem 0.6rem; border-radius:1rem; min-width:260px; overflow:hidden; container-type:inline-size; align-self:start; }}
+             .gs26-status-row {{ display:flex; align-items:center; flex-wrap:wrap; gap:0.5rem; min-width:0; line-height:1.08; margin:0; }}
+             .gs26-status-row {{ grid-column:1; grid-row:1; }}
+             .gs26-status-flight {{ display:flex; align-items:baseline; gap:0.35rem; min-width:0; width:fit-content; max-width:100%; flex-wrap:nowrap; white-space:nowrap; line-height:1.1; margin:0; padding-bottom:0.02rem; }}
+             .gs26-status-flight {{ grid-column:1; grid-row:2; }}
+             .gs26-launch-clock {{ display:inline-flex; align-items:baseline; line-height:1; white-space:nowrap; vertical-align:baseline; color:#f8fafc; font-weight:800; }}
+             .gs26-launch-clock-value {{ display:inline-flex; align-items:baseline; width:9ch; padding-left:0.35ch; line-height:1; text-align:left; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; }}
+             .gs26-status-network {{ grid-column:2; grid-row:1; justify-self:end; line-height:1; }}
+             .gs26-status-launch {{ grid-column:2; grid-row:2; justify-self:end; line-height:1; }}
+             .gs26-status-ack {{ grid-column:2; grid-row:3; justify-self:end; }}
+             .gs26-status-ack[data-active=\"false\"] {{ display:none !important; }}
+             .gs26-status-count[data-active=\"false\"] {{ opacity:0; }}
+             @container (max-width: 520px) {{
+               .gs26-status-shell {{
+                 grid-template-columns:minmax(0, 1fr);
+                 grid-template-rows:auto auto auto auto;
+                 justify-content:center;
+                 justify-items:center;
+                 align-items:center;
+                 column-gap:0;
+                 text-align:center;
+                 row-gap:0.02rem;
+                 padding:0.12rem 0.45rem;
+               }}
+               .gs26-status-row {{
+                 grid-column:1;
+                 grid-row:1;
+                 justify-content:center;
+                 justify-self:center;
+                 width:fit-content;
+                 max-width:100%;
+                 text-align:center;
+               }}
+               .gs26-status-row .gs26-status-value {{
+                 min-width:0 !important;
+                 flex:0 1 auto !important;
+               }}
+               .gs26-status-flight {{
+                 grid-column:1;
+                 grid-row:2;
+                 justify-content:center;
+                 width:fit-content;
+                 max-width:100%;
+                 text-align:center;
+               }}
+               .gs26-status-network {{
+                 grid-column:1;
+                 grid-row:3;
+                 justify-self:center;
+                 max-width:100%;
+               }}
+               .gs26-status-launch {{
+                 grid-column:1;
+                 grid-row:4;
+                 justify-self:center;
+                 max-width:100%;
+               }}
+               .gs26-status-ack {{
+                 grid-column:1;
+                 grid-row:5;
+                 justify-self:center;
+               }}
+               .gs26-status-count[data-active=\"false\"] {{
+                 display:none !important;
+               }}
+             }}
+             @media (max-width: 720px) {{
+               .gs26-status-shell {{
+                 grid-template-columns:minmax(0, 1fr);
+                 grid-template-rows:auto auto auto auto;
+                 justify-content:center;
+                 justify-items:center;
+                 align-items:center;
+                 column-gap:0;
+                 text-align:center;
+                 row-gap:0.02rem;
+                 padding:0.12rem 0.45rem;
+               }}
+               .gs26-status-row {{
+                 grid-column:1;
+                 grid-row:1;
+                 justify-content:center;
+                 justify-self:center;
+                 width:fit-content;
+                 max-width:100%;
+                 text-align:center;
+               }}
+               .gs26-status-row .gs26-status-value {{
+                 min-width:0 !important;
+                 flex:0 1 auto !important;
+               }}
+               .gs26-status-flight {{
+                 grid-column:1;
+                 grid-row:2;
+                 justify-content:center;
+                 justify-self:center;
+                 width:fit-content;
+                 max-width:100%;
+                 text-align:center;
+               }}
+               .gs26-status-network {{
+                 grid-column:1;
+                 grid-row:3;
+                 justify-self:center;
+                 max-width:100%;
+               }}
+               .gs26-status-launch {{
+                 grid-column:1;
+                 grid-row:4;
+                 justify-self:center;
+                 max-width:100%;
+               }}
+               .gs26-status-ack {{
+                 grid-column:1;
+                 grid-row:5;
+                 justify-self:center;
+                 align-self:center !important;
+                 margin-left:0 !important;
+               }}
+               .gs26-status-ack[data-active=\"false\"] {{
+                 display:none !important;
+               }}
+               .gs26-status-value {{
+                 min-width:0 !important;
+               }}
+               .gs26-status-count[data-active=\"false\"] {{
+                 display:none !important;
+               }}
+             }}
              .gs26-header-actions-shell {{ margin-left:auto; position:relative; z-index:2000; }}
              .gs26-header-actions-list {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
              .gs26-header-menu-toggle {{ display:none; }}
@@ -3392,7 +3308,7 @@ fn TelemetryDashboardInner() -> Element {
                  display:inline-flex;
                  align-items:center;
                  justify-content:center;
-                 padding:0.55rem 0.9rem;
+                 padding:0.4rem 0.7rem;
                  border-radius:0.75rem;
                  border:1px solid var(--gs26-header-menu-border);
                  background:var(--gs26-header-menu-background);
@@ -3435,23 +3351,24 @@ fn TelemetryDashboardInner() -> Element {
                  justify-content:stretch !important;
                  align-items:center !important;
                  justify-items:center !important;
-                 row-gap:0.95rem;
-                 padding:0.7rem;
+                 row-gap:0.45rem;
+                 padding:0.45rem;
                }}
                .gs26-tab-shell[data-expanded=\"false\"] {{
                  grid-template-columns:auto;
                  justify-content:center;
                }}
                .gs26-tab-shell[data-expanded=\"true\"] {{
-                 grid-template-columns:minmax(0, 1fr) minmax(0, 1fr);
-                 column-gap:0.95rem;
+                 grid-template-columns:minmax(0, 1fr);
+                 column-gap:0;
+                 row-gap:0.45rem;
                  justify-content:stretch;
                }}
                .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-toggle {{
                  grid-column:1;
                }}
                .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav {{
-                 grid-column:2;
+                 grid-column:1;
                }}
                .gs26-tab-toggle {{
                  display:inline-flex;
@@ -3467,7 +3384,7 @@ fn TelemetryDashboardInner() -> Element {
                  white-space:normal;
                  overflow-wrap:anywhere;
                  word-break:break-word;
-                 padding:0.7rem 0.9rem;
+                 padding:0.28rem 0.65rem 0.32rem 0.65rem;
                  border-radius:0.75rem;
                  border:1px solid var(--gs26-header-menu-border);
                  background:var(--gs26-header-menu-background);
@@ -3483,17 +3400,25 @@ fn TelemetryDashboardInner() -> Element {
                  display:flex;
                  flex-direction:column;
                  align-items:center;
-                 justify-self:stretch;
+                 justify-self:center;
                  width:100%;
-                  margin-top:0;
+                 gap:0.35rem;
+                 margin-top:0;
                }}
                .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav button {{
-                 width:18ch;
+                 display:flex !important;
+                 width:min(100%, 28rem);
                  max-width:100%;
                  min-width:0;
-                 justify-content:center;
-                 margin-left:auto;
-                 margin-right:auto;
+                 justify-content:center !important;
+                 align-items:center !important;
+                 text-align:center !important;
+                 padding:0.28rem 0.65rem 0.32rem 0.65rem !important;
+                 margin-left:0;
+                 margin-right:0;
+               }}
+               .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav button span[data-active=\"false\"] {{
+                 display:none !important;
                }}
              }}"
                 }
@@ -3509,6 +3434,7 @@ fn TelemetryDashboardInner() -> Element {
                     align-items:center;
                     justify-content:center;
                     border:{border_style};
+                    box-shadow:{shell_alert_effect};
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:10px; align-items:center;",
@@ -3532,6 +3458,7 @@ fn TelemetryDashboardInner() -> Element {
                     align-items:center;
                     justify-content:center;
                     border:{border_style};
+                    box-shadow:{shell_alert_effect};
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
@@ -3558,6 +3485,7 @@ fn TelemetryDashboardInner() -> Element {
                 display:flex;
                 flex-direction:column;
                 border:{border_style};
+                box-shadow:{shell_alert_effect};
                 box-sizing:border-box;
                 overflow:hidden;
             ",
@@ -3598,11 +3526,7 @@ fn TelemetryDashboardInner() -> Element {
                                         header_actions_expanded.set(next);
                                     }
                                 },
-                                if *header_actions_expanded.read() {
-                                    "Close menu"
-                                } else {
-                                    "Menu"
-                                }
+                                {if *header_actions_expanded.read() { translate_text("Close menu") } else { translate_text("Menu") }}
                             }
                         div { class: "gs26-header-actions-list",
                             if show_disable_actions {
@@ -3710,7 +3634,7 @@ fn TelemetryDashboardInner() -> Element {
                                                     }
                                                 }
                                             },
-                                            "ABORT"
+                                            "{translate_text(\"ABORT\")}"
                                         }
                                     }
                                 }
@@ -3747,7 +3671,9 @@ fn TelemetryDashboardInner() -> Element {
                             class: "gs26-tab-shell",
                             "data-expanded": if *tabs_expanded.read() { "true" } else { "false" },
                             style: "
-                        flex:1 1 520px;
+                        flex:0 1 auto;
+                        width:fit-content;
+                        max-width:min(650px, 52vw);
                         --gs26-header-menu-background:{theme.button_background};
                         --gs26-header-menu-border:{theme.button_border};
                         --gs26-header-menu-text:{theme.button_text};
@@ -3884,8 +3810,10 @@ fn TelemetryDashboardInner() -> Element {
                                                     }
                                                 },
                                                 span { "{_main_tab_label(&layout, MainTab::Notifications)}" }
-                                                if has_unread_notifications {
-                                                    span { style: "margin-left:6px; color:{theme.info_text};", "●" }
+                                                span {
+                                                    "data-active": if has_unread_notifications { "true" } else { "false" },
+                                                    style: "{notifications_tab_icon_style}",
+                                                    "●"
                                                 }
                                             }
                                         },
@@ -3901,19 +3829,10 @@ fn TelemetryDashboardInner() -> Element {
                                                     }
                                                 },
                                                 span { "{_main_tab_label(&layout, MainTab::Warnings)}" }
-                                                if has_warnings {
-                                                    span {
-                                                        style: {
-                                                            if has_unacked_warnings && *flash_on.read() {
-                                                                format!("margin-left:6px; color:{}; opacity:1;", main_tab_accent("warnings", "#facc15"))
-                                                            } else if has_unacked_warnings {
-                                                                format!("margin-left:6px; color:{}; opacity:0.4;", main_tab_accent("warnings", "#facc15"))
-                                                            } else {
-                                                                format!("margin-left:6px; color:{}; opacity:1;", theme.text_soft)
-                                                            }
-                                                        },
-                                                        "⚠"
-                                                    }
+                                                span {
+                                                    "data-active": if has_warnings { "true" } else { "false" },
+                                                    style: "{warnings_tab_icon_style}",
+                                                    "⚠"
                                                 }
                                             }
                                         },
@@ -3929,19 +3848,10 @@ fn TelemetryDashboardInner() -> Element {
                                                     }
                                                 },
                                                 span { "{_main_tab_label(&layout, MainTab::Errors)}" }
-                                                if has_errors {
-                                                    span {
-                                                        style: {
-                                                            if has_unacked_errors && *flash_on.read() {
-                                                                format!("margin-left:6px; color:{}; opacity:1;", theme.error_text)
-                                                            } else if has_unacked_errors {
-                                                                format!("margin-left:6px; color:{}; opacity:0.4;", theme.error_text)
-                                                            } else {
-                                                                format!("margin-left:6px; color:{}; opacity:1;", theme.text_soft)
-                                                            }
-                                                        },
-                                                        "⛔"
-                                                    }
+                                                span {
+                                                    "data-active": if has_errors { "true" } else { "false" },
+                                                    style: "{errors_tab_icon_style}",
+                                                    "⛔"
                                                 }
                                             }
                                         },
@@ -3979,100 +3889,60 @@ fn TelemetryDashboardInner() -> Element {
     }
 
                         div {
-                            style: "
-                        flex:1 1 320px;
-                        display:flex;
-                        align-items:center;
-                        justify-content:space-between;
-                        flex-wrap:wrap;
-                        gap:0.5rem;
-                        padding:0.35rem 0.7rem;
-                        border-radius:1rem;
-                        background:{theme.button_background};
-                        border:1px solid {theme.tab_shell_border};
-                        min-width:260px;
-                    ",
-                            div { style: "display:flex; align-items:center; flex-wrap:wrap; gap:0.5rem; min-width:0;",
+                            class: "gs26-status-shell",
+                            style: "background:{theme.button_background}; border:1px solid {theme.tab_shell_border};",
+                            div { class: "gs26-status-row",
                                 span { style: "color:{theme.text_soft};", {localized_copy(&language_snapshot, "Status:", "Estado:", "Statut:")} }
-
-                                if !has_warnings && !has_errors {
-                                    span { style: "color:{theme.success_text}; font-weight:600; flex:0 0 auto;", {translate_text("Nominal")} }
-                                    span { style: "color:{theme.info_text}; display:inline-flex; flex:0 0 auto; align-items:baseline; white-space:nowrap;",
-                                        "({localized_copy(&language_snapshot, \"Flight state\", \"Estado de vuelo\", \"Etat de vol\")}:"
-                                        span {
-                                            style: "display:inline-flex; align-items:baseline; width:15.5ch; padding-left:0.4ch; white-space:nowrap;",
-                                            span { {translate_text(&flight_state.read().to_string())} }
-                                            span { ")" }
-                                        }
-                                    }
-                                } else {
-                                    if has_errors {
-                                        span { style: "color:{theme.error_text}; flex:0 0 auto;", {format!("{}: {err_count}", translate_text("Errors"))} }
-                                    }
-                                    if has_warnings {
-                                        span { style: "color:{theme.warning_text}; flex:0 0 auto;", {format!("{}: {warn_count}", translate_text("Warnings"))} }
-                                    }
-                                    span { style: "color:{theme.info_text}; display:inline-flex; flex:0 0 auto; align-items:baseline; white-space:nowrap;",
-                                        "({localized_copy(&language_snapshot, \"Flight state\", \"Estado de vuelo\", \"Etat de vol\")}:"
-                                        span {
-                                            style: "display:inline-flex; align-items:baseline; width:15.5ch; padding-left:0.4ch; white-space:nowrap;",
-                                            span { {translate_text(&flight_state.read().to_string())} }
-                                            span { ")" }
-                                        }
-                                    }
-
-                                    if *active_main_tab.read() == MainTab::Warnings && has_warnings {
-                                        button {
-                                            style: "
-                                        margin-left:auto;
-                                        padding:0.25rem 0.7rem;
-                                        border-radius:999px;
-                                        border:1px solid {theme.tab_shell_border};
-                                        background:{theme.app_background};
-                                        color:{theme.text_primary};
-                                        font-size:0.75rem;
-                                        cursor:pointer;
-                                    ",
-                                            onclick: {
-                                                let mut ack_warning_ts = ack_warning_ts;
-                                                let mut ack_warning_count = ack_warning_count;
-                                                move |_| {
-                                                    ack_warning_ts.set(latest_warning_ts);
-                                                    ack_warning_count.set(*warning_event_counter.read());
-                                                }
-                                            },
-                                            {translate_text("Acknowledge warnings")}
-                                        }
-                                    }
-
-                                    if *active_main_tab.read() == MainTab::Errors && has_errors {
-                                        button {
-                                            style: "
-                                        margin-left:auto;
-                                        padding:0.25rem 0.7rem;
-                                        border-radius:999px;
-                                        border:1px solid {theme.tab_shell_border};
-                                        background:{theme.app_background};
-                                        color:{theme.text_primary};
-                                        font-size:0.75rem;
-                                        cursor:pointer;
-                                    ",
-                                            onclick: {
-                                                let mut ack_error_ts = ack_error_ts;
-                                                let mut ack_error_count = ack_error_count;
-                                                move |_| {
-                                                    ack_error_ts.set(latest_error_ts);
-                                                    ack_error_count.set(*error_event_counter.read());
-                                                }
-                                            },
-                                            {translate_text("Acknowledge errors")}
-                                        }
-                                    }
+                                span { class: "gs26-status-value", style: "{status_label_style}", "{status_label}" }
+                                span {
+                                    class: "gs26-status-count",
+                                    "data-active": if has_errors { "true" } else { "false" },
+                                    style: "{errors_status_style}",
+                                    {format!("{}: {err_count}", translate_text("Errors"))}
+                                }
+                                span {
+                                    class: "gs26-status-count",
+                                    "data-active": if has_warnings { "true" } else { "false" },
+                                    style: "{warnings_status_style}",
+                                    {format!("{}: {warn_count}", translate_text("Warnings"))}
                                 }
                             }
-
-                            LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
-                            NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
+                            div { class: "gs26-status-flight", style: "color:{theme.info_text};",
+                                span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"Flight state\", \"Estado de vuelo\", \"Etat de vol\")}: " }
+                                span {
+                                    style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                    "{translate_text(&display_flight_state(&flight_state.read()))}"
+                                }
+                            }
+                            div { class: "gs26-status-network",
+                                if network_time_visible {
+                                    NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
+                                }
+                            }
+                            div { class: "gs26-status-launch",
+                                LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
+                            }
+                            button {
+                                class: "gs26-status-ack",
+                                "data-active": if ack_button_visible { "true" } else { "false" },
+                                style: "{ack_button_style}",
+                                onclick: {
+                                    let mut ack_warning_ts = ack_warning_ts;
+                                    let mut ack_warning_count = ack_warning_count;
+                                    let mut ack_error_ts = ack_error_ts;
+                                    let mut ack_error_count = ack_error_count;
+                                    move |_| {
+                                        if show_ack_warnings {
+                                            ack_warning_ts.set(latest_warning_ts);
+                                            ack_warning_count.set(*warning_event_counter.read());
+                                        } else if show_ack_errors {
+                                            ack_error_ts.set(latest_error_ts);
+                                            ack_error_count.set(*error_event_counter.read());
+                                        }
+                                    }
+                                },
+                                "{ack_button_label}"
+                            }
                         }
                     }
 
@@ -4157,6 +4027,7 @@ fn TelemetryDashboardInner() -> Element {
                                             board_status: board_status,
                                             rocket_gps: rocket_gps,
                                             user_gps: user_gps,
+                                            fill_targets: fill_targets,
                                             layout: layout.state_tab.clone(),
                                             data_layout: layout.data_tab.clone(),
                                             actions: layout.actions_tab.clone(),
@@ -4168,6 +4039,7 @@ fn TelemetryDashboardInner() -> Element {
                                                 .find(|t| t.id == "VALVE_STATE")
                                                 .and_then(|t| t.boolean_labels.clone()),
                                             abort_only_mode: *abort_only_mode.read(),
+                                            state_chart_labels_vertical: *state_chart_labels_vertical.read(),
                                             theme: theme.clone(),
                                             use_layout_theme_overrides: use_layout_theme_overrides,
                                         }
@@ -4217,12 +4089,13 @@ fn TelemetryDashboardInner() -> Element {
                             },
                             MainTab::Actions => rsx! {
                                 div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
-                                    ActionsTab {
-                                        layout: layout.actions_tab.clone(),
-                                        action_policy: action_policy,
-                                        abort_only_mode: *abort_only_mode.read(),
-                                        theme: theme.clone(),
-                                    }
+                                ActionsTab {
+                                    layout: layout.actions_tab.clone(),
+                                    action_policy: action_policy,
+                                    backend_fill_targets: fill_targets,
+                                    abort_only_mode: *abort_only_mode.read(),
+                                    theme: theme.clone(),
+                                }
                                 }
                             },
                             MainTab::Calibration => rsx! {
@@ -4351,7 +4224,9 @@ pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> R
     if let Some(token) = auth::current_token() {
         request = request.header("Authorization", &format!("Bearer {token}"));
     }
+    let started_mono_ms = monotonic_now_ms();
     let response = request.send().await.map_err(|e| e.to_string())?;
+    note_http_rtt_ms(monotonic_now_ms() - started_mono_ms);
     let status = response.status();
     let body = response.text().await.map_err(|e| e.to_string())?;
     if status == 401 {
@@ -4519,6 +4394,7 @@ pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> R
     if let Some(token) = auth::current_token() {
         request = request.bearer_auth(token);
     }
+    let started_mono_ms = monotonic_now_ms();
     let response = request.send().await.map_err(|e| {
         let msg = format!(
             "request send failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
@@ -4527,6 +4403,7 @@ pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> R
         log!("[http] {msg}");
         msg
     })?;
+    note_http_rtt_ms(monotonic_now_ms() - started_mono_ms);
 
     let status = response.status();
     let body = response.text().await.map_err(|e| {
@@ -4949,6 +4826,7 @@ async fn seed_from_db(
     dismissed_notifications: &mut Signal<Vec<DismissedNotification>>,
     unread_notification_ids: &mut Signal<Vec<u64>>,
     action_policy: &mut Signal<ActionPolicyMsg>,
+    fill_targets: &mut Signal<Option<FillTargetsConfig>>,
     network_time: &mut Signal<Option<NetworkTimeSync>>,
     launch_clock: &mut Signal<Option<LaunchClockMsg>>,
     network_topology: &mut Signal<NetworkTopologyMsg>,
@@ -5174,6 +5052,12 @@ async fn seed_from_db(
         action_policy.set(policy);
     }
 
+    if let Ok(targets) = http_get_json::<FillTargetsConfig>("/api/fill_targets").await
+        && alive.load(Ordering::Relaxed)
+    {
+        fill_targets.set(Some(targets));
+    }
+
     if let Ok(nt) = http_get_json::<NetworkTimeMsg>("/api/network_time").await
         && alive.load(Ordering::Relaxed)
     {
@@ -5234,6 +5118,7 @@ async fn connect_ws_supervisor(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
     launch_clock: Signal<Option<LaunchClockMsg>>,
     network_topology: Signal<NetworkTopologyMsg>,
@@ -5245,8 +5130,9 @@ async fn connect_ws_supervisor(
     user_gps: Signal<Option<(f64, f64)>>,
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let mut warnings = warnings;
-    let mut warning_event_counter = warning_event_counter;
+    let mut notifications = notifications;
+    let mut notification_history = notification_history;
+    let mut unread_notification_ids = unread_notification_ids;
 
     if *WS_EPOCH.read() != epoch {
         return Ok(());
@@ -5274,6 +5160,7 @@ async fn connect_ws_supervisor(
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
+                    fill_targets,
                     network_time,
                     launch_clock,
                     network_topology,
@@ -5299,6 +5186,7 @@ async fn connect_ws_supervisor(
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
+                    fill_targets,
                     network_time,
                     launch_clock,
                     network_topology,
@@ -5324,9 +5212,10 @@ async fn connect_ws_supervisor(
         if let Err(e) = res
             && alive.load(Ordering::Relaxed)
         {
-            note_ws_connect_failure_warning(
-                &mut warnings,
-                &mut warning_event_counter,
+            note_ws_connection_notification(
+                &mut notifications,
+                &mut notification_history,
+                &mut unread_notification_ids,
                 &auth_ws_url(&UrlConfig::base_ws()),
                 &e,
             );
@@ -5353,6 +5242,7 @@ async fn connect_ws_once_wasm(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
     launch_clock: Signal<Option<LaunchClockMsg>>,
     network_topology: Signal<NetworkTopologyMsg>,
@@ -5416,6 +5306,7 @@ async fn connect_ws_once_wasm(
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
+                    fill_targets,
                     network_time,
                     launch_clock,
                     network_topology,
@@ -5604,6 +5495,7 @@ async fn connect_ws_once_native(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
     launch_clock: Signal<Option<LaunchClockMsg>>,
     network_topology: Signal<NetworkTopologyMsg>,
@@ -5702,6 +5594,7 @@ async fn connect_ws_once_native(
                 dismissed_notifications,
                 unread_notification_ids,
                 action_policy,
+                fill_targets,
                 network_time,
                 launch_clock,
                 network_topology,
@@ -5736,6 +5629,7 @@ fn handle_ws_message(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
     launch_clock: Signal<Option<LaunchClockMsg>>,
     network_topology: Signal<NetworkTopologyMsg>,
@@ -5755,6 +5649,7 @@ fn handle_ws_message(
     let dismissed_notifications = dismissed_notifications;
     let unread_notification_ids = unread_notification_ids;
     let mut action_policy = action_policy;
+    let mut fill_targets = fill_targets;
     let mut network_time = network_time;
     let mut launch_clock = launch_clock;
     let mut network_topology = network_topology;
@@ -5872,6 +5767,10 @@ fn handle_ws_message(
 
         WsInMsg::ActionPolicy(policy) => {
             action_policy.set(policy);
+        }
+
+        WsInMsg::FillTargets(targets) => {
+            fill_targets.set(Some(targets));
         }
 
         WsInMsg::RecordingStatus(_status) => {}
