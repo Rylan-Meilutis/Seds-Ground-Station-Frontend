@@ -9,9 +9,10 @@ use std::rc::Rc;
 
 use super::data_chart::{
     charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_subset, charts_cache_get_subset_per_series,
-    sender_scoped_chart_key, series_color, ChartCanvas, SeriesSwatch, CHART_GRID_BOTTOM_PAD,
-    CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
-    CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    sender_scoped_chart_key, series_color, ChartCanvas, SeriesSwatch,
+    CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT,
+    CHART_Y_LABEL_MAX_WIDTH,
 };
 use super::{
     latest_telemetry_row, latest_telemetry_value, reseed_status_note, translate_text,

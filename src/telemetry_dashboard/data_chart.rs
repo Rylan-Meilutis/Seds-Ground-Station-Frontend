@@ -1512,6 +1512,30 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           ? {{ alpha: true }}
                           : {{ alpha: true, desynchronized: true }});
                       }};
+                      const hexToRgb = (color) => {{
+                        if (typeof color !== "string") return null;
+                        const value = color.trim();
+                        const match = /^#([0-9a-f]{{6}})$/i.exec(value);
+                        if (!match) return null;
+                        const hex = match[1];
+                        return {{
+                          r: parseInt(hex.slice(0, 2), 16),
+                          g: parseInt(hex.slice(2, 4), 16),
+                          b: parseInt(hex.slice(4, 6), 16),
+                        }};
+                      }};
+                      const relativeLuma = (color) => {{
+                        const rgb = hexToRgb(color);
+                        if (!rgb) return 0;
+                        return (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255.0;
+                      }};
+                      const seriesDrawOrder = (data.colors || [])
+                        .map((color, index) => ({{
+                          index,
+                          luma: relativeLuma(color || "")
+                        }}))
+                        .sort((a, b) => b.luma - a.luma || a.index - b.index)
+                        .map((entry) => entry.index);
                       const ctx = get2d(el);
                       if (!ctx) return;
                       function buildPath2d(path) {{
@@ -1629,12 +1653,14 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         targetCtx.translate(destX, 0);
                         targetCtx.scale(destW / Math.max(1, chunk.width), pxH / data.view_h);
                         targetCtx.imageSmoothingEnabled = false;
-                        for (let i = 0; i < chunk.paths.length; i += 1) {{
+                        for (const i of seriesDrawOrder) {{
+                          if (i >= chunk.paths.length) continue;
                           const path2d = buildPath2d(chunk.paths[i]);
                           if (!path2d) continue;
                           strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 2.0, 1.0);
                         }}
-                        for (let i = 0; i < chunk.gap_paths.length; i += 1) {{
+                        for (const i of seriesDrawOrder) {{
+                          if (i >= chunk.gap_paths.length) continue;
                           const path2d = buildPath2d(chunk.gap_paths[i]);
                           if (!path2d) continue;
                           targetCtx.save();

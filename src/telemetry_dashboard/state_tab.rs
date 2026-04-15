@@ -20,13 +20,17 @@ use super::{
 };
 
 use crate::telemetry_dashboard::data_chart::{
-    charts_cache_get, charts_cache_get_channel_minmax, series_color, ChartCanvas, ChartRenderChunk, SeriesSwatch,
+    charts_cache_get, charts_cache_get_channel_minmax, series_color, ChartCanvas,
+    ChartRenderChunk, SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT,
+    CHART_GRID_RIGHT_PAD, CHART_GRID_TOP, CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT,
+    CHART_Y_LABEL_MAX_WIDTH,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 use std::hash::{Hash, Hasher};
 
 const COMBINED_CURVE_MIN_DELTA_PX: f32 = 0.35;
 const COMBINED_SMOOTHING_MAX_POINTS: usize = 240;
+const COMBINED_CHART_GRID_LEFT: f32 = 24.0;
 
 #[cfg(target_arch = "wasm32")]
 fn blink_epoch_ms() -> u64 {
@@ -66,6 +70,8 @@ fn action_opacity(
         0.45
     } else if recommended {
         blink_opacity(blink_now_ms, blink, actuated).unwrap_or(1.0)
+    } else if actuated.unwrap_or(false) {
+        1.0
     } else {
         0.62
     }
@@ -407,14 +413,15 @@ fn data_style_chart_cached(
     let (chunks, y_min, y_max, span_min) = charts_cache_get(dt, w, h);
     let reseed_note = reseed_status_note();
 
-    let left = 74.0_f64;
-    let right = view_w - 20.0_f64;
-    let top = 20.0_f64;
-    let bottom = view_h - 34.0_f64;
+    let left = CHART_GRID_LEFT;
+    let right = view_w - CHART_GRID_RIGHT_PAD;
+    let top = CHART_GRID_TOP;
+    let bottom = view_h - CHART_GRID_BOTTOM_PAD;
 
     let inner_h = bottom - top;
 
     let y_mid = (y_min + y_max) * 0.5;
+    let x_label_bottom = CHART_X_LABEL_BOTTOM + 4.0;
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
 
@@ -450,19 +457,19 @@ fn data_style_chart_cached(
                         view_w: view_w,
                         view_h: view_h,
                         chunks: chunks.into(),
-                        grid_left: None,
-                        grid_right: None,
-                        grid_top: None,
-                        grid_bottom: None,
+                        grid_left: Some(left),
+                        grid_right: Some(right),
+                        grid_top: Some(top),
+                        grid_bottom: Some(bottom),
                         style: "position:absolute; inset:0; width:100%; height:100%; display:block;".to_string(),
                     }
                     div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
-                        span { style: "position:absolute; left:10px; top:{y_pct(top + 6.0, view_h)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
-                        span { style: "position:absolute; left:10px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
-                        span { style: "position:absolute; left:10px; top:{y_pct(bottom + 2.0, view_h)}; transform:translateY(-100%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
-                        span { style: "position:absolute; left:{x_pct(left + 16.0, view_w)}; bottom:8px;", {format!("-{:.1} min", span_min)} }
-                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:8px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
-                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:8px;", "{translate_text(\"now\")}" }
+                        span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(top + 6.0, view_h)}; max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
+                        span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
+                        span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(bottom + 1.0, view_h)}; transform:translateY(-100%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
+                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; bottom:{x_label_bottom}px;", {format!("-{:.1} min", span_min)} }
+                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:{x_label_bottom}px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
+                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:{x_label_bottom}px;", "{translate_text(\"now\")}" }
                     }
                 }
             }
@@ -608,10 +615,10 @@ fn combined_chart_payload(
     let newest_ts = rows.iter().map(|row| row.timestamp_ms).max()?;
     let history_start_ts = newest_ts.saturating_sub(HISTORY_MS);
 
-    let left = 20.0_f32;
-    let right = (view_w as f32 - 20.0).max(left + 1.0);
-    let top = 20.0_f32;
-    let bottom = (view_h as f32 - 20.0).max(top + 1.0);
+    let left = COMBINED_CHART_GRID_LEFT;
+    let right = (view_w as f32 - CHART_GRID_RIGHT_PAD as f32).max(left + 1.0);
+    let top = CHART_GRID_TOP as f32;
+    let bottom = (view_h as f32 - CHART_GRID_BOTTOM_PAD as f32).max(top + 1.0);
     let pw = right - left;
     let ph = bottom - top;
 
@@ -781,7 +788,7 @@ fn combined_state_chart_cached(
         combined_chart_payload(specs, data_layout, view_w, view_h)
     else {
         return rsx! {
-            div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:6px; display:flex; flex-direction:column; gap:4px;",
+            div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
                 if let Some(t) = title {
                     div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
                 }
@@ -808,16 +815,26 @@ fn combined_state_chart_cached(
         };
     };
 
-    let left = 74.0_f64;
-    let right = view_w - 20.0_f64;
-    let top = 20.0_f64;
-    let bottom = view_h - 34.0_f64;
+    let left = COMBINED_CHART_GRID_LEFT as f64;
+    let right = view_w - CHART_GRID_RIGHT_PAD;
+    let top = CHART_GRID_TOP;
+    let bottom = view_h - CHART_GRID_BOTTOM_PAD;
     let inner_h = bottom - top;
     let y_mid = (y_min + y_max) * 0.5;
+    let x_label_bottom = CHART_X_LABEL_BOTTOM + 4.0;
+    let scale_chip_style = |i: usize| {
+        format!(
+            "padding:0 5px; line-height:1.15; border-radius:999px; border:1px solid {border}; background:{bg}; color:{fg}; \
+             box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04); text-shadow: 0 1px 1px rgba(2,6,23,0.85);",
+            border = series_color(i),
+            bg = theme.panel_background_alt,
+            fg = series_color(i),
+        )
+    };
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     rsx! {
-        div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:6px; display:flex; flex-direction:column; gap:4px;",
+        div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(t) = title {
                 div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
@@ -841,25 +858,25 @@ fn combined_state_chart_cached(
             }
             div { style: "display:flex; gap:6px; align-items:stretch;",
                 if normalize_per_series {
-                    div { style: "flex:0 0 96px; width:96px; min-width:96px; display:flex; flex-direction:column; justify-content:space-between; align-items:flex-end; font-size:clamp(8px, 1.8vw, 9px); padding-top:2px; padding-bottom:28px; overflow:hidden;",
+                    div { style: "flex:0 0 132px; width:132px; min-width:132px; display:flex; flex-direction:column; justify-content:space-between; align-items:flex-end; font-size:clamp(8px, 1.8vw, 10px); padding-top:4px; padding-bottom:28px; overflow:visible;",
                         div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
                             for (i, _) in labels.iter().enumerate() {
                                 if let Some((_, series_max)) = series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "color:{series_color(i)};", {format!("{:.2}", series_max)} }
+                                    div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_max)} }
                                 }
                             }
                         }
                         div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
                             for (i, _) in labels.iter().enumerate() {
                                 if let Some((series_min, series_max)) = series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "color:{series_color(i)};", {format!("{:.2}", (series_min + series_max) * 0.5)} }
+                                    div { style: "{scale_chip_style(i)}", {format!("{:.2}", (series_min + series_max) * 0.5)} }
                                 }
                             }
                         }
                         div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:6px; white-space:nowrap; width:100%; text-align:right;",
                             for (i, _) in labels.iter().enumerate() {
                                 if let Some((series_min, _)) = series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "color:{series_color(i)};", {format!("{:.2}", series_min)} }
+                                    div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_min)} }
                                 }
                             }
                         }
@@ -878,13 +895,13 @@ fn combined_state_chart_cached(
                     }
                     div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
                         if !normalize_per_series {
-                            span { style: "position:absolute; left:10px; top:{y_pct(top + 6.0, view_h)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
-                            span { style: "position:absolute; left:10px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
-                            span { style: "position:absolute; left:10px; top:{y_pct(bottom + 2.0, view_h)}; transform:translateY(-100%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
+                            span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(top + 6.0, view_h)}; max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
+                            span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
+                            span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(bottom + 1.0, view_h)}; transform:translateY(-100%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
                         }
-                        span { style: "position:absolute; left:{x_pct(left + 16.0, view_w)}; bottom:8px;", {format!("-{:.1} min", span_min)} }
-                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:8px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
-                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:8px;", "{translate_text(\"now\")}" }
+                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; bottom:{x_label_bottom}px;", {format!("-{:.1} min", span_min)} }
+                        span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; bottom:{x_label_bottom}px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
+                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; bottom:{x_label_bottom}px;", "{translate_text(\"now\")}" }
                     }
                 }
             }
@@ -1240,12 +1257,14 @@ fn action_style(
     let opacity = action_opacity(blink_now_ms, enabled, recommended, blink, actuated);
     let filter = if !enabled {
         "grayscale(0.25) brightness(0.9)"
+    } else if actuated.unwrap_or(false) {
+        "none"
     } else if recommended {
         "none"
     } else {
         "saturate(0.58) brightness(0.82)"
     };
-    let box_shadow = if recommended {
+    let box_shadow = if recommended || actuated.unwrap_or(false) {
         "0 10px 25px rgba(0,0,0,0.25)"
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
