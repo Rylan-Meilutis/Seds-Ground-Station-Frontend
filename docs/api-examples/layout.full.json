@@ -121,13 +121,14 @@
     ]
   },
   "data_tab": {
+    "sender_split_data_types": ["BATTERY_VOLTAGE"],
     "tabs": [
       {
         "id": "GPS",
         "label": "GPS",
         "channels": ["Latitude", "Longitude", "Altitude"],
         "chart": {
-          "enabled": true
+          "enabled": false
         }
       },
       {

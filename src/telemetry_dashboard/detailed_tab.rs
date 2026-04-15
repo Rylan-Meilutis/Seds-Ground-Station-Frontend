@@ -33,10 +33,10 @@ pub fn DetailedTab(
             spawn(async move {
                 loop {
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(100).await;
+                    gloo_timers::future::TimeoutFuture::new(500).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                     let next_tick = {
                         let current_tick = *tick.read();

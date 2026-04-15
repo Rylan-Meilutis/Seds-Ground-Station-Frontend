@@ -177,6 +177,33 @@ pub(super) fn note_ws_connection_notification(
     unread_notification_ids.set(unread_vec);
 }
 
+pub(super) fn clear_ws_connection_notification(
+    notifications: &mut Signal<Vec<PersistentNotification>>,
+    unread_notification_ids: &mut Signal<Vec<u64>>,
+) {
+    if let Ok(mut slot) = LAST_WS_CONNECT_WARNING.lock() {
+        *slot = None;
+    }
+
+    let removed_ids: HashSet<u64> = notifications
+        .read()
+        .iter()
+        .filter(|n| n.message.starts_with("WebSocket disconnected.\nURL:"))
+        .map(|n| n.id)
+        .collect();
+    if removed_ids.is_empty() {
+        return;
+    }
+
+    let mut active = notifications.read().clone();
+    active.retain(|n| !removed_ids.contains(&n.id));
+    notifications.set(active);
+
+    let mut unread = unread_notification_ids.read().clone();
+    unread.retain(|id| !removed_ids.contains(id));
+    unread_notification_ids.set(unread);
+}
+
 /// Tracks incoming WebSocket message volume and updates rate calculations.
 pub(super) fn note_incoming_ws_message(raw_bytes: usize) {
     if let Ok(mut next) = FRONTEND_NETWORK_METRICS_STATE.lock() {

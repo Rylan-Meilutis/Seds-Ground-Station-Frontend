@@ -315,6 +315,8 @@ pub enum ConnectionSectionKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DataTabLayout {
     pub tabs: Vec<DataTabSpec>,
+    #[serde(default)]
+    pub sender_split_data_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -422,7 +424,7 @@ fn default_battery_min_drop_rate_v_per_min() -> f32 {
 }
 
 fn default_battery_input_data_type() -> String {
-    "BATTERY_VOLTAGE".to_string()
+    String::new()
 }
 
 fn default_battery_curve_exponent() -> f32 {
@@ -498,6 +500,17 @@ pub struct StateSection {
     pub title: Option<String>,
     pub widgets: Vec<StateWidget>,
     pub style: Option<StateSectionStyle>,
+    #[serde(default)]
+    pub value_layout: StateSectionValueLayout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StateSectionValueLayout {
+    #[default]
+    Auto,
+    Vertical,
+    Horizontal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -509,6 +522,10 @@ pub struct StateWidget {
     pub chart_title: Option<String>,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    #[serde(default)]
+    pub full_width: bool,
+    #[serde(default)]
+    pub width_fraction: Option<f64>,
     pub actions: Option<Vec<String>>,
     pub valves: Option<Vec<SummaryItem>>,
     pub valve_colors: Option<ValveColorSet>,
@@ -703,14 +720,6 @@ impl LayoutConfig {
             let trimmed = board_id.trim();
             if trimmed.is_empty() {
                 return Err("layout contains an empty expected board id".to_string());
-            }
-            if !matches!(
-                trimmed,
-                "FC" | "RF" | "PB" | "VB" | "GW" | "AB" | "DAQ" | "GS"
-            ) {
-                return Err(format!(
-                    "layout contains unknown expected board id '{trimmed}'"
-                ));
             }
         }
 

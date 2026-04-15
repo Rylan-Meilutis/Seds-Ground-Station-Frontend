@@ -32,7 +32,7 @@ use crate::auth;
 use data_chart::{
     charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build, charts_cache_clear_active,
     charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_request_refit,
-    charts_cache_reseed_ingest_row,
+    charts_cache_reseed_ingest_row, configure_sender_split_data_types,
 };
 
 use crate::telemetry_dashboard::actions_tab::ActionsTab;
@@ -61,7 +61,7 @@ use warnings_tab::WarningsTab;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering},
 };
 
 use once_cell::sync::Lazy;
@@ -156,11 +156,15 @@ mod persist;
 
 include!("dashboard_messages.rs");
 
+const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
+const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
+const DASHBOARD_CLOCK_REFRESH_MS: u32 = 16;
+
 pub(crate) use network_metrics::FrontendNetworkMetrics;
 use network_metrics::{
-    frontend_network_metrics_snapshot, note_http_rtt_ms, note_incoming_telemetry_rows,
-    note_incoming_ws_message, note_ws_connection_notification, note_ws_connection_state,
-    reset_frontend_network_metrics_state,
+    clear_ws_connection_notification, frontend_network_metrics_snapshot, note_http_rtt_ms,
+    note_incoming_telemetry_rows, note_incoming_ws_message, note_ws_connection_notification,
+    note_ws_connection_state, reset_frontend_network_metrics_state,
 };
 
 /// Returns the current wall-clock time in milliseconds since the Unix epoch.
@@ -435,6 +439,8 @@ static BUILTIN_THEME_CATALOG: Lazy<layout::ThemePresetCatalog> = Lazy::new(|| {
 static WS_RAW: GlobalSignal<Option<web_sys::WebSocket>> = Signal::global(|| None);
 // Force re-seed of graphs/history from backend.
 static SEED_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+static LAUNCH_TMINUS_DISPLAY_MIN_MS: AtomicI64 = AtomicI64::new(i64::MAX);
+static LAUNCH_TMINUS_ZERO_LATCHED: AtomicBool = AtomicBool::new(false);
 
 fn bump_telemetry_render_epoch() {
     let mut render_epoch = TELEMETRY_RENDER_EPOCH.write();
@@ -487,6 +493,63 @@ fn set_reseed_status_ok(_rows: usize) {
 
 fn set_reseed_status_failed(message: impl Into<String>) {
     set_reseed_status(3, Some(message.into()));
+}
+
+fn user_friendly_http_error(err: &str) -> String {
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("http 502") || lower.contains("502 bad gateway") {
+        return "The Ground Station service is temporarily unavailable. Check that the backend is running and try reconnecting.".to_string();
+    }
+    if lower.contains("http 503") || lower.contains("503 service unavailable") {
+        return "The Ground Station service is starting up or overloaded. Wait a moment, then try again.".to_string();
+    }
+    if lower.contains("http 504") || lower.contains("504 gateway timeout") {
+        return "The Ground Station did not respond in time. Check the connection and try again."
+            .to_string();
+    }
+    if lower.contains("http 401") || lower.contains("unauthorized") {
+        return "Your session expired. Sign in again to continue.".to_string();
+    }
+    if lower.contains("http 403") || lower.contains("forbidden") {
+        return "You do not have permission to perform this action.".to_string();
+    }
+    if lower.contains("http 404") || lower.contains("not found") {
+        return "The Ground Station is missing a required API endpoint. Check that the backend version matches the frontend.".to_string();
+    }
+    if lower.contains("http 500") || lower.contains("internal server error") {
+        return "The Ground Station backend reported an internal problem. Check the backend logs."
+            .to_string();
+    }
+    if lower.contains("request send failed")
+        || lower.contains("failed to fetch")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("dns")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+    {
+        return "Could not reach the Ground Station backend. Check the network connection and backend address.".to_string();
+    }
+    if lower.contains("invalid json") || lower.contains("expected value") {
+        return "The Ground Station sent data this frontend could not read. Check that the frontend and backend versions match.".to_string();
+    }
+    "The Ground Station request failed. Check the connection and try again.".to_string()
+}
+
+fn layout_load_error_message(err: &str) -> String {
+    format!(
+        "Could not load the dashboard layout. {}",
+        user_friendly_http_error(err)
+    )
+}
+
+fn reseed_error_message(refresh: bool, err: &str) -> String {
+    let detail = user_friendly_http_error(err);
+    if refresh {
+        format!("Could not refresh past telemetry. Keeping the data already shown. {detail}")
+    } else {
+        format!("Could not load past telemetry. {detail}")
+    }
 }
 
 pub(crate) fn reseed_status_note() -> Option<(&'static str, String)> {
@@ -1176,10 +1239,13 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
             spawn(async move {
                 loop {
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(100).await;
+                    gloo_timers::future::TimeoutFuture::new(DASHBOARD_CLOCK_REFRESH_MS).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        DASHBOARD_CLOCK_REFRESH_MS as u64,
+                    ))
+                    .await;
 
                     let next_tick = {
                         let current_tick = *tick.read();
@@ -1252,9 +1318,60 @@ fn launch_clock_tplus_anchor_ms(
     fallback_anchor_ms
 }
 
+fn monotonic_tminus_display_ms(clock: &LaunchClockMsg, now_ms: Option<i64>) -> Option<i64> {
+    let remaining = match now_ms {
+        Some(now_ms) => launch_clock_tminus_remaining_ms(clock, now_ms)?,
+        None => clock.duration_ms?,
+    }
+    .max(0);
+    let remaining = if remaining <= LAUNCH_TMINUS_ZERO_SNAP_MS {
+        0
+    } else {
+        remaining
+    };
+
+    let mut current_min = LAUNCH_TMINUS_DISPLAY_MIN_MS.load(Ordering::Relaxed);
+    if current_min != i64::MAX
+        && current_min <= LAUNCH_TMINUS_RESET_ZERO_LATCH_MS
+        && remaining > current_min
+    {
+        LAUNCH_TMINUS_DISPLAY_MIN_MS.store(0, Ordering::Relaxed);
+        LAUNCH_TMINUS_ZERO_LATCHED.store(true, Ordering::Relaxed);
+        return Some(0);
+    }
+    while remaining < current_min {
+        match LAUNCH_TMINUS_DISPLAY_MIN_MS.compare_exchange_weak(
+            current_min,
+            remaining,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => {
+                current_min = remaining;
+                break;
+            }
+            Err(next_min) => current_min = next_min,
+        }
+    }
+
+    let display = current_min.min(remaining);
+    if display == 0 {
+        LAUNCH_TMINUS_ZERO_LATCHED.store(true, Ordering::Relaxed);
+    }
+    Some(display)
+}
+
+fn reset_tminus_display_latch() {
+    LAUNCH_TMINUS_DISPLAY_MIN_MS.store(i64::MAX, Ordering::Relaxed);
+    LAUNCH_TMINUS_ZERO_LATCHED.store(false, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod launch_clock_tests {
-    use super::{LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms};
+    use super::{
+        LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms,
+        monotonic_tminus_display_ms, reset_tminus_display_latch,
+    };
 
     #[test]
     fn tminus_holds_duration_until_backend_anchor_arrives() {
@@ -1298,6 +1415,69 @@ mod launch_clock_tests {
 
         assert_eq!(launch_clock_tminus_remaining_ms(&clock, 115_000), Some(0));
     }
+
+    #[test]
+    fn tminus_display_never_increases_after_backend_reset() {
+        reset_tminus_display_latch();
+        let original = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: Some(100_000),
+            duration_ms: Some(10_000),
+        };
+        let restarted = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: Some(111_000),
+            duration_ms: Some(10_000),
+        };
+
+        assert_eq!(
+            monotonic_tminus_display_ms(&original, Some(110_500)),
+            Some(0)
+        );
+        assert_eq!(
+            monotonic_tminus_display_ms(&restarted, Some(111_000)),
+            Some(0)
+        );
+        reset_tminus_display_latch();
+    }
+
+    #[test]
+    fn tminus_display_snaps_final_milliseconds_to_zero() {
+        reset_tminus_display_latch();
+        let clock = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: Some(100_000),
+            duration_ms: Some(10_000),
+        };
+
+        assert_eq!(monotonic_tminus_display_ms(&clock, Some(109_989)), Some(0));
+        reset_tminus_display_latch();
+    }
+
+    #[test]
+    fn tminus_display_latches_zero_if_backend_restarts_after_final_tick_window() {
+        reset_tminus_display_latch();
+        let original = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: Some(100_000),
+            duration_ms: Some(10_000),
+        };
+        let restarted = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: Some(110_050),
+            duration_ms: Some(10_000),
+        };
+
+        assert_eq!(
+            monotonic_tminus_display_ms(&original, Some(109_900)),
+            Some(100)
+        );
+        assert_eq!(
+            monotonic_tminus_display_ms(&restarted, Some(110_050)),
+            Some(0)
+        );
+        reset_tminus_display_latch();
+    }
 }
 
 #[component]
@@ -1313,10 +1493,13 @@ fn LaunchClockBadge(
             spawn(async move {
                 loop {
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(100).await;
+                    gloo_timers::future::TimeoutFuture::new(DASHBOARD_CLOCK_REFRESH_MS).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        DASHBOARD_CLOCK_REFRESH_MS as u64,
+                    ))
+                    .await;
 
                     let next = tick.read().wrapping_add(1);
                     tick.set(next);
@@ -1329,6 +1512,7 @@ fn LaunchClockBadge(
         let network_time = network_time;
         let mut fallback_tplus_anchor_ms = fallback_tplus_anchor_ms;
         use_effect(move || {
+            let _tick_snapshot = *tick.read();
             let clock = launch_clock.read().clone();
             let now_ms = network_time
                 .read()
@@ -1342,8 +1526,12 @@ fn LaunchClockBadge(
                         if fallback_tplus_anchor_ms.read().is_some() {
                             fallback_tplus_anchor_ms.set(None);
                         }
+                        if clock.kind == LaunchClockKind::TMinus {
+                            let _ = monotonic_tminus_display_ms(&clock, now_ms);
+                        }
                     }
                     LaunchClockKind::TPlus => {
+                        reset_tminus_display_latch();
                         let backend_anchor = now_ms
                             .and_then(|now_ms| launch_clock_tplus_anchor_ms(&clock, now_ms, None));
                         if backend_anchor.is_some() {
@@ -1375,15 +1563,17 @@ fn LaunchClockBadge(
         Some(LaunchClockKind::TPlus) => "T+",
         _ => "T-",
     };
+    let tminus_zero_latched = LAUNCH_TMINUS_ZERO_LATCHED.load(Ordering::Relaxed);
     let display = match (clock.as_ref(), now_ms) {
         (Some(clock), Some(now_ms)) => match clock.kind {
+            LaunchClockKind::Idle if tminus_zero_latched => format_launch_clock_delta(0),
             LaunchClockKind::Idle => format_launch_clock_delta(
                 clock
                     .duration_ms
                     .unwrap_or(DEFAULT_LAUNCH_COUNTDOWN_DURATION_MS),
             ),
             LaunchClockKind::TMinus => format_launch_clock_delta(
-                launch_clock_tminus_remaining_ms(clock, now_ms).unwrap_or(0),
+                monotonic_tminus_display_ms(clock, Some(now_ms)).unwrap_or(0),
             ),
             LaunchClockKind::TPlus => {
                 let anchor_ms =
@@ -1393,8 +1583,12 @@ fn LaunchClockBadge(
             }
         },
         (Some(clock), None) => match clock.kind {
+            LaunchClockKind::Idle | LaunchClockKind::TMinus if tminus_zero_latched => {
+                format_launch_clock_delta(0)
+            }
             LaunchClockKind::TMinus => clock
                 .duration_ms
+                .and_then(|_| monotonic_tminus_display_ms(clock, None))
                 .map(format_launch_clock_delta)
                 .unwrap_or_else(|| "--:--.-".to_string()),
             LaunchClockKind::TPlus => "--:--.-".to_string(),
@@ -2005,6 +2199,7 @@ fn TelemetryDashboardInner() -> Element {
                 && let Ok(layout) = serde_json::from_str::<LayoutConfig>(&cached)
                 && let Ok(()) = layout.validate()
             {
+                configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
                 layout_config.set(Some(layout));
                 layout_loading.set(false);
             }
@@ -2013,12 +2208,16 @@ fn TelemetryDashboardInner() -> Element {
                 match http_get_json::<LayoutConfig>("/api/layout").await {
                     Ok(layout) => {
                         if let Err(err) = layout.validate() {
-                            layout_error.set(Some(format!("Layout failed to load: {err}")));
+                            log!("[layout] validation failed: {err}");
+                            layout_error.set(Some(
+                                "Could not load the dashboard layout. The layout file is not valid for this frontend version.".to_string(),
+                            ));
                             if layout_config.read().is_none() {
                                 layout_loading.set(false);
                             }
                             return;
                         }
+                        configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
                         layout_config.set(Some(layout.clone()));
                         layout_loading.set(false);
                         layout_error.set(None);
@@ -2027,7 +2226,8 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
                     Err(err) => {
-                        layout_error.set(Some(format!("Layout failed to load: {err}")));
+                        log!("[layout] load failed: {err}");
+                        layout_error.set(Some(layout_load_error_message(&err)));
                         if layout_config.read().is_none() {
                             layout_loading.set(false);
                         }
@@ -2274,13 +2474,13 @@ fn TelemetryDashboardInner() -> Element {
                 let tick_ms: u32 = std::env::var("GS_UI_TICK_MS")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(8)
-                    .clamp(1, 50);
+                    .unwrap_or(50)
+                    .clamp(1, 250);
                 let chart_tick_ms: u32 = std::env::var("GS_CHART_TICK_MS")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(tick_ms)
-                    .clamp(1, 500);
+                    .unwrap_or(33)
+                    .clamp(1, 1_000);
                 let chart_every = chart_tick_ms.div_ceil(tick_ms).max(1);
                 let mut chart_tick_counter: u32 = 0;
 
@@ -2428,8 +2628,8 @@ fn TelemetryDashboardInner() -> Element {
                         && alive.load(Ordering::Relaxed)
                         && *SEED_EPOCH.read() == seed_epoch
                     {
-                        set_reseed_status_failed(format!("Reseed failed: {e}"));
                         log!("seed_from_db failed after retries: {e}");
+                        set_reseed_status_failed(reseed_error_message(false, &e));
                     }
                 }
             });
@@ -2936,12 +3136,16 @@ fn TelemetryDashboardInner() -> Element {
             match http_get_json::<LayoutConfig>("/api/layout").await {
                 Ok(layout) => {
                     if let Err(err) = layout.validate() {
-                        layout_error.set(Some(format!("Layout failed to load: {err}")));
+                        log!("[layout] validation failed: {err}");
+                        layout_error.set(Some(
+                            "Could not load the dashboard layout. The layout file is not valid for this frontend version.".to_string(),
+                        ));
                         if layout_config.read().is_none() {
                             layout_loading.set(false);
                         }
                         return;
                     }
+                    configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
                     layout_config.set(Some(layout.clone()));
                     layout_loading.set(false);
                     layout_error.set(None);
@@ -2950,7 +3154,8 @@ fn TelemetryDashboardInner() -> Element {
                     }
                 }
                 Err(err) => {
-                    layout_error.set(Some(format!("Layout failed to load: {err}")));
+                    log!("[layout] load failed: {err}");
+                    layout_error.set(Some(layout_load_error_message(&err)));
                     if layout_config.read().is_none() {
                         layout_loading.set(false);
                     }
@@ -3169,7 +3374,7 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-status-shell {{ flex:1000 1 520px; display:grid; grid-template-columns:minmax(0, 1fr) max-content; grid-template-rows:auto auto; align-items:center; column-gap:0.75rem; row-gap:0; padding:0.16rem 0.6rem 0.24rem 0.6rem; border-radius:1rem; min-width:260px; overflow:hidden; container-type:inline-size; align-self:start; }}
              .gs26-status-row {{ display:flex; align-items:center; flex-wrap:wrap; gap:0.5rem; min-width:0; line-height:1.08; margin:0; }}
              .gs26-status-row {{ grid-column:1; grid-row:1; }}
-             .gs26-status-flight {{ display:flex; align-items:baseline; gap:0.35rem; min-width:0; width:fit-content; max-width:100%; flex-wrap:nowrap; white-space:nowrap; line-height:1.1; margin:0; padding-bottom:0.02rem; }}
+             .gs26-status-flight {{ display:flex; align-items:baseline; gap:0.35rem; min-width:0; width:fit-content; max-width:100%; flex-wrap:nowrap; white-space:nowrap; line-height:1.1; margin:0; padding:0.04rem 0.12rem 0.07rem 0; }}
              .gs26-status-flight {{ grid-column:1; grid-row:2; }}
              .gs26-launch-clock {{ display:inline-flex; align-items:baseline; line-height:1; white-space:nowrap; vertical-align:baseline; color:#f8fafc; font-weight:800; }}
              .gs26-launch-clock-value {{ display:inline-flex; align-items:baseline; width:9ch; padding-left:0.35ch; line-height:1; text-align:left; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; }}
@@ -3355,8 +3560,9 @@ fn TelemetryDashboardInner() -> Element {
                  padding:0.45rem;
                }}
                .gs26-tab-shell[data-expanded=\"false\"] {{
-                 grid-template-columns:auto;
-                 justify-content:center;
+                 grid-template-columns:minmax(0, 1fr);
+                 justify-content:stretch;
+                 justify-items:stretch;
                }}
                .gs26-tab-shell[data-expanded=\"true\"] {{
                  grid-template-columns:minmax(0, 1fr);
@@ -3375,10 +3581,10 @@ fn TelemetryDashboardInner() -> Element {
                  align-items:center;
                  justify-content:center;
                  font:inherit;
-                 width:fit-content;
+                 width:100%;
                  max-width:100%;
                  align-self:center;
-                 justify-self:center;
+                 justify-self:stretch;
                  text-align:center;
                  line-height:1.2;
                  white-space:normal;
@@ -3397,17 +3603,18 @@ fn TelemetryDashboardInner() -> Element {
                  width:auto;
                }}
                .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav {{
-                 display:flex;
-                 flex-direction:column;
-                 align-items:center;
-                 justify-self:center;
+                 display:grid;
+                 grid-template-columns:repeat(2, minmax(0, 1fr));
+                 align-items:stretch;
+                 justify-items:stretch;
+                 justify-self:stretch;
                  width:100%;
                  gap:0.35rem;
                  margin-top:0;
                }}
                .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav button {{
                  display:flex !important;
-                 width:min(100%, 28rem);
+                 width:100%;
                  max-width:100%;
                  min-width:0;
                  justify-content:center !important;
@@ -3419,6 +3626,11 @@ fn TelemetryDashboardInner() -> Element {
                }}
                .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav button span[data-active=\"false\"] {{
                  display:none !important;
+               }}
+             }}
+             @media (max-width: 360px) {{
+               .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav {{
+                 grid-template-columns:1fr;
                }}
              }}"
                 }
@@ -3462,7 +3674,7 @@ fn TelemetryDashboardInner() -> Element {
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
-                            div { style: "font-size:20px; font-weight:800; color:{theme.error_text};", "Layout failed to load" }
+                            div { style: "font-size:20px; font-weight:800; color:{theme.error_text};", "Dashboard layout unavailable" }
                             if let Some(msg) = layout_error_snapshot.clone() {
                                 div { style: "font-size:13px; color:{theme.text_muted};", "{msg}" }
                             }
@@ -3671,9 +3883,9 @@ fn TelemetryDashboardInner() -> Element {
                             class: "gs26-tab-shell",
                             "data-expanded": if *tabs_expanded.read() { "true" } else { "false" },
                             style: "
-                        flex:0 1 auto;
-                        width:fit-content;
-                        max-width:min(650px, 52vw);
+                        flex:1 1 100%;
+                        width:100%;
+                        max-width:100%;
                         --gs26-header-menu-background:{theme.button_background};
                         --gs26-header-menu-border:{theme.button_border};
                         --gs26-header-menu-text:{theme.button_text};
@@ -3684,7 +3896,7 @@ fn TelemetryDashboardInner() -> Element {
                         background:{theme.tab_shell_background};
                         border:1px solid {theme.tab_shell_border};
                         box-shadow:0 10e0px 25px rgba(0,0,0,0.45);
-                        min-width:260px;
+                        min-width:0;
                     ",
                             button {
                                 class: "gs26-tab-toggle",
@@ -4032,12 +4244,7 @@ fn TelemetryDashboardInner() -> Element {
                                             data_layout: layout.data_tab.clone(),
                                             actions: layout.actions_tab.clone(),
                                             action_policy: action_policy,
-                                            default_valve_labels: layout
-                                                .data_tab
-                                                .tabs
-                                                .iter()
-                                                .find(|t| t.id == "VALVE_STATE")
-                                                .and_then(|t| t.boolean_labels.clone()),
+                                            default_valve_labels: None,
                                             abort_only_mode: *abort_only_mode.read(),
                                             state_chart_labels_vertical: *state_chart_labels_vertical.read(),
                                             theme: theme.clone(),
@@ -4088,7 +4295,7 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             },
                             MainTab::Actions => rsx! {
-                                div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
+                                div { style: "height:100%; width:100%; max-width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                 ActionsTab {
                                     layout: layout.actions_tab.clone(),
                                     action_policy: action_policy,
@@ -4983,14 +5190,10 @@ async fn seed_from_db(
         Err(err) => {
             log!("[seed] /api/recent failed: {err}");
             if existing_rows_before_seed.is_empty() {
-                set_reseed_status_failed(format!(
-                    "Could not get past data from the Ground Station: {err}"
-                ));
+                set_reseed_status_failed(reseed_error_message(false, &err));
                 return Err(format!("telemetry reseed failed: {err}"));
             }
-            set_reseed_status_failed(format!(
-                "Could not refresh past data from the Ground Station. Keeping the data already shown: {err}"
-            ));
+            set_reseed_status_failed(reseed_error_message(true, &err));
             log!("telemetry reseed failed (keeping existing history): {err}");
         }
     }
@@ -5281,9 +5484,15 @@ async fn connect_ws_once_wasm(
 
     {
         let ws_url_for_open = ws_url.clone();
+        let mut notifications_for_open = notifications;
+        let mut unread_notification_ids_for_open = unread_notification_ids;
         let onopen: Closure<dyn FnMut(Event)> = Closure::new(move |_e: Event| {
             log!("[WS] open");
             note_ws_connection_state(true, ws_url_for_open.clone(), None, epoch);
+            clear_ws_connection_notification(
+                &mut notifications_for_open,
+                &mut unread_notification_ids_for_open,
+            );
             bump_seed_epoch();
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
@@ -5490,10 +5699,10 @@ async fn connect_ws_once_native(
     epoch: u64,
     warnings: Signal<Vec<AlertMsg>>,
     errors: Signal<Vec<AlertMsg>>,
-    notifications: Signal<Vec<PersistentNotification>>,
+    mut notifications: Signal<Vec<PersistentNotification>>,
     notification_history: Signal<Vec<PersistentNotification>>,
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
-    unread_notification_ids: Signal<Vec<u64>>,
+    mut unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
     fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
@@ -5563,6 +5772,7 @@ async fn connect_ws_once_native(
 
     let (mut write, mut read) = ws_stream.split();
     note_ws_connection_state(true, ws_url.clone(), None, epoch);
+    clear_ws_connection_notification(&mut notifications, &mut unread_notification_ids);
     bump_seed_epoch();
 
     let writer = tokio::spawn(async move {

@@ -28,7 +28,7 @@ use super::types::TelemetryRow;
 use dioxus::prelude::*;
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -36,27 +36,27 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::HISTORY_MS;
 
-const SENDER_SPLIT_DATA_TYPES: &[&str] = &["BATTERY_VOLTAGE", "BATTERY_CURRENT"];
-const BATTERY_COMBINED_CHANNELS: usize = 2;
+thread_local! {
+    static SENDER_SPLIT_DATA_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+pub fn configure_sender_split_data_types(data_types: &[String]) {
+    SENDER_SPLIT_DATA_TYPES.with(|configured| {
+        *configured.borrow_mut() = data_types
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+    });
+}
 
 pub fn sender_scoped_chart_key(data_type: &str, sender_id: &str) -> String {
     format!("{data_type}@@{sender_id}")
 }
 
-pub fn combined_battery_chart_key(data_type: &str) -> Option<String> {
-    should_split_sender_chart(data_type).then(|| format!("{data_type}@@combined"))
-}
-
 fn should_split_sender_chart(data_type: &str) -> bool {
-    SENDER_SPLIT_DATA_TYPES.contains(&data_type)
-}
-
-fn battery_sender_channel(sender_id: &str) -> Option<usize> {
-    match sender_id {
-        "PB" => Some(0),
-        "GW" => Some(1),
-        _ => None,
-    }
+    SENDER_SPLIT_DATA_TYPES.with(|configured| configured.borrow().contains(data_type))
 }
 
 // -------------------------
@@ -226,6 +226,80 @@ pub fn charts_cache_get_subset_per_series(
     })
 }
 
+pub fn charts_cache_get_multi_series_per_series(
+    series: &[(String, usize)],
+    width: f32,
+    height: f32,
+) -> (Rc<Vec<ChartRenderChunk>>, Rc<Vec<Option<(f32, f32)>>>, f32) {
+    CHARTS_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        let series_count = series.len();
+        if series_count == 0 {
+            return (Rc::new(Vec::new()), Rc::new(Vec::new()), 0.0);
+        }
+
+        let mut merged: BTreeMap<i64, ChartRenderChunk> = BTreeMap::new();
+        let mut series_scales = Vec::with_capacity(series_count);
+        let mut span_min = 0.0_f32;
+
+        for (series_idx, (data_type, channel)) in series.iter().enumerate() {
+            let Some(chart) = cache.charts.get_mut(data_type) else {
+                series_scales.push(None);
+                continue;
+            };
+            let (chunks, scales, next_span_min) =
+                chart.build_subset_per_series(&[*channel], width, height);
+            span_min = span_min.max(next_span_min);
+            series_scales.push(scales.first().copied().flatten());
+
+            for chunk in chunks.iter() {
+                let entry = merged.entry(chunk.id).or_insert_with(|| ChartRenderChunk {
+                    id: chunk.id,
+                    x: chunk.x,
+                    width: chunk.width,
+                    right: chunk.right,
+                    paths: vec![String::new(); series_count],
+                    gap_paths: vec![String::new(); series_count],
+                    signature: 0,
+                    live: false,
+                });
+                entry.x = entry.x.min(chunk.x);
+                entry.right = entry.right.max(chunk.right);
+                entry.width = entry.right - entry.x;
+                entry.live |= chunk.live;
+                if let Some(path) = chunk.paths.first() {
+                    entry.paths[series_idx] = path.clone();
+                }
+                if let Some(gap_path) = chunk.gap_paths.first() {
+                    entry.gap_paths[series_idx] = gap_path.clone();
+                }
+            }
+        }
+
+        let chunks = merged
+            .into_values()
+            .filter_map(|mut chunk| {
+                if chunk.paths.iter().all(|path| path.is_empty())
+                    && chunk.gap_paths.iter().all(|path| path.is_empty())
+                {
+                    return None;
+                }
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                chunk.id.hash(&mut hasher);
+                chunk.x.to_bits().hash(&mut hasher);
+                chunk.width.to_bits().hash(&mut hasher);
+                chunk.right.to_bits().hash(&mut hasher);
+                chunk.paths.hash(&mut hasher);
+                chunk.gap_paths.hash(&mut hasher);
+                chunk.signature = hasher.finish();
+                Some(chunk)
+            })
+            .collect::<Vec<_>>();
+
+        (Rc::new(chunks), Rc::new(series_scales), span_min)
+    })
+}
+
 pub fn charts_cache_get_channel_minmax(
     data_type: &str,
     width: f32,
@@ -278,26 +352,6 @@ impl ChartsCache {
             .entry(sender_scoped_chart_key(&r.data_type, &r.sender_id))
             .or_insert_with(CachedChart::new);
         chart.ingest(r);
-
-        let Some(channel) = battery_sender_channel(&r.sender_id) else {
-            return;
-        };
-        let Some(combined_key) = combined_battery_chart_key(&r.data_type) else {
-            return;
-        };
-        let mut combined_values = vec![None; BATTERY_COMBINED_CHANNELS];
-        combined_values[channel] = r.values.first().copied().flatten();
-        let combined_row = TelemetryRow {
-            timestamp_ms: r.timestamp_ms,
-            data_type: combined_key,
-            sender_id: String::new(),
-            values: combined_values,
-        };
-        let combined_chart = self
-            .charts
-            .entry(combined_row.data_type.clone())
-            .or_insert_with(CachedChart::new);
-        combined_chart.ingest(&combined_row);
     }
 
     fn get(&mut self, dt: &str, w: f32, h: f32) -> (Rc<Vec<ChartRenderChunk>>, f32, f32, f32) {
@@ -1293,27 +1347,6 @@ pub(crate) fn anchored_series_range(min: f32, max: f32, zero_ratio: f32) -> (f32
     }
     let padded_span = span * 1.06_f32;
     (-padded_span * ratio, padded_span * (1.0 - ratio))
-}
-
-pub(crate) fn padded_chart_range(mut min: f32, mut max: f32) -> (f32, f32) {
-    if !min.is_finite() || !max.is_finite() {
-        return (0.0, 1.0);
-    }
-    if min >= 0.0 {
-        min = 0.0;
-    }
-    if max <= 0.0 {
-        max = 0.0;
-    }
-    if (max - min).abs() < 1e-6 {
-        let center = min;
-        let pad = (center.abs() * 0.05).max(1.0);
-        min = center - pad;
-        max = center + pad;
-    }
-    let r = (max - min).abs().max(1e-6);
-    let pad = (r * 0.06).max(1.0);
-    (min - pad, max + pad)
 }
 
 pub(crate) fn push_curve_point_with_delta(

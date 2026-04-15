@@ -1489,14 +1489,11 @@ fn relay_board_ids(
         .iter()
         .filter(|node| node.kind == NetworkTopologyNodeKind::Board)
     {
-        let sender = node.sender_id.as_deref();
-        if !matches!(sender, Some("RF") | Some("GW")) {
-            continue;
-        }
         let Some(side_id) = side_by_board.get(&node.id) else {
             continue;
         };
-        out.insert(side_id.clone(), node.id.clone());
+        out.entry(side_id.clone())
+            .or_insert_with(|| node.id.clone());
     }
     out
 }

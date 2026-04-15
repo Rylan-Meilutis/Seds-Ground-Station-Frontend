@@ -6,45 +6,7 @@ use super::{
 };
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Channel {
-    Ch0,
-    Ch1,
-    Iadc,
-}
-
-impl Channel {
-    fn from_layout(s: &str) -> Self {
-        match s {
-            "ch0" | "CH0" | "KG50" | "50kg" => Self::Ch0,
-            "iadc" | "IADC" | "tank_pressure" | "Tank Pressure" => Self::Iadc,
-            _ => Self::Ch1,
-        }
-    }
-    fn api_name(&self) -> &'static str {
-        match self {
-            Self::Ch0 => "ch0",
-            Self::Ch1 => "ch1",
-            Self::Iadc => "iadc",
-        }
-    }
-    fn title(&self) -> &'static str {
-        match self {
-            Self::Ch0 => "50kg",
-            Self::Ch1 => "1000kg",
-            Self::Iadc => "Tank Pressure",
-        }
-    }
-
-    fn fit_color(&self) -> &'static str {
-        match self {
-            Self::Ch0 => "#f59e0b",
-            Self::Ch1 => "#22d3ee",
-            Self::Iadc => "#a78bfa",
-        }
-    }
-}
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 struct ChannelLinear {
@@ -60,78 +22,43 @@ struct FitMeta {
     b: Option<f32>,
     c: Option<f32>,
     d: Option<f32>,
+    e: Option<f32>,
     x0: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct PointCh0 {
-    kg: f32,
-    ch0_raw: f32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct PointCh1 {
-    kg: f32,
-    ch1_raw: f32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct PointIadc {
+struct CalibrationPoint {
     expected: f32,
-    iadc_raw: f32,
+    raw: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+struct GenericCalibrationChannel {
+    #[serde(default)]
+    linear: ChannelLinear,
+    #[serde(default)]
+    zero_raw: Option<f32>,
+    #[serde(default)]
+    points: Vec<CalibrationPoint>,
+    #[serde(default)]
+    fit: Option<FitMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct CalibrationFile {
     full_mass_kg: Option<f32>,
     #[serde(default)]
-    ch0: ChannelLinear,
-    #[serde(default)]
-    ch1: ChannelLinear,
-    #[serde(default)]
-    iadc: ChannelLinear,
-    ch0_zero_raw: Option<f32>,
-    ch1_zero_raw: Option<f32>,
-    iadc_zero_raw: Option<f32>,
-    #[serde(default)]
-    points: Vec<PointCh0>,
-    #[serde(default)]
-    points_ch1: Vec<PointCh1>,
-    #[serde(default)]
-    points_iadc: Vec<PointIadc>,
-    ch0_fit: Option<FitMeta>,
-    ch1_fit: Option<FitMeta>,
-    iadc_fit: Option<FitMeta>,
-    #[serde(default)]
     weights_kg: Vec<f32>,
+    #[serde(default, rename = "extra_channels")]
+    channels: BTreeMap<String, GenericCalibrationChannel>,
 }
 
 impl Default for CalibrationFile {
     fn default() -> Self {
         Self {
             full_mass_kg: Some(10.0),
-            ch0: ChannelLinear {
-                m: Some(1.0),
-                b: Some(0.0),
-            },
-            ch1: ChannelLinear {
-                m: Some(1.0),
-                b: Some(0.0),
-            },
-            iadc: ChannelLinear {
-                m: Some(1.0),
-                b: Some(0.0),
-            },
-            ch0_zero_raw: None,
-            ch1_zero_raw: None,
-            iadc_zero_raw: None,
-            points: Vec::new(),
-            points_ch1: Vec::new(),
-            points_iadc: Vec::new(),
-            ch0_fit: None,
-            ch1_fit: None,
-            iadc_fit: None,
             weights_kg: Vec::new(),
+            channels: BTreeMap::new(),
         }
     }
 }
@@ -160,6 +87,8 @@ struct CalibrationTabLayout {
     #[serde(default = "default_capture_target_samples")]
     capture_target_samples: usize,
     #[serde(default)]
+    fit_modes: Vec<String>,
+    #[serde(default)]
     sensors: Vec<CalibrationSensorSpec>,
 }
 
@@ -169,6 +98,12 @@ struct CalibrationSensorSpec {
     label: String,
     data_type: String,
     channel: String,
+    #[serde(default)]
+    fit_color: String,
+    #[serde(default)]
+    raw_label: String,
+    #[serde(default)]
+    expected_label: String,
     #[serde(default)]
     fit_modes: Vec<String>,
 }
@@ -205,247 +140,134 @@ fn fmt_fixed(v: Option<f32>, width: usize, prec: usize) -> String {
     }
 }
 
-fn default_sensors() -> Vec<CalibrationSensorSpec> {
-    let fit_modes = default_fit_modes();
-    vec![
-        CalibrationSensorSpec {
-            id: "KG50".to_string(),
-            label: "50kg".to_string(),
-            data_type: "KG50".to_string(),
-            channel: "ch0".to_string(),
-            fit_modes: fit_modes.clone(),
-        },
-        CalibrationSensorSpec {
-            id: "KG1000".to_string(),
-            label: "1000kg".to_string(),
-            data_type: "KG1000".to_string(),
-            channel: "ch1".to_string(),
-            fit_modes: fit_modes.clone(),
-        },
-        CalibrationSensorSpec {
-            id: "IADC".to_string(),
-            label: "Tank Pressure".to_string(),
-            data_type: "FUEL_TANK_PRESSURE".to_string(),
-            channel: "iadc".to_string(),
-            fit_modes,
-        },
-    ]
-}
-
 fn sensors_from_layout(layout: &CalibrationTabLayout) -> Vec<CalibrationSensorSpec> {
-    if layout.sensors.is_empty() {
-        return default_sensors();
-    }
     layout.sensors.clone()
 }
 
-fn default_fit_modes() -> Vec<String> {
-    vec![
-        "best".to_string(),
-        "linear".to_string(),
-        "linear_zero".to_string(),
-        "parabolic".to_string(),
-        "parabolic_zero".to_string(),
-        "cubic".to_string(),
-        "cubic_zero".to_string(),
-    ]
+fn channel_points_by_key(cfg: &CalibrationFile, channel: &str) -> Vec<(f32, f32)> {
+    cfg.channels
+        .get(channel)
+        .map(|c| c.points.iter().map(|p| (p.raw, p.expected)).collect())
+        .unwrap_or_default()
 }
 
-fn channel_points(cfg: &CalibrationFile, channel: Channel) -> Vec<(f32, f32)> {
-    match channel {
-        Channel::Ch0 => cfg.points.iter().map(|p| (p.ch0_raw, p.kg)).collect(),
-        Channel::Ch1 => cfg.points_ch1.iter().map(|p| (p.ch1_raw, p.kg)).collect(),
-        Channel::Iadc => cfg
-            .points_iadc
-            .iter()
-            .map(|p| (p.iadc_raw, p.expected))
-            .collect(),
-    }
+fn remove_point_by_key(cfg: &mut CalibrationFile, channel: &str, index: usize) -> bool {
+    cfg.channels.get_mut(channel).is_some_and(|c| {
+        if index < c.points.len() {
+            c.points.remove(index);
+            true
+        } else {
+            false
+        }
+    })
 }
 
-fn remove_point(cfg: &mut CalibrationFile, channel: Channel, index: usize) -> bool {
-    match channel {
-        Channel::Ch0 => {
-            if index < cfg.points.len() {
-                cfg.points.remove(index);
-                true
-            } else {
-                false
-            }
-        }
-        Channel::Ch1 => {
-            if index < cfg.points_ch1.len() {
-                cfg.points_ch1.remove(index);
-                true
-            } else {
-                false
-            }
-        }
-        Channel::Iadc => {
-            if index < cfg.points_iadc.len() {
-                cfg.points_iadc.remove(index);
-                true
-            } else {
-                false
-            }
-        }
-    }
-}
-
-fn update_point(
+fn update_point_by_key(
     cfg: &mut CalibrationFile,
-    channel: Channel,
+    channel: &str,
     index: usize,
     expected: f32,
     raw: f32,
 ) -> bool {
+    let channel = cfg.channels.entry(channel.to_string()).or_default();
+    if let Some(p) = channel.points.get_mut(index) {
+        p.expected = expected.max(0.0);
+        p.raw = raw;
+        true
+    } else {
+        false
+    }
+}
+
+fn upsert_point_by_key(cfg: &mut CalibrationFile, channel: &str, expected: f32, raw: f32) {
     let expected = expected.max(0.0);
-    match channel {
-        Channel::Ch0 => {
-            if let Some(p) = cfg.points.get_mut(index) {
-                p.kg = expected;
-                p.ch0_raw = raw;
-                true
-            } else {
-                false
-            }
-        }
-        Channel::Ch1 => {
-            if let Some(p) = cfg.points_ch1.get_mut(index) {
-                p.kg = expected;
-                p.ch1_raw = raw;
-                true
-            } else {
-                false
-            }
-        }
-        Channel::Iadc => {
-            if let Some(p) = cfg.points_iadc.get_mut(index) {
-                p.expected = expected;
-                p.iadc_raw = raw;
-                true
-            } else {
-                false
-            }
-        }
+    let channel = cfg.channels.entry(channel.to_string()).or_default();
+    if let Some(p) = channel
+        .points
+        .iter_mut()
+        .find(|p| (p.expected - expected).abs() < 1e-6)
+    {
+        p.raw = raw;
+    } else {
+        channel.points.push(CalibrationPoint { expected, raw });
     }
 }
 
-fn upsert_point(cfg: &mut CalibrationFile, channel: Channel, expected: f32, raw: f32) {
-    let expected = expected.max(0.0);
-    match channel {
-        Channel::Ch0 => {
-            if let Some(p) = cfg
-                .points
-                .iter_mut()
-                .find(|p| (p.kg - expected).abs() < 1e-6)
-            {
-                p.ch0_raw = raw;
-            } else {
-                cfg.points.push(PointCh0 {
-                    kg: expected,
-                    ch0_raw: raw,
-                });
-            }
-        }
-        Channel::Ch1 => {
-            if let Some(p) = cfg
-                .points_ch1
-                .iter_mut()
-                .find(|p| (p.kg - expected).abs() < 1e-6)
-            {
-                p.ch1_raw = raw;
-            } else {
-                cfg.points_ch1.push(PointCh1 {
-                    kg: expected,
-                    ch1_raw: raw,
-                });
-            }
-        }
-        Channel::Iadc => {
-            if let Some(p) = cfg
-                .points_iadc
-                .iter_mut()
-                .find(|p| (p.expected - expected).abs() < 1e-6)
-            {
-                p.iadc_raw = raw;
-            } else {
-                cfg.points_iadc.push(PointIadc {
-                    expected,
-                    iadc_raw: raw,
-                });
-            }
-        }
-    }
+fn reset_channel_by_key(cfg: &mut CalibrationFile, channel: &str) {
+    cfg.channels.remove(channel);
 }
 
-fn reset_channel(cfg: &mut CalibrationFile, channel: Channel) {
-    match channel {
-        Channel::Ch0 => {
-            cfg.points.clear();
-            cfg.ch0_zero_raw = None;
-            cfg.ch0_fit = None;
-        }
-        Channel::Ch1 => {
-            cfg.points_ch1.clear();
-            cfg.ch1_zero_raw = None;
-            cfg.ch1_fit = None;
-        }
-        Channel::Iadc => {
-            cfg.points_iadc.clear();
-            cfg.iadc_zero_raw = None;
-            cfg.iadc_fit = None;
-        }
-    }
+fn fit_for_channel_key<'a>(cfg: &'a CalibrationFile, channel: &str) -> Option<&'a FitMeta> {
+    cfg.channels.get(channel).and_then(|c| c.fit.as_ref())
 }
 
-fn fit_for_channel(cfg: &CalibrationFile, channel: Channel) -> Option<&FitMeta> {
-    match channel {
-        Channel::Ch0 => cfg.ch0_fit.as_ref(),
-        Channel::Ch1 => cfg.ch1_fit.as_ref(),
-        Channel::Iadc => cfg.iadc_fit.as_ref(),
-    }
+fn linear_for_channel_key<'a>(
+    cfg: &'a CalibrationFile,
+    channel: &str,
+) -> (&'a ChannelLinear, Option<&'a FitMeta>) {
+    static DEFAULT_LINEAR: ChannelLinear = ChannelLinear {
+        m: Some(1.0),
+        b: Some(0.0),
+    };
+    cfg.channels
+        .get(channel)
+        .map(|c| (&c.linear, c.fit.as_ref()))
+        .unwrap_or((&DEFAULT_LINEAR, None))
 }
 
-fn linear_for_channel(
-    cfg: &CalibrationFile,
-    channel: Channel,
-) -> (&ChannelLinear, Option<&FitMeta>) {
-    match channel {
-        Channel::Ch0 => (&cfg.ch0, cfg.ch0_fit.as_ref()),
-        Channel::Ch1 => (&cfg.ch1, cfg.ch1_fit.as_ref()),
-        Channel::Iadc => (&cfg.iadc, cfg.iadc_fit.as_ref()),
-    }
+fn eval_fit_key(cfg: &CalibrationFile, channel: &str, raw: f32) -> Option<f32> {
+    let (linear, fit) = linear_for_channel_key(cfg, channel);
+    eval_fit_parts(linear, fit, raw)
 }
 
-fn eval_fit(cfg: &CalibrationFile, channel: Channel, raw: f32) -> Option<f32> {
-    let (linear, fit) = linear_for_channel(cfg, channel);
+fn eval_fit_parts(linear: &ChannelLinear, fit: Option<&FitMeta>, raw: f32) -> Option<f32> {
     let fit_type = fit.and_then(|f| f.fit_type.as_deref());
     if let Some(meta) = fit {
         let x = raw - meta.x0.unwrap_or(0.0);
+        if fit_type == Some("poly4") {
+            return Some(
+                meta.a? * x.powi(4)
+                    + meta.b? * x.powi(3)
+                    + meta.c.unwrap_or(0.0) * x * x
+                    + meta.d.unwrap_or(0.0) * x
+                    + meta.e.unwrap_or(0.0),
+            );
+        }
         if fit_type == Some("poly3") {
-            let a = meta.a?;
-            let b = meta.b?;
-            let c = meta.c.unwrap_or(0.0);
-            let d = meta.d.unwrap_or(0.0);
-            return Some(a * x * x * x + b * x * x + c * x + d);
+            return Some(
+                meta.a? * x * x * x
+                    + meta.b? * x * x
+                    + meta.c.unwrap_or(0.0) * x
+                    + meta.d.unwrap_or(0.0),
+            );
         }
         if fit_type == Some("poly2") {
-            let a = meta.a?;
-            let b = meta.b?;
-            let c = meta.c.unwrap_or(0.0);
-            return Some(a * x * x + b * x + c);
+            return Some(meta.a? * x * x + meta.b? * x + meta.c.unwrap_or(0.0));
         }
     }
-    let m = linear.m?;
-    Some(m * raw + linear.b.unwrap_or(0.0))
+    Some(linear.m? * raw + linear.b.unwrap_or(0.0))
 }
 
-fn fit_details_text(cfg: &CalibrationFile, channel: Channel) -> Option<String> {
-    let (linear, fit) = linear_for_channel(cfg, channel);
+fn fit_details_text_key(cfg: &CalibrationFile, channel: &str) -> Option<String> {
+    fit_details_text_parts(linear_for_channel_key(cfg, channel))
+}
+
+fn fit_details_text_parts((linear, fit): (&ChannelLinear, Option<&FitMeta>)) -> Option<String> {
     let fit_type = fit.and_then(|f| f.fit_type.as_deref()).unwrap_or("linear");
 
     match fit_type {
+        "poly4" => {
+            let meta = fit?;
+            Some(format!(
+                "a={} b={} c={} d={} e={} x0={}",
+                fmt_fixed(meta.a, 10, 4),
+                fmt_fixed(meta.b, 10, 4),
+                fmt_fixed(meta.c, 10, 4),
+                fmt_fixed(meta.d, 10, 4),
+                fmt_fixed(meta.e, 10, 4),
+                fmt_fixed(meta.x0, 10, 4)
+            ))
+        }
         "poly3" => {
             let meta = fit?;
             Some(format!(
@@ -489,7 +311,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
         .read()
         .as_ref()
         .map(sensors_from_layout)
-        .unwrap_or_else(default_sensors);
+        .unwrap_or_default();
     let capture_target = layout_cfg
         .read()
         .as_ref()
@@ -498,8 +320,8 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
         .max(10);
 
     let cfg = use_signal(|| None::<CalibrationFile>);
-    let selected_sensor_id = use_signal(|| "KG1000".to_string());
-    let fit_mode = use_signal(|| "best".to_string());
+    let selected_sensor_id = use_signal(String::new);
+    let fit_mode = use_signal(String::new);
     let known_kg = use_signal(|| "1.0".to_string());
     let manual_kg = use_signal(|| "1.0".to_string());
     let manual_raw = use_signal(String::new);
@@ -586,7 +408,6 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                     let Some(sensor) = sensors.iter().find(|s| s.id == selected_id) else {
                         continue;
                     };
-                    let channel = Channel::from_layout(sensor.channel.as_str());
                     let Some(raw) = latest_raw(sensor.data_type.as_str()) else {
                         continue;
                     };
@@ -599,7 +420,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                     if count < capture_target {
                         status.set(format!(
                             "Capturing {}: {count}/{capture_target}",
-                            channel.title()
+                            sensor.label
                         ));
                         continue;
                     }
@@ -610,7 +431,8 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                     capture_active.set(false);
                     capture_vals.set(Vec::new());
 
-                    let sensor_id = channel.api_name().to_string();
+                    let sensor_id = sensor.channel.clone();
+                    let sensor_label = sensor.label.clone();
                     match mode {
                         CaptureMode::SequenceZero => {
                             let body = CapturePointReq {
@@ -627,7 +449,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                                     cfg.set(Some(new_cfg));
                                     status.set(format!(
                                         "Captured zero on {} (avg raw {avg:.6})",
-                                        channel.title()
+                                        sensor_label.clone()
                                     ));
                                 }
                                 Err(e) => status.set(format!("Zero capture failed: {e}")),
@@ -661,7 +483,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                                             status.set(format!(
                                                 "Captured point {} kg on {} (avg raw {avg:.6})",
                                                 weight,
-                                                channel.title()
+                                                sensor_label.clone()
                                             ));
                                         }
                                         Err(e) => status.set(format!("Refit failed: {e}")),
@@ -682,20 +504,25 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
         .find(|s| s.id == selected_id)
         .cloned()
         .or_else(|| sensors.first().cloned());
-    let channel = selected_sensor
+    let channel_key = selected_sensor
         .as_ref()
-        .map(|s| Channel::from_layout(s.channel.as_str()))
-        .unwrap_or(Channel::Ch1);
+        .map(|s| s.channel.clone())
+        .unwrap_or_default();
     let fit_modes = selected_sensor
         .as_ref()
         .map(|s| {
             if s.fit_modes.is_empty() {
-                default_fit_modes()
+                layout_cfg
+                    .read()
+                    .as_ref()
+                    .map(|layout| layout.fit_modes.clone())
+                    .filter(|modes| !modes.is_empty())
+                    .unwrap_or_default()
             } else {
                 s.fit_modes.clone()
             }
         })
-        .unwrap_or_else(default_fit_modes);
+        .unwrap_or_default();
     {
         let fit_modes = fit_modes.clone();
         let mut fit_mode = fit_mode;
@@ -712,7 +539,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
     let points = cfg
         .read()
         .as_ref()
-        .map(|c| channel_points(c, channel))
+        .map(|c| channel_points_by_key(c, &channel_key))
         .unwrap_or_default();
     let raw_live = selected_sensor
         .as_ref()
@@ -720,15 +547,16 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
     let last_ts_ms = selected_sensor
         .as_ref()
         .and_then(|s| latest_telemetry_row(&s.data_type, None).map(|r| r.timestamp_ms));
-    let sequence_started = cfg.read().as_ref().is_some_and(|c| match channel {
-        Channel::Ch0 => c.ch0_zero_raw.is_some(),
-        Channel::Ch1 => c.ch1_zero_raw.is_some(),
-        Channel::Iadc => c.iadc_zero_raw.is_some(),
+    let sequence_started = cfg.read().as_ref().is_some_and(|c| {
+        c.channels
+            .get(&channel_key)
+            .and_then(|channel| channel.zero_raw)
+            .is_some()
     });
     let calibrated_live = cfg
         .read()
         .as_ref()
-        .and_then(|c| raw_live.and_then(|raw| eval_fit(c, channel, raw)));
+        .and_then(|c| raw_live.and_then(|raw| eval_fit_key(c, &channel_key, raw)));
     let raw_live_s = fmt_fixed(raw_live, 12, 6);
     let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
     let ts_live_s = last_ts_ms
@@ -737,17 +565,21 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
     let fit_type_s = cfg
         .read()
         .as_ref()
-        .and_then(|c| fit_for_channel(c, channel))
+        .and_then(|c| fit_for_channel_key(c, &channel_key))
         .and_then(|f| f.fit_type.clone())
         .unwrap_or_else(|| "linear".to_string());
     let fit_meta_text = cfg
         .read()
         .as_ref()
-        .and_then(|c| fit_details_text(c, channel));
+        .and_then(|c| fit_details_text_key(c, &channel_key));
     let fit_equation_text = fit_meta_text
         .clone()
         .unwrap_or_else(|| format!("{}={}", translate_text("type"), translate_text(&fit_type_s)));
-    let fit_color = channel.fit_color();
+    let fit_color = selected_sensor
+        .as_ref()
+        .map(|sensor| sensor.fit_color.as_str())
+        .filter(|color| !color.trim().is_empty())
+        .unwrap_or("#22d3ee");
 
     let plot_w = 900.0_f32;
     let plot_h = 260.0_f32;
@@ -804,7 +636,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
             for i in 0..samples {
                 let t = i as f32 / (samples - 1) as f32;
                 let x = x_min + t * (x_max - x_min);
-                if let Some(y) = eval_fit(c, channel, x) {
+                if let Some(y) = eval_fit_key(c, &channel_key, x) {
                     let cmd = if d.is_empty() { "M" } else { "L" };
                     d.push_str(&format!("{cmd}{:.2},{:.2} ", sx(x), sy(y)));
                 }
@@ -907,7 +739,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                                 return;
                             };
                             let body = RefitReq {
-                                channel: Channel::from_layout(sensor.channel.as_str()).api_name().to_string(),
+                                channel: sensor.channel.clone(),
                                 mode: fit_mode.read().clone(),
                             };
                             spawn(async move {
@@ -972,14 +804,14 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                                 status.set("Invalid selected sensor".to_string());
                                 return;
                             };
-                            let channel = Channel::from_layout(sensor.channel.as_str());
+                            let selected_channel = sensor.channel.clone();
                             let mut next = cfg.read().clone().unwrap_or_default();
-                            upsert_point(&mut next, channel, kg, raw);
+                            upsert_point_by_key(&mut next, &selected_channel, kg, raw);
                             spawn(async move {
                                 match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
                                     Ok(_) => {
                                         let body = RefitReq {
-                                            channel: channel.api_name().to_string(),
+                                            channel: selected_channel,
                                             mode: fit_mode.read().clone(),
                                         };
                                         match http_post_json::<RefitReq, CalibrationFile>("/api/calibration/refit", &body).await {
@@ -1026,9 +858,9 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                                 status.set("Invalid selected sensor".to_string());
                                 return;
                             };
-                            let channel = Channel::from_layout(sensor.channel.as_str());
+                            let selected_channel = sensor.channel.clone();
                             let mut next = cfg.read().clone().unwrap_or_default();
-                            if !update_point(&mut next, channel, idx, kg, raw) {
+                            if !update_point_by_key(&mut next, &selected_channel, idx, kg, raw) {
                                 status.set("Invalid selected point".to_string());
                                 return;
                             }
@@ -1036,7 +868,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                                 match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
                                     Ok(_) => {
                                         let body = RefitReq {
-                                            channel: channel.api_name().to_string(),
+                                            channel: selected_channel,
                                             mode: fit_mode.read().clone(),
                                         };
                                         match http_post_json::<RefitReq, CalibrationFile>("/api/calibration/refit", &body).await {
@@ -1136,9 +968,8 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                                 status.set("Invalid selected sensor".to_string());
                                 return;
                             };
-                            let channel = Channel::from_layout(sensor.channel.as_str());
                             let mut next = cfg.read().clone().unwrap_or_default();
-                            if !remove_point(&mut next, channel, idx) {
+                            if !remove_point_by_key(&mut next, &sensor.channel, idx) {
                                 status.set("Invalid selected point".to_string());
                                 return;
                             }
@@ -1171,9 +1002,8 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
                                 status.set("Invalid selected sensor".to_string());
                                 return;
                             };
-                            let channel = Channel::from_layout(sensor.channel.as_str());
                             let mut next = cfg.read().clone().unwrap_or_default();
-                            reset_channel(&mut next, channel);
+                            reset_channel_by_key(&mut next, &sensor.channel);
                             spawn(async move {
                                 match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
                                     Ok(new_cfg) => {

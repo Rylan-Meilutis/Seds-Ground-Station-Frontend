@@ -56,6 +56,7 @@ Command uplink:
 | --- | --- | --- |
 | `GET` | `/api/action_policy` | Enables/disables action buttons |
 | `GET` | `/api/network_time` | Shared network clock |
+| `GET` | `/api/launch_clock` | Current T-minus/T-plus clock snapshot |
 | `GET` | `/api/network_topology` | Topology tab |
 | `GET` | `/api/boards` | Board presence summary |
 | `GET` | `/api/notifications` | Persistent notifications |
@@ -211,6 +212,33 @@ Response type:
 ```
 
 This route returns a bare JSON string, not an object.
+
+### `GET /api/launch_clock`
+
+Response type:
+
+```json
+{
+  "kind": "t_minus",
+  "anchor_timestamp_ms": 1750000000000,
+  "duration_ms": 10000
+}
+```
+
+Schema:
+
+- `kind: "idle" | "t_minus" | "t_plus"`
+- `anchor_timestamp_ms: i64 | null`
+- `duration_ms: i64 | null`
+
+Semantics:
+
+- `idle` means no backend-started launch clock is active.
+- `t_minus` means countdown is active; remaining time is `duration_ms - (network_now_ms - anchor_timestamp_ms)`, clamped at zero.
+- `t_plus` means launch has crossed T0; elapsed time is `network_now_ms - anchor_timestamp_ms`.
+- Once `t_minus` starts, the backend must not reset or re-anchor it from repeated launch commands, stale flight-state packets, or reconnect/reseed flow.
+- Once `t_plus` starts, the backend must not reset it to idle, restart `t_minus`, or re-anchor `t_plus`.
+- Frontends should display `T- 00:00.00` after countdown completion until a backend `t_plus` update arrives.
 
 ### `GET /api/gps`
 
@@ -459,24 +487,58 @@ Response type:
 ```json
 {
   "capture_target_samples": 200,
+  "fit_modes": [
+    "best",
+    "linear",
+    "linear_zero",
+    "parabolic",
+    "parabolic_zero",
+    "cubic",
+    "cubic_zero",
+    "quartic",
+    "quartic_zero"
+  ],
   "sensors": [
     {
       "id": "KG50",
       "label": "50kg",
       "data_type": "KG50",
       "channel": "ch0",
-      "fit_modes": ["best", "linear", "linear_zero"]
+      "fit_color": "#f59e0b",
+      "raw_label": "Raw",
+      "expected_label": "kg",
+      "fit_modes": ["best", "linear", "linear_zero", "parabolic", "parabolic_zero"]
     },
     {
       "id": "IADC",
       "label": "Tank Pressure",
       "data_type": "FUEL_TANK_PRESSURE",
       "channel": "iadc",
-      "fit_modes": ["best", "linear", "parabolic"]
+      "fit_color": "#a78bfa",
+      "raw_label": "Raw",
+      "expected_label": "psi",
+      "fit_modes": ["best", "linear", "parabolic", "quartic"]
     }
   ]
 }
 ```
+
+The backend reads this from `backend/config/calibration_config.json` by default, or from
+`GS_CALIBRATION_CONFIG_PATH` when set. `fit_modes` at the top level defines the backend-supported
+regressions. A sensor can override that list with its own `fit_modes`. The frontend must use these
+backend-provided modes rather than hard-coding regression choices.
+
+Supported regression mode ids are:
+
+- `best`
+- `linear`
+- `linear_zero`
+- `parabolic` / `poly2`
+- `parabolic_zero` / `poly2_zero`
+- `cubic` / `poly3`
+- `cubic_zero` / `poly3_zero`
+- `quartic` / `poly4`
+- `quartic_zero` / `poly4_zero`
 
 ### `GET /api/calibration`
 
@@ -506,13 +568,41 @@ Response type:
     "b": 0.0,
     "c": null,
     "d": null,
+    "e": null,
     "x0": null
   },
   "ch1_fit": null,
   "iadc_fit": null,
+  "extra_channels": {
+    "aux_pressure": {
+      "linear": { "m": 1.0, "b": 0.0 },
+      "zero_raw": null,
+      "points": [
+        { "expected": 100.0, "raw": 123.4 }
+      ],
+      "fit": {
+        "type": "linear",
+        "a": null,
+        "b": null,
+        "c": null,
+        "d": null,
+        "e": null,
+        "x0": null
+      }
+    }
+  },
   "weights_kg": [0.0, 5.0, 10.0]
 }
 ```
+
+Legacy channels remain present for compatibility:
+
+- `ch0` uses `points` with `{ "kg", "ch0_raw" }`
+- `ch1` uses `points_ch1` with `{ "kg", "ch1_raw" }`
+- `iadc` uses `points_iadc` with `{ "expected", "iadc_raw" }`
+
+Future channels should use `extra_channels[channel_id]` with generic `{ "expected", "raw" }`
+points plus `linear`, `zero_raw`, and `fit` metadata.
 
 ### `POST /api/calibration`
 
@@ -524,7 +614,7 @@ Request:
 
 ```json
 {
-  "sensor_id": "KG50",
+  "sensor_id": "ch0",
   "raw": 123.4
 }
 ```
@@ -539,7 +629,7 @@ Request:
 
 ```json
 {
-  "sensor_id": "KG50",
+  "sensor_id": "ch0",
   "raw": 345.6,
   "known_kg": 5.0
 }
@@ -566,7 +656,7 @@ Response:
 
 ### `GET /api/layout`
 
-This is the largest payload in the frontend contract. It controls tab visibility, actions, data labels, state widgets, theming, and some battery estimation settings.
+This is the largest payload in the frontend contract. It controls tab visibility, actions, data labels, chart behavior, state widgets, board placeholders, theming, and battery estimation settings.
 
 Theme behavior notes:
 
@@ -588,6 +678,18 @@ Important enum values used by layout:
 - `state_tab.states[].sections[].widgets[].kind`: `board_status`, `summary`, `chart`, `valve_state`, `map`, `actions`
 - `value formatter kind`: `number`, `integer`
 - `data chart scale mode`: `shared`, `per_series`
+
+Generic layout behavior:
+
+- `network_tab.expected_boards` accepts any non-empty sender id. The frontend no longer restricts this to a fixed board list.
+- `data_tab.tabs[].chart.enabled` controls whether a telemetry type should render a graph. GPS or boolean telemetry should disable charts in layout instead of relying on frontend data-type names.
+- `data_tab.tabs[].boolean_labels` and `channel_boolean_labels` control boolean value rendering. The frontend does not infer boolean rendering from a hardcoded telemetry id.
+- `data_tab.sender_split_data_types` lists telemetry `data_type` values that should maintain separate chart caches per `sender_id`. Leave it empty for single shared charts.
+- `state_tab` `valve_state` widgets must provide `data_type` and `valves`; the frontend no longer assumes a fixed valve telemetry id or fixed valve labels.
+- `state_tab.states[].sections[].value_layout` can be `auto`, `horizontal`, or `vertical`. Use `horizontal` for telemetry value cards that should flow across the row.
+- `state_tab` widgets can set `"full_width": true` to span the full section grid. This is intended for charts under horizontally arranged summary fields.
+- state summary fill targets require explicit `fill_target_fluid` and `fill_target_kind` on each item that should show a target. The frontend does not infer targets from display labels.
+- calibration sensors, labels, colors, telemetry data types, channel ids, and regression choices come from `/api/calibration_config`.
 
 Main tab ids recognized by the frontend:
 
@@ -661,6 +763,7 @@ Supported `ty` values:
 - `Telemetry`
 - `TelemetryBatch`
 - `FlightState`
+- `LaunchClock`
 - `Warning`
 - `Error`
 - `BoardStatus`
@@ -678,6 +781,7 @@ Payload notes:
 - `Telemetry` payload is one `TelemetryRow`
 - `TelemetryBatch` payload is `TelemetryRow[]`
 - `FlightState` payload is `{ "state": "<string>" }`
+- `LaunchClock` payload is the same shape as `GET /api/launch_clock`
 - `Warning` and `Error` payloads are `{ "timestamp_ms": <i64>, "message": "<string>" }`
 - `BoardStatus`, `NetworkTopology`, `Notifications`, `ActionPolicy`, and `NetworkTime` reuse the same shapes as their HTTP endpoints
 

@@ -7,7 +7,8 @@ use super::types::BoardStatusEntry;
 use super::{current_wallclock_ms, reseed_note_banner, reseed_status_note, translate_text};
 
 const LATENCY_WINDOW_MS: i64 = 20 * 60_000;
-const LATENCY_MAX_POINTS: usize = 2000;
+const LATENCY_MAX_POINTS: usize = 1200;
+const LATENCY_SAMPLE_MS: u64 = 200;
 
 const SCROLL_TRIGGER_THRESHOLD_MS: i64 = 200;
 const LATENCY_CHART_HEIGHT_PX: u32 = 220;
@@ -40,44 +41,45 @@ pub fn ConnectionStatusTab(
                 loop {
                     if !*show_latency.read() && !*latency_fullscreen.read() {
                         #[cfg(target_arch = "wasm32")]
-                        gloo_timers::future::TimeoutFuture::new(50).await;
+                        gloo_timers::future::TimeoutFuture::new(LATENCY_SAMPLE_MS as u32).await;
 
                         #[cfg(not(target_arch = "wasm32"))]
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(LATENCY_SAMPLE_MS))
+                            .await;
                         continue;
                     }
 
                     let now_ms = current_wallclock_ms();
-                    let mut map = history.read().clone();
                     let merged = merged_connection_boards(&boards.read(), &expected_boards);
 
-                    for entry in merged.iter() {
-                        let Some(age_ms) = entry.age_ms else {
-                            continue;
-                        };
-                        let key = entry.sender_id.clone();
-                        let list = map.entry(key).or_default();
-                        list.push((now_ms, age_ms as f64));
-                        if let Some(&(newest, _)) = list.last() {
-                            let cutoff = newest.saturating_sub(LATENCY_WINDOW_MS);
-                            let split = list.partition_point(|(t, _)| *t < cutoff);
-                            if split > 0 {
-                                list.drain(0..split);
+                    {
+                        let mut map = history.write();
+                        for entry in merged.iter() {
+                            let Some(age_ms) = entry.age_ms else {
+                                continue;
+                            };
+                            let key = entry.sender_id.clone();
+                            let list = map.entry(key).or_default();
+                            list.push((now_ms, age_ms as f64));
+                            if let Some(&(newest, _)) = list.last() {
+                                let cutoff = newest.saturating_sub(LATENCY_WINDOW_MS);
+                                let split = list.partition_point(|(t, _)| *t < cutoff);
+                                if split > 0 {
+                                    list.drain(0..split);
+                                }
                             }
-                        }
-                        if list.len() > LATENCY_MAX_POINTS {
-                            let drain = list.len() - LATENCY_MAX_POINTS;
-                            list.drain(0..drain);
+                            if list.len() > LATENCY_MAX_POINTS {
+                                let drain = list.len() - LATENCY_MAX_POINTS;
+                                list.drain(0..drain);
+                            }
                         }
                     }
 
-                    history.set(map);
-
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(50).await;
+                    gloo_timers::future::TimeoutFuture::new(LATENCY_SAMPLE_MS as u32).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(LATENCY_SAMPLE_MS)).await;
                 }
             });
         });

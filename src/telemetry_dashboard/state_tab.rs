@@ -10,30 +10,26 @@ use crate::auth;
 use super::blink::{action_opacity, blink_epoch_ms};
 use super::layout::{
     ActionSpec, ActionsTabLayout, BooleanLabels, ChartSeriesSpec, DataTabLayout, FillTargetFluid,
-    FillTargetValueKind, StateSection, StateSectionStyle, StateTabLayout, StateWidget,
-    StateWidgetKind, SummaryCardStyle, SummaryItem, ThemeConfig, ValueFormatKind, ValueFormatter,
-    ValveColor, ValveColorSet,
+    FillTargetValueKind, StateSection, StateSectionStyle, StateSectionValueLayout, StateTabLayout,
+    StateWidget, StateWidgetKind, SummaryCardStyle, SummaryItem, ThemeConfig, ValueFormatKind,
+    ValueFormatter, ValveColor, ValveColorSet,
 };
-use super::types::{BoardStatusEntry, FlightState, TelemetryRow, display_flight_state};
+use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
-    ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, FillTargetsConfig, HISTORY_MS,
-    TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value, reseed_note_banner,
-    reseed_status_note, translate_text, ui_telemetry_rows_snapshot,
+    ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, FillTargetsConfig, TELEMETRY_RENDER_EPOCH,
+    http_get_json, latest_telemetry_row, latest_telemetry_value, reseed_note_banner,
+    reseed_status_note, translate_text,
 };
 
 use crate::telemetry_dashboard::data_chart::{
     CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
     CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
-    ChartCanvas, ChartRenderChunk, SeriesSwatch, anchored_series_range, charts_cache_get,
-    charts_cache_get_channel_minmax, flush_curve_segment_with_limit, padded_chart_range,
-    push_curve_point_with_delta, series_color, zero_anchor_ratio,
+    ChartCanvas, ChartRenderChunk, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
+    charts_cache_get_multi_series_per_series, charts_cache_get_subset, series_color,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
-use std::hash::{Hash, Hasher};
 
-const COMBINED_CURVE_MIN_DELTA_PX: f32 = 0.35;
-const COMBINED_SMOOTHING_MAX_POINTS: usize = 240;
-const COMBINED_CHART_GRID_LEFT: f32 = 24.0;
+const COMBINED_CHART_GRID_LEFT: f32 = CHART_GRID_LEFT as f32;
 const VERTICAL_SCALE_LABEL_ROW_GAP: f64 = 17.0;
 const VERTICAL_SCALE_LABEL_RAIL_GAP: f64 = 4.0;
 
@@ -69,12 +65,30 @@ pub fn StateTab(
     let boards_snapshot = board_status.read();
     let actions_snapshot = actions.actions.clone();
     let action_policy_snapshot = action_policy.read().clone();
-
-    let content = if let Some(state_layout) = layout
+    let visible_state_layout = layout
         .states
         .iter()
         .find(|entry| entry.states.iter().any(|configured| configured == &state))
+        .cloned();
+
     {
+        let needs_fill_targets = visible_state_layout
+            .as_ref()
+            .is_some_and(state_layout_needs_fill_targets);
+        let mut fill_targets = fill_targets;
+        use_effect(move || {
+            if !needs_fill_targets || fill_targets.read().is_some() {
+                return;
+            }
+            spawn(async move {
+                if let Ok(targets) = http_get_json::<FillTargetsConfig>("/api/fill_targets").await {
+                    fill_targets.set(Some(targets));
+                }
+            });
+        });
+    }
+
+    let content = if let Some(state_layout) = visible_state_layout.as_ref() {
         rsx! {
             for section in state_layout.sections.iter() {
                 {render_state_section(
@@ -99,17 +113,24 @@ pub fn StateTab(
     };
 
     rsx! {
-        div { style: "padding:16px; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:16px; padding-bottom:100px;",
-            h2 { style: "margin:0; color:{theme.text_primary};", "{translate_text(\"State\")}" }
-            div { style: "padding:14px; border:1px solid {theme.border}; border-radius:14px; background:{theme.panel_background};",
-                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(\"Current Flight State\")}" }
-                div { style: "font-size:22px; font-weight:700; margin-top:6px; color:{theme.text_primary};",
-                    "{translate_text(&display_flight_state(&state))}"
-                }
-            }
+        div { style: "padding:10px 12px; height:100%; width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:10px; padding-bottom:100px;",
             {content}
         }
     }
+}
+
+fn state_layout_needs_fill_targets(state_layout: &super::layout::StateLayout) -> bool {
+    state_layout.sections.iter().any(|section| {
+        section.widgets.iter().any(|widget| {
+            widget.items.as_ref().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.fill_target_fluid.is_some() && item.fill_target_kind.is_some()
+                        || summary_item_fill_target_source(widget.data_type.as_deref(), item)
+                            .is_some()
+                })
+            })
+        })
+    })
 }
 
 #[component]
@@ -146,8 +167,8 @@ fn Section(
     };
 
     rsx! {
-        div { style: "padding:14px; border:1px solid {border}; border-radius:14px; background:{background};",
-            div { style: "font-size:15px; color:{title_color}; font-weight:600; margin-bottom:10px;", "{translate_text(&title)}" }
+        div { style: "padding:10px; border:1px solid {border}; border-radius:12px; background:{background}; width:100%; box-sizing:border-box; min-width:0;",
+            div { style: "font-size:14px; color:{title_color}; font-weight:600; margin-bottom:6px;", "{translate_text(&title)}" }
             {children}
         }
     }
@@ -176,27 +197,72 @@ fn render_state_section(
         .clone()
         .map(|title| translate_text(&title))
         .unwrap_or_else(|| translate_text("Section"));
+    let horizontal_values = section_uses_horizontal_values(section);
+    let content_style = if horizontal_values {
+        "display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:6px; align-items:start; width:100%; min-width:0;"
+    } else {
+        "display:flex; flex-direction:column; gap:0; width:100%; min-width:0;"
+    };
 
     rsx! {
         Section { title: title, style: section.style.clone(), theme: theme.clone(), use_layout_theme_overrides: use_layout_theme_overrides,
-            for widget in section.widgets.iter() {
-                {render_state_widget(
-                    widget,
-                    boards,
-                    data_layout,
-                    actions,
-                    action_policy,
-                    default_valve_labels,
-                    rocket_gps,
-                    user_gps,
-                    fill_targets,
-                    abort_only_mode,
-                    state_chart_labels_vertical,
-                    theme,
-                    use_layout_theme_overrides,
-                )}
+            div { style: "{content_style}",
+                for widget in section.widgets.iter() {
+                    div { style: state_widget_container_style(widget, horizontal_values),
+                        {render_state_widget(
+                            widget,
+                            boards,
+                            data_layout,
+                            actions,
+                            action_policy,
+                            default_valve_labels,
+                            rocket_gps,
+                            user_gps,
+                            fill_targets,
+                            abort_only_mode,
+                            state_chart_labels_vertical,
+                            theme,
+                            use_layout_theme_overrides,
+                        )}
+                    }
+                }
             }
         }
+    }
+}
+
+fn state_widget_container_style(widget: &StateWidget, horizontal_values: bool) -> &'static str {
+    let summary_item_count = widget.items.as_ref().map_or(0, Vec::len);
+    let valve_item_count = widget.valves.as_ref().map_or(0, Vec::len);
+    if widget.full_width
+        || widget.kind == StateWidgetKind::Actions
+        || (horizontal_values && widget.kind == StateWidgetKind::Summary && summary_item_count > 1)
+        || (horizontal_values && widget.kind == StateWidgetKind::ValveState && valve_item_count > 1)
+    {
+        "grid-column:1 / -1; min-width:0; width:100%;"
+    } else if horizontal_values
+        && widget
+            .width_fraction
+            .is_some_and(|fraction| fraction >= 0.49)
+    {
+        "grid-column:span 2; min-width:0; width:100%;"
+    } else {
+        "min-width:0; width:100%;"
+    }
+}
+
+fn section_uses_horizontal_values(section: &StateSection) -> bool {
+    match section.value_layout {
+        StateSectionValueLayout::Horizontal => true,
+        StateSectionValueLayout::Vertical => false,
+        StateSectionValueLayout::Auto => section.widgets.iter().all(|widget| {
+            matches!(
+                widget.kind,
+                StateWidgetKind::Summary
+                    | StateWidgetKind::ValveState
+                    | StateWidgetKind::BoardStatus
+            )
+        }),
     }
 }
 
@@ -220,9 +286,9 @@ fn render_state_widget(
         StateWidgetKind::Summary => {
             let dt = widget.data_type.as_deref().unwrap_or("");
             let items = widget.items.as_deref().unwrap_or(&[]);
-            let has_fill_target_item = items
-                .iter()
-                .any(|item| item.fill_target_fluid.is_some() && item.fill_target_kind.is_some());
+            let has_fill_target_item = items.iter().any(|item| {
+                summary_item_fill_target_source(widget.data_type.as_deref(), item).is_some()
+            });
             if dt.is_empty() && !has_fill_target_item {
                 rsx! { div { style: "color:#94a3b8; font-size:12px;", "{translate_text(\"Missing summary data_type\")}" } }
             } else {
@@ -253,6 +319,7 @@ fn render_state_widget(
         StateWidgetKind::ValveState => {
             let labels = widget.boolean_labels.as_ref().or(default_valve_labels);
             rsx! { {valve_state_grid(
+                widget.data_type.as_deref(),
                 widget.valves.as_deref(),
                 widget.valve_colors.as_ref(),
                 labels,
@@ -514,7 +581,7 @@ fn combined_chart_payload(
     data_layout: &DataTabLayout,
     view_w: f64,
     view_h: f64,
-    grid_left: f32,
+    _grid_left: f32,
 ) -> Option<(
     Vec<ChartRenderChunk>,
     f32,
@@ -524,177 +591,54 @@ fn combined_chart_payload(
     bool,
     Vec<Option<(f32, f32)>>,
 )> {
-    let rows = ui_telemetry_rows_snapshot();
-    let newest_ts = rows.iter().map(|row| row.timestamp_ms).max()?;
-    let history_start_ts = newest_ts.saturating_sub(HISTORY_MS);
-
-    let left = grid_left;
-    let right = (view_w as f32 - CHART_GRID_RIGHT_PAD as f32).max(left + 1.0);
-    let top = CHART_GRID_TOP as f32;
-    let bottom = (view_h as f32 - CHART_GRID_BOTTOM_PAD as f32).max(top + 1.0);
-    let pw = right - left;
-    let ph = bottom - top;
-
-    let mut all_points: Vec<Vec<(i64, f32)>> = Vec::with_capacity(specs.len());
-    let mut series_ranges: Vec<Option<(f32, f32)>> = Vec::with_capacity(specs.len());
-    let mut labels = Vec::with_capacity(specs.len());
-    let mut raw_min = f32::INFINITY;
-    let mut raw_max = f32::NEG_INFINITY;
-
-    for spec in specs {
-        let mut points: Vec<(i64, f32)> = rows
-            .iter()
-            .filter(|row| row.data_type == spec.data_type && row.timestamp_ms >= history_start_ts)
-            .filter_map(|row| {
-                row.values
-                    .get(spec.index)
-                    .copied()
-                    .flatten()
-                    .filter(|value| value.is_finite())
-                    .map(|value| (row.timestamp_ms, value))
-            })
-            .collect();
-        points.sort_by_key(|(ts, _)| *ts);
-        points.dedup_by_key(|(ts, _)| *ts);
-
-        let mut series_min = f32::INFINITY;
-        let mut series_max = f32::NEG_INFINITY;
-        if !points.is_empty() {
-            for &(_, value) in &points {
-                series_min = series_min.min(value);
-                series_max = series_max.max(value);
-                raw_min = raw_min.min(value);
-                raw_max = raw_max.max(value);
-            }
-        }
-        series_ranges.push(
-            (series_min.is_finite() && series_max.is_finite()).then_some((series_min, series_max)),
-        );
-        labels.push(default_series_label(data_layout, spec));
-        all_points.push(points);
-    }
-
-    if !raw_min.is_finite() || !raw_max.is_finite() {
-        return None;
-    }
-
-    let oldest_ts = all_points
-        .iter()
-        .filter_map(|points| points.first().map(|(ts, _)| *ts))
-        .min()
-        .unwrap_or(newest_ts);
-    let start_ts = oldest_ts;
-    let span_ms = (newest_ts - start_ts).max(1) as f32;
-
-    let (y_min, y_max) = padded_chart_range(raw_min, raw_max);
-    let common_zero_ratio = zero_anchor_ratio(y_min, y_max);
     let normalize_per_series = specs
         .iter()
         .map(|spec| spec.data_type.as_str())
         .collect::<std::collections::BTreeSet<_>>()
         .len()
         > 1;
-    let map_x = |ts_ms: i64| pw * ((ts_ms.saturating_sub(start_ts) as f32) / span_ms);
+    let labels = specs
+        .iter()
+        .map(|spec| default_series_label(data_layout, spec))
+        .collect::<Vec<_>>();
 
-    let mut paths = vec![String::new(); specs.len()];
-    let mut gap_paths = vec![String::new(); specs.len()];
-    let smooth_curves = span_ms <= 5.0 * 60_000.0;
-
-    for (idx, points) in all_points.iter().enumerate() {
-        if points.is_empty() {
-            continue;
+    if !normalize_per_series {
+        let data_type = specs.first()?.data_type.as_str();
+        let channels = specs.iter().map(|spec| spec.index).collect::<Vec<_>>();
+        let (chunks, y_min, y_max, span_min) =
+            charts_cache_get_subset(data_type, &channels, view_w as f32, view_h as f32);
+        if chunks.is_empty() {
+            return None;
         }
-        let mut curve_points: Vec<(f32, f32)> = Vec::new();
-        let mut min_gap_ms: Option<i64> = None;
-        for window in points.windows(2) {
-            let gap_ms = window[1].0.saturating_sub(window[0].0);
-            if gap_ms > 0 {
-                min_gap_ms = Some(min_gap_ms.map(|prev| prev.min(gap_ms)).unwrap_or(gap_ms));
-            }
-        }
-        let gap_threshold_ms = min_gap_ms
-            .map(|gap_ms| (gap_ms * 6).max(500))
-            .unwrap_or(500);
-
-        for (point_idx, (ts_ms, value)) in points.iter().enumerate() {
-            let x = map_x(*ts_ms);
-            let (series_y_min, series_y_max) = if normalize_per_series {
-                series_ranges[idx]
-                    .map(|(min, max)| anchored_series_range(min, max, common_zero_ratio))
-                    .unwrap_or((y_min, y_max))
-            } else {
-                (y_min, y_max)
-            };
-            let y = bottom - (*value - series_y_min) / (series_y_max - series_y_min) * ph;
-
-            if point_idx == 0 {
-                push_curve_point_with_delta(&mut curve_points, x, y, COMBINED_CURVE_MIN_DELTA_PX);
-                continue;
-            }
-
-            let (prev_ts_ms, prev_value) = points[point_idx - 1];
-            let prev_x = map_x(prev_ts_ms);
-            let prev_y = bottom - (prev_value - series_y_min) / (series_y_max - series_y_min) * ph;
-            let gap_ms = ts_ms.saturating_sub(prev_ts_ms);
-            if gap_ms > gap_threshold_ms {
-                flush_curve_segment_with_limit(
-                    &mut paths[idx],
-                    &curve_points,
-                    smooth_curves,
-                    COMBINED_SMOOTHING_MAX_POINTS,
-                );
-                curve_points.clear();
-                gap_paths[idx].push_str(&format!(
-                    "M {:.2} {:.2} L {:.2} {:.2} ",
-                    prev_x, prev_y, x, y
-                ));
-            }
-            push_curve_point_with_delta(&mut curve_points, x, y, COMBINED_CURVE_MIN_DELTA_PX);
-        }
-        flush_curve_segment_with_limit(
-            &mut paths[idx],
-            &curve_points,
-            smooth_curves,
-            COMBINED_SMOOTHING_MAX_POINTS,
-        );
+        return Some((
+            chunks.as_ref().clone(),
+            y_min,
+            y_max,
+            span_min,
+            labels,
+            false,
+            vec![None; specs.len()],
+        ));
     }
 
-    if paths.iter().all(|path| path.is_empty()) && gap_paths.iter().all(|path| path.is_empty()) {
+    let cache_series = specs
+        .iter()
+        .map(|spec| (spec.data_type.clone(), spec.index))
+        .collect::<Vec<_>>();
+    let (chunks, series_scales, span_min) =
+        charts_cache_get_multi_series_per_series(&cache_series, view_w as f32, view_h as f32);
+    if chunks.is_empty() {
         return None;
     }
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    paths.hash(&mut hasher);
-    gap_paths.hash(&mut hasher);
-    for spec in specs {
-        spec.data_type.hash(&mut hasher);
-        spec.index.hash(&mut hasher);
-        spec.label.hash(&mut hasher);
-    }
-    newest_ts.hash(&mut hasher);
-
-    let chunks = vec![ChartRenderChunk {
-        id: 0,
-        x: left as f64,
-        width: pw as f64,
-        right: right as f64,
-        paths,
-        gap_paths,
-        signature: hasher.finish(),
-        live: true,
-    }];
-
     Some((
-        chunks,
-        y_min,
-        y_max,
-        span_ms / 60_000.0,
+        chunks.as_ref().clone(),
+        0.0,
+        1.0,
+        span_min,
         labels,
-        normalize_per_series,
-        series_ranges
-            .into_iter()
-            .map(|range| range.map(|(min, max)| anchored_series_range(min, max, common_zero_ratio)))
-            .collect(),
+        true,
+        series_scales.as_ref().clone(),
     ))
 }
 
@@ -1073,6 +1017,7 @@ fn fullscreen_view_height() -> f64 {
 // ============================================================
 
 fn valve_state_grid(
+    data_type: Option<&str>,
     valves: Option<&[SummaryItem]>,
     colors: Option<&ValveColorSet>,
     labels: Option<&BooleanLabels>,
@@ -1080,79 +1025,31 @@ fn valve_state_grid(
     theme: &ThemeConfig,
     use_layout_theme_overrides: bool,
 ) -> Element {
-    let latest = latest_telemetry_row("VALVE_STATE", None);
+    let Some(data_type) = data_type.filter(|dt| !dt.trim().is_empty()) else {
+        return rsx! { div { style: "color:#94a3b8; font-size:12px;", "{translate_text(\"Missing valve data_type\")}" } };
+    };
+    let latest = latest_telemetry_row(data_type, None);
 
     let Some(row) = latest.as_ref() else {
         return rsx! { div { style: "color:#94a3b8; font-size:12px;", "No valve state yet." } };
     };
-
-    let default_items = [
-        SummaryItem {
-            label: translate_text("Pilot"),
-            index: 0,
-            formatter: None,
-            fill_target_fluid: None,
-            fill_target_kind: None,
-        },
-        SummaryItem {
-            label: translate_text("NormallyOpen"),
-            index: 1,
-            formatter: None,
-            fill_target_fluid: None,
-            fill_target_kind: None,
-        },
-        SummaryItem {
-            label: translate_text("Dump"),
-            index: 2,
-            formatter: None,
-            fill_target_fluid: None,
-            fill_target_kind: None,
-        },
-        SummaryItem {
-            label: translate_text("Igniter"),
-            index: 3,
-            formatter: None,
-            fill_target_fluid: None,
-            fill_target_kind: None,
-        },
-        SummaryItem {
-            label: translate_text("Nitrogen"),
-            index: 4,
-            formatter: None,
-            fill_target_fluid: None,
-            fill_target_kind: None,
-        },
-        SummaryItem {
-            label: translate_text("Nitrous"),
-            index: 5,
-            formatter: None,
-            fill_target_fluid: None,
-            fill_target_kind: None,
-        },
-        SummaryItem {
-            label: translate_text("Fill Lines"),
-            index: 6,
-            formatter: None,
-            fill_target_fluid: None,
-            fill_target_kind: None,
-        },
-    ];
 
     let items: Vec<(String, Option<f32>)> = match valves {
         Some(list) if !list.is_empty() => list
             .iter()
             .map(|item| (item.label.clone(), value_at(row, item.index)))
             .collect(),
-        _ => default_items
-            .iter()
-            .map(|item| (item.label.clone(), value_at(row, item.index)))
-            .collect(),
+        _ => Vec::new(),
     };
+
+    if items.is_empty() {
+        return rsx! { div { style: "color:#94a3b8; font-size:12px;", "{translate_text(\"No valve items configured.\")}" } };
+    }
 
     let (open, closed, unknown) = valve_colors(colors, theme, use_layout_theme_overrides);
 
     rsx! {
-        div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:12px;",
+        div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:12px; width:100%; max-width:none; box-sizing:border-box; min-width:0;",
             for (idx, (label, value)) in items.iter().enumerate() {
                 ValveStateCard {
                     label: translate_text(label),
@@ -1211,7 +1108,7 @@ fn ValveStateCard(
     };
 
     rsx! {
-        div { style: "padding:10px; border-radius:12px; background:{bg}; border:1px solid {border};",
+        div { style: "padding:10px; border-radius:12px; background:{bg}; border:1px solid {border}; min-width:0; width:100%; box-sizing:border-box;",
             div { style: "font-size:12px; color:{fg};", "{translate_text(&label)}" }
             div { style: "font-size:18px; font-weight:700; color:{fg};", "{translate_text(text)}" }
         }
@@ -1287,7 +1184,7 @@ fn action_section(
     }
 
     rsx! {
-        div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;",
+        div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap:10px; align-items:stretch; width:100%; max-width:none; box-sizing:border-box; min-width:0;",
             for action in filtered.iter() {
                 {
                     let control = action_policy.controls.iter().find(|c| c.cmd == action.cmd);
@@ -1299,7 +1196,7 @@ fn action_section(
                     let actuated = control.and_then(|c| c.actuated);
                     rsx! {
                         button {
-                            style: action_style(&action.border, &action.bg, &action.fg, blink_now_ms, enabled, blink, actuated),
+                            style: "{action_style(&action.border, &action.bg, &action.fg, blink_now_ms, enabled, blink, actuated)} min-width:0;",
                             disabled: !enabled,
                             onmousedown: {
                                 let cmd = action.cmd.clone();
@@ -1417,7 +1314,7 @@ fn summary_row(
     theme: &ThemeConfig,
     use_layout_theme_overrides: bool,
 ) -> Element {
-    let want_minmax = dt.is_some_and(|dt| dt != "VALVE_STATE" && dt != "GPS_DATA");
+    let want_minmax = dt.is_some();
 
     let (chan_min, chan_max) = if want_minmax {
         charts_cache_get_channel_minmax(dt.unwrap_or_default(), 1200.0, 300.0)
@@ -1432,14 +1329,14 @@ fn summary_row(
                 item.label.clone(),
                 item.index,
                 summary_item_value(dt, item, fill_targets),
-                summary_item_fill_target_value_string(item, fill_targets),
+                summary_item_fill_target_value_string(dt, item, fill_targets),
                 item.formatter.as_ref(),
             )
         })
         .collect::<Vec<_>>();
 
     rsx! {
-        div { style: "display:grid; gap:10px; margin-bottom:12px; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); width:100%;",
+        div { style: "display:grid; gap:6px; margin-bottom:0; grid-template-columns:repeat(auto-fit, minmax(112px, 1fr)); width:100%;",
             for (label, idx, value, target, formatter) in latest {
                 SummaryCard {
                     label: translate_text(&label),
@@ -1509,16 +1406,16 @@ fn SummaryCard(
     };
 
     rsx! {
-        div { style: "padding:10px; border-radius:12px; background:{background}; border:1px solid {border}; width:100%; min-width:0; box-sizing:border-box;",
-            div { style: "font-size:12px; color:{label_color};", "{translate_text(&label)}" }
-            div { style: "display:flex; flex-wrap:wrap; align-items:baseline; column-gap:8px; row-gap:2px; margin-top:2px; max-width:100%; overflow:hidden;" ,
-                div { style: "font-size:18px; color:{value_color}; line-height:1.1; min-width:0; width:10.5ch; max-width:10.5ch; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{value}" }
+        div { style: "padding:7px 8px; border-radius:10px; background:{background}; border:1px solid {border}; width:100%; min-width:0; box-sizing:border-box;",
+            div { style: "font-size:11px; line-height:1.05; color:{label_color};", "{translate_text(&label)}" }
+            div { style: "display:flex; flex-wrap:wrap; align-items:baseline; column-gap:5px; row-gap:1px; margin-top:1px; max-width:100%; overflow:hidden;" ,
+                div { style: "font-size:16px; color:{value_color}; line-height:1.05; min-width:0; width:9ch; max-width:9ch; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{value}" }
                 if let Some(target) = target {
-                    div { style: "font-size:11px; color:{theme.info_text}; white-space:nowrap; width:16ch; min-width:min(16ch, 100%); max-width:100%; text-align:left; flex:0 1 16ch; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{target}" }
+                    div { style: "font-size:10px; color:{theme.info_text}; white-space:nowrap; width:15ch; min-width:min(15ch, 100%); max-width:100%; text-align:left; flex:0 1 15ch; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{target}" }
                 }
             }
             if let Some(t) = mm {
-                div { style: "font-size:11px; color:{theme.text_muted}; margin-top:4px;", "{t}" }
+                div { style: "font-size:10px; color:{theme.text_muted}; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", "{t}" }
             }
         }
     }
@@ -1532,12 +1429,37 @@ fn summary_item_value(
     dt.and_then(|dt| latest_telemetry_value(dt, None, item.index))
 }
 
-fn summary_item_fill_target_value(item: &SummaryItem, cfg: &FillTargetsConfig) -> Option<f32> {
-    let (fluid, kind) = item
-        .fill_target_fluid
+fn summary_item_fill_target_source<'a>(
+    dt: Option<&str>,
+    item: &'a SummaryItem,
+) -> Option<(&'a FillTargetFluid, &'a FillTargetValueKind)> {
+    item.fill_target_fluid
         .as_ref()
         .zip(item.fill_target_kind.as_ref())
-        .or_else(|| summary_item_fill_target_fallback(item))?;
+        .or_else(|| summary_item_fill_target_legacy_source(dt, item))
+}
+
+fn summary_item_fill_target_legacy_source(
+    dt: Option<&str>,
+    item: &SummaryItem,
+) -> Option<(&'static FillTargetFluid, &'static FillTargetValueKind)> {
+    static NITROUS: FillTargetFluid = FillTargetFluid::Nitrous;
+    static PRESSURE: FillTargetValueKind = FillTargetValueKind::PressurePsi;
+    static MASS: FillTargetValueKind = FillTargetValueKind::MassKg;
+
+    match (dt, item.index) {
+        (Some("FUEL_TANK_PRESSURE"), 0) => Some((&NITROUS, &PRESSURE)),
+        (Some("LOADCELL_WEIGHT_KG"), 0) => Some((&NITROUS, &MASS)),
+        _ => None,
+    }
+}
+
+fn summary_item_fill_target_value(
+    dt: Option<&str>,
+    item: &SummaryItem,
+    cfg: &FillTargetsConfig,
+) -> Option<f32> {
+    let (fluid, kind) = summary_item_fill_target_source(dt, item)?;
     let target = match fluid {
         FillTargetFluid::Nitrogen => &cfg.nitrogen,
         FillTargetFluid::Nitrous => &cfg.nitrous,
@@ -1548,36 +1470,21 @@ fn summary_item_fill_target_value(item: &SummaryItem, cfg: &FillTargetsConfig) -
     })
 }
 
-fn summary_item_fill_target_fallback(
-    item: &SummaryItem,
-) -> Option<(&'static FillTargetFluid, &'static FillTargetValueKind)> {
-    static NITROUS: FillTargetFluid = FillTargetFluid::Nitrous;
-    static PRESSURE: FillTargetValueKind = FillTargetValueKind::PressurePsi;
-    static MASS: FillTargetValueKind = FillTargetValueKind::MassKg;
-
-    match item.label.as_str() {
-        "Tank Pressure" => Some((&NITROUS, &PRESSURE)),
-        "Mass (kg)" => Some((&NITROUS, &MASS)),
-        _ => None,
-    }
-}
-
 fn summary_item_fill_target_value_string(
+    dt: Option<&str>,
     item: &SummaryItem,
     fill_targets: Option<&FillTargetsConfig>,
 ) -> Option<String> {
-    let cfg = fill_targets?;
-    let raw = summary_item_fill_target_value(item, cfg)?;
-    let (_, kind) = item
-        .fill_target_fluid
-        .as_ref()
-        .zip(item.fill_target_kind.as_ref())
-        .or_else(|| summary_item_fill_target_fallback(item))?;
-    let formatted = format_summary_value(Some(raw), item.formatter.as_ref());
+    let (_, kind) = summary_item_fill_target_source(dt, item)?;
     let label = match kind {
         FillTargetValueKind::MassKg => translate_text("Target"),
         FillTargetValueKind::PressurePsi => translate_text("Target"),
     };
+    let Some(cfg) = fill_targets else {
+        return Some(format!("{label} -"));
+    };
+    let raw = summary_item_fill_target_value(dt, item, cfg)?;
+    let formatted = format_summary_value(Some(raw), item.formatter.as_ref());
     Some(format!("{label} {formatted}"))
 }
 

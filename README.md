@@ -92,6 +92,8 @@ For a more complete dashboard, also implement:
 - `GET /api/i18n/catalog?lang=<code>`
 - `POST /api/i18n/translate`
 
+Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph enablement, sender-split chart types, boolean labels, state widgets, state summary fill-target metadata, and calibration channel names/colors/regressions should be supplied by `/api/layout` and `/api/calibration_config`; avoid depending on frontend hardcoded telemetry names.
+
 ## Running The Frontend
 
 Web:

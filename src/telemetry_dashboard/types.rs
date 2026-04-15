@@ -55,21 +55,13 @@ impl BoardStatusEntry {
     }
 
     pub fn from_sender_id(sender_id: &str) -> Option<Self> {
-        let (board, label) = match sender_id {
-            "GS" => ("GroundStation", "Ground Station"),
-            "FC" => ("FlightComputer", "Flight Computer"),
-            "RF" => ("RFBoard", "RF Board"),
-            "PB" => ("PowerBoard", "Power Board"),
-            "VB" => ("ValveBoard", "Valve Board"),
-            "GW" => ("GatewayBoard", "Gateway Board"),
-            "AB" => ("ActuatorBoard", "Actuator Board"),
-            "DAQ" => ("DaqBoard", "DAQ Board"),
-            _ => return None,
-        };
+        if sender_id.trim().is_empty() {
+            return None;
+        }
 
         Some(Self {
-            board: board.to_string(),
-            board_label: label.to_string(),
+            board: sender_id.to_string(),
+            board_label: display_flight_state(sender_id),
             sender_id: sender_id.to_string(),
             seen: false,
             last_seen_ms: None,

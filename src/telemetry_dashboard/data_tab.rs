@@ -22,9 +22,9 @@ use super::{
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
 const _ACTIVE_SUBTAB_STORAGE_KEY: &str = "gs26_active_data_subtab";
 const DATA_TAB_RESPONSIVE_CSS: &str = r#"
-.gs26-data-tab-shell, .gs26-data-subtab-shell { min-width: 0; }
+.gs26-data-tab-shell, .gs26-data-subtab-shell { min-width: 0; width:100%; align-self:stretch; box-sizing:border-box; }
 .gs26-data-tab-toggle, .gs26-data-subtab-toggle { display:none; }
-.gs26-data-tab-nav, .gs26-data-subtab-nav { display:flex; gap:6px; flex-wrap:wrap; align-items:center; min-width:0; }
+.gs26-data-tab-nav, .gs26-data-subtab-nav { display:flex; gap:6px; flex-wrap:wrap; align-items:center; min-width:0; width:100%; box-sizing:border-box; }
 .gs26-data-tab-nav button, .gs26-data-subtab-nav button,
 .gs26-data-tab-toggle, .gs26-data-subtab-toggle {
   box-sizing:border-box;
@@ -43,8 +43,9 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
     display:inline-flex;
     align-items:center;
     justify-content:center;
-    justify-self:center;
-    max-width:min(100%, 28rem);
+    justify-self:stretch;
+    width:100%;
+    max-width:100%;
     padding:0.25rem 0.65rem 0.3rem 0.65rem;
     border-radius:0.65rem;
     border:1px solid var(--gs26-data-toggle-border);
@@ -62,12 +63,25 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
   .gs26-data-tab-nav, .gs26-data-subtab-nav { display:none; width:100%; }
   .gs26-data-tab-shell[data-expanded="true"] .gs26-data-tab-nav,
   .gs26-data-subtab-shell[data-expanded="true"] .gs26-data-subtab-nav {
-    display:flex;
-    flex-direction:column;
-    align-items:center;
+    display:grid;
+    grid-template-columns:repeat(2, minmax(0, 1fr));
+    align-items:stretch;
+    justify-items:stretch;
+    justify-content:stretch;
+    align-self:stretch;
+    width:100%;
+    min-width:100%;
+    box-sizing:border-box;
   }
   .gs26-data-tab-nav button, .gs26-data-subtab-nav button {
-    width:min(100%, 28rem);
+    width:100%;
+    min-height:2.15rem;
+  }
+}
+@media (max-width: 360px) {
+  .gs26-data-tab-shell[data-expanded="true"] .gs26-data-tab-nav,
+  .gs26-data-subtab-shell[data-expanded="true"] .gs26-data-subtab-nav {
+    grid-template-columns:1fr;
   }
 }
 "#;
@@ -244,18 +258,14 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         .cloned()
         .unwrap_or_default();
 
-    let is_valve_state = current == "VALVE_STATE";
     let has_telemetry = if !summary_items.is_empty() {
         summary_items.iter().any(summary_item_has_value)
     } else {
         latest_row.is_some()
     };
     let show_reseed_banner = reseed_status_note().is_some();
-    let is_graph_allowed = chart_enabled
-        && current != "GPS_DATA"
-        && !is_valve_state
-        && effective_source.is_some()
-        && (has_telemetry || show_reseed_banner);
+    let is_graph_allowed =
+        chart_enabled && effective_source.is_some() && (has_telemetry || show_reseed_banner);
 
     // Viewport constants
     let view_w = 1200.0_f64;
@@ -274,11 +284,12 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         .as_ref()
         .map(chart_key_for_source)
         .unwrap_or_else(|| current.clone());
-    let (_chunks, _y_min, _y_max, _span_min) =
-        charts_cache_get(&chart_key, view_w as f32, view_h as f32);
-    let (chan_min, chan_max) =
-        charts_cache_get_channel_minmax(&chart_key, view_w as f32, view_h as f32);
     let chart_groups = effective_chart_groups(current_tab, selected_subtab.as_ref(), labels.len());
+    let (chan_min, chan_max) = if is_graph_allowed {
+        charts_cache_get_channel_minmax(&chart_key, view_w as f32, view_h as f32)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let data_tabs_toggle_label = if *tabs_expanded.read() {
         "Hide data tabs".to_string()
     } else {
@@ -332,7 +343,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                                         .and_then(|list| list.get(i))
                                     {
                                         boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
-                                    } else if is_valve_state || boolean_labels.is_some() {
+                                    } else if boolean_labels.is_some() {
                                         boolean_value_text(vals.get(i).copied().flatten(), boolean_labels)
                                     } else {
                                         format_value(vals.get(i).copied().flatten(), channel_formatters.and_then(|list| list.get(i)))
@@ -355,7 +366,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         div {
             style: "padding:8px 0 8px 0; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px; --gs26-data-toggle-background:{theme.tab_shell_background}; --gs26-data-toggle-border:{theme.tab_shell_border}; --gs26-data-toggle-text:{theme.button_text};",
 
-            div { style: "display:flex; flex-direction:column; gap:6px;",
+            div { style: "display:flex; flex-direction:column; gap:6px; width:100%; min-width:0; align-self:stretch;",
 
                 div {
                     class: "gs26-data-tab-shell",
@@ -638,7 +649,9 @@ fn DataGraphPanel(
     is_fullscreen: Signal<bool>,
     show_chart: Signal<bool>,
 ) -> Element {
-    let _ = *CHART_RENDER_EPOCH.read();
+    if *show_chart.read() || *is_fullscreen.read() {
+        let _ = *CHART_RENDER_EPOCH.read();
+    }
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     let on_toggle_fullscreen = move |_: Event<MouseData>| {
@@ -649,9 +662,6 @@ fn DataGraphPanel(
         let next = !*show_chart.read();
         show_chart.set(next);
     };
-
-    let (_chunks, _y_min, _y_max, _span_min) =
-        charts_cache_get(&chart_key, view_w as f32, view_h as f32);
 
     rsx! {
         div { style: "flex:0; width:100%; margin-top:6px;",

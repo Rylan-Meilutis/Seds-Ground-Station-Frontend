@@ -266,6 +266,10 @@ pub fn ActionsTab(
                 display:flex;
                 flex-direction:column;
                 gap:12px;
+                width:100%;
+                max-width:none;
+                box-sizing:border-box;
+                align-self:stretch;
             ",
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
@@ -289,6 +293,10 @@ pub fn ActionsTab(
                         display:flex;
                         flex-direction:column;
                         gap:12px;
+                        width:100%;
+                        max-width:none;
+                        box-sizing:border-box;
+                        align-self:stretch;
                     ",
                     for row in action_rows.iter() {
                         match row {
@@ -304,6 +312,9 @@ pub fn ActionsTab(
                                         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
                                         gap:12px;
                                         align-items:stretch;
+                                        width:100%;
+                                        max-width:none;
+                                        box-sizing:border-box;
                                     ",
                                     for item in items.iter() {
                                         match item {
@@ -369,7 +380,7 @@ pub fn ActionsTab(
                     }
                 }
             }
-            div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap:12px; align-items:start;",
+            div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap:12px; align-items:start; width:100%; max-width:none; box-sizing:border-box;",
                 if layout.show_flight_setup {
                     div { style: "{setup_panel_style(&theme)}",
                     h3 { style: "margin:0; color:{theme.text_primary};", "{translate_text(\"Flight Setup\")}" }
