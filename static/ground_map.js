@@ -156,7 +156,8 @@ function requestPersistentTileStorage() {
         if (!navigator.storage || typeof navigator.storage.persist !== "function") return;
         if (window.__gs26_tile_storage_persist_requested) return;
         window.__gs26_tile_storage_persist_requested = true;
-        navigator.storage.persist().catch(() => {});
+        navigator.storage.persist().catch(() => {
+        });
     } catch (e) {
     }
 }
