@@ -89,6 +89,8 @@ pub fn MapTab(
     let _ = *rocket_gps.read();
     let _ = *user_gps.read();
     let mut is_fullscreen = use_signal(|| false);
+    let mut follow_user = use_signal(|| false);
+    let mut user_orientation_up = use_signal(|| false);
     #[cfg(target_os = "ios")]
     let mut show_enable_compass = use_signal(|| false);
     #[cfg(not(target_os = "ios"))]
@@ -190,11 +192,15 @@ pub fn MapTab(
         let tiles = tiles_url();
         let map_config = map_config;
         let is_fullscreen_sig = is_fullscreen;
+        let follow_user = follow_user;
+        let user_orientation_up = user_orientation_up;
         use_effect(move || {
             let config = map_config.read().clone();
             let fs = *is_fullscreen_sig.read();
             js_eval(r#"console.error("[GS26 map] fullscreen/reinit effect entered");"#);
             js_force_map_reinit_now(&tiles, &config, fs, FULLSCREEN_REINIT_DELAY_MS);
+            js_set_follow_user(*follow_user.read());
+            js_set_orientation_mode(*user_orientation_up.read());
         });
     }
 
@@ -283,6 +289,16 @@ pub fn MapTab(
     let effective_user = move || -> Option<(f64, f64)> { *browser_user_gps.read() };
     let distance_text =
         format_distance_label(*rocket_gps.read(), effective_user(), distance_units_metric);
+    let follow_button_style = if *follow_user.read() {
+        primary_button_style.clone()
+    } else {
+        neutral_button_style.clone()
+    };
+    let orientation_button_style = if *user_orientation_up.read() {
+        primary_button_style.clone()
+    } else {
+        neutral_button_style.clone()
+    };
     #[cfg(any(target_os = "ios", target_os = "macos", target_os = "android"))]
     let native_location_warning = if (*user_gps.read()).is_none() {
         Some(translate_text(
@@ -321,6 +337,51 @@ pub fn MapTab(
         });
     }
 
+    {
+        let follow_user = follow_user;
+        use_effect(move || {
+            js_set_follow_user(*follow_user.read());
+        });
+    }
+
+    {
+        use_effect(move || {
+            js_setup_follow_user_listener();
+        });
+    }
+
+    {
+        let mut follow_user = follow_user;
+        let mut user_orientation_up = user_orientation_up;
+        use_effect(move || {
+            spawn(async move {
+                loop {
+                    let enabled = js_read_follow_user_enabled().await;
+                    if *follow_user.read() != enabled {
+                        follow_user.set(enabled);
+                    }
+                    if !enabled && *user_orientation_up.read() {
+                        user_orientation_up.set(false);
+                        js_set_orientation_mode(false);
+                    }
+
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_timers::future::TimeoutFuture::new(100).await;
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            });
+        });
+    }
+
+    {
+        let user_orientation_up = user_orientation_up;
+        use_effect(move || {
+            js_set_orientation_mode(*user_orientation_up.read());
+        });
+    }
+
     let on_center_me = move |_| {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some((lat, lon)) = *user_gps.read() {
@@ -341,6 +402,49 @@ pub fn MapTab(
         } else {
             js_eval(r#"console.warn("No user location yet; cannot center.");"#);
         }
+    };
+
+    let on_toggle_follow_user = move |_| {
+        let next = !*follow_user.read();
+        follow_user.set(next);
+        js_set_follow_user(next);
+        if next {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some((lat, lon)) = *user_gps.read() {
+                js_center_on(lat, lon);
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            if let Some((lat, lon)) = js_cached_user_latlon()
+                .or_else(js_read_user_latlon_from_window)
+                .or_else(effective_user)
+            {
+                browser_user_gps.set(Some((lat, lon)));
+                js_center_on(lat, lon);
+            } else {
+                js_request_user_geolocation_once();
+            }
+        }
+    };
+
+    let on_toggle_orientation = move |_| {
+        let next = !*user_orientation_up.read();
+        user_orientation_up.set(next);
+        if next && !*follow_user.read() {
+            follow_user.set(true);
+            js_set_follow_user(true);
+        }
+        js_set_orientation_mode(next);
+    };
+
+    let on_rotate_left = move |_| {
+        user_orientation_up.set(false);
+        js_adjust_map_bearing(-15.0);
+    };
+
+    let on_rotate_right = move |_| {
+        user_orientation_up.set(false);
+        js_adjust_map_bearing(15.0);
     };
 
     let on_toggle_fullscreen = move |_| {
@@ -391,6 +495,34 @@ pub fn MapTab(
                             onclick: on_center_me,
                             "{translate_text(\"Center on Me\")}"
                         }
+                        button {
+                            style: "{follow_button_style}",
+                            onclick: on_toggle_follow_user,
+                            if *follow_user.read() {
+                                "{translate_text(\"Auto Center On\")}"
+                            } else {
+                                "{translate_text(\"Auto Center Off\")}"
+                            }
+                        }
+                        button {
+                            style: "{orientation_button_style}",
+                            onclick: on_toggle_orientation,
+                            if *user_orientation_up.read() {
+                                "{translate_text(\"User Up\")}"
+                            } else {
+                                "{translate_text(\"North Up\")}"
+                            }
+                        }
+                        button {
+                            style: "{neutral_button_style}",
+                            onclick: on_rotate_left,
+                            "{translate_text(\"Rotate Left\")}"
+                        }
+                        button {
+                            style: "{neutral_button_style}",
+                            onclick: on_rotate_right,
+                            "{translate_text(\"Rotate Right\")}"
+                        }
                         if cfg!(target_os = "ios") && *show_enable_compass.read() {
                             button {
                                 style: "{warning_button_style}",
@@ -431,6 +563,34 @@ pub fn MapTab(
                         style: "{primary_button_style}",
                         onclick: on_center_me,
                         "{translate_text(\"Center on Me\")}"
+                    }
+                    button {
+                        style: "{follow_button_style}",
+                        onclick: on_toggle_follow_user,
+                        if *follow_user.read() {
+                            "{translate_text(\"Auto Center On\")}"
+                        } else {
+                            "{translate_text(\"Auto Center Off\")}"
+                        }
+                    }
+                    button {
+                        style: "{orientation_button_style}",
+                        onclick: on_toggle_orientation,
+                        if *user_orientation_up.read() {
+                            "{translate_text(\"User Up\")}"
+                        } else {
+                            "{translate_text(\"North Up\")}"
+                        }
+                    }
+                    button {
+                        style: "{neutral_button_style}",
+                        onclick: on_rotate_left,
+                        "{translate_text(\"Rotate Left\")}"
+                    }
+                    button {
+                        style: "{neutral_button_style}",
+                        onclick: on_rotate_right,
+                        "{translate_text(\"Rotate Right\")}"
                     }
                     if cfg!(target_os = "ios") && *show_enable_compass.read() {
                         button {
@@ -1021,6 +1181,138 @@ fn js_center_on(lat: f64, lon: f64) {
         "#,
         lat = lat,
         lon = lon
+    ));
+}
+
+fn js_set_follow_user(enabled: bool) {
+    let enabled_js = if enabled { "true" } else { "false" };
+    let enabled_str = if enabled { "\"true\"" } else { "\"false\"" };
+    let guard_js = if enabled { "Date.now() + 1500" } else { "0" };
+    js_eval(&format!(
+        r#"
+        (function() {{
+          try {{
+            window.__gs26_follow_user_enabled = {enabled_str};
+            window.__gs26_follow_user_enable_guard_until = {guard_js};
+            if (typeof window.setGroundMapFollowUser === "function") {{
+              window.setGroundMapFollowUser({enabled});
+            }}
+          }} catch (e) {{
+            console.warn("setGroundMapFollowUser threw:", e);
+          }}
+        }})();
+        "#,
+        enabled = enabled_js,
+        enabled_str = enabled_str,
+        guard_js = guard_js
+    ));
+}
+
+fn js_setup_follow_user_listener() {
+    js_eval(
+        r#"
+        (function() {
+          try {
+            if (window.__gs26_follow_listener_installed) return;
+            window.__gs26_follow_listener_installed = true;
+            window.addEventListener("gs26-follow-user-changed", function(evt) {
+              try {
+                window.__gs26_follow_user_enabled = (evt && evt.detail && evt.detail.enabled) ? "true" : "false";
+              } catch (e) {}
+            });
+          } catch (e) {}
+        })();
+        "#,
+    );
+}
+
+async fn js_read_follow_user_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_read_window_string("__gs26_follow_user_enabled")
+            .map(|value| {
+                if value == "true" {
+                    true
+                } else {
+                    js_read_window_string("__gs26_follow_user_enable_guard_until")
+                        .and_then(|guard| guard.parse::<f64>().ok())
+                        .is_some_and(|guard| guard > js_now_ms())
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let eval = dioxus::document::eval(
+            r#"
+            (function() {
+              try {
+                const enabled = String(window.__gs26_follow_user_enabled ?? "false") === "true";
+                const guard = Number(window.__gs26_follow_user_enable_guard_until || 0);
+                return String(enabled || (Number.isFinite(guard) && guard > Date.now()));
+              } catch (e) {
+                return "false";
+              }
+            })()
+            "#,
+        );
+        eval.join::<String>()
+            .await
+            .map(|value| value == "true")
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_now_ms() -> f64 {
+    js_eval(
+        r#"
+        (function() {
+          try {
+            window.__gs26_tmp_now_ms = Date.now();
+          } catch (e) {
+            window.__gs26_tmp_now_ms = 0;
+          }
+        })();
+        "#,
+    );
+    js_read_window_f64("__gs26_tmp_now_ms").unwrap_or(0.0)
+}
+
+fn js_set_orientation_mode(user_up: bool) {
+    let mode = if user_up { "user" } else { "north" };
+    js_eval(&format!(
+        r#"
+        (function() {{
+          try {{
+            window.__gs26_map_orientation_mode = {mode:?};
+            if (typeof window.setGroundMapOrientationMode === "function") {{
+              window.setGroundMapOrientationMode({mode:?});
+            }}
+          }} catch (e) {{
+            console.warn("setGroundMapOrientationMode threw:", e);
+          }}
+        }})();
+        "#,
+        mode = mode
+    ));
+}
+
+fn js_adjust_map_bearing(delta_deg: f64) {
+    js_eval(&format!(
+        r#"
+        (function() {{
+          try {{
+            if (typeof window.adjustGroundMapBearing === "function") {{
+              window.adjustGroundMapBearing({delta});
+            }}
+          }} catch (e) {{
+            console.warn("adjustGroundMapBearing threw:", e);
+          }}
+        }})();
+        "#,
+        delta = delta_deg
     ));
 }
 

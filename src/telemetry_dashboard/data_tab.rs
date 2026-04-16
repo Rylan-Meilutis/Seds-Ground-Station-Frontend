@@ -308,9 +308,17 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         format!("Show subtabs ({label})")
     };
     let summary_content = if !summary_items.is_empty() {
+        let grid_style = if summary_items.len() == 1 {
+            "display:grid; gap:10px; align-items:stretch; grid-template-columns:minmax(0, min(220px, 100%)); justify-content:start; width:100%; min-width:0;".to_string()
+        } else {
+            let column_count = summary_items.len().clamp(1, 4);
+            format!(
+                "display:grid; gap:10px; align-items:stretch; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); width:100%; min-width:0;"
+            )
+        };
         rsx! {
             div {
-                style: "display:grid; gap:10px; align-items:stretch; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); width:100%;",
+                style: "{grid_style}",
                 for (i, item) in summary_items.iter().enumerate() {
                     SummaryCard {
                         label: translate_text(&item.label),
@@ -330,9 +338,18 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
             },
             Some(row) => {
                 let vals = &row.values;
+                let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
+                let grid_style = if visible_label_count == 1 {
+                    "display:grid; gap:10px; align-items:stretch; grid-template-columns:minmax(0, min(220px, 100%)); justify-content:start; width:100%; min-width:0;".to_string()
+                } else {
+                    let column_count = visible_label_count.clamp(1, 4);
+                    format!(
+                        "display:grid; gap:10px; align-items:stretch; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); width:100%; min-width:0;"
+                    )
+                };
                 rsx! {
                     div {
-                        style: "display:grid; gap:10px; align-items:stretch; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); width:100%;",
+                        style: "{grid_style}",
                         for (i, label) in labels.iter().enumerate() {
                             if !label.is_empty() {
                                 SummaryCard {
@@ -364,7 +381,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
             "{DATA_TAB_RESPONSIVE_CSS}"
         }
         div {
-            style: "padding:8px 0 8px 0; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px; --gs26-data-toggle-background:{theme.tab_shell_background}; --gs26-data-toggle-border:{theme.tab_shell_border}; --gs26-data-toggle-text:{theme.button_text};",
+            style: "padding:8px 0 8px 0; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px; --gs26-data-toggle-background:{theme.tab_shell_background}; --gs26-data-toggle-border:{theme.tab_shell_border}; --gs26-data-toggle-text:{theme.button_text};",
 
             div { style: "display:flex; flex-direction:column; gap:6px; width:100%; min-width:0; align-self:stretch;",
 

@@ -90,22 +90,25 @@ pub fn StateTab(
 
     let content = if let Some(state_layout) = visible_state_layout.as_ref() {
         rsx! {
-            for section in state_layout.sections.iter() {
-                {render_state_section(
-                    section,
-                    &boards_snapshot,
-                    &data_layout,
-                    &actions_snapshot,
-                    &action_policy_snapshot,
-                    default_valve_labels.as_ref(),
-                    rocket_gps,
-                    user_gps,
-                    fill_targets,
-                    abort_only_mode,
-                    state_chart_labels_vertical,
-                    &theme,
-                    use_layout_theme_overrides,
-                )}
+            for (section_idx, section) in state_layout.sections.iter().enumerate() {
+                div { key: "state-section-{section_idx}-{section.title.as_deref().unwrap_or_default()}",
+                    style: "display:contents;",
+                    {render_state_section(
+                        section,
+                        &boards_snapshot,
+                        &data_layout,
+                        &actions_snapshot,
+                        &action_policy_snapshot,
+                        default_valve_labels.as_ref(),
+                        rocket_gps,
+                        user_gps,
+                        fill_targets,
+                        abort_only_mode,
+                        state_chart_labels_vertical,
+                        &theme,
+                        use_layout_theme_overrides,
+                    )}
+                }
             }
         }
     } else {
@@ -113,7 +116,7 @@ pub fn StateTab(
     };
 
     rsx! {
-        div { style: "padding:10px 12px; height:100%; width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:10px; padding-bottom:100px;",
+        div { style: "padding:10px 12px; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:10px; padding-bottom:100px;",
             {content}
         }
     }
@@ -199,7 +202,7 @@ fn render_state_section(
         .unwrap_or_else(|| translate_text("Section"));
     let horizontal_values = section_uses_horizontal_values(section);
     let content_style = if horizontal_values {
-        "display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:6px; align-items:start; width:100%; min-width:0;"
+        "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap:6px; align-items:start; width:100%; min-width:0;"
     } else {
         "display:flex; flex-direction:column; gap:0; width:100%; min-width:0;"
     };
@@ -207,8 +210,10 @@ fn render_state_section(
     rsx! {
         Section { title: title, style: section.style.clone(), theme: theme.clone(), use_layout_theme_overrides: use_layout_theme_overrides,
             div { style: "{content_style}",
-                for widget in section.widgets.iter() {
-                    div { style: state_widget_container_style(widget, horizontal_values),
+                for (widget_idx, widget) in section.widgets.iter().enumerate() {
+                    div {
+                        key: "state-widget-{widget_idx}-{widget.data_type.as_deref().unwrap_or_default()}-{widget.chart_title.as_deref().unwrap_or_default()}",
+                        style: state_widget_container_style(widget, horizontal_values),
                         {render_state_widget(
                             widget,
                             boards,
@@ -223,6 +228,7 @@ fn render_state_section(
                             state_chart_labels_vertical,
                             theme,
                             use_layout_theme_overrides,
+                            horizontal_values,
                         )}
                     }
                 }
@@ -234,7 +240,10 @@ fn render_state_section(
 fn state_widget_container_style(widget: &StateWidget, horizontal_values: bool) -> &'static str {
     let summary_item_count = widget.items.as_ref().map_or(0, Vec::len);
     let valve_item_count = widget.valves.as_ref().map_or(0, Vec::len);
-    if widget.full_width
+    let single_horizontal_value = horizontal_values
+        && ((widget.kind == StateWidgetKind::Summary && summary_item_count <= 1)
+            || (widget.kind == StateWidgetKind::ValveState && valve_item_count <= 1));
+    if (widget.full_width && !single_horizontal_value)
         || widget.kind == StateWidgetKind::Actions
         || (horizontal_values && widget.kind == StateWidgetKind::Summary && summary_item_count > 1)
         || (horizontal_values && widget.kind == StateWidgetKind::ValveState && valve_item_count > 1)
@@ -247,7 +256,7 @@ fn state_widget_container_style(widget: &StateWidget, horizontal_values: bool) -
     {
         "grid-column:span 2; min-width:0; width:100%;"
     } else {
-        "min-width:0; width:100%;"
+        "grid-column:auto / span 1; min-width:0; width:100%;"
     }
 }
 
@@ -280,6 +289,7 @@ fn render_state_widget(
     state_chart_labels_vertical: bool,
     theme: &ThemeConfig,
     use_layout_theme_overrides: bool,
+    horizontal_values: bool,
 ) -> Element {
     match widget.kind {
         StateWidgetKind::BoardStatus => rsx! { {board_status_table(boards, theme)} },
@@ -299,6 +309,7 @@ fn render_state_widget(
                     widget.summary_style.as_ref(),
                     theme,
                     use_layout_theme_overrides,
+                    horizontal_values,
                 )} }
             }
         }
@@ -1313,6 +1324,7 @@ fn summary_row(
     style: Option<&SummaryCardStyle>,
     theme: &ThemeConfig,
     use_layout_theme_overrides: bool,
+    fill_parent_single: bool,
 ) -> Element {
     let want_minmax = dt.is_some();
 
@@ -1334,9 +1346,17 @@ fn summary_row(
             )
         })
         .collect::<Vec<_>>();
+    let grid_style = if latest.len() == 1 && !fill_parent_single {
+        "display:grid; gap:6px; margin-bottom:0; grid-template-columns:minmax(0, min(220px, 100%)); justify-content:start; width:100%; min-width:0; align-items:stretch;".to_string()
+    } else {
+        let column_count = latest.len().clamp(1, 4);
+        format!(
+            "display:grid; gap:6px; margin-bottom:0; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); width:100%; min-width:0; align-items:stretch;"
+        )
+    };
 
     rsx! {
-        div { style: "display:grid; gap:6px; margin-bottom:0; grid-template-columns:repeat(auto-fit, minmax(112px, 1fr)); width:100%;",
+        div { style: "{grid_style}",
             for (label, idx, value, target, formatter) in latest {
                 SummaryCard {
                     label: translate_text(&label),

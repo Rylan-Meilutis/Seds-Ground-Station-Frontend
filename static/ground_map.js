@@ -24,6 +24,11 @@ let tileCacheSweepTimer = null;
 let tilePrefetchTimer = null;
 let currentPrefetchKey = null;
 let tilePrefetchRunId = 0;
+let followUserEnabled = false;
+let orientationMode = "north";
+let mapBearingDeg = 0;
+let suppressFollowDisableUntilMs = 0;
+let followEnableGuardUntilMs = 0;
 let tilePrefetchState = {
     key: "",
     state: "idle",
@@ -133,6 +138,158 @@ function applyFusedHeading() {
     }
 
     updateUserMarkerRotation();
+    if (followUserEnabled && orientationMode === "user") {
+        mapBearingDeg = normalizeAngle(userHeadingDeg);
+        persistMapState();
+        applyMapOrientation();
+    }
+}
+
+function markerCounterRotationDeg() {
+    return normalizeAngle(mapBearingDeg);
+}
+
+function updateMarkerCounterRotation(marker) {
+    if (!marker) return;
+    const el = marker.getElement();
+    if (!el) return;
+    const wrapper = el.querySelector(".user-marker-wrapper");
+    if (!wrapper) return;
+    wrapper.style.transform = `rotate(${markerCounterRotationDeg()}deg)`;
+}
+
+function updateAllMarkerCounterRotation() {
+    updateMarkerCounterRotation(rocketMarker);
+    updateMarkerCounterRotation(userMarker);
+    updateUserMarkerRotation();
+}
+
+function applyMapOrientation() {
+    if (!groundMap) return;
+    const pane = groundMap.getPane && groundMap.getPane("mapPane");
+    if (!pane) return;
+
+    const rotateDeg = normalizeAngle(mapBearingDeg);
+
+    pane.style.transformOrigin = "50% 50%";
+    pane.style.rotate = rotateDeg ? `${-rotateDeg}deg` : "";
+    updateAllMarkerCounterRotation();
+}
+
+function markerVisualCenter(marker) {
+    if (!marker) return null;
+    const el = marker.getElement();
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return null;
+    return {
+        x: rect.left + rect.width / 2.0,
+        y: rect.top + rect.height / 2.0,
+    };
+}
+
+function mapVisualCenter() {
+    if (!groundMap) return null;
+    const container = groundMap.getContainer();
+    if (!container) return null;
+    const rect = container.getBoundingClientRect();
+    if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return null;
+    return {
+        x: rect.left + rect.width / 2.0,
+        y: rect.top + rect.height / 2.0,
+    };
+}
+
+function correctVisualCenterOnMarker(marker, attemptsLeft = 4) {
+    if (!groundMap || !marker || attemptsLeft <= 0) return;
+    requestAnimationFrame(() => {
+        try {
+            const markerCenter = markerVisualCenter(marker);
+            const center = mapVisualCenter();
+            if (!markerCenter || !center) return;
+            const dx = markerCenter.x - center.x;
+            const dy = markerCenter.y - center.y;
+            if (Math.abs(dx) > 1.0 || Math.abs(dy) > 1.0) {
+                suppressFollowDisableUntilMs = Date.now() + 750;
+                groundMap.panBy([dx, dy], {animate: false});
+                correctVisualCenterOnMarker(marker, attemptsLeft - 1);
+            }
+        } catch (e) {
+        }
+    });
+}
+
+function setGroundMapOrientationMode(mode) {
+    orientationMode = mode === "user" ? "user" : (mode === "manual" ? "manual" : "north");
+    if (orientationMode === "north") {
+        mapBearingDeg = 0;
+    } else if (orientationMode === "user" && followUserEnabled && Number.isFinite(userHeadingDeg)) {
+        mapBearingDeg = normalizeAngle(userHeadingDeg);
+    }
+    persistMapState();
+    applyMapOrientation();
+}
+
+function adjustGroundMapBearing(deltaDeg) {
+    const delta = Number(deltaDeg);
+    if (!Number.isFinite(delta)) return;
+    orientationMode = "manual";
+    mapBearingDeg = normalizeAngle(mapBearingDeg + delta);
+    persistMapState();
+    applyMapOrientation();
+}
+
+function setGroundMapBearing(deg) {
+    if (!Number.isFinite(deg)) return;
+    orientationMode = "manual";
+    mapBearingDeg = normalizeAngle(deg);
+    persistMapState();
+    applyMapOrientation();
+}
+
+function setGroundMapFollowUser(enabled) {
+    followUserEnabled = enabled === true;
+    followEnableGuardUntilMs = followUserEnabled ? Date.now() + 1500 : 0;
+    try {
+        window.__gs26_follow_user_enabled = followUserEnabled ? "true" : "false";
+        window.__gs26_follow_user_enable_guard_until = followEnableGuardUntilMs;
+        window.dispatchEvent(new CustomEvent("gs26-follow-user-changed", {
+            detail: {enabled: followUserEnabled}
+        }));
+    } catch (e) {
+    }
+    if (followUserEnabled && groundMap && lastUserLatLng) {
+        suppressFollowDisableUntilMs = Date.now() + 750;
+        groundMap.setView(lastUserLatLng, groundMap.getZoom(), {animate: false});
+        correctVisualCenterOnMarker(userMarker);
+        scheduleHighResTilePrefetch();
+    }
+    if (followUserEnabled && orientationMode === "user" && Number.isFinite(userHeadingDeg)) {
+        mapBearingDeg = normalizeAngle(userHeadingDeg);
+    }
+    persistMapState();
+    applyMapOrientation();
+}
+
+function disableFollowUserFromMapInteraction() {
+    if (Date.now() < suppressFollowDisableUntilMs) return;
+    if (!followUserEnabled) return;
+    followUserEnabled = false;
+    followEnableGuardUntilMs = 0;
+    if (orientationMode === "user") {
+        orientationMode = "manual";
+    }
+    persistMapState();
+    try {
+        window.__gs26_follow_user_enabled = "false";
+        window.__gs26_follow_user_enable_guard_until = 0;
+        window.__gs26_map_orientation_mode = orientationMode;
+        window.dispatchEvent(new CustomEvent("gs26-follow-user-changed", {
+            detail: {enabled: false}
+        }));
+    } catch (e) {
+    }
+    applyMapOrientation();
 }
 
 // ============================================================================
@@ -150,6 +307,7 @@ function ensureMarkerStylesOnce() {
       width: ${MARKER_PX}px;
       height: ${MARKER_PX}px;
       pointer-events: none;
+      transform-origin: 50% 50%;
     }
 
     .emoji-marker {
@@ -192,6 +350,16 @@ function tileCacheSupported() {
     return typeof window !== "undefined"
         && typeof window.caches !== "undefined"
         && typeof window.fetch === "function";
+}
+
+function requestPersistentTileStorage() {
+    try {
+        if (!navigator.storage || typeof navigator.storage.persist !== "function") return;
+        if (window.__gs26_tile_storage_persist_requested) return;
+        window.__gs26_tile_storage_persist_requested = true;
+        navigator.storage.persist().catch(() => {});
+    } catch (e) {
+    }
 }
 
 function tileCacheName(tilesUrl) {
@@ -322,6 +490,44 @@ function setTilePrefetchState(next) {
     } catch (e) {
     }
 }
+
+const MAP_STATE_STORAGE_KEY = "gs26_ground_map_state_v2";
+
+function loadPersistedMapState() {
+    try {
+        if (!window.localStorage) return;
+        const raw = window.localStorage.getItem(MAP_STATE_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (Number.isFinite(parsed.lat) && Number.isFinite(parsed.lon) && Number.isFinite(parsed.zoom)) {
+            lastMapView = {lat: parsed.lat, lon: parsed.lon, zoom: parsed.zoom};
+        }
+        if (parsed.orientationMode === "manual" || parsed.orientationMode === "user" || parsed.orientationMode === "north") {
+            orientationMode = parsed.orientationMode;
+        }
+        if (Number.isFinite(parsed.bearingDeg)) {
+            mapBearingDeg = normalizeAngle(parsed.bearingDeg);
+        }
+    } catch (e) {
+    }
+}
+
+function persistMapState() {
+    try {
+        if (!window.localStorage) return;
+        const payload = {
+            lat: lastMapView && Number.isFinite(lastMapView.lat) ? lastMapView.lat : null,
+            lon: lastMapView && Number.isFinite(lastMapView.lon) ? lastMapView.lon : null,
+            zoom: lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : null,
+            orientationMode,
+            bearingDeg: mapBearingDeg,
+        };
+        window.localStorage.setItem(MAP_STATE_STORAGE_KEY, JSON.stringify(payload));
+    } catch (e) {
+    }
+}
+
+loadPersistedMapState();
 
 function expandBoundsByRadius(bounds, radiusM) {
     if (!bounds) return null;
@@ -643,6 +849,7 @@ function rememberMapView() {
     if (!groundMap) return;
     const c = groundMap.getCenter();
     lastMapView = {lat: c.lat, lon: c.lng, zoom: groundMap.getZoom()};
+    persistMapState();
 }
 
 // ============================================================================
@@ -691,8 +898,9 @@ function updateUserMarkerRotation() {
     const arrow = el.querySelector(".user-heading-indicator");
     if (!arrow) return;
 
+    const relativeHeading = normalizeAngle(userHeadingDeg - mapBearingDeg);
     arrow.style.transform =
-        `translate(-50%, -50%) rotate(${userHeadingDeg}deg) translateY(-${ARROW_RADIUS}px)`;
+        `translate(-50%, -50%) rotate(${relativeHeading}deg) translateY(-${ARROW_RADIUS}px)`;
 }
 
 function setGroundMapUserHeading(deg) {
@@ -802,7 +1010,10 @@ function initCompassOnce() {
 
 function centerGroundMapOn(lat, lon) {
     if (!groundMap) return;
-    groundMap.setView([lat, lon], groundMap.getZoom());
+    suppressFollowDisableUntilMs = Date.now() + 750;
+    groundMap.setView([lat, lon], groundMap.getZoom(), {animate: false});
+    applyMapOrientation();
+    correctVisualCenterOnMarker(userMarker);
     scheduleHighResTilePrefetch();
 }
 
@@ -818,6 +1029,7 @@ function trackedAssetTitle() {
 function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, assetTitle) {
     const L = getLeaflet();
     ensureMarkerStylesOnce();
+    requestPersistentTileStorage();
     initCompassOnce();
     window.__gs26_tracked_asset_title = assetTitle || trackedAssetTitle();
     const effectiveMaxNativeZoom = clampMaxNativeZoom(maxNativeZoom);
@@ -903,7 +1115,18 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     groundMap.on("moveend zoomend", () => {
         rememberMapView();
         scheduleHighResTilePrefetch();
+        applyMapOrientation();
     });
+    groundMap.on("dragstart zoomstart", disableFollowUserFromMapInteraction);
+    groundMap.on("move zoom", applyMapOrientation);
+    try {
+        const container = groundMap.getContainer();
+        if (container && !container.__gs26_follow_disable_hooks) {
+            container.__gs26_follow_disable_hooks = true;
+            container.addEventListener("wheel", disableFollowUserFromMapInteraction, {passive: true});
+        }
+    } catch (e) {
+    }
     rememberMapView();
     window.__gs26_ground_map = groundMap;
 
@@ -912,6 +1135,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
             icon: makeEmojiIcon("🚀", "rocket-marker"),
             title: trackedAssetTitle(),
         }).addTo(groundMap);
+        updateMarkerCounterRotation(rocketMarker);
     }
 
     if (lastUserLatLng) {
@@ -919,10 +1143,11 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
             icon: makeUserIcon(),
             title: "You",
         }).addTo(groundMap);
-        updateUserMarkerRotation();
+        updateMarkerCounterRotation(userMarker);
     }
 
     syncRocketGuideLine(lastRocketLatLng, lastUserLatLng);
+    applyMapOrientation();
     scheduleHighResTilePrefetch();
 }
 
@@ -947,6 +1172,7 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
                 icon: makeEmojiIcon("🚀", "rocket-marker"),
                 title: trackedAssetTitle(),
             }).addTo(groundMap);
+            updateMarkerCounterRotation(rocketMarker);
         } else {
             rocketMarker.setLatLng(lastRocketLatLng);
         }
@@ -958,13 +1184,19 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
                 icon: makeUserIcon(),
                 title: "You",
             }).addTo(groundMap);
-            updateUserMarkerRotation();
+            updateMarkerCounterRotation(userMarker);
         } else {
             userMarker.setLatLng(lastUserLatLng);
+        }
+        if (followUserEnabled) {
+            suppressFollowDisableUntilMs = Date.now() + 750;
+            groundMap.setView(lastUserLatLng, groundMap.getZoom(), {animate: false});
+            correctVisualCenterOnMarker(userMarker);
         }
     }
 
     syncRocketGuideLine(hasRocket ? lastRocketLatLng : null, hasUser ? lastUserLatLng : null);
+    applyMapOrientation();
     if (hasUser || hasRocket) {
         scheduleHighResTilePrefetch();
     }
@@ -981,6 +1213,11 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     api.centerGroundMapOn = centerGroundMapOn;
     api.getLastUserLatLng = getLastUserLatLng;
     api.scheduleHighResTilePrefetch = scheduleHighResTilePrefetch;
+    api.setGroundMapFollowUser = setGroundMapFollowUser;
+    api.setGroundMapOrientationMode = setGroundMapOrientationMode;
+    api.disableFollowUserFromMapInteraction = disableFollowUserFromMapInteraction;
+    api.adjustGroundMapBearing = adjustGroundMapBearing;
+    api.setGroundMapBearing = setGroundMapBearing;
 
     // Optional: expose these too (useful for debugging / permissions testing)
     api.initCompassOnce = initCompassOnce;
@@ -999,6 +1236,7 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     api.makeUserIcon = makeUserIcon;
     api.updateUserMarkerRotation = updateUserMarkerRotation;
     api.setGroundMapUserHeading = setGroundMapUserHeading;
+    api.applyMapOrientation = applyMapOrientation;
     api.syncRocketGuideLine = syncRocketGuideLine;
 
     // Pin state too (lets you debug on-device):
@@ -1030,6 +1268,15 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
         get lastUserLatLng() {
             return lastUserLatLng;
         },
+        get followUserEnabled() {
+            return followUserEnabled;
+        },
+        get orientationMode() {
+            return orientationMode;
+        },
+        get mapBearingDeg() {
+            return mapBearingDeg;
+        },
         get lastMapView() {
             return lastMapView;
         },
@@ -1053,6 +1300,10 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     window.getLastUserLatLng = api.getLastUserLatLng;
     window.initCompassOnce = api.initCompassOnce;
     window.setGroundMapUserHeading = api.setGroundMapUserHeading;
+    window.setGroundMapFollowUser = api.setGroundMapFollowUser;
+    window.setGroundMapOrientationMode = api.setGroundMapOrientationMode;
+    window.adjustGroundMapBearing = api.adjustGroundMapBearing;
+    window.setGroundMapBearing = api.setGroundMapBearing;
     window.scheduleHighResTilePrefetch = api.scheduleHighResTilePrefetch;
 
     // “Loaded” flag

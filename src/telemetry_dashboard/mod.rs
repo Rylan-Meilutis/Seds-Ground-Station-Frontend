@@ -87,8 +87,10 @@ static TRANSLATION_MISS_QUEUE: Lazy<Mutex<HashSet<String>>> =
     Lazy::new(|| Mutex::new(HashSet::new()));
 static TRANSLATION_REQUEST_ACTIVE: AtomicBool = AtomicBool::new(false);
 static LAST_COMMAND_ACTIVATION: Lazy<Mutex<Option<(String, f64)>>> = Lazy::new(|| Mutex::new(None));
+static PENDING_COMMAND_PRESS: Lazy<Mutex<Option<(String, f64)>>> = Lazy::new(|| Mutex::new(None));
 
 const COMMAND_ACTIVATION_DEDUP_MS: f64 = 450.0;
+const COMMAND_MAX_PRESS_RELEASE_MS: f64 = 650.0;
 
 // ============================================================================
 // Dashboard lifetime: STATIC + ALWAYS PRESENT (never Option)
@@ -815,6 +817,12 @@ fn builtin_translation_es(text: &str) -> Option<&'static str> {
         "Collapse" => "Colapsar",
         "Expand" => "Expandir",
         "Center on Me" => "Centrar en mí",
+        "Auto Center On" => "Autocentrado activado",
+        "Auto Center Off" => "Autocentrado desactivado",
+        "User Up" => "Usuario arriba",
+        "North Up" => "Norte arriba",
+        "Rotate Left" => "Girar a la izquierda",
+        "Rotate Right" => "Girar a la derecha",
         "Enable Compass" => "Activar brújula",
         "Distance" => "Distancia",
         "Board Status" => "Estado de placas",
@@ -880,6 +888,13 @@ fn builtin_translation_fr(text: &str) -> Option<&'static str> {
         "Target pressure (psi)" => "Pression cible (psi)",
         "Fullscreen" => "Plein écran",
         "Exit Fullscreen" => "Quitter le plein écran",
+        "Center on Me" => "Me centrer",
+        "Auto Center On" => "Centrage auto activé",
+        "Auto Center Off" => "Centrage auto désactivé",
+        "User Up" => "Utilisateur en haut",
+        "North Up" => "Nord en haut",
+        "Rotate Left" => "Tourner à gauche",
+        "Rotate Right" => "Tourner à droite",
         "Close" | "Dismiss" => "Fermer",
         _ => return None,
     })
@@ -3638,7 +3653,7 @@ fn TelemetryDashboardInner() -> Element {
                     div {
                         style: "
                     height:var(--gs26-app-height);
-                    padding:24px;
+                    padding:clamp(8px, 2.5vw, 24px);
                     color:var(--gs26-app-text);
                     font-family:system-ui, -apple-system, BlinkMacSystemFont;
                     background:var(--gs26-app-background);
@@ -3662,7 +3677,7 @@ fn TelemetryDashboardInner() -> Element {
                     div {
                         style: "
                     height:var(--gs26-app-height);
-                    padding:24px;
+                    padding:clamp(8px, 2.5vw, 24px);
                     color:var(--gs26-app-text);
                     font-family:system-ui, -apple-system, BlinkMacSystemFont;
                     background:var(--gs26-app-background);
@@ -3690,12 +3705,14 @@ fn TelemetryDashboardInner() -> Element {
 
                     style: "
                 height:var(--gs26-app-height);
-                padding:24px;
+                padding:clamp(8px, 2.5vw, 24px);
                 color:var(--gs26-app-text);
                 font-family:system-ui, -apple-system, BlinkMacSystemFont;
                 background:var(--gs26-app-background);
                 display:flex;
                 flex-direction:column;
+                width:100%;
+                max-width:100%;
                 border:{border_style};
                 box-shadow:{shell_alert_effect};
                 box-sizing:border-box;
@@ -4230,10 +4247,10 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
 
-                    div { style: "flex:1; min-height:0; overflow:hidden;",
+                    div { style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                         match *active_main_tab.read() {
                             MainTab::State => rsx! {
-                                div { style: "height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
+                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
                                         StateTab {
                                             flight_state: flight_state,
                                             board_status: board_status,
@@ -4275,7 +4292,7 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             },
                             MainTab::NetworkTopology => rsx! {
-                                div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
+                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     NetworkTopologyTab {
                                         topology: network_topology,
                                         layout: layout.network_tab.clone(),
@@ -4306,22 +4323,22 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             },
                             MainTab::Calibration => rsx! {
-                                div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
+                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     CalibrationTab { theme: theme.clone() }
                                 }
                             },
                             MainTab::Notifications => rsx! {
-                                div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
+                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     NotificationsTab { history: notification_history, theme: theme.clone() }
                                 }
                             },
                             MainTab::Warnings => rsx! {
-                                div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
+                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     WarningsTab { warnings: warnings, theme: theme.clone() }
                                 }
                             },
                             MainTab::Errors => rsx! {
-                                div { style: "height:100%; overflow-y:auto; overflow-x:hidden;",
+                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     ErrorsTab { errors: errors, theme: theme.clone() }
                                 }
                             },
@@ -4368,17 +4385,27 @@ fn should_send_command_activation(cmd: &str) -> bool {
 }
 
 pub(crate) fn send_cmd_from_press(cmd: &str) {
-    let Ok(mut last) = LAST_COMMAND_ACTIVATION.lock() else {
-        send_cmd(cmd);
+    let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
         return;
     };
-    *last = Some((cmd.to_string(), monotonic_now_ms()));
-    drop(last);
-    send_cmd(cmd);
+    *pending = Some((cmd.to_string(), monotonic_now_ms()));
+}
+
+fn should_send_command_release(cmd: &str) -> bool {
+    let now = monotonic_now_ms();
+    let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
+        return false;
+    };
+    let armed = pending.take().is_some_and(|(pending_cmd, started_ms)| {
+        pending_cmd == cmd && now - started_ms <= COMMAND_MAX_PRESS_RELEASE_MS
+    });
+    drop(pending);
+
+    armed && should_send_command_activation(cmd)
 }
 
 pub(crate) fn send_cmd_from_click(cmd: &str) {
-    if should_send_command_activation(cmd) {
+    if should_send_command_release(cmd) {
         send_cmd(cmd);
     }
 }
@@ -6004,7 +6031,7 @@ fn js_read_window_string(key: &str) -> Option<String> {
         (function() {{
           try {{
             const v = window[{key:?}];
-            window.__gs26_tmp_str = (typeof v === "string") ? v : "";
+            window.__gs26_tmp_str = (typeof v === "string" || typeof v === "boolean" || typeof v === "number") ? String(v) : "";
           }} catch (e) {{
             window.__gs26_tmp_str = "";
           }}
