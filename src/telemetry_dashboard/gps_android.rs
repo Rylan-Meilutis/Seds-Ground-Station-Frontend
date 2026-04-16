@@ -82,7 +82,7 @@ fn call_static_void(method: &str, sig: &str, args: &[JValue<'_>]) {
         }
         owned_args.extend_from_slice(args);
         if let Err(err) =
-            env.call_static_method(&class, &method, &parsed_sig.method_signature(), &owned_args)
+            env.call_static_method(&class, &method, parsed_sig.method_signature(), &owned_args)
         {
             eprintln!("Android bridge call {method_name} failed: {err}");
         }

@@ -49,9 +49,7 @@ fn btn_style(
     let opacity = action_opacity(blink_now_ms, enabled, recommended, blink, actuated);
     let filter = if !enabled {
         "grayscale(0.25) brightness(0.9)"
-    } else if actuated.unwrap_or(false) {
-        "none"
-    } else if recommended {
+    } else if actuated.unwrap_or(false) || recommended {
         "none"
     } else {
         "saturate(0.58) brightness(0.82)"

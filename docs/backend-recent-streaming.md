@@ -1,6 +1,6 @@
 # `/api/recent` Streaming Notes
 
-This document matches the current frontend implementation in version `0.3.1` (build `7`).
+This document matches the current frontend implementation in version `0.3.1` (build `11`).
 
 ## Compatibility Summary
 

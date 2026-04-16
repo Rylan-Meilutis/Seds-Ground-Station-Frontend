@@ -76,6 +76,21 @@ fn graph_viewport_style(
     )
 }
 
+fn link_adjacency_map(links: &[NetworkTopologyLink]) -> HashMap<String, Vec<String>> {
+    let mut adjacency = HashMap::<String, Vec<String>>::new();
+    for link in links {
+        adjacency
+            .entry(link.source.clone())
+            .or_default()
+            .push(link.target.clone());
+        adjacency
+            .entry(link.target.clone())
+            .or_default()
+            .push(link.source.clone());
+    }
+    adjacency
+}
+
 #[component]
 pub fn NetworkTopologyTab(
     topology: Signal<NetworkTopologyMsg>,
@@ -806,17 +821,7 @@ pub(crate) fn collect_endpoint_rows(
     links: &[NetworkTopologyLink],
 ) -> Vec<(String, Vec<String>)> {
     let mut by_endpoint = BTreeMap::<String, Vec<String>>::new();
-    let mut adjacency = BTreeMap::<String, Vec<String>>::new();
-    for link in links {
-        adjacency
-            .entry(link.source.clone())
-            .or_default()
-            .push(link.target.clone());
-        adjacency
-            .entry(link.target.clone())
-            .or_default()
-            .push(link.source.clone());
-    }
+    let adjacency = link_adjacency_map(links);
 
     for node in nodes {
         for endpoint in &node.endpoints {
@@ -858,7 +863,7 @@ pub(crate) fn collect_endpoint_rows(
 fn endpoint_route_owners(
     endpoint_node: &NetworkTopologyNode,
     nodes: &[NetworkTopologyNode],
-    adjacency: &BTreeMap<String, Vec<String>>,
+    adjacency: &HashMap<String, Vec<String>>,
     endpoint_name: &str,
 ) -> Vec<String> {
     let mut owners = Vec::new();
@@ -1382,7 +1387,7 @@ fn collapse_visible_links(
         let key = ordered_link_key(link.source.clone(), link.target.clone());
         collapsed
             .entry(key)
-            .and_modify(|existing| *existing = merge_link_status(*existing, link.status))
+            .and_modify(|existing| *existing = existing.merged(link.status))
             .or_insert(link.status);
     }
 
@@ -1416,21 +1421,21 @@ fn collapse_visible_links(
             let router_key = ordered_link_key(router.id.clone(), relay_id.clone());
             collapsed
                 .entry(router_key)
-                .and_modify(|existing| *existing = merge_link_status(*existing, relay_status))
+                .and_modify(|existing| *existing = existing.merged(relay_status))
                 .or_insert(relay_status);
 
             if relay_id != &node.id {
                 let branch_key = ordered_link_key(relay_id.clone(), node.id.clone());
                 collapsed
                     .entry(branch_key)
-                    .and_modify(|existing| *existing = merge_link_status(*existing, node.status))
+                    .and_modify(|existing| *existing = existing.merged(node.status))
                     .or_insert(node.status);
             }
         } else {
             let key = ordered_link_key(router.id.clone(), node.id.clone());
             collapsed
                 .entry(key)
-                .and_modify(|existing| *existing = merge_link_status(*existing, node.status))
+                .and_modify(|existing| *existing = existing.merged(node.status))
                 .or_insert(node.status);
         }
     }
@@ -1444,16 +1449,6 @@ fn collapse_visible_links(
             status,
         })
         .collect()
-}
-
-fn merge_link_status(a: NetworkTopologyStatus, b: NetworkTopologyStatus) -> NetworkTopologyStatus {
-    use NetworkTopologyStatus::{Offline, Online, Simulated};
-
-    match (a, b) {
-        (Offline, _) | (_, Offline) => Offline,
-        (Simulated, _) | (_, Simulated) => Simulated,
-        _ => Online,
-    }
 }
 
 fn ordered_link_key(a: String, b: String) -> (String, String) {
@@ -1515,19 +1510,9 @@ fn compute_graph_layout(
         };
     }
 
-    let mut adjacency = HashMap::<String, Vec<String>>::new();
+    let mut adjacency = link_adjacency_map(links);
     for node in nodes {
         adjacency.entry(node.id.clone()).or_default();
-    }
-    for link in links {
-        adjacency
-            .entry(link.source.clone())
-            .or_default()
-            .push(link.target.clone());
-        adjacency
-            .entry(link.target.clone())
-            .or_default()
-            .push(link.source.clone());
     }
 
     let root_id = nodes

@@ -655,12 +655,11 @@ fn current_host_scope() -> String {
 #[cfg(target_arch = "wasm32")]
 fn host_scope_for_base(base: &str) -> String {
     let mut scope = base.trim().trim_end_matches('/').to_ascii_lowercase();
-    if scope.is_empty() {
-        if let Some(window) = web_sys::window()
-            && let Ok(origin) = window.location().origin()
-        {
-            scope = origin.trim().trim_end_matches('/').to_ascii_lowercase();
-        }
+    if scope.is_empty()
+        && let Some(window) = web_sys::window()
+        && let Ok(origin) = window.location().origin()
+    {
+        scope = origin.trim().trim_end_matches('/').to_ascii_lowercase();
     }
     scope
 }

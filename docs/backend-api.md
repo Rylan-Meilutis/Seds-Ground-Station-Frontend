@@ -2,7 +2,7 @@
 
 This document describes the backend contract that the frontend currently expects.
 
-Verified against frontend version `0.3.1`, app build `7`, and the current Dioxus `0.7.4` codebase.
+Verified against frontend version `0.3.1`, app build `11`, and the current Dioxus `0.7.5` codebase.
 
 It is derived from the frontend source, not from an external OpenAPI spec. If you change the frontend route usage, update this file.
 
@@ -43,6 +43,7 @@ Command uplink:
 | `GET` | `/api/recent` | Telemetry history seed |
 | `GET` | `/api/alerts` | Warning/error history |
 | `GET` | `/api/map_config` | Map defaults |
+| `GET` | `/tiles/{z}/{x}/{y}.jpg` | Map tile source used by the built-in map |
 | `GET` | `/flightstate` | Current flight state string |
 | `GET` | `/api/gps` | Rocket GPS seed, can be null |
 | `GET` | `/api/auth/session` | Session status |
@@ -268,12 +269,35 @@ Response type:
 ```json
 {
   "max_native_zoom": 12,
+  "max_display_zoom": 13,
   "default_center_lat": 31.0,
   "default_center_lon": -99.0,
   "default_zoom": 7.0,
   "map_title": "Recovery Map",
   "tracked_asset_label": "Rocket"
 }
+```
+
+Notes:
+
+- `max_display_zoom` defaults to one level above `max_native_zoom` in the frontend if omitted.
+- blank or non-finite numeric values are sanitized by the frontend, but the backend should still send valid values.
+- the tile source itself is requested from `/tiles/{z}/{x}/{y}.jpg` on the configured host.
+
+### `GET /tiles/{z}/{x}/{y}.jpg`
+
+The frontend map loads raster tiles from this path by default.
+
+Notes:
+
+- serving standard `image/jpeg` tile responses is sufficient
+- a `404` for a specific missing tile is tolerated by the native connection tester
+- if you proxy an upstream tile source, keep this route shape stable for compatibility
+
+Example:
+
+```text
+GET /tiles/7/31/47.jpg
 ```
 
 ### `GET /api/boards`
@@ -295,16 +319,9 @@ Response type:
 }
 ```
 
-Known `sender_id` values inferred from the frontend:
+Notes:
 
-- `GS`
-- `FC`
-- `RF`
-- `PB`
-- `VB`
-- `GW`
-- `AB`
-- `DAQ`
+- `sender_id` is backend-defined. The frontend no longer assumes a fixed board list or a fixed sender-id enum.
 
 ### `GET /api/network_topology`
 

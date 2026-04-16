@@ -5,9 +5,9 @@ This repository contains the Dioxus-based frontend for the UBSEDS ground station
 Current release:
 
 - Frontend version: `0.3.1`
-- App build: `7`
-- Dioxus line: `0.7.4`
-- Targets: web, desktop, Android, iOS
+- App build: `11`
+- Dioxus line: `0.7.5`
+- Targets: web, macOS desktop, Android, iOS
 
 If your goal is to build a backend that works with this frontend, start here:
 
@@ -32,6 +32,7 @@ The app uses HTTP for:
 - layout/config fetches
 - auth
 - telemetry reseed/history loading
+- launch clock snapshots
 - calibration and setup editor writes
 - dismissing persistent notifications
 
@@ -50,11 +51,15 @@ The app uses WebSocket for:
 - Theme presets defined in JSON and compiled into the app at build time
 - Local Python theme editor for adding and editing theme presets
 - Global theme propagation across the full window shell and dashboard tabs
+- Native connect screen with route probing, TLS-skip testing, and WebSocket handshake diagnostics
 - Ground Station colors only apply when the selected preset is `backend`
 - Contrast normalization for text, buttons, alerts, and panel surfaces
 - Emergency `Abort` button always rendered in red regardless of theme or Ground Station palette
 - Telemetry reseed support using either a JSON array or native streamed NDJSON from `/api/recent`
 - Graph-level reseed status notices for running, success, and failure
+- Launch clock badge and launch clock synchronization from both HTTP and WebSocket updates
+- Network topology graph and endpoint ownership views
+- Built-in version page showing app/build/package runtime information
 - Localized UI support through translation catalog and on-demand translation routes
 - Ground Station / App wording in user-facing copy instead of internal `backend` / `frontend` terminology
 
@@ -66,6 +71,7 @@ A minimal backend should implement at least:
 - `GET /api/recent`
 - `GET /api/alerts`
 - `GET /api/map_config`
+- `GET /tiles/{z}/{x}/{y}.jpg`
 - `GET /flightstate`
 - `GET /api/gps`
 - `GET /api/auth/session`
@@ -76,6 +82,7 @@ A minimal backend should implement at least:
 For a more complete dashboard, also implement:
 
 - `GET /api/action_policy`
+- `GET /api/launch_clock`
 - `GET /api/network_time`
 - `GET /api/network_topology`
 - `GET /api/boards`
@@ -99,7 +106,7 @@ Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph e
 Web:
 
 ```bash
-cargo install dioxus-cli --version 0.7.0
+cargo install dioxus-cli --version 0.7.5
 dx serve
 ```
 
@@ -111,7 +118,7 @@ python3 build.py web
 
 Use `python3 build.py` for the full build helper usage.
 
-The codebase is currently pinned to Dioxus `0.7.4`. Any compatible `0.7.x` CLI is the safe choice; the helper also contains guards for patch-level CLI/runtime skew.
+The codebase is currently pinned to Dioxus `0.7.5`. Any compatible `0.7.x` CLI is the safe choice; the helper also contains guards for patch-level CLI/runtime skew.
 
 ## Android Build Notes
 
@@ -164,6 +171,7 @@ If you are implementing the backend streaming path, use [`docs/backend-recent-st
 - Route paths are hardcoded in the frontend. Matching them exactly is the easiest path to compatibility.
 - Some routes can safely return empty data structures. For example, `/api/recent` can return `[]` and `/api/gps` can return `{ "rocket": null }`.
 - `/api/recent` can also stream newline-delimited JSON rows on native builds for faster reseed startup.
+- The map uses `/tiles/{z}/{x}/{y}.jpg` by default. If you expose the map tab, provide that route or an equivalent reverse-proxied path.
 - WebSocket message tags are case-sensitive because they are deserialized from Rust enum variant names.
 - Commands are sent over WebSocket as JSON objects like `{ "cmd": "Abort" }`.
 - Layout drives a large part of the UI. If your backend returns a small valid layout, the frontend can still function without the full production config.

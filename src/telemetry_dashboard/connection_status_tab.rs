@@ -288,7 +288,7 @@ fn render_latency_chart(
     rsx! {
         div { style: "display:flex; flex-direction:column;",
             if let Some((kind, note)) = reseed_note.as_ref() {
-                {reseed_note_banner(*kind, note, theme, true)}
+                {reseed_note_banner(kind, note, theme, true)}
             }
             div { style: "position:relative; width:100%; aspect-ratio:{width}/{height};",
                 svg {
@@ -378,7 +378,7 @@ fn latency_empty_state(
     rsx! {
         div { style: "display:flex; flex-direction:column; gap:8px;",
             if let Some((kind, note)) = reseed_note {
-                {reseed_note_banner(*kind, note, theme, false)}
+                {reseed_note_banner(kind, note, theme, false)}
             }
             div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(message)}" }
         }

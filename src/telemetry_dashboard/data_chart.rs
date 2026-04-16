@@ -1,3 +1,5 @@
+#![allow(clippy::missing_const_for_thread_local)]
+
 // frontend/src/telemetry_dashboard/data_chart.rs
 //
 // Stable chart buckets (artifact-free):
@@ -114,10 +116,12 @@ const Y_SHRINK_ALPHA: f32 = 0.10; // used only during refit_pending
 const Y_PAD_FRAC: f32 = 0.06;
 const Y_MIN_PAD_ABS: f32 = 1.0;
 
+#[allow(dead_code)]
 pub fn charts_cache_request_refit() {
     CHARTS_CACHE.with(|c| c.borrow_mut().request_refit());
 }
 
+#[allow(dead_code)]
 pub fn charts_cache_clear_active() {
     CHARTS_CACHE.with(|c| {
         *c.borrow_mut() = ChartsCache::new();
@@ -215,7 +219,7 @@ pub fn charts_cache_get_subset_per_series(
     channels: &[usize],
     width: f32,
     height: f32,
-) -> (Rc<Vec<ChartRenderChunk>>, Rc<Vec<Option<(f32, f32)>>>, f32) {
+) -> PerSeriesChartCacheResult {
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         if let Some(chart) = c.charts.get_mut(data_type) {
@@ -230,7 +234,7 @@ pub fn charts_cache_get_multi_series_per_series(
     series: &[(String, usize)],
     width: f32,
     height: f32,
-) -> (Rc<Vec<ChartRenderChunk>>, Rc<Vec<Option<(f32, f32)>>>, f32) {
+) -> PerSeriesChartCacheResult {
     CHARTS_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
         let series_count = series.len();
@@ -363,6 +367,7 @@ impl ChartsCache {
         }
     }
 
+    #[allow(dead_code)]
     fn request_refit(&mut self) {
         for ch in self.charts.values_mut() {
             ch.request_refit();
@@ -495,6 +500,7 @@ impl CachedChart {
         }
     }
 
+    #[allow(dead_code)]
     fn request_refit(&mut self) {
         self.refit_pending = true;
         self.dirty = true;
@@ -1104,7 +1110,7 @@ impl CachedChart {
         channels: &[usize],
         w: f32,
         h: f32,
-    ) -> (Rc<Vec<ChartRenderChunk>>, Rc<Vec<Option<(f32, f32)>>>, f32) {
+    ) -> PerSeriesChartCacheResult {
         self.build_if_needed(w, h);
 
         if self.buckets.is_empty() || channels.is_empty() {
@@ -1286,7 +1292,7 @@ impl CachedChart {
 
 #[derive(Clone)]
 struct CachedSubset {
-    chunks: Rc<Vec<ChartRenderChunk>>,
+    chunks: ChartChunkList,
     y_min: f32,
     y_max: f32,
     span_min: f32,
@@ -1294,8 +1300,8 @@ struct CachedSubset {
 
 #[derive(Clone)]
 struct CachedSubsetPerSeries {
-    chunks: Rc<Vec<ChartRenderChunk>>,
-    series_scales: Rc<Vec<Option<(f32, f32)>>>,
+    chunks: ChartChunkList,
+    series_scales: SeriesScaleList,
     span_min: f32,
 }
 
@@ -1465,6 +1471,7 @@ fn push_segment_point(points: &mut Vec<(f32, f32)>, x: f32, y: f32) {
     push_curve_point_with_delta(points, x, y, CURVE_MIN_DELTA_PX);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bridge_or_mark_gap(
     paths: &mut [String],
     gap_paths: &mut [String],
@@ -1515,6 +1522,11 @@ pub struct ChartRenderChunk {
     pub signature: u64,
     pub live: bool,
 }
+
+type ChartChunkList = Rc<Vec<ChartRenderChunk>>;
+type SeriesScaleRange = Option<(f32, f32)>;
+type SeriesScaleList = Rc<Vec<SeriesScaleRange>>;
+type PerSeriesChartCacheResult = (ChartChunkList, SeriesScaleList, f32);
 
 #[derive(Serialize)]
 struct CanvasChartPayload<'a> {

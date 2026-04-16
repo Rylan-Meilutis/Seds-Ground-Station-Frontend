@@ -103,10 +103,10 @@ fn localstorage_get(key: &str) -> Option<String> {
 #[cfg(target_arch = "wasm32")]
 fn localstorage_set(key: &str, value: &str) {
     use web_sys::window;
-    if let Some(w) = window() {
-        if let Ok(Some(ls)) = w.local_storage() {
-            let _ = ls.set_item(key, value);
-        }
+    if let Some(w) = window()
+        && let Ok(Some(ls)) = w.local_storage()
+    {
+        let _ = ls.set_item(key, value);
     }
 }
 
@@ -132,6 +132,20 @@ fn restore_selection_from_localstorage(key: &str, selection: &mut Signal<String>
         return true;
     }
     false
+}
+
+fn use_persisted_selection(
+    key: &'static str,
+    selection: Signal<String>,
+    last_saved: Signal<String>,
+) {
+    use_effect({
+        let selection = selection;
+        let mut last_saved = last_saved;
+        move || {
+            persist_nonempty_selection(key, selection.read().clone(), &mut last_saved);
+        }
+    });
 }
 
 #[component]
@@ -174,18 +188,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     });
 
     // Persist whenever it changes (avoid rewriting same value)
-    use_effect({
-        let active_tab = active_tab;
-        let mut last_saved = last_saved;
-
-        move || {
-            persist_nonempty_selection(
-                _ACTIVE_TAB_STORAGE_KEY,
-                active_tab.read().clone(),
-                &mut last_saved,
-            );
-        }
-    });
+    use_persisted_selection(_ACTIVE_TAB_STORAGE_KEY, active_tab, last_saved);
 
     #[cfg(target_arch = "wasm32")]
     use_effect({
@@ -197,17 +200,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         }
     });
 
-    use_effect({
-        let active_subtab = active_subtab;
-        let mut last_saved_subtab = last_saved_subtab;
-        move || {
-            persist_nonempty_selection(
-                _ACTIVE_SUBTAB_STORAGE_KEY,
-                active_subtab.read().clone(),
-                &mut last_saved_subtab,
-            );
-        }
-    });
+    use_persisted_selection(_ACTIVE_SUBTAB_STORAGE_KEY, active_subtab, last_saved_subtab);
 
     // Layout-defined data types (for buttons)
     let types = layout.tabs.clone();
@@ -845,7 +838,7 @@ fn render_chart_group(
                     div { style: "font-size:13px; font-weight:600; color:{theme.text_primary};", "{translate_text(title)}" }
                 }
                 if let Some((kind, note)) = reseed_note.as_ref() {
-                    {reseed_note_banner(*kind, note, &theme, false)}
+                    {reseed_note_banner(kind, note, theme, false)}
                 }
                 div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No chart data yet.\")}" }
             }
@@ -896,7 +889,7 @@ fn render_chart_group(
                 div { style: "font-size:13px; font-weight:600; color:{theme.text_primary};", "{translate_text(title)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
-                {reseed_note_banner(*kind, note, &theme, false)}
+                {reseed_note_banner(kind, note, theme, false)}
             }
             div { style: "display:flex; gap:6px; align-items:stretch;",
                 if per_series_scale {

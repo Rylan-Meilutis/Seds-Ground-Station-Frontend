@@ -513,7 +513,7 @@ fn collapse_visible_links(
         };
         collapsed
             .entry(key)
-            .and_modify(|existing| *existing = merge_link_status(*existing, link.status))
+            .and_modify(|existing| *existing = existing.merged(link.status))
             .or_insert(link.status);
     }
 
@@ -528,16 +528,6 @@ fn collapse_visible_links(
             },
         )
         .collect()
-}
-
-fn merge_link_status(a: NetworkTopologyStatus, b: NetworkTopologyStatus) -> NetworkTopologyStatus {
-    use NetworkTopologyStatus::{Offline, Online, Simulated};
-
-    match (a, b) {
-        (Offline, _) | (_, Offline) => Offline,
-        (Simulated, _) | (_, Simulated) => Simulated,
-        _ => Online,
-    }
 }
 
 fn collect_board_route_rows(

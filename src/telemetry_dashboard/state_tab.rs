@@ -49,6 +49,39 @@ struct ScaleLabelPlacement {
     text: String,
 }
 
+type CombinedChartPayload = (
+    Vec<ChartRenderChunk>,
+    f32,
+    f32,
+    f32,
+    Vec<String>,
+    bool,
+    Vec<Option<(f32, f32)>>,
+);
+
+fn min_max_summary_text(min: Option<&str>, max: Option<&str>) -> Option<String> {
+    match (min, max) {
+        (Some(min), Some(max)) => Some(format!(
+            "{} {min} • {} {max}",
+            translate_text("min"),
+            translate_text("max")
+        )),
+        _ => None,
+    }
+}
+
+fn themed_value<'a>(
+    enabled: bool,
+    override_value: Option<&'a str>,
+    default_value: &'a str,
+) -> &'a str {
+    if enabled {
+        override_value.unwrap_or(default_value)
+    } else {
+        default_value
+    }
+}
+
 #[component]
 pub fn StateTab(
     flight_state: Signal<FlightState>,
@@ -152,30 +185,23 @@ fn Section(
     use_layout_theme_overrides: bool,
     children: Element,
 ) -> Element {
-    let background = if use_layout_theme_overrides {
+    let background = themed_value(
+        use_layout_theme_overrides,
+        style.as_ref().and_then(|style| style.background.as_deref()),
+        theme.panel_background.as_str(),
+    );
+    let border = themed_value(
+        use_layout_theme_overrides,
+        style.as_ref().and_then(|style| style.border.as_deref()),
+        theme.border.as_str(),
+    );
+    let title_color = themed_value(
+        use_layout_theme_overrides,
         style
             .as_ref()
-            .and_then(|style| style.background.as_deref())
-            .unwrap_or(theme.panel_background.as_str())
-    } else {
-        theme.panel_background.as_str()
-    };
-    let border = if use_layout_theme_overrides {
-        style
-            .as_ref()
-            .and_then(|style| style.border.as_deref())
-            .unwrap_or(theme.border.as_str())
-    } else {
-        theme.border.as_str()
-    };
-    let title_color = if use_layout_theme_overrides {
-        style
-            .as_ref()
-            .and_then(|style| style.title_color.as_deref())
-            .unwrap_or(theme.text_secondary.as_str())
-    } else {
-        theme.text_secondary.as_str()
-    };
+            .and_then(|style| style.title_color.as_deref()),
+        theme.text_secondary.as_str(),
+    );
 
     rsx! {
         div { style: "padding:10px; border:1px solid {border}; border-radius:12px; background:{background}; width:100%; box-sizing:border-box; min-width:0;",
@@ -623,7 +649,7 @@ fn data_style_chart_cached(
                 div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
-                {reseed_note_banner(*kind, note, theme, false)}
+                {reseed_note_banner(kind, note, theme, false)}
             }
 
             if chunks.is_empty() {
@@ -633,7 +659,7 @@ fn data_style_chart_cached(
                     ChartCanvas {
                         view_w: view_w,
                         view_h: view_h,
-                        chunks: chunks.into(),
+                        chunks: chunks,
                         grid_left: Some(left),
                         grid_right: Some(right),
                         grid_top: Some(top),
@@ -687,15 +713,7 @@ fn combined_chart_payload(
     view_w: f64,
     view_h: f64,
     _grid_left: f32,
-) -> Option<(
-    Vec<ChartRenderChunk>,
-    f32,
-    f32,
-    f32,
-    Vec<String>,
-    bool,
-    Vec<Option<(f32, f32)>>,
-)> {
+) -> Option<CombinedChartPayload> {
     let normalize_per_series = specs
         .iter()
         .map(|spec| spec.data_type.as_str())
@@ -766,7 +784,7 @@ fn combined_state_chart_cached(
                     div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
                 }
                 if let Some((kind, note)) = reseed_note.as_ref() {
-                    {reseed_note_banner(*kind, note, theme, false)}
+                    {reseed_note_banner(kind, note, theme, false)}
                 }
                 div { style: "color:{theme.text_muted}; font-size:12px;", "{translate_text(\"No chart data yet.\")}" }
             }
@@ -854,7 +872,7 @@ fn combined_state_chart_cached(
                 div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
-                {reseed_note_banner(*kind, note, theme, false)}
+                {reseed_note_banner(kind, note, theme, false)}
             }
             div { style: "display:flex; align-items:stretch; gap:{VERTICAL_SCALE_LABEL_RAIL_GAP}px; width:100%; {chart_shell_size_style} overflow:hidden;",
                 if normalize_per_series {
@@ -1392,9 +1410,7 @@ fn action_style(
     let opacity = action_opacity(blink_now_ms, enabled, recommended, blink, actuated);
     let filter = if !enabled {
         "grayscale(0.25) brightness(0.9)"
-    } else if actuated.unwrap_or(false) {
-        "none"
-    } else if recommended {
+    } else if actuated.unwrap_or(false) || recommended {
         "none"
     } else {
         "saturate(0.58) brightness(0.82)"
@@ -1478,46 +1494,31 @@ fn SummaryCard(
     theme: ThemeConfig,
     use_layout_theme_overrides: bool,
 ) -> Element {
-    let mm = match (min.as_deref(), max.as_deref()) {
-        (Some(mi), Some(ma)) => Some(format!(
-            "{} {mi} • {} {ma}",
-            translate_text("min"),
-            translate_text("max")
-        )),
-        _ => None,
-    };
-    let background = if use_layout_theme_overrides {
+    let mm = min_max_summary_text(min.as_deref(), max.as_deref());
+    let background = themed_value(
+        use_layout_theme_overrides,
+        style.as_ref().and_then(|style| style.background.as_deref()),
+        theme.panel_background_alt.as_str(),
+    );
+    let border = themed_value(
+        use_layout_theme_overrides,
+        style.as_ref().and_then(|style| style.border.as_deref()),
+        theme.border.as_str(),
+    );
+    let label_color = themed_value(
+        use_layout_theme_overrides,
         style
             .as_ref()
-            .and_then(|style| style.background.as_deref())
-            .unwrap_or(theme.panel_background_alt.as_str())
-    } else {
-        theme.panel_background_alt.as_str()
-    };
-    let border = if use_layout_theme_overrides {
+            .and_then(|style| style.label_color.as_deref()),
+        theme.info_accent.as_str(),
+    );
+    let value_color = themed_value(
+        use_layout_theme_overrides,
         style
             .as_ref()
-            .and_then(|style| style.border.as_deref())
-            .unwrap_or(theme.border.as_str())
-    } else {
-        theme.border.as_str()
-    };
-    let label_color = if use_layout_theme_overrides {
-        style
-            .as_ref()
-            .and_then(|style| style.label_color.as_deref())
-            .unwrap_or(theme.info_accent.as_str())
-    } else {
-        theme.info_accent.as_str()
-    };
-    let value_color = if use_layout_theme_overrides {
-        style
-            .as_ref()
-            .and_then(|style| style.value_color.as_deref())
-            .unwrap_or(theme.text_primary.as_str())
-    } else {
-        theme.text_primary.as_str()
-    };
+            .and_then(|style| style.value_color.as_deref()),
+        theme.text_primary.as_str(),
+    );
 
     rsx! {
         div { style: "padding:5px 6px; border-radius:8px; background:{background}; border:1px solid {border}; width:100%; min-width:0; box-sizing:border-box;",

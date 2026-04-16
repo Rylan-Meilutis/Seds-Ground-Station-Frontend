@@ -92,6 +92,18 @@ pub enum NetworkTopologyStatus {
     Simulated,
 }
 
+impl NetworkTopologyStatus {
+    pub fn merged(self, other: Self) -> Self {
+        use NetworkTopologyStatus::{Offline, Online, Simulated};
+
+        match (self, other) {
+            (Offline, _) | (_, Offline) => Offline,
+            (Simulated, _) | (_, Simulated) => Simulated,
+            _ => Online,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct NetworkTopologyNode {
     pub id: String,

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import errno
 import gzip
 import json
 import os
@@ -7,10 +6,12 @@ import plistlib
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
-import time
 import zipfile
+
+import errno
+import sys
+import time
 
 import platform
 
@@ -117,7 +118,8 @@ def _print_command_failure(context: str, err: subprocess.CalledProcessError, cwd
     if "dx bundle" in cmd_s:
         print("Hint: `dx` launched successfully; the failure came from a downstream build step.", file=sys.stderr)
         print("      Read the Gradle/Android error block above for the actual cause.", file=sys.stderr)
-        print("      This usually means an Android SDK/Gradle/project issue, not a missing Dioxus install.", file=sys.stderr)
+        print("      This usually means an Android SDK/Gradle/project issue, not a missing Dioxus install.",
+              file=sys.stderr)
     elif "cargo build" in cmd_s:
         print("Hint: run `cargo build` directly in the same cwd for full compiler diagnostics.", file=sys.stderr)
     elif "docker" in cmd_s:
@@ -188,7 +190,8 @@ def _contextual_failure_hints(cmd_s: str, text: str) -> list[str]:
                 "Hint: Kotlin incremental compilation failed in the generated Android project."
             )
             hints.append(
-                "      Inspect the generated `target/dx/.../android/app` Gradle project and retry the patched rebuild path."
+                "      Inspect the generated `target/dx/.../android/app` Gradle project and retry the patched rebuild "
+                "path."
             )
             return hints
 
@@ -199,11 +202,13 @@ def _contextual_failure_hints(cmd_s: str, text: str) -> list[str]:
             )
         if "deprecated gradle features were used" in low:
             hints.append(
-                "Hint: run the same Gradle task with `--warning-mode all` to isolate the Gradle 10 deprecations that still come from this repo."
+                "Hint: run the same Gradle task with `--warning-mode all` to isolate the Gradle 10 deprecations that "
+                "still come from this repo."
             )
         if "task ':app:minifyreleasewithr8'" in low and "warning:" in low:
             hints.append(
-                "Hint: the remaining R8 constructor warnings come from AGP/AndroidX rule files, not this repo's own ProGuard rules."
+                "Hint: the remaining R8 constructor warnings come from AGP/AndroidX rule files, not this repo's own "
+                "ProGuard rules."
             )
             return hints
 
@@ -280,10 +285,10 @@ def run(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> None
 
 
 def run_filtered(
-    cmd: list[str],
-    cwd: Path,
-    env: Optional[dict[str, str]] = None,
-    line_filter: Optional[Callable[[str], list[str]]] = None,
+        cmd: list[str],
+        cwd: Path,
+        env: Optional[dict[str, str]] = None,
+        line_filter: Optional[Callable[[str], list[str]]] = None,
 ) -> None:
     cmd = [str(part) for part in cmd]
     cmd_line = f"Running: {' '.join(cmd)} (cwd={cwd})"
@@ -2343,15 +2348,15 @@ def _configure_android_gradle_properties(project_dir: Path) -> None:
 
 def _patch_generated_android_sources(project_dir: Path) -> None:
     rust_webview = (
-        project_dir
-        / "app"
-        / "src"
-        / "main"
-        / "kotlin"
-        / "dev"
-        / "dioxus"
-        / "main"
-        / "RustWebView.kt"
+            project_dir
+            / "app"
+            / "src"
+            / "main"
+            / "kotlin"
+            / "dev"
+            / "dioxus"
+            / "main"
+            / "RustWebView.kt"
     )
     if rust_webview.exists():
         raw = rust_webview.read_text(encoding="utf-8")
@@ -2586,11 +2591,11 @@ def _adb_shell_text(frontend_dir: Path, serial: str, env: Optional[dict[str, str
 
 
 def _wait_for_android_package_manager(
-    frontend_dir: Path,
-    serial: str,
-    env: Optional[dict[str, str]] = None,
-    *,
-    timeout_seconds: float = 90.0,
+        frontend_dir: Path,
+        serial: str,
+        env: Optional[dict[str, str]] = None,
+        *,
+        timeout_seconds: float = 90.0,
 ) -> None:
     adb = _resolve_adb(env)
     deadline = time.time() + timeout_seconds
@@ -2636,10 +2641,10 @@ def _wait_for_android_package_manager(
 
 
 def _install_android_apk_with_fallbacks(
-    frontend_dir: Path,
-    serial: str,
-    apk: Path,
-    env: Optional[dict[str, str]] = None,
+        frontend_dir: Path,
+        serial: str,
+        apk: Path,
+        env: Optional[dict[str, str]] = None,
 ) -> None:
     adb = _resolve_adb(env)
     attempts: list[tuple[str, list[str]]] = [
@@ -3574,7 +3579,8 @@ def _dx_version_line_filter(dx_version: Optional[str], dioxus_versions: list[str
             return [
                 (
                     f"Info: allowing Dioxus patch-version skew "
-                    f"(dx {dx_version}, workspace dioxus {versions}) because they share the same major/minor release line.\n"
+                    f"(dx {dx_version}, workspace dioxus {versions}) because they share the same major/minor release "
+                    f"line.\n"
                 )
             ]
 
@@ -4395,9 +4401,9 @@ def _reset_android_gradle_home(frontend_dir: Path) -> None:
 def _looks_like_android_gradle_cache_corruption(text: str) -> bool:
     lowered = text.lower()
     return (
-        "immutable workspace" in lowered
-        or ("aar-metadata.properties" in lowered and ".gradle-user-home/caches" in lowered)
-        or ("the contents of the immutable workspace" in lowered)
+            "immutable workspace" in lowered
+            or ("aar-metadata.properties" in lowered and ".gradle-user-home/caches" in lowered)
+            or ("the contents of the immutable workspace" in lowered)
     )
 
 
@@ -4831,8 +4837,8 @@ def build_frontend(
                         else:
                             os.environ["GS_WASM_BINDGEN_CLI_VERSION"] = prior_override
             elif (
-                platform_name == "android"
-                and (_generated_android_app_dir(frontend_dir, debug_mode) / "app" / "src" / "main").exists()
+                    platform_name == "android"
+                    and (_generated_android_app_dir(frontend_dir, debug_mode) / "app" / "src" / "main").exists()
             ):
                 print(
                     "Warning: dx android bundler failed after staging the Gradle project; falling back to repo-managed "
@@ -4841,10 +4847,10 @@ def build_frontend(
                 )
                 android_bundle_partial = True
             elif (
-                platform_name == "linux"
-                and (_target_root(frontend_dir) / "dx" / _frontend_package_name(frontend_dir) / (
+                    platform_name == "linux"
+                    and (_target_root(frontend_dir) / "dx" / _frontend_package_name(frontend_dir) / (
                     "debug" if debug_mode else "release"
-                ) / "linux" / "app").exists()
+            ) / "linux" / "app").exists()
             ):
                 print(
                     "Warning: dx linux bundler failed after staging the app payload; falling back to manual AppImage "

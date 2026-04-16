@@ -462,6 +462,10 @@ function tileCoordsAround(lat, lon, zoom, radiusM) {
     const west = lon - dLon;
     const nw = latLonToTileXY(north, west, zoom);
     const se = latLonToTileXY(south, east, zoom);
+    return tileCoordsForRange(nw, se, zoom);
+}
+
+function tileCoordsForRange(nw, se, zoom) {
     const coords = [];
     for (let x = nw.x; x <= se.x; x++) {
         for (let y = nw.y; y <= se.y; y++) {
@@ -479,13 +483,7 @@ function tileCoordsForBounds(bounds, zoom) {
     const west = bounds.getWest();
     const nw = latLonToTileXY(north, west, zoom);
     const se = latLonToTileXY(south, east, zoom);
-    const coords = [];
-    for (let x = nw.x; x <= se.x; x++) {
-        for (let y = nw.y; y <= se.y; y++) {
-            coords.push({x, y, z: zoom});
-        }
-    }
-    return coords;
+    return tileCoordsForRange(nw, se, zoom);
 }
 
 function prefetchZoomLevels(maxNativeZoom) {

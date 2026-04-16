@@ -114,7 +114,7 @@ pub fn MapTab(
     let show_enable_compass = use_signal(|| false);
 
     #[cfg(target_arch = "wasm32")]
-    let mut browser_user_gps = use_signal(|| None::<(f64, f64)>);
+    let browser_user_gps = use_signal(|| None::<(f64, f64)>);
     let has_centered_on_user = use_signal(|| false);
     let map_config = use_signal(MapConfig::default);
     let theme = theme.unwrap_or_default();
@@ -260,11 +260,11 @@ pub fn MapTab(
     {
         let mut has_centered_on_user = has_centered_on_user;
         use_effect(move || {
-            if let Some((lat, lon)) = *user_gps.read() {
-                if !*has_centered_on_user.read() {
-                    js_center_on(lat, lon);
-                    has_centered_on_user.set(true);
-                }
+            if let Some((lat, lon)) = *user_gps.read()
+                && !*has_centered_on_user.read()
+            {
+                js_center_on(lat, lon);
+                has_centered_on_user.set(true);
             }
         });
     }
@@ -730,31 +730,6 @@ fn _js_setup_js_geolocation_watch() {
                 } catch (e) {}
                 console.warn("geolocation watch error:", err);
               },
-              { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
-            );
-          } catch (e) {}
-        })();
-        "#,
-    );
-}
-
-#[cfg(target_arch = "wasm32")]
-fn js_request_user_geolocation_once() {
-    js_eval(
-        r#"
-        (function() {
-          if (window.__gs26_disable_browser_geo === true) return;
-          if (typeof window.isSecureContext === "boolean" && window.isSecureContext !== true) return;
-          if (!navigator || !navigator.geolocation) return;
-
-          try {
-            navigator.geolocation.getCurrentPosition(
-              (pos) => {
-                const c = pos.coords;
-                window.__gs26_user_lat = c.latitude;
-                window.__gs26_user_lon = c.longitude;
-              },
-              () => {},
               { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
             );
           } catch (e) {}

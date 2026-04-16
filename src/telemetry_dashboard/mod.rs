@@ -30,10 +30,12 @@ pub mod warnings_tab;
 use crate::app::Route;
 use crate::auth;
 use data_chart::{
-    charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build, charts_cache_clear_active,
-    charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_request_refit,
-    charts_cache_reseed_ingest_row, configure_sender_split_data_types,
+    charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build,
+    charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_reseed_ingest_row,
+    configure_sender_split_data_types,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use data_chart::{charts_cache_clear_active, charts_cache_request_refit};
 
 use crate::telemetry_dashboard::actions_tab::ActionsTab;
 use calibration_tab::CalibrationTab;
@@ -1788,12 +1790,11 @@ impl UrlConfig {
             .unwrap_or_else(|| BASE_URL.read().clone());
 
         #[cfg(target_arch = "wasm32")]
-        if base.is_empty() {
-            if let Some(window) = web_sys::window()
-                && let Ok(origin) = window.location().origin()
-            {
-                return normalize_base_url(origin);
-            }
+        if base.is_empty()
+            && let Some(window) = web_sys::window()
+            && let Ok(origin) = window.location().origin()
+        {
+            return normalize_base_url(origin);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1894,6 +1895,7 @@ fn reconnect_and_reload_ui() {
 }
 
 /// Mirrors the explicit reload button behavior before reconnecting to a backend.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn clear_and_reconnect_after_connect() {
     clear_telemetry_runtime_buffers();
     clear_visible_telemetry_history();
@@ -1930,12 +1932,14 @@ fn web_dashboard_runtime_allowed() -> bool {
 }
 
 /// Clears runtime telemetry buffers before a reconnect or reseed.
+#[cfg(not(target_arch = "wasm32"))]
 fn clear_telemetry_runtime_buffers() {
     if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
         q.clear();
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn clear_visible_telemetry_history() {
     let snapshot = ui_telemetry_rows_snapshot();
     if let Ok(mut bridge) = RESEED_HISTORY_BRIDGE.lock() {
@@ -5462,6 +5466,7 @@ async fn connect_ws_supervisor(
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
 async fn connect_ws_once_wasm(
     epoch: u64,
     warnings: Signal<Vec<AlertMsg>>,

@@ -2,10 +2,9 @@
 
 import copy
 import json
-from pathlib import Path
 import tkinter as tk
+from pathlib import Path
 from tkinter import colorchooser, messagebox, simpledialog, ttk
-
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG_PATH = ROOT / "assets" / "themes" / "presets.json"
@@ -101,13 +100,13 @@ class ThemeEditor(tk.Tk):
         button_bar = ttk.Frame(left)
         button_bar.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         for idx, (label, command) in enumerate(
-            [
-                ("New", self._new_preset),
-                ("Clone", self._clone_preset),
-                ("Delete", self._delete_preset),
-                ("Reload", self._reload_from_disk),
-                ("Save", self._save),
-            ]
+                [
+                    ("New", self._new_preset),
+                    ("Clone", self._clone_preset),
+                    ("Delete", self._delete_preset),
+                    ("Reload", self._reload_from_disk),
+                    ("Save", self._save),
+                ]
         ):
             ttk.Button(button_bar, text=label, command=command).grid(
                 row=idx, column=0, sticky="ew", pady=2
@@ -324,9 +323,9 @@ class ThemeEditor(tk.Tk):
             return
         preset = self.catalog["presets"][self.current_index]
         if not messagebox.askyesno(
-            "Delete Preset",
-            f"Delete preset '{preset['id']}' from {CATALOG_PATH.name}?",
-            parent=self,
+                "Delete Preset",
+                f"Delete preset '{preset['id']}' from {CATALOG_PATH.name}?",
+                parent=self,
         ):
             return
         del self.catalog["presets"][self.current_index]
@@ -338,9 +337,9 @@ class ThemeEditor(tk.Tk):
 
     def _reload_from_disk(self):
         if not messagebox.askyesno(
-            "Reload",
-            "Discard unsaved changes and reload the theme catalog from disk?",
-            parent=self,
+                "Reload",
+                "Discard unsaved changes and reload the theme catalog from disk?",
+                parent=self,
         ):
             return
         self.catalog = load_catalog()

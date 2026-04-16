@@ -5,7 +5,7 @@ pub fn get_string(key: &str) -> Option<String> {
         use web_sys::window;
         let w = window()?;
         let ls = w.local_storage().ok()??;
-        return ls.get_item(key).ok().flatten();
+        ls.get_item(key).ok().flatten()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
