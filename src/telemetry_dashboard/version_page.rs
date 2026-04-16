@@ -98,7 +98,7 @@ pub fn VersionTab(theme: ThemeConfig) -> Element {
 
     rsx! {
         div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
-            h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "Version & Credits" }
+            h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "Version" }
 
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px;",
                 SectionCard {
@@ -114,11 +114,11 @@ pub fn VersionTab(theme: ThemeConfig) -> Element {
                 }
                 SectionCard {
                     theme: theme.clone(),
-                    title: "Credits",
+                    title: "Runtime",
                     rows: vec![
-                        ("Project", info.app_title.clone()),
-                        ("UI Mapping", "Leaflet".to_string()),
+                        ("App", info.app_title.clone()),
                         ("Runtime", "Rust + Dioxus".to_string()),
+                        ("Map Engine", "MapLibre GL JS".to_string()),
                         ("Packaging", "Dioxus".to_string()),
                     ],
                 }

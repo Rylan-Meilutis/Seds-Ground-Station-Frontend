@@ -32,8 +32,8 @@ const GEOLOCATION_WATCH_JS: &str = r#"
       },
       {
         enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 15000
+        maximumAge: 0,
+        timeout: 5000
       }
     );
   } catch (e) {

@@ -2580,6 +2580,108 @@ def _list_adb_devices(frontend_dir: Path, env: Optional[dict[str, str]] = None) 
     return serials
 
 
+def _adb_shell_text(frontend_dir: Path, serial: str, env: Optional[dict[str, str]], *args: str) -> str:
+    adb = _resolve_adb(env)
+    return run_capture([adb, "-s", serial, "shell", *args], cwd=frontend_dir, env=env).strip()
+
+
+def _wait_for_android_package_manager(
+    frontend_dir: Path,
+    serial: str,
+    env: Optional[dict[str, str]] = None,
+    *,
+    timeout_seconds: float = 90.0,
+) -> None:
+    adb = _resolve_adb(env)
+    deadline = time.time() + timeout_seconds
+
+    run([adb, "-s", serial, "wait-for-device"], cwd=frontend_dir, env=env)
+
+    last_status = "device not ready"
+    while time.time() < deadline:
+        try:
+            boot_completed = _adb_shell_text(
+                frontend_dir,
+                serial,
+                env,
+                "getprop",
+                "sys.boot_completed",
+            )
+            if boot_completed != "1":
+                last_status = f"sys.boot_completed={boot_completed or '<empty>'}"
+                time.sleep(1.0)
+                continue
+
+            service_list = _adb_shell_text(frontend_dir, serial, env, "service", "list")
+            if "package:" not in service_list and "package]" not in service_list:
+                last_status = "Package Manager service not published yet"
+                time.sleep(1.0)
+                continue
+
+            pm_path = _adb_shell_text(frontend_dir, serial, env, "cmd", "package", "path", "android")
+            if "package:" not in pm_path:
+                last_status = f"cmd package path android -> {pm_path or '<empty>'}"
+                time.sleep(1.0)
+                continue
+
+            return
+        except subprocess.CalledProcessError as exc:
+            last_status = f"adb shell failed: {_cmd_to_str(exc.cmd)}"
+            time.sleep(1.0)
+
+    raise RuntimeError(
+        "Android device/emulator connected, but Package Manager never became ready. "
+        f"Last status: {last_status}. Wait for the emulator to finish booting, or cold-boot/wipe it if it is stuck."
+    )
+
+
+def _install_android_apk_with_fallbacks(
+    frontend_dir: Path,
+    serial: str,
+    apk: Path,
+    env: Optional[dict[str, str]] = None,
+) -> None:
+    adb = _resolve_adb(env)
+    attempts: list[tuple[str, list[str]]] = [
+        ("streamed", [adb, "-s", serial, "install", "-r", str(apk)]),
+        ("no-streaming", [adb, "-s", serial, "install", "--no-streaming", "-r", str(apk)]),
+    ]
+
+    remote_apk = f"/data/local/tmp/{apk.name}"
+    attempts.append(
+        (
+            "push+pm",
+            [adb, "-s", serial, "shell", "pm", "install", "-r", remote_apk],
+        )
+    )
+
+    failures: list[str] = []
+    for mode, cmd in attempts:
+        try:
+            if mode == "push+pm":
+                run([adb, "-s", serial, "push", str(apk), remote_apk], cwd=frontend_dir, env=env)
+            run(cmd, cwd=frontend_dir, env=env)
+            if mode == "push+pm":
+                try:
+                    run([adb, "-s", serial, "shell", "rm", "-f", remote_apk], cwd=frontend_dir, env=env)
+                except subprocess.CalledProcessError:
+                    pass
+            return
+        except subprocess.CalledProcessError as exc:
+            failures.append(f"{mode}: exit {exc.returncode}")
+            if mode == "push+pm":
+                try:
+                    run([adb, "-s", serial, "shell", "rm", "-f", remote_apk], cwd=frontend_dir, env=env)
+                except subprocess.CalledProcessError:
+                    pass
+            time.sleep(1.0)
+
+    raise RuntimeError(
+        "Android APK install failed after all fallback modes "
+        f"({', '.join(failures)}). The emulator is likely unstable; cold-boot or wipe it and retry."
+    )
+
+
 def install_android_apk(frontend_dir: Path, apk_path: Optional[Path] = None) -> tuple[str, Path]:
     env = _ensure_android_env(frontend_dir, None)
     devices = _list_adb_devices(frontend_dir, env)
@@ -2597,7 +2699,8 @@ def install_android_apk(frontend_dir: Path, apk_path: Optional[Path] = None) -> 
         raise FileNotFoundError(f"No Android .apk artifact found in {dist_dir(frontend_dir)}")
 
     serial = devices[0]
-    run([adb, "-s", serial, "install", "-r", str(apk)], cwd=frontend_dir, env=env)
+    _wait_for_android_package_manager(frontend_dir, serial, env)
+    _install_android_apk_with_fallbacks(frontend_dir, serial, apk, env)
     print(f"✅ Installed Android APK on {serial}: {apk}")
     return serial, apk
 
@@ -3798,6 +3901,9 @@ def _dx_bundle_env(frontend_dir: Path) -> dict[str, str]:
         env["DIOXUS_WASM_BINDGEN"] = str(wasm_bindgen)
         env["DIOXUS_WASM_BINDGEN_PATH"] = str(wasm_bindgen)
 
+    # Keep the JS map vendor fetch pinned for both cargo builds and dx bundles.
+    env.setdefault("MAPLIBRE_GL_VERSION", os.environ.get("MAPLIBRE_GL_VERSION", "4.7.1"))
+
     return env
 
 
@@ -3979,7 +4085,7 @@ def ios_sim_deploy(frontend_dir: Path, debug_mode: bool = False) -> tuple[str, s
             raise RuntimeError("No available iPhone simulator found.")
         print(f"Booting iOS simulator device: {udid}")
         run(["xcrun", "simctl", "boot", udid], cwd=frontend_dir)
-        run(["xcrun", "simctl", "bootstatus", udid, "-b"], cwd=frontend_dir)
+    run(["xcrun", "simctl", "bootstatus", udid, "-b"], cwd=frontend_dir)
 
     print(f"Installing app in simulator ({udid}): {app}")
     run(["xcrun", "simctl", "install", udid, str(app)], cwd=frontend_dir)

@@ -214,64 +214,86 @@ fn main() {
     // Re-run if this file changes
     println!("cargo:rerun-if-changed=build.rs");
 
-    // Allow changing Leaflet version via env if you ever want
-    println!("cargo:rerun-if-env-changed=LEAFLET_VERSION");
+    stage_maplibre_assets(&manifest_dir);
+}
 
-    let version = env::var("LEAFLET_VERSION").unwrap_or_else(|_| "1.9.4".to_string());
+fn stage_maplibre_assets(manifest_dir: &Path) {
+    const DEFAULT_MAPLIBRE_VERSION: &str = "4.7.1";
+    const PLACEHOLDER_MARKER: &str = "gs26-maplibre-placeholder";
 
-    // Path to frontend/dist/vendor/leaflet relative to this crate
-    let leaflet_dir = manifest_dir.join("static").join("vendor").join("leaflet");
+    println!("cargo:rerun-if-env-changed=MAPLIBRE_GL_VERSION");
 
-    // Always watch these outputs (if they exist, Cargo will track changes)
-    println!(
-        "cargo:rerun-if-changed={}",
-        leaflet_dir.join("leaflet.css").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        leaflet_dir.join("leaflet.js").display()
-    );
+    let version =
+        env::var("MAPLIBRE_GL_VERSION").unwrap_or_else(|_| DEFAULT_MAPLIBRE_VERSION.to_string());
+    let vendor_dir = manifest_dir
+        .join("static")
+        .join("vendor")
+        .join("maplibre-gl");
+    let stamp = vendor_dir.join(".maplibre-gl-stamp");
+    let stamp_contents = format!("version={version}\n");
 
-    // Add a sentinel file that we *ensure exists*; Cargo can reliably watch it.
-    let stamp = leaflet_dir.join(".leaflet-stamp");
+    for asset in ["maplibre-gl.css", "maplibre-gl.js"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            vendor_dir.join(asset).display()
+        );
+    }
     println!("cargo:rerun-if-changed={}", stamp.display());
 
-    // Create the dir + stamp (dir creation doesn't help Cargo, stamp does)
-    fs::create_dir_all(&leaflet_dir).unwrap();
-    write_if_changed(&stamp, &format!("version={}\n", version)).unwrap();
-    if let Err(e) = fs::create_dir_all(&leaflet_dir) {
-        log(format!("Failed to create Leaflet vendor dir {leaflet_dir:?}: {e}").as_ref());
-
+    if let Err(e) = fs::create_dir_all(&vendor_dir) {
+        log(format!("Failed to create MapLibre vendor dir {vendor_dir:?}: {e}").as_ref());
         return;
     }
 
-    // Download CSS and JS
-    if let Err(e) = download_leaflet_file(&leaflet_dir, &version, "css", log) {
-        log(format!("Failed to download Leaflet CSS: {e}").as_ref());
+    if let Err(e) = write_if_changed(&stamp, &stamp_contents) {
+        log(format!("Failed to write MapLibre stamp {}: {e}", stamp.display()).as_ref());
     }
-    if let Err(e) = download_leaflet_file(&leaflet_dir, &version, "js", log) {
-        log(format!("Failed to download Leaflet JS: {e}").as_ref());
+
+    for (filename, cdn_path) in [
+        ("maplibre-gl.css", "dist/maplibre-gl.css"),
+        ("maplibre-gl.js", "dist/maplibre-gl.js"),
+    ] {
+        if let Err(e) = download_vendor_asset(
+            &vendor_dir,
+            &stamp_contents,
+            filename,
+            &format!("https://unpkg.com/maplibre-gl@{version}/{cdn_path}"),
+            PLACEHOLDER_MARKER,
+            log,
+        ) {
+            log(format!("Failed to download MapLibre asset {filename}: {e}").as_ref());
+        }
     }
 }
 
-fn download_leaflet_file(
-    leaflet_dir: &Path,
-    version: &str,
-    kind: &str, // "css" or "js"
+fn download_vendor_asset(
+    vendor_dir: &Path,
+    expected_stamp: &str,
+    filename: &str,
+    url: &str,
+    placeholder_marker: &str,
     log: impl Fn(&str),
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let filename = format!("leaflet.{kind}");
-    let out_path = leaflet_dir.join(&filename);
+    let out_path = vendor_dir.join(filename);
+    let stamp_path = vendor_dir.join(".maplibre-gl-stamp");
+    let existing_stamp = fs::read_to_string(&stamp_path).unwrap_or_default();
 
-    // If file already exists, don't redownload every build
-    if out_path.exists() {
+    let needs_download = match fs::read_to_string(&out_path) {
+        Ok(existing) => {
+            existing_stamp != expected_stamp
+                || existing.contains(placeholder_marker)
+                || existing.len() < 128
+        }
+        Err(_) => true,
+    };
+
+    if !needs_download {
         return Ok(());
     }
 
-    let url = format!("https://unpkg.com/leaflet@{version}/dist/leaflet.{kind}",);
     log(format!("Downloading {url} -> {}", out_path.display()).as_ref());
 
-    let resp = reqwest::blocking::get(&url)?;
+    let resp = reqwest::blocking::get(url)?;
     if !resp.status().is_success() {
         return Err(format!("HTTP error: {}", resp.status()).into());
     }

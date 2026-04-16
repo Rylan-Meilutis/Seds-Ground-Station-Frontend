@@ -15,7 +15,7 @@ use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use serde::Deserialize;
 
 const RESIZE_DEBOUNCE_MS: u64 = 250;
-const FULLSCREEN_REINIT_DELAY_MS: u64 = 80;
+const FULLSCREEN_REINIT_DELAY_MS: u64 = 0;
 const DEFAULT_MAX_NATIVE_ZOOM: u32 = 12;
 const DEFAULT_MAP_CENTER_LAT: f64 = 31.0;
 const DEFAULT_MAP_CENTER_LON: f64 = -99.0;
@@ -25,6 +25,22 @@ const DEFAULT_TRACKED_ASSET_LABEL: &str = "Tracked Asset";
 
 fn tiles_url() -> String {
     map_tiles_url()
+}
+
+fn map_control_now_ms() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as f64)
+            .unwrap_or(0.0)
+    }
 }
 
 fn format_distance_label(
@@ -89,8 +105,9 @@ pub fn MapTab(
     let _ = *rocket_gps.read();
     let _ = *user_gps.read();
     let mut is_fullscreen = use_signal(|| false);
-    let mut follow_user = use_signal(|| false);
-    let mut user_orientation_up = use_signal(|| false);
+    let follow_user = use_signal(|| false);
+    let follow_user_latch_until_ms = use_signal(|| 0.0);
+    let user_orientation_up = use_signal(|| false);
     #[cfg(target_os = "ios")]
     let mut show_enable_compass = use_signal(|| false);
     #[cfg(not(target_os = "ios"))]
@@ -101,10 +118,6 @@ pub fn MapTab(
     let has_centered_on_user = use_signal(|| false);
     let map_config = use_signal(MapConfig::default);
     let theme = theme.unwrap_or_default();
-    let primary_button_style = format!(
-        "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.85rem; cursor:pointer;",
-        theme.info_accent, theme.info_background, theme.info_text
-    );
     let warning_button_style = format!(
         "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.85rem; cursor:pointer;",
         theme.warning_border, theme.warning_background, theme.warning_text
@@ -134,7 +147,6 @@ pub fn MapTab(
         let map_config = map_config;
         use_effect(move || {
             let config = map_config.read().clone();
-            js_eval(r#"console.error("[GS26 map] setup effect entered");"#);
             #[cfg(target_os = "ios")]
             {
                 *show_enable_compass.write() = js_is_compass_denied();
@@ -151,39 +163,6 @@ pub fn MapTab(
 
             // Fullscreen enter/exit explicit reinit hook (independent of rotation)
             js_setup_js_fullscreen_reinit(&tiles, &config);
-
-            js_eval(&format!(
-                r#"
-                    (function() {{
-                      try {{
-                        console.error("[GS26 map] forcing immediate init attempt");
-                        if (window.__gs26_ground_station_loaded === true &&
-                            typeof window.initGroundMap === "function") {{
-                          window.initGroundMap(
-                            {tiles:?},
-                            {center_lat},
-                            {center_lon},
-                            {zoom},
-                            {max_native_zoom},
-                            {tracked_asset_label:?}
-                          );
-                        }} else {{
-                          console.error("[GS26 map] init prerequisites missing", {{
-                            loaded: window.__gs26_ground_station_loaded,
-                            hasInit: typeof window.initGroundMap === "function"
-                          }});
-                        }}
-                      }} catch (e) {{
-                        console.error("[GS26 map] immediate init failed", String(e), e && e.stack ? e.stack : "");
-                      }}
-                    }})();
-                    "#,
-                center_lat = config.default_center_lat,
-                center_lon = config.default_center_lon,
-                zoom = config.default_zoom,
-                max_native_zoom = config.max_native_zoom,
-                tracked_asset_label = config.tracked_asset_label
-            ));
         });
     }
 
@@ -192,15 +171,43 @@ pub fn MapTab(
         let tiles = tiles_url();
         let map_config = map_config;
         let is_fullscreen_sig = is_fullscreen;
-        let follow_user = follow_user;
-        let user_orientation_up = user_orientation_up;
+        let mut did_mount_fullscreen_effect = use_signal(|| false);
         use_effect(move || {
             let config = map_config.read().clone();
             let fs = *is_fullscreen_sig.read();
-            js_eval(r#"console.error("[GS26 map] fullscreen/reinit effect entered");"#);
+            if !*did_mount_fullscreen_effect.read() {
+                did_mount_fullscreen_effect.set(true);
+                return;
+            }
             js_force_map_reinit_now(&tiles, &config, fs, FULLSCREEN_REINIT_DELAY_MS);
-            js_set_follow_user(*follow_user.read());
-            js_set_orientation_mode(*user_orientation_up.read());
+        });
+    }
+
+    // --- 1b) Map config changes must reapply live map zoom/tile config, not just window vars ---
+    {
+        let tiles = tiles_url();
+        let map_config = map_config;
+        let is_fullscreen_sig = is_fullscreen;
+        let mut did_mount_map_config_effect = use_signal(|| false);
+        let mut last_applied_map_config = use_signal(|| None::<(String, u32, u32)>);
+        use_effect(move || {
+            let config = map_config.read().clone();
+            let fs = *is_fullscreen_sig.read();
+            let next_key = (
+                tiles.clone(),
+                config.max_native_zoom,
+                config.max_display_zoom,
+            );
+            if !*did_mount_map_config_effect.read() {
+                did_mount_map_config_effect.set(true);
+                last_applied_map_config.set(Some(next_key));
+                return;
+            }
+            if *last_applied_map_config.read() == Some(next_key.clone()) {
+                return;
+            }
+            last_applied_map_config.set(Some(next_key));
+            js_force_map_reinit_now(&tiles, &config, fs, 0);
         });
     }
 
@@ -289,16 +296,6 @@ pub fn MapTab(
     let effective_user = move || -> Option<(f64, f64)> { *browser_user_gps.read() };
     let distance_text =
         format_distance_label(*rocket_gps.read(), effective_user(), distance_units_metric);
-    let follow_button_style = if *follow_user.read() {
-        primary_button_style.clone()
-    } else {
-        neutral_button_style.clone()
-    };
-    let orientation_button_style = if *user_orientation_up.read() {
-        primary_button_style.clone()
-    } else {
-        neutral_button_style.clone()
-    };
     #[cfg(any(target_os = "ios", target_os = "macos", target_os = "android"))]
     let native_location_warning = if (*user_gps.read()).is_none() {
         Some(translate_text(
@@ -338,13 +335,6 @@ pub fn MapTab(
     }
 
     {
-        let follow_user = follow_user;
-        use_effect(move || {
-            js_set_follow_user(*follow_user.read());
-        });
-    }
-
-    {
         use_effect(move || {
             js_setup_follow_user_listener();
         });
@@ -353,16 +343,21 @@ pub fn MapTab(
     {
         let mut follow_user = follow_user;
         let mut user_orientation_up = user_orientation_up;
+        let follow_user_latch_until_ms = follow_user_latch_until_ms;
         use_effect(move || {
             spawn(async move {
                 loop {
                     let enabled = js_read_follow_user_enabled().await;
-                    if *follow_user.read() != enabled {
+                    let orientation_mode = js_read_map_orientation_mode().await;
+                    let latch_active = *follow_user.read()
+                        && !enabled
+                        && map_control_now_ms() < *follow_user_latch_until_ms.read();
+                    if !latch_active && *follow_user.read() != enabled {
                         follow_user.set(enabled);
                     }
-                    if !enabled && *user_orientation_up.read() {
-                        user_orientation_up.set(false);
-                        js_set_orientation_mode(false);
+                    let user_up = orientation_mode == "user";
+                    if *user_orientation_up.read() != user_up {
+                        user_orientation_up.set(user_up);
                     }
 
                     #[cfg(target_arch = "wasm32")]
@@ -374,78 +369,6 @@ pub fn MapTab(
             });
         });
     }
-
-    {
-        let user_orientation_up = user_orientation_up;
-        use_effect(move || {
-            js_set_orientation_mode(*user_orientation_up.read());
-        });
-    }
-
-    let on_center_me = move |_| {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some((lat, lon)) = *user_gps.read() {
-            js_center_on(lat, lon);
-            return;
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        js_request_user_geolocation_once();
-
-        // Refresh from JS at click-time
-        #[cfg(target_arch = "wasm32")]
-        if let Some((lat, lon)) = js_cached_user_latlon().or_else(js_read_user_latlon_from_window) {
-            browser_user_gps.set(Some((lat, lon)));
-            js_center_on(lat, lon);
-        } else if let Some((lat, lon)) = effective_user() {
-            js_center_on(lat, lon);
-        } else {
-            js_eval(r#"console.warn("No user location yet; cannot center.");"#);
-        }
-    };
-
-    let on_toggle_follow_user = move |_| {
-        let next = !*follow_user.read();
-        follow_user.set(next);
-        js_set_follow_user(next);
-        if next {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some((lat, lon)) = *user_gps.read() {
-                js_center_on(lat, lon);
-            }
-
-            #[cfg(target_arch = "wasm32")]
-            if let Some((lat, lon)) = js_cached_user_latlon()
-                .or_else(js_read_user_latlon_from_window)
-                .or_else(effective_user)
-            {
-                browser_user_gps.set(Some((lat, lon)));
-                js_center_on(lat, lon);
-            } else {
-                js_request_user_geolocation_once();
-            }
-        }
-    };
-
-    let on_toggle_orientation = move |_| {
-        let next = !*user_orientation_up.read();
-        user_orientation_up.set(next);
-        if next && !*follow_user.read() {
-            follow_user.set(true);
-            js_set_follow_user(true);
-        }
-        js_set_orientation_mode(next);
-    };
-
-    let on_rotate_left = move |_| {
-        user_orientation_up.set(false);
-        js_adjust_map_bearing(-15.0);
-    };
-
-    let on_rotate_right = move |_| {
-        user_orientation_up.set(false);
-        js_adjust_map_bearing(15.0);
-    };
 
     let on_toggle_fullscreen = move |_| {
         let next = !*is_fullscreen.read();
@@ -482,7 +405,7 @@ pub fn MapTab(
     rsx! {
         if *is_fullscreen.read() {
             div { style: "position:fixed; inset:0; z-index:9999; padding:16px; background:{theme.app_background}; display:flex; flex-direction:column; gap:12px;",
-                div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:space-between;",
+                div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:space-between; padding:4px 4px 0 4px; box-sizing:border-box;",
                     div { style: "display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;",
                         h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
                         if let Some(distance_text) = distance_text.clone() {
@@ -490,39 +413,6 @@ pub fn MapTab(
                         }
                     }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",
-                        button {
-                            style: "{primary_button_style}",
-                            onclick: on_center_me,
-                            "{translate_text(\"Center on Me\")}"
-                        }
-                        button {
-                            style: "{follow_button_style}",
-                            onclick: on_toggle_follow_user,
-                            if *follow_user.read() {
-                                "{translate_text(\"Auto Center On\")}"
-                            } else {
-                                "{translate_text(\"Auto Center Off\")}"
-                            }
-                        }
-                        button {
-                            style: "{orientation_button_style}",
-                            onclick: on_toggle_orientation,
-                            if *user_orientation_up.read() {
-                                "{translate_text(\"User Up\")}"
-                            } else {
-                                "{translate_text(\"North Up\")}"
-                            }
-                        }
-                        button {
-                            style: "{neutral_button_style}",
-                            onclick: on_rotate_left,
-                            "{translate_text(\"Rotate Left\")}"
-                        }
-                        button {
-                            style: "{neutral_button_style}",
-                            onclick: on_rotate_right,
-                            "{translate_text(\"Rotate Right\")}"
-                        }
                         if cfg!(target_os = "ios") && *show_enable_compass.read() {
                             button {
                                 style: "{warning_button_style}",
@@ -554,43 +444,10 @@ pub fn MapTab(
                         border-radius:12px; background:{theme.tab_shell_background}; border:1px solid {theme.border_strong}; \
                         box-shadow:0 10px 25px rgba(0,0,0,0.45);",
                 div {
-                    style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                    style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:10px 12px 0 12px; box-sizing:border-box;",
                     h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
                     if let Some(distance_text) = distance_text {
                         span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "({translate_text(\"Distance\")}: {distance_text})" }
-                    }
-                    button {
-                        style: "{primary_button_style}",
-                        onclick: on_center_me,
-                        "{translate_text(\"Center on Me\")}"
-                    }
-                    button {
-                        style: "{follow_button_style}",
-                        onclick: on_toggle_follow_user,
-                        if *follow_user.read() {
-                            "{translate_text(\"Auto Center On\")}"
-                        } else {
-                            "{translate_text(\"Auto Center Off\")}"
-                        }
-                    }
-                    button {
-                        style: "{orientation_button_style}",
-                        onclick: on_toggle_orientation,
-                        if *user_orientation_up.read() {
-                            "{translate_text(\"User Up\")}"
-                        } else {
-                            "{translate_text(\"North Up\")}"
-                        }
-                    }
-                    button {
-                        style: "{neutral_button_style}",
-                        onclick: on_rotate_left,
-                        "{translate_text(\"Rotate Left\")}"
-                    }
-                    button {
-                        style: "{neutral_button_style}",
-                        onclick: on_rotate_right,
-                        "{translate_text(\"Rotate Right\")}"
                     }
                     if cfg!(target_os = "ios") && *show_enable_compass.read() {
                         button {
@@ -623,14 +480,7 @@ fn map_canvas(theme: &ThemeConfig) -> Element {
     rsx! {
         div {
             id: "ground-map",
-            style: "width:100%; height:100%; border-radius:12px; overflow:hidden; background:{theme.panel_background}; border:1px solid {theme.border_strong}; touch-action:manipulation; overscroll-behavior:contain;",
-            ontouchstart: move |e| {
-                let touches = e.touches();
-                if touches.len() > 1 {
-                    e.prevent_default();
-                    e.stop_propagation();
-                }
-            },
+            style: "width:100%; height:100%; border-radius:12px; overflow:hidden; background:{theme.panel_background}; border:1px solid {theme.border_strong}; overscroll-behavior:contain;",
         }
     }
 }
@@ -642,6 +492,7 @@ fn map_canvas(theme: &ThemeConfig) -> Element {
 struct MapJsConfig {
     tiles: String,
     max_native_zoom: String,
+    max_display_zoom: String,
     center_lat: String,
     center_lon: String,
     zoom: String,
@@ -652,6 +503,7 @@ fn map_js_config(tiles: &str, config: &MapConfig) -> MapJsConfig {
     MapJsConfig {
         tiles: serde_json::to_string(tiles).unwrap_or_else(|_| "\"\"".to_string()),
         max_native_zoom: config.max_native_zoom.to_string(),
+        max_display_zoom: config.max_display_zoom.to_string(),
         center_lat: config.default_center_lat.to_string(),
         center_lon: config.default_center_lon.to_string(),
         zoom: config.default_zoom.to_string(),
@@ -664,6 +516,7 @@ fn apply_map_js_config(script: &str, cfg: &MapJsConfig) -> String {
     script
         .replace("__TILES__", &cfg.tiles)
         .replace("__MAX_NATIVE_ZOOM__", &cfg.max_native_zoom)
+        .replace("__MAX_DISPLAY_ZOOM__", &cfg.max_display_zoom)
         .replace("__CENTER_LAT__", &cfg.center_lat)
         .replace("__CENTER_LON__", &cfg.center_lon)
         .replace("__DEFAULT_ZOOM__", &cfg.zoom)
@@ -675,24 +528,22 @@ fn js_setup_js_fullscreen_reinit(tiles: &str, config: &MapConfig) {
 
     let script = r#"
     (function() {
-      if (window.__gs26_fullscreen_reinit_installed) return;
-      window.__gs26_fullscreen_reinit_installed = true;
-
       window.__gs26_tiles_url = __TILES__;
       window.__gs26_max_native_zoom = __MAX_NATIVE_ZOOM__;
+      window.__gs26_max_display_zoom = __MAX_DISPLAY_ZOOM__;
       window.__gs26_default_center_lat = __CENTER_LAT__;
       window.__gs26_default_center_lon = __CENTER_LON__;
       window.__gs26_default_zoom = __DEFAULT_ZOOM__;
       window.__gs26_tracked_asset_title = __TRACKED_ASSET_TITLE__;
+      if (window.__gs26_fullscreen_reinit_installed) return;
+      window.__gs26_fullscreen_reinit_installed = true;
 
       function doInvalidateMulti() {
         try {
           const m = window.__gs26_ground_map;
           if (m && typeof m.invalidateSize === "function") {
             requestAnimationFrame(() => { try { m.invalidateSize(); } catch(e) {} });
-            setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 80);
-            setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 200);
-            setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 400);
+            setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 120);
           }
         } catch(e) {}
       }
@@ -713,8 +564,7 @@ fn js_setup_js_fullscreen_reinit(tiles: &str, config: &MapConfig) {
       window.__gs26_force_map_reinit = function(isFullscreen, delayMs) {
         try {
           const d = (typeof delayMs === "number") ? delayMs : 60;
-
-          setTimeout(() => {
+          const run = () => {
             try {
               if (window.__gs26_ground_station_loaded === true &&
                   typeof window.initGroundMap === "function") {
@@ -737,7 +587,13 @@ fn js_setup_js_fullscreen_reinit(tiles: &str, config: &MapConfig) {
 
             applyMarkers();
             doInvalidateMulti();
-          }, d);
+          };
+
+          if (d <= 0) {
+            run();
+          } else {
+            setTimeout(run, d);
+          }
         } catch(e) {}
       };
     })();
@@ -756,6 +612,7 @@ fn js_force_map_reinit_now(tiles: &str, config: &MapConfig, is_fullscreen: bool,
       try {
         window.__gs26_tiles_url = __TILES__;
         window.__gs26_max_native_zoom = __MAX_NATIVE_ZOOM__;
+        window.__gs26_max_display_zoom = __MAX_DISPLAY_ZOOM__;
         window.__gs26_default_center_lat = __CENTER_LAT__;
         window.__gs26_default_center_lon = __CENTER_LON__;
         window.__gs26_default_zoom = __DEFAULT_ZOOM__;
@@ -779,72 +636,67 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
 
     let script = r#"
     (function() {
-      if (window.__gs26_init_retry_installed) return;
-      window.__gs26_init_retry_installed = true;
-
       window.__gs26_tiles_url = __TILES__;
       window.__gs26_max_native_zoom = __MAX_NATIVE_ZOOM__;
+      window.__gs26_max_display_zoom = __MAX_DISPLAY_ZOOM__;
       window.__gs26_default_center_lat = __CENTER_LAT__;
       window.__gs26_default_center_lon = __CENTER_LON__;
       window.__gs26_default_zoom = __DEFAULT_ZOOM__;
       window.__gs26_tracked_asset_title = __TRACKED_ASSET_TITLE__;
+      if (window.__gs26_init_retry_installed) return;
+      window.__gs26_init_retry_installed = true;
 
-      let tries = 0;
-      const maxTries = 200; // ~10s at 50ms
-
-      const t = setInterval(() => {
-        tries++;
+      function tryInit() {
         try {
           const el = document.getElementById("ground-map");
-          if (!el) return;
-
-          if (window.__gs26_ground_station_loaded === true &&
-              typeof window.initGroundMap === "function") {
-
-            window.initGroundMap(
-              window.__gs26_tiles_url,
-              window.__gs26_default_center_lat,
-              window.__gs26_default_center_lon,
-              window.__gs26_default_zoom,
-              window.__gs26_max_native_zoom,
-              window.__gs26_tracked_asset_title
-            );
-
-            try {
-              if (typeof window.__gs26_map_size_hook_update === "function") {
-                window.__gs26_map_size_hook_update();
-              }
-            } catch (e) {}
-
-            try {
-              if (typeof window.updateGroundMapMarkers === "function") {
-                window.updateGroundMapMarkers(
-                  window.__gs26_pending_r_lat,
-                  window.__gs26_pending_r_lon,
-                  window.__gs26_pending_u_lat,
-                  window.__gs26_pending_u_lon
-                );
-              }
-            } catch (e) {}
-
-            try {
-              const m = window.__gs26_ground_map;
-              if (m && typeof m.invalidateSize === "function") {
-                requestAnimationFrame(() => { try { m.invalidateSize(); } catch(e) {} });
-                setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 80);
-                setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 200);
-              }
-            } catch (e) {}
-
-            clearInterval(t);
+          if (!el) return false;
+          if (!(window.__gs26_ground_station_loaded === true &&
+                typeof window.initGroundMap === "function")) {
+            return false;
           }
-        } catch (e) {}
 
-        if (tries >= maxTries) {
-          clearInterval(t);
-          try { console.warn("[GS26] initGroundMap retry timed out"); } catch (e) {}
+          window.initGroundMap(
+            window.__gs26_tiles_url,
+            window.__gs26_default_center_lat,
+            window.__gs26_default_center_lon,
+            window.__gs26_default_zoom,
+            window.__gs26_max_native_zoom,
+            window.__gs26_tracked_asset_title
+          );
+
+          try {
+            if (typeof window.__gs26_map_size_hook_update === "function") {
+              window.__gs26_map_size_hook_update();
+            }
+          } catch (e) {}
+
+          try {
+            if (typeof window.updateGroundMapMarkers === "function") {
+              window.updateGroundMapMarkers(
+                window.__gs26_pending_r_lat,
+                window.__gs26_pending_r_lon,
+                window.__gs26_pending_u_lat,
+                window.__gs26_pending_u_lon
+              );
+            }
+          } catch (e) {}
+
+          try {
+            const m = window.__gs26_ground_map;
+            if (m && typeof m.invalidateSize === "function") {
+              requestAnimationFrame(() => { try { m.invalidateSize(); } catch(e) {} });
+            }
+          } catch (e) {}
+
+          return true;
+        } catch (e) {
+          return false;
         }
-      }, 50);
+      }
+
+      if (!tryInit()) {
+        window.addEventListener("gs26-ground-map-ready", tryInit, { once: true });
+      }
     })();
     "#;
 
@@ -878,7 +730,7 @@ fn _js_setup_js_geolocation_watch() {
                 } catch (e) {}
                 console.warn("geolocation watch error:", err);
               },
-              { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+              { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
             );
           } catch (e) {}
         })();
@@ -903,7 +755,7 @@ fn js_request_user_geolocation_once() {
                 window.__gs26_user_lon = c.longitude;
               },
               () => {},
-              { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+              { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
             );
           } catch (e) {}
         })();
@@ -914,6 +766,7 @@ fn js_request_user_geolocation_once() {
 fn js_setup_js_resize_reinit(tiles: &str, config: &MapConfig, debounce_ms: u64) {
     let tiles_js = serde_json::to_string(tiles).unwrap_or_else(|_| "\"\"".to_string());
     let max_native_zoom_js = config.max_native_zoom.to_string();
+    let max_display_zoom_js = config.max_display_zoom.to_string();
     let center_lat_js = config.default_center_lat.to_string();
     let center_lon_js = config.default_center_lon.to_string();
     let zoom_js = config.default_zoom.to_string();
@@ -923,15 +776,15 @@ fn js_setup_js_resize_reinit(tiles: &str, config: &MapConfig, debounce_ms: u64) 
 
     let script = r#"
     (function() {
-      if (window.__gs26_resize_reinit_installed) return;
-      window.__gs26_resize_reinit_installed = true;
-
       window.__gs26_tiles_url = __TILES__;
       window.__gs26_max_native_zoom = __MAX_NATIVE_ZOOM__;
+      window.__gs26_max_display_zoom = __MAX_DISPLAY_ZOOM__;
       window.__gs26_default_center_lat = __CENTER_LAT__;
       window.__gs26_default_center_lon = __CENTER_LON__;
       window.__gs26_default_zoom = __DEFAULT_ZOOM__;
       window.__gs26_tracked_asset_title = __TRACKED_ASSET_TITLE__;
+      if (window.__gs26_resize_reinit_installed) return;
+      window.__gs26_resize_reinit_installed = true;
       const DEBOUNCE = __DEBOUNCE__;
 
       function doInvalidateMulti() {
@@ -939,9 +792,7 @@ fn js_setup_js_resize_reinit(tiles: &str, config: &MapConfig, debounce_ms: u64) 
           const m = window.__gs26_ground_map;
           if (m && typeof m.invalidateSize === "function") {
             requestAnimationFrame(() => { try { m.invalidateSize(); } catch(e) {} });
-            setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 80);
-            setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 200);
-            setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 400);
+            setTimeout(() => { try { m.invalidateSize(); } catch(e) {} }, 120);
           }
         } catch(e) {}
       }
@@ -1010,9 +861,6 @@ fn js_setup_js_resize_reinit(tiles: &str, config: &MapConfig, debounce_ms: u64) 
         else if (mq && typeof mq.addListener === "function") mq.addListener(schedule);
       } catch (e) {}
 
-      // initial settle
-      setTimeout(schedule, 0);
-      setTimeout(schedule, 250);
     })();
     "#;
 
@@ -1020,6 +868,7 @@ fn js_setup_js_resize_reinit(tiles: &str, config: &MapConfig, debounce_ms: u64) 
         &script
             .replace("__TILES__", &tiles_js)
             .replace("__MAX_NATIVE_ZOOM__", &max_native_zoom_js)
+            .replace("__MAX_DISPLAY_ZOOM__", &max_display_zoom_js)
             .replace("__CENTER_LAT__", &center_lat_js)
             .replace("__CENTER_LON__", &center_lon_js)
             .replace("__DEFAULT_ZOOM__", &zoom_js)
@@ -1035,22 +884,6 @@ fn js_setup_map_touch_guard() {
           const el = document.getElementById("ground-map");
           if (!el || el.__gs26_touch_guard) return;
           el.__gs26_touch_guard = true;
-          let last = 0;
-          el.addEventListener('touchstart', function(e) {
-            if (e.touches && e.touches.length > 1) {
-              e.preventDefault();
-              e.stopPropagation();
-              return;
-            }
-          }, { passive: false });
-          el.addEventListener('touchend', function(e) {
-            const now = Date.now();
-            if (now - last <= 300) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-            last = now;
-          }, { passive: false });
         })();
         "#,
     );
@@ -1098,7 +931,7 @@ fn js_setup_map_size_guard() {
     );
 }
 
-fn js_update_markers(r_lat: f64, r_lon: f64, u_lat: f64, u_lon: f64) {
+pub(crate) fn js_update_markers(r_lat: f64, r_lon: f64, u_lat: f64, u_lon: f64) {
     // Always cache the most recent values so the JS side can apply them later.
     js_eval(&format!(
         r#"
@@ -1153,11 +986,14 @@ fn js_center_on(lat: f64, lon: f64) {
 
             const tryCenter = function() {{
               try {{
-                if (typeof window.centerGroundMapOn !== "function") return false;
+                const centerFn = (typeof window.centerGroundMapOn === "function")
+                  ? window.centerGroundMapOn
+                  : (window.GS26 && typeof window.GS26.centerGroundMapOn === "function" ? window.GS26.centerGroundMapOn : null);
+                if (typeof centerFn !== "function") return false;
                 const clat = window.__gs26_pending_center_lat;
                 const clon = window.__gs26_pending_center_lon;
                 if (!Number.isFinite(clat) || !Number.isFinite(clon)) return false;
-                window.centerGroundMapOn(clat, clon);
+                centerFn(clat, clon);
                 return true;
               }} catch (e) {{
                 console.warn("centerGroundMapOn threw:", e);
@@ -1181,30 +1017,6 @@ fn js_center_on(lat: f64, lon: f64) {
         "#,
         lat = lat,
         lon = lon
-    ));
-}
-
-fn js_set_follow_user(enabled: bool) {
-    let enabled_js = if enabled { "true" } else { "false" };
-    let enabled_str = if enabled { "\"true\"" } else { "\"false\"" };
-    let guard_js = if enabled { "Date.now() + 1500" } else { "0" };
-    js_eval(&format!(
-        r#"
-        (function() {{
-          try {{
-            window.__gs26_follow_user_enabled = {enabled_str};
-            window.__gs26_follow_user_enable_guard_until = {guard_js};
-            if (typeof window.setGroundMapFollowUser === "function") {{
-              window.setGroundMapFollowUser({enabled});
-            }}
-          }} catch (e) {{
-            console.warn("setGroundMapFollowUser threw:", e);
-          }}
-        }})();
-        "#,
-        enabled = enabled_js,
-        enabled_str = enabled_str,
-        guard_js = guard_js
     ));
 }
 
@@ -1280,40 +1092,29 @@ fn js_now_ms() -> f64 {
     js_read_window_f64("__gs26_tmp_now_ms").unwrap_or(0.0)
 }
 
-fn js_set_orientation_mode(user_up: bool) {
-    let mode = if user_up { "user" } else { "north" };
-    js_eval(&format!(
-        r#"
-        (function() {{
-          try {{
-            window.__gs26_map_orientation_mode = {mode:?};
-            if (typeof window.setGroundMapOrientationMode === "function") {{
-              window.setGroundMapOrientationMode({mode:?});
-            }}
-          }} catch (e) {{
-            console.warn("setGroundMapOrientationMode threw:", e);
-          }}
-        }})();
-        "#,
-        mode = mode
-    ));
-}
+async fn js_read_map_orientation_mode() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_read_window_string("__gs26_map_orientation_mode").unwrap_or_else(|| "north".to_string())
+    }
 
-fn js_adjust_map_bearing(delta_deg: f64) {
-    js_eval(&format!(
-        r#"
-        (function() {{
-          try {{
-            if (typeof window.adjustGroundMapBearing === "function") {{
-              window.adjustGroundMapBearing({delta});
-            }}
-          }} catch (e) {{
-            console.warn("adjustGroundMapBearing threw:", e);
-          }}
-        }})();
-        "#,
-        delta = delta_deg
-    ));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let eval = dioxus::document::eval(
+            r#"
+            (function() {
+              try {
+                return String(window.__gs26_map_orientation_mode ?? "north");
+              } catch (e) {
+                return "north";
+              }
+            })()
+            "#,
+        );
+        eval.join::<String>()
+            .await
+            .unwrap_or_else(|_| "north".to_string())
+    }
 }
 
 #[cfg(any(target_os = "ios", target_os = "android"))]
@@ -1374,6 +1175,8 @@ fn js_read_user_latlon_from_window() -> Option<(f64, f64)> {
 #[derive(Debug, Clone, Deserialize)]
 struct MapConfig {
     max_native_zoom: u32,
+    #[serde(default = "default_max_display_zoom")]
+    max_display_zoom: u32,
     #[serde(default = "default_map_center_lat")]
     default_center_lat: f64,
     #[serde(default = "default_map_center_lon")]
@@ -1390,6 +1193,7 @@ impl Default for MapConfig {
     fn default() -> Self {
         Self {
             max_native_zoom: DEFAULT_MAX_NATIVE_ZOOM,
+            max_display_zoom: default_max_display_zoom(),
             default_center_lat: default_map_center_lat(),
             default_center_lon: default_map_center_lon(),
             default_zoom: default_map_zoom(),
@@ -1402,6 +1206,9 @@ impl Default for MapConfig {
 impl MapConfig {
     fn sanitized(mut self) -> Self {
         self.max_native_zoom = self.max_native_zoom.max(1);
+        self.max_display_zoom = self
+            .max_display_zoom
+            .max(self.max_native_zoom.saturating_add(1));
         if !self.default_center_lat.is_finite() {
             self.default_center_lat = default_map_center_lat();
         }
@@ -1419,6 +1226,10 @@ impl MapConfig {
         }
         self
     }
+}
+
+fn default_max_display_zoom() -> u32 {
+    DEFAULT_MAX_NATIVE_ZOOM.saturating_add(1)
 }
 
 fn default_map_center_lat() -> f64 {

@@ -51,8 +51,8 @@ use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
 use types::{
-    BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
-    display_flight_state,
+    display_flight_state, BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg,
+    TelemetryRow,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use version_page::VersionTab;
@@ -60,8 +60,8 @@ use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering}, Arc,
+    Mutex,
 };
 
 use once_cell::sync::Lazy;
@@ -665,21 +665,16 @@ pub fn map_tiles_url() -> String {
 
     #[cfg(target_os = "android")]
     {
-        // On Android, WRY rewrites custom protocols into host-mapped HTTP(S) URLs
-        // like `https://gs26.local/...` before handing them back to the request handler.
-        // Use HTTPS here so WebView does not block tile fetches as mixed content from
-        // the secure `https://dioxus.index.html` app origin.
+        // Android WebView raster loads work more reliably through WRY's host-mapped
+        // alias while still routing into the same native protocol handler.
         "https://gs26.local/tiles/{z}/{x}/{y}.jpg".to_string()
     }
 
     #[cfg(target_os = "ios")]
     {
-        // iOS does not use the desktop custom-protocol registration path, so
-        // `gs26://...` tile URLs never reach our proxy handler there.
-        format!(
-            "{}/tiles/{{z}}/{{x}}/{{y}}.jpg",
-            UrlConfig::base_http().trim_end_matches('/')
-        )
+        // iOS uses the same JS-side MapLibre loader path as Android, so route tiles
+        // straight through the custom protocol handler here as well.
+        "gs26://local/tiles/{z}/{x}/{y}.jpg".to_string()
     }
 
     #[cfg(all(
@@ -792,8 +787,8 @@ fn builtin_translation_es(text: &str) -> Option<&'static str> {
         "SIGN OUT" => "CERRAR SESIÓN",
         "Menu" => "Menú",
         "Close menu" => "Cerrar menú",
-        "Actions disabled" => "Acciones desactivadas",
-        "Actions enabled" => "Acciones activadas",
+        "Actions Disabled" => "Acciones Desactivadas",
+        "Actions Enabled" => "Acciones Activadas",
         "Close" | "Dismiss" => "Cerrar",
         "State" => "Estado",
         "Current Flight State" => "Estado actual de vuelo",
@@ -1384,8 +1379,8 @@ fn reset_tminus_display_latch() {
 #[cfg(test)]
 mod launch_clock_tests {
     use super::{
-        LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms,
-        monotonic_tminus_display_ms, reset_tminus_display_latch,
+        launch_clock_tminus_remaining_ms, monotonic_tminus_display_ms, reset_tminus_display_latch,
+        LaunchClockKind, LaunchClockMsg,
     };
 
     #[test]
@@ -3091,9 +3086,9 @@ fn TelemetryDashboardInner() -> Element {
         .map(|username| format!("{sign_out_prefix} {username}"))
         .unwrap_or(sign_in_label);
     let disable_actions_label = if *abort_only_mode.read() {
-        translate_text("Actions disabled")
+        translate_text("Actions Disabled")
     } else {
-        translate_text("Actions enabled")
+        translate_text("Actions Enabled")
     };
 
     let auth_button: Element = {
@@ -3138,7 +3133,7 @@ fn TelemetryDashboardInner() -> Element {
     let layout_config = layout_config;
     let mut layout_loading = layout_loading;
     let mut layout_error = layout_error;
-    let refresh_layout = move || {
+    let _refresh_layout = move || {
         let base = UrlConfig::base_http();
         let cache_key = layout_cache_key_for_base(&base);
         layout_loading.set(true);
@@ -3179,7 +3174,8 @@ fn TelemetryDashboardInner() -> Element {
         });
     };
 
-    let mut refresh_layout_on_reload = refresh_layout;
+    let rocket_gps_for_reload = rocket_gps;
+    let user_gps_for_reload = user_gps;
     let reload_button: Element = rsx! {
         button {
             style: format!("
@@ -3192,8 +3188,11 @@ fn TelemetryDashboardInner() -> Element {
                 cursor:pointer;
             ", theme.button_border, theme.button_background, theme.button_text),
             onclick: move |_| {
-                refresh_layout_on_reload();
-                clear_and_reconnect_after_connect();
+                let rocket = *rocket_gps_for_reload.read();
+                let user = *user_gps_for_reload.read();
+                let (r_lat, r_lon) = rocket.unwrap_or((f64::NAN, f64::NAN));
+                let (u_lat, u_lon) = user.unwrap_or((f64::NAN, f64::NAN));
+                crate::telemetry_dashboard::map_tab::js_update_markers(r_lat, r_lon, u_lat, u_lon);
             },
             "{reload_button_label}"
         }

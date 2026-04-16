@@ -8,15 +8,15 @@ use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::rc::Rc;
 
 use super::data_chart::{
+    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_subset, charts_cache_get_subset_per_series,
+    sender_scoped_chart_key, series_color, ChartCanvas, SeriesSwatch,
     CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
-    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
-    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
-    charts_cache_get_subset, charts_cache_get_subset_per_series, sender_scoped_chart_key,
-    series_color,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT,
+    CHART_Y_LABEL_MAX_WIDTH,
 };
 use super::{
-    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value,
-    reseed_note_banner, reseed_status_note, translate_text,
+    latest_telemetry_row, latest_telemetry_value, reseed_note_banner, reseed_status_note,
+    translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
 };
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
@@ -76,6 +76,12 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
   .gs26-data-tab-nav button, .gs26-data-subtab-nav button {
     width:100%;
     min-height:2.15rem;
+  }
+}
+@media (max-width: 980px) {
+  .gs26-data-graph-groups,
+  .gs26-data-graph-groups-fullscreen {
+    grid-template-columns:minmax(0, 1fr) !important;
   }
 }
 @media (max-width: 360px) {
@@ -669,6 +675,11 @@ fn DataGraphPanel(
     if *show_chart.read() || *is_fullscreen.read() {
         let _ = *CHART_RENDER_EPOCH.read();
     }
+    let chart_groups_grid_style = if chart_groups.len() >= 2 {
+        "display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; width:100%; align-items:start;"
+    } else {
+        "display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; width:100%; align-items:start;"
+    };
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     let on_toggle_fullscreen = move |_: Event<MouseData>| {
@@ -701,7 +712,8 @@ fn DataGraphPanel(
                 }
 
                 if *show_chart.read() {
-                    div { style: "display:flex; flex-direction:column; gap:12px;",
+                    div { style: "width:100%;",
+                        div { class: "gs26-data-graph-groups", style: "{chart_groups_grid_style}",
                         for group in chart_groups.iter() {
                             {render_chart_group(
                                 group,
@@ -718,6 +730,7 @@ fn DataGraphPanel(
                                 &y_pct,
                                 &theme,
                             )}
+                        }
                         }
                     }
                 }
@@ -741,7 +754,8 @@ fn DataGraphPanel(
                         }
 
                         div {
-                            style: "flex:1; min-height:0; width:100%; overflow-y:auto; display:flex; flex-direction:column; gap:12px;",
+                            style: "flex:1; min-height:0; width:100%; overflow-y:auto;",
+                            div { class: "gs26-data-graph-groups-fullscreen", style: "{chart_groups_grid_style}",
                             for group in chart_groups.iter() {
                                 {render_chart_group(
                                     group,
@@ -758,6 +772,7 @@ fn DataGraphPanel(
                                     &y_pct,
                                     &theme,
                                 )}
+                            }
                             }
                         }
                     }

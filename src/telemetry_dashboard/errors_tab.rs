@@ -1,4 +1,4 @@
-use super::{AlertMsg, format_timestamp_ms_clock, layout::ThemeConfig, translate_text};
+use super::{format_timestamp_ms_clock, layout::ThemeConfig, translate_text, AlertMsg};
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
 

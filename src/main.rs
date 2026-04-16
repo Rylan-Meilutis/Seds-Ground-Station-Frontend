@@ -5,11 +5,11 @@ mod telemetry_dashboard;
 
 use dioxus::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
-use dioxus_desktop::RequestAsyncResponder;
-#[cfg(not(target_arch = "wasm32"))]
 use dioxus_desktop::tao::window::WindowBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use dioxus_desktop::wry::http::{Request as HttpRequest, Response as HttpResponse};
+#[cfg(not(target_arch = "wasm32"))]
+use dioxus_desktop::RequestAsyncResponder;
 #[cfg(not(target_arch = "wasm32"))]
 use image::ImageFormat;
 #[cfg(not(target_arch = "wasm32"))]
@@ -17,7 +17,9 @@ use std::backtrace::Backtrace;
 #[cfg(not(target_arch = "wasm32"))]
 use std::borrow::Cow;
 #[cfg(not(target_arch = "wasm32"))]
-use std::fs::{OpenOptions, create_dir_all};
+use std::fs::{create_dir_all, OpenOptions};
+#[cfg(not(target_arch = "wasm32"))]
+use std::hash::{Hash, Hasher};
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
@@ -26,6 +28,8 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{collections::hash_map::DefaultHasher, fs};
 
 #[cfg(target_arch = "wasm32")]
 /// Installs a browser panic hook so Rust panics appear in the JS console.
@@ -81,6 +85,38 @@ fn append_native_log(message: &str) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = file.write_all(line.as_bytes());
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tile_cache_root() -> PathBuf {
+    std::env::temp_dir().join("gs26-tile-cache")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tile_cache_path(base: &str, z: u32, x: u32, y: u32) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    base.hash(&mut hasher);
+    let base_key = format!("{:016x}", hasher.finish());
+    tile_cache_root()
+        .join(base_key)
+        .join(z.to_string())
+        .join(x.to_string())
+        .join(format!("{y}.jpg"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_cached_tile(base: &str, z: u32, x: u32, y: u32) -> Option<Vec<u8>> {
+    let path = tile_cache_path(base, z, x, y);
+    fs::read(path).ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_cached_tile(base: &str, z: u32, x: u32, y: u32, bytes: &[u8]) {
+    let path = tile_cache_path(base, z, x, y);
+    if let Some(parent) = path.parent() {
+        let _ = create_dir_all(parent);
+    }
+    let _ = fs::write(path, bytes);
 }
 
 #[cfg(target_os = "android")]
@@ -199,12 +235,18 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         body: Vec<u8>,
     ) -> HttpResponse<Cow<'static, [u8]>> {
         let mut builder = HttpResponse::builder().status(status);
+        builder = builder
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            .header("Access-Control-Allow-Headers", "*")
+            .header("Cross-Origin-Resource-Policy", "cross-origin");
         if let Some(ct) = content_type {
             builder = builder.header("Content-Type", ct);
         }
         builder.body(Cow::Owned(body)).unwrap_or_else(|_| {
             HttpResponse::builder()
                 .status(500)
+                .header("Access-Control-Allow-Origin", "*")
                 .body(Cow::Owned(Vec::new()))
                 .unwrap()
         })
@@ -263,7 +305,15 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
 
     let upstream = match client.get(tile_url).send() {
         Ok(r) => r,
-        Err(_) => return build_response(502, None, Vec::new()),
+        Err(err) => {
+            append_native_log(&format!(
+                "[protocol] upstream fetch failed, attempting cache fallback: {err}"
+            ));
+            if let Some(cached) = read_cached_tile(&base, z, x, y) {
+                return build_response(200, Some("image/jpeg"), cached);
+            }
+            return build_response(502, None, Vec::new());
+        }
     };
 
     let status = upstream.status().as_u16();
@@ -274,11 +324,25 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         .map(|s| s.to_string());
     let bytes = match upstream.bytes() {
         Ok(b) => b.to_vec(),
-        Err(_) => return build_response(502, None, Vec::new()),
+        Err(err) => {
+            append_native_log(&format!(
+                "[protocol] upstream body read failed, attempting cache fallback: {err}"
+            ));
+            if let Some(cached) = read_cached_tile(&base, z, x, y) {
+                return build_response(200, content_type.as_deref().or(Some("image/jpeg")), cached);
+            }
+            return build_response(502, None, Vec::new());
+        }
     };
 
     if status == 404 {
         return build_response(204, content_type.as_deref(), Vec::new());
+    }
+
+    if (200..300).contains(&status) && !bytes.is_empty() {
+        write_cached_tile(&base, z, x, y, &bytes);
+    } else if let Some(cached) = read_cached_tile(&base, z, x, y) {
+        return build_response(200, content_type.as_deref().or(Some("image/jpeg")), cached);
     }
 
     build_response(status, content_type.as_deref(), bytes)

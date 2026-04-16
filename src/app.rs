@@ -11,13 +11,13 @@ use crate::telemetry_dashboard::layout::ThemeConfig;
 use dioxus::prelude::*;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 use dioxus_desktop::use_window;
-use dioxus_router::{Routable, Router, use_navigator};
+use dioxus_router::{use_navigator, Routable, Router};
 
 #[allow(unused_imports)]
 use crate::telemetry_dashboard::{self, UrlConfig};
 
-const INLINE_LEAFLET_CSS: &str = include_str!("../static/vendor/leaflet/leaflet.css");
-const INLINE_LEAFLET_JS: &str = include_str!("../static/vendor/leaflet/leaflet.js");
+const INLINE_MAPLIBRE_CSS: &str = include_str!("../static/vendor/maplibre-gl/maplibre-gl.css");
+const INLINE_MAPLIBRE_JS: &str = include_str!("../static/vendor/maplibre-gl/maplibre-gl.js");
 const INLINE_GROUND_MAP_JS: &str = include_str!("../static/ground_map.js");
 
 // -------------------------
@@ -620,7 +620,7 @@ async fn http_probe_with_client(
     path: &'static str,
     url: String,
 ) -> Result<(u16, String), String> {
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     const MAX_BODY_BYTES: usize = 4096;
     const BODY_SNIP_TIMEOUT_MS: u64 = 400;
@@ -961,8 +961,8 @@ pub fn App() -> Element {
     }
     let map_assets: Element = {
         rsx! {
-            document::Style { "{INLINE_LEAFLET_CSS}" }
-            document::Script { "{INLINE_LEAFLET_JS}" }
+            document::Style { "{INLINE_MAPLIBRE_CSS}" }
+            document::Script { "{INLINE_MAPLIBRE_JS}" }
             document::Script { "{INLINE_GROUND_MAP_JS}" }
         }
     };
@@ -1785,6 +1785,10 @@ pub fn Dashboard() -> Element {
     let nav = use_navigator();
     let mut auth_state = use_signal(|| None::<Result<AuthSessionStatus, String>>);
     let mut auth_state_base = use_signal(String::new);
+    #[cfg(not(target_arch = "wasm32"))]
+    let can_render_dashboard_while_auth_check_runs = auth::current_session().is_some()
+        || auth::current_status().permissions.view_data
+        || telemetry_dashboard::dashboard_has_prior_backend_connection();
     use_effect(move || {
         let base = UrlConfig::base_http();
         if *auth_state_base.read() != base {
@@ -1801,6 +1805,10 @@ pub fn Dashboard() -> Element {
     });
 
     match auth_state.read().as_ref() {
+        #[cfg(not(target_arch = "wasm32"))]
+        None if can_render_dashboard_while_auth_check_runs => {
+            rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
+        }
         None => rsx! {
             div { style: format!("height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;", shell_theme().app_background, shell_theme().text_primary),
                 div {

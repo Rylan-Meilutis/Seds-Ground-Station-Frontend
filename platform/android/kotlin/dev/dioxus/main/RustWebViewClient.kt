@@ -19,6 +19,7 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
+import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
@@ -32,6 +33,7 @@ class RustWebViewClient(private val context: Context): WebViewClient() {
     var currentUrl: String = "about:blank"
     private var lastInterceptedUrl: Uri? = null
     private var pendingUrlRedirect: String? = null
+    private val tileCacheDir = File(context.cacheDir, "gs26-map-tiles").apply { mkdirs() }
 
     private val assetLoader = WebViewAssetLoader.Builder()
         .setDomain(assetLoaderDomain())
@@ -144,6 +146,7 @@ class RustWebViewClient(private val context: Context): WebViewClient() {
 
         val upstreamUrl = normalizedBase.trimEnd('/') + path
         val skipTlsVerify = loadSkipTlsVerify(normalizedBase)
+        val cacheFile = tileCacheFile(normalizedBase, path)
         Log.e(tag, "proxying tile uri=$uri upstream=$upstreamUrl skipTls=$skipTlsVerify")
 
         return try {
@@ -158,19 +161,71 @@ class RustWebViewClient(private val context: Context): WebViewClient() {
             val reason = connection.responseMessage ?: "OK"
             val mimeType = connection.contentType?.substringBefore(';') ?: "image/jpeg"
             val encoding = connection.contentEncoding ?: "binary"
-            val input = selectResponseStream(connection)
             val headers = mutableMapOf<String, String>()
             connection.headerFields.forEach { (key, values) ->
                 if (key != null && values != null && values.isNotEmpty()) {
                     headers[key] = values.joinToString(",")
                 }
             }
+            headers["Access-Control-Allow-Origin"] = "*"
+            headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+            headers["Access-Control-Allow-Headers"] = "*"
+            headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+            val bytes = selectResponseStream(connection).use { it.readBytes() }
 
-            WebResourceResponse(mimeType, encoding, status, reason, headers, input)
+            if (status in 200..299 && bytes.isNotEmpty()) {
+                writeTileCache(cacheFile, bytes)
+            } else if (cacheFile.exists()) {
+                return cachedTileResponse(cacheFile, mimeType, encoding)
+            }
+
+            WebResourceResponse(
+                mimeType,
+                encoding,
+                status,
+                reason,
+                headers,
+                ByteArrayInputStream(bytes)
+            )
         } catch (exc: Exception) {
             Log.e(tag, "tile proxy failed uri=$uri error=${exc.message}", exc)
+            if (cacheFile.exists()) {
+                return cachedTileResponse(cacheFile, "image/jpeg", "binary")
+            }
             errorResponse(502, "Bad Gateway", exc.message ?: "Tile proxy failed")
         }
+    }
+
+    private fun tileCacheFile(baseUrl: String, path: String): File {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$baseUrl|$path".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        return File(tileCacheDir, "$digest.bin")
+    }
+
+    private fun writeTileCache(file: File, bytes: ByteArray) {
+        try {
+            file.parentFile?.mkdirs()
+            file.writeBytes(bytes)
+        } catch (exc: Exception) {
+            Log.e(tag, "tile cache write failed file=${file.absolutePath} error=${exc.message}", exc)
+        }
+    }
+
+    private fun cachedTileResponse(file: File, mimeType: String, encoding: String): WebResourceResponse {
+        return WebResourceResponse(
+            mimeType,
+            encoding,
+            200,
+            "OK",
+            mapOf(
+                "Access-Control-Allow-Origin" to "*",
+                "Access-Control-Allow-Methods" to "GET, OPTIONS",
+                "Access-Control-Allow-Headers" to "*",
+                "Cross-Origin-Resource-Policy" to "cross-origin",
+            ),
+            file.inputStream()
+        )
     }
 
     private fun openConnection(url: String, skipTlsVerify: Boolean): HttpURLConnection {
@@ -203,7 +258,12 @@ class RustWebViewClient(private val context: Context): WebViewClient() {
             "utf-8",
             status,
             reason,
-            emptyMap(),
+            mapOf(
+                "Access-Control-Allow-Origin" to "*",
+                "Access-Control-Allow-Methods" to "GET, OPTIONS",
+                "Access-Control-Allow-Headers" to "*",
+                "Cross-Origin-Resource-Policy" to "cross-origin",
+            ),
             ByteArrayInputStream(message.toByteArray())
         )
     }
