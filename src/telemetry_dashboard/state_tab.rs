@@ -32,6 +32,13 @@ use crate::telemetry_dashboard::map_tab::MapTab;
 const COMBINED_CHART_GRID_LEFT: f32 = CHART_GRID_LEFT as f32;
 const VERTICAL_SCALE_LABEL_ROW_GAP: f64 = 17.0;
 const VERTICAL_SCALE_LABEL_RAIL_GAP: f64 = 4.0;
+const STATE_TAB_RESPONSIVE_CSS: &str = r#"
+@media (max-width: 980px) {
+  .gs26-state-chart-grid {
+    grid-template-columns:minmax(0, 1fr) !important;
+  }
+}
+"#;
 
 #[derive(Clone)]
 struct ScaleLabelPlacement {
@@ -117,6 +124,7 @@ pub fn StateTab(
 
     rsx! {
         div { style: "padding:10px 12px; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:10px; padding-bottom:100px;",
+            style { "{STATE_TAB_RESPONSIVE_CSS}" }
             {content}
         }
     }
@@ -201,19 +209,77 @@ fn render_state_section(
         .map(|title| translate_text(&title))
         .unwrap_or_else(|| translate_text("Section"));
     let horizontal_values = section_uses_horizontal_values(section);
-    let content_style = if horizontal_values {
-        "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap:6px; align-items:start; width:100%; min-width:0;"
+    let is_compact_horizontal_value_widget = |widget: &StateWidget| {
+        let summary_item_count = widget.items.as_ref().map_or(0, Vec::len);
+        let valve_item_count = widget.valves.as_ref().map_or(0, Vec::len);
+        matches!(
+            widget.kind,
+            StateWidgetKind::Summary | StateWidgetKind::ValveState
+        ) && ((widget.kind == StateWidgetKind::Summary && summary_item_count <= 1)
+            || (widget.kind == StateWidgetKind::ValveState && valve_item_count <= 1))
+    };
+    let compact_horizontal_value_widgets = horizontal_values
+        && section
+            .widgets
+            .iter()
+            .all(is_compact_horizontal_value_widget);
+    let has_chart_widgets = section
+        .widgets
+        .iter()
+        .any(|widget| matches!(widget.kind, StateWidgetKind::Chart));
+    let compact_non_chart_widget_count = section
+        .widgets
+        .iter()
+        .filter(|widget| !matches!(widget.kind, StateWidgetKind::Chart))
+        .filter(|widget| is_compact_horizontal_value_widget(widget))
+        .count();
+    let all_non_chart_widgets_compact = has_chart_widgets
+        && section
+            .widgets
+            .iter()
+            .filter(|widget| !matches!(widget.kind, StateWidgetKind::Chart))
+            .all(is_compact_horizontal_value_widget);
+    let content_style = if compact_horizontal_value_widgets {
+        let column_count = section.widgets.len().clamp(1, 4);
+        format!(
+            "display:grid; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); gap:6px; align-items:start; width:100%; min-width:0;"
+        )
+    } else if horizontal_values
+        && has_chart_widgets
+        && all_non_chart_widgets_compact
+        && compact_non_chart_widget_count > 0
+    {
+        let column_count = compact_non_chart_widget_count.clamp(1, 4);
+        format!(
+            "display:grid; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); gap:6px; align-items:start; width:100%; min-width:0;"
+        )
+    } else if horizontal_values && has_chart_widgets {
+        "display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; align-items:start; width:100%; min-width:0;"
+            .to_string()
+    } else if horizontal_values {
+        let column_count = section.widgets.len().clamp(1, 4);
+        format!(
+            "display:grid; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); gap:6px; align-items:start; width:100%; min-width:0;"
+        )
     } else {
-        "display:flex; flex-direction:column; gap:0; width:100%; min-width:0;"
+        "display:flex; flex-direction:column; gap:0; width:100%; min-width:0;".to_string()
     };
 
     rsx! {
         Section { title: title, style: section.style.clone(), theme: theme.clone(), use_layout_theme_overrides: use_layout_theme_overrides,
-            div { style: "{content_style}",
+            div {
+                class: if horizontal_values && has_chart_widgets { "gs26-state-chart-grid" } else { "" },
+                style: "{content_style}",
                 for (widget_idx, widget) in section.widgets.iter().enumerate() {
                     div {
                         key: "state-widget-{widget_idx}-{widget.data_type.as_deref().unwrap_or_default()}-{widget.chart_title.as_deref().unwrap_or_default()}",
-                        style: state_widget_container_style(widget, horizontal_values),
+                        style: state_widget_container_style(
+                            widget,
+                            horizontal_values,
+                            has_chart_widgets,
+                            compact_horizontal_value_widgets,
+                            all_non_chart_widgets_compact,
+                        ),
                         {render_state_widget(
                             widget,
                             boards,
@@ -237,12 +303,40 @@ fn render_state_section(
     }
 }
 
-fn state_widget_container_style(widget: &StateWidget, horizontal_values: bool) -> &'static str {
+fn state_widget_container_style(
+    widget: &StateWidget,
+    horizontal_values: bool,
+    has_chart_widgets: bool,
+    compact_horizontal_value_widgets: bool,
+    all_non_chart_widgets_compact: bool,
+) -> &'static str {
     let summary_item_count = widget.items.as_ref().map_or(0, Vec::len);
     let valve_item_count = widget.valves.as_ref().map_or(0, Vec::len);
     let single_horizontal_value = horizontal_values
         && ((widget.kind == StateWidgetKind::Summary && summary_item_count <= 1)
             || (widget.kind == StateWidgetKind::ValveState && valve_item_count <= 1));
+    if compact_horizontal_value_widgets {
+        return "grid-column:auto / span 1; min-width:0; width:100%;";
+    }
+    if has_chart_widgets && all_non_chart_widgets_compact {
+        if matches!(widget.kind, StateWidgetKind::Chart) {
+            return "grid-column:1 / -1; min-width:0; width:100%;";
+        }
+        return "grid-column:auto / span 1; min-width:0; width:100%;";
+    }
+    if single_horizontal_value {
+        return "grid-column:auto / span 1; min-width:0; width:100%;";
+    }
+    if has_chart_widgets && matches!(widget.kind, StateWidgetKind::Chart) {
+        if widget.full_width
+            || widget
+                .width_fraction
+                .is_some_and(|fraction| fraction >= 0.99)
+        {
+            return "grid-column:1 / -1; min-width:0; width:100%;";
+        }
+        return "grid-column:auto / span 1; min-width:0; width:100%;";
+    }
     if (widget.full_width && !single_horizontal_value)
         || widget.kind == StateWidgetKind::Actions
         || (horizontal_values && widget.kind == StateWidgetKind::Summary && summary_item_count > 1)
@@ -1347,11 +1441,11 @@ fn summary_row(
         })
         .collect::<Vec<_>>();
     let grid_style = if latest.len() == 1 && !fill_parent_single {
-        "display:grid; gap:6px; margin-bottom:0; grid-template-columns:minmax(0, min(220px, 100%)); justify-content:start; width:100%; min-width:0; align-items:stretch;".to_string()
+        "display:grid; gap:4px; margin-bottom:0; grid-template-columns:minmax(0, min(220px, 100%)); justify-content:start; width:100%; min-width:0; align-items:stretch;".to_string()
     } else {
         let column_count = latest.len().clamp(1, 4);
         format!(
-            "display:grid; gap:6px; margin-bottom:0; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); width:100%; min-width:0; align-items:stretch;"
+            "display:grid; gap:4px; margin-bottom:0; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); width:100%; min-width:0; align-items:stretch;"
         )
     };
 
@@ -1426,16 +1520,16 @@ fn SummaryCard(
     };
 
     rsx! {
-        div { style: "padding:7px 8px; border-radius:10px; background:{background}; border:1px solid {border}; width:100%; min-width:0; box-sizing:border-box;",
-            div { style: "font-size:11px; line-height:1.05; color:{label_color};", "{translate_text(&label)}" }
-            div { style: "display:flex; flex-wrap:wrap; align-items:baseline; column-gap:5px; row-gap:1px; margin-top:1px; max-width:100%; overflow:hidden;" ,
-                div { style: "font-size:16px; color:{value_color}; line-height:1.05; min-width:0; width:9ch; max-width:9ch; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{value}" }
+        div { style: "padding:5px 6px; border-radius:8px; background:{background}; border:1px solid {border}; width:100%; min-width:0; box-sizing:border-box;",
+            div { style: "font-size:10px; line-height:1.0; color:{label_color};", "{translate_text(&label)}" }
+            div { style: "display:flex; flex-direction:column; align-items:flex-start; gap:0; margin-top:1px; min-width:0; max-width:100%;",
+                div { style: "font-size:14px; color:{value_color}; line-height:1.0; min-width:0; max-width:100%; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{value}" }
                 if let Some(target) = target {
-                    div { style: "font-size:10px; color:{theme.info_text}; white-space:nowrap; width:15ch; min-width:min(15ch, 100%); max-width:100%; text-align:left; flex:0 1 15ch; overflow:hidden; text-overflow:clip; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{target}" }
+                    div { style: "font-size:9px; color:{theme.info_text}; min-width:0; max-width:100%; text-align:left; overflow:hidden; text-overflow:ellipsis; font-variant-numeric:tabular-nums; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{target}" }
                 }
             }
             if let Some(t) = mm {
-                div { style: "font-size:10px; color:{theme.text_muted}; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", "{t}" }
+                div { style: "font-size:9px; color:{theme.text_muted}; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", "{t}" }
             }
         }
     }
