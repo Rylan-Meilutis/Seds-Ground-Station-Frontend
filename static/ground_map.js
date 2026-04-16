@@ -34,6 +34,7 @@ let suppressFollowCameraUntilMs = 0;
 let suppressFollowDisableUntilMs = 0;
 let followEnableGuardUntilMs = 0;
 let internalCameraUpdateUntilMs = 0;
+let pendingUserUpRealign = false;
 let userHeadingDegRaw = null;
 let userHeadingDeg = null;
 let nativeHeadingDeg = null;
@@ -71,6 +72,7 @@ const USER_MARKER_SMOOTH_MIN_MS = 80;
 const USER_MARKER_SMOOTH_MAX_MS = 220;
 const USER_MARKER_SMOOTH_SNAP_DISTANCE_M = 20.0;
 const USER_MARKER_SMOOTH_SKIP_M = 0.35;
+const USER_ORIENTATION_DEADZONE_DEG = 3;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
 const GUIDE_SOURCE_ID = "gs26-guide-source";
@@ -569,7 +571,18 @@ function rememberMapView() {
         zoom: groundMap.getZoom(),
     };
     mapBearingDeg = normalizeAngle(groundMap.getBearing());
+    syncWindowMapControlState();
     persistMapStateSoon();
+}
+
+function syncWindowMapControlState() {
+    try {
+        window.__gs26_follow_user_enabled = followUserEnabled ? "true" : "false";
+        window.__gs26_follow_user_enable_guard_until = followEnableGuardUntilMs;
+        window.__gs26_map_orientation_mode = orientationMode;
+        window.__gs26_map_bearing_deg = mapBearingDeg;
+    } catch (e) {
+    }
 }
 
 function effectiveMaxNativeZoomFor(configMaxNativeZoom) {
@@ -914,7 +927,7 @@ function updateUserMarkerRotation() {
 }
 
 function centerControlMode() {
-    if (followUserEnabled && orientationMode === "user") return "user-up";
+    if (followUserEnabled && orientationMode === "user" && hasUsableUserHeading()) return "user-up";
     if (followUserEnabled) return "follow";
     return "idle";
 }
@@ -1124,6 +1137,10 @@ function fusedHeadingTarget() {
     return null;
 }
 
+function hasUsableUserHeading() {
+    return Number.isFinite(fusedHeadingTarget()) || Number.isFinite(userHeadingDeg);
+}
+
 function applyMapOrientation() {
     if (!groundMap) return;
     const targetBearing = normalizeAngle(mapBearingDeg);
@@ -1153,7 +1170,11 @@ function applyFusedHeading() {
     }
 
     if (followUserEnabled && orientationMode === "user") {
-        mapBearingDeg = normalizeAngle(userHeadingDeg);
+        const nextBearing = normalizeAngle(userHeadingDeg);
+        if (pendingUserUpRealign || Math.abs(shortestAngleDiff(mapBearingDeg, nextBearing)) >= USER_ORIENTATION_DEADZONE_DEG) {
+            mapBearingDeg = nextBearing;
+            pendingUserUpRealign = false;
+        }
     }
     updateUserMarkerRotation();
     applyMapOrientation();
@@ -1260,18 +1281,17 @@ function unlockMapInteraction(options) {
         followEnableGuardUntilMs = 0;
         changed = true;
     }
-    if (dropOrientation && orientationMode === "user") {
+    if (dropOrientation && (force || orientationMode !== "manual")) {
         orientationMode = "manual";
+        pendingUserUpRealign = false;
         changed = true;
     }
     if (!changed) return;
 
     suppressFollowDisableUntilMs = 0;
+    syncWindowMapControlState();
     persistMapState();
     try {
-        window.__gs26_follow_user_enabled = followUserEnabled ? "true" : "false";
-        window.__gs26_follow_user_enable_guard_until = followEnableGuardUntilMs;
-        window.__gs26_map_orientation_mode = orientationMode;
         if (!followUserEnabled) {
             window.dispatchEvent(new CustomEvent("gs26-follow-user-changed", {
                 detail: {enabled: false},
@@ -1308,16 +1328,23 @@ function syncRequestedMapControlState() {
 
 function setGroundMapOrientationMode(mode) {
     orientationMode = mode === "user" ? "user" : (mode === "manual" ? "manual" : "north");
+    pendingUserUpRealign = orientationMode === "user";
     if (orientationMode === "north") {
         mapBearingDeg = 0;
-    } else if (orientationMode === "user" && followUserEnabled && Number.isFinite(userHeadingDeg)) {
-        mapBearingDeg = normalizeAngle(userHeadingDeg);
+        pendingUserUpRealign = false;
+    } else if (orientationMode === "user" && followUserEnabled) {
+        const headingTarget = fusedHeadingTarget();
+        if (Number.isFinite(headingTarget)) {
+            userHeadingDegRaw = headingTarget;
+            userHeadingDeg = headingTarget;
+            mapBearingDeg = normalizeAngle(headingTarget);
+            pendingUserUpRealign = false;
+        } else if (Number.isFinite(userHeadingDeg)) {
+            mapBearingDeg = normalizeAngle(userHeadingDeg);
+            pendingUserUpRealign = false;
+        }
     }
-    try {
-        window.__gs26_map_orientation_mode = orientationMode;
-        window.__gs26_map_bearing_deg = mapBearingDeg;
-    } catch (e) {
-    }
+    syncWindowMapControlState();
     persistMapState();
     applyMapOrientation();
     updateCenterControlAppearance();
@@ -1326,10 +1353,8 @@ function setGroundMapOrientationMode(mode) {
 function enterManualOrientationMode() {
     if (orientationMode !== "manual") {
         orientationMode = "manual";
-        try {
-            window.__gs26_map_orientation_mode = "manual";
-        } catch (e) {
-        }
+        pendingUserUpRealign = false;
+        syncWindowMapControlState();
     }
     updateCenterControlAppearance();
 }
@@ -1338,12 +1363,9 @@ function adjustGroundMapBearing(deltaDeg) {
     const delta = Number(deltaDeg);
     if (!Number.isFinite(delta)) return;
     orientationMode = "manual";
+    pendingUserUpRealign = false;
     mapBearingDeg = normalizeAngle(mapBearingDeg + delta);
-    try {
-        window.__gs26_map_orientation_mode = orientationMode;
-        window.__gs26_map_bearing_deg = mapBearingDeg;
-    } catch (e) {
-    }
+    syncWindowMapControlState();
     persistMapState();
     applyMapOrientation();
 }
@@ -1351,22 +1373,21 @@ function adjustGroundMapBearing(deltaDeg) {
 function setGroundMapBearing(deg) {
     if (!Number.isFinite(deg)) return;
     orientationMode = "manual";
+    pendingUserUpRealign = false;
     mapBearingDeg = normalizeAngle(deg);
-    try {
-        window.__gs26_map_orientation_mode = orientationMode;
-        window.__gs26_map_bearing_deg = mapBearingDeg;
-    } catch (e) {
-    }
+    syncWindowMapControlState();
     persistMapState();
     applyMapOrientation();
 }
 
 function setGroundMapFollowUser(enabled) {
     followUserEnabled = enabled === true;
+    if (!followUserEnabled) {
+        pendingUserUpRealign = false;
+    }
     followEnableGuardUntilMs = followUserEnabled ? Date.now() + 5000 : 0;
+    syncWindowMapControlState();
     try {
-        window.__gs26_follow_user_enabled = followUserEnabled ? "true" : "false";
-        window.__gs26_follow_user_enable_guard_until = followEnableGuardUntilMs;
         window.dispatchEvent(new CustomEvent("gs26-follow-user-changed", {
             detail: {enabled: followUserEnabled},
         }));
@@ -1398,12 +1419,11 @@ function centerOnUserNow() {
 function activateLocateControl() {
     if (!followUserEnabled) {
         setGroundMapFollowUser(true);
-        setGroundMapOrientationMode("north");
         centerOnUserNow();
         return;
     }
 
-    if (orientationMode !== "user") {
+    if (orientationMode !== "user" && hasUsableUserHeading()) {
         setGroundMapOrientationMode("user");
         centerOnUserNow();
         return;
@@ -1628,7 +1648,7 @@ function installCustomGestureHooks() {
     canvas.addEventListener("wheel", (event) => {
         if (!event.shiftKey || !groundMap) return;
         event.preventDefault();
-        unlockMapInteraction({force: true, dropFollow: false, dropOrientation: true});
+        unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
         enterManualOrientationMode();
         mapBearingDeg = normalizeAngle(mapBearingDeg + event.deltaY * 0.18);
         applyMapOrientation();
@@ -1641,7 +1661,7 @@ function installCustomGestureHooks() {
             return;
         }
         event.preventDefault();
-        unlockMapInteraction({force: true, dropFollow: false, dropOrientation: true});
+        unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
         enterManualOrientationMode();
         state.shiftRotateActive = true;
         state.shiftRotateStartX = event.clientX;
@@ -1707,14 +1727,18 @@ function installCustomGestureHooks() {
 
         const currentAngle = touchAngle(event.touches);
         const angleDelta = shortestAngleDiff(state.touchGesture.startAngle, currentAngle);
-        let nextBearing = state.touchGesture.startBearing;
+        let nextBearing = normalizeAngle(groundMap.getBearing());
+        let bearingChanged = false;
         if (Math.abs(angleDelta) >= TWO_TOUCH_ROTATE_THRESHOLD_DEG) {
-            unlockMapInteraction({force: true, dropFollow: false, dropOrientation: true});
+            unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
             enterManualOrientationMode();
             nextBearing = normalizeAngle(state.touchGesture.startBearing - angleDelta);
+            bearingChanged = true;
         }
 
-        mapBearingDeg = nextBearing;
+        if (bearingChanged) {
+            mapBearingDeg = nextBearing;
+        }
         markInternalCameraUpdate(16);
         groundMap.jumpTo({
             center: [nextCenter.lng, nextCenter.lat],
@@ -1766,13 +1790,22 @@ function installMapHooks() {
         mapBearingDeg = normalizeAngle(groundMap.getBearing());
         if (!isInternalCameraUpdate() && orientationMode !== "manual") {
             orientationMode = "manual";
-            try {
-                window.__gs26_map_orientation_mode = orientationMode;
-            } catch (e) {
-            }
+            pendingUserUpRealign = false;
         }
+        syncWindowMapControlState();
         updateUserMarkerRotation();
         rememberMapView();
+        updateCenterControlAppearance();
+    });
+    groundMap.on("rotate", () => {
+        if (!groundMap || isInternalCameraUpdate()) return;
+        if (orientationMode !== "manual") {
+            orientationMode = "manual";
+            pendingUserUpRealign = false;
+        }
+        mapBearingDeg = normalizeAngle(groundMap.getBearing());
+        syncWindowMapControlState();
+        updateUserMarkerRotation();
         updateCenterControlAppearance();
     });
 
@@ -1791,8 +1824,9 @@ function installMapHooks() {
     });
     groundMap.on("rotatestart", () => {
         suppressHighResPrefetch(2500);
+        suppressFollowCameraUntilMs = Date.now() + 1500;
         if (isInternalCameraUpdate()) return;
-        unlockMapInteraction({force: true, dropFollow: false, dropOrientation: true});
+        unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
     });
     for (const eventName of ["pitchstart"]) {
         groundMap.on(eventName, disableFollowUserFromMapInteraction);
@@ -1931,6 +1965,9 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     }
     if (groundMap.touchZoomRotate && typeof groundMap.touchZoomRotate.enable === "function") {
         groundMap.touchZoomRotate.enable();
+        if (typeof groundMap.touchZoomRotate.disableRotation === "function") {
+            groundMap.touchZoomRotate.disableRotation();
+        }
     }
     if (groundMap.touchPitch && typeof groundMap.touchPitch.disable === "function") {
         groundMap.touchPitch.disable();
