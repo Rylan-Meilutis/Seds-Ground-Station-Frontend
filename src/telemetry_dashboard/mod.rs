@@ -29,13 +29,13 @@ pub mod warnings_tab;
 
 use crate::app::Route;
 use crate::auth;
+#[cfg(not(target_arch = "wasm32"))]
+use data_chart::charts_cache_request_refit;
 use data_chart::{
-    charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build,
+    charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build, charts_cache_clear_active,
     charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_reseed_ingest_row,
     configure_sender_split_data_types,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use data_chart::{charts_cache_clear_active, charts_cache_request_refit};
 
 use crate::telemetry_dashboard::actions_tab::ActionsTab;
 use calibration_tab::CalibrationTab;
@@ -409,12 +409,116 @@ const THEME_PRESET_STORAGE_KEY: &str = "gs_theme_preset";
 const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
+const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
 const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v9_";
 const NOTIFICATION_DISMISSED_STORAGE_KEY: &str = "gs_notification_dismissed_ids_v1";
 const _SKIP_TLS_VERIFY_KEY_PREFIX: &str = "gs_skip_tls_verify_";
 const NOTIFICATION_AUTO_DISMISS_MS: u32 = 5_000;
 const MAX_ACTIVE_NOTIFICATIONS: usize = 2;
 const MAX_NOTIFICATION_HISTORY: usize = 500;
+
+fn clear_cached_layout_configs() {
+    persist::remove_prefix(LAYOUT_CACHE_KEY_PREFIX);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn clear_browser_tile_and_data_caches() {
+    js_eval(
+        r#"
+        (async function() {
+          try {
+            if (typeof window !== "undefined" && window.__gs26ChartCanvasCache && typeof window.__gs26ChartCanvasCache.clear === "function") {
+              window.__gs26ChartCanvasCache.clear();
+            }
+            if (typeof window !== "undefined") {
+              window.__gs26_ground_map_cache_state = { key: "", state: "idle", pending: 0, completed: 0, failed: 0, lastStartedAt: 0, lastCompletedAt: 0 };
+              window.__gs26_ground_map_cache_ready = false;
+            }
+            if (typeof caches !== "undefined" && typeof caches.keys === "function") {
+              const keys = await caches.keys();
+              await Promise.all(
+                keys
+                  .filter((key) => key.startsWith("gs26-tiles-v1:"))
+                  .map((key) => caches.delete(key))
+              );
+            }
+          } catch (e) {
+            console.warn("GS26 cache clear failed:", e);
+          }
+        })();
+        "#,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clear_native_tile_cache() {
+    let path = std::env::temp_dir().join("gs26-tile-cache");
+    let _ = std::fs::remove_dir_all(path);
+}
+
+fn clear_frontend_caches() {
+    charts_cache_clear_active();
+    clear_cached_layout_configs();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        clear_telemetry_runtime_buffers();
+        clear_visible_telemetry_history();
+        reset_frontend_network_metrics_state();
+        clear_native_tile_cache();
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        clear_browser_tile_and_data_caches();
+    }
+}
+
+fn trigger_map_prefetch_now() {
+    js_eval(
+        r#"
+        (function() {
+          try {
+            if (typeof window.scheduleHighResTilePrefetch === "function") {
+              window.scheduleHighResTilePrefetch();
+            }
+          } catch (e) {
+            console.warn("GS26 prefetch trigger failed:", e);
+          }
+        })();
+        "#,
+    );
+}
+
+fn clear_frontend_caches_and_reseed() {
+    clear_frontend_caches();
+    set_reseed_status_running();
+    charts_cache_request_refit();
+    reconnect_and_reload_ui();
+    trigger_map_prefetch_now();
+}
+
+fn reset_local_app_data() {
+    clear_frontend_caches();
+    auth::clear_all_stored_sessions();
+    persist::clear_all();
+    *PREFERRED_LANGUAGE.write() = "en".to_string();
+    *APP_THEME_CONFIG.write() = localized_theme(&layout::ThemeConfig::default(), "default");
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_eval(
+            r#"
+            (async function() {
+              try {
+                if (typeof sessionStorage !== "undefined") {
+                  sessionStorage.clear();
+                }
+              } catch (e) {
+                console.warn("GS26 sessionStorage clear failed:", e);
+              }
+            })();
+            "#,
+        );
+    }
+}
 
 // When this number changes, we tear down and rebuild the websocket connection.
 static WS_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
@@ -970,6 +1074,8 @@ pub fn NativeSettingsPage() -> Element {
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
+    let map_prefetch_enabled =
+        use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
 
     {
         let distance_units_metric = distance_units_metric;
@@ -1020,6 +1126,35 @@ pub fn NativeSettingsPage() -> Element {
         });
     }
     {
+        let map_prefetch_enabled = map_prefetch_enabled;
+        use_effect(move || {
+            let enabled = *map_prefetch_enabled.read();
+            persist::set_string(
+                MAP_PREFETCH_ENABLED_STORAGE_KEY,
+                if enabled { "on" } else { "off" },
+            );
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_prefetch_enabled = {enabled};
+                    if ({enabled}) {{
+                      if (typeof window.scheduleHighResTilePrefetch === "function") {{
+                        window.scheduleHighResTilePrefetch();
+                      }}
+                    }} else {{
+                      window.__gs26_ground_map_cache_state = {{ key: "", state: "idle", pending: 0, completed: 0, failed: 0, lastStartedAt: 0, lastCompletedAt: 0 }};
+                      window.__gs26_ground_map_cache_ready = false;
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 prefetch toggle sync failed:", e);
+                  }}
+                }})();
+                "#
+            ));
+        });
+    }
+    {
         let theme_preset = theme_preset;
         use_effect(move || {
             let theme = localized_theme(
@@ -1038,6 +1173,23 @@ pub fn NativeSettingsPage() -> Element {
         "Ajustes",
         "Parametres",
     );
+    let on_reset_app_data = {
+        let mut distance_units_metric = distance_units_metric;
+        let mut theme_preset = theme_preset;
+        let mut language_code = language_code;
+        let mut network_flow_animation_enabled = network_flow_animation_enabled;
+        let mut state_chart_labels_vertical = state_chart_labels_vertical;
+        let mut map_prefetch_enabled = map_prefetch_enabled;
+        move |_| {
+            reset_local_app_data();
+            distance_units_metric.set(false);
+            theme_preset.set("default".to_string());
+            language_code.set("en".to_string());
+            network_flow_animation_enabled.set(true);
+            state_chart_labels_vertical.set(false);
+            map_prefetch_enabled.set(true);
+        }
+    };
 
     rsx! {
         SettingsPage {
@@ -1046,7 +1198,12 @@ pub fn NativeSettingsPage() -> Element {
             language_code,
             network_flow_animation_enabled,
             state_chart_labels_vertical,
+            map_prefetch_enabled,
             theme,
+            on_clear_cache: move |_| {
+                clear_frontend_caches_and_reseed();
+            },
+            on_reset_app_data,
             title,
         }
     }
@@ -1897,12 +2054,7 @@ fn reconnect_and_reload_ui() {
 /// Mirrors the explicit reload button behavior before reconnecting to a backend.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn clear_and_reconnect_after_connect() {
-    clear_telemetry_runtime_buffers();
-    clear_visible_telemetry_history();
-    set_reseed_status_running();
-    charts_cache_request_refit();
-
-    reconnect_and_reload_ui();
+    hard_reload_dashboard_data();
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1932,14 +2084,12 @@ fn web_dashboard_runtime_allowed() -> bool {
 }
 
 /// Clears runtime telemetry buffers before a reconnect or reseed.
-#[cfg(not(target_arch = "wasm32"))]
 fn clear_telemetry_runtime_buffers() {
     if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
         q.clear();
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn clear_visible_telemetry_history() {
     let snapshot = ui_telemetry_rows_snapshot();
     if let Ok(mut bridge) = RESEED_HISTORY_BRIDGE.lock() {
@@ -1959,6 +2109,15 @@ fn clear_visible_telemetry_history() {
     reset_latest_telemetry(&[]);
     charts_cache_clear_active();
     bump_render_epoch();
+}
+
+pub fn hard_reload_dashboard_data() {
+    clear_telemetry_runtime_buffers();
+    clear_visible_telemetry_history();
+    set_reseed_status_running();
+    #[cfg(not(target_arch = "wasm32"))]
+    charts_cache_request_refit();
+    reconnect_and_reload_ui();
 }
 
 // ---------- Cross-platform WS handle ----------
@@ -2049,6 +2208,8 @@ fn TelemetryDashboardInner() -> Element {
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
+    let map_prefetch_enabled =
+        use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
 
     let layout_config = use_signal(|| None::<LayoutConfig>);
     let layout_loading = use_signal(|| true);
@@ -2370,6 +2531,35 @@ fn TelemetryDashboardInner() -> Element {
                 "off"
             };
             persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
+        let map_prefetch_enabled = map_prefetch_enabled;
+        use_effect(move || {
+            let enabled = *map_prefetch_enabled.read();
+            persist::set_string(
+                MAP_PREFETCH_ENABLED_STORAGE_KEY,
+                if enabled { "on" } else { "off" },
+            );
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_prefetch_enabled = {enabled};
+                    if ({enabled}) {{
+                      if (typeof window.scheduleHighResTilePrefetch === "function") {{
+                        window.scheduleHighResTilePrefetch();
+                      }}
+                    }} else {{
+                      window.__gs26_ground_map_cache_state = {{ key: "", state: "idle", pending: 0, completed: 0, failed: 0, lastStartedAt: 0, lastCompletedAt: 0 }};
+                      window.__gs26_ground_map_cache_ready = false;
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 prefetch toggle sync failed:", e);
+                  }}
+                }})();
+                "#
+            ));
         });
     }
     {
@@ -3178,8 +3368,6 @@ fn TelemetryDashboardInner() -> Element {
         });
     };
 
-    let rocket_gps_for_reload = rocket_gps;
-    let user_gps_for_reload = user_gps;
     let reload_button: Element = rsx! {
         button {
             style: format!("
@@ -3192,11 +3380,7 @@ fn TelemetryDashboardInner() -> Element {
                 cursor:pointer;
             ", theme.button_border, theme.button_background, theme.button_text),
             onclick: move |_| {
-                let rocket = *rocket_gps_for_reload.read();
-                let user = *user_gps_for_reload.read();
-                let (r_lat, r_lon) = rocket.unwrap_or((f64::NAN, f64::NAN));
-                let (u_lat, u_lon) = user.unwrap_or((f64::NAN, f64::NAN));
-                crate::telemetry_dashboard::map_tab::js_update_markers(r_lat, r_lon, u_lat, u_lon);
+                hard_reload_dashboard_data();
             },
             "{reload_button_label}"
         }
@@ -3363,7 +3547,38 @@ fn TelemetryDashboardInner() -> Element {
                             language_code: language_code,
                             network_flow_animation_enabled: network_flow_animation_enabled,
                             state_chart_labels_vertical: state_chart_labels_vertical,
+                            map_prefetch_enabled: map_prefetch_enabled,
                             theme: theme.clone(),
+                            on_clear_cache: move |_| {
+                                clear_frontend_caches_and_reseed();
+                            },
+                            on_reset_app_data: {
+                                let mut st_warn_ack = st_warn_ack;
+                                let mut st_err_ack = st_err_ack;
+                                let mut st_main_tab = st_main_tab;
+                                let mut st_data_tab = st_data_tab;
+                                let mut st_base_url = st_base_url;
+                                let mut distance_units_metric = distance_units_metric;
+                                let mut theme_preset = theme_preset;
+                                let mut language_code = language_code;
+                                let mut network_flow_animation_enabled = network_flow_animation_enabled;
+                                let mut state_chart_labels_vertical = state_chart_labels_vertical;
+                                let mut map_prefetch_enabled = map_prefetch_enabled;
+                                move |_| {
+                                    reset_local_app_data();
+                                    st_warn_ack.set("0".to_string());
+                                    st_err_ack.set("0".to_string());
+                                    st_main_tab.set("state".to_string());
+                                    st_data_tab.set("GYRO_DATA".to_string());
+                                    st_base_url.set(String::new());
+                                    distance_units_metric.set(false);
+                                    theme_preset.set("default".to_string());
+                                    language_code.set("en".to_string());
+                                    network_flow_animation_enabled.set(true);
+                                    state_chart_labels_vertical.set(false);
+                                    map_prefetch_enabled.set(true);
+                                }
+                            },
                             title: settings_title.clone(),
                         }
                     }

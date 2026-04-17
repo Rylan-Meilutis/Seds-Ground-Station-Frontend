@@ -148,6 +148,16 @@ pub fn clear_current_session() {
     clear_storage_session_for_host(&host_scope);
 }
 
+pub fn clear_all_stored_sessions() {
+    if let Ok(mut slot) = CURRENT_SESSION.lock() {
+        *slot = None;
+    }
+    if let Ok(mut status) = CURRENT_STATUS.lock() {
+        *status = SessionStatus::default();
+    }
+    write_storage_store(&StoredAuthSessionStore::default());
+}
+
 pub async fn fetch_session_status(
     base: &str,
     skip_tls_verify: bool,

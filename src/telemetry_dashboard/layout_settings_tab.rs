@@ -9,9 +9,14 @@ pub fn SettingsPage(
     language_code: Signal<String>,
     network_flow_animation_enabled: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
+    map_prefetch_enabled: Signal<bool>,
     theme: ThemeConfig,
+    on_clear_cache: EventHandler<()>,
+    on_reset_app_data: EventHandler<()>,
     #[props(default)] title: Option<String>,
 ) -> Element {
+    let mut maintenance_status = use_signal(String::new);
+    let mut confirm_reset = use_signal(|| false);
     let language = language_code.read().clone();
     let title = title
         .filter(|value| !value.trim().is_empty())
@@ -21,6 +26,7 @@ pub fn SettingsPage(
     let selected_language = language_code.read().clone();
     let flow_animation_enabled = *network_flow_animation_enabled.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
+    let map_prefetch_enabled_value = *map_prefetch_enabled.read();
 
     let card_style = format!(
         "padding:16px; border-radius:14px; border:1px solid {}; background:{}; display:flex; flex-direction:column; gap:12px;",
@@ -40,6 +46,21 @@ pub fn SettingsPage(
     let section_map = localized_copy(&language, "Map", "Mapa", "Carte");
     let section_network = localized_copy(&language, "Network", "Red", "Reseau");
     let section_charts = localized_copy(&language, "Charts", "Graficas", "Graphiques");
+    let section_storage = localized_copy(&language, "Storage", "Almacenamiento", "Stockage");
+    let prefetch_title = localized_copy(
+        &language,
+        "Map Prefetch",
+        "Precarga del mapa",
+        "Prechargement carte",
+    );
+    let prefetch_desc = localized_copy(
+        &language,
+        "Warms map tiles around the user, rocket, and viewport for faster fullscreen transitions and offline recovery.",
+        "Precarga mosaicos alrededor del usuario, del cohete y del viewport para transiciones rapidas y recuperacion sin conexion.",
+        "Precharge les tuiles autour de l'utilisateur, de la fusee et du viewport pour des transitions rapides et la recuperation hors ligne.",
+    );
+    let prefetch_on = localized_copy(&language, "Enabled", "Activado", "Active");
+    let prefetch_off = localized_copy(&language, "Disabled", "Desactivado", "Desactive");
     let language_title = localized_copy(&language, "Language", "Idioma", "Langue");
     let language_desc = localized_copy(
         &language,
@@ -108,6 +129,63 @@ pub fn SettingsPage(
     );
     let chart_labels_side = localized_copy(&language, "Side Rail", "Riel lateral", "Rail lateral");
     let chart_labels_vertical = localized_copy(&language, "Vertical", "Vertical", "Vertical");
+    let clear_cache_title =
+        localized_copy(&language, "Clear Cache", "Limpiar cache", "Vider le cache");
+    let clear_cache_done_title =
+        localized_copy(&language, "Cache Cleared", "Cache limpiada", "Cache vide");
+    let clear_cache_desc = localized_copy(
+        &language,
+        "Clears frontend data caches and cached map tiles without removing login or saved preferences.",
+        "Limpia los caches de datos y los mosaicos del mapa sin borrar el inicio de sesion ni las preferencias guardadas.",
+        "Efface les caches de donnees et les tuiles de carte sans supprimer la session ni les preferences enregistrees.",
+    );
+    let reset_app_data_title = localized_copy(
+        &language,
+        "Reset App Data",
+        "Restablecer datos",
+        "Reinitialiser les donnees",
+    );
+    let reset_app_data_desc = localized_copy(
+        &language,
+        "Purges local tokens, saved settings, cached map tiles, and cached frontend data.",
+        "Elimina tokens locales, ajustes guardados, mosaicos de mapa en cache y caches de datos del frontend.",
+        "Supprime les jetons locaux, les reglages enregistres, les tuiles en cache et les caches de donnees du frontend.",
+    );
+    let danger_idle = format!(
+        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:700; cursor:pointer;",
+        theme.warning_border, theme.warning_background, theme.warning_text
+    );
+    let confirm_idle = format!(
+        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:700; cursor:pointer;",
+        theme.button_border, theme.button_background, theme.button_text
+    );
+    let reset_confirm_title = localized_copy(
+        &language,
+        "Confirm Reset",
+        "Confirmar restablecimiento",
+        "Confirmer la reinitialisation",
+    );
+    let reset_confirm_desc = localized_copy(
+        &language,
+        "This will clear login data, saved settings, cached map tiles, and cached frontend data.",
+        "Esto borrara el inicio de sesion, los ajustes guardados, los mosaicos en cache y los caches de datos del frontend.",
+        "Cela effacera la session, les reglages enregistres, les tuiles en cache et les caches de donnees du frontend.",
+    );
+    let cancel_label = localized_copy(&language, "Cancel", "Cancelar", "Annuler");
+    let cache_cleared_label = localized_copy(
+        &language,
+        "Caches cleared and reload started.",
+        "Cache limpiada y recarga iniciada.",
+        "Caches vides et rechargement lance.",
+    );
+    let reset_done_label = localized_copy(
+        &language,
+        "App data cleared.",
+        "Datos borrados.",
+        "Donnees effacees.",
+    );
+    let confirm_action_label =
+        localized_copy(&language, "Clear Everything", "Borrar todo", "Tout effacer");
     let english_label = "English".to_string();
     let spanish_label = "Español".to_string();
     let french_label = "Français".to_string();
@@ -203,6 +281,22 @@ pub fn SettingsPage(
                         if metric_enabled { "{metric_hint}" } else { "{imperial_hint}" }
                     }
                 }
+                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_desc}" }
+                    div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                        button {
+                            style: if map_prefetch_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| map_prefetch_enabled.set(true),
+                            "{prefetch_on}"
+                        }
+                        button {
+                            style: if !map_prefetch_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| map_prefetch_enabled.set(false),
+                            "{prefetch_off}"
+                        }
+                    }
+                }
             }
 
             div { style: "margin-top:12px; {card_style}",
@@ -237,6 +331,73 @@ pub fn SettingsPage(
                         style: if state_chart_labels_vertical_enabled { chip_selected.clone() } else { chip_idle.clone() },
                         onclick: move |_| state_chart_labels_vertical.set(true),
                         "{chart_labels_vertical}"
+                    }
+                }
+            }
+
+            div { style: "margin-top:12px; {card_style}",
+                div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_storage}" }
+                div { style: "display:flex; flex-direction:column; gap:12px;",
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{clear_cache_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{clear_cache_desc}" }
+                        button {
+                            style: chip_idle.clone(),
+                            onclick: move |_| {
+                                on_clear_cache.call(());
+                                maintenance_status.set(cache_cleared_label.clone());
+                                confirm_reset.set(false);
+                            },
+                            if maintenance_status.read().as_str() == cache_cleared_label.as_str() {
+                                "{clear_cache_done_title}"
+                            } else {
+                                "{clear_cache_title}"
+                            }
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{reset_app_data_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{reset_app_data_desc}" }
+                        button {
+                            style: danger_idle,
+                            onclick: move |_| {
+                                confirm_reset.set(true);
+                                maintenance_status.set(String::new());
+                            },
+                            "{reset_app_data_title}"
+                        }
+                    }
+                    if !maintenance_status.read().is_empty() {
+                        div { style: "font-size:13px; color:{theme.info_text};", "{maintenance_status}" }
+                    }
+                }
+            }
+
+            if *confirm_reset.read() {
+                div {
+                    style: "position:fixed; inset:0; z-index:4100; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(0,0,0,0.45);",
+                    onclick: move |_| confirm_reset.set(false),
+                    div {
+                        style: "width:min(420px, 100%); display:flex; flex-direction:column; gap:10px; padding:16px; border-radius:16px; border:1px solid {theme.warning_border}; background:{theme.panel_background}; box-shadow:0 16px 40px rgba(0,0,0,0.35);",
+                        onclick: move |evt| evt.stop_propagation(),
+                        div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{reset_confirm_title}" }
+                        div { style: "font-size:13px; color:{theme.text_secondary};", "{reset_confirm_desc}" }
+                        div { style: "display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; margin-top:4px;",
+                            button {
+                                style: confirm_idle.clone(),
+                                onclick: move |_| confirm_reset.set(false),
+                                "{cancel_label}"
+                            }
+                            button {
+                                style: danger_idle.clone(),
+                                onclick: move |_| {
+                                    on_reset_app_data.call(());
+                                    maintenance_status.set(reset_done_label.clone());
+                                    confirm_reset.set(false);
+                                },
+                                "{confirm_action_label}"
+                            }
+                        }
                     }
                 }
             }

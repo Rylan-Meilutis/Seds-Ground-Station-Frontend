@@ -1472,8 +1472,8 @@ fn summary_row(
                     label: translate_text(&label),
                     value: format_summary_value(value, formatter),
                     target: target,
-                    min: if want_minmax { chan_min.get(idx).copied().flatten().map(|v| format_summary_value(Some(v), formatter)) } else { None },
-                    max: if want_minmax { chan_max.get(idx).copied().flatten().map(|v| format_summary_value(Some(v), formatter)) } else { None },
+                    min: if want_minmax { chan_min.get(idx).copied().flatten().map(|v| format_summary_value_for_minmax(Some(v), formatter)) } else { None },
+                    max: if want_minmax { chan_max.get(idx).copied().flatten().map(|v| format_summary_value_for_minmax(Some(v), formatter)) } else { None },
                     style: style.cloned(),
                     theme: theme.clone(),
                     use_layout_theme_overrides: use_layout_theme_overrides,
@@ -1608,6 +1608,18 @@ fn value_at(row: &TelemetryRow, idx: usize) -> Option<f32> {
 }
 
 fn format_summary_value(v: Option<f32>, formatter: Option<&ValueFormatter>) -> String {
+    format_summary_value_inner(v, formatter, true)
+}
+
+fn format_summary_value_for_minmax(v: Option<f32>, formatter: Option<&ValueFormatter>) -> String {
+    format_summary_value_inner(v, formatter, false)
+}
+
+fn format_summary_value_inner(
+    v: Option<f32>,
+    formatter: Option<&ValueFormatter>,
+    include_prefix: bool,
+) -> String {
     match v {
         Some(x) => {
             let kind = formatter
@@ -1616,6 +1628,7 @@ fn format_summary_value(v: Option<f32>, formatter: Option<&ValueFormatter>) -> S
             let precision = formatter.and_then(|formatter| formatter.precision);
             let prefix = formatter
                 .and_then(|formatter| formatter.prefix.as_deref())
+                .filter(|_| include_prefix)
                 .unwrap_or("");
             let suffix = formatter
                 .and_then(|formatter| formatter.suffix.as_deref())

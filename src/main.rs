@@ -295,6 +295,11 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         base, skip_tls, tile_url
     ));
 
+    if let Some(cached) = read_cached_tile(&base, z, x, y) {
+        append_native_log("[protocol] cache hit, serving tile without upstream fetch");
+        return build_response(200, Some("image/jpeg"), cached);
+    }
+
     let client = match reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(skip_tls)
         .build()

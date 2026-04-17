@@ -62,17 +62,17 @@ const MIN_ZOOM = 0;
 const DEFAULT_MAX_NATIVE_ZOOM = 12;
 const DEFAULT_MAX_OVERZOOM_DELTA = 1;
 const HIGH_RES_PREFETCH_RADIUS_M = 1609.344;
-const HIGH_RES_PREFETCH_MIN_ZOOM_DELTA = 1;
 const HIGH_RES_PREFETCH_MAX_TILES = 96;
 const HIGH_RES_PREFETCH_CONCURRENCY = 1;
 const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 5000;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
 const CACHE_SWEEP_DELAY_MS = 15000;
-const USER_MARKER_SMOOTH_MIN_MS = 80;
-const USER_MARKER_SMOOTH_MAX_MS = 220;
-const USER_MARKER_SMOOTH_SNAP_DISTANCE_M = 20.0;
+const USER_MARKER_SMOOTH_MIN_MS = 120;
+const USER_MARKER_SMOOTH_MAX_MS = 520;
+const USER_MARKER_SMOOTH_SNAP_DISTANCE_M = 150.0;
 const USER_MARKER_SMOOTH_SKIP_M = 0.35;
 const USER_ORIENTATION_DEADZONE_DEG = 3;
+const USER_ORIENTATION_EASE_MS = 180;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
 const GUIDE_SOURCE_ID = "gs26-guide-source";
@@ -95,7 +95,7 @@ const NA_BOUNDS = {
     latMax: 83.0,
 };
 
-const TWO_TOUCH_ROTATE_THRESHOLD_DEG = 8;
+const TWO_TOUCH_ROTATE_THRESHOLD_DEG = 16;
 
 function getMapLibre() {
     if (!window.maplibregl || typeof window.maplibregl.Map !== "function") {
@@ -216,9 +216,7 @@ function tileProtocolTemplate() {
 
 function shouldUseNativeTileTemplate(tilesUrl) {
     const url = String(tilesUrl || "");
-    return /^gs26:\/\//i.test(url)
-        || /^https:\/\/gs26\.local\//i.test(url)
-        || /^http:\/\/gs26\.localhost\//i.test(url);
+    return /^gs26:\/\//i.test(url);
 }
 
 function tilesUseNativeProxy() {
@@ -227,6 +225,19 @@ function tilesUseNativeProxy() {
 
 function tilesUseCustomSchemeProxy() {
     return /^gs26:\/\//i.test(String(currentTilesUrl || ""));
+}
+
+function mapPrefetchEnabled() {
+    try {
+        if (typeof window !== "undefined" && typeof window.__gs26_prefetch_enabled === "boolean") {
+            return window.__gs26_prefetch_enabled;
+        }
+        if (typeof window !== "undefined" && window.localStorage) {
+            return (window.localStorage.getItem("gs_map_prefetch_enabled") || "on") !== "off";
+        }
+    } catch (e) {
+    }
+    return true;
 }
 
 function parseTileProtocolRequest(url) {
@@ -255,6 +266,10 @@ function ensureMapProtocolOnce() {
         }
         const cacheName = tileCacheName(currentTilesUrl);
         try {
+            const cached = await readCachedTileArrayBuffer(cacheName, url);
+            if (cached) {
+                return {data: cached};
+            }
             const data = await fetchAndCacheTileArrayBuffer(cacheName, url);
             return {data};
         } catch (primaryError) {
@@ -490,9 +505,8 @@ function tileCoordsForBounds(bounds, zoom) {
 
 function prefetchZoomLevels(maxNativeZoom) {
     const top = Math.max(MIN_ZOOM, Math.floor(Number(maxNativeZoom) || DEFAULT_MAX_NATIVE_ZOOM));
-    const min = Math.max(MIN_ZOOM, top - HIGH_RES_PREFETCH_MIN_ZOOM_DELTA);
     const zooms = [];
-    for (let z = top; z >= min; z--) {
+    for (let z = top; z >= MIN_ZOOM; z--) {
         zooms.push(z);
     }
     return zooms;
@@ -752,6 +766,19 @@ function scheduleTileCacheSweep(tilesUrl) {
 
 function scheduleHighResTilePrefetch() {
     if (!groundMap || !currentTilesUrl) return;
+    if (!mapPrefetchEnabled()) {
+        currentPrefetchKey = "";
+        if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
+        tilePrefetchTimer = null;
+        setTilePrefetchState({
+            key: "",
+            state: "idle",
+            pending: 0,
+            completed: 0,
+            failed: 0,
+        });
+        return;
+    }
     if (tilesUseCustomSchemeProxy() || !tileCacheAllowedForUrl(currentTilesUrl)) {
         currentPrefetchKey = "";
         setTilePrefetchState({
@@ -1006,6 +1033,10 @@ function syncUserHeadingIndicator() {
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(USER_HEADING_SOURCE_ID);
     if (!source) return;
+    if (!hasUsableUserHeading()) {
+        source.setData(emptyFeatureCollection());
+        return;
+    }
     const latLng = userMarkerDisplayedLatLng || lastUserLatLng;
     source.setData(headingFeatureCollection(latLng, userHeadingDeg));
 }
@@ -1014,19 +1045,21 @@ function scheduleFollowCameraUpdate(latLng) {
     if (!groundMap || !Array.isArray(latLng)) return;
     if (Date.now() < suppressFollowCameraUntilMs) return;
     pendingFollowCameraLatLng = [latLng[0], latLng[1]];
-    if (followCameraFrame != null) return;
-    followCameraFrame = requestAnimationFrame(() => {
+    if (followCameraFrame != null) {
+        try {
+            cancelAnimationFrame(followCameraFrame);
+        } catch (e) {
+        }
         followCameraFrame = null;
-        const target = pendingFollowCameraLatLng;
-        pendingFollowCameraLatLng = null;
-        if (!groundMap || !Array.isArray(target)) return;
-        markInternalCameraUpdate(120);
-        groundMap.jumpTo({
-            center: [target[1], target[0]],
-            bearing: mapBearingDeg,
-        });
-        rememberMapView();
+    }
+    const target = pendingFollowCameraLatLng;
+    pendingFollowCameraLatLng = null;
+    markInternalCameraUpdate(32);
+    groundMap.jumpTo({
+        center: [target[1], target[0]],
+        bearing: mapBearingDeg,
     });
+    rememberMapView();
 }
 
 function setUserMarkerVisualLatLng(latLng) {
@@ -1093,7 +1126,7 @@ function animateUserMarkerTo(targetLatLng) {
     setUserMarkerVisualLatLng(from);
     const durationMs = Math.max(
         USER_MARKER_SMOOTH_MIN_MS,
-        Math.min(USER_MARKER_SMOOTH_MAX_MS, 90.0 + distanceM * 10.0)
+        Math.min(USER_MARKER_SMOOTH_MAX_MS, 140.0 + distanceM * 18.0)
     );
     userMarkerAnimation = {
         from,
@@ -1147,7 +1180,16 @@ function applyMapOrientation() {
     const currentBearing = normalizeAngle(groundMap.getBearing());
     if (Math.abs(shortestAngleDiff(currentBearing, targetBearing)) > 0.05) {
         markInternalCameraUpdate(250);
-        groundMap.jumpTo({bearing: targetBearing});
+        if (orientationMode === "user") {
+            groundMap.easeTo({
+                bearing: targetBearing,
+                duration: USER_ORIENTATION_EASE_MS,
+                easing: (t) => 1.0 - Math.pow(1.0 - t, 3.0),
+                essential: true,
+            });
+        } else {
+            groundMap.jumpTo({bearing: targetBearing});
+        }
     }
     updateUserMarkerRotation();
     rememberMapView();
@@ -1260,12 +1302,8 @@ function applyPendingCenterIfPossible() {
 function applyFollowUserIfPossible() {
     if (!groundMap || !followUserEnabled || !lastUserLatLng) return;
     if (Date.now() < suppressFollowCameraUntilMs) return;
-    markInternalCameraUpdate(250);
-    groundMap.jumpTo({
-        center: [lastUserLatLng[1], lastUserLatLng[0]],
-        bearing: mapBearingDeg,
-    });
-    rememberMapView();
+    const visualTarget = currentUserMarkerVisualLatLng() || lastUserLatLng;
+    scheduleFollowCameraUpdate(visualTarget);
     scheduleHighResTilePrefetch();
 }
 
@@ -1406,12 +1444,7 @@ function setGroundMapFollowUser(enabled) {
 
 function centerOnUserNow() {
     if (!groundMap || !lastUserLatLng) return false;
-    markInternalCameraUpdate(250);
-    groundMap.jumpTo({
-        center: [lastUserLatLng[1], lastUserLatLng[0]],
-        bearing: mapBearingDeg,
-    });
-    rememberMapView();
+    scheduleFollowCameraUpdate(currentUserMarkerVisualLatLng() || lastUserLatLng);
     scheduleHighResTilePrefetch();
     return true;
 }
@@ -1845,6 +1878,7 @@ function installMapHooks() {
 }
 
 function resetMapObjects() {
+    const preservedUserVisual = currentUserMarkerVisualLatLng();
     cancelUserMarkerAnimation();
     if (groundMap) {
         try {
@@ -1865,7 +1899,9 @@ function resetMapObjects() {
     mapNavigationControl = null;
     mapCenterControl = null;
     mapNorthControl = null;
-    userMarkerDisplayedLatLng = null;
+    if (Array.isArray(preservedUserVisual)) {
+        userMarkerDisplayedLatLng = [preservedUserVisual[0], preservedUserVisual[1]];
+    }
 }
 
 function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, assetTitle) {
@@ -1979,7 +2015,9 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     window.__gs26_ground_map = groundMap;
     syncRequestedMapControlState();
 
-    if (lastUserLatLng) {
+    if (Array.isArray(userMarkerDisplayedLatLng)) {
+        userMarkerDisplayedLatLng = [userMarkerDisplayedLatLng[0], userMarkerDisplayedLatLng[1]];
+    } else if (lastUserLatLng) {
         userMarkerDisplayedLatLng = [lastUserLatLng[0], lastUserLatLng[1]];
     }
 
@@ -2012,7 +2050,8 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     if (hasUser) {
         let userMarkerCreated = false;
         if (!Array.isArray(userMarkerDisplayedLatLng)) {
-            userMarkerDisplayedLatLng = [lastUserLatLng[0], lastUserLatLng[1]];
+            const seedUserLatLng = currentUserMarkerVisualLatLng() || lastUserLatLng;
+            userMarkerDisplayedLatLng = [seedUserLatLng[0], seedUserLatLng[1]];
             setUserMarkerVisualLatLng(userMarkerDisplayedLatLng);
             userMarkerCreated = true;
         } else {

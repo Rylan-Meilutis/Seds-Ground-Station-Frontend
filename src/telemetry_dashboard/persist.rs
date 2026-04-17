@@ -50,6 +50,53 @@ pub fn _remove(key: &str) {
     }
 }
 
+/// Removes all persisted keys that share the provided prefix.
+pub fn remove_prefix(prefix: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use web_sys::window;
+        if let Some(w) = window()
+            && let Ok(Some(ls)) = w.local_storage()
+        {
+            let len = ls.length().ok().unwrap_or(0);
+            let mut keys = Vec::new();
+            for idx in 0..len {
+                if let Ok(Some(key)) = ls.key(idx)
+                    && key.starts_with(prefix)
+                {
+                    keys.push(key);
+                }
+            }
+            for key in keys {
+                let _ = ls.remove_item(&key);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = native::remove_prefix(prefix);
+    }
+}
+
+/// Removes all persisted app keys from the current storage backend.
+pub fn clear_all() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use web_sys::window;
+        if let Some(w) = window()
+            && let Ok(Some(ls)) = w.local_storage()
+        {
+            let _ = ls.clear();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = native::clear_all();
+    }
+}
+
 /// Reads a stored string value or falls back to the provided default.
 pub fn get_or(key: &str, default: &str) -> String {
     get_string(key).unwrap_or_else(|| default.to_string())
@@ -137,5 +184,23 @@ mod native {
         map.remove(key);
         save_map(&map)?;
         Ok(())
+    }
+
+    /// Removes all keys that share a prefix from the native persistence file.
+    pub fn remove_prefix(prefix: &str) -> Result<(), io::Error> {
+        let mut map = load_map()?;
+        map.retain(|key, _| !key.starts_with(prefix));
+        save_map(&map)?;
+        Ok(())
+    }
+
+    /// Removes the native persistence file entirely.
+    pub fn clear_all() -> Result<(), io::Error> {
+        let path = storage_path();
+        match std::fs::remove_file(path) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 }

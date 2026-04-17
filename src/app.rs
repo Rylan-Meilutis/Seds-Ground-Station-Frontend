@@ -1286,6 +1286,35 @@ fn LoginOverlay(
 
 #[component]
 pub fn Login() -> Element {
+    #[cfg(not(target_arch = "wasm32"))]
+    if UrlConfig::_stored_base_url().is_none() {
+        let nav = use_navigator();
+        use_effect(move || {
+            let _ = nav.replace(connect_route());
+        });
+        return rsx! {
+            div {
+                style: format!(
+                    "height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+                    shell_theme().app_background,
+                    shell_theme().text_primary
+                ),
+                div {
+                    style: shell_card_style(&shell_theme(), "min(520px, 92vw)"),
+                    h1 { style: "margin:0 0 10px 0; font-size:20px;", "Connect First" }
+                    p { style: "margin:0 0 16px 0; color:{shell_theme().text_muted};", "Configure and connect to a Ground Station before signing in." }
+                    button {
+                        style: shell_button_style(&shell_theme()),
+                        onclick: move |_| {
+                            let _ = nav.replace(connect_route());
+                        },
+                        "Open Connect"
+                    }
+                }
+            }
+        };
+    }
+
     #[cfg(target_arch = "wasm32")]
     let show_live_dashboard = false;
     #[cfg(not(target_arch = "wasm32"))]
@@ -1577,25 +1606,6 @@ pub fn Connect() -> Element {
                 }
 
                 div { style: format!("display:flex; gap:12px; margin-top:16px; padding-top:16px; justify-content:flex-end; flex-wrap:wrap; border-top:1px solid {};", theme.border_soft),
-                    button {
-                        style: shell_button_style(&theme),
-                        onclick: move |_| {
-                            let u_norm = compose_base_url_for_connect(&scheme_edit(), &host_edit());
-                            if u_norm.is_empty() {
-                                test_status.set("Enter a URL first.".to_string());
-                                test_report.set(None);
-                                return;
-                            }
-
-                            objc_poke::poke_url(&u_norm);
-                            UrlConfig::set_base_url_and_persist(u_norm.to_string());
-                            UrlConfig::_set_skip_tls_verify_for_base(&u_norm, *skip_tls.read());
-                            let _ = persist::write_connect_shown(true);
-                            let _ = nav.replace(Route::Login {});
-                        },
-                        "Sign In"
-                    }
-
                     button {
                         style: shell_button_alt_style(&theme),
                         disabled: testing(),
