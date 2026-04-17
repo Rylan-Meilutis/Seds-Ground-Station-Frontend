@@ -34,6 +34,7 @@ let suppressFollowCameraUntilMs = 0;
 let suppressFollowDisableUntilMs = 0;
 let followEnableGuardUntilMs = 0;
 let internalCameraUpdateUntilMs = 0;
+let suppressManualOrientationDropUntilMs = 0;
 let pendingUserUpRealign = false;
 let userHeadingDegRaw = null;
 let userHeadingDeg = null;
@@ -47,6 +48,7 @@ let mapNavigationControl = null;
 let mapCenterControl = null;
 let mapNorthControl = null;
 const TILE_PROTOCOL = "gs26map";
+const SOURCE_EMPTY_KEY = "__empty__";
 
 let tilePrefetchState = {
     key: "",
@@ -73,6 +75,7 @@ const USER_MARKER_SMOOTH_SNAP_DISTANCE_M = 150.0;
 const USER_MARKER_SMOOTH_SKIP_M = 0.35;
 const USER_ORIENTATION_DEADZONE_DEG = 3;
 const USER_ORIENTATION_EASE_MS = 180;
+const FOLLOW_CAMERA_CENTER_EPSILON_M = 0.2;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
 const GUIDE_SOURCE_ID = "gs26-guide-source";
@@ -95,7 +98,7 @@ const NA_BOUNDS = {
     latMax: 83.0,
 };
 
-const TWO_TOUCH_ROTATE_THRESHOLD_DEG = 16;
+const TWO_TOUCH_ROTATE_THRESHOLD_DEG = 12;
 
 function getMapLibre() {
     if (!window.maplibregl || typeof window.maplibregl.Map !== "function") {
@@ -569,7 +572,7 @@ function persistMapState() {
 
 function persistMapStateSoon() {
     const now = Date.now();
-    if (now - lastPersistedMapStateAtMs < 250) return;
+    if (now - lastPersistedMapStateAtMs < 1000) return;
     lastPersistedMapStateAtMs = now;
     persistMapState();
 }
@@ -586,7 +589,21 @@ function rememberMapView() {
     };
     mapBearingDeg = normalizeAngle(groundMap.getBearing());
     syncWindowMapControlState();
-    persistMapStateSoon();
+}
+
+function pointDataKey(latLng) {
+    if (!Array.isArray(latLng)) return SOURCE_EMPTY_KEY;
+    return `${Number(latLng[0]).toFixed(6)},${Number(latLng[1]).toFixed(6)}`;
+}
+
+function guideLineDataKey(rocketLatLng, userLatLng) {
+    if (!Array.isArray(rocketLatLng) || !Array.isArray(userLatLng)) return SOURCE_EMPTY_KEY;
+    return `${pointDataKey(userLatLng)}|${pointDataKey(rocketLatLng)}`;
+}
+
+function headingDataKey(latLng, bearingDeg) {
+    if (!Array.isArray(latLng) || !Number.isFinite(bearingDeg)) return SOURCE_EMPTY_KEY;
+    return `${pointDataKey(latLng)}|${normalizeAngle(bearingDeg).toFixed(2)}`;
 }
 
 function syncWindowMapControlState() {
@@ -997,8 +1014,11 @@ function syncRocketGuideLine(rocketLatLng, userLatLng) {
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(GUIDE_SOURCE_ID);
     if (!source) return;
+    const dataKey = guideLineDataKey(rocketLatLng, userLatLng);
+    if (source.__gs26_data_key === dataKey) return;
 
     if (!rocketLatLng || !userLatLng) {
+        source.__gs26_data_key = SOURCE_EMPTY_KEY;
         source.setData({
             type: "FeatureCollection",
             features: [],
@@ -1006,6 +1026,7 @@ function syncRocketGuideLine(rocketLatLng, userLatLng) {
         return;
     }
 
+    source.__gs26_data_key = dataKey;
     source.setData({
         type: "FeatureCollection",
         features: [{
@@ -1026,6 +1047,9 @@ function syncPointSource(sourceId, latLng) {
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(sourceId);
     if (!source) return;
+    const dataKey = pointDataKey(latLng);
+    if (source.__gs26_data_key === dataKey) return;
+    source.__gs26_data_key = dataKey;
     source.setData(pointFeatureCollection(latLng));
 }
 
@@ -1034,10 +1058,15 @@ function syncUserHeadingIndicator() {
     const source = groundMap.getSource(USER_HEADING_SOURCE_ID);
     if (!source) return;
     if (!hasUsableUserHeading()) {
+        if (source.__gs26_data_key === SOURCE_EMPTY_KEY) return;
+        source.__gs26_data_key = SOURCE_EMPTY_KEY;
         source.setData(emptyFeatureCollection());
         return;
     }
     const latLng = userMarkerDisplayedLatLng || lastUserLatLng;
+    const dataKey = headingDataKey(latLng, userHeadingDeg);
+    if (source.__gs26_data_key === dataKey) return;
+    source.__gs26_data_key = dataKey;
     source.setData(headingFeatureCollection(latLng, userHeadingDeg));
 }
 
@@ -1045,32 +1074,35 @@ function scheduleFollowCameraUpdate(latLng) {
     if (!groundMap || !Array.isArray(latLng)) return;
     if (Date.now() < suppressFollowCameraUntilMs) return;
     pendingFollowCameraLatLng = [latLng[0], latLng[1]];
-    if (followCameraFrame != null) {
-        try {
-            cancelAnimationFrame(followCameraFrame);
-        } catch (e) {
-        }
+    if (followCameraFrame != null) return;
+    followCameraFrame = requestAnimationFrame(() => {
         followCameraFrame = null;
-    }
-    const target = pendingFollowCameraLatLng;
-    pendingFollowCameraLatLng = null;
-    markInternalCameraUpdate(32);
-    groundMap.jumpTo({
-        center: [target[1], target[0]],
-        bearing: mapBearingDeg,
+        const target = pendingFollowCameraLatLng;
+        pendingFollowCameraLatLng = null;
+        if (!groundMap || !Array.isArray(target)) return;
+        const center = groundMap.getCenter();
+        const centerDistanceM = distanceMetersBetween([center.lat, center.lng], target);
+        if (!followUserEnabled && Number.isFinite(centerDistanceM) && centerDistanceM <= FOLLOW_CAMERA_CENTER_EPSILON_M) {
+            return;
+        }
+        markInternalCameraUpdate(32);
+        groundMap.jumpTo({
+            center: [target[1], target[0]],
+            bearing: mapBearingDeg,
+        });
+        rememberMapView();
     });
-    rememberMapView();
 }
 
 function setUserMarkerVisualLatLng(latLng) {
     if (!Array.isArray(latLng)) return;
+    if (followUserEnabled && groundMap) {
+        scheduleFollowCameraUpdate(latLng);
+    }
     userMarkerDisplayedLatLng = [latLng[0], latLng[1]];
     syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng);
     syncUserHeadingIndicator();
     syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng);
-    if (followUserEnabled && groundMap) {
-        scheduleFollowCameraUpdate(latLng);
-    }
 }
 
 function currentUserMarkerVisualLatLng() {
@@ -1664,6 +1696,8 @@ function installCustomGestureHooks() {
         shiftRotateStartBearing: 0,
         dragPanWasEnabled: false,
         touchGesture: null,
+        touchRotateLatched: false,
+        touchCarryId: null,
     };
 
     const stopShiftRotate = () => {
@@ -1721,13 +1755,22 @@ function installCustomGestureHooks() {
         if (event.touches.length === 1) {
             unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
             state.touchGesture = null;
+            state.touchCarryId = event.touches[0] ? event.touches[0].identifier : null;
             return;
         }
         if (event.touches.length !== 2) {
             state.touchGesture = null;
+            if (event.touches.length === 0) {
+                state.touchRotateLatched = false;
+                state.touchCarryId = null;
+            }
             return;
         }
         event.preventDefault();
+        const carryId = state.touchCarryId;
+        const continueLatchedRotation = state.touchRotateLatched
+            && carryId != null
+            && Array.from(event.touches).some((touch) => touch.identifier === carryId);
         state.touchGesture = {
             startAngle: touchAngle(event.touches),
             startDistance: Math.max(1, touchDistance(event.touches)),
@@ -1735,6 +1778,7 @@ function installCustomGestureHooks() {
             startCenter: groundMap.getCenter(),
             startZoom: groundMap.getZoom(),
             startBearing: mapBearingDeg,
+            rotationUnlocked: continueLatchedRotation,
         };
     }, {passive: false, signal});
 
@@ -1762,7 +1806,11 @@ function installCustomGestureHooks() {
         const angleDelta = shortestAngleDiff(state.touchGesture.startAngle, currentAngle);
         let nextBearing = normalizeAngle(groundMap.getBearing());
         let bearingChanged = false;
-        if (Math.abs(angleDelta) >= TWO_TOUCH_ROTATE_THRESHOLD_DEG) {
+        if (!state.touchGesture.rotationUnlocked && Math.abs(angleDelta) >= TWO_TOUCH_ROTATE_THRESHOLD_DEG) {
+            state.touchGesture.rotationUnlocked = true;
+            state.touchRotateLatched = true;
+        }
+        if (state.touchGesture.rotationUnlocked) {
             unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
             enterManualOrientationMode();
             nextBearing = normalizeAngle(state.touchGesture.startBearing - angleDelta);
@@ -1783,8 +1831,19 @@ function installCustomGestureHooks() {
         updateCenterControlAppearance();
     }, {passive: false, signal});
 
-    const clearTouchGesture = () => {
+    const clearTouchGesture = (event) => {
         state.touchGesture = null;
+        const touches = event && event.touches ? event.touches : [];
+        if (touches.length === 0) {
+            state.touchRotateLatched = false;
+            state.touchCarryId = null;
+            return;
+        }
+        if (touches.length === 1) {
+            state.touchCarryId = touches[0].identifier;
+            return;
+        }
+        state.touchCarryId = null;
     };
     canvas.addEventListener("touchend", clearTouchGesture, {signal});
     canvas.addEventListener("touchcancel", clearTouchGesture, {signal});
@@ -1807,6 +1866,7 @@ function installMapHooks() {
 
     groundMap.on("moveend", () => {
         rememberMapView();
+        persistMapStateSoon();
         scheduleHighResTilePrefetch();
         scheduleTileZoomDiscovery();
     });
@@ -1814,6 +1874,7 @@ function installMapHooks() {
         suppressFollowCameraUntilMs = 0;
         suppressHighResPrefetch(1200);
         rememberMapView();
+        persistMapStateSoon();
         scheduleHighResTilePrefetch();
         if (followUserEnabled) {
             applyFollowUserIfPossible();
@@ -1821,18 +1882,26 @@ function installMapHooks() {
     });
     groundMap.on("rotateend", () => {
         mapBearingDeg = normalizeAngle(groundMap.getBearing());
-        if (!isInternalCameraUpdate() && orientationMode !== "manual") {
+        if (
+            !isInternalCameraUpdate()
+            && Date.now() >= suppressManualOrientationDropUntilMs
+            && orientationMode !== "manual"
+        ) {
             orientationMode = "manual";
             pendingUserUpRealign = false;
         }
         syncWindowMapControlState();
         updateUserMarkerRotation();
         rememberMapView();
+        persistMapStateSoon();
         updateCenterControlAppearance();
     });
     groundMap.on("rotate", () => {
         if (!groundMap || isInternalCameraUpdate()) return;
-        if (orientationMode !== "manual") {
+        if (
+            Date.now() >= suppressManualOrientationDropUntilMs
+            && orientationMode !== "manual"
+        ) {
             orientationMode = "manual";
             pendingUserUpRealign = false;
         }
@@ -1853,6 +1922,7 @@ function installMapHooks() {
     groundMap.on("zoomstart", () => {
         suppressHighResPrefetch(2500);
         suppressFollowCameraUntilMs = Date.now() + 1000;
+        suppressManualOrientationDropUntilMs = Date.now() + 1500;
         unlockMapInteraction({force: true, dropFollow: false, dropOrientation: false});
     });
     groundMap.on("rotatestart", () => {

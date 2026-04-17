@@ -1,7 +1,7 @@
 #![allow(clippy::redundant_locals)]
 
 use super::{
-    http_get_json, http_post_json, latest_telemetry_row, latest_telemetry_value,
+    http_get_json, http_post_json, latest_telemetry_timestamp, latest_telemetry_value,
     layout::ThemeConfig, translate_text, TELEMETRY_RENDER_EPOCH,
 };
 use dioxus::prelude::*;
@@ -546,7 +546,7 @@ pub fn CalibrationTab(theme: ThemeConfig) -> Element {
         .and_then(|s| latest_raw(s.data_type.as_str()));
     let last_ts_ms = selected_sensor
         .as_ref()
-        .and_then(|s| latest_telemetry_row(&s.data_type, None).map(|r| r.timestamp_ms));
+        .and_then(|s| latest_telemetry_timestamp(&s.data_type, None));
     let sequence_started = cfg.read().as_ref().is_some_and(|c| {
         c.channels
             .get(&channel_key)

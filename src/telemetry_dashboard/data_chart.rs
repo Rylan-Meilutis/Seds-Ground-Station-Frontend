@@ -1618,8 +1618,11 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         .map((entry) => entry.index);
                       const ctx = get2d(el);
                       if (!ctx) return;
-                      function buildPath2d(path) {{
+                      function buildPath2d(pathCache, key, path) {{
                         if (!path) return null;
+                        if (pathCache && pathCache.has(key)) {{
+                          return pathCache.get(key);
+                        }}
                         const tokens = path.trim().split(/[ \t\r\n]+/);
                         if (!tokens.length) return null;
                         const p = new Path2D();
@@ -1650,6 +1653,9 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                             p.lineTo(x, y);
                           }}
                           i += 2;
+                        }}
+                        if (pathCache) {{
+                          pathCache.set(key, p);
                         }}
                         return p;
                       }}
@@ -1740,13 +1746,13 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         targetCtx.imageSmoothingEnabled = false;
                         for (const i of seriesDrawOrder) {{
                           if (i >= chunk.paths.length) continue;
-                          const path2d = buildPath2d(chunk.paths[i]);
+                          const path2d = buildPath2d(cache.path2dCache, `p:${{chunk.id}}:${{chunk.signature}}:${{i}}`, chunk.paths[i]);
                           if (!path2d) continue;
                           strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 2.0, 1.0);
                         }}
                         for (const i of seriesDrawOrder) {{
                           if (i >= chunk.gap_paths.length) continue;
-                          const path2d = buildPath2d(chunk.gap_paths[i]);
+                          const path2d = buildPath2d(cache.path2dCache, `g:${{chunk.id}}:${{chunk.signature}}:${{i}}`, chunk.gap_paths[i]);
                           if (!path2d) continue;
                           targetCtx.save();
                           targetCtx.setLineDash([7, 6]);
@@ -1803,6 +1809,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           pxH,
                           gridBuffer,
                           chunkCache: new Map(),
+                          path2dCache: new Map(),
                           historyBuffer: null,
                           historyKey: null,
                         }};
@@ -1851,7 +1858,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         : 0;
                       const historyKey = data.chunks
                         .filter(chunk => !chunk.live)
-                        .map(chunk => `${{chunk.id}}:${{chunk.signature}}:${{chunk.x.toFixed(3)}}:${{chunk.right.toFixed(3)}}`)
+                        .map(chunk => `${{chunk.id}}:${{chunk.signature}}`)
                         .join("|");
                       const activeChunkKeys = new Set(
                         data.chunks
@@ -1870,6 +1877,20 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                       for (const key of cache.chunkCache.keys()) {{
                         if (!activeChunkKeys.has(key)) {{
                           cache.chunkCache.delete(key);
+                        }}
+                      }}
+                      const activePathKeys = new Set();
+                      for (const chunk of data.chunks) {{
+                        for (let i = 0; i < chunk.paths.length; i += 1) {{
+                          if (chunk.paths[i]) activePathKeys.add(`p:${{chunk.id}}:${{chunk.signature}}:${{i}}`);
+                        }}
+                        for (let i = 0; i < chunk.gap_paths.length; i += 1) {{
+                          if (chunk.gap_paths[i]) activePathKeys.add(`g:${{chunk.id}}:${{chunk.signature}}:${{i}}`);
+                        }}
+                      }}
+                      for (const key of cache.path2dCache.keys()) {{
+                        if (!activePathKeys.has(key)) {{
+                          cache.path2dCache.delete(key);
                         }}
                       }}
                       if (!cache.historyBuffer || cache.historyKey !== historyKey) {{

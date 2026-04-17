@@ -98,7 +98,7 @@ pub fn NetworkTopologyTab(
     flow_animation_enabled: bool,
     theme: ThemeConfig,
 ) -> Element {
-    let snapshot = topology.read().clone();
+    let snapshot = topology.read();
     let expanded_node_id = use_signal(|| None::<String>);
     let mut is_fullscreen = use_signal(|| false);
     let title = layout

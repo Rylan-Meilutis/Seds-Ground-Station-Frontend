@@ -196,6 +196,7 @@ macro_rules! log {
 pub const HISTORY_MS: i64 = 60_000 * 20; // 20 minutes
 const UI_ROW_BUCKET_MS: i64 = 20; // Match chart bucket width in data_chart.rs.
 const STARTUP_SEED_DELAY_MS: u64 = 1_200;
+const MAX_TELEMETRY_QUEUE: usize = 120_000;
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct UiRowKey {
@@ -208,6 +209,14 @@ struct UiRowKey {
 struct LatestTelemetryKey {
     data_type: String,
     sender_id: String,
+}
+
+#[derive(Clone)]
+struct LatestTelemetrySample {
+    timestamp_ms: i64,
+    data_type: String,
+    sender_id: String,
+    values: Arc<[Option<f32>]>,
 }
 
 impl LatestTelemetryKey {
@@ -258,7 +267,13 @@ impl UiTelemetryStore {
         };
         let min_bucket =
             (newest_bucket * UI_ROW_BUCKET_MS - HISTORY_MS).div_euclid(UI_ROW_BUCKET_MS);
-        self.rows.retain(|key, _| key.bucket >= min_bucket);
+        while self
+            .rows
+            .first_key_value()
+            .is_some_and(|(key, _)| key.bucket < min_bucket)
+        {
+            self.rows.pop_first();
+        }
     }
 
     /// Returns the compacted UI store as a sorted vector.
@@ -269,9 +284,9 @@ impl UiTelemetryStore {
 
 static UI_TELEMETRY_STORE: Lazy<Mutex<UiTelemetryStore>> =
     Lazy::new(|| Mutex::new(UiTelemetryStore::default()));
-static LATEST_TELEMETRY: Lazy<Mutex<HashMap<LatestTelemetryKey, TelemetryRow>>> =
+static LATEST_TELEMETRY: Lazy<Mutex<HashMap<LatestTelemetryKey, LatestTelemetrySample>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-static LATEST_TELEMETRY_BY_TYPE: Lazy<Mutex<HashMap<String, TelemetryRow>>> =
+static LATEST_TELEMETRY_BY_TYPE: Lazy<Mutex<HashMap<String, LatestTelemetrySample>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Sorts telemetry rows into a stable UI presentation order.
@@ -331,10 +346,21 @@ fn update_latest_telemetry(row: &TelemetryRow) {
     }
 }
 
+/// Inserts a batch of rows into the latest-row indexes under a single lock.
+fn update_latest_telemetry_batch(rows: &[TelemetryRow]) {
+    if let Ok(mut latest) = LATEST_TELEMETRY.lock()
+        && let Ok(mut latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock()
+    {
+        for row in rows {
+            update_latest_telemetry_locked(&mut latest, &mut latest_by_type, row);
+        }
+    }
+}
+
 /// Applies latest-row replacement rules while both latest-row maps are already locked.
 fn update_latest_telemetry_locked(
-    latest: &mut HashMap<LatestTelemetryKey, TelemetryRow>,
-    latest_by_type: &mut HashMap<String, TelemetryRow>,
+    latest: &mut HashMap<LatestTelemetryKey, LatestTelemetrySample>,
+    latest_by_type: &mut HashMap<String, LatestTelemetrySample>,
     row: &TelemetryRow,
 ) {
     let key = LatestTelemetryKey::new(&row.data_type, &row.sender_id);
@@ -342,14 +368,30 @@ fn update_latest_telemetry_locked(
         .get(&key)
         .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
     if should_replace {
-        latest.insert(key, row.clone());
+        latest.insert(
+            key,
+            LatestTelemetrySample {
+                timestamp_ms: row.timestamp_ms,
+                data_type: row.data_type.clone(),
+                sender_id: row.sender_id.clone(),
+                values: Arc::<[Option<f32>]>::from(row.values.clone()),
+            },
+        );
     }
 
     let should_replace_type = latest_by_type
         .get(&row.data_type)
         .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
     if should_replace_type {
-        latest_by_type.insert(row.data_type.clone(), row.clone());
+        latest_by_type.insert(
+            row.data_type.clone(),
+            LatestTelemetrySample {
+                timestamp_ms: row.timestamp_ms,
+                data_type: row.data_type.clone(),
+                sender_id: row.sender_id.clone(),
+                values: Arc::<[Option<f32>]>::from(row.values.clone()),
+            },
+        );
     }
 }
 
@@ -363,14 +405,47 @@ pub(crate) fn latest_telemetry_row(
             if let Ok(latest) = LATEST_TELEMETRY.lock() {
                 latest
                     .get(&LatestTelemetryKey::new(data_type, sender_id))
-                    .cloned()
+                    .map(|sample| TelemetryRow {
+                        timestamp_ms: sample.timestamp_ms,
+                        data_type: sample.data_type.clone(),
+                        sender_id: sample.sender_id.clone(),
+                        values: sample.values.as_ref().to_vec(),
+                    })
             } else {
                 None
             }
         }
         None => {
             if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
-                latest_by_type.get(data_type).cloned()
+                latest_by_type.get(data_type).map(|sample| TelemetryRow {
+                    timestamp_ms: sample.timestamp_ms,
+                    data_type: sample.data_type.clone(),
+                    sender_id: sample.sender_id.clone(),
+                    values: sample.values.as_ref().to_vec(),
+                })
+            } else {
+                None
+            }
+        }
+    }
+}
+
+pub(crate) fn latest_telemetry_timestamp(data_type: &str, sender_id: Option<&str>) -> Option<i64> {
+    match sender_id {
+        Some(sender_id) => {
+            if let Ok(latest) = LATEST_TELEMETRY.lock() {
+                latest
+                    .get(&LatestTelemetryKey::new(data_type, sender_id))
+                    .map(|sample| sample.timestamp_ms)
+            } else {
+                None
+            }
+        }
+        None => {
+            if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
+                latest_by_type
+                    .get(data_type)
+                    .map(|sample| sample.timestamp_ms)
             } else {
                 None
             }
@@ -384,8 +459,26 @@ pub(crate) fn latest_telemetry_value(
     sender_id: Option<&str>,
     index: usize,
 ) -> Option<f32> {
-    latest_telemetry_row(data_type, sender_id)
-        .and_then(|row| row.values.get(index).copied().flatten())
+    match sender_id {
+        Some(sender_id) => {
+            if let Ok(latest) = LATEST_TELEMETRY.lock() {
+                latest
+                    .get(&LatestTelemetryKey::new(data_type, sender_id))
+                    .and_then(|row| row.values.get(index).copied().flatten())
+            } else {
+                None
+            }
+        }
+        None => {
+            if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
+                latest_by_type
+                    .get(data_type)
+                    .and_then(|row| row.values.get(index).copied().flatten())
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// Returns the compacted UI telemetry store as a snapshot vector.
@@ -2698,13 +2791,12 @@ fn TelemetryDashboardInner() -> Element {
                         break;
                     }
 
-                    // Drain queued telemetry
-                    let mut drained: Vec<TelemetryRow> = Vec::new();
-                    if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
-                        while let Some(r) = q.pop_front() {
-                            drained.push(r);
-                        }
-                    }
+                    // Drain queued telemetry in one move to minimize lock hold time and copies.
+                    let drained: Vec<TelemetryRow> = if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                        std::mem::take(&mut *q).into_iter().collect()
+                    } else {
+                        Vec::new()
+                    };
 
                     if drained.is_empty() {
                         continue;
@@ -5174,6 +5266,8 @@ fn apply_notifications_snapshot(
     // Backend dismiss endpoint is source of truth; local cache is only for local bookkeeping.
     let mut active: Vec<PersistentNotification> = incoming;
     active.sort_by_key(|n| n.timestamp_ms);
+    let mut dismissed_ids = dismissed_notifications.read().clone();
+    let mut dismissed_changed = false;
 
     // Keep only latest N active notifications and auto-dismiss oldest overflow.
     if active.len() > MAX_ACTIVE_NOTIFICATIONS {
@@ -5187,12 +5281,9 @@ fn apply_notifications_snapshot(
             })
             .collect();
         for item in overflow_items {
-            let mut ids = dismissed_notifications.read().clone();
-            if !ids.contains(&item) {
-                ids.push(item);
-                ids.sort_by_key(|x| (x.id, x.timestamp_ms));
-                dismissed_notifications.set(ids.clone());
-                persist_dismissed_notifications(&ids);
+            if !dismissed_ids.contains(&item) {
+                dismissed_ids.push(item);
+                dismissed_changed = true;
             }
             let id = item.id;
             spawn_detached(async move {
@@ -5200,6 +5291,11 @@ fn apply_notifications_snapshot(
             });
         }
         active = active.split_off(overflow);
+    }
+    if dismissed_changed {
+        dismissed_ids.sort_by_key(|x| (x.id, x.timestamp_ms));
+        dismissed_notifications.set(dismissed_ids.clone());
+        persist_dismissed_notifications(&dismissed_ids);
     }
 
     let prev_ids: HashSet<u64> = { notifications.read().iter().map(|n| n.id).collect() };
@@ -5358,13 +5454,11 @@ async fn seed_from_db(
                     "[seed] /api/recent merging bridge_rows={}",
                     bridge_rows.len()
                 );
-                list = merge_db_and_live(list, bridge_rows.clone());
+                list = merge_db_and_live(list, bridge_rows);
             }
 
             // Capture rows that arrived while reseed was running and keep them.
             let mut live_rows = ui_telemetry_rows_snapshot();
-            live_rows.extend(queue_snapshot());
-            live_rows.extend(ui_telemetry_rows_snapshot());
             live_rows.extend(queue_snapshot());
             if !live_rows.is_empty() {
                 sort_rows(&mut live_rows);
@@ -5404,9 +5498,7 @@ async fn seed_from_db(
 
                 // Replay live rows received during reseed build.
                 let reseed_live_rows = if let Ok(mut v) = RESEED_LIVE_BUFFER.lock() {
-                    let rows = v.clone();
-                    v.clear();
-                    rows
+                    std::mem::take(&mut *v)
                 } else {
                     Vec::new()
                 };
@@ -6138,8 +6230,7 @@ fn handle_ws_message(
                 q.push_back(row);
 
                 // Safety cap if UI stalls
-                const MAX_QUEUE: usize = 120_000;
-                while q.len() > MAX_QUEUE {
+                while q.len() > MAX_TELEMETRY_QUEUE {
                     q.pop_front();
                 }
             }
@@ -6150,25 +6241,33 @@ fn handle_ws_message(
                 return;
             }
             note_incoming_telemetry_rows(batch.len(), 1);
+            update_latest_telemetry_batch(&batch);
+            let reseed_active = RESEED_IN_PROGRESS.load(Ordering::Relaxed);
+            let mut reseed_live = if reseed_active {
+                RESEED_LIVE_BUFFER.lock().ok()
+            } else {
+                None
+            };
+            let mut latest_gps = None;
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                q.reserve(batch.len());
                 for row in batch {
                     charts_cache_ingest_row(&row);
-                    update_latest_telemetry(&row);
-                    if RESEED_IN_PROGRESS.load(Ordering::Relaxed)
-                        && let Ok(mut v) = RESEED_LIVE_BUFFER.lock()
-                    {
+                    if let Some(v) = reseed_live.as_mut() {
                         v.push(row.clone());
                     }
                     if let Some((lat, lon)) = row_to_gps(&row) {
-                        rocket_gps.set(Some((lat, lon)));
+                        latest_gps = Some((lat, lon));
                     }
                     q.push_back(row);
                 }
 
-                const MAX_QUEUE: usize = 120_000;
-                while q.len() > MAX_QUEUE {
+                while q.len() > MAX_TELEMETRY_QUEUE {
                     q.pop_front();
                 }
+            }
+            if latest_gps.is_some() {
+                rocket_gps.set(latest_gps);
             }
         }
 
