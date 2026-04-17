@@ -1,8 +1,8 @@
 #![allow(clippy::redundant_locals)]
 
 use super::{
-    http_get_json, http_post_json, latest_telemetry_timestamp, latest_telemetry_value,
-    layout::ThemeConfig, translate_text, TELEMETRY_RENDER_EPOCH,
+    http_get_json, http_post_json, latest_telemetry_value, layout::ThemeConfig,
+    persist, translate_text, TELEMETRY_RENDER_EPOCH,
 };
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -71,17 +71,17 @@ struct RefitReq {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct CalibrationTabLayout {
+pub(crate) struct CalibrationTabLayout {
     #[serde(default = "default_capture_target_samples")]
-    capture_target_samples: usize,
+    pub(crate) capture_target_samples: usize,
     #[serde(default)]
-    fit_modes: Vec<String>,
+    pub(crate) fit_modes: Vec<String>,
     #[serde(default)]
-    sensors: Vec<CalibrationSensorSpec>,
+    pub(crate) sensors: Vec<CalibrationSensorSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct CalibrationSensorSpec {
+pub(crate) struct CalibrationSensorSpec {
     id: String,
     label: String,
     data_type: String,
@@ -99,6 +99,8 @@ struct CalibrationSensorSpec {
 fn default_capture_target_samples() -> usize {
     200
 }
+
+const CALIBRATION_SELECTED_SENSOR_STORAGE_KEY: &str = "gs_calibration_selected_sensor";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
@@ -126,12 +128,10 @@ where
     F: FnMut(usize, usize),
 {
     let target = samples.clamp(1, 5_000);
-    let mut total = 0.0_f32;
-    let mut captured = 0usize;
+    let mut captured_samples = Vec::with_capacity(target);
     for idx in 0..target {
         if let Some(raw) = latest_raw(&data_type) {
-            total += raw;
-            captured += 1;
+            captured_samples.push(raw);
         }
         let completed = idx + 1;
         if completed == 1 || completed == target || completed % 5 == 0 {
@@ -141,10 +141,47 @@ where
             sleep_ms(20).await;
         }
     }
-    if captured == 0 {
+    if captured_samples.is_empty() {
         Err("No live raw samples were available during capture.".to_string())
     } else {
-        Ok((total / captured as f32, captured))
+        captured_samples.sort_by(f32::total_cmp);
+        const OUTLIER_FLOOR: f32 = 0.000001;
+        const OUTLIER_SCALE: f32 = 3.5;
+        const TRIM_RATIO: f32 = 0.12;
+        let len = captured_samples.len();
+        let median = if len % 2 == 0 {
+            (captured_samples[len / 2 - 1] + captured_samples[len / 2]) * 0.5
+        } else {
+            captured_samples[len / 2]
+        };
+        let mut deviations: Vec<f32> = captured_samples
+            .iter()
+            .map(|value| (value - median).abs())
+            .collect();
+        deviations.sort_by(f32::total_cmp);
+        let mad = if len % 2 == 0 {
+            (deviations[len / 2 - 1] + deviations[len / 2]) * 0.5
+        } else {
+            deviations[len / 2]
+        };
+        let outlier_limit = (mad * OUTLIER_SCALE).max(OUTLIER_FLOOR);
+        let mut filtered: Vec<f32> = captured_samples
+            .iter()
+            .copied()
+            .filter(|value| (value - median).abs() <= outlier_limit)
+            .collect();
+        if filtered.is_empty() {
+            filtered = captured_samples.clone();
+        }
+        filtered.sort_by(f32::total_cmp);
+        let trim = ((filtered.len() as f32) * TRIM_RATIO).floor() as usize;
+        let usable = if filtered.len() > trim * 2 + 2 {
+            &filtered[trim..(filtered.len() - trim)]
+        } else {
+            filtered.as_slice()
+        };
+        let total: f32 = usable.iter().copied().sum();
+        Ok((total / usable.len() as f32, usable.len()))
     }
 }
 
@@ -336,7 +373,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     };
 
     let cfg = use_signal(|| None::<CalibrationFile>);
-    let selected_sensor_id = use_signal(String::new);
+    let selected_sensor_id = use_signal(|| {
+        persist::get_string(CALIBRATION_SELECTED_SENSOR_STORAGE_KEY).unwrap_or_default()
+    });
     let fit_mode = use_signal(String::new);
     let known_kg = use_signal(|| "1.0".to_string());
     let manual_kg = use_signal(|| "1.0".to_string());
@@ -373,15 +412,32 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
 
     {
         let sensors = sensors.clone();
+        let layout_cfg = layout_cfg;
         let mut selected_sensor_id = selected_sensor_id;
         use_effect(move || {
+            if layout_cfg.read().is_none() {
+                return;
+            }
             let cur = selected_sensor_id.read().clone();
             if sensors.iter().any(|s| s.id == cur) {
                 return;
             }
             if let Some(first) = sensors.first() {
                 selected_sensor_id.set(first.id.clone());
+            } else {
+                selected_sensor_id.set(String::new());
+                persist::_remove(CALIBRATION_SELECTED_SENSOR_STORAGE_KEY);
             }
+        });
+    }
+    {
+        let selected_sensor_id = selected_sensor_id;
+        use_effect(move || {
+            let sensor_id = selected_sensor_id.read().clone();
+            if sensor_id.trim().is_empty() {
+                return;
+            }
+            persist::set_string(CALIBRATION_SELECTED_SENSOR_STORAGE_KEY, &sensor_id);
         });
     }
 
@@ -460,9 +516,16 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .find(|s| s.id == selected_id)
         .cloned()
         .or_else(|| sensors.first().cloned());
+    if sensors.is_empty() {
+        return rsx! {};
+    }
     let channel_key = selected_sensor
         .as_ref()
         .map(|s| s.channel.clone())
+        .unwrap_or_default();
+    let effective_selected_sensor_id = selected_sensor
+        .as_ref()
+        .map(|s| s.id.clone())
         .unwrap_or_default();
     let fit_modes = selected_sensor
         .as_ref()
@@ -494,7 +557,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 .as_ref()
                 .and_then(|cfg| fit_for_channel_key(cfg, &channel_key))
                 .and_then(|fit| fit.fit_type.clone());
-            if let Some(seeded_mode) = seeded.filter(|mode| fit_modes.iter().any(|candidate| candidate == mode)) {
+            if let Some(seeded_mode) =
+                seeded.filter(|mode| fit_modes.iter().any(|candidate| candidate == mode))
+            {
                 fit_mode.set(seeded_mode);
                 return;
             }
@@ -547,9 +612,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let raw_live = selected_sensor
         .as_ref()
         .and_then(|s| latest_raw(s.data_type.as_str()));
-    let last_ts_ms = selected_sensor
-        .as_ref()
-        .and_then(|s| latest_telemetry_timestamp(&s.data_type, None));
     let sequence_started = cfg.read().as_ref().is_some_and(|c| {
         c.channels
             .get(&channel_key)
@@ -562,9 +624,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .and_then(|c| raw_live.and_then(|raw| eval_fit_key(c, &channel_key, raw)));
     let raw_live_s = fmt_fixed(raw_live, 12, 6);
     let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
-    let ts_live_s = last_ts_ms
-        .map(|v| format!("{v:>13}"))
-        .unwrap_or_else(|| "-".to_string());
     let fit_type_s = cfg
         .read()
         .as_ref()
@@ -706,20 +765,25 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let active_plot_point_cx = inspected_plot_point_idx.and_then(|idx| scatter_xy.get(idx).map(|(cx, _)| *cx));
-    let active_plot_point_cy = inspected_plot_point_idx.and_then(|idx| scatter_xy.get(idx).map(|(_, cy)| *cy));
-    let point_overlay_width = 220.0_f32;
-    let point_overlay_height = 74.0_f32;
+    let active_plot_point_cx =
+        inspected_plot_point_idx.and_then(|idx| scatter_xy.get(idx).map(|(cx, _)| *cx));
+    let active_plot_point_cy =
+        inspected_plot_point_idx.and_then(|idx| scatter_xy.get(idx).map(|(_, cy)| *cy));
+    const GRAPH_POINT_RADIUS_IDLE: f32 = 5.0;
+    const GRAPH_POINT_RADIUS_ACTIVE: f32 = 7.0;
+    const GRAPH_POINT_TOUCH_RADIUS: f32 = 16.0;
+    let point_overlay_height = 86.0_f32;
     let point_overlay_gap_x = 42.0_f32;
     let point_overlay_gap_y = 26.0_f32;
-    let point_overlay_left = active_plot_point_cx.map(|cx| {
-        let right_space = plot_w - cx;
-        let left = if right_space > point_overlay_width + point_overlay_gap_x + 16.0 {
-            (cx + point_overlay_gap_x).min(plot_w - point_overlay_width - 10.0)
+    let point_overlay_width_css = "172px";
+    let point_overlay_horizontal_style = active_plot_point_cx.map(|cx| {
+        let x_pct = ((cx / plot_w) * 100.0).clamp(0.0, 100.0);
+        if x_pct <= 58.0 {
+            format!("left:calc({x_pct:.4}% + {point_overlay_gap_x:.1}px);")
         } else {
-            (cx - point_overlay_width - point_overlay_gap_x).max(10.0)
-        };
-        format!("{left:.1}px")
+            let right_pct = (((plot_w - cx) / plot_w) * 100.0).clamp(0.0, 100.0);
+            format!("right:calc({right_pct:.4}% + {point_overlay_gap_x:.1}px);")
+        }
     });
     let point_overlay_top = active_plot_point_cy.map(|cy| {
         let bottom_space = plot_h - cy;
@@ -734,12 +798,27 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
 
     rsx! {
         div { style: "{shell_style}",
+            style { {r#"
+                @media (max-width: 1100px) {
+                    .gs26-calibration-plot-overlay-desktop { display: none !important; }
+                    .gs26-calibration-plot-overlay-mobile { display: block !important; }
+                }
+                @media (min-width: 1101px) {
+                    .gs26-calibration-plot-overlay-mobile { display: none !important; }
+                }
+            "#} }
             div { style: "{section_style}",
                 div { style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;",
                     div {
                         h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
                         div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Tune live sensor fits, capture calibration points, and refit without leaving the dashboard." }
-                        div { style: "margin-top:6px; color:{theme.text_secondary}; font-size:12px;", "Local edits stay on this page until Save pushes them to the backend. Saved changes sync to other open frontends." }
+                        div { style: "margin-top:6px; color:{theme.text_secondary}; font-size:12px;",
+                            if can_edit {
+                                "Local edits stay on this page until Save pushes them to the backend. Saved changes sync to other open frontends."
+                            } else {
+                                "Current calibration data, active regression, and captured points are shown here."
+                            }
+                        }
                     }
                     div { style: "display:flex; align-items:center; gap:8px; flex-wrap:wrap;",
                         if *dirty.read() {
@@ -747,54 +826,50 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         } else {
                             div { style: "padding:8px 10px; border-radius:12px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;", "Saved" }
                         }
-                        button {
-                            style: "{success_button_style}",
-                            disabled: cfg.read().is_none() || !can_edit || !*dirty.read(),
-                            onclick: {
-                                let mut cfg = cfg;
-                                let selected_sensor = selected_sensor.clone();
-                                let fit_mode = fit_mode;
-                                let mut status = status;
-                                let mut dirty = dirty;
-                                move |_| {
-                                    let Some(next) = cfg.read().clone() else {
-                                        status.set("No calibration data loaded".to_string());
-                                        return;
-                                    };
-                                    let Some(sensor) = selected_sensor.clone() else {
-                                        status.set("No sensor selected".to_string());
-                                        return;
-                                    };
-                                    status.set("Saving calibration to backend...".to_string());
-                                    spawn(async move {
-                                        match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
-                                            Ok(_) => {
-                                                let body = RefitReq {
-                                                    channel: sensor.channel.clone(),
-                                                    mode: fit_mode.read().clone(),
-                                                };
-                                                match http_post_json::<RefitReq, CalibrationFile>("/api/calibration/refit", &body).await {
-                                                    Ok(new_cfg) => {
-                                                        cfg.set(Some(new_cfg));
-                                                        dirty.set(false);
-                                                        status.set("Calibration saved".to_string());
+                        if can_edit {
+                            button {
+                                style: "{success_button_style}",
+                                disabled: cfg.read().is_none() || !*dirty.read(),
+                                onclick: {
+                                    let mut cfg = cfg;
+                                    let selected_sensor = selected_sensor.clone();
+                                    let fit_mode = fit_mode;
+                                    let mut status = status;
+                                    let mut dirty = dirty;
+                                    move |_| {
+                                        let Some(next) = cfg.read().clone() else {
+                                            status.set("No calibration data loaded".to_string());
+                                            return;
+                                        };
+                                        let Some(sensor) = selected_sensor.clone() else {
+                                            status.set("No sensor selected".to_string());
+                                            return;
+                                        };
+                                        status.set("Saving calibration to backend...".to_string());
+                                        spawn(async move {
+                                            match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
+                                                Ok(_) => {
+                                                    let body = RefitReq {
+                                                        channel: sensor.channel.clone(),
+                                                        mode: fit_mode.read().clone(),
+                                                    };
+                                                    match http_post_json::<RefitReq, CalibrationFile>("/api/calibration/refit", &body).await {
+                                                        Ok(new_cfg) => {
+                                                            cfg.set(Some(new_cfg));
+                                                            dirty.set(false);
+                                                            status.set("Calibration saved".to_string());
+                                                        }
+                                                        Err(e) => status.set(format!("Refit failed: {e}")),
                                                     }
-                                                    Err(e) => status.set(format!("Refit failed: {e}")),
                                                 }
+                                                Err(e) => status.set(format!("Save failed: {e}")),
                                             }
-                                            Err(e) => status.set(format!("Save failed: {e}")),
-                                        }
-                                    });
-                                }
-                            },
-                            "Save"
+                                        });
+                                    }
+                                },
+                                "Save"
+                            }
                         }
-                    }
-                }
-                if !can_edit {
-                    div {
-                        style: "padding:10px 12px; border-radius:12px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:13px;",
-                        "View only. Sign in as the rylan user to capture, edit, or reset calibration data."
                     }
                 }
 
@@ -802,7 +877,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 span { style: "color:{theme.text_secondary};", "Sensors" }
                 for sensor in sensors.iter().cloned() {
                     button {
-                        style: "{sensor_button_style(sensor.id == selected_id)}",
+                        style: "{sensor_button_style(sensor.id == effective_selected_sensor_id)}",
                         onclick: {
                             let mut selected_sensor_id = selected_sensor_id;
                             let mut selected_point_idx = selected_point_idx;
@@ -818,7 +893,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
 
             div { style: "display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
-                {metric_card(&theme, "Last Timestamp (ms)", ts_live_s.clone())}
                 {metric_card(&theme, "Live Raw", raw_live_s.clone())}
                 {metric_card(&theme, "Calibrated Value", calibrated_live_s.clone())}
                 {metric_card(&theme, "Active Fit", fit_type_s.clone())}
@@ -828,52 +902,56 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             div { style: "{section_style}",
             div { style: "{toolbar_style}",
                 span { style: "color:{theme.text_secondary};", "Regression" }
-                select {
-                    style: "{select_style}",
-                    value: "{fit_mode.read()}",
-                    disabled: !can_edit,
-                    onchange: {
-                        let mut fit_mode = fit_mode;
-                        move |e| fit_mode.set(e.value())
-                    },
-                    for mode in fit_modes.iter() {
-                        option { value: "{mode}", "{mode}" }
-                    }
-                }
-                button {
-                    style: "{neutral_button_style}",
-                    disabled: cfg.read().is_none() || !can_edit,
-                    onclick: {
-                        let mut cfg = cfg;
-                        let selected_sensor_id = selected_sensor_id;
-                        let sensors = sensors.clone();
-                        let fit_mode = fit_mode;
-                        let mut status = status;
-                        move |_| {
-                            let selected_id = selected_sensor_id.read().clone();
-                            let Some(sensor) = sensors.iter().find(|s| s.id == selected_id) else {
-                                status.set("Invalid selected sensor".to_string());
-                                return;
-                            };
-                            let body = RefitReq {
-                                channel: sensor.channel.clone(),
-                                mode: fit_mode.read().clone(),
-                            };
-                            spawn(async move {
-                                match http_post_json::<RefitReq, CalibrationFile>("/api/calibration/refit", &body).await {
-                                    Ok(new_cfg) => {
-                                        cfg.set(Some(new_cfg));
-                                        status.set("Refit complete".to_string());
-                                    }
-                                    Err(e) => status.set(format!("Refit failed: {e}")),
-                                }
-                            });
+                if can_edit {
+                    select {
+                        style: "{select_style}",
+                        value: "{fit_mode.read()}",
+                        onchange: {
+                            let mut fit_mode = fit_mode;
+                            move |e| fit_mode.set(e.value())
+                        },
+                        for mode in fit_modes.iter() {
+                            option { value: "{mode}", "{mode}" }
                         }
-                    },
-                    "Refit"
+                    }
+                } else {
+                    div { style: "padding:8px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-weight:700;", "{fit_mode.read()}" }
+                }
+                if can_edit {
+                    button {
+                        style: "{neutral_button_style}",
+                        disabled: cfg.read().is_none(),
+                        onclick: {
+                            let mut cfg = cfg;
+                            let selected_sensor = selected_sensor.clone();
+                            let fit_mode = fit_mode;
+                            let mut status = status;
+                            move |_| {
+                                let Some(sensor) = selected_sensor.clone() else {
+                                    status.set("No sensor selected".to_string());
+                                    return;
+                                };
+                                let body = RefitReq {
+                                    channel: sensor.channel.clone(),
+                                    mode: fit_mode.read().clone(),
+                                };
+                                spawn(async move {
+                                    match http_post_json::<RefitReq, CalibrationFile>("/api/calibration/refit", &body).await {
+                                        Ok(new_cfg) => {
+                                            cfg.set(Some(new_cfg));
+                                            status.set("Refit complete".to_string());
+                                        }
+                                        Err(e) => status.set(format!("Refit failed: {e}")),
+                                    }
+                                });
+                            }
+                        },
+                        "Refit"
+                    }
                 }
             }
 
+            if can_edit {
             div { style: "{toolbar_style}",
                 input {
                     style: "{input_style}",
@@ -904,8 +982,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     disabled: cfg.read().is_none() || !can_edit,
                     onclick: {
                         let mut cfg = cfg;
-                        let selected_sensor_id = selected_sensor_id;
-                        let sensors = sensors.clone();
+                        let selected_sensor = selected_sensor.clone();
                         let manual_kg = manual_kg;
                         let manual_raw = manual_raw;
                         let mut status = status;
@@ -919,9 +996,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 status.set("Invalid manual raw".to_string());
                                 return;
                             };
-                            let selected_id = selected_sensor_id.read().clone();
-                            let Some(sensor) = sensors.iter().find(|s| s.id == selected_id) else {
-                                status.set("Invalid selected sensor".to_string());
+                            let Some(sensor) = selected_sensor.clone() else {
+                                status.set("No sensor selected".to_string());
                                 return;
                             };
                             let selected_channel = sensor.channel.clone();
@@ -993,12 +1069,14 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     if selected_point_idx.read().is_some() { "Capture for Edit" } else { "Capture for Point" }
                 }
                 if !manual_capture_progress.read().is_empty() {
-                    div { style: "padding-left:4px; min-height:20px; display:flex; align-items:center; font-size:12px; color:{theme.info_text};",
+                    div { style: "padding:6px 10px; min-height:20px; display:flex; align-items:center; font-size:12px; color:{theme.info_text}; border:1px solid {theme.info_accent}; border-radius:999px; background:{theme.info_background};",
                         "{manual_capture_progress.read()}"
                     }
                 }
             }
+            }
 
+            if can_edit {
             div { style: "{toolbar_style}",
                 input {
                     style: "{input_style}",
@@ -1070,15 +1148,16 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     }
                 }
             }
+            }
 
+            if can_edit {
             div { style: "{toolbar_style}",
                 button {
                     style: "{error_button_style}",
                     disabled: cfg.read().is_none() || selected_point_idx.read().is_none() || !can_edit,
                     onclick: {
                         let mut cfg = cfg;
-                        let selected_sensor_id = selected_sensor_id;
-                        let sensors = sensors.clone();
+                        let selected_sensor = selected_sensor.clone();
                         let mut selected_point_idx = selected_point_idx;
                         let mut status = status;
                         let mut dirty = dirty;
@@ -1087,9 +1166,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 status.set("Select a point first".to_string());
                                 return;
                             };
-                            let selected_id = selected_sensor_id.read().clone();
-                            let Some(sensor) = sensors.iter().find(|s| s.id == selected_id) else {
-                                status.set("Invalid selected sensor".to_string());
+                            let Some(sensor) = selected_sensor.clone() else {
+                                status.set("No sensor selected".to_string());
                                 return;
                             };
                             let mut next = cfg.read().clone().unwrap_or_default();
@@ -1110,15 +1188,13 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     disabled: cfg.read().is_none() || !can_edit,
                     onclick: {
                         let mut cfg = cfg;
-                        let selected_sensor_id = selected_sensor_id;
-                        let sensors = sensors.clone();
+                        let selected_sensor = selected_sensor.clone();
                         let mut selected_point_idx = selected_point_idx;
                         let mut status = status;
                         let mut dirty = dirty;
                         move |_| {
-                            let selected_id = selected_sensor_id.read().clone();
-                            let Some(sensor) = sensors.iter().find(|s| s.id == selected_id) else {
-                                status.set("Invalid selected sensor".to_string());
+                            let Some(sensor) = selected_sensor.clone() else {
+                                status.set("No sensor selected".to_string());
                                 return;
                             };
                             let mut next = cfg.read().clone().unwrap_or_default();
@@ -1133,9 +1209,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 }
             }
             }
+            }
 
             div { style: "{section_style}",
-            div { style: "display:grid; grid-template-columns:minmax(260px, 340px) minmax(0, 1fr); gap:12px;",
+            div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap:12px; align-items:start;",
                 div { style: "display:flex; flex-direction:column; gap:8px;",
                     div { style: "font-size:13px; font-weight:700; color:{theme.text_secondary}; text-transform:uppercase; letter-spacing:0.04em;", "Points" }
                     div { style: "display:grid; grid-template-columns:1fr; gap:6px; border:1px solid {theme.border}; border-radius:12px; padding:10px; background:{theme.panel_background_alt}; max-height:420px; overflow:auto;",
@@ -1172,7 +1249,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
                 }
                 div { style: "display:flex; flex-direction:column; gap:10px;",
-            div { style: "border:1px solid {theme.border}; border-radius:12px; padding:10px; background:{theme.panel_background_alt};",
+            div { style: "border:1px solid {theme.border}; border-radius:12px; padding:10px; background:{theme.panel_background_alt}; overflow:visible;",
                 div {
                     style: "display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:6px 8px 10px 8px;",
                     svg { width: "30", height: "10", view_box: "0 0 30 10", style: "display:block; flex:0 0 auto;",
@@ -1188,7 +1265,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     }
                 }
                 div {
-                    style: "position:relative; width:100%; height:260px;",
+                    style: "position:relative; width:100%; height:260px; overflow:visible;",
                     onclick: {
                         let mut inspected_point_idx = inspected_point_idx;
                         move |_| inspected_point_idx.set(None)
@@ -1204,11 +1281,34 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         circle {
                             cx:"{cx}",
                             cy:"{cy}",
-                            r: if highlighted_plot_point_idx == Some(idx) { "5" } else { "3.5" },
+                            r: if highlighted_plot_point_idx == Some(idx) { "{GRAPH_POINT_RADIUS_ACTIVE}" } else { "{GRAPH_POINT_RADIUS_IDLE}" },
                             fill: if highlighted_plot_point_idx == Some(idx) { "{theme.info_accent}" } else { "{theme.warning_text}" },
                             stroke: if highlighted_plot_point_idx == Some(idx) { "{theme.info_text}" } else { "none" },
                             "stroke-width": if highlighted_plot_point_idx == Some(idx) { "1.5" } else { "0" },
                             style: "cursor:pointer;",
+                            onmouseenter: {
+                                let mut inspected_point_idx = inspected_point_idx;
+                                move |_| inspected_point_idx.set(Some(idx))
+                            },
+                            onmouseleave: {
+                                let mut inspected_point_idx = inspected_point_idx;
+                                move |_| inspected_point_idx.set(None)
+                            },
+                            onclick: {
+                                let mut inspected_point_idx = inspected_point_idx;
+                                move |evt| {
+                                    evt.stop_propagation();
+                                    inspected_point_idx.set(Some(idx));
+                                }
+                            }
+                        }
+                        circle {
+                            cx:"{cx}",
+                            cy:"{cy}",
+                            r:"{GRAPH_POINT_TOUCH_RADIUS}",
+                            fill:"transparent",
+                            stroke:"transparent",
+                            style:"cursor:pointer;",
                             onmouseenter: {
                                 let mut inspected_point_idx = inspected_point_idx;
                                 move |_| inspected_point_idx.set(Some(idx))
@@ -1231,21 +1331,50 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     text { x:"{pad_l}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x min {:.3}", x_min)} }
                     text { x:"{plot_w - 130.0}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x max {:.3}", x_max)} }
                 }
-                if let (Some((raw, expected)), Some(panel_left), Some(panel_top)) = (active_plot_point, point_overlay_left.clone(), point_overlay_top.clone()) {
+                if let (Some((raw, expected)), Some(panel_horizontal_style), Some(panel_top)) = (active_plot_point, point_overlay_horizontal_style.clone(), point_overlay_top.clone()) {
                     div {
-                        style: "position:absolute; left:{panel_left}; top:{panel_top}; width:{point_overlay_width}px; padding:10px 12px; border-radius:14px; border:1px solid {theme.info_accent}; background:{theme.panel_background}; color:{theme.text_primary}; box-shadow:0 14px 28px rgba(0,0,0,0.28); pointer-events:none; z-index:3;",
+                        class: "gs26-calibration-plot-overlay-desktop",
+                        style: "position:absolute; {panel_horizontal_style} top:{panel_top}; transform:translateZ(0); width:{point_overlay_width_css}; max-width:calc(100% - 24px); box-sizing:border-box; padding:10px 12px; border-radius:14px; border:1px solid {theme.info_accent}; background:{theme.panel_background}; color:{theme.text_primary}; box-shadow:0 14px 28px rgba(0,0,0,0.28); pointer-events:none; z-index:3; overflow-wrap:anywhere;",
                         div { style: "font-size:11px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;", "Selected Point" }
-                        div { style: "display:grid; gap:4px; font-size:12px;",
-                            div { "Value {expected:.4} kg" }
-                            div { "Raw {raw:.6}" }
+                        div { style: "display:grid; gap:4px; font-size:12px; line-height:1.35;",
+                            div { style: "display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;",
+                                span { "Value" }
+                                span { "{expected:.4} kg" }
+                            }
+                            div { style: "display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;",
+                                span { "Raw" }
+                                span { "{raw:.6}" }
+                            }
                         }
                     }
                 }
                 }
+                div {
+                    class: "gs26-calibration-plot-overlay-mobile",
+                    style: "display:none; width:100%; box-sizing:border-box; margin-top:10px; min-height:108px;",
+                    if let Some((raw, expected)) = active_plot_point {
+                        div {
+                            style: "width:100%; box-sizing:border-box; padding:10px 12px; border-radius:14px; border:1px solid {theme.info_accent}; background:{theme.panel_background}; color:{theme.text_primary}; box-shadow:0 10px 24px rgba(0,0,0,0.18); overflow-wrap:anywhere;",
+                            div { style: "font-size:11px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;", "Selected Point" }
+                            div { style: "display:grid; gap:4px; font-size:12px; line-height:1.35;",
+                                div { style: "display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;",
+                                    span { "Value" }
+                                    span { "{expected:.4} kg" }
+                                }
+                                div { style: "display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;",
+                                    span { "Raw" }
+                                    span { "{raw:.6}" }
+                                }
+                            }
+                        }
+                    } else {
+                        div { style: "font-size:11px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;", "Selected Point" }
+                        div { style: "padding:10px 12px; border-radius:14px; border:1px dashed {theme.border}; background:{theme.panel_background}; color:{theme.text_muted}; font-size:12px;", "Tap a point to inspect its value and raw reading." }
+                    }
+                }
             }
                 }
             }
-            div { style: "font-size:13px; color:{theme.text_muted}; padding:0 2px;", "{status.read()}" }
             if *sequence_dialog_open.read() {
                 div {
                     style: "position:fixed; inset:0; z-index:4200; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(0,0,0,0.45);",

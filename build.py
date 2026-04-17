@@ -2,6 +2,7 @@
 import gzip
 import json
 import os
+import platform
 import plistlib
 import re
 import shutil
@@ -12,8 +13,6 @@ import zipfile
 import errno
 import sys
 import time
-
-import platform
 
 try:
     import tomllib  # py3.11+
@@ -2480,6 +2479,7 @@ def rebuild_patched_android_bundle(frontend_dir: Path, debug_mode: bool, env: Op
     gradlew = project_dir / "gradlew"
     if not gradlew.exists():
         raise FileNotFoundError(f"Gradle wrapper not found: {gradlew}")
+    gradlew.chmod(0o755)
 
     task = "bundleDebug" if debug_mode else "bundleRelease"
     for stale_dir in [

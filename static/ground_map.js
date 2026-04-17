@@ -27,7 +27,7 @@ let tilePrefetchRunId = 0;
 let prefetchSuppressedUntilMs = 0;
 let mapInitStartedAtMs = 0;
 let lastPersistedMapStateAtMs = 0;
-let followUserEnabled = false;
+let followUserEnabled = true;
 let orientationMode = "north";
 let mapBearingDeg = 0;
 let suppressFollowCameraUntilMs = 0;
@@ -38,6 +38,7 @@ let suppressManualOrientationDropUntilMs = 0;
 let pendingUserUpRealign = false;
 let userHeadingDegRaw = null;
 let userHeadingDeg = null;
+let userHeadingIndicatorDeg = null;
 let nativeHeadingDeg = null;
 let deviceHeadingDeg = null;
 let compassInitialized = false;
@@ -71,10 +72,14 @@ const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
 const CACHE_SWEEP_DELAY_MS = 15000;
 const USER_MARKER_SMOOTH_MIN_MS = 120;
 const USER_MARKER_SMOOTH_MAX_MS = 520;
-const USER_MARKER_SMOOTH_SNAP_DISTANCE_M = 150.0;
+const USER_MARKER_SMOOTH_SNAP_DISTANCE_M = 2500.0;
 const USER_MARKER_SMOOTH_SKIP_M = 0.35;
+const USER_MARKER_PREDICTION_MAX_MS = 280;
+const USER_MARKER_PREDICTION_RATIO = 0.35;
+const USER_MARKER_RATE_MIN_CATCHUP_MS = 150;
+const USER_MARKER_RATE_MAX_CATCHUP_MS = 430;
 const USER_ORIENTATION_DEADZONE_DEG = 3;
-const USER_ORIENTATION_EASE_MS = 180;
+const USER_ORIENTATION_EASE_MS = 220;
 const FOLLOW_CAMERA_CENTER_EPSILON_M = 0.2;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
@@ -400,6 +405,19 @@ function headingFeatureCollection(latLng, headingDeg) {
             properties: {bearing: resolvedHeadingDeg},
         }],
     };
+}
+
+function blendLatLngToward(fromLatLng, toLatLng, alpha) {
+    if (!Array.isArray(fromLatLng) || !Array.isArray(toLatLng)) return Array.isArray(toLatLng) ? [toLatLng[0], toLatLng[1]] : null;
+    const clampedAlpha = Math.max(0.0, Math.min(1.0, Number(alpha) || 0));
+    const fromLon = clampLon(fromLatLng[1]);
+    let lonDiff = clampLon(toLatLng[1]) - fromLon;
+    if (lonDiff > 180.0) lonDiff -= 360.0;
+    if (lonDiff < -180.0) lonDiff += 360.0;
+    return [
+        clampLat(fromLatLng[0] + (toLatLng[0] - fromLatLng[0]) * clampedAlpha),
+        clampLon(fromLon + lonDiff * clampedAlpha),
+    ];
 }
 
 function createMarkerCanvas(size, draw) {
@@ -1064,10 +1082,13 @@ function syncUserHeadingIndicator() {
         return;
     }
     const latLng = userMarkerDisplayedLatLng || lastUserLatLng;
-    const dataKey = headingDataKey(latLng, userHeadingDeg);
+    const displayHeadingDeg = followUserEnabled && orientationMode === "user"
+        ? normalizeAngle(groundMap.getBearing())
+        : (Number.isFinite(userHeadingIndicatorDeg) ? userHeadingIndicatorDeg : userHeadingDeg);
+    const dataKey = headingDataKey(latLng, displayHeadingDeg);
     if (source.__gs26_data_key === dataKey) return;
     source.__gs26_data_key = dataKey;
-    source.setData(headingFeatureCollection(latLng, userHeadingDeg));
+    source.setData(headingFeatureCollection(latLng, displayHeadingDeg));
 }
 
 function scheduleFollowCameraUpdate(latLng) {
@@ -1109,15 +1130,7 @@ function currentUserMarkerVisualLatLng() {
     const displayed = Array.isArray(userMarkerDisplayedLatLng) ? userMarkerDisplayedLatLng : null;
     const anim = userMarkerAnimation;
     if (!anim) return displayed;
-
-    const now = performance.now();
-    const t = Math.max(0.0, Math.min(1.0, (now - anim.startedAt) / anim.durationMs));
-    if (t >= 1.0) return anim.target;
-    const eased = 1.0 - Math.pow(1.0 - t, 3.0);
-    return [
-        anim.from[0] + (anim.target[0] - anim.from[0]) * eased,
-        anim.from[1] + (anim.target[1] - anim.from[1]) * eased,
-    ];
+    return displayed || (Array.isArray(anim.target) ? [anim.target[0], anim.target[1]] : null);
 }
 
 function cancelUserMarkerAnimation() {
@@ -1139,6 +1152,15 @@ function cancelUserMarkerAnimation() {
     userMarkerAnimation = null;
 }
 
+function resetUserMotionSmoothing(latLng) {
+    if (!Array.isArray(latLng)) return;
+    cancelUserMarkerAnimation();
+    userMarkerDisplayedLatLng = [latLng[0], latLng[1]];
+    syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng);
+    syncUserHeadingIndicator();
+    syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng);
+}
+
 function animateUserMarkerTo(targetLatLng) {
     if (!Array.isArray(targetLatLng)) return;
     const target = [targetLatLng[0], targetLatLng[1]];
@@ -1156,15 +1178,42 @@ function animateUserMarkerTo(targetLatLng) {
     }
 
     setUserMarkerVisualLatLng(from);
-    const durationMs = Math.max(
-        USER_MARKER_SMOOTH_MIN_MS,
-        Math.min(USER_MARKER_SMOOTH_MAX_MS, 140.0 + distanceM * 18.0)
-    );
+    const nowMs = Date.now();
+    const previousTarget = userMarkerAnimation && Array.isArray(userMarkerAnimation.target)
+        ? userMarkerAnimation.target
+        : null;
+    const previousFixAtMs = userMarkerAnimation && Number.isFinite(userMarkerAnimation.targetFixAtMs)
+        ? userMarkerAnimation.targetFixAtMs
+        : NaN;
+    let velocityLatPerMs = 0.0;
+    let velocityLonPerMs = 0.0;
+    let smoothedIntervalMs = userMarkerAnimation && Number.isFinite(userMarkerAnimation.smoothedIntervalMs)
+        ? userMarkerAnimation.smoothedIntervalMs
+        : USER_MARKER_SMOOTH_MAX_MS;
+    if (Array.isArray(previousTarget) && Number.isFinite(previousFixAtMs)) {
+        const dtMs = Math.max(1.0, nowMs - previousFixAtMs);
+        if (dtMs <= 10_000) {
+            velocityLatPerMs = (target[0] - previousTarget[0]) / dtMs;
+            let lonDiff = target[1] - previousTarget[1];
+            if (lonDiff > 180.0) lonDiff -= 360.0;
+            if (lonDiff < -180.0) lonDiff += 360.0;
+            velocityLonPerMs = lonDiff / dtMs;
+            smoothedIntervalMs = Math.max(
+                USER_MARKER_SMOOTH_MIN_MS,
+                Math.min(
+                    USER_MARKER_SMOOTH_MAX_MS,
+                    smoothedIntervalMs * 0.7 + dtMs * 0.3
+                )
+            );
+        }
+    }
     userMarkerAnimation = {
-        from,
         target,
-        startedAt: performance.now(),
-        durationMs,
+        targetFixAtMs: nowMs,
+        velocityLatPerMs,
+        velocityLonPerMs,
+        smoothedIntervalMs,
+        lastFrameAt: performance.now(),
     };
 
     if (userMarkerAnimationFrame != null) return;
@@ -1176,13 +1225,37 @@ function animateUserMarkerTo(targetLatLng) {
             return;
         }
         const now = performance.now();
-        const t = Math.max(0.0, Math.min(1.0, (now - anim.startedAt) / anim.durationMs));
-        const eased = 1.0 - Math.pow(1.0 - t, 3.0);
-        const next = [
-            anim.from[0] + (anim.target[0] - anim.from[0]) * eased,
-            anim.from[1] + (anim.target[1] - anim.from[1]) * eased,
+        const dtMs = Math.max(1.0, Math.min(80.0, now - (anim.lastFrameAt || now)));
+        anim.lastFrameAt = now;
+        const current = currentUserMarkerVisualLatLng() || anim.target;
+        const fixAgeMs = Math.max(0.0, Date.now() - (anim.targetFixAtMs || Date.now()));
+        const predictiveLeadMs = fixAgeMs <= anim.smoothedIntervalMs * 1.5
+            ? Math.max(
+                0.0,
+                Math.min(
+                    USER_MARKER_PREDICTION_MAX_MS,
+                    anim.smoothedIntervalMs * USER_MARKER_PREDICTION_RATIO
+                )
+            )
+            : 0.0;
+        const predictedTarget = [
+            clampLat(anim.target[0] + anim.velocityLatPerMs * predictiveLeadMs),
+            clampLon(anim.target[1] + anim.velocityLonPerMs * predictiveLeadMs),
         ];
-        if (t >= 1.0) {
+        const catchupMs = Math.max(
+            USER_MARKER_RATE_MIN_CATCHUP_MS,
+            Math.min(USER_MARKER_RATE_MAX_CATCHUP_MS, anim.smoothedIntervalMs * 0.8)
+        );
+        const alpha = 1.0 - Math.exp(-dtMs / catchupMs);
+        const next = blendLatLngToward(current, predictedTarget, alpha);
+        const remainingDistanceM = distanceMetersBetween(next, anim.target);
+        if (!Array.isArray(next) || !Number.isFinite(remainingDistanceM)) {
+            setUserMarkerVisualLatLng(anim.target);
+            userMarkerAnimation = null;
+            userMarkerAnimationFrame = null;
+            return;
+        }
+        if (remainingDistanceM <= USER_MARKER_SMOOTH_SKIP_M && predictiveLeadMs === 0.0) {
             setUserMarkerVisualLatLng(anim.target);
             userMarkerAnimation = null;
             userMarkerAnimationFrame = null;
@@ -1238,9 +1311,21 @@ function applyFusedHeading() {
     } else {
         const diff = shortestAngleDiff(userHeadingDeg, target);
         const gain = Number.isFinite(nativeHeadingDeg)
-            ? Math.min(0.92, Math.max(0.72, Math.abs(diff) / 45.0))
-            : Math.min(0.55, Math.max(0.16, Math.abs(diff) / 90.0));
+            ? Math.min(0.82, Math.max(0.58, Math.abs(diff) / 60.0))
+            : Math.min(0.42, Math.max(0.12, Math.abs(diff) / 120.0));
         userHeadingDeg = normalizeAngle(userHeadingDeg + diff * gain);
+    }
+
+    if (followUserEnabled && orientationMode === "user") {
+        userHeadingIndicatorDeg = normalizeAngle(groundMap ? groundMap.getBearing() : userHeadingDeg);
+    } else if (!Number.isFinite(userHeadingIndicatorDeg)) {
+        userHeadingIndicatorDeg = userHeadingDeg;
+    } else {
+        const indicatorDiff = shortestAngleDiff(userHeadingIndicatorDeg, userHeadingDeg);
+        const indicatorGain = Number.isFinite(nativeHeadingDeg)
+            ? Math.min(0.5, Math.max(0.22, Math.abs(indicatorDiff) / 120.0))
+            : Math.min(0.32, Math.max(0.12, Math.abs(indicatorDiff) / 180.0));
+        userHeadingIndicatorDeg = normalizeAngle(userHeadingIndicatorDeg + indicatorDiff * indicatorGain);
     }
 
     if (followUserEnabled && orientationMode === "user") {
@@ -1378,7 +1463,8 @@ function disableFollowUserFromMapInteraction() {
 
 function syncRequestedMapControlState() {
     try {
-        const enabled = String(window.__gs26_follow_user_enabled ?? "false") === "true";
+        const requested = window.__gs26_follow_user_enabled;
+        const enabled = requested == null ? true : String(requested) === "true";
         const guard = Number(window.__gs26_follow_user_enable_guard_until || 0);
         followUserEnabled = enabled || (Number.isFinite(guard) && guard > Date.now());
 
@@ -1407,9 +1493,11 @@ function setGroundMapOrientationMode(mode) {
         if (Number.isFinite(headingTarget)) {
             userHeadingDegRaw = headingTarget;
             userHeadingDeg = headingTarget;
+            userHeadingIndicatorDeg = headingTarget;
             mapBearingDeg = normalizeAngle(headingTarget);
             pendingUserUpRealign = false;
         } else if (Number.isFinite(userHeadingDeg)) {
+            userHeadingIndicatorDeg = userHeadingDeg;
             mapBearingDeg = normalizeAngle(userHeadingDeg);
             pendingUserUpRealign = false;
         }
@@ -1972,6 +2060,7 @@ function resetMapObjects() {
     if (Array.isArray(preservedUserVisual)) {
         userMarkerDisplayedLatLng = [preservedUserVisual[0], preservedUserVisual[1]];
     }
+    userHeadingIndicatorDeg = Number.isFinite(userHeadingDeg) ? userHeadingDeg : userHeadingIndicatorDeg;
 }
 
 function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, assetTitle) {
@@ -2121,8 +2210,7 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
         let userMarkerCreated = false;
         if (!Array.isArray(userMarkerDisplayedLatLng)) {
             const seedUserLatLng = currentUserMarkerVisualLatLng() || lastUserLatLng;
-            userMarkerDisplayedLatLng = [seedUserLatLng[0], seedUserLatLng[1]];
-            setUserMarkerVisualLatLng(userMarkerDisplayedLatLng);
+            resetUserMotionSmoothing(seedUserLatLng);
             userMarkerCreated = true;
         } else {
             animateUserMarkerTo(lastUserLatLng);

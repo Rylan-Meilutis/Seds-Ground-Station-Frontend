@@ -54,10 +54,10 @@ dioxus = { version = "0.7.5", features = ["desktop", "macro"] }
 dioxus-signals = "0.7.4"
 dioxus-desktop = "0.7.5"
 chrono = { version = "0.4.44", default-features = false, features = ["std", "clock"] }
-tokio = { version = "1.52.0", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "time"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "blocking", "rustls", "stream"] }
 rustls = "0.23"
-rustls-platform-verifier = "0.6.2"
+rustls-platform-verifier = "0.7.0"
 futures-util = "0.3.32"
 url = "2.5.8"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -74,6 +74,7 @@ tokio-tungstenite = { version = "0.29.0", default-features = false, features = [
 jni = "0.22.4"
 jni021 = { package = "jni", version = "0.21.1" }
 ndk-context = "0.1.1"
+rustls_platform_verifier_reqwest = { package = "rustls-platform-verifier", version = "0.6.2" }
 
 [features]
 default = ["web"]

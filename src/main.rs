@@ -122,34 +122,36 @@ fn write_cached_tile(base: &str, z: u32, x: u32, y: u32, bytes: &[u8]) {
 #[cfg(target_os = "android")]
 /// Initializes rustls-platform-verifier with Android JVM/context handles.
 fn init_android_platform_tls_verifier() {
-    use ::jni021::JavaVM;
-    use ::jni021::objects::JObject;
+    use ::jni::JavaVM;
+    use ::jni::objects::JObject;
+    use ::jni021::JavaVM as JavaVM021;
+    use ::jni021::objects::JObject as JObject021;
 
     let ctx = ndk_context::android_context();
     let vm = match unsafe { JavaVM::from_raw(ctx.vm().cast()) } {
-        Ok(vm) => vm,
-        Err(e) => {
-            append_native_log(&format!(
-                "[startup] android TLS verifier init failed (vm): {e}"
-            ));
-            return;
-        }
+        vm => vm,
     };
 
-    match (|| -> ::jni021::errors::Result<()> {
-        let init_vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }?;
-        let mut env = vm.attach_current_thread()?;
-        let context = unsafe { JObject::from_raw(ctx.context().cast()) };
-        let loader = env
-            .call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
-            .l()?;
-        let context = env.new_global_ref(context)?;
-        let loader = env.new_global_ref(loader)?;
-        rustls_platform_verifier::android::init_with_refs(init_vm, context, loader);
+    match vm.attach_current_thread(|env| -> ::jni::errors::Result<()> {
+        let context = unsafe { JObject::from_raw(env, ctx.context().cast()) };
+        rustls_platform_verifier::android::init_with_env(env, context)?;
         Ok(())
-    })() {
+    }) {
         Ok(_) => append_native_log("[startup] android TLS verifier initialized"),
         Err(e) => append_native_log(&format!("[startup] android TLS verifier init failed: {e}")),
+    }
+
+    match (|| -> ::jni021::errors::Result<()> {
+        let vm = unsafe { JavaVM021::from_raw(ctx.vm().cast()) }?;
+        let mut env = vm.attach_current_thread()?;
+        let context = unsafe { JObject021::from_raw(ctx.context().cast()) };
+        rustls_platform_verifier_reqwest::android::init_with_env(&mut env, context)?;
+        Ok(())
+    })() {
+        Ok(_) => append_native_log("[startup] android reqwest TLS verifier initialized"),
+        Err(e) => append_native_log(&format!(
+            "[startup] android reqwest TLS verifier init failed: {e}"
+        )),
     }
 }
 
@@ -170,13 +172,21 @@ fn main() {
     append_native_log("[startup] native main entered");
     #[cfg(target_os = "android")]
     init_android_platform_tls_verifier();
-    let mut cfg = dioxus_desktop::Config::new().with_asynchronous_custom_protocol(
-        "gs26",
-        |_id, request, responder| {
+    let mut cfg = dioxus_desktop::Config::new();
+    #[cfg(target_os = "android")]
+    {
+        cfg = cfg.with_custom_protocol("gs26", |_id, request| {
+            append_native_log("[startup] protocol request dispatched");
+            handle_gs26_protocol_safely(request)
+        });
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        cfg = cfg.with_asynchronous_custom_protocol("gs26", |_id, request, responder| {
             append_native_log("[startup] protocol request dispatched");
             _handle_gs26_protocol_async(request, responder);
-        },
-    );
+        });
+    }
     #[cfg(target_os = "android")]
     {
         cfg = cfg.with_custom_head(android_custom_head());
@@ -188,6 +198,20 @@ fn main() {
     append_native_log("[startup] launching desktop app");
     LaunchBuilder::desktop().with_cfg(cfg).launch(app::App);
     append_native_log("[startup] desktop launch returned");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn handle_gs26_protocol_safely(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'static, [u8]>> {
+    match panic::catch_unwind(AssertUnwindSafe(|| handle_gs26_protocol(request))) {
+        Ok(resp) => resp,
+        Err(_) => {
+            append_native_log("[protocol] panic while handling request");
+            HttpResponse::builder()
+                .status(500)
+                .body(Cow::Owned(Vec::new()))
+                .unwrap_or_else(|_| HttpResponse::new(Cow::Owned(Vec::new())))
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -359,17 +383,7 @@ fn _handle_gs26_protocol_async(request: HttpRequest<Vec<u8>>, responder: Request
     let _ = std::thread::Builder::new()
         .name("gs26-proto-req".to_string())
         .spawn(move || {
-            let response =
-                match panic::catch_unwind(AssertUnwindSafe(|| handle_gs26_protocol(request))) {
-                    Ok(resp) => resp,
-                    Err(_) => {
-                        append_native_log("[protocol] panic in protocol handler thread");
-                        HttpResponse::builder()
-                            .status(500)
-                            .body(Cow::Owned(Vec::new()))
-                            .unwrap_or_else(|_| HttpResponse::new(Cow::Owned(Vec::new())))
-                    }
-                };
+            let response = handle_gs26_protocol_safely(request);
             responder.respond(response);
         });
 }

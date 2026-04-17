@@ -48,7 +48,8 @@ pub fn SettingsPage(
     let section_map = localized_copy(&language, "Map", "Mapa", "Carte");
     let section_network = localized_copy(&language, "Network", "Red", "Reseau");
     let section_charts = localized_copy(&language, "Charts", "Graficas", "Graphiques");
-    let section_calibration = localized_copy(&language, "Calibration", "Calibracion", "Calibration");
+    let section_calibration =
+        localized_copy(&language, "Calibration", "Calibracion", "Calibration");
     let section_storage = localized_copy(&language, "Storage", "Almacenamiento", "Stockage");
     let prefetch_title = localized_copy(
         &language,

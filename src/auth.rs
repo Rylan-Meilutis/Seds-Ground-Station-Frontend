@@ -34,6 +34,10 @@ pub struct SessionStatus {
     pub session_type: Option<String>,
     #[serde(default)]
     pub allowed_commands: Vec<String>,
+    #[serde(default)]
+    pub can_view_calibration: Option<bool>,
+    #[serde(default)]
+    pub can_edit_calibration: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,14 +116,11 @@ pub fn can_view_actions() -> bool {
 }
 
 pub fn can_view_calibration() -> bool {
-    current_status().authenticated
+    current_status().can_view_calibration.unwrap_or(false)
 }
 
 pub fn can_edit_calibration() -> bool {
-    current_status()
-        .username
-        .as_deref()
-        .is_some_and(|username| username.eq_ignore_ascii_case("rylan"))
+    current_status().can_edit_calibration.unwrap_or(false)
 }
 
 pub fn set_current_session(session: StoredAuthSession) {

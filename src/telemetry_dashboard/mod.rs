@@ -37,7 +37,7 @@ use data_chart::{
 };
 
 use crate::telemetry_dashboard::actions_tab::ActionsTab;
-use calibration_tab::CalibrationTab;
+use calibration_tab::{CalibrationTab, CalibrationTabLayout};
 use connection_status_tab::ConnectionStatusTab;
 use data_tab::DataTab;
 use detailed_tab::DetailedTab;
@@ -423,29 +423,6 @@ pub(crate) fn latest_telemetry_row(
                     sender_id: sample.sender_id.clone(),
                     values: sample.values.as_ref().to_vec(),
                 })
-            } else {
-                None
-            }
-        }
-    }
-}
-
-pub(crate) fn latest_telemetry_timestamp(data_type: &str, sender_id: Option<&str>) -> Option<i64> {
-    match sender_id {
-        Some(sender_id) => {
-            if let Ok(latest) = LATEST_TELEMETRY.lock() {
-                latest
-                    .get(&LatestTelemetryKey::new(data_type, sender_id))
-                    .map(|sample| sample.timestamp_ms)
-            } else {
-                None
-            }
-        }
-        None => {
-            if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
-                latest_by_type
-                    .get(data_type)
-                    .map(|sample| sample.timestamp_ms)
             } else {
                 None
             }
@@ -2015,12 +1992,16 @@ fn _actions_tab_has_visible_actions(layout: &LayoutConfig, abort_only_mode: bool
     auth::can_view_actions() && !layout.actions_tab.actions.is_empty()
 }
 
-fn _calibration_tab_visible() -> bool {
-    auth::can_view_calibration()
+fn _calibration_tab_visible(calibration_has_sensors: Option<bool>) -> bool {
+    auth::can_view_calibration() && calibration_has_sensors.unwrap_or(true)
 }
 
 /// Computes the final visible tab list after applying layout and auth filtering.
-fn _configured_main_tabs(layout: &LayoutConfig, abort_only_mode: bool) -> Vec<MainTab> {
+fn _configured_main_tabs(
+    layout: &LayoutConfig,
+    abort_only_mode: bool,
+    calibration_has_sensors: Option<bool>,
+) -> Vec<MainTab> {
     let mut tabs = Vec::new();
     for id in &layout.main_tabs {
         let tab = _main_tab_from_str(id);
@@ -2030,7 +2011,7 @@ fn _configured_main_tabs(layout: &LayoutConfig, abort_only_mode: bool) -> Vec<Ma
         if tab == MainTab::Actions && !_actions_tab_has_visible_actions(layout, abort_only_mode) {
             continue;
         }
-        if tab == MainTab::Calibration && !_calibration_tab_visible() {
+        if tab == MainTab::Calibration && !_calibration_tab_visible(calibration_has_sensors) {
             continue;
         }
         tabs.push(tab);
@@ -2342,6 +2323,8 @@ fn TelemetryDashboardInner() -> Element {
     let layout_loading = use_signal(|| true);
     let layout_error = use_signal(|| None::<String>);
     let layout_request_base = use_signal(String::new);
+    let calibration_has_sensors = use_signal(|| None::<bool>);
+    let calibration_request_base = use_signal(String::new);
     let startup_seed_ready = use_signal(|| false);
 
     let parse_i64 = |s: &str| s.parse::<i64>().unwrap_or(0);
@@ -2417,16 +2400,44 @@ fn TelemetryDashboardInner() -> Element {
         let mut active_main_tab = active_main_tab;
         let layout_config = layout_config;
         let abort_only_mode = abort_only_mode;
+        let calibration_has_sensors = calibration_has_sensors;
         use_effect(move || {
             let Some(layout) = layout_config.read().clone() else {
                 return;
             };
             let current = *active_main_tab.read();
-            let configured = _configured_main_tabs(&layout, *abort_only_mode.read());
+            let configured = _configured_main_tabs(
+                &layout,
+                *abort_only_mode.read(),
+                *calibration_has_sensors.read(),
+            );
             if !configured.contains(&current) {
                 let next = configured.into_iter().next().unwrap_or(MainTab::State);
                 active_main_tab.set(next);
             }
+        });
+    }
+
+    {
+        let mut calibration_has_sensors = calibration_has_sensors;
+        let mut calibration_request_base = calibration_request_base;
+        use_effect(move || {
+            if !auth::can_view_calibration() {
+                calibration_has_sensors.set(Some(false));
+                calibration_request_base.set(String::new());
+                return;
+            }
+            let base = UrlConfig::base_http();
+            if *calibration_request_base.read() == base {
+                return;
+            }
+            calibration_request_base.set(base.clone());
+            spawn(async move {
+                match http_get_json::<CalibrationTabLayout>("/api/calibration_config").await {
+                    Ok(layout) => calibration_has_sensors.set(Some(!layout.sensors.is_empty())),
+                    Err(_) => calibration_has_sensors.set(Some(false)),
+                }
+            });
         });
     }
 
@@ -3463,15 +3474,18 @@ fn TelemetryDashboardInner() -> Element {
     let layout_config = layout_config;
     let mut layout_loading = layout_loading;
     let mut layout_error = layout_error;
-    let _refresh_layout = move || {
+    let mut layout_request_base = layout_request_base;
+    let mut _refresh_layout = move || {
         let base = UrlConfig::base_http();
         let cache_key = layout_cache_key_for_base(&base);
+        layout_request_base.set(String::new());
         layout_loading.set(true);
         layout_error.set(None);
         persist::_remove(&cache_key);
         let mut layout_config = layout_config;
         let mut layout_loading = layout_loading;
         let mut layout_error = layout_error;
+        let mut layout_request_base = layout_request_base;
         spawn(async move {
             match http_get_json::<LayoutConfig>("/api/layout").await {
                 Ok(layout) => {
@@ -3486,6 +3500,7 @@ fn TelemetryDashboardInner() -> Element {
                         return;
                     }
                     configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                    layout_request_base.set(base.clone());
                     layout_config.set(Some(layout.clone()));
                     layout_loading.set(false);
                     layout_error.set(None);
@@ -3516,6 +3531,7 @@ fn TelemetryDashboardInner() -> Element {
                 cursor:pointer;
             ", theme.button_border, theme.button_background, theme.button_text),
             onclick: move |_| {
+                _refresh_layout();
                 hard_reload_dashboard_data();
             },
             "{reload_button_label}"
@@ -4290,7 +4306,7 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
                             nav { class: "gs26-tab-nav",
-                                for tab in _configured_main_tabs(&layout, *abort_only_mode.read()).into_iter() {
+                                for tab in _configured_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read()).into_iter() {
                                     match tab {
                                         MainTab::State => rsx! {
                                             button {
