@@ -42,7 +42,6 @@ name = "UBSEDS GroundStation"
 icon = "assets/icon.ico"
 
 [bundle.macos]
-# Used for BOTH macOS and iOS bundles
 info_plist_path = "platform/macos/Info.plist"
 icon = "icons/icon.icns"
 minimum_system_version = "13.0"

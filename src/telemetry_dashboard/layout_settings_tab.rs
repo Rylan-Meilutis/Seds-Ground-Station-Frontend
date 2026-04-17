@@ -10,6 +10,7 @@ pub fn SettingsPage(
     network_flow_animation_enabled: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
     map_prefetch_enabled: Signal<bool>,
+    calibration_capture_sample_count: Signal<usize>,
     theme: ThemeConfig,
     on_clear_cache: EventHandler<()>,
     on_reset_app_data: EventHandler<()>,
@@ -27,6 +28,7 @@ pub fn SettingsPage(
     let flow_animation_enabled = *network_flow_animation_enabled.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
     let map_prefetch_enabled_value = *map_prefetch_enabled.read();
+    let calibration_capture_sample_count_value = *calibration_capture_sample_count.read();
 
     let card_style = format!(
         "padding:16px; border-radius:14px; border:1px solid {}; background:{}; display:flex; flex-direction:column; gap:12px;",
@@ -46,6 +48,7 @@ pub fn SettingsPage(
     let section_map = localized_copy(&language, "Map", "Mapa", "Carte");
     let section_network = localized_copy(&language, "Network", "Red", "Reseau");
     let section_charts = localized_copy(&language, "Charts", "Graficas", "Graphiques");
+    let section_calibration = localized_copy(&language, "Calibration", "Calibracion", "Calibration");
     let section_storage = localized_copy(&language, "Storage", "Almacenamiento", "Stockage");
     let prefetch_title = localized_copy(
         &language,
@@ -61,6 +64,18 @@ pub fn SettingsPage(
     );
     let prefetch_on = localized_copy(&language, "Enabled", "Activado", "Active");
     let prefetch_off = localized_copy(&language, "Disabled", "Desactivado", "Desactive");
+    let calibration_samples_title = localized_copy(
+        &language,
+        "Capture Sample Count",
+        "Cantidad de muestras",
+        "Nombre d'echantillons",
+    );
+    let calibration_samples_desc = localized_copy(
+        &language,
+        "Used when capturing and averaging live raw samples for calibration points and sequences.",
+        "Se usa al capturar y promediar muestras crudas en vivo para puntos y secuencias de calibracion.",
+        "Utilise lors de la capture et de la moyenne des echantillons bruts en direct pour les points et sequences d'etalonnage.",
+    );
     let language_title = localized_copy(&language, "Language", "Idioma", "Langue");
     let language_desc = localized_copy(
         &language,
@@ -331,6 +346,28 @@ pub fn SettingsPage(
                         style: if state_chart_labels_vertical_enabled { chip_selected.clone() } else { chip_idle.clone() },
                         onclick: move |_| state_chart_labels_vertical.set(true),
                         "{chart_labels_vertical}"
+                    }
+                }
+            }
+
+            div { style: "margin-top:12px; {card_style}",
+                div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_calibration}" }
+                div { style: "font-size:13px; color:{theme.text_muted};", "{calibration_samples_title}" }
+                div { style: "font-size:13px; color:{theme.text_soft};", "{calibration_samples_desc}" }
+                input {
+                    style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:140px;",
+                    r#type: "number",
+                    min: "1",
+                    max: "5000",
+                    step: "1",
+                    value: "{calibration_capture_sample_count_value}",
+                    oninput: {
+                        let mut calibration_capture_sample_count = calibration_capture_sample_count;
+                        move |e| {
+                            if let Ok(value) = e.value().trim().parse::<usize>() {
+                                calibration_capture_sample_count.set(value.clamp(1, 5_000));
+                            }
+                        }
                     }
                 }
             }

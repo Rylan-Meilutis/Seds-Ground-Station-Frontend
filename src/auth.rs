@@ -111,6 +111,17 @@ pub fn can_view_actions() -> bool {
     current_status().permissions.send_commands
 }
 
+pub fn can_view_calibration() -> bool {
+    current_status().authenticated
+}
+
+pub fn can_edit_calibration() -> bool {
+    current_status()
+        .username
+        .as_deref()
+        .is_some_and(|username| username.eq_ignore_ascii_case("rylan"))
+}
+
 pub fn set_current_session(session: StoredAuthSession) {
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {

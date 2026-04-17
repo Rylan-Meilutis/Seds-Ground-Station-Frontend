@@ -502,6 +502,7 @@ const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
 const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
+const CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY: &str = "gs_calibration_capture_sample_count";
 const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v9_";
 const NOTIFICATION_DISMISSED_STORAGE_KEY: &str = "gs_notification_dismissed_ids_v1";
 const _SKIP_TLS_VERIFY_KEY_PREFIX: &str = "gs_skip_tls_verify_";
@@ -1168,6 +1169,13 @@ pub fn NativeSettingsPage() -> Element {
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
     let map_prefetch_enabled =
         use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
+    let calibration_capture_sample_count = use_signal(|| {
+        persist::get_or(CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY, "200")
+            .parse::<usize>()
+            .ok()
+            .unwrap_or(200)
+            .clamp(1, 5_000)
+    });
 
     {
         let distance_units_metric = distance_units_metric;
@@ -1247,6 +1255,16 @@ pub fn NativeSettingsPage() -> Element {
         });
     }
     {
+        let calibration_capture_sample_count = calibration_capture_sample_count;
+        use_effect(move || {
+            let count = (*calibration_capture_sample_count.read()).clamp(1, 5_000);
+            persist::set_string(
+                CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY,
+                &count.to_string(),
+            );
+        });
+    }
+    {
         let theme_preset = theme_preset;
         use_effect(move || {
             let theme = localized_theme(
@@ -1272,6 +1290,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut network_flow_animation_enabled = network_flow_animation_enabled;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
         let mut map_prefetch_enabled = map_prefetch_enabled;
+        let mut calibration_capture_sample_count = calibration_capture_sample_count;
         move |_| {
             reset_local_app_data();
             distance_units_metric.set(false);
@@ -1280,6 +1299,7 @@ pub fn NativeSettingsPage() -> Element {
             network_flow_animation_enabled.set(true);
             state_chart_labels_vertical.set(false);
             map_prefetch_enabled.set(true);
+            calibration_capture_sample_count.set(200);
         }
     };
 
@@ -1291,6 +1311,7 @@ pub fn NativeSettingsPage() -> Element {
             network_flow_animation_enabled,
             state_chart_labels_vertical,
             map_prefetch_enabled,
+            calibration_capture_sample_count,
             theme,
             on_clear_cache: move |_| {
                 clear_frontend_caches_and_reseed();
@@ -1994,6 +2015,10 @@ fn _actions_tab_has_visible_actions(layout: &LayoutConfig, abort_only_mode: bool
     auth::can_view_actions() && !layout.actions_tab.actions.is_empty()
 }
 
+fn _calibration_tab_visible() -> bool {
+    auth::can_view_calibration()
+}
+
 /// Computes the final visible tab list after applying layout and auth filtering.
 fn _configured_main_tabs(layout: &LayoutConfig, abort_only_mode: bool) -> Vec<MainTab> {
     let mut tabs = Vec::new();
@@ -2003,6 +2028,9 @@ fn _configured_main_tabs(layout: &LayoutConfig, abort_only_mode: bool) -> Vec<Ma
             continue;
         }
         if tab == MainTab::Actions && !_actions_tab_has_visible_actions(layout, abort_only_mode) {
+            continue;
+        }
+        if tab == MainTab::Calibration && !_calibration_tab_visible() {
             continue;
         }
         tabs.push(tab);
@@ -2302,6 +2330,13 @@ fn TelemetryDashboardInner() -> Element {
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
     let map_prefetch_enabled =
         use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
+    let calibration_capture_sample_count = use_signal(|| {
+        persist::get_or(CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY, "200")
+            .parse::<usize>()
+            .ok()
+            .unwrap_or(200)
+            .clamp(1, 5_000)
+    });
 
     let layout_config = use_signal(|| None::<LayoutConfig>);
     let layout_loading = use_signal(|| true);
@@ -2652,6 +2687,16 @@ fn TelemetryDashboardInner() -> Element {
                 }})();
                 "#
             ));
+        });
+    }
+    {
+        let calibration_capture_sample_count = calibration_capture_sample_count;
+        use_effect(move || {
+            let count = (*calibration_capture_sample_count.read()).clamp(1, 5_000);
+            persist::set_string(
+                CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY,
+                &count.to_string(),
+            );
         });
     }
     {
@@ -3639,6 +3684,7 @@ fn TelemetryDashboardInner() -> Element {
                             network_flow_animation_enabled: network_flow_animation_enabled,
                             state_chart_labels_vertical: state_chart_labels_vertical,
                             map_prefetch_enabled: map_prefetch_enabled,
+                            calibration_capture_sample_count: calibration_capture_sample_count,
                             theme: theme.clone(),
                             on_clear_cache: move |_| {
                                 clear_frontend_caches_and_reseed();
@@ -3655,6 +3701,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut network_flow_animation_enabled = network_flow_animation_enabled;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
                                 let mut map_prefetch_enabled = map_prefetch_enabled;
+                                let mut calibration_capture_sample_count = calibration_capture_sample_count;
                                 move |_| {
                                     reset_local_app_data();
                                     st_warn_ack.set("0".to_string());
@@ -3668,6 +3715,7 @@ fn TelemetryDashboardInner() -> Element {
                                     network_flow_animation_enabled.set(true);
                                     state_chart_labels_vertical.set(false);
                                     map_prefetch_enabled.set(true);
+                                    calibration_capture_sample_count.set(200);
                                 }
                             },
                             title: settings_title.clone(),
@@ -4633,7 +4681,11 @@ fn TelemetryDashboardInner() -> Element {
                             },
                             MainTab::Calibration => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    CalibrationTab { theme: theme.clone() }
+                                    CalibrationTab {
+                                        theme: theme.clone(),
+                                        can_edit: auth::can_edit_calibration(),
+                                        capture_sample_count: *calibration_capture_sample_count.read(),
+                                    }
                                 }
                             },
                             MainTab::Notifications => rsx! {
