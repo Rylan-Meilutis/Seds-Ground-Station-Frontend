@@ -7,6 +7,8 @@ let groundMap = null;
 let userMarkerDisplayedLatLng = null;
 let userMarkerAnimationFrame = null;
 let userMarkerAnimation = null;
+let headingAnimationFrame = null;
+let headingAnimationLastFrameAt = 0;
 let followCameraFrame = null;
 let pendingFollowCameraLatLng = null;
 let currentTilesUrl = null;
@@ -38,6 +40,7 @@ let suppressManualOrientationDropUntilMs = 0;
 let pendingUserUpRealign = false;
 let userHeadingDegRaw = null;
 let userHeadingDeg = null;
+let userHeadingDisplayDeg = null;
 let userHeadingIndicatorDeg = null;
 let nativeHeadingDeg = null;
 let deviceHeadingDeg = null;
@@ -79,7 +82,13 @@ const USER_MARKER_PREDICTION_RATIO = 0.35;
 const USER_MARKER_RATE_MIN_CATCHUP_MS = 150;
 const USER_MARKER_RATE_MAX_CATCHUP_MS = 430;
 const USER_ORIENTATION_DEADZONE_DEG = 3;
-const USER_ORIENTATION_EASE_MS = 220;
+const USER_ORIENTATION_INPUT_DEADZONE_DEG = 2.4;
+const USER_ORIENTATION_CAMERA_EPSILON_DEG = 0.45;
+const USER_ORIENTATION_MAX_STEP_DEG = 6.0;
+const USER_ORIENTATION_INDICATOR_DEADZONE_DEG = 1.6;
+const USER_ORIENTATION_EASE_MS = 320;
+const USER_ORIENTATION_DISPLAY_CATCHUP_MS = 180;
+const USER_ORIENTATION_INDICATOR_CATCHUP_MS = 140;
 const FOLLOW_CAMERA_CENTER_EPSILON_M = 0.2;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
@@ -1083,7 +1092,7 @@ function syncUserHeadingIndicator() {
     }
     const latLng = userMarkerDisplayedLatLng || lastUserLatLng;
     const displayHeadingDeg = followUserEnabled && orientationMode === "user"
-        ? normalizeAngle(groundMap.getBearing())
+        ? (Number.isFinite(userHeadingDisplayDeg) ? userHeadingDisplayDeg : mapBearingDeg)
         : (Number.isFinite(userHeadingIndicatorDeg) ? userHeadingIndicatorDeg : userHeadingDeg);
     const dataKey = headingDataKey(latLng, displayHeadingDeg);
     if (source.__gs26_data_key === dataKey) return;
@@ -1103,7 +1112,7 @@ function scheduleFollowCameraUpdate(latLng) {
         if (!groundMap || !Array.isArray(target)) return;
         const center = groundMap.getCenter();
         const centerDistanceM = distanceMetersBetween([center.lat, center.lng], target);
-        if (!followUserEnabled && Number.isFinite(centerDistanceM) && centerDistanceM <= FOLLOW_CAMERA_CENTER_EPSILON_M) {
+        if (followUserEnabled && Number.isFinite(centerDistanceM) && centerDistanceM <= FOLLOW_CAMERA_CENTER_EPSILON_M) {
             return;
         }
         markInternalCameraUpdate(32);
@@ -1117,10 +1126,24 @@ function scheduleFollowCameraUpdate(latLng) {
 
 function setUserMarkerVisualLatLng(latLng) {
     if (!Array.isArray(latLng)) return;
-    if (followUserEnabled && groundMap) {
-        scheduleFollowCameraUpdate(latLng);
-    }
     userMarkerDisplayedLatLng = [latLng[0], latLng[1]];
+    if (followUserEnabled && groundMap && Date.now() >= suppressFollowCameraUntilMs) {
+        const center = groundMap.getCenter();
+        const centerDistanceM = distanceMetersBetween(
+            [center.lat, center.lng],
+            userMarkerDisplayedLatLng
+        );
+        if (!Number.isFinite(centerDistanceM) || centerDistanceM > FOLLOW_CAMERA_CENTER_EPSILON_M) {
+            markInternalCameraUpdate(32);
+            groundMap.jumpTo({
+                center: [userMarkerDisplayedLatLng[1], userMarkerDisplayedLatLng[0]],
+                bearing: mapBearingDeg,
+            });
+            rememberMapView();
+        }
+    } else if (followUserEnabled && groundMap) {
+        scheduleFollowCameraUpdate(userMarkerDisplayedLatLng);
+    }
     syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng);
     syncUserHeadingIndicator();
     syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng);
@@ -1279,19 +1302,108 @@ function hasUsableUserHeading() {
     return Number.isFinite(fusedHeadingTarget()) || Number.isFinite(userHeadingDeg);
 }
 
+function scheduleHeadingAnimation() {
+    if (headingAnimationFrame != null) return;
+    headingAnimationLastFrameAt = performance.now();
+    const step = () => {
+        headingAnimationFrame = null;
+        const now = performance.now();
+        const dtMs = Math.max(1.0, Math.min(80.0, now - (headingAnimationLastFrameAt || now)));
+        headingAnimationLastFrameAt = now;
+        let changed = false;
+
+        if (Number.isFinite(userHeadingDeg)) {
+            if (!Number.isFinite(userHeadingDisplayDeg)) {
+                userHeadingDisplayDeg = userHeadingDeg;
+                changed = true;
+            } else {
+                const displayDiff = shortestAngleDiff(userHeadingDisplayDeg, userHeadingDeg);
+                if (Math.abs(displayDiff) >= USER_ORIENTATION_INDICATOR_DEADZONE_DEG) {
+                    const alpha = 1.0 - Math.exp(-dtMs / USER_ORIENTATION_DISPLAY_CATCHUP_MS);
+                    const displayStep = Math.max(
+                        -USER_ORIENTATION_MAX_STEP_DEG,
+                        Math.min(USER_ORIENTATION_MAX_STEP_DEG, displayDiff * alpha)
+                    );
+                    userHeadingDisplayDeg = normalizeAngle(userHeadingDisplayDeg + displayStep);
+                    changed = true;
+                }
+            }
+        }
+
+        const indicatorTarget = Number.isFinite(userHeadingDisplayDeg)
+            ? userHeadingDisplayDeg
+            : userHeadingDeg;
+        if (Number.isFinite(indicatorTarget)) {
+            if (followUserEnabled && orientationMode === "user") {
+                if (userHeadingIndicatorDeg !== indicatorTarget) {
+                    userHeadingIndicatorDeg = indicatorTarget;
+                    changed = true;
+                }
+            } else if (!Number.isFinite(userHeadingIndicatorDeg)) {
+                userHeadingIndicatorDeg = indicatorTarget;
+                changed = true;
+            } else {
+                const indicatorDiff = shortestAngleDiff(userHeadingIndicatorDeg, indicatorTarget);
+                if (Math.abs(indicatorDiff) >= USER_ORIENTATION_INDICATOR_DEADZONE_DEG) {
+                    const alpha = 1.0 - Math.exp(-dtMs / USER_ORIENTATION_INDICATOR_CATCHUP_MS);
+                    const indicatorStep = Math.max(
+                        -USER_ORIENTATION_MAX_STEP_DEG,
+                        Math.min(USER_ORIENTATION_MAX_STEP_DEG, indicatorDiff * alpha)
+                    );
+                    userHeadingIndicatorDeg = normalizeAngle(userHeadingIndicatorDeg + indicatorStep);
+                    changed = true;
+                }
+            }
+        }
+
+        if (followUserEnabled && orientationMode === "user" && Number.isFinite(userHeadingDisplayDeg)) {
+            const nextBearing = normalizeAngle(userHeadingDisplayDeg);
+            if (
+                pendingUserUpRealign
+                || Math.abs(shortestAngleDiff(mapBearingDeg, nextBearing)) >= USER_ORIENTATION_CAMERA_EPSILON_DEG
+            ) {
+                mapBearingDeg = nextBearing;
+                pendingUserUpRealign = false;
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            applyMapOrientation();
+        } else {
+            updateUserMarkerRotation();
+        }
+
+        const displaySettled = !Number.isFinite(userHeadingDeg)
+            || !Number.isFinite(userHeadingDisplayDeg)
+            || Math.abs(shortestAngleDiff(userHeadingDisplayDeg, userHeadingDeg)) < USER_ORIENTATION_INDICATOR_DEADZONE_DEG;
+        const indicatorSettled = !Number.isFinite(indicatorTarget)
+            || !Number.isFinite(userHeadingIndicatorDeg)
+            || Math.abs(shortestAngleDiff(userHeadingIndicatorDeg, indicatorTarget)) < USER_ORIENTATION_INDICATOR_DEADZONE_DEG;
+        const bearingSettled = orientationMode !== "user"
+            || !followUserEnabled
+            || !Number.isFinite(userHeadingDisplayDeg)
+            || Math.abs(shortestAngleDiff(mapBearingDeg, userHeadingDisplayDeg)) < USER_ORIENTATION_CAMERA_EPSILON_DEG;
+
+        if (!(displaySettled && indicatorSettled && bearingSettled)) {
+            headingAnimationFrame = requestAnimationFrame(step);
+        }
+    };
+    headingAnimationFrame = requestAnimationFrame(step);
+}
+
 function applyMapOrientation() {
     if (!groundMap) return;
     const targetBearing = normalizeAngle(mapBearingDeg);
     const currentBearing = normalizeAngle(groundMap.getBearing());
-    if (Math.abs(shortestAngleDiff(currentBearing, targetBearing)) > 0.05) {
-        markInternalCameraUpdate(250);
+    const cameraDiff = Math.abs(shortestAngleDiff(currentBearing, targetBearing));
+    const minCameraDiff = orientationMode === "user"
+        ? USER_ORIENTATION_CAMERA_EPSILON_DEG
+        : 0.05;
+    if (cameraDiff > minCameraDiff) {
+        markInternalCameraUpdate(orientationMode === "user" ? 32 : 250);
         if (orientationMode === "user") {
-            groundMap.easeTo({
-                bearing: targetBearing,
-                duration: USER_ORIENTATION_EASE_MS,
-                easing: (t) => 1.0 - Math.pow(1.0 - t, 3.0),
-                essential: true,
-            });
+            groundMap.jumpTo({bearing: targetBearing});
         } else {
             groundMap.jumpTo({bearing: targetBearing});
         }
@@ -1310,33 +1422,29 @@ function applyFusedHeading() {
         userHeadingDeg = target;
     } else {
         const diff = shortestAngleDiff(userHeadingDeg, target);
-        const gain = Number.isFinite(nativeHeadingDeg)
-            ? Math.min(0.82, Math.max(0.58, Math.abs(diff) / 60.0))
-            : Math.min(0.42, Math.max(0.12, Math.abs(diff) / 120.0));
-        userHeadingDeg = normalizeAngle(userHeadingDeg + diff * gain);
-    }
-
-    if (followUserEnabled && orientationMode === "user") {
-        userHeadingIndicatorDeg = normalizeAngle(groundMap ? groundMap.getBearing() : userHeadingDeg);
-    } else if (!Number.isFinite(userHeadingIndicatorDeg)) {
-        userHeadingIndicatorDeg = userHeadingDeg;
-    } else {
-        const indicatorDiff = shortestAngleDiff(userHeadingIndicatorDeg, userHeadingDeg);
-        const indicatorGain = Number.isFinite(nativeHeadingDeg)
-            ? Math.min(0.5, Math.max(0.22, Math.abs(indicatorDiff) / 120.0))
-            : Math.min(0.32, Math.max(0.12, Math.abs(indicatorDiff) / 180.0));
-        userHeadingIndicatorDeg = normalizeAngle(userHeadingIndicatorDeg + indicatorDiff * indicatorGain);
-    }
-
-    if (followUserEnabled && orientationMode === "user") {
-        const nextBearing = normalizeAngle(userHeadingDeg);
-        if (pendingUserUpRealign || Math.abs(shortestAngleDiff(mapBearingDeg, nextBearing)) >= USER_ORIENTATION_DEADZONE_DEG) {
-            mapBearingDeg = nextBearing;
-            pendingUserUpRealign = false;
+        if (Math.abs(diff) >= USER_ORIENTATION_INPUT_DEADZONE_DEG) {
+            const gain = Number.isFinite(nativeHeadingDeg)
+                ? Math.min(0.48, Math.max(0.18, Math.abs(diff) / 90.0))
+                : Math.min(0.24, Math.max(0.08, Math.abs(diff) / 180.0));
+            const step = Math.max(
+                -USER_ORIENTATION_MAX_STEP_DEG,
+                Math.min(USER_ORIENTATION_MAX_STEP_DEG, diff * gain)
+            );
+            userHeadingDeg = normalizeAngle(userHeadingDeg + step);
         }
     }
-    updateUserMarkerRotation();
-    applyMapOrientation();
+
+    if (!Number.isFinite(userHeadingDisplayDeg)) {
+        userHeadingDisplayDeg = userHeadingDeg;
+    }
+
+    if (followUserEnabled && orientationMode === "user") {
+        userHeadingIndicatorDeg = userHeadingDisplayDeg;
+    } else if (!Number.isFinite(userHeadingIndicatorDeg)) {
+        userHeadingIndicatorDeg = userHeadingDisplayDeg;
+    }
+
+    scheduleHeadingAnimation();
 }
 
 function setGroundMapUserHeading(deg) {
@@ -1489,17 +1597,18 @@ function setGroundMapOrientationMode(mode) {
         mapBearingDeg = 0;
         pendingUserUpRealign = false;
     } else if (orientationMode === "user" && followUserEnabled) {
+        const currentBearing = normalizeAngle(groundMap ? groundMap.getBearing() : mapBearingDeg);
         const headingTarget = fusedHeadingTarget();
         if (Number.isFinite(headingTarget)) {
             userHeadingDegRaw = headingTarget;
             userHeadingDeg = headingTarget;
-            userHeadingIndicatorDeg = headingTarget;
-            mapBearingDeg = normalizeAngle(headingTarget);
-            pendingUserUpRealign = false;
+            userHeadingDisplayDeg = currentBearing;
+            userHeadingIndicatorDeg = currentBearing;
+            mapBearingDeg = currentBearing;
         } else if (Number.isFinite(userHeadingDeg)) {
-            userHeadingIndicatorDeg = userHeadingDeg;
-            mapBearingDeg = normalizeAngle(userHeadingDeg);
-            pendingUserUpRealign = false;
+            userHeadingDisplayDeg = currentBearing;
+            userHeadingIndicatorDeg = currentBearing;
+            mapBearingDeg = currentBearing;
         }
     }
     syncWindowMapControlState();
@@ -2015,8 +2124,8 @@ function installMapHooks() {
     });
     groundMap.on("rotatestart", () => {
         suppressHighResPrefetch(2500);
-        suppressFollowCameraUntilMs = Date.now() + 1500;
         if (isInternalCameraUpdate()) return;
+        suppressFollowCameraUntilMs = Date.now() + 1500;
         unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
     });
     for (const eventName of ["pitchstart"]) {
