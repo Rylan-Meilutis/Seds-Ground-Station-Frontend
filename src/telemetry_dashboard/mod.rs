@@ -29,7 +29,6 @@ pub mod warnings_tab;
 
 use crate::app::Route;
 use crate::auth;
-#[cfg(not(target_arch = "wasm32"))]
 use data_chart::charts_cache_request_refit;
 use data_chart::{
     charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build, charts_cache_clear_active,
