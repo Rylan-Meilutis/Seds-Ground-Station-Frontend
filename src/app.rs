@@ -125,6 +125,43 @@ fn shell_theme() -> ThemeConfig {
     telemetry_dashboard::app_shell_theme()
 }
 
+#[cfg(target_arch = "wasm32")]
+fn ensure_document_text_node(tag: &str, id: &str, text: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(head) = document.head() else {
+        return;
+    };
+
+    if let Some(existing) = document.get_element_by_id(id) {
+        if existing.text_content().as_deref() != Some(text) {
+            existing.set_text_content(Some(text));
+        }
+        return;
+    }
+
+    let Ok(node) = document.create_element(tag) else {
+        return;
+    };
+    let _ = node.set_attribute("id", id);
+    node.set_text_content(Some(text));
+    let _ = head.append_child(&node);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ensure_document_inline_script(id: &str, text: &str) {
+    ensure_document_text_node("script", id, text);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ensure_document_inline_style(id: &str, text: &str) {
+    ensure_document_text_node("style", id, text);
+}
+
 fn shell_page_style(theme: &ThemeConfig) -> String {
     format!(
         "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow-y:auto; overflow-x:hidden; display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
@@ -959,17 +996,30 @@ pub fn App() -> Element {
             telemetry_dashboard::apply_window_theme(&theme);
         });
     }
-    let map_assets: Element = {
-        rsx! {
-            document::Style { "{INLINE_MAPLIBRE_CSS}" }
-            document::Script { "{INLINE_MAPLIBRE_JS}" }
-            document::Script { "{INLINE_GROUND_MAP_JS}" }
-        }
-    };
-    rsx! {
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        use_effect(move || {
+            ensure_document_inline_style("gs26-global-css", GLOBAL_CSS);
+            ensure_document_inline_style("gs26-maplibre-css", INLINE_MAPLIBRE_CSS);
+            ensure_document_inline_script("gs26-maplibre-js", INLINE_MAPLIBRE_JS);
+            ensure_document_inline_script("gs26-ground-map-js", INLINE_GROUND_MAP_JS);
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let document_assets: Element = rsx! {
         document::Style { "{GLOBAL_CSS}" }
+        document::Style { "{INLINE_MAPLIBRE_CSS}" }
+        document::Script { "{INLINE_MAPLIBRE_JS}" }
+        document::Script { "{INLINE_GROUND_MAP_JS}" }
+    };
+    #[cfg(target_arch = "wasm32")]
+    let document_assets: Element = rsx! { Fragment {} };
+
+    rsx! {
         Meta { name: "viewport", content: "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" }
-        {map_assets}
+        {document_assets}
 
         div {
             style: "min-height: var(--gs26-app-height); width: 100%; background: var(--gs26-app-background); color: var(--gs26-app-text);",

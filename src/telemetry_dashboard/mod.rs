@@ -2563,13 +2563,18 @@ fn TelemetryDashboardInner() -> Element {
     // Subsequent reseeds (button/reconnect) remain immediate.
     {
         let mut startup_seed_ready = startup_seed_ready;
+        let mut startup_seed_scheduled = use_signal(|| false);
         let layout_loading = layout_loading;
         let alive = alive.clone();
 
         use_effect(move || {
-            if *startup_seed_ready.read() || *layout_loading.read() {
+            let seed_ready = *startup_seed_ready.read();
+            let loading = *layout_loading.read();
+            let already_scheduled = *startup_seed_scheduled.read();
+            if seed_ready || loading || already_scheduled {
                 return;
             }
+            startup_seed_scheduled.set(true);
 
             let alive = alive.clone();
             spawn(async move {
