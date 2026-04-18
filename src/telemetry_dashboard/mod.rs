@@ -1760,7 +1760,10 @@ fn LaunchClockBadge(
                     ))
                     .await;
 
-                    let next = tick.read().wrapping_add(1);
+                    let next = {
+                        let current = *tick.read();
+                        current.wrapping_add(1)
+                    };
                     tick.set(next);
                 }
             });
@@ -1778,11 +1781,12 @@ fn LaunchClockBadge(
                 .as_ref()
                 .copied()
                 .map(compensated_network_time_ms);
+            let fallback_anchor = *fallback_tplus_anchor_ms.read();
 
             match clock {
                 Some(clock) => match clock.kind {
                     LaunchClockKind::Idle | LaunchClockKind::TMinus => {
-                        if fallback_tplus_anchor_ms.read().is_some() {
+                        if fallback_anchor.is_some() {
                             fallback_tplus_anchor_ms.set(None);
                         }
                         if clock.kind == LaunchClockKind::TMinus {
@@ -1794,16 +1798,16 @@ fn LaunchClockBadge(
                         let backend_anchor = now_ms
                             .and_then(|now_ms| launch_clock_tplus_anchor_ms(&clock, now_ms, None));
                         if backend_anchor.is_some() {
-                            if fallback_tplus_anchor_ms.read().is_some() {
+                            if fallback_anchor.is_some() {
                                 fallback_tplus_anchor_ms.set(None);
                             }
-                        } else if fallback_tplus_anchor_ms.read().is_none() {
+                        } else if fallback_anchor.is_none() {
                             fallback_tplus_anchor_ms.set(now_ms);
                         }
                     }
                 },
                 None => {
-                    if fallback_tplus_anchor_ms.read().is_some() {
+                    if fallback_anchor.is_some() {
                         fallback_tplus_anchor_ms.set(None);
                     }
                 }
@@ -2428,7 +2432,8 @@ fn TelemetryDashboardInner() -> Element {
                 return;
             }
             let base = UrlConfig::base_http();
-            if *calibration_request_base.read() == base {
+            let current_calibration_request_base = calibration_request_base.read().clone();
+            if current_calibration_request_base == base {
                 return;
             }
             calibration_request_base.set(base.clone());
@@ -2450,7 +2455,8 @@ fn TelemetryDashboardInner() -> Element {
                 return;
             };
             let default_disabled = layout.actions_tab.disable_actions_by_default;
-            if *last_applied_disable_actions_default.read() == Some(default_disabled) {
+            let current_disable_actions_default = *last_applied_disable_actions_default.read();
+            if current_disable_actions_default == Some(default_disabled) {
                 return;
             }
             last_applied_disable_actions_default.set(Some(default_disabled));
@@ -2500,7 +2506,8 @@ fn TelemetryDashboardInner() -> Element {
 
         use_effect(move || {
             let base = UrlConfig::base_http();
-            if *layout_request_base.read() == base {
+            let current_layout_request_base = layout_request_base.read().clone();
+            if current_layout_request_base == base {
                 return;
             }
             layout_request_base.set(base.clone());
@@ -2525,7 +2532,8 @@ fn TelemetryDashboardInner() -> Element {
                             layout_error.set(Some(
                                 "Could not load the dashboard layout. The layout file is not valid for this frontend version.".to_string(),
                             ));
-                            if layout_config.read().is_none() {
+                            let has_layout_config = layout_config.read().is_some();
+                            if !has_layout_config {
                                 layout_loading.set(false);
                             }
                             return;
@@ -2541,7 +2549,8 @@ fn TelemetryDashboardInner() -> Element {
                     Err(err) => {
                         log!("[layout] load failed: {err}");
                         layout_error.set(Some(layout_load_error_message(&err)));
-                        if layout_config.read().is_none() {
+                        let has_layout_config = layout_config.read().is_some();
+                        if !has_layout_config {
                             layout_loading.set(false);
                         }
                     }
@@ -3007,7 +3016,10 @@ fn TelemetryDashboardInner() -> Element {
                         break;
                     }
 
-                    let next = !*flash_on.read();
+                    let next = {
+                        let current = *flash_on.read();
+                        !current
+                    };
                     flash_on.set(next);
                 }
             });
@@ -3188,7 +3200,8 @@ fn TelemetryDashboardInner() -> Element {
                 return;
             }
 
-            if last_started_epoch.read().as_ref() == Some(&epoch) {
+            let current_started_epoch = *last_started_epoch.read();
+            if current_started_epoch == Some(epoch) {
                 return;
             }
             last_started_epoch.set(Some(epoch));
@@ -3494,7 +3507,8 @@ fn TelemetryDashboardInner() -> Element {
                         layout_error.set(Some(
                             "Could not load the dashboard layout. The layout file is not valid for this frontend version.".to_string(),
                         ));
-                        if layout_config.read().is_none() {
+                        let has_layout_config = layout_config.read().is_some();
+                        if !has_layout_config {
                             layout_loading.set(false);
                         }
                         return;
@@ -3511,7 +3525,8 @@ fn TelemetryDashboardInner() -> Element {
                 Err(err) => {
                     log!("[layout] load failed: {err}");
                     layout_error.set(Some(layout_load_error_message(&err)));
-                    if layout_config.read().is_none() {
+                    let has_layout_config = layout_config.read().is_some();
+                    if !has_layout_config {
                         layout_loading.set(false);
                     }
                 }
@@ -4124,7 +4139,10 @@ fn TelemetryDashboardInner() -> Element {
                                 onclick: {
                                     let mut header_actions_expanded = header_actions_expanded;
                                     move |_| {
-                                        let next = !*header_actions_expanded.read();
+                                        let next = {
+                                            let current = *header_actions_expanded.read();
+                                            !current
+                                        };
                                         header_actions_expanded.set(next);
                                     }
                                 },
@@ -4159,7 +4177,10 @@ fn TelemetryDashboardInner() -> Element {
                                     let mut abort_only_mode = abort_only_mode;
                                     let mut header_actions_expanded = header_actions_expanded;
                                     move |_| {
-                                        let next = !*abort_only_mode.read();
+                                        let next = {
+                                            let current = *abort_only_mode.read();
+                                            !current
+                                        };
                                         abort_only_mode.set(next);
                                         header_actions_expanded.set(false);
                                     }
@@ -4293,7 +4314,10 @@ fn TelemetryDashboardInner() -> Element {
                                 onclick: {
                                     let mut tabs_expanded = tabs_expanded;
                                     move |_| {
-                                        let next = !*tabs_expanded.read();
+                                        let next = {
+                                            let current = *tabs_expanded.read();
+                                            !current
+                                        };
                                         tabs_expanded.set(next);
                                     }
                                 },
@@ -5377,7 +5401,8 @@ fn apply_notifications_snapshot(
     }
     let mut unread_vec: Vec<u64> = unread.into_iter().collect();
     unread_vec.sort_unstable();
-    if *unread_notification_ids.read() != unread_vec {
+    let unread_snapshot = unread_notification_ids.read().clone();
+    if unread_snapshot != unread_vec {
         unread_notification_ids.set(unread_vec);
     }
 
@@ -5613,7 +5638,9 @@ async fn seed_from_db(
         }
 
         let max_ts = alerts.iter().map(|a| a.timestamp_ms).max().unwrap_or(0);
-        let prev_ack = (*ack_warning_ts.read()).max(*ack_error_ts.read());
+        let current_ack_warning_ts = *ack_warning_ts.read();
+        let current_ack_error_ts = *ack_error_ts.read();
+        let prev_ack = current_ack_warning_ts.max(current_ack_error_ts);
         if prev_ack > 0 && max_ts > 0 && max_ts < prev_ack - HISTORY_MS {
             ack_warning_ts.set(0);
             ack_error_ts.set(0);
@@ -6354,7 +6381,10 @@ fn handle_ws_message(
                 v.truncate(500);
             }
             warnings.set(v);
-            let next = warning_event_counter.read().saturating_add(1);
+            let next = {
+                let current = *warning_event_counter.read();
+                current.saturating_add(1)
+            };
             warning_event_counter.set(next);
         }
 
@@ -6365,7 +6395,10 @@ fn handle_ws_message(
                 v.truncate(500);
             }
             errors.set(v);
-            let next = error_event_counter.read().saturating_add(1);
+            let next = {
+                let current = *error_event_counter.read();
+                current.saturating_add(1)
+            };
             error_event_counter.set(next);
         }
 

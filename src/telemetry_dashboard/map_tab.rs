@@ -175,7 +175,8 @@ pub fn MapTab(
         use_effect(move || {
             let config = map_config.read().clone();
             let fs = *is_fullscreen_sig.read();
-            if !*did_mount_fullscreen_effect.read() {
+            let has_mounted = *did_mount_fullscreen_effect.read();
+            if !has_mounted {
                 did_mount_fullscreen_effect.set(true);
                 return;
             }
@@ -198,12 +199,14 @@ pub fn MapTab(
                 config.max_native_zoom,
                 config.max_display_zoom,
             );
-            if !*did_mount_map_config_effect.read() {
+            let has_mounted = *did_mount_map_config_effect.read();
+            if !has_mounted {
                 did_mount_map_config_effect.set(true);
                 last_applied_map_config.set(Some(next_key));
                 return;
             }
-            if *last_applied_map_config.read() == Some(next_key.clone()) {
+            let current_map_config = last_applied_map_config.read().clone();
+            if current_map_config == Some(next_key.clone()) {
                 return;
             }
             last_applied_map_config.set(Some(next_key));
@@ -219,13 +222,15 @@ pub fn MapTab(
         use_effect(move || {
             if let Some((lat, lon)) = js_cached_user_latlon() {
                 browser_user_gps.set(Some((lat, lon)));
-                if !*has_centered_on_user.read() {
+                let already_centered = *has_centered_on_user.read();
+                if !already_centered {
                     js_center_on(lat, lon);
                     has_centered_on_user.set(true);
                 }
             } else if let Some((lat, lon)) = js_read_user_latlon_from_window() {
                 browser_user_gps.set(Some((lat, lon)));
-                if !*has_centered_on_user.read() {
+                let already_centered = *has_centered_on_user.read();
+                if !already_centered {
                     js_center_on(lat, lon);
                     has_centered_on_user.set(true);
                 }
@@ -241,10 +246,12 @@ pub fn MapTab(
         use_future(move || async move {
             loop {
                 if let Some((lat, lon)) = js_read_user_latlon_from_window() {
-                    if *browser_user_gps.read() != Some((lat, lon)) {
+                    let current_browser_gps = *browser_user_gps.read();
+                    if current_browser_gps != Some((lat, lon)) {
                         browser_user_gps.set(Some((lat, lon)));
                     }
-                    if !*has_centered_on_user.read() {
+                    let already_centered = *has_centered_on_user.read();
+                    if !already_centered {
                         js_center_on(lat, lon);
                         has_centered_on_user.set(true);
                     }
@@ -260,8 +267,10 @@ pub fn MapTab(
     {
         let mut has_centered_on_user = has_centered_on_user;
         use_effect(move || {
-            if let Some((lat, lon)) = *user_gps.read()
-                && !*has_centered_on_user.read()
+            let native_user_gps = *user_gps.read();
+            let already_centered = *has_centered_on_user.read();
+            if let Some((lat, lon)) = native_user_gps
+                && !already_centered
             {
                 js_center_on(lat, lon);
                 has_centered_on_user.set(true);
@@ -349,14 +358,17 @@ pub fn MapTab(
                 loop {
                     let enabled = js_read_follow_user_enabled().await;
                     let orientation_mode = js_read_map_orientation_mode().await;
-                    let latch_active = *follow_user.read()
+                    let follow_user_enabled = *follow_user.read();
+                    let latch_until_ms = *follow_user_latch_until_ms.read();
+                    let latch_active = follow_user_enabled
                         && !enabled
-                        && map_control_now_ms() < *follow_user_latch_until_ms.read();
-                    if !latch_active && *follow_user.read() != enabled {
+                        && map_control_now_ms() < latch_until_ms;
+                    if !latch_active && follow_user_enabled != enabled {
                         follow_user.set(enabled);
                     }
                     let user_up = orientation_mode == "user";
-                    if *user_orientation_up.read() != user_up {
+                    let current_user_orientation_up = *user_orientation_up.read();
+                    if current_user_orientation_up != user_up {
                         user_orientation_up.set(user_up);
                     }
 

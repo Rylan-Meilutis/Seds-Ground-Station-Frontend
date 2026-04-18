@@ -1086,7 +1086,8 @@ fn LoginCard(
         if effect_base.trim().is_empty() {
             return;
         }
-        if *logged_out_probe_base.read() == effect_base {
+        let current_probe_base = logged_out_probe_base.read().clone();
+        if current_probe_base == effect_base {
             return;
         }
         logged_out_probe_base.set(effect_base.clone());
@@ -1155,7 +1156,10 @@ fn LoginCard(
                             r#type: "checkbox",
                             checked: *remember_me.read(),
                             onclick: move |_| {
-                                let next = !*remember_me.read();
+                                let next = {
+                                    let current = *remember_me.read();
+                                    !current
+                                };
                                 remember_me.set(next);
                             },
                         }
@@ -1470,7 +1474,10 @@ pub fn Connect() -> Element {
                             r#type: "checkbox",
                             checked: *skip_tls.read(),
                             onclick: move |_| {
-                                let next = !*skip_tls.read();
+                                let next = {
+                                    let current = *skip_tls.read();
+                                    !current
+                                };
                                 skip_tls.set(next);
                                 let base = compose_base_url_for_connect(&scheme_edit(), &host_edit());
                                 if !base.is_empty() {
@@ -1801,12 +1808,14 @@ pub fn Dashboard() -> Element {
         || telemetry_dashboard::dashboard_has_prior_backend_connection();
     use_effect(move || {
         let base = UrlConfig::base_http();
-        if *auth_state_base.read() != base {
+        let current_auth_state_base = auth_state_base.read().clone();
+        if current_auth_state_base != base {
             auth_state_base.set(base.clone());
             auth_state.set(None);
         }
         let skip_tls = UrlConfig::_skip_tls_verify();
-        if auth_state.read().is_some() {
+        let auth_state_ready = auth_state.read().is_some();
+        if auth_state_ready {
             return;
         }
         spawn(async move {

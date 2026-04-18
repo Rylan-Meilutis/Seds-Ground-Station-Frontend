@@ -201,7 +201,10 @@ pub fn ActionsTab(
         spawn(async move {
             loop {
                 sleep_for_frame(target_frame_duration()).await;
-                let next = redraw_tick.read().wrapping_add(1);
+                let next = {
+                    let current = *redraw_tick.read();
+                    current.wrapping_add(1)
+                };
                 redraw_tick.set(next);
             }
         });
@@ -425,7 +428,8 @@ pub fn ActionsTab(
                                     style: "{apply_button_style(&theme, !*flight_setup_busy.read() && !abort_only_mode)}",
                                     disabled: *flight_setup_busy.read() || abort_only_mode,
                                     onclick: move |_| {
-                                        if *flight_setup_busy.read() || abort_only_mode {
+                                        let is_busy = *flight_setup_busy.read();
+                                        if is_busy || abort_only_mode {
                                             return;
                                         }
                                         flight_setup_busy.set(true);

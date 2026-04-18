@@ -111,7 +111,8 @@ fn localstorage_set(key: &str, value: &str) {
 }
 
 fn persist_nonempty_selection(key: &str, current: String, last_saved: &mut Signal<String>) {
-    if current.is_empty() || current == *last_saved.read() {
+    let last_saved_value = last_saved.read().clone();
+    if current.is_empty() || current == last_saved_value {
         return;
     }
     last_saved.set(current.clone());
@@ -169,7 +170,8 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         let layout_tabs = layout.tabs.clone();
 
         move || {
-            if *did_restore.read() {
+            let already_restored = *did_restore.read();
+            if already_restored {
                 return;
             }
             did_restore.set(true);
@@ -179,7 +181,8 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                 return;
             }
 
-            if active_tab.read().is_empty()
+            let current_active_tab = active_tab.read().clone();
+            if current_active_tab.is_empty()
                 && let Some(first) = layout_tabs.first()
             {
                 active_tab.set(first.id.clone());
@@ -392,7 +395,10 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                         onclick: {
                             let mut tabs_expanded = tabs_expanded;
                             move |_| {
-                                let next = !*tabs_expanded.read();
+                                let next = {
+                                    let current = *tabs_expanded.read();
+                                    !current
+                                };
                                 tabs_expanded.set(next);
                             }
                         },
@@ -453,7 +459,10 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                             onclick: {
                                 let mut subtabs_expanded = subtabs_expanded;
                                 move |_| {
-                                    let next = !*subtabs_expanded.read();
+                                    let next = {
+                                        let current = *subtabs_expanded.read();
+                                        !current
+                                    };
                                     subtabs_expanded.set(next);
                                 }
                             },
@@ -676,11 +685,17 @@ fn DataGraphPanel(
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     let on_toggle_fullscreen = move |_: Event<MouseData>| {
-        let next = !*is_fullscreen.read();
+        let next = {
+            let current = *is_fullscreen.read();
+            !current
+        };
         is_fullscreen.set(next);
     };
     let on_toggle_chart = move |_: Event<MouseData>| {
-        let next = !*show_chart.read();
+        let next = {
+            let current = *show_chart.read();
+            !current
+        };
         show_chart.set(next);
     };
 
