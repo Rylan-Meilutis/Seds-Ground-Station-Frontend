@@ -19,6 +19,8 @@ let currentMaxZoom = null;
 let lastRocketLatLng = null;
 let lastUserLatLng = null;
 let lastMapView = null;
+let lastMapZoom = null;
+let pendingRestoreZoom = null;
 let tileCacheSweepTimer = null;
 let tilePrefetchTimer = null;
 let tileZoomDiscoveryTimer = null;
@@ -565,12 +567,21 @@ function clampMaxDisplayZoom(value, maxNativeZoom) {
 
 function loadPersistedMapState() {
     try {
-        if (!window.localStorage) return;
-        const raw = window.localStorage.getItem(MAP_STATE_STORAGE_KEY);
+        const storage = window.localStorage || null;
+        const raw = (storage ? storage.getItem(MAP_STATE_STORAGE_KEY) : null)
+            || window.__gs26_ground_map_state_json;
         if (!raw) return;
         const parsed = JSON.parse(raw);
-        if (Number.isFinite(parsed.lat) && Number.isFinite(parsed.lon) && Number.isFinite(parsed.zoom)) {
-            lastMapView = {lat: parsed.lat, lon: parsed.lon, zoom: parsed.zoom};
+        if (Number.isFinite(parsed.zoom)) {
+            lastMapZoom = parsed.zoom;
+            pendingRestoreZoom = parsed.zoom;
+        }
+        if (Number.isFinite(parsed.lat) && Number.isFinite(parsed.lon)) {
+            lastMapView = {
+                lat: parsed.lat,
+                lon: parsed.lon,
+                zoom: Number.isFinite(parsed.zoom) ? parsed.zoom : null,
+            };
         }
         if (parsed.orientationMode === "manual" || parsed.orientationMode === "user" || parsed.orientationMode === "north") {
             orientationMode = parsed.orientationMode;
@@ -584,15 +595,21 @@ function loadPersistedMapState() {
 
 function persistMapState() {
     try {
-        if (!window.localStorage) return;
+        const storage = window.localStorage || null;
         const payload = {
             lat: lastMapView && Number.isFinite(lastMapView.lat) ? lastMapView.lat : null,
             lon: lastMapView && Number.isFinite(lastMapView.lon) ? lastMapView.lon : null,
-            zoom: lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : null,
+            zoom: Number.isFinite(lastMapZoom)
+                ? lastMapZoom
+                : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : null),
             orientationMode,
             bearingDeg: mapBearingDeg,
         };
-        window.localStorage.setItem(MAP_STATE_STORAGE_KEY, JSON.stringify(payload));
+        const raw = JSON.stringify(payload);
+        window.__gs26_ground_map_state_json = raw;
+        if (storage) {
+            storage.setItem(MAP_STATE_STORAGE_KEY, raw);
+        }
     } catch (e) {
     }
 }
@@ -609,10 +626,19 @@ loadPersistedMapState();
 function rememberMapView() {
     if (!groundMap) return;
     const center = groundMap.getCenter();
+    const zoom = groundMap.getZoom();
+    const preservePendingZoom = Number.isFinite(pendingRestoreZoom)
+        && pendingRestoreZoom > zoom
+        && Number.isFinite(currentMaxZoom)
+        && zoom >= currentMaxZoom - 0.001;
+    if (!preservePendingZoom) {
+        lastMapZoom = zoom;
+        pendingRestoreZoom = null;
+    }
     lastMapView = {
         lat: center.lat,
         lon: center.lng,
-        zoom: groundMap.getZoom(),
+        zoom: preservePendingZoom ? pendingRestoreZoom : zoom,
     };
     mapBearingDeg = normalizeAngle(groundMap.getBearing());
     syncWindowMapControlState();
@@ -2178,6 +2204,12 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     initCompassOnce();
     ensureMapProtocolOnce();
     mapInitStartedAtMs = Date.now();
+    if (groundMap) {
+        rememberMapView();
+        persistMapState();
+    } else {
+        loadPersistedMapState();
+    }
 
     const previousTilesUrl = currentTilesUrl;
     const previousMaxNativeZoom = currentMaxNativeZoom;
@@ -2206,8 +2238,22 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     const container = document.getElementById("ground-map");
     if (!container) return;
 
-    const desiredZoom = lastMapView ? lastMapView.zoom : zoom;
+    const desiredZoom = Number.isFinite(pendingRestoreZoom)
+        ? pendingRestoreZoom
+        : (Number.isFinite(lastMapZoom)
+            ? lastMapZoom
+            : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : zoom));
+    if (Number.isFinite(desiredZoom) && desiredZoom > currentMaxZoom) {
+        pendingRestoreZoom = desiredZoom;
+        lastMapZoom = desiredZoom;
+    }
     const clampedZoom = Math.min(currentMaxZoom, Math.max(MIN_ZOOM, desiredZoom));
+    if (Number.isFinite(pendingRestoreZoom) && pendingRestoreZoom <= currentMaxZoom) {
+        pendingRestoreZoom = null;
+        lastMapZoom = clampedZoom;
+    } else if (!Number.isFinite(pendingRestoreZoom)) {
+        lastMapZoom = clampedZoom;
+    }
     const startCenter = lastMapView
         ? [lastMapView.lon, lastMapView.lat]
         : [centerLon, centerLat];
@@ -2216,6 +2262,13 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     if (!needsFullRecreate && groundMap && groundMap.getContainer && groundMap.getContainer() === container) {
         groundMap.resize();
         groundMap.setMaxZoom(currentMaxZoom);
+        markInternalCameraUpdate(250);
+        groundMap.jumpTo({
+            center: startCenter,
+            zoom: clampedZoom,
+            bearing: startBearing,
+        });
+        rememberMapView();
         applyMapOrientation();
         applyPendingCenterIfPossible();
         applyFollowUserIfPossible();
@@ -2384,6 +2437,8 @@ function getLastUserLatLng() {
     api.setGroundMapUserHeading = setGroundMapUserHeading;
     api.applyMapOrientation = applyMapOrientation;
     api.syncRocketGuideLine = syncRocketGuideLine;
+    api.reloadPersistedMapState = loadPersistedMapState;
+    window.__gs26_reload_persisted_map_state = loadPersistedMapState;
 
     api.state = api.state || {};
     Object.assign(api.state, {
