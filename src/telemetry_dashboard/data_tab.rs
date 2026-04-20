@@ -8,15 +8,15 @@ use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::rc::Rc;
 
 use super::data_chart::{
-    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_subset, charts_cache_get_subset_per_series,
-    sender_scoped_chart_key, series_color, ChartCanvas, SeriesSwatch,
     CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
-    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT,
-    CHART_Y_LABEL_MAX_WIDTH,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
+    charts_cache_get_subset, charts_cache_get_subset_per_series, sender_scoped_chart_key,
+    series_color,
 };
 use super::{
-    latest_telemetry_row, latest_telemetry_value, reseed_note_banner, reseed_status_note,
-    translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
+    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value,
+    reseed_note_banner, reseed_status_note, translate_text,
 };
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
@@ -310,14 +310,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         format!("Show subtabs ({label})")
     };
     let summary_content = if !summary_items.is_empty() {
-        let grid_style = if summary_items.len() == 1 {
-            "display:grid; gap:10px; align-items:stretch; grid-template-columns:minmax(0, min(220px, 100%)); justify-content:start; width:100%; min-width:0;".to_string()
-        } else {
-            let column_count = summary_items.len().clamp(1, 4);
-            format!(
-                "display:grid; gap:10px; align-items:stretch; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); width:100%; min-width:0;"
-            )
-        };
+        let grid_style = summary_grid_style(summary_items.len());
         rsx! {
             div {
                 style: "{grid_style}",
@@ -341,14 +334,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
             Some(row) => {
                 let vals = &row.values;
                 let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
-                let grid_style = if visible_label_count == 1 {
-                    "display:grid; gap:10px; align-items:stretch; grid-template-columns:minmax(0, min(220px, 100%)); justify-content:start; width:100%; min-width:0;".to_string()
-                } else {
-                    let column_count = visible_label_count.clamp(1, 4);
-                    format!(
-                        "display:grid; gap:10px; align-items:stretch; grid-template-columns:repeat({column_count}, minmax(0, 1fr)); width:100%; min-width:0;"
-                    )
-                };
+                let grid_style = summary_grid_style(visible_label_count);
                 rsx! {
                     div {
                         style: "{grid_style}",
@@ -989,12 +975,20 @@ fn SummaryCard(
 
     rsx! {
         div { style: "padding:10px; border-radius:12px; background:{theme.panel_background_alt}; border:1px solid {theme.border}; width:100%; min-width:0; box-sizing:border-box;",
-            div { style: "font-size:12px; color:{color};", "{label}" }
-            div { style: "font-size:18px; color:{theme.text_primary}; line-height:1.1;", "{value}" }
+            div { style: "font-size:12px; color:{color}; line-height:1.15; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{label}" }
+            div { style: "font-size:18px; color:{theme.text_primary}; line-height:1.1; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
             if let Some(t) = mm {
-                div { style: "font-size:11px; color:{theme.text_muted}; margin-top:4px;", "{t}" }
+                div { style: "font-size:11px; color:{theme.text_muted}; margin-top:4px; line-height:1.2; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{t}" }
             }
         }
+    }
+}
+
+fn summary_grid_style(item_count: usize) -> String {
+    if item_count <= 1 {
+        "display:grid; gap:10px; align-items:stretch; grid-template-columns:minmax(0, min(220px, 100%)); justify-content:start; width:100%; min-width:0;".to_string()
+    } else {
+        "display:grid; gap:10px; align-items:stretch; grid-template-columns:repeat(auto-fit, minmax(min(100%, 128px), 1fr)); width:100%; min-width:0;".to_string()
     }
 }
 
