@@ -556,6 +556,28 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn sparse_timestamp_jumps_do_not_allocate_intermediate_buckets() {
+        let mut chart = super::CachedChart::new();
+        chart.ingest(&TelemetryRow {
+            timestamp_ms: 1_700_000_000_000,
+            data_type: "GPS".to_string(),
+            sender_id: "DAQ".to_string(),
+            values: vec![Some(1.0)],
+        });
+        chart.ingest(&TelemetryRow {
+            timestamp_ms: i64::MAX - 1_000,
+            data_type: "GPS".to_string(),
+            sender_id: "DAQ".to_string(),
+            values: vec![Some(2.0)],
+        });
+
+        assert!(
+            chart.buckets.len() <= 2,
+            "large timestamp jumps must not fill every missing 20 ms bucket"
+        );
+    }
 }
 
 #[derive(Clone, Default)]
@@ -704,12 +726,9 @@ impl CachedChart {
             self.newest_bucket_id = bid;
             self.buckets.push_back(Bucket::new(bid, self.channel_count));
         } else if bid > self.newest_bucket_id {
-            // append buckets up to new bucket
-            let mut cur = self.newest_bucket_id;
-            while cur < bid {
-                cur += 1;
-                self.buckets.push_back(Bucket::new(cur, self.channel_count));
-            }
+            // Keep sparse time jumps sparse. Filling every 20 ms bucket before pruning can
+            // allocate unbounded memory if a device/backend timestamp jumps far forward.
+            self.buckets.push_back(Bucket::new(bid, self.channel_count));
             self.newest_bucket_id = bid;
         }
 
