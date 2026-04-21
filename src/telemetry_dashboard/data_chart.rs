@@ -160,7 +160,6 @@ pub fn charts_cache_reseed_ingest_row(row: &TelemetryRow) {
     RESEED_CACHE.with(|c| {
         if let Some(cache) = c.borrow_mut().as_mut() {
             cache.ingest_row(row);
-            cache.ingest_sender_scoped_row(row);
         }
     });
 }
@@ -179,7 +178,6 @@ pub fn charts_cache_ingest_row(row: &TelemetryRow) {
     CHARTS_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
         cache.ingest_row(row);
-        cache.ingest_sender_scoped_row(row);
     });
 }
 
@@ -399,6 +397,16 @@ impl ChartsCache {
     }
 
     fn ingest_row(&mut self, r: &TelemetryRow) {
+        self.ingest_chart_row(r);
+        self.ingest_sender_scoped_row(r);
+
+        for derived in derived_chart_rows(r) {
+            self.ingest_chart_row(&derived);
+            self.ingest_sender_scoped_row(&derived);
+        }
+    }
+
+    fn ingest_chart_row(&mut self, r: &TelemetryRow) {
         let chart = self
             .charts
             .entry(r.data_type.clone())
@@ -430,6 +438,122 @@ impl ChartsCache {
     fn request_refit(&mut self) {
         for ch in self.charts.values_mut() {
             ch.request_refit();
+        }
+    }
+}
+
+fn derived_chart_rows(row: &TelemetryRow) -> Vec<TelemetryRow> {
+    const DEFAULT_LOADCELL_FULL_MASS_KG: f32 = 10.0;
+
+    match row.data_type.as_str() {
+        "KG1000" | "LOADCELL_WEIGHT_KG" => {
+            let Some(Some(mass_kg)) = row.values.first().copied() else {
+                return Vec::new();
+            };
+            if !mass_kg.is_finite() {
+                return Vec::new();
+            }
+
+            let mut rows = Vec::with_capacity(2);
+            if row.data_type != "LOADCELL_WEIGHT_KG" {
+                rows.push(TelemetryRow {
+                    timestamp_ms: row.timestamp_ms,
+                    data_type: "LOADCELL_WEIGHT_KG".to_string(),
+                    sender_id: row.sender_id.clone(),
+                    values: vec![Some(mass_kg)],
+                });
+            }
+            rows.push(TelemetryRow {
+                timestamp_ms: row.timestamp_ms,
+                data_type: "LOADCELL_FILL_PERCENT".to_string(),
+                sender_id: row.sender_id.clone(),
+                values: vec![Some(
+                    ((mass_kg / DEFAULT_LOADCELL_FULL_MASS_KG) * 100.0).clamp(0.0, 100.0),
+                )],
+            });
+            rows
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        charts_cache_clear_active, charts_cache_get,
+        charts_cache_get_multi_series_per_series_with_grid, charts_cache_ingest_row,
+    };
+    use crate::telemetry_dashboard::types::TelemetryRow;
+
+    #[test]
+    fn derives_loadcell_chart_rows_from_kg1000_samples() {
+        charts_cache_clear_active();
+
+        for i in 0..3 {
+            charts_cache_ingest_row(&TelemetryRow {
+                timestamp_ms: 1_700_000_000_000 + i * 40,
+                data_type: "KG1000".to_string(),
+                sender_id: "DAQ".to_string(),
+                values: vec![Some(5.0 + i as f32)],
+            });
+        }
+
+        let (weight_chunks, _, _, _) = charts_cache_get("LOADCELL_WEIGHT_KG", 1200.0, 260.0);
+        let (fill_chunks, _, _, _) = charts_cache_get("LOADCELL_FILL_PERCENT", 1200.0, 260.0);
+
+        assert!(
+            weight_chunks
+                .iter()
+                .any(|chunk| chunk.paths.iter().any(|path| !path.is_empty())),
+            "KG1000 should populate the LOADCELL_WEIGHT_KG chart cache"
+        );
+        assert!(
+            fill_chunks
+                .iter()
+                .any(|chunk| chunk.paths.iter().any(|path| !path.is_empty())),
+            "KG1000 should populate the LOADCELL_FILL_PERCENT chart cache"
+        );
+    }
+
+    #[test]
+    fn combines_raw_and_derived_loadcell_series_into_distinct_paths() {
+        charts_cache_clear_active();
+
+        for i in 0..3 {
+            let timestamp_ms = 1_700_000_010_000 + i * 40;
+            charts_cache_ingest_row(&TelemetryRow {
+                timestamp_ms,
+                data_type: "FUEL_TANK_PRESSURE".to_string(),
+                sender_id: "DAQ".to_string(),
+                values: vec![Some(100.0 + i as f32)],
+            });
+            charts_cache_ingest_row(&TelemetryRow {
+                timestamp_ms,
+                data_type: "KG1000".to_string(),
+                sender_id: "DAQ".to_string(),
+                values: vec![Some(4.0 + i as f32)],
+            });
+        }
+
+        let series = vec![
+            ("FUEL_TANK_PRESSURE".to_string(), 0),
+            ("LOADCELL_WEIGHT_KG".to_string(), 0),
+            ("LOADCELL_FILL_PERCENT".to_string(), 0),
+        ];
+        let (chunks, scales, _) = charts_cache_get_multi_series_per_series_with_grid(
+            &series, 1200.0, 260.0, 18.0, 12.0, 20.0, 52.0,
+        );
+
+        assert_eq!(scales.len(), 3);
+        assert!(scales.iter().all(Option::is_some));
+        for series_idx in 0..3 {
+            assert!(
+                chunks.iter().any(|chunk| chunk
+                    .paths
+                    .get(series_idx)
+                    .is_some_and(|path| !path.is_empty())),
+                "combined chart should include a drawable path for series index {series_idx}"
+            );
         }
     }
 }

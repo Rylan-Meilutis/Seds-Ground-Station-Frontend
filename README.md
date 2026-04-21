@@ -57,7 +57,9 @@ The app uses WebSocket for:
 - Emergency `Abort` button always rendered in red regardless of theme or Ground Station palette
 - Telemetry reseed support using either a JSON array or native streamed NDJSON from `/api/recent`
 - Graph-level reseed status notices for running, success, and failure
+- Offline native startup with locally cached telemetry/GPS/map state when the configured Ground Station cannot be reached
 - Launch clock badge and launch clock synchronization from both HTTP and WebSocket updates
+- Sender-aware multi-series charts and per-series scaling for state/data graphs
 - Network topology graph and endpoint ownership views
 - Built-in version page showing app/build/package runtime information
 - Localized UI support through translation catalog and on-demand translation routes
@@ -99,7 +101,7 @@ For a more complete dashboard, also implement:
 - `GET /api/i18n/catalog?lang=<code>`
 - `POST /api/i18n/translate`
 
-Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph enablement, sender-split chart types, boolean labels, state widgets, state summary fill-target metadata, and calibration channel names/colors/regressions should be supplied by `/api/layout` and `/api/calibration_config`; avoid depending on frontend hardcoded telemetry names.
+Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph enablement, sender-split chart types, boolean labels, state widgets, state summary fill-target metadata, and calibration channel names/colors/regressions should be supplied by `/api/layout` and `/api/calibration_config`; avoid depending on frontend hardcoded telemetry names. Layout validation rejects duplicate tab ids, invalid known chart-series indexes, invalid chart-group channel references, and incomplete fill-target metadata.
 
 ## Running The Frontend
 
@@ -161,8 +163,10 @@ When the app reconnects or explicitly reseeds, it keeps existing chart history v
 
 - `/api/recent` may return the legacy JSON array response
 - native builds also accept streamed NDJSON from `/api/recent`
+- WebSocket reconnects trigger telemetry reseed and preserve live rows received during reseed
 - reseed status is shown directly on graphs so operators can tell whether it is running, succeeded, or failed
 - if reseed fails after data was already visible, the app keeps the existing visible history instead of blanking the graphs
+- native builds keep a compact local telemetry snapshot so a failed connection attempt can still open the dashboard with the last remembered data/GPS/map state
 
 If you are implementing the backend streaming path, use [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md).
 
@@ -172,10 +176,22 @@ If you are implementing the backend streaming path, use [`docs/backend-recent-st
 - Some routes can safely return empty data structures. For example, `/api/recent` can return `[]` and `/api/gps` can return `{ "rocket": null }`.
 - `/api/recent` can also stream newline-delimited JSON rows on native builds for faster reseed startup.
 - The map uses `/tiles/{z}/{x}/{y}.jpg` by default. If you expose the map tab, provide that route or an equivalent reverse-proxied path.
+- The map persists the last effective tile `max_native_zoom` per tile URL and reuses it offline, so cached high-zoom tiles can still be restored after a backend disconnect.
 - WebSocket message tags are case-sensitive because they are deserialized from Rust enum variant names.
 - Commands are sent over WebSocket as JSON objects like `{ "cmd": "Abort" }`.
 - Layout drives a large part of the UI. If your backend returns a small valid layout, the frontend can still function without the full production config.
+- If you publish raw `KG1000` loadcell rows, the frontend derives `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` for labels and charts. Backends can also publish those derived rows directly.
 - Ground Station-provided theme colors are optional and are only used when the user explicitly selects the `backend` preset.
+
+## Regression Checks
+
+Run the fast Rust regression suite before shipping layout, telemetry, chart, or reconnect changes:
+
+```bash
+cargo test
+```
+
+The current suite covers layout parsing/validation, sender-aware chart series, derived loadcell labels/charts, launch-clock monotonic behavior, and state/data chart regressions.
 
 ## Reference Files
 

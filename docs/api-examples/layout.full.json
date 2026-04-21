@@ -154,6 +154,7 @@
               {
                 "data_type": "BATTERY_VOLTAGE",
                 "index": 0,
+                "sender_id": "FC",
                 "label": "Battery"
               },
               {
@@ -212,6 +213,7 @@
                   {
                     "data_type": "BATTERY_VOLTAGE",
                     "index": 0,
+                    "sender_id": "FC",
                     "label": "Battery"
                   },
                   {

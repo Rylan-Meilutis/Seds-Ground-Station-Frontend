@@ -16,5 +16,11 @@
     "data_type": "BATTERY_VOLTAGE",
     "sender_id": "FC",
     "values": [12.4]
+  },
+  {
+    "timestamp_ms": 1750000000300,
+    "data_type": "KG1000",
+    "sender_id": "DAQ",
+    "values": [9.5754]
   }
 ]

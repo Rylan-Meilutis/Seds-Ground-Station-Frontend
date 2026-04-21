@@ -662,6 +662,7 @@ fn chart_series_for_group(
         series.push(ChartSeriesSpec {
             data_type: item.data_type.clone(),
             index: item.index,
+            sender_id: item.sender_id.clone(),
             label: Some(item.label.clone()),
         });
     }
@@ -670,6 +671,39 @@ fn chart_series_for_group(
         None
     } else {
         Some(series)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{chart_series_for_group, DataChartGroup, DataSummaryItem};
+
+    #[test]
+    fn inferred_chart_series_preserves_summary_sender_id() {
+        let group = DataChartGroup {
+            title: Some("Battery".to_string()),
+            data_type: None,
+            sender_id: None,
+            labels: Some(vec!["Battery".to_string()]),
+            channels: vec![0],
+            chart_series: None,
+            scale_mode: None,
+        };
+        let summary_items = vec![DataSummaryItem {
+            label: "Battery".to_string(),
+            data_type: "BATTERY_VOLTAGE".to_string(),
+            index: 0,
+            sender_id: Some("PB".to_string()),
+            formatter: None,
+            boolean_labels: None,
+        }];
+
+        let series = chart_series_for_group(&group, &summary_items, &[])
+            .expect("summary items should infer chart series");
+
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].data_type, "BATTERY_VOLTAGE");
+        assert_eq!(series[0].sender_id.as_deref(), Some("PB"));
     }
 }
 
@@ -866,7 +900,14 @@ fn render_chart_group(
         if let Some(series) = multi_series.as_ref() {
             let cache_series = series
                 .iter()
-                .map(|spec| (spec.data_type.clone(), spec.index))
+                .map(|spec| {
+                    let chart_key = spec
+                        .sender_id
+                        .as_deref()
+                        .map(|sender_id| sender_scoped_chart_key(&spec.data_type, sender_id))
+                        .unwrap_or_else(|| spec.data_type.clone());
+                    (chart_key, spec.index)
+                })
                 .collect::<Vec<_>>();
             let (chunks, scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
                 &cache_series,

@@ -288,6 +288,8 @@ static LATEST_TELEMETRY: Lazy<Mutex<HashMap<LatestTelemetryKey, LatestTelemetryS
     Lazy::new(|| Mutex::new(HashMap::new()));
 static LATEST_TELEMETRY_BY_TYPE: Lazy<Mutex<HashMap<String, LatestTelemetrySample>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static LAST_TELEMETRY_CACHE_PERSIST_MS: AtomicI64 = AtomicI64::new(0);
+static RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD: AtomicBool = AtomicBool::new(false);
 
 /// Sorts telemetry rows into a stable UI presentation order.
 fn sort_rows(rows: &mut [TelemetryRow]) {
@@ -436,6 +438,15 @@ pub(crate) fn latest_telemetry_value(
     sender_id: Option<&str>,
     index: usize,
 ) -> Option<f32> {
+    latest_telemetry_value_direct(data_type, sender_id, index)
+        .or_else(|| fallback_latest_telemetry_value(data_type, sender_id, index))
+}
+
+fn latest_telemetry_value_direct(
+    data_type: &str,
+    sender_id: Option<&str>,
+    index: usize,
+) -> Option<f32> {
     match sender_id {
         Some(sender_id) => {
             if let Ok(latest) = LATEST_TELEMETRY.lock() {
@@ -458,6 +469,50 @@ pub(crate) fn latest_telemetry_value(
     }
 }
 
+fn fallback_latest_telemetry_value(
+    data_type: &str,
+    sender_id: Option<&str>,
+    index: usize,
+) -> Option<f32> {
+    const DEFAULT_LOADCELL_FULL_MASS_KG: f32 = 10.0;
+
+    match (data_type, index) {
+        ("LOADCELL_WEIGHT_KG", 0) => latest_telemetry_value_direct("KG1000", sender_id, 0),
+        ("LOADCELL_FILL_PERCENT", 0) => {
+            let mass_kg = latest_telemetry_value_direct("LOADCELL_WEIGHT_KG", sender_id, 0)
+                .or_else(|| latest_telemetry_value_direct("KG1000", sender_id, 0))?;
+            Some(((mass_kg / DEFAULT_LOADCELL_FULL_MASS_KG) * 100.0).clamp(0.0, 100.0))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod latest_telemetry_tests {
+    use super::{latest_telemetry_value, reset_latest_telemetry, TelemetryRow};
+
+    #[test]
+    fn derives_latest_loadcell_labels_from_kg1000_samples() {
+        reset_latest_telemetry(&[TelemetryRow {
+            timestamp_ms: 1_700_000_030_000,
+            data_type: "KG1000".to_string(),
+            sender_id: "DAQ".to_string(),
+            values: vec![Some(9.5754)],
+        }]);
+
+        assert_eq!(latest_telemetry_value("KG1000", None, 0), Some(9.5754));
+        assert_eq!(
+            latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0),
+            Some(9.5754)
+        );
+        let fill_percent =
+            latest_telemetry_value("LOADCELL_FILL_PERCENT", None, 0).expect("derived fill percent");
+        assert!((fill_percent - 95.754).abs() < 0.001);
+
+        reset_latest_telemetry(&[]);
+    }
+}
+
 /// Returns the compacted UI telemetry store as a snapshot vector.
 pub(crate) fn ui_telemetry_rows_snapshot() -> Vec<TelemetryRow> {
     if let Ok(store) = UI_TELEMETRY_STORE.lock() {
@@ -465,6 +520,92 @@ pub(crate) fn ui_telemetry_rows_snapshot() -> Vec<TelemetryRow> {
     } else {
         Vec::new()
     }
+}
+
+fn persist_cached_telemetry_rows(rows: &[TelemetryRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    let start = rows.len().saturating_sub(TELEMETRY_CACHE_MAX_ROWS);
+    if let Ok(raw) = serde_json::to_string(&rows[start..]) {
+        persist::set_string(TELEMETRY_CACHE_STORAGE_KEY, &raw);
+    }
+}
+
+fn persist_cached_telemetry_snapshot_if_due(force: bool) {
+    let now_ms = current_wallclock_ms();
+    let last_ms = LAST_TELEMETRY_CACHE_PERSIST_MS.load(Ordering::Relaxed);
+    if !force && now_ms.saturating_sub(last_ms) < TELEMETRY_CACHE_WRITE_INTERVAL_MS {
+        return;
+    }
+
+    let rows = ui_telemetry_rows_snapshot();
+    if rows.is_empty() {
+        return;
+    }
+
+    persist_cached_telemetry_rows(&rows);
+    LAST_TELEMETRY_CACHE_PERSIST_MS.store(now_ms, Ordering::Relaxed);
+}
+
+fn restore_cached_telemetry_rows_if_needed() -> usize {
+    if !ui_telemetry_rows_snapshot().is_empty() {
+        return 0;
+    }
+
+    let Some(raw) = persist::get_string(TELEMETRY_CACHE_STORAGE_KEY) else {
+        return 0;
+    };
+    let Ok(mut rows) = serde_json::from_str::<Vec<TelemetryRow>>(&raw) else {
+        return 0;
+    };
+    if rows.is_empty() {
+        return 0;
+    }
+
+    sort_rows(&mut rows);
+    prune_history(&mut rows);
+    rows = compact_rows_for_ui(rows);
+    if rows.is_empty() {
+        return 0;
+    }
+
+    for row in &rows {
+        charts_cache_ingest_row(row);
+    }
+    if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+        store.replace_from_rows(&rows);
+    }
+    reset_latest_telemetry(&rows);
+    RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.store(true, Ordering::Relaxed);
+    bump_render_epoch();
+    bump_chart_render_epoch();
+    rows.len()
+}
+
+fn rebuild_chart_cache_from_visible_rows() {
+    let rows = ui_telemetry_rows_snapshot();
+    if rows.is_empty() {
+        return;
+    }
+    charts_cache_clear_active();
+    for row in &rows {
+        charts_cache_ingest_row(row);
+    }
+    bump_chart_render_epoch();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn dashboard_has_cached_state() -> bool {
+    !ui_telemetry_rows_snapshot().is_empty()
+        || persist::get_string(TELEMETRY_CACHE_STORAGE_KEY)
+            .map(|raw| {
+                serde_json::from_str::<Vec<TelemetryRow>>(&raw)
+                    .map(|rows| !rows.is_empty())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        || map_tab::has_persisted_map_state()
 }
 
 // unified storage keys
@@ -483,6 +624,9 @@ const CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY: &str = "gs_calibration_captu
 const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v9_";
 const NOTIFICATION_DISMISSED_STORAGE_KEY: &str = "gs_notification_dismissed_ids_v1";
 const _SKIP_TLS_VERIFY_KEY_PREFIX: &str = "gs_skip_tls_verify_";
+const TELEMETRY_CACHE_STORAGE_KEY: &str = "gs_telemetry_rows_cache_v1";
+const TELEMETRY_CACHE_MAX_ROWS: usize = 5_000;
+const TELEMETRY_CACHE_WRITE_INTERVAL_MS: i64 = 2_500;
 const NOTIFICATION_AUTO_DISMISS_MS: u32 = 5_000;
 const MAX_ACTIVE_NOTIFICATIONS: usize = 2;
 const MAX_NOTIFICATION_HISTORY: usize = 500;
@@ -1646,6 +1790,9 @@ mod launch_clock_tests {
         launch_clock_tminus_remaining_ms, monotonic_tminus_display_ms, reset_tminus_display_latch,
         LaunchClockKind, LaunchClockMsg,
     };
+    use std::sync::Mutex;
+
+    static MONOTONIC_TMINUS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn tminus_holds_duration_until_backend_anchor_arrives() {
@@ -1692,6 +1839,7 @@ mod launch_clock_tests {
 
     #[test]
     fn tminus_display_never_increases_after_backend_reset() {
+        let _guard = MONOTONIC_TMINUS_TEST_LOCK.lock().unwrap();
         reset_tminus_display_latch();
         let original = LaunchClockMsg {
             kind: LaunchClockKind::TMinus,
@@ -1717,6 +1865,7 @@ mod launch_clock_tests {
 
     #[test]
     fn tminus_display_snaps_final_milliseconds_to_zero() {
+        let _guard = MONOTONIC_TMINUS_TEST_LOCK.lock().unwrap();
         reset_tminus_display_latch();
         let clock = LaunchClockMsg {
             kind: LaunchClockKind::TMinus,
@@ -1730,6 +1879,7 @@ mod launch_clock_tests {
 
     #[test]
     fn tminus_display_latches_zero_if_backend_restarts_after_final_tick_window() {
+        let _guard = MONOTONIC_TMINUS_TEST_LOCK.lock().unwrap();
         reset_tminus_display_latch();
         let original = LaunchClockMsg {
             kind: LaunchClockKind::TMinus,
@@ -2226,6 +2376,8 @@ fn clear_visible_telemetry_history() {
     if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
         store.replace_from_rows(&[]);
     }
+    persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+    LAST_TELEMETRY_CACHE_PERSIST_MS.store(0, Ordering::Relaxed);
     reset_latest_telemetry(&[]);
     charts_cache_clear_active();
     bump_render_epoch();
@@ -2301,6 +2453,7 @@ pub fn TelemetryDashboard() -> Element {
 fn TelemetryDashboardInner() -> Element {
     // Always valid; becomes “real” once outer publishes it.
     let alive = dashboard_alive();
+    let _restored_cached_rows = use_signal(restore_cached_telemetry_rows_if_needed);
 
     // ----------------------------
     // Persistent values (strings)
@@ -2487,7 +2640,12 @@ fn TelemetryDashboardInner() -> Element {
     let ack_error_count = use_signal(|| 0u64);
 
     let flash_on = use_signal(|| false);
-    let rocket_gps = use_signal(|| None::<(f64, f64)>);
+    let rocket_gps = use_signal(|| {
+        ui_telemetry_rows_snapshot()
+            .iter()
+            .rev()
+            .find_map(row_to_gps)
+    });
     let user_gps = use_signal(|| None::<(f64, f64)>);
 
     // ---------------------------------------------------------
@@ -2535,6 +2693,9 @@ fn TelemetryDashboardInner() -> Element {
                 && let Ok(()) = layout.validate()
             {
                 configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                if RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.swap(false, Ordering::Relaxed) {
+                    rebuild_chart_cache_from_visible_rows();
+                }
                 layout_config.set(Some(layout));
                 layout_loading.set(false);
             }
@@ -2554,6 +2715,11 @@ fn TelemetryDashboardInner() -> Element {
                             return;
                         }
                         configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                        if RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD
+                            .swap(false, Ordering::Relaxed)
+                        {
+                            rebuild_chart_cache_from_visible_rows();
+                        }
                         layout_config.set(Some(layout.clone()));
                         layout_loading.set(false);
                         layout_error.set(None);
@@ -2890,6 +3056,7 @@ fn TelemetryDashboardInner() -> Element {
                     if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
                         store.apply_rows(drained);
                     }
+                    persist_cached_telemetry_snapshot_if_due(false);
                     bump_telemetry_render_epoch();
                     chart_tick_counter = chart_tick_counter.saturating_add(1);
                     if chart_tick_counter >= chart_every {
@@ -3534,6 +3701,9 @@ fn TelemetryDashboardInner() -> Element {
                         return;
                     }
                     configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                    if RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.swap(false, Ordering::Relaxed) {
+                        rebuild_chart_cache_from_visible_rows();
+                    }
                     layout_request_base.set(base.clone());
                     layout_config.set(Some(layout.clone()));
                     layout_loading.set(false);
@@ -5663,6 +5833,7 @@ async fn seed_from_db(
                 store.replace_from_rows(&list);
             }
             reset_latest_telemetry(&list);
+            persist_cached_telemetry_snapshot_if_due(true);
             if !list.is_empty() {
                 DASHBOARD_HAS_CONNECTED.store(true, Ordering::Relaxed);
             }

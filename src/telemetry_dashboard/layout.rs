@@ -539,6 +539,7 @@ pub struct StateWidget {
 pub struct ChartSeriesSpec {
     pub data_type: String,
     pub index: usize,
+    pub sender_id: Option<String>,
     pub label: Option<String>,
 }
 
@@ -661,6 +662,7 @@ impl LayoutConfig {
         }
 
         let mut tab_ids = HashSet::new();
+        let mut tab_channel_counts = HashMap::new();
         for tab in &self.data_tab.tabs {
             if tab.id.trim().is_empty() {
                 return Err("layout contains a data tab with an empty id".to_string());
@@ -674,6 +676,7 @@ impl LayoutConfig {
             if tab.label.trim().is_empty() {
                 return Err(format!("data tab '{}' has an empty label", tab.id));
             }
+            tab_channel_counts.insert(tab.id.clone(), tab.channels.len());
             if let Some(channel_labels) = &tab.channel_boolean_labels
                 && channel_labels.len() > tab.channels.len()
             {
@@ -689,6 +692,68 @@ impl LayoutConfig {
                     "data tab '{}' has more channel formatters than channels",
                     tab.id
                 ));
+            }
+
+            if let Some(chart_groups) = &tab.chart_groups {
+                for (group_idx, group) in chart_groups.iter().enumerate() {
+                    let group_channel_count = group
+                        .data_type
+                        .as_ref()
+                        .and_then(|data_type| tab_channel_counts.get(data_type).copied())
+                        .unwrap_or(tab.channels.len());
+                    if group.data_type.is_none()
+                        && group
+                            .channels
+                            .iter()
+                            .any(|index| *index >= group_channel_count)
+                    {
+                        return Err(format!(
+                            "data tab '{}' chart group {group_idx} references a channel index outside the tab channel list",
+                            tab.id
+                        ));
+                    }
+                    validate_chart_series(
+                        group.chart_series.as_deref(),
+                        &tab_channel_counts,
+                        &format!("data tab '{}' chart group {group_idx}", tab.id),
+                    )?;
+                }
+            }
+
+            if let Some(subtabs) = &tab.subtabs {
+                for (subtab_idx, subtab) in subtabs.iter().enumerate() {
+                    let subtab_channel_count = subtab.channels.as_ref().map_or(
+                        subtab
+                            .data_type
+                            .as_ref()
+                            .and_then(|data_type| tab_channel_counts.get(data_type).copied())
+                            .unwrap_or(tab.channels.len()),
+                        Vec::len,
+                    );
+                    if let Some(chart_groups) = &subtab.chart_groups {
+                        for (group_idx, group) in chart_groups.iter().enumerate() {
+                            if group.data_type.is_none()
+                                && group
+                                    .channels
+                                    .iter()
+                                    .any(|index| *index >= subtab_channel_count)
+                            {
+                                return Err(format!(
+                                    "data tab '{}' subtab {subtab_idx} chart group {group_idx} references a channel index outside the subtab channel list",
+                                    tab.id
+                                ));
+                            }
+                            validate_chart_series(
+                                group.chart_series.as_deref(),
+                                &tab_channel_counts,
+                                &format!(
+                                    "data tab '{}' subtab {subtab_idx} chart group {group_idx}",
+                                    tab.id
+                                ),
+                            )?;
+                        }
+                    }
+                }
             }
         }
 
@@ -713,6 +778,13 @@ impl LayoutConfig {
                             "state layout entry {state_idx}, section {section_idx}, widget {widget_idx} has summary items with incomplete fill target source metadata"
                         ));
                     }
+                    validate_chart_series(
+                        widget.chart_series.as_deref(),
+                        &tab_channel_counts,
+                        &format!(
+                            "state layout entry {state_idx}, section {section_idx}, widget {widget_idx}"
+                        ),
+                    )?;
                 }
             }
         }
@@ -726,6 +798,34 @@ impl LayoutConfig {
 
         Ok(())
     }
+}
+
+fn validate_chart_series(
+    series: Option<&[ChartSeriesSpec]>,
+    tab_channel_counts: &HashMap<String, usize>,
+    context: &str,
+) -> Result<(), String> {
+    let Some(series) = series else {
+        return Ok(());
+    };
+
+    for (series_idx, spec) in series.iter().enumerate() {
+        if spec.data_type.trim().is_empty() {
+            return Err(format!(
+                "{context} chart series {series_idx} has an empty data_type"
+            ));
+        }
+        if let Some(channel_count) = tab_channel_counts.get(&spec.data_type)
+            && spec.index >= *channel_count
+        {
+            return Err(format!(
+                "{context} chart series {series_idx} references index {} outside data type '{}' channel count {channel_count}",
+                spec.index, spec.data_type
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -786,5 +886,120 @@ mod tests {
         assert_eq!(layout.actions_tab.actions.len(), 1);
         assert_eq!(layout.data_tab.tabs[0].channels.len(), 3);
         assert_eq!(layout.state_tab.states.len(), 1);
+    }
+
+    #[test]
+    fn validates_documented_full_layout_example() {
+        let payload = include_str!("../../docs/api-examples/layout.full.json");
+        let layout: LayoutConfig = serde_json::from_str(payload).expect("valid layout json");
+
+        layout
+            .validate()
+            .expect("documented layout should validate");
+    }
+
+    #[test]
+    fn parses_chart_series_sender_id() {
+        let payload = r##"{
+            "version": 1,
+            "connection_tab": { "sections": [{ "kind": "board_status", "title": "Board Status" }] },
+            "actions_tab": { "actions": [] },
+            "data_tab": {
+                "tabs": [
+                    {
+                        "id": "BATTERY_VOLTAGE",
+                        "label": "Battery",
+                        "channels": ["Voltage"],
+                        "chart": { "enabled": true }
+                    }
+                ]
+            },
+            "state_tab": {
+                "states": [
+                    {
+                        "states": ["Startup"],
+                        "sections": [
+                            {
+                                "title": "Power",
+                                "widgets": [
+                                    {
+                                        "kind": "chart",
+                                        "chart_series": [
+                                            {
+                                                "data_type": "BATTERY_VOLTAGE",
+                                                "index": 0,
+                                                "sender_id": "PB",
+                                                "label": "AV Bay"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }"##;
+
+        let layout: LayoutConfig = serde_json::from_str(payload).expect("valid layout payload");
+        let series = layout.state_tab.states[0].sections[0].widgets[0]
+            .chart_series
+            .as_ref()
+            .expect("chart series");
+
+        assert_eq!(series[0].sender_id.as_deref(), Some("PB"));
+        layout
+            .validate()
+            .expect("sender-aware chart series validates");
+    }
+
+    #[test]
+    fn rejects_known_chart_series_index_outside_channel_count() {
+        let payload = r##"{
+            "version": 1,
+            "connection_tab": { "sections": [{ "kind": "board_status", "title": "Board Status" }] },
+            "actions_tab": { "actions": [] },
+            "data_tab": {
+                "tabs": [
+                    {
+                        "id": "BATTERY_VOLTAGE",
+                        "label": "Battery",
+                        "channels": ["Voltage"],
+                        "chart": { "enabled": true }
+                    }
+                ]
+            },
+            "state_tab": {
+                "states": [
+                    {
+                        "states": ["Startup"],
+                        "sections": [
+                            {
+                                "title": "Power",
+                                "widgets": [
+                                    {
+                                        "kind": "chart",
+                                        "chart_series": [
+                                            {
+                                                "data_type": "BATTERY_VOLTAGE",
+                                                "index": 3,
+                                                "label": "Bad"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }"##;
+
+        let layout: LayoutConfig = serde_json::from_str(payload).expect("valid layout payload");
+        let err = layout
+            .validate()
+            .expect_err("invalid series index should fail");
+
+        assert!(err.contains("outside data type 'BATTERY_VOLTAGE' channel count 1"));
     }
 }

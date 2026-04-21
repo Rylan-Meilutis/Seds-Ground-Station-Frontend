@@ -23,9 +23,10 @@ use super::{
 
 use crate::telemetry_dashboard::data_chart::{
     charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    series_color, ChartCanvas, ChartRenderChunk, SeriesSwatch,
-    CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
-    CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    sender_scoped_chart_key, series_color, ChartCanvas, ChartRenderChunk,
+    SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET,
+    CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 
@@ -518,18 +519,41 @@ fn StateChartPanel(
             rsx! { div { style: "color:#94a3b8; font-size:12px;", "{translate_text(\"Missing chart data_type\")}" } }
         } else {
             let labels = labels_from_layout(&data_layout, dt);
-            data_style_chart_cached(
-                dt,
-                view_w,
-                if *is_fullscreen.read() {
-                    full_h
-                } else {
-                    view_h
-                },
-                widget.chart_title.as_deref(),
-                &labels,
-                &theme,
-            )
+            let requested_h = if *is_fullscreen.read() {
+                full_h
+            } else {
+                view_h
+            };
+            if labels.len() > 1 {
+                let series = labels
+                    .iter()
+                    .enumerate()
+                    .map(|(index, label)| ChartSeriesSpec {
+                        data_type: dt.to_string(),
+                        index,
+                        sender_id: None,
+                        label: Some(label.clone()),
+                    })
+                    .collect::<Vec<_>>();
+                combined_state_chart_cached(
+                    &series,
+                    view_w,
+                    requested_h,
+                    widget.chart_title.as_deref(),
+                    &data_layout,
+                    state_chart_labels_vertical,
+                    &theme,
+                )
+            } else {
+                data_style_chart_cached(
+                    dt,
+                    view_w,
+                    requested_h,
+                    widget.chart_title.as_deref(),
+                    &labels,
+                    &theme,
+                )
+            }
         }
     };
 
@@ -677,8 +701,22 @@ fn default_series_label(data_layout: &DataTabLayout, spec: &ChartSeriesSpec) -> 
         .find(|tab| tab.id == spec.data_type)
         .and_then(|tab| tab.channels.get(spec.index).cloned())
         .filter(|label| !label.is_empty())
-        .map(|label| translate_text(&label))
+        .map(|label| {
+            if let Some(sender_id) = spec.sender_id.as_ref()
+                && !sender_id.trim().is_empty()
+            {
+                return format!("{} {}", translate_text(sender_id), translate_text(&label));
+            }
+            translate_text(&label)
+        })
         .unwrap_or_else(|| format!("{}[{}]", translate_text(&spec.data_type), spec.index))
+}
+
+fn chart_key_for_series_spec(spec: &ChartSeriesSpec) -> String {
+    spec.sender_id
+        .as_deref()
+        .map(|sender_id| sender_scoped_chart_key(&spec.data_type, sender_id))
+        .unwrap_or_else(|| spec.data_type.clone())
 }
 
 fn combined_chart_payload(
@@ -694,10 +732,11 @@ fn combined_chart_payload(
         .collect::<Vec<_>>();
 
     if specs.len() <= 1 {
-        let data_type = specs.first()?.data_type.as_str();
+        let first = specs.first()?;
+        let data_type = chart_key_for_series_spec(first);
         let channels = specs.iter().map(|spec| spec.index).collect::<Vec<_>>();
         let (chunks, y_min, y_max, span_min) =
-            charts_cache_get_subset(data_type, &channels, view_w as f32, view_h as f32);
+            charts_cache_get_subset(&data_type, &channels, view_w as f32, view_h as f32);
         if chunks.is_empty() {
             return None;
         }
@@ -714,7 +753,7 @@ fn combined_chart_payload(
 
     let cache_series = specs
         .iter()
-        .map(|spec| (spec.data_type.clone(), spec.index))
+        .map(|spec| (chart_key_for_series_spec(spec), spec.index))
         .collect::<Vec<_>>();
     let (chunks, series_scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
         &cache_series,
@@ -738,6 +777,23 @@ fn combined_chart_payload(
         true,
         series_scales.as_ref().clone(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{chart_key_for_series_spec, ChartSeriesSpec};
+
+    #[test]
+    fn chart_series_with_sender_uses_sender_scoped_cache_key() {
+        let spec = ChartSeriesSpec {
+            data_type: "BATTERY_VOLTAGE".to_string(),
+            index: 0,
+            sender_id: Some("PB".to_string()),
+            label: Some("AV Bay".to_string()),
+        };
+
+        assert_eq!(chart_key_for_series_spec(&spec), "BATTERY_VOLTAGE@@PB");
+    }
 }
 
 fn combined_state_chart_cached(

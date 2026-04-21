@@ -24,6 +24,12 @@ const DEFAULT_MAP_TITLE: &str = "Map";
 const DEFAULT_TRACKED_ASSET_LABEL: &str = "Tracked Asset";
 const MAP_STATE_STORAGE_KEY: &str = "gs26_ground_map_state_v3";
 
+pub(crate) fn has_persisted_map_state() -> bool {
+    persist::get_string(MAP_STATE_STORAGE_KEY)
+        .map(|raw| serde_json::from_str::<serde_json::Value>(&raw).is_ok())
+        .unwrap_or(false)
+}
+
 fn tiles_url() -> String {
     map_tiles_url()
 }

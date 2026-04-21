@@ -1726,7 +1726,16 @@ pub fn Connect() -> Element {
                                 );
                                 return;
                             }
-                            crate::telemetry_dashboard::clear_and_reconnect_after_connect();
+                            let tested_ok = test_report
+                                .read()
+                                .as_ref()
+                                .map(|report| all_tests_passed(&report.checks, &report.ws_probe))
+                                .unwrap_or(false);
+                            if tested_ok {
+                                crate::telemetry_dashboard::clear_and_reconnect_after_connect();
+                            } else {
+                                crate::telemetry_dashboard::reconnect_and_reseed_after_auth_change();
+                            }
                             let _ = persist::write_connect_shown(true);
                             let _ = nav.replace(Route::Dashboard {});
                         },
@@ -1853,9 +1862,12 @@ pub fn Dashboard() -> Element {
     let mut auth_state = use_signal(|| None::<Result<AuthSessionStatus, String>>);
     let mut auth_state_base = use_signal(String::new);
     #[cfg(not(target_arch = "wasm32"))]
+    let has_offline_cached_dashboard_state = telemetry_dashboard::dashboard_has_cached_state();
+    #[cfg(not(target_arch = "wasm32"))]
     let can_render_dashboard_while_auth_check_runs = auth::current_session().is_some()
         || auth::current_status().permissions.view_data
-        || telemetry_dashboard::dashboard_has_prior_backend_connection();
+        || telemetry_dashboard::dashboard_has_prior_backend_connection()
+        || has_offline_cached_dashboard_state;
     use_effect(move || {
         let base = UrlConfig::base_http();
         let current_auth_state_base = auth_state_base.read().clone();
@@ -1931,6 +1943,10 @@ pub fn Dashboard() -> Element {
                     }
                 }
             }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Some(Err(_err)) if has_offline_cached_dashboard_state => {
+            rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
         }
         Some(Err(err)) => rsx! {
             ConnectionFailedCard {

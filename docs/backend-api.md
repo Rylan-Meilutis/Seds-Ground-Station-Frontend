@@ -160,6 +160,7 @@ Or streamed newline-delimited JSON on native builds:
 ```text
 {"timestamp_ms":1750000000000,"data_type":"GPS","sender_id":"FC","values":[42.9586,-78.8119,1200.0]}
 {"timestamp_ms":1750000000100,"data_type":"ACCEL","sender_id":"FC","values":[0.1,0.2,9.7]}
+{"timestamp_ms":1750000000200,"data_type":"KG1000","sender_id":"DAQ","values":[9.5754]}
 ```
 
 Schema:
@@ -173,6 +174,7 @@ Notes:
 
 - the frontend uses `values[0]` and `values[1]` as latitude/longitude for `GPS`, `GPS_DATA`, or `ROCKET_GPS`
 - an empty array is acceptable
+- `KG1000` is accepted as the raw 1000 kg loadcell source. The frontend derives `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` from it for summary labels and chart series when those derived telemetry rows are not provided directly.
 - native builds accept either the array response or NDJSON-style streaming for faster reseed startup
 - native builds advertise `Accept: application/x-ndjson` on this route
 - if you stream, emit one complete telemetry row per line and start sending bytes promptly
@@ -392,6 +394,7 @@ Notes:
 
 - `persistent` defaults to `true` in the frontend
 - `action_label` and `action_cmd` are optional
+- users can clear visible local notification history from the Notifications tab; backend notifications can still return on the next `/api/notifications` or WebSocket `Notifications` payload unless dismissed server-side
 - frontend-generated WebSocket disconnect notifications are local-only, appear at most once during an outage, are not retained in notification history, and are removed automatically when the WebSocket reconnects
 
 ### `POST /api/notifications/{id}/dismiss`
@@ -705,14 +708,17 @@ Generic layout behavior:
 - `data_tab.tabs[].boolean_labels` and `channel_boolean_labels` control boolean value rendering. The frontend does not infer boolean rendering from a hardcoded telemetry id.
 - `data_tab.sender_split_data_types` lists telemetry `data_type` values that should maintain separate chart caches per `sender_id`. Leave it empty for single shared charts.
 - `data_tab.tabs[].chart_groups[]` can plot a subset of channels from the current tab with `channels`, `labels`, and `scale_mode`.
-- `data_tab.tabs[].chart_groups[].chart_series` can plot lines from multiple telemetry data types in one graph. Each item uses `{ "data_type": "...", "index": N, "label": "..." }`. Multi-line `chart_series` are rendered as explicit per-series lines so lower-range series remain visible.
+- `data_tab.tabs[].chart_groups[].chart_series` can plot lines from multiple telemetry data types in one graph. Each item uses `{ "data_type": "...", "index": N, "sender_id": "optional", "label": "..." }`. Multi-line `chart_series` are rendered as explicit per-series lines so lower-range series remain visible. Set `sender_id` when the backend publishes sender-split data for that telemetry type.
 - `data_tab.tabs[].subtabs[]` can override `data_type`, `sender_id`, `channels`, `chart_groups`, and `summary_items`. If `chart_series` is omitted, the frontend can infer chart series from matching `summary_items` labels.
+- layout validation rejects duplicate data tab ids, empty labels, incomplete fill-target metadata, known `chart_series` indexes outside the referenced data type's channel count, and chart groups that reference channels outside their tab/subtab channel list.
 - `state_tab` `valve_state` widgets must provide `data_type` and `valves`; the frontend no longer assumes a fixed valve telemetry id or fixed valve labels.
 - `state_tab.states[].sections[].value_layout` can be `auto`, `horizontal`, or `vertical`. Use `horizontal` for telemetry value cards that should flow across the row.
 - `state_tab` widgets can set `"full_width": true` to span the full section grid. This is intended for charts under horizontally arranged summary fields.
-- `state_tab` chart widgets can use either `data_type` for a normal single telemetry chart or `chart_series` for explicit multi-line charts. Multi-line `chart_series` use compact per-series scaling so every configured line remains visible.
+- `state_tab` chart widgets can use either `data_type` for a normal single telemetry chart or `chart_series` for explicit multi-line charts. Multi-line `chart_series` use compact per-series scaling so every configured line remains visible, and each series can include `sender_id` to target a sender-specific chart cache.
 - after any WebSocket reconnect, the frontend reseeds telemetry/history from `/api/recent` and preserves live rows received during the reseed.
+- native builds persist a compact telemetry snapshot and map state locally. If the configured backend cannot be reached on startup or after a failed connect attempt, the frontend opens the dashboard with cached data/GPS/map state instead of blocking on the connection screen.
 - state summary fill targets require explicit `fill_target_fluid` and `fill_target_kind` on each item that should show a target. The frontend does not infer targets from display labels.
+- loadcell aliases are shared between labels and charts: `LOADCELL_WEIGHT_KG[0]` falls back to `KG1000[0]`, and `LOADCELL_FILL_PERCENT[0]` is derived from that mass using a default 10 kg full-scale target if no backend-derived value is present.
 - calibration sensors, labels, colors, telemetry data types, channel ids, and regression choices come from `/api/calibration_config`.
 
 Main tab ids recognized by the frontend:
