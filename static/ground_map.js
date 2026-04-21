@@ -74,6 +74,7 @@ const HIGH_RES_PREFETCH_MAX_TILES = 96;
 const HIGH_RES_PREFETCH_CONCURRENCY = 1;
 const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 5000;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
+const WHEEL_ROTATE_DEG_PER_PIXEL = 0.18;
 const CACHE_SWEEP_DELAY_MS = 15000;
 const USER_MARKER_SMOOTH_MIN_MS = 120;
 const USER_MARKER_SMOOTH_MAX_MS = 520;
@@ -1705,6 +1706,27 @@ function enterManualOrientationMode() {
     updateCenterControlAppearance();
 }
 
+function wheelDeltaPixels(event, value) {
+    const delta = Number(value);
+    if (!Number.isFinite(delta)) return 0;
+    if (event && event.deltaMode === 1) return delta * 16;
+    if (event && event.deltaMode === 2) return delta * 120;
+    return delta;
+}
+
+function wheelRotationDeltaDeg(event) {
+    if (!event) return 0;
+    const deltaX = wheelDeltaPixels(event, event.deltaX);
+    const deltaY = wheelDeltaPixels(event, event.deltaY);
+    if (Math.abs(deltaX) >= 1) {
+        return deltaX * WHEEL_ROTATE_DEG_PER_PIXEL;
+    }
+    if (event.shiftKey && Math.abs(deltaY) >= 1) {
+        return deltaY * WHEEL_ROTATE_DEG_PER_PIXEL;
+    }
+    return 0;
+}
+
 function adjustGroundMapBearing(deltaDeg) {
     const delta = Number(deltaDeg);
     if (!Number.isFinite(delta)) return;
@@ -1985,14 +2007,33 @@ function installCustomGestureHooks() {
     canvas.__gs26_custom_gestures_installed = true;
     canvas.__gs26_custom_gestures_controller = controller;
 
-    canvas.addEventListener("wheel", (event) => {
-        if (!event.shiftKey || !groundMap) return;
+    const rotateFromWheel = (event) => {
+        if (!groundMap || event.__gs26WheelRotateHandled) return;
+        const deltaDeg = wheelRotationDeltaDeg(event);
+        if (!Number.isFinite(deltaDeg) || Math.abs(deltaDeg) < 0.01) return;
+        event.__gs26WheelRotateHandled = true;
         event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === "function") {
+            event.stopImmediatePropagation();
+        }
+        suppressHighResPrefetch(1200);
         unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
         enterManualOrientationMode();
-        mapBearingDeg = normalizeAngle(mapBearingDeg + event.deltaY * 0.18);
+        mapBearingDeg = normalizeAngle(mapBearingDeg + deltaDeg);
         applyMapOrientation();
-    }, {passive: false, signal});
+        persistMapStateSoon();
+        updateCenterControlAppearance();
+    };
+
+    canvas.addEventListener("wheel", rotateFromWheel, {capture: true, passive: false, signal});
+    try {
+        const mapCanvas = groundMap.getCanvas ? groundMap.getCanvas() : null;
+        if (mapCanvas && mapCanvas !== canvas) {
+            mapCanvas.addEventListener("wheel", rotateFromWheel, {capture: true, passive: false, signal});
+        }
+    } catch (e) {
+    }
 
     canvas.addEventListener("mousedown", (event) => {
         if (!groundMap || event.button !== 0) return;
