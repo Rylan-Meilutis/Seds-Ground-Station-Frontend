@@ -540,7 +540,7 @@ function tileCoordsForBounds(bounds, zoom) {
 function prefetchZoomLevels(maxNativeZoom) {
     const top = Math.max(MIN_ZOOM, Math.floor(Number(maxNativeZoom) || DEFAULT_MAX_NATIVE_ZOOM));
     const zooms = [];
-    for (let z = top; z >= MIN_ZOOM; z--) {
+    for (let z = MIN_ZOOM; z <= top; z++) {
         zooms.push(z);
     }
     return zooms;
@@ -1783,10 +1783,7 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
     const rasterTemplate = shouldUseNativeTileTemplate(tilesUrl)
         ? String(tilesUrl || "")
         : tileProtocolTemplate();
-    const sourceMaxZoom = Math.max(
-        MIN_ZOOM,
-        Math.floor(Number(currentMaxZoom) || Number(effectiveMaxNativeZoom) || DEFAULT_MAX_NATIVE_ZOOM)
-    );
+    const sourceMaxZoom = clampMaxNativeZoom(effectiveMaxNativeZoom);
     return {
         version: 8,
         sources: {

@@ -57,7 +57,7 @@ The app uses WebSocket for:
 - Emergency `Abort` button always rendered in red regardless of theme or Ground Station palette
 - Telemetry reseed support using either a JSON array or native streamed NDJSON from `/api/recent`
 - Graph-level reseed status notices for running, success, and failure
-- Offline native startup with locally cached telemetry/GPS/map state when the configured Ground Station cannot be reached
+- Offline native startup with locally cached layout/telemetry/GPS/map state when the configured Ground Station cannot be reached
 - Launch clock badge and launch clock synchronization from both HTTP and WebSocket updates
 - Sender-aware multi-series charts and per-series scaling for state/data graphs
 - Network topology graph and endpoint ownership views
@@ -166,7 +166,7 @@ When the app reconnects or explicitly reseeds, it keeps existing chart history v
 - WebSocket reconnects trigger telemetry reseed and preserve live rows received during reseed
 - reseed status is shown directly on graphs so operators can tell whether it is running, succeeded, or failed
 - if reseed fails after data was already visible, the app keeps the existing visible history instead of blanking the graphs
-- native builds keep a compact local telemetry snapshot so a failed connection attempt can still open the dashboard with the last remembered data/GPS/map state
+- native builds keep the last valid layout per Ground Station URL plus a compact local telemetry snapshot so a failed connection attempt can still open the dashboard with the last remembered data/GPS/map state. Without a cached layout for that URL, the app shows the connection failure page.
 
 If you are implementing the backend streaming path, use [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md).
 
@@ -176,7 +176,7 @@ If you are implementing the backend streaming path, use [`docs/backend-recent-st
 - Some routes can safely return empty data structures. For example, `/api/recent` can return `[]` and `/api/gps` can return `{ "rocket": null }`.
 - `/api/recent` can also stream newline-delimited JSON rows on native builds for faster reseed startup.
 - The map uses `/tiles/{z}/{x}/{y}.jpg` by default. If you expose the map tab, provide that route or an equivalent reverse-proxied path.
-- The map persists the last effective tile `max_native_zoom` per tile URL and reuses it offline, so cached high-zoom tiles can still be restored after a backend disconnect.
+- The map persists the last effective tile `max_native_zoom` per tile URL in browser/native storage and reuses it offline. Prefetch warms tiles from zoom `0` through the remembered native max so zooming out can stay cached. Display zoom can overzoom above native tile zoom, but tile requests stay capped at native max zoom so cached high-zoom native tiles can still be restored after a backend disconnect.
 - WebSocket message tags are case-sensitive because they are deserialized from Rust enum variant names.
 - Commands are sent over WebSocket as JSON objects like `{ "cmd": "Abort" }`.
 - Layout drives a large part of the UI. If your backend returns a small valid layout, the frontend can still function without the full production config.

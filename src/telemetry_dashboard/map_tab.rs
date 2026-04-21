@@ -23,12 +23,7 @@ const DEFAULT_MAP_ZOOM: f64 = 7.0;
 const DEFAULT_MAP_TITLE: &str = "Map";
 const DEFAULT_TRACKED_ASSET_LABEL: &str = "Tracked Asset";
 const MAP_STATE_STORAGE_KEY: &str = "gs26_ground_map_state_v3";
-
-pub(crate) fn has_persisted_map_state() -> bool {
-    persist::get_string(MAP_STATE_STORAGE_KEY)
-        .map(|raw| serde_json::from_str::<serde_json::Value>(&raw).is_ok())
-        .unwrap_or(false)
-}
+const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
 
 fn tiles_url() -> String {
     map_tiles_url()
@@ -162,6 +157,7 @@ pub fn MapTab(
             js_setup_map_touch_guard();
             js_setup_map_size_guard();
             js_hydrate_persisted_map_state();
+            js_hydrate_persisted_map_max_zoom();
             js_setup_js_init_retry(&tiles, &config);
             #[cfg(target_arch = "wasm32")]
             _js_setup_js_geolocation_watch();
@@ -360,6 +356,8 @@ pub fn MapTab(
     {
         use_future(move || async move {
             let mut last_saved = persist::get_string(MAP_STATE_STORAGE_KEY).unwrap_or_default();
+            let mut last_saved_max_zoom =
+                persist::get_string(MAP_MAX_ZOOM_STORAGE_KEY).unwrap_or_default();
             loop {
                 if let Some(raw) = js_read_current_map_state_json().await
                     && raw != last_saved
@@ -367,6 +365,13 @@ pub fn MapTab(
                 {
                     persist::set_string(MAP_STATE_STORAGE_KEY, &raw);
                     last_saved = raw;
+                }
+                if let Some(raw) = js_read_current_map_max_zoom_json().await
+                    && raw != last_saved_max_zoom
+                    && serde_json::from_str::<serde_json::Value>(&raw).is_ok()
+                {
+                    persist::set_string(MAP_MAX_ZOOM_STORAGE_KEY, &raw);
+                    last_saved_max_zoom = raw;
                 }
 
                 #[cfg(target_arch = "wasm32")]
@@ -586,6 +591,35 @@ fn js_hydrate_persisted_map_state() {
             }}
             if (typeof window.__gs26_reload_persisted_map_state === "function") {{
               window.__gs26_reload_persisted_map_state();
+            }}
+          }} catch (e) {{}}
+        }})();
+        "#,
+        key_js = key_js,
+        raw_js = raw_js,
+    ));
+}
+
+fn js_hydrate_persisted_map_max_zoom() {
+    let Some(raw) = persist::get_string(MAP_MAX_ZOOM_STORAGE_KEY) else {
+        return;
+    };
+    if serde_json::from_str::<serde_json::Value>(&raw).is_err() {
+        return;
+    }
+
+    let key_js =
+        serde_json::to_string(MAP_MAX_ZOOM_STORAGE_KEY).unwrap_or_else(|_| "\"\"".to_string());
+    let raw_js = serde_json::to_string(&raw).unwrap_or_else(|_| "\"\"".to_string());
+    js_eval(&format!(
+        r#"
+        (function() {{
+          try {{
+            const key = {key_js};
+            const raw = {raw_js};
+            window.__gs26_ground_map_max_zoom_json = raw;
+            if (window.localStorage) {{
+              window.localStorage.setItem(key, raw);
             }}
           }} catch (e) {{}}
         }})();
@@ -1125,6 +1159,54 @@ async fn js_read_current_map_state_json() -> Option<String> {
             }})()
             "#,
             key = MAP_STATE_STORAGE_KEY,
+        ));
+        eval.join::<String>()
+            .await
+            .ok()
+            .filter(|raw| !raw.is_empty())
+    }
+}
+
+async fn js_read_current_map_max_zoom_json() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_eval(&format!(
+            r#"
+            (function() {{
+              try {{
+                const key = {key:?};
+                window.__gs26_tmp_map_max_zoom_json =
+                  window.__gs26_ground_map_max_zoom_json ||
+                  (window.localStorage ? window.localStorage.getItem(key) : "") ||
+                  "";
+              }} catch (e) {{
+                window.__gs26_tmp_map_max_zoom_json = "";
+              }}
+            }})();
+            "#,
+            key = MAP_MAX_ZOOM_STORAGE_KEY,
+        ));
+        js_read_window_string("__gs26_tmp_map_max_zoom_json").filter(|raw| !raw.is_empty())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let eval = dioxus::document::eval(&format!(
+            r#"
+            (function() {{
+              try {{
+                const key = {key:?};
+                return String(
+                  window.__gs26_ground_map_max_zoom_json ||
+                  (window.localStorage ? window.localStorage.getItem(key) : "") ||
+                  ""
+                );
+              }} catch (e) {{
+                return "";
+              }}
+            }})()
+            "#,
+            key = MAP_MAX_ZOOM_STORAGE_KEY,
         ));
         eval.join::<String>()
             .await

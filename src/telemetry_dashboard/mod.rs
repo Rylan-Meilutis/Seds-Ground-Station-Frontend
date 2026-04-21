@@ -596,16 +596,11 @@ fn rebuild_chart_cache_from_visible_rows() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn dashboard_has_cached_state() -> bool {
-    !ui_telemetry_rows_snapshot().is_empty()
-        || persist::get_string(TELEMETRY_CACHE_STORAGE_KEY)
-            .map(|raw| {
-                serde_json::from_str::<Vec<TelemetryRow>>(&raw)
-                    .map(|rows| !rows.is_empty())
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-        || map_tab::has_persisted_map_state()
+pub fn dashboard_has_cached_layout_for_base(base: &str) -> bool {
+    let cache_key = layout_cache_key_for_base(base);
+    persist::get_string(&cache_key)
+        .and_then(|raw| serde_json::from_str::<LayoutConfig>(&raw).ok())
+        .is_some_and(|layout| layout.validate().is_ok())
 }
 
 // unified storage keys
@@ -820,7 +815,7 @@ fn set_reseed_status_failed(message: impl Into<String>) {
 fn user_friendly_http_error(err: &str) -> String {
     let lower = err.to_ascii_lowercase();
     if lower.contains("http 502") || lower.contains("502 bad gateway") {
-        return "The Ground Station service is temporarily unavailable. Check that the backend is running and try reconnecting.".to_string();
+        return "The Ground Station service is temporarily unavailable. Check that the Ground Station is running and try reconnecting.".to_string();
     }
     if lower.contains("http 503") || lower.contains("503 service unavailable") {
         return "The Ground Station service is starting up or overloaded. Wait a moment, then try again.".to_string();

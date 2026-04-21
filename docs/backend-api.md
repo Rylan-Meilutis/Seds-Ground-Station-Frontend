@@ -285,7 +285,9 @@ Notes:
 - `max_display_zoom` defaults to one level above `max_native_zoom` in the frontend if omitted.
 - blank or non-finite numeric values are sanitized by the frontend, but the backend should still send valid values.
 - the tile source itself is requested from `/tiles/{z}/{x}/{y}.jpg` on the configured host.
-- the frontend persists the last effective `max_native_zoom` per tile URL template and reuses it if the backend is unavailable later. This allows cached high-zoom map tiles and previously zoomed-in map views to restore without requiring `/api/map_config` to be reachable.
+- the frontend persists the last effective `max_native_zoom` per tile URL template in browser/native storage and reuses it if the backend is unavailable later. This allows cached high-zoom map tiles and previously zoomed-in map views to restore without requiring `/api/map_config` to be reachable.
+- map prefetch warms the visible/user/rocket tile area from zoom `0` through the effective native max zoom so cached maps can remain visible when operators zoom out offline.
+- display overzoom is allowed above native tile zoom, but the tile source is capped at the native max zoom so offline views reuse cached native tiles instead of requesting uncached synthetic higher-zoom tile URLs.
 
 ### `GET /tiles/{z}/{x}/{y}.jpg`
 
@@ -716,7 +718,7 @@ Generic layout behavior:
 - `state_tab` widgets can set `"full_width": true` to span the full section grid. This is intended for charts under horizontally arranged summary fields.
 - `state_tab` chart widgets can use either `data_type` for a normal single telemetry chart or `chart_series` for explicit multi-line charts. Multi-line `chart_series` use compact per-series scaling so every configured line remains visible, and each series can include `sender_id` to target a sender-specific chart cache.
 - after any WebSocket reconnect, the frontend reseeds telemetry/history from `/api/recent` and preserves live rows received during the reseed.
-- native builds persist a compact telemetry snapshot and map state locally. If the configured backend cannot be reached on startup or after a failed connect attempt, the frontend opens the dashboard with cached data/GPS/map state instead of blocking on the connection screen.
+- native builds persist the layout per Ground Station URL plus a compact telemetry snapshot and map state locally. If the configured backend cannot be reached on startup or after a failed connect attempt, the frontend opens the dashboard with cached layout/data/GPS/map state instead of blocking on the connection screen. If there is no valid cached layout for that configured URL, the app shows the connection failure page.
 - state summary fill targets require explicit `fill_target_fluid` and `fill_target_kind` on each item that should show a target. The frontend does not infer targets from display labels.
 - loadcell aliases are shared between labels and charts: `LOADCELL_WEIGHT_KG[0]` falls back to `KG1000[0]`, and `LOADCELL_FILL_PERCENT[0]` is derived from that mass using a default 10 kg full-scale target if no backend-derived value is present.
 - calibration sensors, labels, colors, telemetry data types, channel ids, and regression choices come from `/api/calibration_config`.

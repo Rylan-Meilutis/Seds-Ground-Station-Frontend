@@ -1862,12 +1862,13 @@ pub fn Dashboard() -> Element {
     let mut auth_state = use_signal(|| None::<Result<AuthSessionStatus, String>>);
     let mut auth_state_base = use_signal(String::new);
     #[cfg(not(target_arch = "wasm32"))]
-    let has_offline_cached_dashboard_state = telemetry_dashboard::dashboard_has_cached_state();
+    let has_cached_layout_for_base =
+        telemetry_dashboard::dashboard_has_cached_layout_for_base(&base);
     #[cfg(not(target_arch = "wasm32"))]
     let can_render_dashboard_while_auth_check_runs = auth::current_session().is_some()
         || auth::current_status().permissions.view_data
         || telemetry_dashboard::dashboard_has_prior_backend_connection()
-        || has_offline_cached_dashboard_state;
+        || has_cached_layout_for_base;
     use_effect(move || {
         let base = UrlConfig::base_http();
         let current_auth_state_base = auth_state_base.read().clone();
@@ -1945,7 +1946,7 @@ pub fn Dashboard() -> Element {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        Some(Err(_err)) if has_offline_cached_dashboard_state => {
+        Some(Err(_err)) if has_cached_layout_for_base => {
             rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
         }
         Some(Err(err)) => rsx! {
