@@ -30,6 +30,8 @@ let currentPrefetchKey = null;
 let tilePrefetchRunId = 0;
 let wheelRotateFrame = null;
 let wheelRotateTargetBearing = null;
+let wheelGestureMode = null;
+let wheelGestureLastAtMs = 0;
 let prefetchSuppressedUntilMs = 0;
 let mapInitStartedAtMs = 0;
 let lastPersistedMapStateAtMs = 0;
@@ -79,6 +81,9 @@ const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
 const WHEEL_ROTATE_DEG_PER_PIXEL = 0.18;
 const WHEEL_ROTATE_EASE = 0.24;
 const WHEEL_ROTATE_SETTLE_DEG = 0.08;
+const WHEEL_ROTATE_AXIS_DOMINANCE = 1.0;
+const WHEEL_GESTURE_LOCK_MS = 180;
+const WHEEL_ZOOM_LIMIT_EPSILON = 0.001;
 const CACHE_SWEEP_DELAY_MS = 15000;
 const USER_MARKER_SMOOTH_MIN_MS = 120;
 const USER_MARKER_SMOOTH_MAX_MS = 520;
@@ -1721,13 +1726,62 @@ function wheelRotationDeltaDeg(event) {
     if (!event) return 0;
     const deltaX = wheelDeltaPixels(event, event.deltaX);
     const deltaY = wheelDeltaPixels(event, event.deltaY);
-    if (Math.abs(deltaX) >= 1) {
-        return deltaX * WHEEL_ROTATE_DEG_PER_PIXEL;
-    }
     if (event.shiftKey && Math.abs(deltaY) >= 1) {
         return deltaY * WHEEL_ROTATE_DEG_PER_PIXEL;
     }
+    if (horizontalWheelDominates(deltaX, deltaY)) {
+        return deltaX * WHEEL_ROTATE_DEG_PER_PIXEL;
+    }
     return 0;
+}
+
+function wheelGestureIntent(event) {
+    if (!event) return null;
+    const now = Date.now();
+    if (wheelGestureMode && now - wheelGestureLastAtMs <= WHEEL_GESTURE_LOCK_MS) {
+        wheelGestureLastAtMs = now;
+        return wheelGestureMode;
+    }
+
+    const deltaX = wheelDeltaPixels(event, event.deltaX);
+    const deltaY = wheelDeltaPixels(event, event.deltaY);
+    let nextMode = null;
+    if (event.shiftKey && Math.abs(deltaY) >= 1) {
+        nextMode = "rotate";
+    } else if (verticalWheelDominates(deltaX, deltaY) || wheelZoomWouldExceedLimit(deltaY)) {
+        nextMode = "zoom";
+    } else if (horizontalWheelDominates(deltaX, deltaY)) {
+        nextMode = "rotate";
+    }
+
+    wheelGestureMode = nextMode;
+    wheelGestureLastAtMs = nextMode ? now : 0;
+    return nextMode;
+}
+
+function horizontalWheelDominates(deltaX, deltaY) {
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+    return absX >= 1 && absX >= Math.max(1, absY * WHEEL_ROTATE_AXIS_DOMINANCE);
+}
+
+function verticalWheelDominates(deltaX, deltaY) {
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+    return absY >= 1 && absY > absX;
+}
+
+function wheelZoomWouldExceedLimit(deltaY) {
+    if (!groundMap || !Number.isFinite(deltaY) || Math.abs(deltaY) < 1) return false;
+    const zoom = groundMap.getZoom();
+    if (!Number.isFinite(zoom)) return false;
+    if (deltaY < 0 && Number.isFinite(currentMaxZoom)) {
+        return zoom >= currentMaxZoom - WHEEL_ZOOM_LIMIT_EPSILON;
+    }
+    if (deltaY > 0) {
+        return zoom <= MIN_ZOOM + WHEEL_ZOOM_LIMIT_EPSILON;
+    }
+    return false;
 }
 
 function cancelSmoothWheelRotation() {
@@ -2065,14 +2119,21 @@ function installCustomGestureHooks() {
 
     const rotateFromWheel = (event) => {
         if (!groundMap || event.__gs26WheelRotateHandled) return;
+        const intent = wheelGestureIntent(event);
+        if (intent === "zoom") {
+            return;
+        }
+        if (intent !== "rotate") {
+            return;
+        }
         const deltaDeg = wheelRotationDeltaDeg(event);
-        if (!Number.isFinite(deltaDeg) || Math.abs(deltaDeg) < 0.01) return;
         event.__gs26WheelRotateHandled = true;
         event.preventDefault();
         event.stopPropagation();
         if (typeof event.stopImmediatePropagation === "function") {
             event.stopImmediatePropagation();
         }
+        if (!Number.isFinite(deltaDeg) || Math.abs(deltaDeg) < 0.01) return;
         suppressHighResPrefetch(1200);
         unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
         enterManualOrientationMode();
