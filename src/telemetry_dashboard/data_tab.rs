@@ -1,6 +1,6 @@
 use super::layout::{
-    BooleanLabels, DataChartGroup, DataChartScaleMode, DataSubtabSpec, DataSummaryItem,
-    DataTabLayout, DataTabSpec, ThemeConfig, ValueFormatKind, ValueFormatter,
+    BooleanLabels, ChartSeriesSpec, DataChartGroup, DataChartScaleMode, DataSubtabSpec,
+    DataSummaryItem, DataTabLayout, DataTabSpec, ThemeConfig, ValueFormatKind, ValueFormatter,
 };
 // frontend/src/telemetry_dashboard/data_tab.rs
 use dioxus::prelude::*;
@@ -8,15 +8,15 @@ use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::rc::Rc;
 
 use super::data_chart::{
-    CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
-    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
-    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
-    charts_cache_get_subset, charts_cache_get_subset_per_series, sender_scoped_chart_key,
-    series_color,
+    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
+    charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color, ChartCanvas,
+    SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD,
+    CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
+    CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
 use super::{
-    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value,
-    reseed_note_banner, reseed_status_note, translate_text,
+    latest_telemetry_row, latest_telemetry_value, reseed_note_banner, reseed_status_note,
+    translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
 };
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
@@ -91,6 +91,9 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
   }
 }
 "#;
+const DATA_CHART_NORMALIZED_GRID_LEFT: f32 = 18.0;
+const DATA_CHART_NORMALIZED_GRID_RIGHT_PAD: f32 = 12.0;
+const DATA_CHART_PER_SERIES_LABEL_ROW_GAP: f64 = 18.0;
 
 #[cfg(target_arch = "wasm32")]
 fn localstorage_get(key: &str) -> Option<String> {
@@ -508,6 +511,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                     chart_groups: chart_groups.clone(),
                     chart_key: chart_key.clone(),
                     labels: labels.clone(),
+                    summary_items: summary_items.clone(),
                     view_w: view_w,
                     view_h: view_h,
                     view_h_full: view_h_full,
@@ -599,6 +603,7 @@ fn effective_chart_groups(
                 sender_id: None,
                 labels: None,
                 channels: (0..channel_count).collect(),
+                chart_series: None,
                 scale_mode: None,
             }]
         })
@@ -620,6 +625,52 @@ fn chart_key_for_source(source: &DataSource) -> String {
         .as_deref()
         .map(|sender_id| sender_scoped_chart_key(&source.data_type, sender_id))
         .unwrap_or_else(|| source.data_type.clone())
+}
+
+fn chart_series_for_group(
+    group: &DataChartGroup,
+    summary_items: &[DataSummaryItem],
+    fallback_labels: &[String],
+) -> Option<Vec<ChartSeriesSpec>> {
+    if let Some(series) = group.chart_series.as_ref()
+        && !series.is_empty()
+    {
+        return Some(series.clone());
+    }
+
+    if summary_items.is_empty() {
+        return None;
+    }
+
+    let legend_source = group.labels.as_deref().unwrap_or(fallback_labels);
+    let mut series = Vec::new();
+    for (group_idx, channel_idx) in group.channels.iter().enumerate() {
+        let label = legend_source
+            .get(*channel_idx)
+            .or_else(|| legend_source.get(group_idx));
+        let item = label
+            .and_then(|label| {
+                summary_items
+                    .iter()
+                    .find(|item| item.label.eq_ignore_ascii_case(label))
+            })
+            .or_else(|| summary_items.get(*channel_idx))
+            .or_else(|| summary_items.get(group_idx));
+        let Some(item) = item else {
+            continue;
+        };
+        series.push(ChartSeriesSpec {
+            data_type: item.data_type.clone(),
+            index: item.index,
+            label: Some(item.label.clone()),
+        });
+    }
+
+    if series.is_empty() {
+        None
+    } else {
+        Some(series)
+    }
 }
 
 fn summary_item_has_value(item: &DataSummaryItem) -> bool {
@@ -648,6 +699,7 @@ fn DataGraphPanel(
     chart_groups: Vec<DataChartGroup>,
     chart_key: String,
     labels: Vec<String>,
+    summary_items: Vec<DataSummaryItem>,
     view_w: f64,
     view_h: f64,
     view_h_full: f64,
@@ -713,6 +765,7 @@ fn DataGraphPanel(
                                 group,
                                 &chart_key,
                                 &labels,
+                                &summary_items,
                                 view_w,
                                 view_h,
                                 left,
@@ -755,6 +808,7 @@ fn DataGraphPanel(
                                     group,
                                     &chart_key,
                                     &labels,
+                                    &summary_items,
                                     view_w,
                                     view_h_full,
                                     left,
@@ -781,6 +835,7 @@ fn render_chart_group(
     group: &DataChartGroup,
     fallback_chart_key: &str,
     fallback_labels: &[String],
+    summary_items: &[DataSummaryItem],
     view_w: f64,
     view_h: f64,
     left: f64,
@@ -794,43 +849,100 @@ fn render_chart_group(
 ) -> Element {
     let chart_key = chart_key_for_group(group, fallback_chart_key);
     let per_series_scale = matches!(group.scale_mode, Some(DataChartScaleMode::PerSeries));
-    let (filtered_chunks, y_min, y_max, span_min, per_series_scales) = if per_series_scale {
-        let (chunks, scales, span_min) = charts_cache_get_subset_per_series(
-            &chart_key,
-            &group.channels,
-            view_w as f32,
-            view_h as f32,
-        );
-        let overall_min = scales
-            .iter()
-            .flatten()
-            .map(|(min, _)| *min)
-            .fold(f32::INFINITY, f32::min);
-        let overall_max = scales
-            .iter()
-            .flatten()
-            .map(|(_, max)| *max)
-            .fold(f32::NEG_INFINITY, f32::max);
-        (
-            chunks,
-            if overall_min.is_finite() {
-                overall_min
-            } else {
-                0.0
-            },
-            if overall_max.is_finite() {
-                overall_max
-            } else {
-                1.0
-            },
-            span_min,
-            scales,
-        )
+    let multi_series = chart_series_for_group(group, summary_items, fallback_labels);
+    let normalize_multi_series = multi_series.as_ref().is_some_and(|series| series.len() > 1);
+    let use_per_series_scale = per_series_scale || normalize_multi_series;
+    let chart_left = if use_per_series_scale {
+        DATA_CHART_NORMALIZED_GRID_LEFT as f64
     } else {
-        let (chunks, y_min, y_max, span_min) =
-            charts_cache_get_subset(&chart_key, &group.channels, view_w as f32, view_h as f32);
-        (chunks, y_min, y_max, span_min, Rc::new(Vec::new()))
+        left
     };
+    let chart_right = if use_per_series_scale {
+        view_w - DATA_CHART_NORMALIZED_GRID_RIGHT_PAD as f64
+    } else {
+        right
+    };
+    let (filtered_chunks, y_min, y_max, span_min, per_series_scales) =
+        if let Some(series) = multi_series.as_ref() {
+            let cache_series = series
+                .iter()
+                .map(|spec| (spec.data_type.clone(), spec.index))
+                .collect::<Vec<_>>();
+            let (chunks, scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
+                &cache_series,
+                view_w as f32,
+                view_h as f32,
+                chart_left as f32,
+                (view_w - chart_right) as f32,
+                pad_top as f32,
+                pad_bottom as f32,
+            );
+            let overall_min = scales
+                .iter()
+                .flatten()
+                .map(|(min, _)| *min)
+                .fold(f32::INFINITY, f32::min);
+            let overall_max = scales
+                .iter()
+                .flatten()
+                .map(|(_, max)| *max)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (
+                chunks,
+                if overall_min.is_finite() {
+                    overall_min
+                } else {
+                    0.0
+                },
+                if overall_max.is_finite() {
+                    overall_max
+                } else {
+                    1.0
+                },
+                span_min,
+                scales,
+            )
+        } else if use_per_series_scale {
+            let (chunks, scales, span_min) = charts_cache_get_subset_per_series_with_grid(
+                &chart_key,
+                &group.channels,
+                view_w as f32,
+                view_h as f32,
+                chart_left as f32,
+                (view_w - chart_right) as f32,
+                pad_top as f32,
+                pad_bottom as f32,
+            );
+            let overall_min = scales
+                .iter()
+                .flatten()
+                .map(|(min, _)| *min)
+                .fold(f32::INFINITY, f32::min);
+            let overall_max = scales
+                .iter()
+                .flatten()
+                .map(|(_, max)| *max)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (
+                chunks,
+                if overall_min.is_finite() {
+                    overall_min
+                } else {
+                    0.0
+                },
+                if overall_max.is_finite() {
+                    overall_max
+                } else {
+                    1.0
+                },
+                span_min,
+                scales,
+            )
+        } else {
+            let (chunks, y_min, y_max, span_min) =
+                charts_cache_get_subset(&chart_key, &group.channels, view_w as f32, view_h as f32);
+            (chunks, y_min, y_max, span_min, Rc::new(Vec::new()))
+        };
     let reseed_note = reseed_status_note();
     if filtered_chunks.is_empty() {
         return rsx! {
@@ -852,37 +964,99 @@ fn render_chart_group(
     let y_mid_s = format!("{:.2}", y_mid);
     let y_min_s = format!("{:.2}", y_min);
     let x_label_top = view_h - pad_bottom + CHART_X_LABEL_BOTTOM;
-    let legend_source = group.labels.as_deref().unwrap_or(fallback_labels);
-    let legend_rows: Vec<(usize, &str)> = group
-        .channels
+    let legend_labels = if let Some(series) = multi_series.as_ref() {
+        series
+            .iter()
+            .map(|spec| {
+                spec.label
+                    .clone()
+                    .unwrap_or_else(|| format!("{}[{}]", spec.data_type, spec.index))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let legend_source = group.labels.as_deref().unwrap_or(fallback_labels);
+        group
+            .channels
+            .iter()
+            .enumerate()
+            .filter_map(|(group_idx, idx)| {
+                legend_source
+                    .get(*idx)
+                    .or_else(|| legend_source.get(group_idx))
+                    .cloned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let legend_rows: Vec<(usize, &str)> = legend_labels
         .iter()
         .enumerate()
-        .filter_map(|(group_idx, idx)| {
-            legend_source
-                .get(*idx)
-                .or_else(|| legend_source.get(group_idx))
-                .map(|label| (group_idx, label.as_str()))
-        })
         .filter(|(_, label)| !label.is_empty())
+        .map(|(idx, label)| (idx, label.as_str()))
         .collect();
-    let per_series_label_width = if per_series_scale {
-        let visible = per_series_scales
+    let scale_entries = if use_per_series_scale {
+        per_series_scales
             .iter()
-            .filter(|scale| scale.is_some())
-            .count()
-            .max(1);
-        (visible as f64 * 31.0) + (visible.saturating_sub(1) as f64 * 4.0) + 14.0
+            .enumerate()
+            .filter_map(|(i, scale)| {
+                scale.map(|(series_min, series_max)| {
+                    [
+                        (i, format!("{:.2}", series_max)),
+                        (i, format!("{:.2}", (series_min + series_max) * 0.5)),
+                        (i, format!("{:.2}", series_min)),
+                    ]
+                })
+            })
+            .flatten()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let widest_scale_label_chars = scale_entries
+        .iter()
+        .map(|(_, text)| text.len())
+        .max()
+        .unwrap_or(5);
+    let scale_chip_width = (widest_scale_label_chars as f64 * 5.8 + 13.0).clamp(38.0, 74.0);
+    let per_series_label_width = if use_per_series_scale {
+        scale_chip_width + 8.0
     } else {
         0.0
     };
+    let rendered_chart_height = if use_per_series_scale {
+        let rows = scale_entries.len().max(1);
+        (CHART_GRID_TOP
+            + CHART_GRID_BOTTOM_PAD
+            + 28.0
+            + rows.saturating_sub(1) as f64 * DATA_CHART_PER_SERIES_LABEL_ROW_GAP)
+            .max(view_h)
+    } else {
+        view_h
+    };
+    let chart_shell_size_style = if use_per_series_scale {
+        format!("height:{rendered_chart_height}px;")
+    } else {
+        format!("aspect-ratio:{view_w}/{view_h};")
+    };
     let per_series_chip_style = |i: usize| {
         format!(
-            "padding:0 4px; line-height:1.1; font-size:clamp(8px, 1.8vw, 10px); border-radius:999px; border:1px solid {border}; background:{bg}; color:{fg}; \
+            "box-sizing:border-box; min-width:{scale_chip_width}px; max-width:{scale_chip_width}px; padding:0 4px; line-height:1.1; font-size:clamp(8px, 1.8vw, 10px); text-align:center; font-variant-numeric:tabular-nums; border-radius:999px; border:1px solid {border}; background:{bg}; color:{fg}; \
              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04); text-shadow:0 1px 1px rgba(2,6,23,0.85);",
             border = series_color(i),
             bg = theme.panel_background,
             fg = series_color(i),
+            scale_chip_width = scale_chip_width,
         )
+    };
+    let label_y_pct = |idx: usize| {
+        if scale_entries.len() <= 1 {
+            y_pct(CHART_GRID_TOP + 8.0, rendered_chart_height)
+        } else {
+            let min_y = CHART_GRID_TOP + 8.0;
+            let max_y = (rendered_chart_height - CHART_GRID_BOTTOM_PAD - 8.0).max(min_y);
+            let gap = ((max_y - min_y) / (scale_entries.len() as f64 - 1.0))
+                .max(DATA_CHART_PER_SERIES_LABEL_ROW_GAP);
+            y_pct((min_y + idx as f64 * gap).min(max_y), rendered_chart_height)
+        }
     };
     rsx! {
         div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
@@ -892,52 +1066,37 @@ fn render_chart_group(
             if let Some((kind, note)) = reseed_note.as_ref() {
                 {reseed_note_banner(kind, note, theme, false)}
             }
-            div { style: "display:flex; gap:6px; align-items:stretch;",
-                if per_series_scale {
-                    div { style: "flex:0 0 {per_series_label_width}px; width:{per_series_label_width}px; min-width:{per_series_label_width}px; display:flex; flex-direction:column; justify-content:space-between; align-items:flex-end; padding-top:8px; padding-bottom:48px; overflow:visible; container-type:inline-size;",
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:clamp(2px, 0.35vw, 4px); white-space:nowrap; width:100%; text-align:right;",
-                            for (i, _) in group.channels.iter().enumerate() {
-                                if let Some((_, series_max)) = per_series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "{per_series_chip_style(i)}", {format!("{:.2}", series_max)} }
-                                }
-                            }
-                        }
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:clamp(2px, 0.35vw, 4px); white-space:nowrap; width:100%; text-align:right;",
-                            for (i, _) in group.channels.iter().enumerate() {
-                                if let Some((series_min, series_max)) = per_series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "{per_series_chip_style(i)}", {format!("{:.2}", (series_min + series_max) * 0.5)} }
-                                }
-                            }
-                        }
-                        div { style: "display:flex; justify-content:flex-end; flex-wrap:nowrap; gap:clamp(2px, 0.35vw, 4px); white-space:nowrap; width:100%; text-align:right;",
-                            for (i, _) in group.channels.iter().enumerate() {
-                                if let Some((series_min, _)) = per_series_scales.get(i).and_then(|scale| *scale) {
-                                    div { style: "{per_series_chip_style(i)}", {format!("{:.2}", series_min)} }
-                                }
+            div { style: "display:flex; gap:6px; align-items:stretch; width:100%; {chart_shell_size_style}",
+                if use_per_series_scale {
+                    div { style: "position:relative; flex:0 0 {per_series_label_width}px; width:{per_series_label_width}px; min-width:{per_series_label_width}px; height:100%; overflow:hidden;",
+                        for (entry_idx, (series_idx, text)) in scale_entries.iter().enumerate() {
+                            div {
+                                style: "position:absolute; right:0; top:{label_y_pct(entry_idx)}; transform:translateY(-50%); pointer-events:none;",
+                                div { style: "{per_series_chip_style(*series_idx)}", "{text}" }
                             }
                         }
                     }
                 }
-                div { style: "position:relative; flex:1 1 auto; min-width:0; aspect-ratio:{view_w}/{view_h};",
+                div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%;",
                     ChartCanvas {
                         view_w: view_w,
                         view_h: view_h,
                         chunks: filtered_chunks,
-                        grid_left: Some(left),
-                        grid_right: Some(right),
+                        grid_left: Some(chart_left),
+                        grid_right: Some(chart_right),
                         grid_top: Some(pad_top),
                         grid_bottom: Some(view_h - pad_bottom),
                         style: "position:absolute; inset:0; width:100%; height:100%; display:block;".to_string(),
                     }
                     div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
-                        if !per_series_scale {
+                        if !use_per_series_scale {
                             span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(pad_top + 6.0, view_h)}; max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{y_max_s}" }
                             span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(pad_top + inner_h / 2.0 + 4.0, view_h)}; transform:translateY(-50%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{y_mid_s}" }
                             span { style: "position:absolute; left:{CHART_Y_LABEL_LEFT}px; top:{y_pct(view_h - pad_bottom + 1.0, view_h)}; transform:translateY(-100%); max-width:{CHART_Y_LABEL_MAX_WIDTH}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{y_min_s}" }
                         }
-                        span { style: "position:absolute; left:{x_pct(left + CHART_X_LABEL_LEFT_INSET, view_w)}; top:{y_pct(x_label_top, view_h)};", "{x_left_s}" }
+                        span { style: "position:absolute; left:{x_pct(chart_left + CHART_X_LABEL_LEFT_INSET, view_w)}; top:{y_pct(x_label_top, view_h)};", "{x_left_s}" }
                         span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; top:{y_pct(x_label_top, view_h)}; transform:translateX(-50%);", "{x_mid_s}" }
-                        span { style: "position:absolute; left:{x_pct(right - 52.0, view_w)}; top:{y_pct(x_label_top, view_h)};", "{translate_text(\"now\")}" }
+                        span { style: "position:absolute; left:{x_pct(chart_right - 52.0, view_w)}; top:{y_pct(x_label_top, view_h)};", "{translate_text(\"now\")}" }
                     }
                 }
             }

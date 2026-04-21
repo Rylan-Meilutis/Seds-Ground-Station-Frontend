@@ -103,6 +103,7 @@ const ROCKET_LAYER_ID = "gs26-rocket-layer";
 const USER_HEADING_SOURCE_ID = "gs26-user-heading-source";
 const USER_HEADING_LAYER_ID = "gs26-user-heading-layer";
 const MAP_STATE_STORAGE_KEY = "gs26_ground_map_state_v3";
+const MAP_MAX_ZOOM_STORAGE_KEY = "gs26_ground_map_max_zoom_v1";
 const USER_ICON_IMAGE_ID = "gs26-user-icon";
 const ROCKET_ICON_IMAGE_ID = "gs26-rocket-icon";
 const USER_HEADING_IMAGE_ID = "gs26-user-heading-icon";
@@ -566,6 +567,52 @@ function clampMaxDisplayZoom(value, maxNativeZoom) {
     return Math.max(nativeZoom + DEFAULT_MAX_OVERZOOM_DELTA, Math.floor(value));
 }
 
+function tileZoomCacheKey(tilesUrl) {
+    return String(tilesUrl || "").trim();
+}
+
+function loadPersistedMaxNativeZoom(tilesUrl) {
+    const key = tileZoomCacheKey(tilesUrl);
+    if (!key) return null;
+    try {
+        const storage = window.localStorage || null;
+        const raw = (storage ? storage.getItem(MAP_MAX_ZOOM_STORAGE_KEY) : null)
+            || window.__gs26_ground_map_max_zoom_json;
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        const value = Number(parsed && parsed[key] && parsed[key].maxNativeZoom);
+        if (!Number.isFinite(value)) return null;
+        return clampMaxNativeZoom(value);
+    } catch (e) {
+        return null;
+    }
+}
+
+function persistMaxNativeZoom(tilesUrl, maxNativeZoom) {
+    const key = tileZoomCacheKey(tilesUrl);
+    const value = clampMaxNativeZoom(Number(maxNativeZoom));
+    if (!key || !Number.isFinite(value)) return;
+    try {
+        const storage = window.localStorage || null;
+        const raw = (storage ? storage.getItem(MAP_MAX_ZOOM_STORAGE_KEY) : null)
+            || window.__gs26_ground_map_max_zoom_json;
+        let parsed = {};
+        if (raw) {
+            parsed = JSON.parse(raw) || {};
+        }
+        parsed[key] = {
+            maxNativeZoom: value,
+            updatedAt: Date.now(),
+        };
+        const nextRaw = JSON.stringify(parsed);
+        window.__gs26_ground_map_max_zoom_json = nextRaw;
+        if (storage) {
+            storage.setItem(MAP_MAX_ZOOM_STORAGE_KEY, nextRaw);
+        }
+    } catch (e) {
+    }
+}
+
 function loadPersistedMapState() {
     try {
         const storage = window.localStorage || null;
@@ -670,8 +717,13 @@ function syncWindowMapControlState() {
     }
 }
 
-function effectiveMaxNativeZoomFor(configMaxNativeZoom) {
-    return clampMaxNativeZoom(configMaxNativeZoom);
+function effectiveMaxNativeZoomFor(configMaxNativeZoom, tilesUrl) {
+    const configured = clampMaxNativeZoom(configMaxNativeZoom);
+    const cached = loadPersistedMaxNativeZoom(tilesUrl || currentTilesUrl);
+    if (Number.isFinite(cached)) {
+        return Math.max(configured, cached);
+    }
+    return configured;
 }
 
 function scheduleTileZoomDiscovery() {
@@ -2219,8 +2271,11 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         Number(window.__gs26_max_display_zoom),
         nextConfiguredMaxNativeZoom
     );
-    const nextMaxNativeZoom = effectiveMaxNativeZoomFor(nextConfiguredMaxNativeZoom);
-    const nextMaxZoom = nextConfiguredMaxDisplayZoom;
+    const nextMaxNativeZoom = effectiveMaxNativeZoomFor(nextConfiguredMaxNativeZoom, tilesUrl);
+    const nextMaxZoom = Math.max(
+        nextConfiguredMaxDisplayZoom,
+        nextMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA
+    );
     const needsFullRecreate =
         !!groundMap && (
             previousTilesUrl !== tilesUrl ||
@@ -2233,6 +2288,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     configuredMaxDisplayZoom = nextConfiguredMaxDisplayZoom;
     currentMaxNativeZoom = nextMaxNativeZoom;
     currentMaxZoom = nextMaxZoom;
+    persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
     currentPrefetchKey = null;
     scheduleTileCacheSweep(tilesUrl);
 

@@ -214,26 +214,78 @@ pub fn charts_cache_get_subset(
     })
 }
 
+#[allow(dead_code)]
 pub fn charts_cache_get_subset_per_series(
     data_type: &str,
     channels: &[usize],
     width: f32,
     height: f32,
 ) -> PerSeriesChartCacheResult {
+    charts_cache_get_subset_per_series_with_grid(
+        data_type,
+        channels,
+        width,
+        height,
+        CHART_GRID_LEFT as f32,
+        CHART_GRID_RIGHT_PAD as f32,
+        CHART_GRID_TOP as f32,
+        CHART_GRID_BOTTOM_PAD as f32,
+    )
+}
+
+pub fn charts_cache_get_subset_per_series_with_grid(
+    data_type: &str,
+    channels: &[usize],
+    width: f32,
+    height: f32,
+    grid_left: f32,
+    grid_right_pad: f32,
+    grid_top: f32,
+    grid_bottom_pad: f32,
+) -> PerSeriesChartCacheResult {
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         if let Some(chart) = c.charts.get_mut(data_type) {
-            chart.build_subset_per_series(channels, width, height)
+            chart.build_subset_per_series_with_grid(
+                channels,
+                width,
+                height,
+                grid_left,
+                grid_right_pad,
+                grid_top,
+                grid_bottom_pad,
+            )
         } else {
             (Rc::new(Vec::new()), Rc::new(Vec::new()), 0.0)
         }
     })
 }
 
+#[allow(dead_code)]
 pub fn charts_cache_get_multi_series_per_series(
     series: &[(String, usize)],
     width: f32,
     height: f32,
+) -> PerSeriesChartCacheResult {
+    charts_cache_get_multi_series_per_series_with_grid(
+        series,
+        width,
+        height,
+        CHART_GRID_LEFT as f32,
+        CHART_GRID_RIGHT_PAD as f32,
+        CHART_GRID_TOP as f32,
+        CHART_GRID_BOTTOM_PAD as f32,
+    )
+}
+
+pub fn charts_cache_get_multi_series_per_series_with_grid(
+    series: &[(String, usize)],
+    width: f32,
+    height: f32,
+    grid_left: f32,
+    grid_right_pad: f32,
+    grid_top: f32,
+    grid_bottom_pad: f32,
 ) -> PerSeriesChartCacheResult {
     CHARTS_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
@@ -251,8 +303,15 @@ pub fn charts_cache_get_multi_series_per_series(
                 series_scales.push(None);
                 continue;
             };
-            let (chunks, scales, next_span_min) =
-                chart.build_subset_per_series(&[*channel], width, height);
+            let (chunks, scales, next_span_min) = chart.build_subset_per_series_with_grid(
+                &[*channel],
+                width,
+                height,
+                grid_left,
+                grid_right_pad,
+                grid_top,
+                grid_bottom_pad,
+            );
             span_min = span_min.max(next_span_min);
             series_scales.push(scales.first().copied().flatten());
 
@@ -1105,11 +1164,33 @@ impl CachedChart {
         result
     }
 
+    #[allow(dead_code)]
     fn build_subset_per_series(
         &mut self,
         channels: &[usize],
         w: f32,
         h: f32,
+    ) -> PerSeriesChartCacheResult {
+        self.build_subset_per_series_with_grid(
+            channels,
+            w,
+            h,
+            CHART_GRID_LEFT as f32,
+            CHART_GRID_RIGHT_PAD as f32,
+            CHART_GRID_TOP as f32,
+            CHART_GRID_BOTTOM_PAD as f32,
+        )
+    }
+
+    fn build_subset_per_series_with_grid(
+        &mut self,
+        channels: &[usize],
+        w: f32,
+        h: f32,
+        grid_left: f32,
+        grid_right_pad: f32,
+        grid_top: f32,
+        grid_bottom_pad: f32,
     ) -> PerSeriesChartCacheResult {
         self.build_if_needed(w, h);
 
@@ -1122,7 +1203,15 @@ impl CachedChart {
             return (Rc::new(Vec::new()), Rc::new(Vec::new()), 0.0);
         }
 
-        let cache_key = SubsetCacheKey::new(&valid_channels, w, h);
+        let cache_key = SubsetCacheKey::new_with_grid(
+            &valid_channels,
+            w,
+            h,
+            grid_left,
+            grid_right_pad,
+            grid_top,
+            grid_bottom_pad,
+        );
         if let Some(cached) = self.subset_per_series_cache.get(&cache_key) {
             return (
                 cached.chunks.clone(),
@@ -1144,10 +1233,10 @@ impl CachedChart {
             .saturating_mul(BUCKET_MS)
             .div_euclid(lod_bucket_ms);
 
-        let left = CHART_GRID_LEFT as f32;
-        let right = (w - CHART_GRID_RIGHT_PAD as f32).max(left + 1.0);
-        let top = CHART_GRID_TOP as f32;
-        let bottom = (h - CHART_GRID_BOTTOM_PAD as f32).max(top + 1.0);
+        let left = grid_left.max(0.0);
+        let right = (w - grid_right_pad.max(0.0)).max(left + 1.0);
+        let top = grid_top.max(0.0);
+        let bottom = (h - grid_bottom_pad.max(0.0)).max(top + 1.0);
         let pw = right - left;
         let ph = bottom - top;
 
@@ -1310,14 +1399,42 @@ struct SubsetCacheKey {
     channels: Vec<usize>,
     width_px: u32,
     height_px: u32,
+    grid_left_px: u32,
+    grid_right_pad_px: u32,
+    grid_top_px: u32,
+    grid_bottom_pad_px: u32,
 }
 
 impl SubsetCacheKey {
     fn new(channels: &[usize], width: f32, height: f32) -> Self {
+        Self::new_with_grid(
+            channels,
+            width,
+            height,
+            CHART_GRID_LEFT as f32,
+            CHART_GRID_RIGHT_PAD as f32,
+            CHART_GRID_TOP as f32,
+            CHART_GRID_BOTTOM_PAD as f32,
+        )
+    }
+
+    fn new_with_grid(
+        channels: &[usize],
+        width: f32,
+        height: f32,
+        grid_left: f32,
+        grid_right_pad: f32,
+        grid_top: f32,
+        grid_bottom_pad: f32,
+    ) -> Self {
         Self {
             channels: channels.to_vec(),
             width_px: width.max(0.0).round() as u32,
             height_px: height.max(0.0).round() as u32,
+            grid_left_px: grid_left.max(0.0).round() as u32,
+            grid_right_pad_px: grid_right_pad.max(0.0).round() as u32,
+            grid_top_px: grid_top.max(0.0).round() as u32,
+            grid_bottom_pad_px: grid_bottom_pad.max(0.0).round() as u32,
         }
     }
 }

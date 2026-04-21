@@ -354,6 +354,7 @@ pub struct DataChartGroup {
     pub sender_id: Option<String>,
     pub labels: Option<Vec<String>>,
     pub channels: Vec<usize>,
+    pub chart_series: Option<Vec<ChartSeriesSpec>>,
     pub scale_mode: Option<DataChartScaleMode>,
 }
 

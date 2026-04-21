@@ -126,21 +126,25 @@ pub(super) fn note_ws_connection_state(
 
 pub(super) fn note_ws_connection_notification(
     notifications: &mut Signal<Vec<PersistentNotification>>,
-    notification_history: &mut Signal<Vec<PersistentNotification>>,
+    _notification_history: &mut Signal<Vec<PersistentNotification>>,
     unread_notification_ids: &mut Signal<Vec<u64>>,
     ws_url: &str,
     reason: &str,
 ) {
+    if notifications
+        .read()
+        .iter()
+        .any(|n| n.message.starts_with("WebSocket disconnected.\nURL:"))
+    {
+        return;
+    }
+
     let now_ms = current_wallclock_ms();
-    let fingerprint = format!("{}|{}", redact_ws_url_for_display(ws_url), reason.trim());
     if let Ok(mut slot) = LAST_WS_CONNECT_WARNING.lock() {
-        if slot
-            .as_ref()
-            .is_some_and(|last_fingerprint| last_fingerprint == &fingerprint)
-        {
+        if slot.is_some() {
             return;
         }
-        *slot = Some(fingerprint);
+        *slot = Some(redact_ws_url_for_display(ws_url));
     }
 
     let item = PersistentNotification {
@@ -155,10 +159,6 @@ pub(super) fn note_ws_connection_notification(
         action_label: None,
         action_cmd: None,
     };
-
-    let mut history = notification_history.read().clone();
-    merge_notification_history(&mut history, std::slice::from_ref(&item));
-    notification_history.set(history);
 
     let mut active = notifications.read().clone();
     active.retain(|n| !n.message.starts_with("WebSocket disconnected.\nURL:"));
@@ -179,6 +179,7 @@ pub(super) fn note_ws_connection_notification(
 
 pub(super) fn clear_ws_connection_notification(
     notifications: &mut Signal<Vec<PersistentNotification>>,
+    notification_history: &mut Signal<Vec<PersistentNotification>>,
     unread_notification_ids: &mut Signal<Vec<u64>>,
 ) {
     if let Ok(mut slot) = LAST_WS_CONNECT_WARNING.lock() {
@@ -192,6 +193,9 @@ pub(super) fn clear_ws_connection_notification(
         .map(|n| n.id)
         .collect();
     if removed_ids.is_empty() {
+        let mut history = notification_history.read().clone();
+        history.retain(|n| !n.message.starts_with("WebSocket disconnected.\nURL:"));
+        notification_history.set(history);
         return;
     }
 
@@ -202,6 +206,10 @@ pub(super) fn clear_ws_connection_notification(
     let mut unread = unread_notification_ids.read().clone();
     unread.retain(|id| !removed_ids.contains(id));
     unread_notification_ids.set(unread);
+
+    let mut history = notification_history.read().clone();
+    history.retain(|n| !n.message.starts_with("WebSocket disconnected.\nURL:"));
+    notification_history.set(history);
 }
 
 /// Tracks incoming WebSocket message volume and updates rate calculations.

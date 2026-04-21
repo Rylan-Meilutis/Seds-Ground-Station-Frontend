@@ -7,10 +7,31 @@ use dioxus::prelude::*;
 pub fn NotificationsTab(
     history: Signal<Vec<PersistentNotification>>,
     theme: ThemeConfig,
+    on_clear: EventHandler<()>,
 ) -> Element {
+    let has_history = !history.read().is_empty();
+    let clear_button_style = format!(
+        "padding:0.25rem 0.65rem; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.75rem; cursor:{}; opacity:{};",
+        theme.button_border,
+        theme.button_background,
+        theme.button_text,
+        if has_history { "pointer" } else { "default" },
+        if has_history { "1" } else { "0.45" },
+    );
+
     rsx! {
         div { style: "padding:4px 0 2px 0; color:{theme.text_primary}; height:100%; box-sizing:border-box;",
-            h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Notifications History\")}" }
+            div { style: "display:flex; align-items:center; gap:10px; margin:0 0 8px 0;",
+                h2 { style: "margin:0; color:{theme.text_primary}; flex:1;", "{translate_text(\"Notifications History\")}" }
+                button {
+                    disabled: !has_history,
+                    style: "{clear_button_style}",
+                    onclick: move |_| {
+                        on_clear.call(());
+                    },
+                    "{translate_text(\"Clear\")}"
+                }
+            }
 
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 for n in history.read().iter() {

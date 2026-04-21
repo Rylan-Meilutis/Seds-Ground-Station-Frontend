@@ -144,6 +144,24 @@
             "channels": [0, 1, 2],
             "labels": ["X", "Y", "Z"],
             "scale_mode": "shared"
+          },
+          {
+            "title": "Battery Overview",
+            "channels": [0, 1],
+            "labels": ["Battery", "Percent"],
+            "scale_mode": "per_series",
+            "chart_series": [
+              {
+                "data_type": "BATTERY_VOLTAGE",
+                "index": 0,
+                "label": "Battery"
+              },
+              {
+                "data_type": "BATTERY_PERCENT",
+                "index": 0,
+                "label": "Percent"
+              }
+            ]
           }
         ]
       }
@@ -177,6 +195,29 @@
                       "precision": 2,
                       "suffix": " V"
                     }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "title": "Power Trend",
+            "widgets": [
+              {
+                "kind": "chart",
+                "chart_title": "Battery Trend",
+                "height": 260,
+                "full_width": true,
+                "chart_series": [
+                  {
+                    "data_type": "BATTERY_VOLTAGE",
+                    "index": 0,
+                    "label": "Battery"
+                  },
+                  {
+                    "data_type": "BATTERY_PERCENT",
+                    "index": 0,
+                    "label": "Percent"
                   }
                 ]
               }

@@ -909,6 +909,21 @@ fn bump_seed_epoch() {
     log!("[seed] bump_seed_epoch -> {}", *epoch);
 }
 
+fn note_ws_connected_and_restore_data_flow(
+    ws_url: String,
+    epoch: u64,
+    notifications: &mut Signal<Vec<PersistentNotification>>,
+    notification_history: &mut Signal<Vec<PersistentNotification>>,
+    unread_notification_ids: &mut Signal<Vec<u64>>,
+) {
+    note_ws_connection_state(true, ws_url, None, epoch);
+    clear_ws_connection_notification(notifications, notification_history, unread_notification_ids);
+    set_reseed_status_running();
+    charts_cache_request_refit();
+    bump_render_epoch();
+    bump_seed_epoch();
+}
+
 pub(crate) fn localized_copy(lang: &str, en: &str, es: &str, fr: &str) -> String {
     match lang {
         "es" => es.to_string(),
@@ -4735,7 +4750,24 @@ fn TelemetryDashboardInner() -> Element {
                             },
                             MainTab::Notifications => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    NotificationsTab { history: notification_history, theme: theme.clone() }
+                                    NotificationsTab {
+                                        history: notification_history,
+                                        theme: theme.clone(),
+                                        on_clear: {
+                                            let notifications = notifications;
+                                            let notification_history = notification_history;
+                                            let dismissed_notifications = dismissed_notifications;
+                                            let unread_notification_ids = unread_notification_ids;
+                                            move |_| {
+                                                clear_all_notifications_local_and_remote(
+                                                    notifications,
+                                                    notification_history,
+                                                    dismissed_notifications,
+                                                    unread_notification_ids,
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             },
                             MainTab::Warnings => rsx! {
@@ -5324,6 +5356,21 @@ fn dismiss_all_active_notifications_local_and_remote(
             let _ = dismiss_notification_remote(id).await;
         });
     }
+}
+
+fn clear_all_notifications_local_and_remote(
+    notifications: Signal<Vec<PersistentNotification>>,
+    notification_history: Signal<Vec<PersistentNotification>>,
+    dismissed_notifications: Signal<Vec<DismissedNotification>>,
+    unread_notification_ids: Signal<Vec<u64>>,
+) {
+    dismiss_all_active_notifications_local_and_remote(
+        notifications,
+        dismissed_notifications,
+        unread_notification_ids,
+    );
+    let mut notification_history = notification_history;
+    notification_history.set(Vec::new());
 }
 
 fn merge_notification_history(
@@ -5922,15 +5969,17 @@ async fn connect_ws_once_wasm(
     {
         let ws_url_for_open = ws_url.clone();
         let mut notifications_for_open = notifications;
+        let mut notification_history_for_open = notification_history;
         let mut unread_notification_ids_for_open = unread_notification_ids;
         let onopen: Closure<dyn FnMut(Event)> = Closure::new(move |_e: Event| {
             log!("[WS] open");
-            note_ws_connection_state(true, ws_url_for_open.clone(), None, epoch);
-            clear_ws_connection_notification(
+            note_ws_connected_and_restore_data_flow(
+                ws_url_for_open.clone(),
+                epoch,
                 &mut notifications_for_open,
+                &mut notification_history_for_open,
                 &mut unread_notification_ids_for_open,
             );
-            bump_seed_epoch();
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
         onopen.forget();
@@ -6137,7 +6186,7 @@ async fn connect_ws_once_native(
     warnings: Signal<Vec<AlertMsg>>,
     errors: Signal<Vec<AlertMsg>>,
     mut notifications: Signal<Vec<PersistentNotification>>,
-    notification_history: Signal<Vec<PersistentNotification>>,
+    mut notification_history: Signal<Vec<PersistentNotification>>,
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     mut unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
@@ -6208,9 +6257,13 @@ async fn connect_ws_once_native(
     };
 
     let (mut write, mut read) = ws_stream.split();
-    note_ws_connection_state(true, ws_url.clone(), None, epoch);
-    clear_ws_connection_notification(&mut notifications, &mut unread_notification_ids);
-    bump_seed_epoch();
+    note_ws_connected_and_restore_data_flow(
+        ws_url.clone(),
+        epoch,
+        &mut notifications,
+        &mut notification_history,
+        &mut unread_notification_ids,
+    );
 
     let writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {

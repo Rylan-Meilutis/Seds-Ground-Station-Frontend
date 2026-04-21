@@ -22,14 +22,15 @@ use super::{
 };
 
 use crate::telemetry_dashboard::data_chart::{
-    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series, charts_cache_get_subset,
+    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
     series_color, ChartCanvas, ChartRenderChunk, SeriesSwatch,
     CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
     CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 
-const COMBINED_CHART_GRID_LEFT: f32 = CHART_GRID_LEFT as f32;
+const COMBINED_CHART_GRID_LEFT: f32 = 18.0;
+const COMBINED_CHART_GRID_RIGHT_PAD: f32 = 12.0;
 const VERTICAL_SCALE_LABEL_ROW_GAP: f64 = 17.0;
 const VERTICAL_SCALE_LABEL_RAIL_GAP: f64 = 4.0;
 const STATE_TAB_RESPONSIVE_CSS: &str = r#"
@@ -156,7 +157,7 @@ pub fn StateTab(
     };
 
     rsx! {
-        div { style: "padding:10px 12px; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:10px; padding-bottom:100px;",
+        div { style: "padding:8px 10px 18px 10px; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px;",
             style { "{STATE_TAB_RESPONSIVE_CSS}" }
             {content}
         }
@@ -502,14 +503,10 @@ fn StateChartPanel(
         } else {
             view_h
         };
-        let adjusted_h = requested_h.max(min_combined_chart_height_for_labels(
-            series,
-            state_chart_labels_vertical,
-        ));
         combined_state_chart_cached(
             series,
             view_w,
-            adjusted_h,
+            requested_h,
             widget.chart_title.as_deref(),
             &data_layout,
             state_chart_labels_vertical,
@@ -564,29 +561,6 @@ fn StateChartPanel(
             }
         }
     }
-}
-
-fn min_combined_chart_height_for_labels(
-    specs: &[ChartSeriesSpec],
-    state_chart_labels_vertical: bool,
-) -> f64 {
-    if !state_chart_labels_vertical {
-        return 0.0;
-    }
-    let unique_types = specs
-        .iter()
-        .map(|spec| spec.data_type.as_str())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
-    if unique_types <= 1 {
-        return 0.0;
-    }
-
-    let label_rows = specs.len().saturating_mul(3).max(1);
-    CHART_GRID_TOP
-        + CHART_GRID_BOTTOM_PAD
-        + 28.0
-        + label_rows.saturating_sub(1) as f64 * VERTICAL_SCALE_LABEL_ROW_GAP
 }
 
 fn section_has_content(
@@ -714,18 +688,12 @@ fn combined_chart_payload(
     view_h: f64,
     _grid_left: f32,
 ) -> Option<CombinedChartPayload> {
-    let normalize_per_series = specs
-        .iter()
-        .map(|spec| spec.data_type.as_str())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
-        > 1;
     let labels = specs
         .iter()
         .map(|spec| default_series_label(data_layout, spec))
         .collect::<Vec<_>>();
 
-    if !normalize_per_series {
+    if specs.len() <= 1 {
         let data_type = specs.first()?.data_type.as_str();
         let channels = specs.iter().map(|spec| spec.index).collect::<Vec<_>>();
         let (chunks, y_min, y_max, span_min) =
@@ -748,8 +716,15 @@ fn combined_chart_payload(
         .iter()
         .map(|spec| (spec.data_type.clone(), spec.index))
         .collect::<Vec<_>>();
-    let (chunks, series_scales, span_min) =
-        charts_cache_get_multi_series_per_series(&cache_series, view_w as f32, view_h as f32);
+    let (chunks, series_scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
+        &cache_series,
+        view_w as f32,
+        view_h as f32,
+        COMBINED_CHART_GRID_LEFT,
+        COMBINED_CHART_GRID_RIGHT_PAD,
+        CHART_GRID_TOP as f32,
+        CHART_GRID_BOTTOM_PAD as f32,
+    );
     if chunks.is_empty() {
         return None;
     }
@@ -792,7 +767,7 @@ fn combined_state_chart_cached(
     };
 
     let left = COMBINED_CHART_GRID_LEFT as f64;
-    let right = view_w - CHART_GRID_RIGHT_PAD;
+    let right = view_w - COMBINED_CHART_GRID_RIGHT_PAD as f64;
     let top = CHART_GRID_TOP;
     let bottom = view_h - CHART_GRID_BOTTOM_PAD;
     let inner_h = bottom - top;
@@ -840,11 +815,7 @@ fn combined_state_chart_cached(
         0.0
     };
     let rendered_chart_height = if normalize_per_series && state_chart_labels_vertical {
-        let rows = scale_label_placements.len().max(1);
-        CHART_GRID_TOP
-            + CHART_GRID_BOTTOM_PAD
-            + 28.0
-            + rows.saturating_sub(1) as f64 * VERTICAL_SCALE_LABEL_ROW_GAP
+        view_h
     } else {
         0.0
     };
@@ -1057,7 +1028,7 @@ fn stacked_scale_label_placements(
     let columns = entries.len().div_ceil(rows_per_column).max(1);
     let rows_in_column = entries.len().div_ceil(columns).max(1);
     let effective_gap = if rows_in_column > 1 {
-        row_gap.min((max_y - min_y) / (rows_in_column as f64 - 1.0))
+        row_gap.max((max_y - min_y) / (rows_in_column as f64 - 1.0))
     } else {
         row_gap
     };
@@ -1539,9 +1510,31 @@ fn SummaryCard(
 fn summary_item_value(
     dt: Option<&str>,
     item: &SummaryItem,
-    _fill_targets: Option<&FillTargetsConfig>,
+    fill_targets: Option<&FillTargetsConfig>,
 ) -> Option<f32> {
-    dt.and_then(|dt| latest_telemetry_value(dt, None, item.index))
+    let dt = dt?;
+    latest_telemetry_value(dt, None, item.index)
+        .or_else(|| fallback_summary_item_value(dt, item, fill_targets))
+}
+
+fn fallback_summary_item_value(
+    dt: &str,
+    item: &SummaryItem,
+    fill_targets: Option<&FillTargetsConfig>,
+) -> Option<f32> {
+    match (dt, item.index) {
+        ("LOADCELL_WEIGHT_KG", 0) => latest_telemetry_value("KG1000", None, 0),
+        ("LOADCELL_FILL_PERCENT", 0) => {
+            let mass_kg = latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0)
+                .or_else(|| latest_telemetry_value("KG1000", None, 0))?;
+            let full_mass_kg = fill_targets
+                .map(|targets| targets.nitrous.target_mass_kg)
+                .filter(|target| target.is_finite() && *target > 0.0)
+                .unwrap_or(10.0);
+            Some(((mass_kg / full_mass_kg) * 100.0).clamp(0.0, 100.0))
+        }
+        _ => None,
+    }
 }
 
 fn summary_item_fill_target_source<'a>(

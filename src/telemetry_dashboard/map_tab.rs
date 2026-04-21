@@ -383,9 +383,8 @@ pub fn MapTab(
                     let orientation_mode = js_read_map_orientation_mode().await;
                     let follow_user_enabled = *follow_user.read();
                     let latch_until_ms = *follow_user_latch_until_ms.read();
-                    let latch_active = follow_user_enabled
-                        && !enabled
-                        && map_control_now_ms() < latch_until_ms;
+                    let latch_active =
+                        follow_user_enabled && !enabled && map_control_now_ms() < latch_until_ms;
                     if !latch_active && follow_user_enabled != enabled {
                         follow_user.set(enabled);
                     }

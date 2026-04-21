@@ -283,6 +283,7 @@ Notes:
 - `max_display_zoom` defaults to one level above `max_native_zoom` in the frontend if omitted.
 - blank or non-finite numeric values are sanitized by the frontend, but the backend should still send valid values.
 - the tile source itself is requested from `/tiles/{z}/{x}/{y}.jpg` on the configured host.
+- the frontend persists the last effective `max_native_zoom` per tile URL template and reuses it if the backend is unavailable later. This allows cached high-zoom map tiles and previously zoomed-in map views to restore without requiring `/api/map_config` to be reachable.
 
 ### `GET /tiles/{z}/{x}/{y}.jpg`
 
@@ -391,6 +392,7 @@ Notes:
 
 - `persistent` defaults to `true` in the frontend
 - `action_label` and `action_cmd` are optional
+- frontend-generated WebSocket disconnect notifications are local-only, appear at most once during an outage, are not retained in notification history, and are removed automatically when the WebSocket reconnects
 
 ### `POST /api/notifications/{id}/dismiss`
 
@@ -702,9 +704,14 @@ Generic layout behavior:
 - `data_tab.tabs[].chart.enabled` controls whether a telemetry type should render a graph. GPS or boolean telemetry should disable charts in layout instead of relying on frontend data-type names.
 - `data_tab.tabs[].boolean_labels` and `channel_boolean_labels` control boolean value rendering. The frontend does not infer boolean rendering from a hardcoded telemetry id.
 - `data_tab.sender_split_data_types` lists telemetry `data_type` values that should maintain separate chart caches per `sender_id`. Leave it empty for single shared charts.
+- `data_tab.tabs[].chart_groups[]` can plot a subset of channels from the current tab with `channels`, `labels`, and `scale_mode`.
+- `data_tab.tabs[].chart_groups[].chart_series` can plot lines from multiple telemetry data types in one graph. Each item uses `{ "data_type": "...", "index": N, "label": "..." }`. Multi-line `chart_series` are rendered as explicit per-series lines so lower-range series remain visible.
+- `data_tab.tabs[].subtabs[]` can override `data_type`, `sender_id`, `channels`, `chart_groups`, and `summary_items`. If `chart_series` is omitted, the frontend can infer chart series from matching `summary_items` labels.
 - `state_tab` `valve_state` widgets must provide `data_type` and `valves`; the frontend no longer assumes a fixed valve telemetry id or fixed valve labels.
 - `state_tab.states[].sections[].value_layout` can be `auto`, `horizontal`, or `vertical`. Use `horizontal` for telemetry value cards that should flow across the row.
 - `state_tab` widgets can set `"full_width": true` to span the full section grid. This is intended for charts under horizontally arranged summary fields.
+- `state_tab` chart widgets can use either `data_type` for a normal single telemetry chart or `chart_series` for explicit multi-line charts. Multi-line `chart_series` use compact per-series scaling so every configured line remains visible.
+- after any WebSocket reconnect, the frontend reseeds telemetry/history from `/api/recent` and preserves live rows received during the reseed.
 - state summary fill targets require explicit `fill_target_fluid` and `fill_target_kind` on each item that should show a target. The frontend does not infer targets from display labels.
 - calibration sensors, labels, colors, telemetry data types, channel ids, and regression choices come from `/api/calibration_config`.
 
