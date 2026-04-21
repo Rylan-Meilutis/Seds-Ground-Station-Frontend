@@ -139,6 +139,15 @@ function isAndroidPlatform() {
     return /Android/i.test(userAgent);
 }
 
+function isIosPlatform() {
+    if (typeof navigator === "undefined") return false;
+    const userAgent = navigator.userAgent || "";
+    const platform = navigator.platform || "";
+    return /iPad|iPhone|iPod/i.test(userAgent)
+        || /iPad|iPhone|iPod/i.test(platform)
+        || (platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
 function normalizeAngle(deg) {
     let value = Number(deg) || 0;
     value %= 360;
@@ -245,7 +254,7 @@ function tileProtocolTemplate() {
 
 function shouldUseNativeTileTemplate(tilesUrl) {
     const url = String(tilesUrl || "");
-    return /^gs26:\/\//i.test(url);
+    return /^gs26:\/\//i.test(url) && !isIosPlatform();
 }
 
 function tilesUseNativeProxy() {
@@ -1556,7 +1565,6 @@ function handleOrientation(event) {
 
 function initCompassOnce() {
     if (compassInitialized) return;
-    compassInitialized = true;
     if (window.__gs26_disable_compass === true) return;
     if (!window.DeviceOrientationEvent) return;
 
@@ -1570,11 +1578,14 @@ function initCompassOnce() {
         }
 
         if (saved === "granted") {
+            compassInitialized = true;
             window.addEventListener("deviceorientation", handleOrientation);
             return;
         }
         if (saved === "denied") return;
+        if (window.__gs26_compass_permission_request_allowed !== true) return;
 
+        compassInitialized = true;
         Dev.requestPermission()
             .then((value) => {
                 try {
@@ -1592,6 +1603,7 @@ function initCompassOnce() {
                 }
             });
     } else {
+        compassInitialized = true;
         window.addEventListener("deviceorientation", handleOrientation);
     }
 }

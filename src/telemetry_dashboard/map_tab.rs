@@ -428,6 +428,7 @@ pub fn MapTab(
                 r#"
                 (function() {
                   try {
+                    window.__gs26_compass_permission_request_allowed = true;
                     window.__gs26_disable_compass = false;
                     if (typeof window.initCompassOnce === "function") {
                       window.initCompassOnce();
