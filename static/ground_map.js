@@ -332,9 +332,10 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url) {
 
     const response = await fetch(url);
     if (!response.ok) throw new Error(`tile fetch failed: ${response.status}`);
+    const cacheResponse = response.clone();
     Promise.resolve().then(async () => {
         try {
-            await cache.put(url, response.clone());
+            await cache.put(url, cacheResponse);
         } catch (e) {
             console.warn("[GS26 map] cache put failed", url, e);
         }
