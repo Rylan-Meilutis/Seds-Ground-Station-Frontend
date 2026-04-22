@@ -156,20 +156,24 @@ const TRANSPARENT_TILE_BYTES = Uint8Array.from([
 ]);
 const MAP_FIRST_PAINT_GATE_TIMEOUT_MS = 180;
 const MAP_FIRST_PAINT_FADE_MS = 45;
+const STARTUP_CACHE_WARM_MAX_TILES = 16;
+const STARTUP_CACHE_WARM_CONCURRENCY = 4;
+const STARTUP_ZOOM_DISCOVERY_DELAY_MS = 1200;
+const STARTUP_TILE_CACHE_LOOKUP_BUDGET_MS = 45;
 const tileCacheHandles = new Map();
 const tileMemoryCache = new Map();
-const USER_MARKER_SMOOTH_MIN_MS = 120;
-const USER_MARKER_SMOOTH_MAX_MS = 650;
+const USER_MARKER_SMOOTH_MIN_MS = 180;
+const USER_MARKER_SMOOTH_MAX_MS = 900;
 const USER_MARKER_SMOOTH_SKIP_M = 0.04;
-const USER_MARKER_PREDICTION_MAX_MS = 650;
-const USER_MARKER_PREDICTION_RATIO = 0.42;
-const USER_MARKER_PREDICTION_STALE_RATIO = 1.05;
-const USER_MARKER_RATE_MIN_CATCHUP_MS = 150;
-const USER_MARKER_RATE_MAX_CATCHUP_MS = 620;
-const USER_MARKER_VISUAL_MIN_SPEED_MPS = 0.5;
+const USER_MARKER_PREDICTION_MAX_MS = 900;
+const USER_MARKER_PREDICTION_RATIO = 0.55;
+const USER_MARKER_PREDICTION_STALE_RATIO = 1.4;
+const USER_MARKER_RATE_MIN_CATCHUP_MS = 220;
+const USER_MARKER_RATE_MAX_CATCHUP_MS = 900;
+const USER_MARKER_VISUAL_MIN_SPEED_MPS = 0.2;
 const USER_MARKER_VISUAL_MAX_SPEED_MPS = 90;
 const USER_MARKER_VISUAL_SPEED_GAIN = 1.12;
-const USER_MARKER_VISUAL_CATCHUP_MS = 320;
+const USER_MARKER_VISUAL_CATCHUP_MS = 520;
 const USER_GPS_SNAP_DISTANCE_M = 120;
 const USER_GPS_SNAP_SPEED_MPS = 45;
 const USER_ORIENTATION_DEADZONE_DEG = 2.2;
@@ -188,9 +192,9 @@ const USER_ORIENTATION_SMALL_ERROR_GAIN = 0.025;
 const USER_HEADING_VISUAL_SYNC_MIN_MS = 33;
 const GPS_STABLE_FIX_REQUIRED = 1;
 const GPS_STABLE_DISTANCE_M = 50;
-const FOLLOW_CAMERA_SETTLE_EPSILON_PX = 0.05;
-const FOLLOW_CAMERA_MAX_STEP_PX = 160.0;
-const FOLLOW_CAMERA_CATCHUP_MS = 90;
+const FOLLOW_CAMERA_SETTLE_EPSILON_PX = 0.2;
+const FOLLOW_CAMERA_MAX_STEP_PX = 90.0;
+const FOLLOW_CAMERA_CATCHUP_MS = 180;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
 const MAP_BACKGROUND_LAYER_ID = "gs26-map-background-layer";
@@ -762,21 +766,27 @@ function warmInitialMapTilesFromCache(tilesUrl, center, zoom, container = null) 
     if (!coords.length) {
         coords = tileCoordsAroundTileRadius(lat, lon, nativeZoom, 1);
     }
-    coords = coords.slice(0, DOM_MAP_MAX_RENDER_TILES);
+    coords = coords.slice(0, STARTUP_CACHE_WARM_MAX_TILES);
     if (!coords.length) return Promise.resolve(false);
     const cacheName = tileCacheName(tilesUrl);
     return Promise.resolve().then(async () => {
         let foundCachedTile = false;
-        for (const coord of coords) {
-            if (currentTilesUrl !== tilesUrl) return;
-            const url = resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y);
-            if (!url) continue;
-            const cached = await readCachedTileArrayBuffer(cacheName, url);
-            if (cached) {
-                foundCachedTile = true;
-                maybeFinishMapFirstPaintFromTile(coord);
+        let nextIndex = 0;
+        const workerCount = Math.max(1, Math.min(STARTUP_CACHE_WARM_CONCURRENCY, coords.length));
+        const workers = Array.from({length: workerCount}, async () => {
+            while (nextIndex < coords.length) {
+                const coord = coords[nextIndex++];
+                if (currentTilesUrl !== tilesUrl) return;
+                const url = resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y);
+                if (!url) continue;
+                const cached = await readCachedTileArrayBuffer(cacheName, url);
+                if (cached) {
+                    foundCachedTile = true;
+                    maybeFinishMapFirstPaintFromTile(coord);
+                }
             }
-        }
+        });
+        await Promise.all(workers);
         if (foundCachedTile) {
             logMapInitTiming("first-tile", {source: "startup-cache-warm"});
             if (isDomMapActive()) {
@@ -839,7 +849,10 @@ function ensureMapProtocolOnce() {
                 handleMissingTileCoord(coords);
                 return {data: await transparentTileArrayBuffer()};
             }
-            const cached = await readCachedTileArrayBuffer(cacheName, url);
+            const cacheLookupOptions = mapFirstPaintGateActive
+                ? {timeoutMs: STARTUP_TILE_CACHE_LOOKUP_BUDGET_MS}
+                : undefined;
+            const cached = await readCachedTileArrayBuffer(cacheName, url, cacheLookupOptions);
             if (cached) {
                 logMapInitTiming("first-tile", {source: "cache", url});
                 maybeFinishMapFirstPaintFromTile(coords);
@@ -889,11 +902,24 @@ function logMapInitTiming(label, extra = {}) {
     }
 }
 
-async function readCachedTileArrayBuffer(cacheName, url) {
+async function readCachedTileArrayBuffer(cacheName, url, options = {}) {
     if (!tileCacheEnabled() || !tileCacheSupported() || !url) return null;
     const hot = readTileMemoryCache(cacheName, url);
     if (hot) return hot;
-    const persistent = await readPersistentTileArrayBuffer(cacheName, url);
+    const originalPersistentPromise = readPersistentTileArrayBuffer(cacheName, url);
+    let persistentPromise = originalPersistentPromise;
+    const timeoutMs = Number(options.timeoutMs);
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        originalPersistentPromise.then((delayedPersistent) => {
+            if (delayedPersistent) writeTileMemoryCache(cacheName, url, delayedPersistent);
+        }).catch(() => {
+        });
+        persistentPromise = Promise.race([
+            originalPersistentPromise,
+            new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+        ]);
+    }
+    const persistent = await persistentPromise;
     if (!persistent) return null;
     writeTileMemoryCache(cacheName, url, persistent);
     return cloneTileArrayBuffer(persistent);
@@ -933,6 +959,38 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     if (options.skipCacheLookup !== true) {
         const hot = await readCachedTileArrayBuffer(cacheName, url);
         if (hot) return hot;
+    }
+
+    if (options.skipCacheLookup === true) {
+        const response = await fetch(url);
+        if (!response.ok) {
+            if (response.status === 404 || response.status === 410) {
+                rememberMissingTile(cacheName, url, response.status);
+            }
+            throw new Error(`tile fetch failed: ${response.status}`);
+        }
+        const data = await response.arrayBuffer();
+        writeTileMemoryCache(cacheName, url, data);
+        forgetMissingTile(cacheName, url);
+        if (data.byteLength <= TILE_CACHE_MAX_TILE_BYTES) {
+            const headers = new Headers(response.headers);
+            const cacheResponse = new Response(cloneTileArrayBuffer(data), {
+                status: response.status,
+                statusText: response.statusText,
+                headers,
+            });
+            Promise.resolve().then(async () => {
+                try {
+                    const cache = await openTileCache(cacheName);
+                    if (cache) {
+                        await cache.put(tileCacheRequestKey(url), cacheResponse);
+                    }
+                } catch (e) {
+                    if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
+                }
+            });
+        }
+        return cloneTileArrayBuffer(data);
     }
 
     const cache = await openTileCache(cacheName);
@@ -1632,6 +1690,15 @@ function applyDiscoveredCachedMaxNativeZoom(tilesUrl) {
         }
     }).catch(() => {
     });
+}
+
+function scheduleCachedZoomDiscoveryAfterStartup(tilesUrl) {
+    if (!tileCacheEnabled() || !tilesUrl) return;
+    window.setTimeout(safeMapCallback("startup cached zoom discovery", () => {
+        if (currentTilesUrl === tilesUrl) {
+            applyDiscoveredCachedMaxNativeZoom(tilesUrl);
+        }
+    }), STARTUP_ZOOM_DISCOVERY_DELAY_MS);
 }
 
 function refreshRasterTileSourceForZoom() {
@@ -2888,8 +2955,6 @@ function setUserMarkerVisualLatLng(latLng, options = {}) {
     if (followUserEnabled && groundMap && options.skipFollow !== true) {
         if (isFollowZoomHolding()) {
             recenterFollowUserDuringZoom();
-        } else if (options.holdCenter === true && Date.now() >= suppressFollowCameraUntilMs) {
-            snapFollowCameraTo(followTarget);
         } else {
             scheduleFollowCameraUpdate(followTarget);
         }
@@ -3041,7 +3106,7 @@ function animateUserMarkerTo(targetLatLng) {
             USER_MARKER_SMOOTH_MIN_MS,
             anim.smoothedIntervalMs * USER_MARKER_PREDICTION_STALE_RATIO
         );
-        const predictiveLeadMs = fixAgeMs <= staleAtMs && (Number(anim.fixSpeedMps) || 0.0) >= 0.4
+        const predictiveLeadMs = fixAgeMs <= staleAtMs && (Number(anim.fixSpeedMps) || 0.0) >= 0.05
             ? Math.max(
                 0.0,
                 Math.min(
@@ -4993,7 +5058,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
                 window.__gs26_ground_map = null;
             }
             resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
-            applyDiscoveredCachedMaxNativeZoom(currentTilesUrl);
+            scheduleCachedZoomDiscoveryAfterStartup(currentTilesUrl);
             renderAfterStartupCacheWarm(
                 warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
             );
@@ -5049,7 +5114,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         window.__gs26_ground_map = null;
     }
     resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
-    applyDiscoveredCachedMaxNativeZoom(currentTilesUrl);
+    scheduleCachedZoomDiscoveryAfterStartup(currentTilesUrl);
     startMapFirstPaintGate(clampedZoom);
     renderAfterStartupCacheWarm(
         warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
