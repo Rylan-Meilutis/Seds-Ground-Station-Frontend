@@ -14,14 +14,14 @@ fn target_frame_duration() -> std::time::Duration {
     let fps: u64 = std::env::var("GS_UI_FPS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(240);
-    let fps = fps.clamp(1, 480);
+        .unwrap_or(15);
+    let fps = fps.clamp(1, 60);
     std::time::Duration::from_micros(1_000_000 / fps)
 }
 
 #[cfg(target_arch = "wasm32")]
 fn target_frame_duration() -> std::time::Duration {
-    std::time::Duration::from_millis(16)
+    std::time::Duration::from_millis(67)
 }
 
 #[cfg(target_arch = "wasm32")]

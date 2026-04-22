@@ -3067,13 +3067,13 @@ fn TelemetryDashboardInner() -> Element {
                 let tick_ms: u32 = std::env::var("GS_UI_TICK_MS")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(50)
-                    .clamp(1, 250);
+                    .unwrap_or(100)
+                    .clamp(16, 500);
                 let chart_tick_ms: u32 = std::env::var("GS_CHART_TICK_MS")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(33)
-                    .clamp(1, 1_000);
+                    .unwrap_or(250)
+                    .clamp(50, 2_000);
                 let chart_every = chart_tick_ms.div_ceil(tick_ms).max(1);
                 let mut chart_tick_counter: u32 = 0;
 
@@ -4844,11 +4844,11 @@ fn TelemetryDashboardInner() -> Element {
                     // Main body
                     if !notifications.read().is_empty() {
                         div {
-                            style: "display:flex; flex-direction:column; gap:8px; margin-bottom:10px;",
+                            style: "display:flex; flex:0 1 auto; flex-direction:column; gap:8px; margin-bottom:10px; max-height:min(30vh, 180px); overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; min-height:0; padding-right:2px;",
                             for n in notifications.read().iter() {
                                 div {
-                                    style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text};",
-                                    span { style: "flex:1;", {translate_text(&n.message)} }
+                                    style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0;",
+                                    span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
                                     if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
                                         && auth::can_send_command(action_cmd)
                                     {

@@ -69,6 +69,12 @@ fn haversine_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     EARTH_RADIUS_M * c
 }
 
+#[cfg(any(target_os = "ios", target_os = "android"))]
+fn heading_delta_degrees(a: f64, b: f64) -> f64 {
+    let diff = (b - a).rem_euclid(360.0);
+    diff.min(360.0 - diff)
+}
+
 fn format_human_distance(meters: f64, metric: bool) -> String {
     if metric {
         if meters < 1_000.0 {
@@ -243,7 +249,7 @@ pub fn MapTab(
                     }
                 }
 
-                gloo_timers::future::TimeoutFuture::new(20).await;
+                gloo_timers::future::TimeoutFuture::new(200).await;
             }
         });
     }
@@ -253,23 +259,47 @@ pub fn MapTab(
         #[cfg(target_os = "ios")]
         let mut native_user_gps = user_gps;
         use_future(move || async move {
+            #[cfg(target_os = "ios")]
+            let mut last_location = None::<(f64, f64)>;
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            let mut last_heading = None::<f64>;
             loop {
                 #[cfg(target_os = "ios")]
                 if let Some((lat, lon)) = gps_apple::latest_location() {
-                    native_user_gps.set(Some((lat, lon)));
+                    let changed = last_location
+                        .map(|(prev_lat, prev_lon)| {
+                            haversine_meters(prev_lat, prev_lon, lat, lon) >= 0.5
+                        })
+                        .unwrap_or(true);
+                    if changed {
+                        last_location = Some((lat, lon));
+                        native_user_gps.set(Some((lat, lon)));
+                    }
                 }
 
                 #[cfg(target_os = "ios")]
                 if let Some(deg) = gps_apple::latest_heading_deg() {
-                    js_set_user_heading(deg);
+                    let changed = last_heading
+                        .map(|prev| heading_delta_degrees(prev, deg) >= 1.0)
+                        .unwrap_or(true);
+                    if changed {
+                        last_heading = Some(deg);
+                        js_set_user_heading(deg);
+                    }
                 }
 
                 #[cfg(target_os = "android")]
                 if let Some(deg) = gps_android::latest_heading_deg() {
-                    js_set_user_heading(deg);
+                    let changed = last_heading
+                        .map(|prev| heading_delta_degrees(prev, deg) >= 1.0)
+                        .unwrap_or(true);
+                    if changed {
+                        last_heading = Some(deg);
+                        js_set_user_heading(deg);
+                    }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
         });
     }
@@ -458,10 +488,9 @@ pub fn MapTab(
         } else {
             div {
                 id: "map-card",
-                style: "display:flex; flex-direction:column; gap:12px; width:100%; height:var(--gs26-map-max, 60vh); \
-                        max-height:var(--gs26-map-max, 60vh); \
+                style: "display:flex; flex:1 1 auto; flex-direction:column; gap:12px; width:100%; height:100%; max-height:100%; min-height:0; \
                         border-radius:12px; background:{theme.tab_shell_background}; border:1px solid {theme.border_strong}; \
-                        box-shadow:0 10px 25px rgba(0,0,0,0.45);",
+                        box-shadow:0 10px 25px rgba(0,0,0,0.45); box-sizing:border-box; overflow:hidden;",
                 div {
                     style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:10px 12px 0 12px; box-sizing:border-box;",
                     h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
@@ -487,7 +516,7 @@ pub fn MapTab(
                     }
                 }
 
-                div { style: "flex:1; min-height:0; width:100%;",
+                div { style: "flex:1 1 auto; min-height:0; width:100%; overflow:hidden;",
                     {map_canvas(&theme)}
                 }
             }
@@ -499,7 +528,7 @@ fn map_canvas(theme: &ThemeConfig) -> Element {
     rsx! {
         div {
             id: "ground-map",
-            style: "width:100%; height:100%; border-radius:12px; overflow:hidden; background:{theme.panel_background}; border:1px solid {theme.border_strong}; overscroll-behavior:contain;",
+            style: "width:100%; height:100%; box-sizing:border-box; border-radius:12px; overflow:hidden; background:{theme.panel_background}; border:1px solid {theme.border_strong}; overscroll-behavior:contain;",
         }
     }
 }
@@ -974,6 +1003,10 @@ fn js_setup_map_size_guard() {
               const h = getH();
               const max = Math.max(220, h - rect.top - 24);
               card.style.setProperty('--gs26-map-max', max + 'px');
+              const m = window.__gs26_ground_map;
+              if (m && typeof m.invalidateSize === "function") {
+                requestAnimationFrame(() => { try { m.invalidateSize(); } catch(e) {} });
+              }
             } catch (e) {}
           }
 
@@ -986,6 +1019,21 @@ fn js_setup_map_size_guard() {
             if (window.visualViewport) {
               window.visualViewport.addEventListener('resize', updateSize);
               window.visualViewport.addEventListener('scroll', updateSize);
+            }
+          } catch (e) {}
+          try {
+            if (typeof ResizeObserver === 'function') {
+              const observer = new ResizeObserver(updateSize);
+              const observeTargets = () => {
+                const card = document.getElementById("map-card");
+                const map = document.getElementById("ground-map");
+                if (card) observer.observe(card);
+                if (map) observer.observe(map);
+              };
+              observeTargets();
+              window.__gs26_map_resize_observer = observer;
+              setTimeout(observeTargets, 250);
+              setTimeout(observeTargets, 1000);
             }
           } catch (e) {}
         })();

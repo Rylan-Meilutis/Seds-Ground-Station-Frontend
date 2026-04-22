@@ -96,10 +96,6 @@ const MAX_BUCKETS_PER_TYPE: usize = (HISTORY_MS as usize / BUCKET_MS as usize) +
 // Only recent buckets are mutable. Older buckets are frozen.
 // Allow a few buckets for packet jitter/reordering on slower devices.
 const LIVE_BUCKETS_BACK: i64 = 3;
-// Always bridge gaps for continuous display, but cap inserted points per gap for performance.
-const MAX_INTERP_POINTS_PER_GAP: i64 = 64;
-// Only bridge short gaps (packet jitter). Large gaps should remain visually broken.
-const MAX_INTERP_GAP_BUCKETS: i64 = 6;
 const CURVE_MIN_DELTA_PX: f32 = 0.35;
 const RENDER_CHUNK_MS: i64 = 30_000;
 const SMOOTHING_MAX_POINTS_PER_SEGMENT: usize = 240;
@@ -1053,7 +1049,6 @@ impl CachedChart {
         let render_chunk_buckets = (RENDER_CHUNK_MS / lod_bucket_ms).max(1);
         let first_chunk_id = start_view_id.div_euclid(render_chunk_buckets);
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
-        let max_interp_gap_buckets = ((MAX_INTERP_GAP_BUCKETS * BUCKET_MS) / lod_bucket_ms).max(1);
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);
@@ -1099,7 +1094,6 @@ impl CachedChart {
                             b.id,
                             last_point_drawn[ch],
                             (x, y),
-                            max_interp_gap_buckets,
                             smooth_chunk,
                         );
                     }
@@ -1208,7 +1202,6 @@ impl CachedChart {
         let render_chunk_buckets = (RENDER_CHUNK_MS / lod_bucket_ms).max(1);
         let first_chunk_id = start_view_id.div_euclid(render_chunk_buckets);
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
-        let max_interp_gap_buckets = ((MAX_INTERP_GAP_BUCKETS * BUCKET_MS) / lod_bucket_ms).max(1);
         let mut chunks = Vec::new();
 
         for chunk_id in first_chunk_id..=last_chunk_id {
@@ -1250,7 +1243,6 @@ impl CachedChart {
                             b.id,
                             last_point_drawn[group_idx],
                             (x, y),
-                            max_interp_gap_buckets,
                             smooth_chunk,
                         );
                     }
@@ -1414,7 +1406,6 @@ impl CachedChart {
         let render_chunk_buckets = (RENDER_CHUNK_MS / lod_bucket_ms).max(1);
         let first_chunk_id = start_view_id.div_euclid(render_chunk_buckets);
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
-        let max_interp_gap_buckets = ((MAX_INTERP_GAP_BUCKETS * BUCKET_MS) / lod_bucket_ms).max(1);
         let mut chunks = Vec::new();
 
         for chunk_id in first_chunk_id..=last_chunk_id {
@@ -1458,7 +1449,6 @@ impl CachedChart {
                             b.id,
                             last_point_drawn[group_idx],
                             (x, y),
-                            max_interp_gap_buckets,
                             smooth_chunk,
                         );
                     }
@@ -1741,7 +1731,6 @@ fn bridge_or_mark_gap(
     current_bid: i64,
     prev_point: Option<(f32, f32)>,
     current_point: (f32, f32),
-    max_interp_gap_buckets: i64,
     smooth_chunk: bool,
 ) {
     let gap_buckets = current_bid - prev_bid;
@@ -1752,23 +1741,12 @@ fn bridge_or_mark_gap(
         return;
     };
     let (x, y) = current_point;
-    if gap_buckets <= max_interp_gap_buckets {
-        let missing = gap_buckets - 1;
-        let interp_pts = missing.clamp(1, MAX_INTERP_POINTS_PER_GAP);
-        for j in 1..=interp_pts {
-            let t = j as f32 / (interp_pts + 1) as f32;
-            let xi = prev_x + (x - prev_x) * t;
-            let yi = prev_y + (y - prev_y) * t;
-            push_segment_point(&mut segment_points[idx], xi, yi);
-        }
-    } else {
-        flush_smoothed_segment(&mut paths[idx], &segment_points[idx], smooth_chunk);
-        segment_points[idx].clear();
-        gap_paths[idx].push_str(&format!(
-            "M {:.2} {:.2} L {:.2} {:.2} ",
-            prev_x, prev_y, x, y
-        ));
-    }
+    flush_smoothed_segment(&mut paths[idx], &segment_points[idx], smooth_chunk);
+    segment_points[idx].clear();
+    gap_paths[idx].push_str(&format!(
+        "M {:.2} {:.2} L {:.2} {:.2} ",
+        prev_x, prev_y, x, y
+    ));
 }
 
 #[derive(Clone, PartialEq, Serialize)]
@@ -1818,7 +1796,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                       const cssW = Math.max(1, Math.round(rect.width || data.view_w || 1));
                       const cssH = Math.max(1, Math.round(rect.height || data.view_h || 1));
                       const mobilePlatform = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || navigator.platform || "");
-                      const maxDpr = mobilePlatform ? 3 : 5;
+                      const maxDpr = mobilePlatform ? 2 : 5;
                       const dpr = Math.max(1, Math.min(maxDpr, (window.devicePixelRatio || 1)));
                       const qualityBoost = 1.0;
                       const maxCanvasEdge = 16384;
