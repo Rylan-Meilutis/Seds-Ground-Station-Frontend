@@ -3056,9 +3056,11 @@ fn TelemetryDashboardInner() -> Element {
     // ------------------------------------------------------------------------
     {
         let alive = alive.clone();
+        let active_main_tab = active_main_tab;
 
         use_effect(move || {
             let alive = alive.clone();
+            let active_main_tab = active_main_tab;
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
@@ -3106,7 +3108,11 @@ fn TelemetryDashboardInner() -> Element {
                     bump_telemetry_render_epoch();
                     chart_tick_counter = chart_tick_counter.saturating_add(1);
                     if chart_tick_counter >= chart_every {
-                        bump_chart_render_epoch();
+                        let chart_tab_visible =
+                            matches!(*active_main_tab.read(), MainTab::Data | MainTab::State);
+                        if chart_tab_visible {
+                            bump_chart_render_epoch();
+                        }
                         chart_tick_counter = 0;
                     }
                 }

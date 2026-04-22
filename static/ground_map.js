@@ -2962,9 +2962,6 @@ function installMapHooks() {
         mapReady = true;
         restorePendingZoomIfPossible();
         updateZoomControlAppearance();
-        setTimeout(() => {
-            refreshRasterTileSourceForZoom();
-        }, TILE_STARTUP_CACHE_ONLY_MS + 150);
         syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng || lastUserLatLng);
         syncPointSource(ROCKET_SOURCE_ID, lastRocketLatLng);
         syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng || lastUserLatLng);
@@ -3157,6 +3154,15 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         : (Number.isFinite(lastMapZoom)
             ? lastMapZoom
             : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : zoom));
+    if (Number.isFinite(desiredZoom) && desiredZoom > currentMaxNativeZoom) {
+        currentMaxNativeZoom = clampMaxNativeZoom(desiredZoom);
+        currentMaxZoom = Math.max(
+            currentMaxZoom,
+            currentMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA,
+            desiredZoom
+        );
+        persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+    }
     if (Number.isFinite(desiredZoom) && desiredZoom > currentMaxZoom) {
         pendingRestoreZoom = desiredZoom;
         lastMapZoom = desiredZoom;
