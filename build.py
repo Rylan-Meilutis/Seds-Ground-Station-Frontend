@@ -36,6 +36,7 @@ LEGACY_APP_BUNDLE_NAME = f"{LEGACY_APP_NAME}.app"
 
 # fixed development provisioning profile path (repo-local)
 DEVELOPMENT_MOBILEPROVISION_REL = Path("Groundstation_dev.mobileprovision")
+DISTRIBUTION_MOBILEPROVISION_REL = Path("UBSEDS_GroundStation.mobileprovision")
 
 LOG_FILE: Optional[Path] = None
 INTERRUPTED_EXIT_CODE = 130
@@ -4043,6 +4044,25 @@ def ios_development_mobileprovision_path(
     )
 
 
+def ios_distribution_mobileprovision_path(frontend_dir: Path) -> Path:
+    override = os.environ.get("IOS_DISTRIBUTION_MOBILEPROVISION", "").strip()
+    if override:
+        p = Path(override).expanduser()
+        if not p.exists():
+            raise FileNotFoundError(f"IOS_DISTRIBUTION_MOBILEPROVISION does not exist: {p}")
+        return p
+
+    local = frontend_dir / DISTRIBUTION_MOBILEPROVISION_REL
+    if local.exists():
+        return local
+
+    raise FileNotFoundError(
+        "Missing iOS distribution provisioning profile.\n"
+        f"Set IOS_DISTRIBUTION_MOBILEPROVISION=/path/to/profile.mobileprovision or place one at "
+        f"{local}."
+    )
+
+
 def _validate_ios_mobileprovision(
         profile: Path,
         profile_info: dict,
@@ -4066,6 +4086,25 @@ def _validate_ios_mobileprovision(
     if not provisioned_devices:
         raise RuntimeError(
             "Development provisioning profile has no ProvisionedDevices entries: "
+            f"{profile}"
+        )
+
+
+def _validate_ios_distribution_mobileprovision(
+        profile: Path,
+        profile_info: dict,
+        *,
+        bundle_id: str,
+) -> None:
+    if not _profile_matches_bundle(profile_info, bundle_id):
+        raise RuntimeError(
+            f"Distribution provisioning profile does not match bundle id {bundle_id}: {profile}"
+        )
+
+    entitlements = profile_info.get("Entitlements", {})
+    if entitlements.get("get-task-allow") is True:
+        raise RuntimeError(
+            "Refusing to create a distribution IPA with a development provisioning profile: "
             f"{profile}"
         )
 
@@ -4099,6 +4138,11 @@ def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debu
         profile = ios_development_mobileprovision_path(frontend_dir, bundle_id=bundle_id)
         profile_info = _decode_mobileprovision(profile, frontend_dir)
         _validate_ios_mobileprovision(profile, profile_info, bundle_id=bundle_id)
+        profile_arg = str(profile.resolve())
+    else:
+        profile = ios_distribution_mobileprovision_path(frontend_dir)
+        profile_info = _decode_mobileprovision(profile, frontend_dir)
+        _validate_ios_distribution_mobileprovision(profile, profile_info, bundle_id=bundle_id)
         profile_arg = str(profile.resolve())
 
     signer = frontend_dir / "scripts" / "ios_package_sign.sh"
@@ -5184,6 +5228,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("  CERT_REGEX=...                    # override cert regex for signer script")
     print("  CERT_PICK=newest|first            # override cert selection for signer script")
     print("  IOS_DEVELOPMENT_MOBILEPROVISION=...   # physical-device deploy provisioning profile")
+    print("  IOS_DISTRIBUTION_MOBILEPROVISION=...  # distribution IPA provisioning profile")
     print("  MACOS_ENTITLEMENTS=...            # optional entitlements file for macOS codesign")
     print("  NOTARY_PROFILE=...                # notarytool keychain profile")
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")
