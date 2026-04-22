@@ -733,6 +733,8 @@ fn reset_local_app_data() {
 static WS_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+static TELEMETRY_RENDER_DIRTY: AtomicBool = AtomicBool::new(false);
+static CHART_RENDER_DIRTY: AtomicBool = AtomicBool::new(false);
 static PREFERRED_LANGUAGE: GlobalSignal<String> = Signal::global(|| "en".to_string());
 static TRANSLATION_CATALOG: GlobalSignal<HashMap<String, String>> = Signal::global(HashMap::new);
 pub(crate) static APP_THEME_CONFIG: GlobalSignal<layout::ThemeConfig> = Signal::global(|| {
@@ -762,6 +764,30 @@ static LAUNCH_TMINUS_ZERO_LATCHED: AtomicBool = AtomicBool::new(false);
 fn bump_telemetry_render_epoch() {
     let mut render_epoch = TELEMETRY_RENDER_EPOCH.write();
     *render_epoch = render_epoch.wrapping_add(1);
+}
+
+fn mark_telemetry_render_dirty() {
+    TELEMETRY_RENDER_DIRTY.store(true, Ordering::Release);
+}
+
+fn mark_chart_render_dirty() {
+    CHART_RENDER_DIRTY.store(true, Ordering::Release);
+}
+
+fn default_live_tick_ms() -> u32 {
+    if cfg!(target_os = "ios") {
+        66
+    } else {
+        50
+    }
+}
+
+fn default_chart_tick_ms() -> u32 {
+    if cfg!(target_os = "ios") {
+        125
+    } else {
+        100
+    }
 }
 
 fn bump_chart_render_epoch() {
@@ -3052,7 +3078,45 @@ fn TelemetryDashboardInner() -> Element {
     }
 
     // ------------------------------------------------------------------------
-    // UI flush loop: drain telemetry queue into `rows` at a fixed cadence
+    // Live telemetry render loop: latest values are updated by the websocket
+    // handler immediately, so this only coalesces repaint wakeups.
+    // ------------------------------------------------------------------------
+    {
+        let alive = alive.clone();
+
+        use_effect(move || {
+            let alive = alive.clone();
+            let epoch = *WS_EPOCH.read();
+
+            spawn(async move {
+                let live_tick_ms: u32 = std::env::var("GS_LIVE_TICK_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(default_live_tick_ms)
+                    .clamp(33, 250);
+
+                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_timers::future::TimeoutFuture::new(live_tick_ms).await;
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(live_tick_ms as u64)).await;
+
+                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
+                        break;
+                    }
+
+                    if TELEMETRY_RENDER_DIRTY.swap(false, Ordering::AcqRel) {
+                        bump_telemetry_render_epoch();
+                    }
+                }
+            });
+        });
+    }
+
+    // ------------------------------------------------------------------------
+    // Visible chart render loop: chart cache ingestion is interest-based, so this
+    // can run faster without waking hidden tabs or non-chart screens.
     // ------------------------------------------------------------------------
     {
         let alive = alive.clone();
@@ -3064,20 +3128,56 @@ fn TelemetryDashboardInner() -> Element {
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
-                // Keep telemetry and charts responsive by default; operators can still override
-                // cadence through env vars on slower devices.
+                let chart_tick_ms: u32 = std::env::var("GS_CHART_TICK_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(default_chart_tick_ms)
+                    .clamp(75, 2_000);
+
+                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_timers::future::TimeoutFuture::new(chart_tick_ms).await;
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(chart_tick_ms as u64)).await;
+
+                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
+                        break;
+                    }
+
+                    let chart_tab_visible =
+                        matches!(*active_main_tab.read(), MainTab::Data | MainTab::State);
+                    if !chart_tab_visible {
+                        CHART_RENDER_DIRTY.store(false, Ordering::Release);
+                        continue;
+                    }
+
+                    if CHART_RENDER_DIRTY.swap(false, Ordering::AcqRel) {
+                        bump_chart_render_epoch();
+                    }
+                }
+            });
+        });
+    }
+
+    // ------------------------------------------------------------------------
+    // UI flush loop: drain telemetry queue into `rows` at a fixed cadence
+    // ------------------------------------------------------------------------
+    {
+        let alive = alive.clone();
+
+        use_effect(move || {
+            let alive = alive.clone();
+            let epoch = *WS_EPOCH.read();
+
+            spawn(async move {
+                // Keep compacted telemetry history responsive by default; operators can still
+                // override cadence through env vars on slower devices.
                 let tick_ms: u32 = std::env::var("GS_UI_TICK_MS")
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(100)
                     .clamp(16, 500);
-                let chart_tick_ms: u32 = std::env::var("GS_CHART_TICK_MS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(250)
-                    .clamp(50, 2_000);
-                let chart_every = chart_tick_ms.div_ceil(tick_ms).max(1);
-                let mut chart_tick_counter: u32 = 0;
 
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
                     #[cfg(target_arch = "wasm32")]
@@ -3105,16 +3205,6 @@ fn TelemetryDashboardInner() -> Element {
                         store.apply_rows(drained);
                     }
                     persist_cached_telemetry_snapshot_if_due(false);
-                    bump_telemetry_render_epoch();
-                    chart_tick_counter = chart_tick_counter.saturating_add(1);
-                    if chart_tick_counter >= chart_every {
-                        let chart_tab_visible =
-                            matches!(*active_main_tab.read(), MainTab::Data | MainTab::State);
-                        if chart_tab_visible {
-                            bump_chart_render_epoch();
-                        }
-                        chart_tick_counter = 0;
-                    }
                 }
             });
         });
@@ -6624,6 +6714,8 @@ fn handle_ws_message(
             note_incoming_telemetry_rows(1, 0);
             charts_cache_ingest_row(&row);
             update_latest_telemetry(&row);
+            mark_telemetry_render_dirty();
+            mark_chart_render_dirty();
             if RESEED_IN_PROGRESS.load(Ordering::Relaxed)
                 && let Ok(mut v) = RESEED_LIVE_BUFFER.lock()
             {
@@ -6651,6 +6743,8 @@ fn handle_ws_message(
             }
             note_incoming_telemetry_rows(batch.len(), 1);
             update_latest_telemetry_batch(&batch);
+            mark_telemetry_render_dirty();
+            mark_chart_render_dirty();
             let reseed_active = RESEED_IN_PROGRESS.load(Ordering::Relaxed);
             let mut reseed_live = if reseed_active {
                 RESEED_LIVE_BUFFER.lock().ok()
