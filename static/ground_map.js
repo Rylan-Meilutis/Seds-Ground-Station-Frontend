@@ -12,13 +12,22 @@ let headingAnimationFrame = null;
 let headingAnimationLastFrameAt = 0;
 let followCameraFrame = null;
 let pendingFollowCameraLatLng = null;
+let followCameraLastFrameAt = 0;
+let followCameraVisualPoint = null;
+let followCameraVelocityXPps = 0;
+let followCameraVelocityYPps = 0;
 let currentTilesUrl = null;
 let configuredMaxNativeZoom = null;
 let configuredMaxDisplayZoom = null;
 let currentMaxNativeZoom = null;
 let currentMaxZoom = null;
+let currentMinZoom = null;
+let pendingRuntimeMinZoom = null;
+let runtimeMinZoomTimer = null;
 let lastRocketLatLng = null;
 let lastUserLatLng = null;
+let rocketGpsStability = null;
+let userGpsStability = null;
 let lastMapView = null;
 let lastMapZoom = null;
 let pendingRestoreZoom = null;
@@ -35,14 +44,22 @@ let currentTrackingPrefetchKey = null;
 let tileTrackingPrefetchRunId = 0;
 let tileTrackingPrefetchActive = false;
 let tileMemoryCacheBytes = 0;
+const tileMissingCache = new Map();
+let transparentTileArrayBufferPromise = null;
 let wheelRotateFrame = null;
 let wheelRotateTargetBearing = null;
 let wheelGestureMode = null;
 let wheelGestureLastAtMs = 0;
+let zoomButtonTargetZoom = null;
+let followZoomAnimationFrame = null;
+let followZoomHoldUntilMs = 0;
 let prefetchSuppressedUntilMs = 0;
 let mapInitStartedAtMs = 0;
 let mapInitTimingLogged = false;
 let firstTileTimingLogged = false;
+let mapFirstPaintGateActive = false;
+let mapFirstPaintTimer = null;
+let mapFirstPaintTargetZoom = null;
 let lastPersistedMapStateAtMs = 0;
 let lastMarkerSyncAtMs = 0;
 let markerSyncTimer = null;
@@ -69,11 +86,14 @@ let deviceHeadingDeg = null;
 let lastHeadingVisualSyncAtMs = 0;
 let compassInitialized = false;
 let maplibreProtocolInstalled = false;
+let mapRuntimeGuardsInstalled = false;
 let mapReady = false;
 let trackedAssetLabel = "Tracked Asset";
 let mapNavigationControl = null;
 let mapCenterControl = null;
 let mapNorthControl = null;
+let domMapTileRenderId = 0;
+let domMapBlobUrls = new Map();
 const TILE_PROTOCOL = "gs26map";
 const SOURCE_EMPTY_KEY = "__empty__";
 
@@ -88,23 +108,33 @@ let tilePrefetchState = {
 };
 
 const MIN_ZOOM = 0;
+const DEFAULT_SAFE_MIN_ZOOM = 5;
 const DEFAULT_MAX_NATIVE_ZOOM = 12;
+const MAX_NATIVE_ZOOM_LIMIT = 18;
 const DEFAULT_MAX_OVERZOOM_DELTA = 1;
+const MAX_DISPLAY_ZOOM_LIMIT = MAX_NATIVE_ZOOM_LIMIT + DEFAULT_MAX_OVERZOOM_DELTA;
+const DOM_MAP_MAX_OVERZOOM_DELTA = 6;
 const HIGH_RES_PREFETCH_RADIUS_M = 1609.344;
-const HIGH_RES_PREFETCH_MAX_TILES = 96;
+const HIGH_RES_PREFETCH_MAX_TILES = 900;
 const HIGH_RES_PREFETCH_CONCURRENCY = 1;
-const HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES = 0;
-const HIGH_RES_PREFETCH_LOCATION_BUFFER_TILES = 0;
-const HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA = 2;
+const HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES = 5;
+const HIGH_RES_PREFETCH_LOCATION_BUFFER_TILES = 5;
+const HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA = 3;
 const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 5000;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
-const TRACKING_PREFETCH_TILE_RADIUS = 5;
+const TRACKING_PREFETCH_TILE_RADIUS = 14;
 const TRACKING_PREFETCH_ZOOM_DELTA = 3;
-const TRACKING_PREFETCH_INTERVAL_MS = 5000;
-const TRACKING_PREFETCH_DELAY_MS = 250;
-const TRACKING_PREFETCH_CONCURRENCY = 2;
+const TRACKING_PREFETCH_ZOOM_OUT_VIEWPORT_LEVELS = 3;
+const TRACKING_PREFETCH_ZOOM_IN_VIEWPORT_LEVELS = 3;
+const TRACKING_PREFETCH_VIEWPORT_BUFFER_TILES = 4;
+const TRACKING_PREFETCH_MAX_TILES = 3200;
+const TRACKING_PREFETCH_INTERVAL_MS = 2500;
+const TRACKING_PREFETCH_DELAY_MS = 80;
+const TRACKING_PREFETCH_CONCURRENCY = 3;
+const DOM_MAP_MAX_RENDER_TILES = 72;
+const DOM_MAP_TILE_BUFFER_PX = 320;
 const MARKER_SYNC_MIN_INTERVAL_MS = 100;
-const ZOOM_BUTTON_ANIMATION_MS = 160;
+const ZOOM_BUTTON_ANIMATION_MS = 240;
 const ORIENTATION_MODE_ANIMATION_MS = 520;
 const WHEEL_ROTATE_DEG_PER_PIXEL = 0.18;
 const WHEEL_ROTATE_EASE = 0.24;
@@ -113,16 +143,35 @@ const WHEEL_ROTATE_AXIS_DOMINANCE = 1.0;
 const WHEEL_GESTURE_LOCK_MS = 180;
 const WHEEL_ZOOM_LIMIT_EPSILON = 0.001;
 const CACHE_SWEEP_DELAY_MS = 15000;
-const TILE_MEMORY_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+const TILE_CACHE_ENABLED_BY_DEFAULT = true;
+const TILE_MEMORY_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+const TILE_CACHE_MAX_TILE_BYTES = 2 * 1024 * 1024;
+const TILE_MISSING_CACHE_TTL_MS = 5 * 60 * 1000;
+const TRANSPARENT_TILE_BYTES = Uint8Array.from([
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+    0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 181, 28, 12, 2,
+    0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0,
+    3, 3, 2, 0, 239, 191, 167, 219, 0, 0, 0, 0, 73, 69, 78, 68,
+    174, 66, 96, 130,
+]);
+const MAP_FIRST_PAINT_GATE_TIMEOUT_MS = 180;
+const MAP_FIRST_PAINT_FADE_MS = 45;
 const tileCacheHandles = new Map();
 const tileMemoryCache = new Map();
-const USER_MARKER_SMOOTH_MIN_MS = 180;
-const USER_MARKER_SMOOTH_MAX_MS = 720;
-const USER_MARKER_SMOOTH_SKIP_M = 0.12;
-const USER_MARKER_PREDICTION_MAX_MS = 280;
-const USER_MARKER_PREDICTION_RATIO = 0.35;
-const USER_MARKER_RATE_MIN_CATCHUP_MS = 220;
-const USER_MARKER_RATE_MAX_CATCHUP_MS = 680;
+const USER_MARKER_SMOOTH_MIN_MS = 220;
+const USER_MARKER_SMOOTH_MAX_MS = 900;
+const USER_MARKER_SMOOTH_SKIP_M = 0.04;
+const USER_MARKER_PREDICTION_MAX_MS = 1200;
+const USER_MARKER_PREDICTION_RATIO = 0.75;
+const USER_MARKER_PREDICTION_STALE_RATIO = 1.35;
+const USER_MARKER_RATE_MIN_CATCHUP_MS = 320;
+const USER_MARKER_RATE_MAX_CATCHUP_MS = 950;
+const USER_MARKER_VISUAL_MIN_SPEED_MPS = 8;
+const USER_MARKER_VISUAL_MAX_SPEED_MPS = 60;
+const USER_MARKER_VISUAL_SPEED_GAIN = 1.35;
+const USER_MARKER_VISUAL_CATCHUP_MS = 850;
+const USER_GPS_SNAP_DISTANCE_M = 120;
+const USER_GPS_SNAP_SPEED_MPS = 45;
 const USER_ORIENTATION_DEADZONE_DEG = 2.2;
 const USER_ORIENTATION_INPUT_DEADZONE_DEG = 0.9;
 const USER_ORIENTATION_CAMERA_SETTLE_DEG = 0.035;
@@ -137,9 +186,15 @@ const USER_ORIENTATION_ARROW_CATCHUP_MS = 95;
 const USER_ORIENTATION_ARROW_DEADZONE_DEG = 0.12;
 const USER_ORIENTATION_SMALL_ERROR_GAIN = 0.025;
 const USER_HEADING_VISUAL_SYNC_MIN_MS = 33;
-const FOLLOW_CAMERA_CENTER_EPSILON_M = 0.2;
+const GPS_STABLE_FIX_REQUIRED = 3;
+const GPS_STABLE_DISTANCE_M = 50;
+const FOLLOW_CAMERA_SETTLE_EPSILON_PX = 0.45;
+const FOLLOW_CAMERA_MAX_STEP_PX = 84.0;
+const FOLLOW_CAMERA_CATCHUP_MS = 170;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
+const MAP_BACKGROUND_LAYER_ID = "gs26-map-background-layer";
+const MAP_BACKGROUND_COLOR = "#111827";
 const GUIDE_SOURCE_ID = "gs26-guide-source";
 const GUIDE_LAYER_ID = "gs26-guide-layer";
 const USER_SOURCE_ID = "gs26-user-source";
@@ -192,6 +247,48 @@ function normalizeAngle(deg) {
     return value;
 }
 
+function reportMapRuntimeError(label, error) {
+    try {
+        console.warn("[GS26 map]", label, error);
+    } catch (e) {
+    }
+}
+
+function safeMapCallback(label, fn) {
+    return function safeMapCallbackWrapper(...args) {
+        try {
+            const result = fn.apply(this, args);
+            if (result && typeof result.then === "function") {
+                result.catch((error) => {
+                    reportMapRuntimeError(label, error);
+                });
+            }
+            return result;
+        } catch (error) {
+            reportMapRuntimeError(label, error);
+            return undefined;
+        }
+    };
+}
+
+function installMapRuntimeGuardsOnce() {
+    if (mapRuntimeGuardsInstalled || typeof window === "undefined") return;
+    mapRuntimeGuardsInstalled = true;
+    window.addEventListener("unhandledrejection", (event) => {
+        const reason = event && event.reason;
+        reportMapRuntimeError("unhandled promise rejection", reason);
+    });
+}
+
+function isExpectedTileFallbackError(error) {
+    const message = String(error && (error.message || error) || "");
+    return message.includes("tile fetch failed:")
+        || message.includes("tile known missing")
+        || message.includes("tile cache miss")
+        || message.includes("unsupported tile url")
+        || message.includes("tile url missing");
+}
+
 function markInternalCameraUpdate(durationMs) {
     internalCameraUpdateUntilMs = Date.now() + Math.max(0, Number(durationMs) || 0);
 }
@@ -236,6 +333,24 @@ function tileCacheSupported() {
         && typeof window.fetch === "function";
 }
 
+function tileCacheEnabled() {
+    try {
+        if (typeof window !== "undefined" && window.__gs26_tile_cache_disabled === true) {
+            return false;
+        }
+        if (typeof window !== "undefined" && typeof window.__gs26_tile_cache_enabled === "boolean") {
+            return window.__gs26_tile_cache_enabled;
+        }
+        if (typeof window !== "undefined" && window.localStorage) {
+            const stored = window.localStorage.getItem("gs26_tile_cache_enabled");
+            if (stored === "off") return false;
+            if (stored === "on") return true;
+        }
+    } catch (e) {
+    }
+    return TILE_CACHE_ENABLED_BY_DEFAULT;
+}
+
 function tileFetchAllowedForUrl(url) {
     return /^https?:/i.test(String(url || "")) || /^gs26:\/\//i.test(String(url || ""));
 }
@@ -259,7 +374,48 @@ function tileMemoryKey(cacheName, url) {
     return `${cacheName}\n${tileCacheRequestKey(url)}`;
 }
 
+function transparentTileFallbackArrayBuffer() {
+    return TRANSPARENT_TILE_BYTES.slice().buffer;
+}
+
+async function transparentTileArrayBuffer() {
+    if (!transparentTileArrayBufferPromise) {
+        transparentTileArrayBufferPromise = Promise.resolve(transparentTileFallbackArrayBuffer());
+    }
+    return cloneTileArrayBuffer(await transparentTileArrayBufferPromise);
+}
+
+function tileMissingKey(cacheName, url) {
+    return tileMemoryKey(cacheName, url);
+}
+
+function rememberMissingTile(cacheName, url, status = 0) {
+    if (!cacheName || !url) return;
+    tileMissingCache.set(tileMissingKey(cacheName, url), {
+        expiresAt: Date.now() + TILE_MISSING_CACHE_TTL_MS,
+        status,
+    });
+}
+
+function forgetMissingTile(cacheName, url) {
+    if (!cacheName || !url) return;
+    tileMissingCache.delete(tileMissingKey(cacheName, url));
+}
+
+function isKnownMissingTile(cacheName, url) {
+    if (!cacheName || !url) return false;
+    const key = tileMissingKey(cacheName, url);
+    const entry = tileMissingCache.get(key);
+    if (!entry) return false;
+    if (Date.now() >= entry.expiresAt) {
+        tileMissingCache.delete(key);
+        return false;
+    }
+    return true;
+}
+
 function readTileMemoryCache(cacheName, url) {
+    if (!tileCacheEnabled()) return null;
     const key = tileMemoryKey(cacheName, url);
     const entry = tileMemoryCache.get(key);
     if (!entry || !entry.data) return null;
@@ -268,8 +424,21 @@ function readTileMemoryCache(cacheName, url) {
     return cloneTileArrayBuffer(entry.data);
 }
 
+function hasTileMemoryCache(cacheName, url) {
+    if (!tileCacheEnabled()) return false;
+    const key = tileMemoryKey(cacheName, url);
+    const entry = tileMemoryCache.get(key);
+    if (!entry || !entry.data) return false;
+    tileMemoryCache.delete(key);
+    tileMemoryCache.set(key, entry);
+    return true;
+}
+
 function writeTileMemoryCache(cacheName, url, data) {
+    if (!tileCacheEnabled()) return;
     if (!data || typeof data.byteLength !== "number") return;
+    if (data.byteLength > TILE_CACHE_MAX_TILE_BYTES) return;
+    if (TILE_MEMORY_CACHE_MAX_BYTES <= 0) return;
     const key = tileMemoryKey(cacheName, url);
     const existing = tileMemoryCache.get(key);
     if (existing && Number.isFinite(existing.bytes)) {
@@ -290,7 +459,7 @@ function writeTileMemoryCache(cacheName, url, data) {
 }
 
 async function openTileCache(cacheName) {
-    if (!tileCacheSupported()) return null;
+    if (!tileCacheSupported() || !tileCacheEnabled()) return null;
     if (!tileCacheHandles.has(cacheName)) {
         tileCacheHandles.set(cacheName, caches.open(cacheName).catch((e) => {
             tileCacheHandles.delete(cacheName);
@@ -302,6 +471,7 @@ async function openTileCache(cacheName) {
 
 function requestPersistentTileStorage() {
     try {
+        if (!tileCacheEnabled()) return;
         if (!navigator.storage || typeof navigator.storage.persist !== "function") return;
         if (window.__gs26_tile_storage_persist_requested) return;
         window.__gs26_tile_storage_persist_requested = true;
@@ -365,10 +535,12 @@ function tileCacheName(tilesUrl) {
 
 function resolveTileUrl(z, x, y) {
     if (!currentTilesUrl) return "";
+    const coord = normalizeTileCoord(z, x, y);
+    if (!coord) return "";
     return String(currentTilesUrl)
-        .replace("{z}", String(z))
-        .replace("{x}", String(x))
-        .replace("{y}", String(y));
+        .replace("{z}", String(coord.z))
+        .replace("{x}", String(coord.x))
+        .replace("{y}", String(coord.y));
 }
 
 function effectivePrefetchTilesUrl() {
@@ -382,19 +554,25 @@ function effectivePrefetchMaxNativeZoom(tilesUrl) {
         loadPersistedMaxNativeZoom(tilesUrl),
         DEFAULT_MAX_NATIVE_ZOOM,
     ];
+    let best = null;
     for (const raw of candidates) {
         if (raw == null || raw === "") continue;
         const value = Number(raw);
-        if (Number.isFinite(value)) return clampMaxNativeZoom(value);
+        if (Number.isFinite(value)) {
+            const zoom = clampMaxNativeZoom(value);
+            best = best == null ? zoom : Math.max(best, zoom);
+        }
     }
-    return DEFAULT_MAX_NATIVE_ZOOM;
+    return best == null ? DEFAULT_MAX_NATIVE_ZOOM : best;
 }
 
 function resolvePrefetchTileUrl(tilesUrl, z, x, y) {
+    const coord = normalizeTileCoord(z, x, y);
+    if (!coord) return "";
     return String(tilesUrl || "")
-        .replace("{z}", String(z))
-        .replace("{x}", String(x))
-        .replace("{y}", String(y));
+        .replace("{z}", String(coord.z))
+        .replace("{x}", String(coord.x))
+        .replace("{y}", String(coord.y));
 }
 
 function tileProtocolTemplate() {
@@ -410,7 +588,77 @@ function tilesUseNativeProxy() {
     return shouldUseNativeTileTemplate(currentTilesUrl);
 }
 
+function effectiveMinZoom() {
+    const runtimeMin = Number.isFinite(currentMinZoom)
+        ? Math.max(DEFAULT_SAFE_MIN_ZOOM, currentMinZoom)
+        : DEFAULT_SAFE_MIN_ZOOM;
+    return Math.max(MIN_ZOOM, runtimeMin);
+}
+
+function raiseRuntimeMinZoom(minZoom) {
+    const nextMin = Math.max(DEFAULT_SAFE_MIN_ZOOM, Math.floor(Number(minZoom)));
+    if (!Number.isFinite(nextMin)) return;
+    if (Number.isFinite(currentMinZoom) && currentMinZoom >= nextMin) return;
+    currentMinZoom = nextMin;
+    try {
+        if (groundMap && typeof groundMap.setMinZoom === "function") {
+            groundMap.setMinZoom(effectiveMinZoom());
+        }
+        if (groundMap && typeof groundMap.getZoom === "function" && groundMap.getZoom() < effectiveMinZoom()) {
+            markInternalCameraUpdate(160);
+            groundMap.jumpTo({
+                zoom: effectiveMinZoom(),
+                bearing: mapBearingDeg,
+            });
+            rememberMapView();
+        }
+    } catch (e) {
+    }
+    persistTileZoomRange(
+        effectivePrefetchTilesUrl(),
+        currentMinZoom,
+        Number.isFinite(currentMaxNativeZoom) ? currentMaxNativeZoom : DEFAULT_MAX_NATIVE_ZOOM
+    );
+    updateZoomControlAppearance();
+}
+
+function handleMissingTileCoord(coord) {
+    if (!coord || !Number.isFinite(coord.z)) return;
+    const zoom = groundMap && typeof groundMap.getZoom === "function" ? Number(groundMap.getZoom()) : NaN;
+    if (!Number.isFinite(zoom) || zoom > coord.z + 0.25) return;
+    const nextMin = Math.max(DEFAULT_SAFE_MIN_ZOOM, Math.floor(coord.z + 1));
+    if (Number.isFinite(currentMinZoom) && currentMinZoom >= nextMin) return;
+    pendingRuntimeMinZoom = Number.isFinite(pendingRuntimeMinZoom)
+        ? Math.max(pendingRuntimeMinZoom, nextMin)
+        : nextMin;
+    if (runtimeMinZoomTimer != null) return;
+    runtimeMinZoomTimer = setTimeout(safeMapCallback("runtime min zoom timer", () => {
+        runtimeMinZoomTimer = null;
+        const target = pendingRuntimeMinZoom;
+        pendingRuntimeMinZoom = null;
+        raiseRuntimeMinZoom(target);
+    }), 0);
+}
+
+function normalizeTileCoord(z, x, y) {
+    let zi = Math.floor(Number(z));
+    if (!Number.isFinite(zi)) return null;
+    const minZoom = effectiveMinZoom();
+    if (zi < minZoom) {
+        return null;
+    }
+    const scale = Math.pow(2, zi);
+    if (!Number.isFinite(scale) || scale < 1) return null;
+    let xi = Math.floor(Number(x));
+    let yi = Math.floor(Number(y));
+    if (!Number.isFinite(xi) || !Number.isFinite(yi)) return null;
+    xi = Math.max(0, Math.min(scale - 1, xi));
+    yi = Math.max(0, Math.min(scale - 1, yi));
+    return {z: zi, x: xi, y: yi};
+}
+
 function mapPrefetchEnabled() {
+    if (!tileCacheEnabled()) return false;
     try {
         if (typeof window !== "undefined" && typeof window.__gs26_prefetch_enabled === "boolean") {
             return window.__gs26_prefetch_enabled;
@@ -424,13 +672,91 @@ function mapPrefetchEnabled() {
 }
 
 function parseTileProtocolRequest(url) {
-    const match = String(url || "").match(/^gs26map:\/\/tiles\/(\d+)\/(\d+)\/(\d+)\.jpg(?:\?.*)?$/i);
+    const match = String(url || "").match(/^gs26map:\/\/tiles\/(-?\d+)\/(-?\d+)\/(-?\d+)\.jpg(?:\?.*)?$/i);
     if (!match) return null;
-    return {
-        z: Number(match[1]),
-        x: Number(match[2]),
-        y: Number(match[3]),
-    };
+    return normalizeTileCoord(match[1], match[2], match[3]);
+}
+
+function mapFirstPaintNativeZoomFor(zoom) {
+    const requested = Math.floor(Number(zoom));
+    const nativeMax = Number.isFinite(currentMaxNativeZoom)
+        ? currentMaxNativeZoom
+        : DEFAULT_MAX_NATIVE_ZOOM;
+    if (!Number.isFinite(requested)) return effectiveMinZoom();
+    return Math.max(effectiveMinZoom(), Math.min(nativeMax, requested));
+}
+
+function setMapContainerFirstPaintHidden(hidden) {
+    const container = document.getElementById("ground-map");
+    if (!container) return;
+    try {
+        container.style.backgroundColor = MAP_BACKGROUND_COLOR;
+    } catch (e) {
+    }
+    try {
+        container.style.transition = hidden
+            ? "none"
+            : `opacity ${MAP_FIRST_PAINT_FADE_MS}ms ease-out`;
+        container.style.opacity = "1";
+    } catch (e) {
+    }
+}
+
+function finishMapFirstPaintGate(reason) {
+    if (!mapFirstPaintGateActive) return;
+    mapFirstPaintGateActive = false;
+    if (mapFirstPaintTimer != null) {
+        clearTimeout(mapFirstPaintTimer);
+        mapFirstPaintTimer = null;
+    }
+    mapFirstPaintTargetZoom = null;
+    setMapContainerFirstPaintHidden(false);
+    logMapInitTiming("first-paint", {reason});
+}
+
+function maybeFinishMapFirstPaintFromTile(coords) {
+    if (!mapFirstPaintGateActive || !coords) return;
+    const targetZoom = Number.isFinite(mapFirstPaintTargetZoom)
+        ? mapFirstPaintTargetZoom
+        : MIN_ZOOM;
+    if (Number(coords.z) >= targetZoom) {
+        requestAnimationFrame(safeMapCallback("map first paint frame", () => {
+            requestAnimationFrame(safeMapCallback("map first paint frame", () => finishMapFirstPaintGate("target-tile")));
+        }));
+    }
+}
+
+function startMapFirstPaintGate(zoom) {
+    if (mapFirstPaintTimer != null) {
+        clearTimeout(mapFirstPaintTimer);
+        mapFirstPaintTimer = null;
+    }
+    mapFirstPaintGateActive = true;
+    mapFirstPaintTargetZoom = mapFirstPaintNativeZoomFor(zoom);
+    setMapContainerFirstPaintHidden(true);
+    mapFirstPaintTimer = setTimeout(safeMapCallback("map first paint timeout", () => {
+        finishMapFirstPaintGate("timeout");
+    }), MAP_FIRST_PAINT_GATE_TIMEOUT_MS);
+}
+
+function warmInitialMapTilesFromCache(tilesUrl, center, zoom) {
+    if (!tileCacheSupported() || !tileFetchAllowedForUrl(tilesUrl) || !Array.isArray(center)) return;
+    const lon = Number(center[0]);
+    const lat = Number(center[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const nativeZoom = mapFirstPaintNativeZoomFor(zoom);
+    const coords = tileCoordsAroundTileRadius(lat, lon, nativeZoom, 1).slice(0, 9);
+    if (!coords.length) return;
+    const cacheName = tileCacheName(tilesUrl);
+    Promise.resolve().then(async () => {
+        for (const coord of coords) {
+            if (currentTilesUrl !== tilesUrl) return;
+            const url = resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y);
+            if (!url) continue;
+            await readCachedTileArrayBuffer(cacheName, url);
+        }
+    }).catch(() => {
+    });
 }
 
 function ensureMapProtocolOnce() {
@@ -439,31 +765,51 @@ function ensureMapProtocolOnce() {
     if (typeof maplibre.addProtocol !== "function") return;
 
     maplibre.addProtocol(TILE_PROTOCOL, async (params) => {
-        const coords = parseTileProtocolRequest(params && params.url);
-        if (!coords) {
-            throw new Error(`invalid tile protocol url: ${params && params.url ? params.url : ""}`);
-        }
-        const url = resolveTileUrl(coords.z, coords.x, coords.y);
-        if (!url) {
-            throw new Error("tile url missing");
-        }
-        const cacheName = tileCacheName(currentTilesUrl);
+        let coords = null;
+        let url = "";
+        let cacheName = "";
         try {
+            coords = parseTileProtocolRequest(params && params.url);
+            if (!coords) {
+                return {data: await transparentTileArrayBuffer()};
+            }
+            url = resolveTileUrl(coords.z, coords.x, coords.y);
+            if (!url) {
+                return {data: await transparentTileArrayBuffer()};
+            }
+            cacheName = tileCacheName(currentTilesUrl);
+            if (isKnownMissingTile(cacheName, url)) {
+                handleMissingTileCoord(coords);
+                return {data: await transparentTileArrayBuffer()};
+            }
             const cached = await readCachedTileArrayBuffer(cacheName, url);
             if (cached) {
                 logMapInitTiming("first-tile", {source: "cache", url});
+                maybeFinishMapFirstPaintFromTile(coords);
                 return {data: cached};
             }
             const data = await fetchAndCacheTileArrayBuffer(cacheName, url, {skipCacheLookup: true});
             logMapInitTiming("first-tile", {source: "fetch", url});
+            maybeFinishMapFirstPaintFromTile(coords);
             return {data};
         } catch (primaryError) {
-            const cached = await readCachedTileArrayBuffer(cacheName, url);
-            if (cached) {
-                logMapInitTiming("first-tile", {source: "cache-after-error", url});
-                return {data: cached};
+            try {
+                const cached = await readCachedTileArrayBuffer(cacheName, url);
+                if (cached) {
+                    logMapInitTiming("first-tile", {source: "cache-after-error", url});
+                    maybeFinishMapFirstPaintFromTile(coords);
+                    return {data: cached};
+                }
+                rememberMissingTile(cacheName, url, 0);
+                handleMissingTileCoord(coords);
+                maybeFinishMapFirstPaintFromTile(coords);
+            } catch (fallbackError) {
+                reportMapRuntimeError("tile protocol fallback failed", fallbackError);
             }
-            throw primaryError;
+            if (!isExpectedTileFallbackError(primaryError)) {
+                reportMapRuntimeError("tile protocol returned transparent tile", primaryError);
+            }
+            return {data: await transparentTileArrayBuffer()};
         }
     });
     maplibreProtocolInstalled = true;
@@ -474,7 +820,7 @@ function logMapInitTiming(label, extra = {}) {
         if (firstTileTimingLogged) return;
         firstTileTimingLogged = true;
     }
-    if (mapInitTimingLogged && label !== "first-tile") return;
+    if (mapInitTimingLogged && label !== "first-tile" && label !== "first-paint") return;
     try {
         const elapsed = mapInitStartedAtMs > 0 ? Math.round(Date.now() - mapInitStartedAtMs) : null;
         console.info("[GS26 map timing]", label, {elapsedMs: elapsed, ...extra});
@@ -486,16 +832,22 @@ function logMapInitTiming(label, extra = {}) {
 }
 
 async function readCachedTileArrayBuffer(cacheName, url) {
-    if (!tileCacheSupported() || !url) return null;
+    if (!tileCacheEnabled() || !tileCacheSupported() || !url) return null;
     const hot = readTileMemoryCache(cacheName, url);
     if (hot) return hot;
+    const persistent = await readPersistentTileArrayBuffer(cacheName, url);
+    if (!persistent) return null;
+    writeTileMemoryCache(cacheName, url, persistent);
+    return cloneTileArrayBuffer(persistent);
+}
+
+async function readPersistentTileArrayBuffer(cacheName, url) {
+    if (!tileCacheEnabled() || !tileCacheSupported() || !url) return null;
     try {
         const cache = await openTileCache(cacheName);
         const cached = await cache.match(tileCacheRequestKey(url), {ignoreVary: true});
         if (!cached || !cached.ok) return null;
-        const data = await cached.arrayBuffer();
-        writeTileMemoryCache(cacheName, url, data);
-        return cloneTileArrayBuffer(data);
+        return await cached.arrayBuffer();
     } catch (e) {
         console.warn("[GS26 map] cache read failed", url, e);
         return null;
@@ -505,10 +857,18 @@ async function readCachedTileArrayBuffer(cacheName, url) {
 async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     if (!url) throw new Error("tile url missing");
     if (!tileFetchAllowedForUrl(url)) throw new Error(`unsupported tile url: ${url}`);
+    if (isKnownMissingTile(cacheName, url)) {
+        throw new Error("tile known missing");
+    }
 
-    if (!tileCacheSupported()) {
+    if (!tileCacheEnabled() || !tileCacheSupported()) {
         const response = await fetch(url);
-        if (!response.ok) throw new Error(`tile fetch failed: ${response.status}`);
+        if (!response.ok) {
+            if (response.status === 404 || response.status === 410) {
+                rememberMissingTile(cacheName, url, response.status);
+            }
+            throw new Error(`tile fetch failed: ${response.status}`);
+        }
         return await response.arrayBuffer();
     }
 
@@ -518,11 +878,22 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     }
 
     const cache = await openTileCache(cacheName);
+    if (!cache) {
+        const response = await fetch(url);
+        if (!response.ok) {
+            if (response.status === 404 || response.status === 410) {
+                rememberMissingTile(cacheName, url, response.status);
+            }
+            throw new Error(`tile fetch failed: ${response.status}`);
+        }
+        return await response.arrayBuffer();
+    }
     const cacheKey = tileCacheRequestKey(url);
     const cached = await cache.match(cacheKey, {ignoreVary: true});
     if (cached && cached.ok) {
         const data = await cached.arrayBuffer();
         writeTileMemoryCache(cacheName, url, data);
+        forgetMissingTile(cacheName, url);
         return cloneTileArrayBuffer(data);
     }
 
@@ -531,24 +902,73 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     }
 
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`tile fetch failed: ${response.status}`);
-    const cacheResponse = response.clone();
+    if (!response.ok) {
+        if (response.status === 404 || response.status === 410) {
+            rememberMissingTile(cacheName, url, response.status);
+        }
+        throw new Error(`tile fetch failed: ${response.status}`);
+    }
     const data = await response.arrayBuffer();
     writeTileMemoryCache(cacheName, url, data);
-    Promise.resolve().then(async () => {
-        try {
-            await cache.put(cacheKey, cacheResponse);
-        } catch (e) {
-            console.warn("[GS26 map] cache put failed", url, e);
-        }
-    });
+    forgetMissingTile(cacheName, url);
+    if (data.byteLength <= TILE_CACHE_MAX_TILE_BYTES) {
+        const headers = new Headers(response.headers);
+        const cacheResponse = new Response(cloneTileArrayBuffer(data), {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+        });
+        Promise.resolve().then(async () => {
+            try {
+                await cache.put(cacheKey, cacheResponse);
+            } catch (e) {
+                console.warn("[GS26 map] cache put failed", url, e);
+            }
+        });
+    }
     return cloneTileArrayBuffer(data);
+}
+
+async function prefetchTileToPersistentCache(cacheName, url) {
+    if (!url) throw new Error("tile url missing");
+    if (!tileFetchAllowedForUrl(url)) throw new Error(`unsupported tile url: ${url}`);
+    if (!tileCacheEnabled() || !tileCacheSupported()) return;
+    if (isKnownMissingTile(cacheName, url)) return;
+    if (hasTileMemoryCache(cacheName, url)) return;
+
+    const cache = await openTileCache(cacheName);
+    if (!cache) return;
+    const cacheKey = tileCacheRequestKey(url);
+    const cached = await cache.match(cacheKey, {ignoreVary: true});
+    if (cached && cached.ok) {
+        forgetMissingTile(cacheName, url);
+        return;
+    }
+
+    const response = await fetch(url);
+    if (!response.ok) {
+        if (response.status === 404 || response.status === 410) {
+            rememberMissingTile(cacheName, url, response.status);
+        }
+        throw new Error(`tile fetch failed: ${response.status}`);
+    }
+    const contentLengthRaw = response.headers ? response.headers.get("content-length") : null;
+    const contentLength = contentLengthRaw == null ? NaN : Number(contentLengthRaw);
+    if (Number.isFinite(contentLength) && contentLength > TILE_CACHE_MAX_TILE_BYTES) {
+        return;
+    }
+    try {
+        await cache.put(cacheKey, response);
+        forgetMissingTile(cacheName, url);
+    } catch (e) {
+        console.warn("[GS26 map] cache put failed", url, e);
+    }
 }
 
 function warmTileInBackground(cacheName, url) {
     Promise.resolve().then(async () => {
         try {
-            await fetchAndCacheTileArrayBuffer(cacheName, url);
+            await prefetchTileToPersistentCache(cacheName, url);
         } catch (e) {
         }
     });
@@ -590,6 +1010,94 @@ function distanceMetersBetween(a, b) {
     const h = Math.sin(dLat / 2.0) ** 2
         + Math.cos(p1) * Math.cos(p2) * Math.sin(dLon / 2.0) ** 2;
     return 2.0 * r * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0.0, 1.0 - h)));
+}
+
+function isUsableLatLng(lat, lon) {
+    const latNum = Number(lat);
+    const lonNum = Number(lon);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lonNum)) return false;
+    if (Math.abs(latNum) > 85.05112878 || Math.abs(lonNum) > 180.0) return false;
+    return true;
+}
+
+function stabilizeLatLng(stateName, lat, lon) {
+    const state = stateName === "rocket" ? rocketGpsStability : userGpsStability;
+    const nextState = state || {
+        candidate: null,
+        count: 0,
+        accepted: false,
+        acceptedLatLng: null,
+    };
+    if (!isUsableLatLng(lat, lon)) {
+        nextState.candidate = null;
+        nextState.count = 0;
+        if (stateName === "rocket") rocketGpsStability = nextState;
+        else userGpsStability = nextState;
+        return nextState.accepted ? nextState.acceptedLatLng : null;
+    }
+
+    const next = [Number(lat), Number(lon)];
+    const acceptedDistanceM = Array.isArray(nextState.acceptedLatLng)
+        ? distanceMetersBetween(nextState.acceptedLatLng, next)
+        : Infinity;
+    if (nextState.accepted && Number.isFinite(acceptedDistanceM) && acceptedDistanceM <= GPS_STABLE_DISTANCE_M) {
+        nextState.acceptedLatLng = next;
+        nextState.candidate = next;
+        nextState.count = GPS_STABLE_FIX_REQUIRED;
+        if (stateName === "rocket") rocketGpsStability = nextState;
+        else userGpsStability = nextState;
+        return next;
+    }
+
+    const candidateDistanceM = Array.isArray(nextState.candidate)
+        ? distanceMetersBetween(nextState.candidate, next)
+        : Infinity;
+    if (Number.isFinite(candidateDistanceM) && candidateDistanceM <= GPS_STABLE_DISTANCE_M) {
+        nextState.count += 1;
+        nextState.candidate = next;
+    } else {
+        nextState.candidate = next;
+        nextState.count = 1;
+    }
+
+    if (nextState.count >= GPS_STABLE_FIX_REQUIRED) {
+        nextState.accepted = true;
+        nextState.acceptedLatLng = next;
+        if (stateName === "rocket") rocketGpsStability = nextState;
+        else userGpsStability = nextState;
+        return next;
+    }
+
+    if (stateName === "rocket") rocketGpsStability = nextState;
+    else userGpsStability = nextState;
+    return nextState.accepted ? nextState.acceptedLatLng : null;
+}
+
+function latLngOffsetMeters(fromLatLng, toLatLng) {
+    if (!Array.isArray(fromLatLng) || !Array.isArray(toLatLng)) return null;
+    const fromLat = Number(fromLatLng[0]);
+    const fromLon = Number(fromLatLng[1]);
+    const toLat = Number(toLatLng[0]);
+    const toLon = Number(toLatLng[1]);
+    if (![fromLat, fromLon, toLat, toLon].every(Number.isFinite)) return null;
+    let lonDiff = clampLon(toLon) - clampLon(fromLon);
+    if (lonDiff > 180.0) lonDiff -= 360.0;
+    if (lonDiff < -180.0) lonDiff += 360.0;
+    const midLat = (fromLat + toLat) * 0.5;
+    return {
+        north: (toLat - fromLat) * metersPerDegreeLat(),
+        east: lonDiff * metersPerDegreeLon(midLat),
+    };
+}
+
+function latLngFromOffsetMeters(fromLatLng, northM, eastM) {
+    if (!Array.isArray(fromLatLng)) return null;
+    const lat = Number(fromLatLng[0]);
+    const lon = Number(fromLatLng[1]);
+    if (![lat, lon, northM, eastM].every(Number.isFinite)) return null;
+    const nextLat = clampLat(lat + northM / metersPerDegreeLat());
+    const nextLon = clampLon(lon + eastM / metersPerDegreeLon((lat + nextLat) * 0.5));
+    return [nextLat, nextLon];
 }
 
 function emptyFeatureCollection() {
@@ -641,6 +1149,15 @@ function blendLatLngToward(fromLatLng, toLatLng, alpha) {
         clampLat(fromLatLng[0] + (toLatLng[0] - fromLatLng[0]) * clampedAlpha),
         clampLon(fromLon + lonDiff * clampedAlpha),
     ];
+}
+
+function speedLimitedLatLngToward(fromLatLng, toLatLng, maxDistanceM) {
+    const distanceM = distanceMetersBetween(fromLatLng, toLatLng);
+    if (!Number.isFinite(distanceM)) return Array.isArray(toLatLng) ? [toLatLng[0], toLatLng[1]] : null;
+    if (distanceM <= 0.001) return [toLatLng[0], toLatLng[1]];
+    const allowedM = Math.max(0.0, Number(maxDistanceM) || 0.0);
+    if (allowedM >= distanceM) return [toLatLng[0], toLatLng[1]];
+    return blendLatLngToward(fromLatLng, toLatLng, allowedM / distanceM);
 }
 
 function createMarkerCanvas(size, draw) {
@@ -728,7 +1245,10 @@ function tileCoordsAround(lat, lon, zoom, radiusM) {
 
 function tileCoordsForRange(nw, se, zoom, bufferTiles = 0) {
     const coords = [];
-    const scale = Math.pow(2, zoom);
+    const z = Math.max(effectiveMinZoom(), Math.floor(Number(zoom)));
+    if (!Number.isFinite(z)) return coords;
+    const scale = Math.pow(2, z);
+    if (!Number.isFinite(scale) || scale < 1) return coords;
     const buffer = Math.max(0, Math.floor(Number(bufferTiles) || 0));
     const xMin = Math.max(0, Math.min(nw.x, se.x) - buffer);
     const xMax = Math.min(scale - 1, Math.max(nw.x, se.x) + buffer);
@@ -736,7 +1256,7 @@ function tileCoordsForRange(nw, se, zoom, bufferTiles = 0) {
     const yMax = Math.min(scale - 1, Math.max(nw.y, se.y) + buffer);
     for (let x = xMin; x <= xMax; x++) {
         for (let y = yMin; y <= yMax; y++) {
-            coords.push({x, y, z: zoom});
+            coords.push({x, y, z});
         }
     }
     return coords;
@@ -758,12 +1278,37 @@ function tileCoordsAroundTileRadius(lat, lon, zoom, radiusTiles) {
     return tileCoordsForRange(center, center, zoom, radiusTiles);
 }
 
+function tileCoordsForViewportAround(lat, lon, zoom, bufferTiles = 0) {
+    const z = Math.max(effectiveMinZoom(), Math.floor(Number(zoom)));
+    const centerLat = Number(lat);
+    const centerLon = Number(lon);
+    if (!Number.isFinite(z) || !Number.isFinite(centerLat) || !Number.isFinite(centerLon)) return [];
+    const container = groundMap && typeof groundMap.getContainer === "function"
+        ? groundMap.getContainer()
+        : null;
+    const width = Math.max(320, Number(container && container.clientWidth) || window.innerWidth || 800);
+    const height = Math.max(320, Number(container && container.clientHeight) || window.innerHeight || 600);
+    const centerPoint = latLonToWorldPointAtZoom(centerLat, centerLon, z);
+    const coverPx = Math.ceil(Math.hypot(width, height) / 2)
+        + Math.max(0, Math.floor(Number(bufferTiles) || 0)) * 256;
+    const nw = {
+        x: Math.floor((centerPoint.x - coverPx) / 256),
+        y: Math.floor((centerPoint.y - coverPx) / 256),
+    };
+    const se = {
+        x: Math.ceil((centerPoint.x + coverPx) / 256),
+        y: Math.ceil((centerPoint.y + coverPx) / 256),
+    };
+    return tileCoordsForRange(nw, se, z, 0);
+}
+
 function prefetchZoomLevels(maxNativeZoom, focusZoom) {
     const top = Math.max(MIN_ZOOM, Math.floor(Number(maxNativeZoom) || DEFAULT_MAX_NATIVE_ZOOM));
+    const bottom = effectiveMinZoom();
     const zooms = [];
     const seen = new Set();
     const add = (value) => {
-        const z = Math.max(MIN_ZOOM, Math.min(top, Math.floor(Number(value))));
+        const z = Math.max(bottom, Math.min(top, Math.floor(Number(value))));
         if (!Number.isFinite(z) || seen.has(z)) return;
         seen.add(z);
         zooms.push(z);
@@ -777,7 +1322,7 @@ function prefetchZoomLevels(maxNativeZoom, focusZoom) {
             add(center - delta);
         }
     }
-    for (let z = top; z >= MIN_ZOOM; z--) {
+    for (let z = top; z >= bottom; z--) {
         add(z);
     }
     return zooms;
@@ -785,14 +1330,15 @@ function prefetchZoomLevels(maxNativeZoom, focusZoom) {
 
 function trackingZoomLevels(maxNativeZoom, focusZoom) {
     const top = Math.max(MIN_ZOOM, Math.floor(Number(maxNativeZoom) || DEFAULT_MAX_NATIVE_ZOOM));
+    const bottom = effectiveMinZoom();
     const center = Math.max(
-        MIN_ZOOM,
+        bottom,
         Math.min(top, Math.floor(Number.isFinite(focusZoom) ? focusZoom : top))
     );
     const zooms = [];
     const seen = new Set();
     const add = (value) => {
-        const z = Math.max(MIN_ZOOM, Math.min(top, Math.floor(Number(value))));
+        const z = Math.max(bottom, Math.min(top, Math.floor(Number(value))));
         if (!Number.isFinite(z) || seen.has(z)) return;
         seen.add(z);
         zooms.push(z);
@@ -817,13 +1363,32 @@ function appendUniqueCoords(target, seen, coords, maxTiles) {
 
 function clampMaxNativeZoom(value) {
     if (!Number.isFinite(value)) return DEFAULT_MAX_NATIVE_ZOOM;
-    return Math.max(MIN_ZOOM, Math.floor(value));
+    return Math.max(DEFAULT_SAFE_MIN_ZOOM, Math.min(MAX_NATIVE_ZOOM_LIMIT, Math.floor(value)));
 }
 
 function clampMaxDisplayZoom(value, maxNativeZoom) {
     const nativeZoom = clampMaxNativeZoom(maxNativeZoom);
-    if (!Number.isFinite(value)) return nativeZoom + DEFAULT_MAX_OVERZOOM_DELTA;
-    return Math.max(nativeZoom + DEFAULT_MAX_OVERZOOM_DELTA, Math.floor(value));
+    return Math.min(MAX_DISPLAY_ZOOM_LIMIT, nativeZoom + DEFAULT_MAX_OVERZOOM_DELTA);
+}
+
+function promoteNativeZoomForDisplayZoom(displayZoom, tilesUrl = currentTilesUrl) {
+    const value = Number(displayZoom);
+    if (!Number.isFinite(value)) return false;
+    const targetNativeZoom = clampMaxNativeZoom(Math.floor(value));
+    if (Number.isFinite(currentMaxNativeZoom) && currentMaxNativeZoom >= targetNativeZoom) {
+        return false;
+    }
+    currentMaxNativeZoom = targetNativeZoom;
+    currentMaxZoom = Math.max(
+        Number.isFinite(currentMaxZoom) ? currentMaxZoom : DEFAULT_SAFE_MIN_ZOOM,
+        Math.min(MAX_DISPLAY_ZOOM_LIMIT, currentMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA)
+    );
+    try {
+        window.__gs26_max_native_zoom = currentMaxNativeZoom;
+    } catch (e) {
+    }
+    persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+    return true;
 }
 
 function tileZoomCacheKey(tilesUrl) {
@@ -847,10 +1412,29 @@ function loadPersistedMaxNativeZoom(tilesUrl) {
     }
 }
 
-function persistMaxNativeZoom(tilesUrl, maxNativeZoom) {
+function loadPersistedMinNativeZoom(tilesUrl) {
     const key = tileZoomCacheKey(tilesUrl);
-    const value = clampMaxNativeZoom(Number(maxNativeZoom));
-    if (!key || !Number.isFinite(value)) return;
+    if (!key) return null;
+    try {
+        const storage = window.localStorage || null;
+        const raw = (storage ? storage.getItem(MAP_MAX_ZOOM_STORAGE_KEY) : null)
+            || window.__gs26_ground_map_max_zoom_json;
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        const value = Number(parsed && parsed[key] && parsed[key].minNativeZoom);
+        if (!Number.isFinite(value)) return null;
+        return Math.max(DEFAULT_SAFE_MIN_ZOOM, Math.floor(value));
+    } catch (e) {
+        return null;
+    }
+}
+
+function persistTileZoomRange(tilesUrl, minNativeZoom, maxNativeZoom) {
+    if (!tileCacheEnabled()) return;
+    const key = tileZoomCacheKey(tilesUrl);
+    const maxValue = clampMaxNativeZoom(Number(maxNativeZoom));
+    const minValue = Math.max(DEFAULT_SAFE_MIN_ZOOM, Math.min(maxValue, Math.floor(Number(minNativeZoom))));
+    if (!key || !Number.isFinite(maxValue) || !Number.isFinite(minValue)) return;
     try {
         const storage = window.localStorage || null;
         const raw = (storage ? storage.getItem(MAP_MAX_ZOOM_STORAGE_KEY) : null)
@@ -860,7 +1444,8 @@ function persistMaxNativeZoom(tilesUrl, maxNativeZoom) {
             parsed = JSON.parse(raw) || {};
         }
         parsed[key] = {
-            maxNativeZoom: value,
+            minNativeZoom: minValue,
+            maxNativeZoom: maxValue,
             updatedAt: Date.now(),
         };
         const nextRaw = JSON.stringify(parsed);
@@ -870,6 +1455,15 @@ function persistMaxNativeZoom(tilesUrl, maxNativeZoom) {
         }
     } catch (e) {
     }
+}
+
+function persistMaxNativeZoom(tilesUrl, maxNativeZoom) {
+    const minZoom = loadPersistedMinNativeZoom(tilesUrl);
+    persistTileZoomRange(
+        tilesUrl,
+        Number.isFinite(minZoom) ? minZoom : MIN_ZOOM,
+        maxNativeZoom
+    );
 }
 
 function cachedRequestUrlToOriginal(rawUrl) {
@@ -896,7 +1490,7 @@ function tileUrlZoomRegex(tilesUrl) {
     return new RegExp(`^${escaped}$`);
 }
 
-async function discoverCachedMaxNativeZoom(tilesUrl) {
+async function discoverCachedNativeZoomRange(tilesUrl) {
     if (!tileCacheSupported()) return null;
     const key = tileZoomCacheKey(tilesUrl);
     if (!key) return null;
@@ -905,6 +1499,7 @@ async function discoverCachedMaxNativeZoom(tilesUrl) {
     try {
         const cache = await caches.open(tileCacheName(tilesUrl));
         const requests = await cache.keys();
+        let minZoom = null;
         let maxZoom = null;
         for (const request of requests) {
             const raw = request && request.url ? request.url : "";
@@ -913,20 +1508,37 @@ async function discoverCachedMaxNativeZoom(tilesUrl) {
             if (!match) continue;
             const zoom = Number(match[1]);
             if (Number.isFinite(zoom)) {
+                minZoom = minZoom == null ? zoom : Math.min(minZoom, zoom);
                 maxZoom = maxZoom == null ? zoom : Math.max(maxZoom, zoom);
             }
         }
-        return Number.isFinite(maxZoom) ? clampMaxNativeZoom(maxZoom) : null;
+        return Number.isFinite(maxZoom)
+            ? {
+                minNativeZoom: Math.max(MIN_ZOOM, Math.floor(minZoom)),
+                maxNativeZoom: clampMaxNativeZoom(maxZoom),
+            }
+            : null;
     } catch (e) {
         return null;
     }
 }
 
+async function discoverCachedMaxNativeZoom(tilesUrl) {
+    const range = await discoverCachedNativeZoomRange(tilesUrl);
+    return range ? range.maxNativeZoom : null;
+}
+
 function applyDiscoveredCachedMaxNativeZoom(tilesUrl) {
-    discoverCachedMaxNativeZoom(tilesUrl).then((zoom) => {
-        if (!Number.isFinite(zoom) || effectivePrefetchTilesUrl() !== tilesUrl) return;
+    if (!tileCacheEnabled()) return;
+    discoverCachedNativeZoomRange(tilesUrl).then((range) => {
+        if (!range || effectivePrefetchTilesUrl() !== tilesUrl) return;
+        const zoom = range.maxNativeZoom;
         if (Number.isFinite(currentMaxNativeZoom) && zoom <= currentMaxNativeZoom) {
-            persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+            persistTileZoomRange(
+                tilesUrl,
+                Number.isFinite(currentMinZoom) ? currentMinZoom : MIN_ZOOM,
+                currentMaxNativeZoom
+            );
             restorePendingZoomIfPossible();
             return;
         }
@@ -935,11 +1547,17 @@ function applyDiscoveredCachedMaxNativeZoom(tilesUrl) {
             currentMaxZoom || 0,
             currentMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA
         );
-        persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+        persistTileZoomRange(
+            tilesUrl,
+            Number.isFinite(currentMinZoom) ? currentMinZoom : MIN_ZOOM,
+            currentMaxNativeZoom
+        );
         try {
             if (groundMap) {
                 groundMap.setMaxZoom(currentMaxZoom);
-                refreshRasterTileSourceForZoom();
+                if (isDomMapActive()) {
+                    renderDomMap();
+                }
                 updateZoomControlAppearance();
                 restorePendingZoomIfPossible();
             }
@@ -966,8 +1584,8 @@ function refreshRasterTileSourceForZoom() {
             tiles: [rasterTemplate],
             tileSize: 256,
             bounds: [NA_BOUNDS.lonMin, NA_BOUNDS.latMin, NA_BOUNDS.lonMax, NA_BOUNDS.latMax],
-            minzoom: MIN_ZOOM,
-            maxzoom: clampMaxNativeZoom(currentMaxNativeZoom),
+            minzoom: effectiveMinZoom(),
+            maxzoom: Math.max(effectiveMinZoom(), MAX_NATIVE_ZOOM_LIMIT),
         });
         const beforeLayer = groundMap.getLayer && groundMap.getLayer(GUIDE_LAYER_ID)
             ? GUIDE_LAYER_ID
@@ -1019,7 +1637,7 @@ function restorePendingZoomIfPossible() {
     if (!groundMap || !Number.isFinite(pendingRestoreZoom) || !Number.isFinite(currentMaxZoom)) {
         return false;
     }
-    const targetZoom = Math.max(MIN_ZOOM, Math.min(currentMaxZoom, pendingRestoreZoom));
+    const targetZoom = Math.max(effectiveMinZoom(), Math.min(currentMaxZoom, pendingRestoreZoom));
     if (targetZoom + WHEEL_ZOOM_LIMIT_EPSILON < pendingRestoreZoom) {
         return false;
     }
@@ -1103,7 +1721,7 @@ function rememberMapView() {
 
 function pointDataKey(latLng) {
     if (!Array.isArray(latLng)) return SOURCE_EMPTY_KEY;
-    return `${Number(latLng[0]).toFixed(6)},${Number(latLng[1]).toFixed(6)}`;
+    return `${Number(latLng[0]).toFixed(7)},${Number(latLng[1]).toFixed(7)}`;
 }
 
 function guideLineDataKey(rocketLatLng, userLatLng) {
@@ -1128,6 +1746,7 @@ function syncWindowMapControlState() {
 
 function effectiveMaxNativeZoomFor(configMaxNativeZoom, tilesUrl) {
     const configured = clampMaxNativeZoom(configMaxNativeZoom);
+    if (!tileCacheEnabled()) return configured;
     const cached = loadPersistedMaxNativeZoom(tilesUrl || currentTilesUrl);
     if (Number.isFinite(cached)) {
         return Math.max(configured, cached);
@@ -1147,11 +1766,11 @@ function buildTrackingPrefetchPlan() {
 
     const userLat = Array.isArray(lastUserLatLng) ? Number(lastUserLatLng[0]) : NaN;
     const userLon = Array.isArray(lastUserLatLng) ? Number(lastUserLatLng[1]) : NaN;
-    const rocketLat = Array.isArray(lastRocketLatLng) ? Number(lastRocketLatLng[0]) : NaN;
-    const rocketLon = Array.isArray(lastRocketLatLng) ? Number(lastRocketLatLng[1]) : NaN;
     const hasUser = Number.isFinite(userLat) && Number.isFinite(userLon);
-    const hasRocket = Number.isFinite(rocketLat) && Number.isFinite(rocketLon);
-    if (!hasUser && !hasRocket) {
+    if (!userGpsStability || !userGpsStability.accepted) {
+        return {key: "", coords: []};
+    }
+    if (!hasUser) {
         return {key: "", coords: []};
     }
 
@@ -1160,42 +1779,49 @@ function buildTrackingPrefetchPlan() {
         ? groundMap.getZoom()
         : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : maxNativeZoom);
     const zooms = trackingZoomLevels(maxNativeZoom, focusZoom);
-    const focusZoomInt = Math.max(MIN_ZOOM, Math.min(maxNativeZoom, Math.floor(focusZoom)));
-    const userFocusTile = hasUser ? latLonToTileXY(userLat, userLon, focusZoomInt) : null;
-    const rocketFocusTile = hasRocket ? latLonToTileXY(rocketLat, rocketLon, focusZoomInt) : null;
+    const focusZoomInt = Math.max(effectiveMinZoom(), Math.min(maxNativeZoom, Math.floor(focusZoom)));
+    const userFocusTile = latLonToTileXY(userLat, userLon, focusZoomInt);
+    const container = groundMap && typeof groundMap.getContainer === "function" ? groundMap.getContainer() : null;
     const key = [
-        "tracking",
+        "tracking-user",
         tilesUrl,
         String(maxNativeZoom),
         Number.isFinite(focusZoom) ? Math.floor(focusZoom).toString() : "",
-        userFocusTile ? userFocusTile.x : "",
-        userFocusTile ? userFocusTile.y : "",
-        rocketFocusTile ? rocketFocusTile.x : "",
-        rocketFocusTile ? rocketFocusTile.y : "",
-        Number.isFinite(userLat) ? userLat.toFixed(5) : "",
-        Number.isFinite(userLon) ? userLon.toFixed(5) : "",
-        Number.isFinite(rocketLat) ? rocketLat.toFixed(5) : "",
-        Number.isFinite(rocketLon) ? rocketLon.toFixed(5) : "",
+        userFocusTile.x,
+        userFocusTile.y,
+        userLat.toFixed(5),
+        userLon.toFixed(5),
+        container ? Math.round(container.clientWidth || 0) : "",
+        container ? Math.round(container.clientHeight || 0) : "",
     ].join("|");
 
     const coords = [];
     const seen = new Set();
-    const locations = [];
-    if (hasUser) locations.push([userLat, userLon]);
-    if (hasRocket) locations.push([rocketLat, rocketLon]);
-    const maxTiles = Math.max(
-        1,
-        locations.length * zooms.length * Math.pow(TRACKING_PREFETCH_TILE_RADIUS * 2 + 1, 2)
+    const maxTiles = TRACKING_PREFETCH_MAX_TILES;
+    const viewportBaseZoom = Math.max(
+        effectiveMinZoom(),
+        Math.min(maxNativeZoom, Math.floor(Number.isFinite(focusZoom) ? focusZoom : maxNativeZoom))
     );
+    for (
+        let delta = -TRACKING_PREFETCH_ZOOM_IN_VIEWPORT_LEVELS;
+        delta <= TRACKING_PREFETCH_ZOOM_OUT_VIEWPORT_LEVELS;
+        delta++
+    ) {
+        const zoom = Math.max(effectiveMinZoom(), Math.min(maxNativeZoom, viewportBaseZoom + delta));
+        appendUniqueCoords(
+            coords,
+            seen,
+            tileCoordsForViewportAround(userLat, userLon, zoom, TRACKING_PREFETCH_VIEWPORT_BUFFER_TILES),
+            maxTiles
+        );
+    }
     for (const zoom of zooms) {
-        for (const [lat, lon] of locations) {
-            appendUniqueCoords(
-                coords,
-                seen,
-                tileCoordsAroundTileRadius(lat, lon, zoom, TRACKING_PREFETCH_TILE_RADIUS),
-                maxTiles
-            );
-        }
+        appendUniqueCoords(
+            coords,
+            seen,
+            tileCoordsAroundTileRadius(userLat, userLon, zoom, TRACKING_PREFETCH_TILE_RADIUS),
+            maxTiles
+        );
     }
 
     return {key, coords};
@@ -1218,6 +1844,9 @@ function buildHighResPrefetchPlan() {
     const userLon = Array.isArray(lastUserLatLng) ? lastUserLatLng[1] : NaN;
     const rocketLat = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[0] : NaN;
     const rocketLon = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[1] : NaN;
+    if (!userGpsStability || !userGpsStability.accepted) {
+        return {key: "", coords: []};
+    }
     const bounds = groundMap && groundMap.getBounds ? groundMap.getBounds() : null;
     const viewportKey = bounds
         ? [
@@ -1308,11 +1937,13 @@ async function runHighResTilePrefetch(runId, key) {
             const index = nextIndex++;
             if (index >= total) return;
             const coord = plan.coords[index];
+            const url = resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y);
+            if (!url || isKnownMissingTile(cacheName, url)) {
+                completed += 1;
+                continue;
+            }
             try {
-                await fetchAndCacheTileArrayBuffer(
-                    cacheName,
-                    resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y)
-                );
+                await prefetchTileToPersistentCache(cacheName, url);
             } catch (e) {
                 failed += 1;
             } finally {
@@ -1362,11 +1993,10 @@ async function runTrackingTilePrefetch(runId, plan) {
             const index = nextIndex++;
             if (index >= total) return;
             const coord = plan.coords[index];
+            const url = resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y);
+            if (!url || isKnownMissingTile(cacheName, url)) continue;
             try {
-                await fetchAndCacheTileArrayBuffer(
-                    cacheName,
-                    resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y)
-                );
+                await prefetchTileToPersistentCache(cacheName, url);
             } catch (e) {
             }
         }
@@ -1382,9 +2012,9 @@ async function runTrackingTilePrefetch(runId, plan) {
 
 function ensureTrackingTilePrefetchLoop() {
     if (tileTrackingPrefetchInterval) return;
-    tileTrackingPrefetchInterval = setInterval(() => {
+    tileTrackingPrefetchInterval = setInterval(safeMapCallback("tracking tile prefetch interval", () => {
         scheduleTrackingTilePrefetch({force: true});
-    }, TRACKING_PREFETCH_INTERVAL_MS);
+    }), TRACKING_PREFETCH_INTERVAL_MS);
 }
 
 function scheduleTrackingTilePrefetch(options = {}) {
@@ -1410,16 +2040,16 @@ function scheduleTrackingTilePrefetch(options = {}) {
         cancelIdleDelay(tileTrackingPrefetchTimer);
     }
     const runId = ++tileTrackingPrefetchRunId;
-    tileTrackingPrefetchTimer = idleDelay(async () => {
+    tileTrackingPrefetchTimer = idleDelay(safeMapCallback("tracking tile prefetch timer", async () => {
         tileTrackingPrefetchTimer = null;
         await runTrackingTilePrefetch(runId, plan);
-    }, TRACKING_PREFETCH_DELAY_MS);
+    }), TRACKING_PREFETCH_DELAY_MS);
 }
 
 function scheduleTileCacheSweep(tilesUrl) {
-    if (!tileCacheSupported()) return;
+    if (!tileCacheEnabled() || !tileCacheSupported()) return;
     if (tileCacheSweepTimer) clearTimeout(tileCacheSweepTimer);
-    tileCacheSweepTimer = setTimeout(async () => {
+    tileCacheSweepTimer = setTimeout(safeMapCallback("tile cache sweep timer", async () => {
         try {
             const active = tileCacheName(tilesUrl);
             const keys = await caches.keys();
@@ -1431,7 +2061,7 @@ function scheduleTileCacheSweep(tilesUrl) {
         } catch (e) {
             console.warn("[GS26 map] cache sweep failed", e);
         }
-    }, CACHE_SWEEP_DELAY_MS);
+    }), CACHE_SWEEP_DELAY_MS);
 }
 
 function scheduleHighResTilePrefetch() {
@@ -1465,7 +2095,19 @@ function scheduleHighResTilePrefetch() {
     }
     const plan = buildHighResPrefetchPlan();
     const key = plan.key;
-    if (!key) return;
+    if (!key) {
+        currentPrefetchKey = "";
+        if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
+        tilePrefetchTimer = null;
+        setTilePrefetchState({
+            key: "",
+            state: "idle",
+            pending: 0,
+            completed: 0,
+            failed: 0,
+        });
+        return;
+    }
     if (currentPrefetchKey === key) return;
     currentPrefetchKey = key;
 
@@ -1483,14 +2125,14 @@ function scheduleHighResTilePrefetch() {
     const startupDelayMs = Math.max(HIGH_RES_PREFETCH_IDLE_DELAY_MS, HIGH_RES_PREFETCH_STARTUP_DELAY_MS - sinceInitMs);
     const suppressionDelayMs = Math.max(0, prefetchSuppressedUntilMs - now);
     const delayMs = Math.max(startupDelayMs, suppressionDelayMs);
-    tilePrefetchTimer = idleDelay(async () => {
+    tilePrefetchTimer = idleDelay(safeMapCallback("high-res tile prefetch timer", async () => {
         tilePrefetchTimer = null;
         if (Date.now() < prefetchSuppressedUntilMs) {
             scheduleHighResTilePrefetch();
             return;
         }
         await runHighResTilePrefetch(runId, key);
-    }, delayMs);
+    }), delayMs);
 }
 
 function ensureMarkerStylesOnce() {
@@ -1559,6 +2201,11 @@ function ensureMarkerStylesOnce() {
 
     .gs26-map-north-control {
       position: relative;
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
+      padding: 0 !important;
+      line-height: 0;
     }
 
     .gs26-map-north-control[hidden] {
@@ -1570,6 +2217,8 @@ function ensureMarkerStylesOnce() {
       width: 18px;
       height: 18px;
       display: block;
+      flex: 0 0 auto;
+      margin: 0;
       transform-origin: 50% 50%;
       transition: transform 140ms ease;
     }
@@ -1682,9 +2331,10 @@ function setZoomButtonState(button, enabled, label) {
 function updateZoomControlAppearance() {
     if (!groundMap) return;
     const zoom = Number(groundMap.getZoom && groundMap.getZoom());
+    const minZoom = effectiveMinZoom();
     const maxZoom = Number.isFinite(currentMaxZoom) ? currentMaxZoom : DEFAULT_MAX_NATIVE_ZOOM + DEFAULT_MAX_OVERZOOM_DELTA;
     const canZoomIn = Number.isFinite(zoom) && zoom < maxZoom - WHEEL_ZOOM_LIMIT_EPSILON;
-    const canZoomOut = Number.isFinite(zoom) && zoom > MIN_ZOOM + WHEEL_ZOOM_LIMIT_EPSILON;
+    const canZoomOut = Number.isFinite(zoom) && zoom > minZoom + WHEEL_ZOOM_LIMIT_EPSILON;
     setZoomButtonState(findMapControlButton("maplibregl-ctrl-zoom-in"), canZoomIn, "Zoom In");
     setZoomButtonState(findMapControlButton("maplibregl-ctrl-zoom-out"), canZoomOut, "Zoom Out");
 }
@@ -1696,35 +2346,55 @@ function applyImmediateZoomStep(delta) {
     const maxZoom = Number.isFinite(currentMaxZoom)
         ? currentMaxZoom
         : DEFAULT_MAX_NATIVE_ZOOM + DEFAULT_MAX_OVERZOOM_DELTA;
+    const baseZoom = Number.isFinite(zoomButtonTargetZoom)
+        ? zoomButtonTargetZoom
+        : currentZoom;
     const nextZoomTarget = delta > 0
-        ? Math.floor(currentZoom + WHEEL_ZOOM_LIMIT_EPSILON) + 1
-        : Math.ceil(currentZoom - WHEEL_ZOOM_LIMIT_EPSILON) - 1;
-    const nextZoom = Math.max(MIN_ZOOM, Math.min(maxZoom, nextZoomTarget));
-    if (Math.abs(nextZoom - currentZoom) <= WHEEL_ZOOM_LIMIT_EPSILON) {
+        ? Math.floor(baseZoom + WHEEL_ZOOM_LIMIT_EPSILON) + 1
+        : Math.ceil(baseZoom - WHEEL_ZOOM_LIMIT_EPSILON) - 1;
+    const nextZoom = Math.max(effectiveMinZoom(), Math.min(maxZoom, nextZoomTarget));
+    if (
+        Math.abs(nextZoom - currentZoom) <= WHEEL_ZOOM_LIMIT_EPSILON
+        && Math.abs(nextZoom - baseZoom) <= WHEEL_ZOOM_LIMIT_EPSILON
+    ) {
         updateZoomControlAppearance();
         return;
     }
+    zoomButtonTargetZoom = nextZoom;
     try {
         if (typeof groundMap.stop === "function") {
             groundMap.stop();
         }
     } catch (e) {
     }
-    markInternalCameraUpdate(120);
+    const followCenter = holdFollowUserAtScreenCenterForZoom();
+    if (followCenter) {
+        animateFollowZoomTo(nextZoom, ZOOM_BUTTON_ANIMATION_MS);
+        rememberMapView();
+        persistMapStateSoon();
+        scheduleTrackingTilePrefetch();
+        scheduleHighResTilePrefetch();
+        updateZoomControlAppearance();
+        return;
+    }
+    markInternalCameraUpdate(ZOOM_BUTTON_ANIMATION_MS + 80);
     const zoomOptions = {
         zoom: nextZoom,
         bearing: mapBearingDeg,
         duration: ZOOM_BUTTON_ANIMATION_MS,
-        easing: (t) => 1 - Math.pow(1 - t, 3),
+        easing: (t) => t < 0.5
+            ? 4 * t * t * t
+            : 1 - Math.pow(-2 * t + 2, 3) / 2,
         essential: true,
     };
     if (typeof groundMap.easeTo === "function") {
         groundMap.easeTo(zoomOptions);
     } else {
-        groundMap.jumpTo({
+        const jumpOptions = {
             zoom: nextZoom,
             bearing: mapBearingDeg,
-        });
+        };
+        groundMap.jumpTo(jumpOptions);
     }
     rememberMapView();
     persistMapStateSoon();
@@ -1740,7 +2410,7 @@ function installImmediateZoomButtonHandlers() {
     const install = (button, delta) => {
         if (!button || button.__gs26_immediate_zoom_installed) return;
         button.__gs26_immediate_zoom_installed = true;
-        button.addEventListener("click", (event) => {
+        button.addEventListener("click", safeMapCallback("zoom control click", (event) => {
             event.preventDefault();
             event.stopPropagation();
             if (typeof event.stopImmediatePropagation === "function") {
@@ -1748,7 +2418,7 @@ function installImmediateZoomButtonHandlers() {
             }
             if (button.disabled || button.getAttribute("aria-disabled") === "true") return;
             applyImmediateZoomStep(delta);
-        }, {capture: true});
+        }), {capture: true});
     };
     install(zoomIn, 1);
     install(zoomOut, -1);
@@ -1768,6 +2438,10 @@ function updateNorthControlAppearance() {
 }
 
 function syncRocketGuideLine(rocketLatLng, userLatLng) {
+    if (isDomMapActive()) {
+        renderDomMapOverlays();
+        return;
+    }
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(GUIDE_SOURCE_ID);
     if (!source) return;
@@ -1801,6 +2475,10 @@ function syncRocketGuideLine(rocketLatLng, userLatLng) {
 }
 
 function syncPointSource(sourceId, latLng) {
+    if (isDomMapActive()) {
+        renderDomMapOverlays();
+        return;
+    }
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(sourceId);
     if (!source) return;
@@ -1811,6 +2489,10 @@ function syncPointSource(sourceId, latLng) {
 }
 
 function syncUserHeadingIndicator() {
+    if (isDomMapActive()) {
+        renderDomMapOverlays();
+        return;
+    }
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(USER_HEADING_SOURCE_ID);
     if (!source) return;
@@ -1832,60 +2514,285 @@ function syncUserHeadingIndicator() {
     source.setData(headingFeatureCollection(latLng, displayHeadingDeg));
 }
 
+function snapFollowCameraTo(latLng) {
+    if (!groundMap || !Array.isArray(latLng)) return;
+    pendingFollowCameraLatLng = null;
+    followCameraVisualPoint = null;
+    followCameraVelocityXPps = 0;
+    followCameraVelocityYPps = 0;
+    if (followCameraFrame != null) {
+        try {
+            cancelAnimationFrame(followCameraFrame);
+        } catch (e) {
+        }
+        followCameraFrame = null;
+    }
+    if (!followUserEnabled || Date.now() < suppressFollowCameraUntilMs) return;
+    markInternalCameraUpdate(120);
+    try {
+        groundMap.jumpTo({
+            center: [latLng[1], latLng[0]],
+            bearing: mapBearingDeg,
+        });
+        rememberMapView();
+        persistMapStateSoon();
+        syncWindowMapControlState();
+    } catch (e) {
+    }
+}
+
+function currentFollowUserZoomCenter() {
+    if (!followUserEnabled) return null;
+    const visual = currentUserMarkerVisualLatLng() || userMarkerDisplayedLatLng || lastUserLatLng;
+    if (!Array.isArray(visual)) return null;
+    const lat = Number(visual[0]);
+    const lon = Number(visual[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return [lon, lat];
+}
+
+function cancelFollowCameraAnimation() {
+    pendingFollowCameraLatLng = null;
+    followCameraVisualPoint = null;
+    followCameraVelocityXPps = 0;
+    followCameraVelocityYPps = 0;
+    if (followCameraFrame != null) {
+        try {
+            cancelAnimationFrame(followCameraFrame);
+        } catch (e) {
+        }
+        followCameraFrame = null;
+    }
+}
+
+function cancelFollowZoomAnimation() {
+    if (followZoomAnimationFrame != null) {
+        try {
+            cancelAnimationFrame(followZoomAnimationFrame);
+        } catch (e) {
+        }
+        followZoomAnimationFrame = null;
+    }
+}
+
+function beginFollowZoomHold(durationMs) {
+    const until = Date.now() + Math.max(120, Number(durationMs) || 0) + 140;
+    followZoomHoldUntilMs = Math.max(followZoomHoldUntilMs, until);
+    suppressFollowCameraUntilMs = Math.max(suppressFollowCameraUntilMs, until);
+    cancelFollowCameraAnimation();
+}
+
+function isFollowZoomHolding() {
+    return followUserEnabled && Date.now() < followZoomHoldUntilMs;
+}
+
+function recenterFollowUserDuringZoom(zoom) {
+    const center = currentFollowUserZoomCenter();
+    if (!groundMap || !center) return false;
+    const nextZoom = Number(zoom);
+    markInternalCameraUpdate(80);
+    try {
+        const options = {
+            center,
+            bearing: mapBearingDeg,
+        };
+        if (Number.isFinite(nextZoom)) {
+            options.zoom = nextZoom;
+        }
+        groundMap.jumpTo(options);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function animateFollowZoomTo(targetZoom, durationMs) {
+    if (!groundMap) return false;
+    const startZoom = Number(groundMap.getZoom && groundMap.getZoom());
+    const endZoom = Number(targetZoom);
+    if (!Number.isFinite(startZoom) || !Number.isFinite(endZoom)) return false;
+    cancelFollowZoomAnimation();
+    beginFollowZoomHold(durationMs);
+    const startedAt = performance.now();
+    const duration = Math.max(1, Number(durationMs) || ZOOM_BUTTON_ANIMATION_MS);
+    const ease = (t) => t < 0.5
+        ? 4 * t * t * t
+        : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const step = safeMapCallback("follow zoom animation frame", () => {
+        if (!groundMap || !followUserEnabled) {
+            followZoomAnimationFrame = null;
+            return;
+        }
+        const elapsed = performance.now() - startedAt;
+        const t = Math.max(0, Math.min(1, elapsed / duration));
+        const zoom = startZoom + (endZoom - startZoom) * ease(t);
+        if (!recenterFollowUserDuringZoom(zoom)) {
+            followZoomAnimationFrame = null;
+            return;
+        }
+        updateZoomControlAppearance();
+        if (t >= 1) {
+            followZoomAnimationFrame = null;
+            followZoomHoldUntilMs = Math.max(followZoomHoldUntilMs, Date.now() + 180);
+            return;
+        }
+        followZoomAnimationFrame = requestAnimationFrame(step);
+    });
+    followZoomAnimationFrame = requestAnimationFrame(step);
+    return true;
+}
+
+function holdFollowUserAtScreenCenterForZoom(options = {}) {
+    if (!groundMap) return null;
+    const center = currentFollowUserZoomCenter();
+    if (!center) return null;
+    beginFollowZoomHold(options && Number.isFinite(Number(options.durationMs)) ? Number(options.durationMs) : 120);
+    const zoom = Number(options.zoom);
+    markInternalCameraUpdate(120);
+    try {
+        const jumpOptions = {
+            center,
+            bearing: mapBearingDeg,
+        };
+        if (Number.isFinite(zoom)) {
+            jumpOptions.zoom = zoom;
+        }
+        groundMap.jumpTo(jumpOptions);
+    } catch (e) {
+    }
+    return center;
+}
+
+function applyFollowWheelZoom(deltaY) {
+    if (!groundMap || !followUserEnabled) return false;
+    const center = currentFollowUserZoomCenter();
+    if (!center) return false;
+    const currentZoom = Number(groundMap.getZoom && groundMap.getZoom());
+    if (!Number.isFinite(currentZoom)) return false;
+    const dy = Number(deltaY);
+    if (!Number.isFinite(dy) || Math.abs(dy) < 0.01) return false;
+    const maxZoom = Number.isFinite(currentMaxZoom)
+        ? currentMaxZoom
+        : DEFAULT_MAX_NATIVE_ZOOM + DEFAULT_MAX_OVERZOOM_DELTA;
+    const nextZoom = Math.max(
+        effectiveMinZoom(),
+        Math.min(maxZoom, currentZoom - dy * 0.004)
+    );
+    if (Math.abs(nextZoom - currentZoom) <= WHEEL_ZOOM_LIMIT_EPSILON) {
+        holdFollowUserAtScreenCenterForZoom({zoom: currentZoom});
+        updateZoomControlAppearance();
+        return true;
+    }
+    zoomButtonTargetZoom = null;
+    suppressHighResPrefetch(300);
+    holdFollowUserAtScreenCenterForZoom({zoom: nextZoom});
+    rememberMapView();
+    persistMapStateSoon();
+    scheduleTrackingTilePrefetch();
+    scheduleHighResTilePrefetch();
+    updateZoomControlAppearance();
+    return true;
+}
+
 function scheduleFollowCameraUpdate(latLng) {
     if (!groundMap || !Array.isArray(latLng)) return;
     if (Date.now() < suppressFollowCameraUntilMs) return;
-    if (isOrientationModeSettling()) return;
     pendingFollowCameraLatLng = [latLng[0], latLng[1]];
     if (followCameraFrame != null) return;
-    followCameraFrame = requestAnimationFrame(() => {
-        followCameraFrame = null;
+    followCameraLastFrameAt = performance.now();
+    const step = safeMapCallback("follow camera frame", () => {
         const target = pendingFollowCameraLatLng;
-        pendingFollowCameraLatLng = null;
-        if (!groundMap || !Array.isArray(target)) return;
-        const center = groundMap.getCenter();
-        const centerDistanceM = distanceMetersBetween([center.lat, center.lng], target);
-        if (followUserEnabled && Number.isFinite(centerDistanceM) && centerDistanceM <= FOLLOW_CAMERA_CENTER_EPSILON_M) {
+        if (!groundMap || !followUserEnabled || !Array.isArray(target) || Date.now() < suppressFollowCameraUntilMs) {
+            followCameraFrame = null;
             return;
         }
-        const targetCenter = [target[1], target[0]];
-        if (isOrientationModeAnimationActive() && typeof groundMap.easeTo === "function") {
-            const durationMs = Math.max(120, orientationModeAnimationRemainingMs());
-            markInternalCameraUpdate(durationMs + 80);
-            groundMap.easeTo({
-                center: targetCenter,
-                bearing: mapBearingDeg,
-                duration: durationMs,
-                easing: (t) => 1 - Math.pow(1 - t, 3),
-                essential: true,
-            });
-            syncWindowMapControlState();
-            persistMapStateSoon();
-        } else {
-            markInternalCameraUpdate(32);
-            groundMap.jumpTo({
-                center: targetCenter,
-                bearing: mapBearingDeg,
-            });
-            rememberMapView();
+        if (isOrientationModeSettling()) {
+            followCameraFrame = requestAnimationFrame(step);
+            return;
         }
+        const now = performance.now();
+        const dtMs = Math.max(1.0, Math.min(50.0, now - (followCameraLastFrameAt || now)));
+        followCameraLastFrameAt = now;
+        let center;
+        let centerPoint;
+        let targetPoint;
+        try {
+            center = groundMap.getCenter();
+            centerPoint = groundMap.project(center);
+            targetPoint = groundMap.project({lat: target[0], lng: target[1]});
+        } catch (e) {
+            followCameraFrame = null;
+            return;
+        }
+        const errorX = targetPoint.x - centerPoint.x;
+        const errorY = targetPoint.y - centerPoint.y;
+        const distancePx = Math.hypot(errorX, errorY);
+        if (distancePx <= FOLLOW_CAMERA_SETTLE_EPSILON_PX) {
+            followCameraVisualPoint = targetPoint;
+            followCameraVelocityXPps = 0;
+            followCameraVelocityYPps = 0;
+            pendingFollowCameraLatLng = null;
+            followCameraFrame = null;
+            return;
+        }
+        const alpha = Math.min(1.0, 1.0 - Math.exp(-dtMs / FOLLOW_CAMERA_CATCHUP_MS));
+        let stepX = errorX * alpha;
+        let stepY = errorY * alpha;
+        let stepLen = Math.hypot(stepX, stepY);
+        if (stepLen >= distancePx - FOLLOW_CAMERA_SETTLE_EPSILON_PX) {
+            stepX = errorX;
+            stepY = errorY;
+            stepLen = distancePx;
+        }
+        if (stepLen > FOLLOW_CAMERA_MAX_STEP_PX) {
+            const scale = FOLLOW_CAMERA_MAX_STEP_PX / stepLen;
+            stepX *= scale;
+            stepY *= scale;
+        }
+        followCameraVelocityXPps = 0;
+        followCameraVelocityYPps = 0;
+        followCameraVisualPoint = {
+            x: centerPoint.x + stepX,
+            y: centerPoint.y + stepY,
+        };
+        let nextCenter;
+        try {
+            nextCenter = groundMap.unproject(followCameraVisualPoint);
+        } catch (e) {
+            followCameraFrame = null;
+            return;
+        }
+        markInternalCameraUpdate(80);
+        try {
+            groundMap.jumpTo({
+                center: [nextCenter.lng, nextCenter.lat],
+                bearing: mapBearingDeg,
+            });
+        } catch (e) {
+            followCameraFrame = null;
+            return;
+        }
+        syncWindowMapControlState();
+        persistMapStateSoon();
+        followCameraFrame = requestAnimationFrame(step);
     });
+    followCameraFrame = requestAnimationFrame(step);
 }
 
-function setUserMarkerVisualLatLng(latLng) {
+function setUserMarkerVisualLatLng(latLng, options = {}) {
     if (!Array.isArray(latLng)) return;
     userMarkerDisplayedLatLng = [latLng[0], latLng[1]];
-    if (followUserEnabled && groundMap && Date.now() >= suppressFollowCameraUntilMs) {
-        const center = groundMap.getCenter();
-        const centerDistanceM = distanceMetersBetween(
-            [center.lat, center.lng],
-            userMarkerDisplayedLatLng
-        );
-        if (!Number.isFinite(centerDistanceM) || centerDistanceM > FOLLOW_CAMERA_CENTER_EPSILON_M) {
-            scheduleFollowCameraUpdate(userMarkerDisplayedLatLng);
+    const followTarget = options && Array.isArray(options.followTarget)
+        ? options.followTarget
+        : userMarkerDisplayedLatLng;
+    if (followUserEnabled && groundMap && options.skipFollow !== true) {
+        if (isFollowZoomHolding()) {
+            recenterFollowUserDuringZoom();
+        } else if (options.holdCenter === true && Date.now() >= suppressFollowCameraUntilMs) {
+            snapFollowCameraTo(followTarget);
+        } else {
+            scheduleFollowCameraUpdate(followTarget);
         }
-    } else if (followUserEnabled && groundMap) {
-        scheduleFollowCameraUpdate(userMarkerDisplayedLatLng);
     }
     syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng);
     syncUserHeadingIndicator();
@@ -1908,6 +2815,10 @@ function cancelUserMarkerAnimation() {
     }
     followCameraFrame = null;
     pendingFollowCameraLatLng = null;
+    followCameraLastFrameAt = 0;
+    followCameraVisualPoint = null;
+    followCameraVelocityXPps = 0;
+    followCameraVelocityYPps = 0;
     if (userMarkerAnimationFrame != null) {
         try {
             cancelAnimationFrame(userMarkerAnimationFrame);
@@ -1922,9 +2833,27 @@ function resetUserMotionSmoothing(latLng) {
     if (!Array.isArray(latLng)) return;
     cancelUserMarkerAnimation();
     userMarkerDisplayedLatLng = [latLng[0], latLng[1]];
+    if (followUserEnabled && groundMap) {
+        snapFollowCameraTo(userMarkerDisplayedLatLng);
+    }
     syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng);
     syncUserHeadingIndicator();
     syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng);
+}
+
+function shouldSnapUserGpsJump(from, target, previousTarget, previousFixAtMs) {
+    if (!Array.isArray(from) || !Array.isArray(target)) return false;
+    const visualDistanceM = distanceMetersBetween(from, target);
+    if (!Number.isFinite(visualDistanceM) || visualDistanceM < USER_GPS_SNAP_DISTANCE_M) {
+        return false;
+    }
+    if (!Array.isArray(previousTarget) || !Number.isFinite(previousFixAtMs)) {
+        return true;
+    }
+    const dtSec = Math.max(0.001, (Date.now() - previousFixAtMs) / 1000.0);
+    const fixDistanceM = distanceMetersBetween(previousTarget, target);
+    const speedMps = Number.isFinite(fixDistanceM) ? fixDistanceM / dtSec : Infinity;
+    return speedMps >= USER_GPS_SNAP_SPEED_MPS;
 }
 
 function animateUserMarkerTo(targetLatLng) {
@@ -1937,6 +2866,18 @@ function animateUserMarkerTo(targetLatLng) {
     }
     const from = currentUserMarkerVisualLatLng() || target;
     const distanceM = distanceMetersBetween(from, target);
+    const previousTarget = userMarkerAnimation && Array.isArray(userMarkerAnimation.target)
+        ? userMarkerAnimation.target
+        : null;
+    const previousFixAtMs = userMarkerAnimation && Number.isFinite(userMarkerAnimation.targetFixAtMs)
+        ? userMarkerAnimation.targetFixAtMs
+        : NaN;
+
+    if (shouldSnapUserGpsJump(from, target, previousTarget, previousFixAtMs)) {
+        resetUserMotionSmoothing(target);
+        snapFollowCameraTo(target);
+        return;
+    }
 
     if (
         !Number.isFinite(distanceM)
@@ -1947,22 +2888,18 @@ function animateUserMarkerTo(targetLatLng) {
         return;
     }
 
-    setUserMarkerVisualLatLng(from);
     const nowMs = Date.now();
-    const previousTarget = userMarkerAnimation && Array.isArray(userMarkerAnimation.target)
-        ? userMarkerAnimation.target
-        : null;
-    const previousFixAtMs = userMarkerAnimation && Number.isFinite(userMarkerAnimation.targetFixAtMs)
-        ? userMarkerAnimation.targetFixAtMs
-        : NaN;
     let velocityLatPerMs = 0.0;
     let velocityLonPerMs = 0.0;
+    let fixSpeedMps = 0.0;
     let smoothedIntervalMs = userMarkerAnimation && Number.isFinite(userMarkerAnimation.smoothedIntervalMs)
         ? userMarkerAnimation.smoothedIntervalMs
         : USER_MARKER_SMOOTH_MAX_MS;
     if (Array.isArray(previousTarget) && Number.isFinite(previousFixAtMs)) {
         const dtMs = Math.max(1.0, nowMs - previousFixAtMs);
         if (dtMs <= 10_000) {
+            const fixDistanceM = distanceMetersBetween(previousTarget, target);
+            fixSpeedMps = Number.isFinite(fixDistanceM) ? fixDistanceM / (dtMs / 1000.0) : 0.0;
             velocityLatPerMs = (target[0] - previousTarget[0]) / dtMs;
             let lonDiff = target[1] - previousTarget[1];
             if (lonDiff > 180.0) lonDiff -= 360.0;
@@ -1978,23 +2915,18 @@ function animateUserMarkerTo(targetLatLng) {
         }
     }
     userMarkerAnimation = {
-        from: [from[0], from[1]],
         target,
-        startedAt: performance.now(),
         targetFixAtMs: nowMs,
         velocityLatPerMs,
         velocityLonPerMs,
+        fixSpeedMps,
         smoothedIntervalMs,
-        durationMs: Math.max(
-            USER_MARKER_SMOOTH_MIN_MS,
-            Math.min(USER_MARKER_SMOOTH_MAX_MS, smoothedIntervalMs * 1.2)
-        ),
         lastFrameAt: performance.now(),
     };
 
     if (userMarkerAnimationFrame != null) return;
 
-    const step = () => {
+    const step = safeMapCallback("user marker animation frame", () => {
         const anim = userMarkerAnimation;
         if (!anim) {
             userMarkerAnimationFrame = null;
@@ -2005,12 +2937,16 @@ function animateUserMarkerTo(targetLatLng) {
         anim.lastFrameAt = now;
         const current = currentUserMarkerVisualLatLng() || anim.target;
         const fixAgeMs = Math.max(0.0, Date.now() - (anim.targetFixAtMs || Date.now()));
-        const predictiveLeadMs = fixAgeMs <= anim.smoothedIntervalMs * 1.5
+        const staleAtMs = Math.max(
+            USER_MARKER_SMOOTH_MIN_MS,
+            anim.smoothedIntervalMs * USER_MARKER_PREDICTION_STALE_RATIO
+        );
+        const predictiveLeadMs = fixAgeMs <= staleAtMs
             ? Math.max(
                 0.0,
                 Math.min(
                     USER_MARKER_PREDICTION_MAX_MS,
-                    anim.smoothedIntervalMs * USER_MARKER_PREDICTION_RATIO
+                    Math.max(fixAgeMs, anim.smoothedIntervalMs * USER_MARKER_PREDICTION_RATIO)
                 )
             )
             : 0.0;
@@ -2020,13 +2956,25 @@ function animateUserMarkerTo(targetLatLng) {
         ];
         const durationMs = Math.max(
             USER_MARKER_RATE_MIN_CATCHUP_MS,
-            Math.min(USER_MARKER_RATE_MAX_CATCHUP_MS, anim.durationMs || anim.smoothedIntervalMs)
+            Math.min(USER_MARKER_RATE_MAX_CATCHUP_MS, anim.smoothedIntervalMs)
         );
-        const elapsedMs = Math.max(0.0, now - (anim.startedAt || now));
-        const t = Math.max(0.0, Math.min(1.0, elapsedMs / durationMs));
-        const eased = t * t * (3.0 - 2.0 * t);
-        const base = Array.isArray(anim.from) ? anim.from : current;
-        const next = blendLatLngToward(base, predictedTarget, eased);
+        const alpha = 1.0 - Math.exp(-dtMs / durationMs);
+        const remainingToPredictionM = distanceMetersBetween(current, predictedTarget);
+        const dynamicSpeedMps = Math.max(
+            USER_MARKER_VISUAL_MIN_SPEED_MPS,
+            Math.min(
+                USER_MARKER_VISUAL_MAX_SPEED_MPS,
+                Math.max(
+                    (Number(anim.fixSpeedMps) || 0.0) * USER_MARKER_VISUAL_SPEED_GAIN,
+                    Number.isFinite(remainingToPredictionM)
+                        ? remainingToPredictionM / (USER_MARKER_VISUAL_CATCHUP_MS / 1000.0)
+                        : 0.0
+                )
+            )
+        );
+        const maxStepM = dynamicSpeedMps * (dtMs / 1000.0);
+        const easedTarget = blendLatLngToward(current, predictedTarget, alpha);
+        const next = speedLimitedLatLngToward(current, easedTarget, maxStepM);
         const remainingDistanceM = distanceMetersBetween(next, anim.target);
         if (!Array.isArray(next) || !Number.isFinite(remainingDistanceM)) {
             setUserMarkerVisualLatLng(anim.target);
@@ -2034,15 +2982,18 @@ function animateUserMarkerTo(targetLatLng) {
             userMarkerAnimationFrame = null;
             return;
         }
-        if (remainingDistanceM <= USER_MARKER_SMOOTH_SKIP_M && predictiveLeadMs === 0.0) {
+        if (fixAgeMs > staleAtMs && remainingDistanceM <= USER_MARKER_SMOOTH_SKIP_M) {
             setUserMarkerVisualLatLng(anim.target);
             userMarkerAnimation = null;
             userMarkerAnimationFrame = null;
             return;
         }
-        setUserMarkerVisualLatLng(next);
+        setUserMarkerVisualLatLng(next, {
+            followTarget: next,
+            holdCenter: followUserEnabled,
+        });
         userMarkerAnimationFrame = requestAnimationFrame(step);
-    };
+    });
     userMarkerAnimationFrame = requestAnimationFrame(step);
 }
 
@@ -2088,7 +3039,7 @@ function applyKnownUserUpBearingNow() {
 function scheduleHeadingAnimation() {
     if (headingAnimationFrame != null) return;
     headingAnimationLastFrameAt = performance.now();
-    const step = () => {
+    const step = safeMapCallback("heading animation frame", () => {
         headingAnimationFrame = null;
         const now = performance.now();
         const dtMs = Math.max(1.0, Math.min(80.0, now - (headingAnimationLastFrameAt || now)));
@@ -2241,7 +3192,7 @@ function scheduleHeadingAnimation() {
         if (!(arrowSettled && filterSettled && displaySettled && indicatorSettled && bearingSettled)) {
             headingAnimationFrame = requestAnimationFrame(step);
         }
-    };
+    });
     headingAnimationFrame = requestAnimationFrame(step);
 }
 
@@ -2361,7 +3312,7 @@ function initCompassOnce() {
 
         if (saved === "granted") {
             compassInitialized = true;
-            window.addEventListener("deviceorientation", handleOrientation);
+            window.addEventListener("deviceorientation", safeMapCallback("device orientation", handleOrientation));
             return;
         }
         if (saved === "denied") return;
@@ -2375,7 +3326,7 @@ function initCompassOnce() {
                 } catch (e) {
                 }
                 if (value === "granted") {
-                    window.addEventListener("deviceorientation", handleOrientation);
+                    window.addEventListener("deviceorientation", safeMapCallback("device orientation", handleOrientation));
                 }
             })
             .catch(() => {
@@ -2386,7 +3337,7 @@ function initCompassOnce() {
             });
     } else {
         compassInitialized = true;
-        window.addEventListener("deviceorientation", handleOrientation);
+        window.addEventListener("deviceorientation", safeMapCallback("device orientation", handleOrientation));
     }
 }
 
@@ -2572,7 +3523,7 @@ function wheelZoomWouldExceedLimit(deltaY) {
         return zoom >= currentMaxZoom - WHEEL_ZOOM_LIMIT_EPSILON;
     }
     if (deltaY > 0) {
-        return zoom <= MIN_ZOOM + WHEEL_ZOOM_LIMIT_EPSILON;
+        return zoom <= effectiveMinZoom() + WHEEL_ZOOM_LIMIT_EPSILON;
     }
     return false;
 }
@@ -2586,34 +3537,44 @@ function cancelSmoothWheelRotation() {
 }
 
 function stepSmoothWheelRotation() {
-    wheelRotateFrame = null;
-    if (!groundMap || !Number.isFinite(wheelRotateTargetBearing)) {
+    try {
+        wheelRotateFrame = null;
+        if (!groundMap || !Number.isFinite(wheelRotateTargetBearing)) {
+            cancelSmoothWheelRotation();
+            return;
+        }
+
+        const currentBearing = normalizeAngle(groundMap.getBearing());
+        const diff = shortestAngleDiff(currentBearing, wheelRotateTargetBearing);
+        const settled = Math.abs(diff) <= WHEEL_ROTATE_SETTLE_DEG;
+        const nextBearing = settled
+            ? normalizeAngle(wheelRotateTargetBearing)
+            : normalizeAngle(currentBearing + diff * WHEEL_ROTATE_EASE);
+
+        markInternalCameraUpdate(80);
+        mapBearingDeg = nextBearing;
+        try {
+            groundMap.jumpTo({bearing: nextBearing});
+        } catch (e) {
+            cancelSmoothWheelRotation();
+            return;
+        }
+        syncWindowMapControlState();
+        updateUserMarkerRotation();
+        rememberMapView();
+        updateCenterControlAppearance();
+
+        if (settled) {
+            wheelRotateTargetBearing = null;
+            persistMapStateSoon();
+            return;
+        }
+
+        wheelRotateFrame = requestAnimationFrame(stepSmoothWheelRotation);
+    } catch (error) {
+        reportMapRuntimeError("wheel rotation frame", error);
         cancelSmoothWheelRotation();
-        return;
     }
-
-    const currentBearing = normalizeAngle(groundMap.getBearing());
-    const diff = shortestAngleDiff(currentBearing, wheelRotateTargetBearing);
-    const settled = Math.abs(diff) <= WHEEL_ROTATE_SETTLE_DEG;
-    const nextBearing = settled
-        ? normalizeAngle(wheelRotateTargetBearing)
-        : normalizeAngle(currentBearing + diff * WHEEL_ROTATE_EASE);
-
-    markInternalCameraUpdate(80);
-    mapBearingDeg = nextBearing;
-    groundMap.jumpTo({bearing: nextBearing});
-    syncWindowMapControlState();
-    updateUserMarkerRotation();
-    rememberMapView();
-    updateCenterControlAppearance();
-
-    if (settled) {
-        wheelRotateTargetBearing = null;
-        persistMapStateSoon();
-        return;
-    }
-
-    wheelRotateFrame = requestAnimationFrame(stepSmoothWheelRotation);
 }
 
 function rotateMapFromWheel(deltaDeg) {
@@ -2704,11 +3665,528 @@ function trackedAssetTitle() {
     return window.__gs26_tracked_asset_title || trackedAssetLabel || "Tracked Asset";
 }
 
+function shouldUseDomMapRenderer() {
+    try {
+        if (window.__gs26_force_maplibre === true) return false;
+        if (window.__gs26_force_dom_map === true) return true;
+    } catch (e) {
+    }
+    return false;
+}
+
+function isDomMapActive() {
+    return !!(groundMap && groundMap.__gs26_dom_map === true);
+}
+
+function worldSizeAtZoom(zoom) {
+    return 256 * Math.pow(2, Math.max(MIN_ZOOM, Math.floor(Number(zoom) || MIN_ZOOM)));
+}
+
+function latLonToWorldPointAtZoom(lat, lon, zoom) {
+    const z = Math.max(MIN_ZOOM, Math.floor(Number(zoom) || MIN_ZOOM));
+    const scale = worldSizeAtZoom(z);
+    const clampedLat = clampLat(Number(lat));
+    const clampedLon = clampLon(Number(lon));
+    const sinLat = Math.sin((clampedLat * Math.PI) / 180.0);
+    return {
+        x: ((clampedLon + 180.0) / 360.0) * scale,
+        y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale,
+    };
+}
+
+function worldPointToLatLonAtZoom(x, y, zoom) {
+    const z = Math.max(MIN_ZOOM, Math.floor(Number(zoom) || MIN_ZOOM));
+    const scale = worldSizeAtZoom(z);
+    const lon = (Number(x) / scale) * 360.0 - 180.0;
+    const n = Math.PI - (2.0 * Math.PI * Number(y)) / scale;
+    const lat = (180.0 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+    return [clampLat(lat), clampLon(lon)];
+}
+
+function domMapNativeZoom(state) {
+    const nativeMax = Number.isFinite(currentMaxNativeZoom)
+        ? currentMaxNativeZoom
+        : DEFAULT_MAX_NATIVE_ZOOM;
+    return Math.max(effectiveMinZoom(), Math.min(Math.max(nativeMax, effectiveMinZoom()), Math.floor(Number(state.zoom) || effectiveMinZoom())));
+}
+
+function revokeDomMapBlobUrls() {
+    for (const url of domMapBlobUrls.values()) {
+        try {
+            URL.revokeObjectURL(url);
+        } catch (e) {
+        }
+    }
+    domMapBlobUrls = new Map();
+}
+
+function releaseDomMapTileImages(root) {
+    if (!root || typeof root.querySelectorAll !== "function") return;
+    const images = root.querySelectorAll("img");
+    for (const img of images) {
+        if (img && img.__gs26_object_url) {
+            try {
+                URL.revokeObjectURL(img.__gs26_object_url);
+            } catch (e) {
+            }
+            img.__gs26_object_url = "";
+        }
+    }
+}
+
+function domMapTileBlobUrl(data) {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const mime = bytes[0] === 0xff && bytes[1] === 0xd8
+        ? "image/jpeg"
+        : "image/png";
+    const blob = new Blob([data], {type: mime});
+    return URL.createObjectURL(blob);
+}
+
+function setDomMapTileImage(img, cacheName, url, coord, renderId) {
+    if (!img || !url) return;
+    Promise.resolve().then(async () => {
+        if (!groundMap || !groundMap.__gs26_dom_map || renderId !== domMapTileRenderId) return;
+        let data = null;
+        try {
+            data = await readCachedTileArrayBuffer(cacheName, url);
+            if (!data && !isKnownMissingTile(cacheName, url)) {
+                data = await fetchAndCacheTileArrayBuffer(cacheName, url, {skipCacheLookup: true});
+            }
+        } catch (e) {
+            try {
+                data = await readCachedTileArrayBuffer(cacheName, url);
+            } catch (fallbackError) {
+                data = null;
+            }
+            if (!data) {
+                rememberMissingTile(cacheName, url, 0);
+                handleMissingTileCoord(coord);
+            }
+        }
+        if (!groundMap || !groundMap.__gs26_dom_map || renderId !== domMapTileRenderId) return;
+        const bytes = data || await transparentTileArrayBuffer();
+        if (img.__gs26_object_url) {
+            try {
+                URL.revokeObjectURL(img.__gs26_object_url);
+            } catch (e) {
+            }
+            img.__gs26_object_url = "";
+        }
+        const objectUrl = domMapTileBlobUrl(bytes);
+        img.__gs26_object_url = objectUrl;
+        const releaseObjectUrl = () => {
+            const urlToRelease = img.__gs26_object_url;
+            if (!urlToRelease) return;
+            img.__gs26_object_url = "";
+            setTimeout(() => {
+                try {
+                    URL.revokeObjectURL(urlToRelease);
+                } catch (e) {
+                }
+            }, 0);
+        };
+        img.onload = releaseObjectUrl;
+        img.onerror = releaseObjectUrl;
+        img.src = objectUrl;
+        img.style.opacity = data ? "1" : "0";
+    }).catch((error) => {
+        reportMapRuntimeError("dom tile load", error);
+    });
+}
+
+function renderDomMap() {
+    if (!isDomMapActive()) return;
+    const state = groundMap.__gs26_state;
+    const container = groundMap.__gs26_container;
+    const tilePane = groundMap.__gs26_tile_pane;
+    if (!state || !container || !tilePane) return;
+    const width = Math.max(1, container.clientWidth || container.offsetWidth || 1);
+    const height = Math.max(1, container.clientHeight || container.offsetHeight || 1);
+    const z = domMapNativeZoom(state);
+    const zoomScale = Math.pow(2, Math.max(0, state.zoom - z));
+    const center = worldPointToLatLonAtZoom(
+        latLonToWorldPointAtZoom(state.center[1], state.center[0], z).x,
+        latLonToWorldPointAtZoom(state.center[1], state.center[0], z).y,
+        z
+    );
+    state.center = [center[1], center[0]];
+    const centerPoint = latLonToWorldPointAtZoom(state.center[1], state.center[0], z);
+    const cover = Math.ceil(Math.hypot(width, height) / (2 * zoomScale)) + DOM_MAP_TILE_BUFFER_PX;
+    const tileMinX = Math.floor((centerPoint.x - cover) / 256);
+    const tileMaxX = Math.ceil((centerPoint.x + cover) / 256);
+    const tileMinY = Math.floor((centerPoint.y - cover) / 256);
+    const tileMaxY = Math.ceil((centerPoint.y + cover) / 256);
+    const tileCount = Math.pow(2, z);
+    const cacheName = tileCacheName(currentTilesUrl);
+    const renderId = ++domMapTileRenderId;
+    const frag = document.createDocumentFragment();
+    const candidates = [];
+    for (let x = tileMinX; x <= tileMaxX; x++) {
+        for (let y = tileMinY; y <= tileMaxY; y++) {
+            if (y < 0 || y >= tileCount) continue;
+            const wrappedX = ((x % tileCount) + tileCount) % tileCount;
+            const coord = normalizeTileCoord(z, wrappedX, y);
+            if (!coord) continue;
+            const url = resolvePrefetchTileUrl(currentTilesUrl, coord.z, coord.x, coord.y);
+            if (!url) continue;
+            const tileCenterX = x * 256 + 128;
+            const tileCenterY = y * 256 + 128;
+            candidates.push({
+                x,
+                y,
+                coord,
+                url,
+                distance: Math.hypot(tileCenterX - centerPoint.x, tileCenterY - centerPoint.y),
+            });
+        }
+    }
+    candidates.sort((a, b) => a.distance - b.distance);
+    for (const item of candidates.slice(0, DOM_MAP_MAX_RENDER_TILES)) {
+        const img = document.createElement("img");
+        img.decoding = "async";
+        img.draggable = false;
+        img.alt = "";
+        img.style.position = "absolute";
+        img.style.left = `${width / 2 + (item.x * 256 - centerPoint.x) * zoomScale}px`;
+        img.style.top = `${height / 2 + (item.y * 256 - centerPoint.y) * zoomScale}px`;
+        img.style.width = `${256 * zoomScale + 0.5}px`;
+        img.style.height = `${256 * zoomScale + 0.5}px`;
+        img.style.imageRendering = "auto";
+        img.style.userSelect = "none";
+        img.style.pointerEvents = "none";
+        frag.appendChild(img);
+        setDomMapTileImage(img, cacheName, item.url, item.coord, renderId);
+    }
+    releaseDomMapTileImages(tilePane);
+    tilePane.replaceChildren(frag);
+    tilePane.style.transform = `rotate(${-normalizeAngle(state.bearing)}deg)`;
+    renderDomMapOverlays();
+    updateZoomControlAppearance();
+    updateNorthControlAppearance();
+}
+
+function domMapScreenPointForLatLng(latLng) {
+    if (!isDomMapActive() || !Array.isArray(latLng)) return null;
+    const state = groundMap.__gs26_state;
+    const container = groundMap.__gs26_container;
+    const width = Math.max(1, container.clientWidth || container.offsetWidth || 1);
+    const height = Math.max(1, container.clientHeight || container.offsetHeight || 1);
+    const z = domMapNativeZoom(state);
+    const zoomScale = Math.pow(2, Math.max(0, state.zoom - z));
+    const centerPoint = latLonToWorldPointAtZoom(state.center[1], state.center[0], z);
+    const point = latLonToWorldPointAtZoom(latLng[0], latLng[1], z);
+    return {
+        x: width / 2 + (point.x - centerPoint.x) * zoomScale,
+        y: height / 2 + (point.y - centerPoint.y) * zoomScale,
+    };
+}
+
+function renderDomMapMarker(element, latLng, headingDeg, options = {}) {
+    if (!element) return;
+    const point = domMapScreenPointForLatLng(latLng);
+    if (!point) {
+        element.hidden = true;
+        return;
+    }
+    element.hidden = false;
+    const bearing = isDomMapActive() ? normalizeAngle(groundMap.__gs26_state.bearing) : 0;
+    const keepUpright = options.keepUpright !== false;
+    const rotate = Number.isFinite(headingDeg)
+        ? normalizeAngle(headingDeg - bearing)
+        : (keepUpright ? -bearing : 0);
+    element.style.transform = `translate(${point.x}px, ${point.y}px) translate(-50%, -50%) rotate(${rotate}deg)`;
+}
+
+function renderDomMapOverlays() {
+    if (!isDomMapActive()) return;
+    const state = groundMap.__gs26_state;
+    const userLatLng = userMarkerDisplayedLatLng || lastUserLatLng;
+    renderDomMapMarker(groundMap.__gs26_rocket_marker, lastRocketLatLng, null);
+    renderDomMapMarker(groundMap.__gs26_user_marker, userLatLng, null);
+    const headingDeg = Number.isFinite(userHeadingArrowDeg) ? userHeadingArrowDeg : userHeadingDeg;
+    if (Number.isFinite(headingDeg)) {
+        renderDomMapMarker(groundMap.__gs26_user_heading_marker, userLatLng, headingDeg, {keepUpright: false});
+    } else if (groundMap.__gs26_user_heading_marker) {
+        groundMap.__gs26_user_heading_marker.hidden = true;
+    }
+    const hasLine = Array.isArray(lastRocketLatLng) && Array.isArray(userLatLng);
+    if (groundMap.__gs26_guide_line) {
+        if (!hasLine) {
+            groundMap.__gs26_guide_line.hidden = true;
+        } else {
+            const a = domMapScreenPointForLatLng(userLatLng);
+            const b = domMapScreenPointForLatLng(lastRocketLatLng);
+            if (a && b) {
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                groundMap.__gs26_guide_line.hidden = false;
+                groundMap.__gs26_guide_line.style.width = `${Math.hypot(dx, dy)}px`;
+                groundMap.__gs26_guide_line.style.transform = `translate(${a.x}px, ${a.y}px) rotate(${Math.atan2(dy, dx)}rad)`;
+            }
+        }
+    }
+    if (state) {
+        mapBearingDeg = normalizeAngle(state.bearing);
+    }
+}
+
+function createDomMapControlButton(label, title, onClick, className = "") {
+    const button = document.createElement("button");
+    button.type = "button";
+    if (className) button.className = className;
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    button.textContent = label;
+    button.style.width = "32px";
+    button.style.height = "32px";
+    button.style.border = "0";
+    button.style.background = "#fff";
+    button.style.color = "#111827";
+    button.style.font = "600 18px/1 system-ui, sans-serif";
+    button.style.display = "grid";
+    button.style.placeItems = "center";
+    button.addEventListener("click", safeMapCallback(`dom map ${title}`, (event) => {
+        event.preventDefault();
+        onClick();
+    }));
+    return button;
+}
+
+function createDomEmojiMarker(label, sizePx, background, borderColor) {
+    const marker = document.createElement("div");
+    marker.style.position = "absolute";
+    marker.style.width = `${sizePx}px`;
+    marker.style.height = `${sizePx}px`;
+    marker.style.borderRadius = "999px";
+    marker.style.display = "grid";
+    marker.style.placeItems = "center";
+    marker.style.background = background;
+    marker.style.border = `2px solid ${borderColor}`;
+    marker.style.boxShadow = "0 2px 10px rgba(0,0,0,0.55)";
+    marker.style.font = `${Math.round(sizePx * 0.58)}px/1 system-ui, -apple-system, BlinkMacSystemFont, sans-serif`;
+    marker.style.transformOrigin = "50% 50%";
+    marker.style.pointerEvents = "none";
+    marker.textContent = label;
+    marker.hidden = true;
+    return marker;
+}
+
+function createDomHeadingMarker() {
+    const marker = document.createElement("div");
+    marker.style.position = "absolute";
+    marker.style.width = "0";
+    marker.style.height = "0";
+    marker.style.borderLeft = "8px solid transparent";
+    marker.style.borderRight = "8px solid transparent";
+    marker.style.borderBottom = "22px solid #f8fafc";
+    marker.style.filter = "drop-shadow(0 1px 2px rgba(0,0,0,0.9))";
+    marker.style.transformOrigin = "50% 34px";
+    marker.style.marginTop = "-34px";
+    marker.style.pointerEvents = "none";
+    marker.hidden = true;
+    return marker;
+}
+
+function installDomMapGestures(container) {
+    const state = groundMap.__gs26_state;
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    container.addEventListener("pointerdown", safeMapCallback("dom map pointerdown", (event) => {
+        dragging = true;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        container.setPointerCapture(event.pointerId);
+        unlockMapInteraction({force: true, dropFollow: true, dropOrientation: false});
+    }));
+    container.addEventListener("pointermove", safeMapCallback("dom map pointermove", (event) => {
+        if (!dragging) return;
+        const dx = event.clientX - lastX;
+        const dy = event.clientY - lastY;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        const z = domMapNativeZoom(state);
+        const zoomScale = Math.pow(2, Math.max(0, state.zoom - z));
+        const centerPoint = latLonToWorldPointAtZoom(state.center[1], state.center[0], z);
+        const next = worldPointToLatLonAtZoom(centerPoint.x - dx / zoomScale, centerPoint.y - dy / zoomScale, z);
+        state.center = [next[1], next[0]];
+        renderDomMap();
+        rememberMapView();
+    }));
+    const endDrag = safeMapCallback("dom map pointerup", (event) => {
+        dragging = false;
+        try {
+            container.releasePointerCapture(event.pointerId);
+        } catch (e) {
+        }
+        persistMapStateSoon();
+    });
+    container.addEventListener("pointerup", endDrag);
+    container.addEventListener("pointercancel", endDrag);
+}
+
+function createDomGroundMap(container, center, zoom, bearing) {
+    revokeDomMapBlobUrls();
+    releaseDomMapTileImages(container);
+    container.replaceChildren();
+    container.style.position = "relative";
+    container.style.overflow = "hidden";
+    container.style.backgroundColor = MAP_BACKGROUND_COLOR;
+
+    const tilePane = document.createElement("div");
+    tilePane.style.position = "absolute";
+    tilePane.style.inset = "0";
+    tilePane.style.transformOrigin = "50% 50%";
+    tilePane.style.pointerEvents = "none";
+
+    const overlayPane = document.createElement("div");
+    overlayPane.style.position = "absolute";
+    overlayPane.style.inset = "0";
+    overlayPane.style.pointerEvents = "none";
+
+    const guide = document.createElement("div");
+    guide.style.position = "absolute";
+    guide.style.height = "3px";
+    guide.style.background = "#ef4444";
+    guide.style.opacity = "0.95";
+    guide.style.transformOrigin = "0 50%";
+    guide.hidden = true;
+
+    const rocket = createDomEmojiMarker("🚀", 42, "rgba(127, 29, 29, 0.92)", "#fecaca");
+    const user = createDomEmojiMarker("🧍", 40, "rgba(12, 74, 110, 0.94)", "#bae6fd");
+    const userHeading = createDomHeadingMarker();
+
+    const controls = document.createElement("div");
+    controls.style.position = "absolute";
+    controls.style.top = "10px";
+    controls.style.right = "10px";
+    controls.style.display = "grid";
+    controls.style.gap = "1px";
+    controls.style.borderRadius = "4px";
+    controls.style.overflow = "hidden";
+    controls.style.boxShadow = "0 1px 5px rgba(0,0,0,0.35)";
+    controls.style.pointerEvents = "auto";
+
+    const domMap = {
+        __gs26_dom_map: true,
+        __gs26_container: container,
+        __gs26_tile_pane: tilePane,
+        __gs26_overlay_pane: overlayPane,
+        __gs26_guide_line: guide,
+        __gs26_rocket_marker: rocket,
+        __gs26_user_marker: user,
+        __gs26_user_heading_marker: userHeading,
+        __gs26_state: {
+            center: [Number(center[0]), Number(center[1])],
+            zoom: Math.max(effectiveMinZoom(), Math.min(currentMaxZoom, Number(zoom) || effectiveMinZoom())),
+            bearing: normalizeAngle(bearing),
+        },
+        getContainer: () => container,
+        getCanvas: () => container,
+        getCanvasContainer: () => container,
+        getCenter() {
+            return {lng: this.__gs26_state.center[0], lat: this.__gs26_state.center[1]};
+        },
+        getZoom() {
+            return this.__gs26_state.zoom;
+        },
+        getBearing() {
+            return this.__gs26_state.bearing;
+        },
+        setMaxZoom(value) {
+            const nextMax = Number(value);
+            currentMaxZoom = Number.isFinite(nextMax)
+                ? Math.max(effectiveMinZoom(), nextMax)
+                : effectiveMinZoom();
+            this.__gs26_state.zoom = Math.min(this.__gs26_state.zoom, currentMaxZoom);
+            renderDomMap();
+        },
+        setMinZoom(value) {
+            const nextMin = Number(value);
+            currentMinZoom = Number.isFinite(nextMin)
+                ? Math.max(DEFAULT_SAFE_MIN_ZOOM, nextMin)
+                : DEFAULT_SAFE_MIN_ZOOM;
+            this.__gs26_state.zoom = Math.max(this.__gs26_state.zoom, effectiveMinZoom());
+            renderDomMap();
+        },
+        jumpTo(options = {}) {
+            if (Array.isArray(options.center)) {
+                this.__gs26_state.center = [Number(options.center[0]), Number(options.center[1])];
+            }
+            if (Number.isFinite(Number(options.zoom))) {
+                this.__gs26_state.zoom = Math.max(effectiveMinZoom(), Math.min(currentMaxZoom, Number(options.zoom)));
+            }
+            if (Number.isFinite(Number(options.bearing))) {
+                this.__gs26_state.bearing = normalizeAngle(Number(options.bearing));
+            }
+            renderDomMap();
+        },
+        easeTo(options = {}) {
+            this.jumpTo(options);
+        },
+        resize() {
+            renderDomMap();
+        },
+        invalidateSize() {
+            renderDomMap();
+        },
+        remove() {
+            revokeDomMapBlobUrls();
+            releaseDomMapTileImages(container);
+            container.replaceChildren();
+        },
+        stop() {},
+        on() {},
+        addControl() {},
+        getLayer() { return null; },
+        getSource() { return null; },
+        project(lngLat) {
+            const lat = Number(lngLat.lat);
+            const lng = Number(lngLat.lng);
+            return domMapScreenPointForLatLng([lat, lng]) || {x: 0, y: 0};
+        },
+        unproject(point) {
+            const state = this.__gs26_state;
+            const width = Math.max(1, container.clientWidth || container.offsetWidth || 1);
+            const height = Math.max(1, container.clientHeight || container.offsetHeight || 1);
+            const z = domMapNativeZoom(state);
+            const zoomScale = Math.pow(2, Math.max(0, state.zoom - z));
+            const centerPoint = latLonToWorldPointAtZoom(state.center[1], state.center[0], z);
+            const x = Array.isArray(point) ? point[0] : point.x;
+            const y = Array.isArray(point) ? point[1] : point.y;
+            const latLng = worldPointToLatLonAtZoom(
+                centerPoint.x + (Number(x) - width / 2) / zoomScale,
+                centerPoint.y + (Number(y) - height / 2) / zoomScale,
+                z
+            );
+            return {lat: latLng[0], lng: latLng[1]};
+        },
+    };
+
+    groundMap = domMap;
+    controls.appendChild(createDomMapControlButton("+", "Zoom In", () => applyImmediateZoomStep(1), "maplibregl-ctrl-zoom-in"));
+    controls.appendChild(createDomMapControlButton("-", "Zoom Out", () => applyImmediateZoomStep(-1), "maplibregl-ctrl-zoom-out"));
+    controls.appendChild(createDomMapControlButton("◎", "Center On Me", () => activateLocateControl()));
+    controls.appendChild(createDomMapControlButton("N", "Reset North Up", () => setGroundMapOrientationMode("north")));
+    overlayPane.appendChild(guide);
+    overlayPane.appendChild(userHeading);
+    overlayPane.appendChild(rocket);
+    overlayPane.appendChild(user);
+    container.appendChild(tilePane);
+    container.appendChild(overlayPane);
+    container.appendChild(controls);
+    installDomMapGestures(container);
+    mapReady = true;
+    window.__gs26_ground_map = groundMap;
+    renderDomMap();
+}
+
 function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
     const rasterTemplate = shouldUseNativeTileTemplate(tilesUrl)
         ? String(tilesUrl || "")
         : tileProtocolTemplate();
-    const sourceMaxZoom = clampMaxNativeZoom(effectiveMaxNativeZoom);
+    const sourceMaxZoom = Math.max(effectiveMinZoom(), MAX_NATIVE_ZOOM_LIMIT);
     return {
         version: 8,
         sources: {
@@ -2717,7 +4195,7 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
                 tiles: [rasterTemplate],
                 tileSize: 256,
                 bounds: [NA_BOUNDS.lonMin, NA_BOUNDS.latMin, NA_BOUNDS.lonMax, NA_BOUNDS.latMax],
-                minzoom: MIN_ZOOM,
+                minzoom: effectiveMinZoom(),
                 maxzoom: sourceMaxZoom,
             },
             [GUIDE_SOURCE_ID]: {
@@ -2738,6 +4216,13 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
             },
         },
         layers: [
+            {
+                id: MAP_BACKGROUND_LAYER_ID,
+                type: "background",
+                paint: {
+                    "background-color": MAP_BACKGROUND_COLOR,
+                },
+            },
             {
                 id: TILE_LAYER_ID,
                 type: "raster",
@@ -2819,10 +4304,10 @@ function addOverlayControls() {
             button.title = "Center On Me";
             button.setAttribute("aria-label", "Center On Me");
             button.innerHTML = '<span class="gs26-map-center-control-icon" aria-hidden="true"></span>';
-            button.addEventListener("click", (event) => {
+            button.addEventListener("click", safeMapCallback("center control click", (event) => {
                 event.preventDefault();
                 activateLocateControl();
-            });
+            }));
 
             container.appendChild(button);
             this._container = container;
@@ -2852,11 +4337,11 @@ function addOverlayControls() {
             button.title = "Reset North Up";
             button.setAttribute("aria-label", "Reset North Up");
             button.innerHTML = '<span class="gs26-map-north-control-icon" aria-hidden="true"></span>';
-            button.addEventListener("click", (event) => {
+            button.addEventListener("click", safeMapCallback("north control click", (event) => {
                 event.preventDefault();
                 setGroundMapOrientationMode("north");
                 updateNorthControlAppearance();
-            });
+            }));
 
             container.appendChild(button);
             this._container = container;
@@ -2936,16 +4421,31 @@ function installCustomGestureHooks() {
         updateCenterControlAppearance();
     };
 
-    canvas.addEventListener("wheel", rotateFromWheel, {capture: true, passive: false, signal});
+    const zoomFollowFromWheel = (event) => {
+        if (!groundMap || event.__gs26WheelRotateHandled) return;
+        const intent = wheelGestureIntent(event);
+        if (intent !== "zoom" || !followUserEnabled) return;
+        const deltaY = wheelDeltaPixels(event, event.deltaY);
+        if (!applyFollowWheelZoom(deltaY)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === "function") {
+            event.stopImmediatePropagation();
+        }
+    };
+
+    canvas.addEventListener("wheel", safeMapCallback("map wheel rotate", rotateFromWheel), {capture: true, passive: false, signal});
+    canvas.addEventListener("wheel", safeMapCallback("map wheel follow zoom", zoomFollowFromWheel), {capture: true, passive: false, signal});
     try {
         const mapCanvas = groundMap.getCanvas ? groundMap.getCanvas() : null;
         if (mapCanvas && mapCanvas !== canvas) {
-            mapCanvas.addEventListener("wheel", rotateFromWheel, {capture: true, passive: false, signal});
+            mapCanvas.addEventListener("wheel", safeMapCallback("map canvas wheel rotate", rotateFromWheel), {capture: true, passive: false, signal});
+            mapCanvas.addEventListener("wheel", safeMapCallback("map canvas wheel follow zoom", zoomFollowFromWheel), {capture: true, passive: false, signal});
         }
     } catch (e) {
     }
 
-    canvas.addEventListener("mousedown", (event) => {
+    canvas.addEventListener("mousedown", safeMapCallback("map mousedown", (event) => {
         if (!groundMap || event.button !== 0) return;
         cancelSmoothWheelRotation();
         if (!event.shiftKey) {
@@ -2961,20 +4461,20 @@ function installCustomGestureHooks() {
         if (state.dragPanWasEnabled) {
             groundMap.dragPan.disable();
         }
-    }, {signal});
+    }), {signal});
 
-    window.addEventListener("mousemove", (event) => {
+    window.addEventListener("mousemove", safeMapCallback("map mousemove", (event) => {
         if (!state.shiftRotateActive || !groundMap) return;
         const dx = event.clientX - state.shiftRotateStartX;
         mapBearingDeg = normalizeAngle(state.shiftRotateStartBearing + dx * 0.45);
         applyMapOrientation();
-    }, {signal});
+    }), {signal});
 
-    window.addEventListener("mouseup", () => {
+    window.addEventListener("mouseup", safeMapCallback("map mouseup", () => {
         stopShiftRotate();
-    }, {signal});
+    }), {signal});
 
-    canvas.addEventListener("touchstart", (event) => {
+    canvas.addEventListener("touchstart", safeMapCallback("map touchstart", (event) => {
         if (!groundMap) return;
         if (event.touches.length === 1) {
             state.touchGesture = null;
@@ -3003,9 +4503,9 @@ function installCustomGestureHooks() {
             startBearing: mapBearingDeg,
             rotationUnlocked: continueLatchedRotation,
         };
-    }, {passive: false, signal});
+    }), {passive: false, signal});
 
-    canvas.addEventListener("touchmove", (event) => {
+    canvas.addEventListener("touchmove", safeMapCallback("map touchmove", (event) => {
         if (!groundMap || !state.touchGesture || event.touches.length !== 2) return;
         event.preventDefault();
 
@@ -3013,7 +4513,7 @@ function installCustomGestureHooks() {
         const midpointDx = currentMidpoint.x - state.touchGesture.startMidpoint.x;
         const midpointDy = currentMidpoint.y - state.touchGesture.startMidpoint.y;
         const startCenterPoint = groundMap.project(state.touchGesture.startCenter);
-        const nextCenter = groundMap.unproject([
+        let nextCenter = groundMap.unproject([
             startCenterPoint.x - midpointDx,
             startCenterPoint.y - midpointDy,
         ]);
@@ -3022,7 +4522,7 @@ function installCustomGestureHooks() {
         const distanceScale = Math.max(0.25, Math.min(4.0, currentDistance / state.touchGesture.startDistance));
         const nextZoom = Math.min(
             currentMaxZoom,
-            Math.max(MIN_ZOOM, state.touchGesture.startZoom + Math.log2(distanceScale))
+            Math.max(effectiveMinZoom(), state.touchGesture.startZoom + Math.log2(distanceScale))
         );
 
         const currentAngle = touchAngle(event.touches);
@@ -3038,6 +4538,12 @@ function installCustomGestureHooks() {
             enterManualOrientationMode();
             nextBearing = normalizeAngle(state.touchGesture.startBearing - angleDelta);
             bearingChanged = true;
+        } else if (followUserEnabled) {
+            const followCenter = currentFollowUserZoomCenter();
+            if (followCenter) {
+                nextCenter = {lng: followCenter[0], lat: followCenter[1]};
+                cancelFollowCameraAnimation();
+            }
         }
 
         if (bearingChanged) {
@@ -3052,7 +4558,7 @@ function installCustomGestureHooks() {
         updateUserMarkerRotation();
         rememberMapView();
         updateCenterControlAppearance();
-    }, {passive: false, signal});
+    }), {passive: false, signal});
 
     const clearTouchGesture = (event) => {
         state.touchGesture = null;
@@ -3068,15 +4574,22 @@ function installCustomGestureHooks() {
         }
         state.touchCarryId = null;
     };
-    canvas.addEventListener("touchend", clearTouchGesture, {signal});
-    canvas.addEventListener("touchcancel", clearTouchGesture, {signal});
+    canvas.addEventListener("touchend", safeMapCallback("map touchend", clearTouchGesture), {signal});
+    canvas.addEventListener("touchcancel", safeMapCallback("map touchcancel", clearTouchGesture), {signal});
 
 }
 
 function installMapHooks() {
     if (!groundMap) return;
+    const onMap = (eventName, label, fn) => {
+        groundMap.on(eventName, safeMapCallback(label, fn));
+    };
 
-    groundMap.on("load", () => {
+    onMap("error", "map error", (event) => {
+        reportMapRuntimeError("maplibre error", event && (event.error || event.message || event));
+    });
+
+    onMap("load", "map load", () => {
         logMapInitTiming("load");
         ensureMapMarkerImages();
         mapReady = true;
@@ -3091,19 +4604,37 @@ function installMapHooks() {
         scheduleTileZoomDiscovery();
     });
 
-    groundMap.on("moveend", () => {
+    onMap("moveend", "map moveend", () => {
         rememberMapView();
         persistMapStateSoon();
         scheduleHighResTilePrefetch();
         scheduleTileZoomDiscovery();
         updateZoomControlAppearance();
     });
-    groundMap.on("move", () => {
+    onMap("move", "map move", () => {
         scheduleTrackingTilePrefetch();
     });
-    groundMap.on("zoomend", () => {
+    onMap("zoomend", "map zoomend", () => {
+        try {
+            const zoom = groundMap && typeof groundMap.getZoom === "function" ? groundMap.getZoom() : NaN;
+            if (
+                !Number.isFinite(zoomButtonTargetZoom)
+                || (Number.isFinite(zoom) && Math.abs(zoom - zoomButtonTargetZoom) <= WHEEL_ZOOM_LIMIT_EPSILON)
+            ) {
+                zoomButtonTargetZoom = null;
+            }
+        } catch (e) {
+            zoomButtonTargetZoom = null;
+        }
         suppressFollowCameraUntilMs = 0;
         suppressHighResPrefetch(300);
+        try {
+            const zoom = groundMap && typeof groundMap.getZoom === "function" ? groundMap.getZoom() : NaN;
+            if (promoteNativeZoomForDisplayZoom(zoom, currentTilesUrl) && groundMap && typeof groundMap.setMaxZoom === "function") {
+                groundMap.setMaxZoom(currentMaxZoom);
+            }
+        } catch (e) {
+        }
         rememberMapView();
         persistMapStateSoon();
         scheduleTrackingTilePrefetch();
@@ -3113,10 +4644,13 @@ function installMapHooks() {
         }
         updateZoomControlAppearance();
     });
-    groundMap.on("zoom", () => {
+    onMap("zoom", "map zoom", () => {
+        if (isFollowZoomHolding()) {
+            recenterFollowUserDuringZoom();
+        }
         updateZoomControlAppearance();
     });
-    groundMap.on("rotateend", () => {
+    onMap("rotateend", "map rotateend", () => {
         if (isInternalCameraUpdate() && orientationMode === "north") {
             mapBearingDeg = 0;
         } else if (isInternalCameraUpdate() && orientationMode === "user") {
@@ -3143,7 +4677,7 @@ function installMapHooks() {
         persistMapStateSoon();
         updateCenterControlAppearance();
     });
-    groundMap.on("rotate", () => {
+    onMap("rotate", "map rotate", () => {
         if (!groundMap || isInternalCameraUpdate()) return;
         if (
             Date.now() >= suppressManualOrientationDropUntilMs
@@ -3158,23 +4692,26 @@ function installMapHooks() {
         updateCenterControlAppearance();
     });
 
-    groundMap.on("drag", () => {
+    onMap("drag", "map drag", () => {
         updateUserMarkerRotation();
     });
 
-    groundMap.on("dragstart", () => {
+    onMap("dragstart", "map dragstart", () => {
         cancelSmoothWheelRotation();
         suppressHighResPrefetch(300);
         unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
     });
-    groundMap.on("zoomstart", () => {
+    onMap("zoomstart", "map zoomstart", () => {
         cancelSmoothWheelRotation();
         suppressHighResPrefetch(300);
+        if (followUserEnabled && currentFollowUserZoomCenter()) {
+            beginFollowZoomHold(900);
+        }
         suppressFollowCameraUntilMs = Date.now() + 1000;
         suppressManualOrientationDropUntilMs = Date.now() + 1500;
         unlockMapInteraction({force: true, dropFollow: false, dropOrientation: false});
     });
-    groundMap.on("rotatestart", () => {
+    onMap("rotatestart", "map rotatestart", () => {
         if (!isInternalCameraUpdate()) {
             cancelSmoothWheelRotation();
         }
@@ -3184,24 +4721,27 @@ function installMapHooks() {
         unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
     });
     for (const eventName of ["pitchstart"]) {
-        groundMap.on(eventName, disableFollowUserFromMapInteraction);
+        onMap(eventName, `map ${eventName}`, disableFollowUserFromMapInteraction);
     }
 
     try {
         const canvas = groundMap.getCanvas();
         if (canvas && !canvas.__gs26_follow_disable_hooks) {
             canvas.__gs26_follow_disable_hooks = true;
-            canvas.addEventListener("wheel", () => {
+            canvas.addEventListener("wheel", safeMapCallback("map wheel unlock", () => {
                 unlockMapInteraction({force: true, dropFollow: false, dropOrientation: false});
-            }, {passive: true});
+            }), {passive: true});
         }
     } catch (e) {
     }
 }
 
-function resetMapObjects() {
+function resetMapObjects(options = {}) {
+    const clearTileRuntimeCache = !!(options && options.clearTileRuntimeCache);
     const preservedUserVisual = currentUserMarkerVisualLatLng();
     cancelSmoothWheelRotation();
+    cancelFollowZoomAnimation();
+    followZoomHoldUntilMs = 0;
     cancelUserMarkerAnimation();
     if (groundMap) {
         try {
@@ -3218,8 +4758,21 @@ function resetMapObjects() {
         clearTimeout(tileZoomDiscoveryTimer);
         tileZoomDiscoveryTimer = null;
     }
-    tileMemoryCache.clear();
-    tileMemoryCacheBytes = 0;
+    if (runtimeMinZoomTimer != null) {
+        clearTimeout(runtimeMinZoomTimer);
+        runtimeMinZoomTimer = null;
+    }
+    pendingRuntimeMinZoom = null;
+    if (mapFirstPaintTimer != null) {
+        clearTimeout(mapFirstPaintTimer);
+        mapFirstPaintTimer = null;
+    }
+    mapFirstPaintGateActive = false;
+    mapFirstPaintTargetZoom = null;
+    if (clearTileRuntimeCache) {
+        tileMemoryCache.clear();
+        tileMemoryCacheBytes = 0;
+    }
     if (markerSyncTimer) {
         clearTimeout(markerSyncTimer);
         markerSyncTimer = null;
@@ -3235,11 +4788,30 @@ function resetMapObjects() {
     userHeadingIndicatorDeg = Number.isFinite(userHeadingDeg) ? userHeadingDeg : userHeadingIndicatorDeg;
 }
 
+function mapCameraAlreadyAt(center, zoom, bearing) {
+    if (!groundMap || !Array.isArray(center)) return false;
+    try {
+        const currentCenter = groundMap.getCenter && groundMap.getCenter();
+        const currentZoom = groundMap.getZoom && Number(groundMap.getZoom());
+        const currentBearing = groundMap.getBearing && Number(groundMap.getBearing());
+        if (!currentCenter || !Number.isFinite(currentZoom) || !Number.isFinite(currentBearing)) return false;
+        return Math.abs(Number(currentCenter.lng) - Number(center[0])) <= 0.000001
+            && Math.abs(Number(currentCenter.lat) - Number(center[1])) <= 0.000001
+            && Math.abs(currentZoom - Number(zoom)) <= 0.001
+            && Math.abs(shortestAngleDiff(currentBearing, Number(bearing))) <= 0.05;
+    } catch (e) {
+        return false;
+    }
+}
+
 function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, assetTitle) {
+    installMapRuntimeGuardsOnce();
     ensureMarkerStylesOnce();
     requestPersistentTileStorage();
     initCompassOnce();
-    ensureMapProtocolOnce();
+    if (!shouldUseDomMapRenderer()) {
+        ensureMapProtocolOnce();
+    }
     mapInitStartedAtMs = Date.now();
     mapInitTimingLogged = false;
     firstTileTimingLogged = false;
@@ -3252,32 +4824,31 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     }
 
     const previousTilesUrl = currentTilesUrl;
-    const previousMaxNativeZoom = currentMaxNativeZoom;
     const nextConfiguredMaxNativeZoom = clampMaxNativeZoom(maxNativeZoom);
     const nextConfiguredMaxDisplayZoom = clampMaxDisplayZoom(
         Number(window.__gs26_max_display_zoom),
         nextConfiguredMaxNativeZoom
     );
-    const nextMaxNativeZoom = effectiveMaxNativeZoomFor(nextConfiguredMaxNativeZoom, tilesUrl);
-    const nextMaxZoom = Math.max(
+    let nextMaxNativeZoom = effectiveMaxNativeZoomFor(nextConfiguredMaxNativeZoom, tilesUrl);
+    let nextMaxZoom = Math.max(
+        DEFAULT_SAFE_MIN_ZOOM,
         nextConfiguredMaxDisplayZoom,
         nextMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA
     );
-    const needsFullRecreate =
-        !!groundMap && (
-            previousTilesUrl !== tilesUrl ||
-            previousMaxNativeZoom !== nextMaxNativeZoom
-        );
-
+    if (shouldUseDomMapRenderer()) {
+        nextMaxZoom = Math.max(nextMaxZoom, nextMaxNativeZoom + DOM_MAP_MAX_OVERZOOM_DELTA);
+    }
     trackedAssetLabel = assetTitle || trackedAssetTitle();
     currentTilesUrl = tilesUrl;
     configuredMaxNativeZoom = nextConfiguredMaxNativeZoom;
     configuredMaxDisplayZoom = nextConfiguredMaxDisplayZoom;
     currentMaxNativeZoom = nextMaxNativeZoom;
     currentMaxZoom = nextMaxZoom;
-    persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+    currentMinZoom = DEFAULT_SAFE_MIN_ZOOM;
     currentPrefetchKey = null;
-    scheduleTileCacheSweep(tilesUrl);
+    if (previousTilesUrl && previousTilesUrl !== tilesUrl) {
+        scheduleTileCacheSweep(tilesUrl);
+    }
 
     const container = document.getElementById("ground-map");
     if (!container) return;
@@ -3287,10 +4858,11 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         : (Number.isFinite(lastMapZoom)
             ? lastMapZoom
             : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : zoom));
+    promoteNativeZoomForDisplayZoom(desiredZoom, tilesUrl);
     if (Number.isFinite(desiredZoom) && desiredZoom > currentMaxZoom) {
-        currentMaxZoom = desiredZoom;
+        currentMaxZoom = Math.min(MAX_DISPLAY_ZOOM_LIMIT, desiredZoom);
     }
-    const clampedZoom = Math.min(currentMaxZoom, Math.max(MIN_ZOOM, desiredZoom));
+    const clampedZoom = Math.min(currentMaxZoom, Math.max(effectiveMinZoom(), desiredZoom));
     if (Number.isFinite(pendingRestoreZoom) && pendingRestoreZoom <= currentMaxZoom) {
         pendingRestoreZoom = null;
         lastMapZoom = clampedZoom;
@@ -3302,16 +4874,60 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         : [centerLon, centerLat];
     const startBearing = orientationMode === "north" ? 0 : mapBearingDeg;
 
+    if (shouldUseDomMapRenderer()) {
+        if (isDomMapActive() && groundMap.getContainer && groundMap.getContainer() === container) {
+            groundMap.setMaxZoom(currentMaxZoom);
+            groundMap.jumpTo({
+                center: startCenter,
+                zoom: clampedZoom,
+                bearing: startBearing,
+            });
+        } else {
+            if (groundMap) {
+                try {
+                    groundMap.remove();
+                } catch (e) {
+                }
+                groundMap = null;
+                window.__gs26_ground_map = null;
+            }
+            resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
+            applyDiscoveredCachedMaxNativeZoom(currentTilesUrl);
+            createDomGroundMap(container, startCenter, clampedZoom, startBearing);
+        }
+        rememberMapView();
+        syncRequestedMapControlState();
+        if (Array.isArray(userMarkerDisplayedLatLng)) {
+            userMarkerDisplayedLatLng = [userMarkerDisplayedLatLng[0], userMarkerDisplayedLatLng[1]];
+        } else if (lastUserLatLng) {
+            userMarkerDisplayedLatLng = [lastUserLatLng[0], lastUserLatLng[1]];
+        }
+        renderDomMapOverlays();
+        scheduleTrackingTilePrefetch();
+        scheduleHighResTilePrefetch();
+        scheduleTileZoomDiscovery();
+        return;
+    }
+
+    const needsFullRecreate =
+        !!groundMap && (
+            isDomMapActive() ||
+            previousTilesUrl !== tilesUrl
+        );
+    persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+
     if (!needsFullRecreate && groundMap && groundMap.getContainer && groundMap.getContainer() === container) {
         groundMap.resize();
         groundMap.setMaxZoom(currentMaxZoom);
         updateZoomControlAppearance();
-        markInternalCameraUpdate(250);
-        groundMap.jumpTo({
-            center: startCenter,
-            zoom: clampedZoom,
-            bearing: startBearing,
-        });
+        if (!mapCameraAlreadyAt(startCenter, clampedZoom, startBearing)) {
+            markInternalCameraUpdate(250);
+            groundMap.jumpTo({
+                center: startCenter,
+                zoom: clampedZoom,
+                bearing: startBearing,
+            });
+        }
         rememberMapView();
         applyMapOrientation();
         applyPendingCenterIfPossible();
@@ -3328,32 +4944,44 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         groundMap = null;
         window.__gs26_ground_map = null;
     }
-    resetMapObjects();
+    resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
+    applyDiscoveredCachedMaxNativeZoom(currentTilesUrl);
+    startMapFirstPaintGate(clampedZoom);
+    warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom);
 
-    const maplibre = getMapLibre();
-    groundMap = new maplibre.Map({
-        container,
-        style: makeMapStyle(currentTilesUrl, currentMaxNativeZoom),
-        center: startCenter,
-        zoom: clampedZoom,
-        bearing: startBearing,
-        minZoom: MIN_ZOOM,
-        maxZoom: currentMaxZoom,
-        dragRotate: true,
-        dragPan: true,
-        scrollZoom: true,
-        doubleClickZoom: true,
-        boxZoom: false,
-        touchZoomRotate: true,
-        touchPitch: false,
-        pitchWithRotate: false,
-        maxPitch: 0,
-        attributionControl: false,
-        cooperativeGestures: false,
-        renderWorldCopies: false,
-        fadeDuration: 0,
-        refreshExpiredTiles: false,
-    });
+    let maplibre = null;
+    try {
+        maplibre = getMapLibre();
+        groundMap = new maplibre.Map({
+            container,
+            style: makeMapStyle(currentTilesUrl, currentMaxNativeZoom),
+            center: startCenter,
+            zoom: clampedZoom,
+            bearing: startBearing,
+            minZoom: effectiveMinZoom(),
+            maxZoom: currentMaxZoom,
+            dragRotate: true,
+            dragPan: true,
+            scrollZoom: true,
+            doubleClickZoom: true,
+            boxZoom: false,
+            touchZoomRotate: true,
+            touchPitch: false,
+            pitchWithRotate: false,
+            maxPitch: 0,
+            attributionControl: false,
+            cooperativeGestures: false,
+            renderWorldCopies: false,
+            fadeDuration: 0,
+            refreshExpiredTiles: false,
+        });
+    } catch (error) {
+        reportMapRuntimeError("map construction failed", error);
+        finishMapFirstPaintGate("map-construction-error");
+        groundMap = null;
+        window.__gs26_ground_map = null;
+        return;
+    }
     groundMap.invalidateSize = () => {
         try {
             groundMap.resize();
@@ -3404,8 +5032,8 @@ function applyGroundMapMarkers(rLat, rLon, uLat, uLon) {
     pendingMarkerSync = null;
     lastMarkerSyncAtMs = Date.now();
 
-    const hasRocket = Number.isFinite(rLat) && Number.isFinite(rLon);
-    const hasUser = Number.isFinite(uLat) && Number.isFinite(uLon);
+    const hasRocket = isUsableLatLng(rLat, rLon);
+    const hasUser = isUsableLatLng(uLat, uLon);
 
     if (hasRocket) {
         lastRocketLatLng = [rLat, rLon];
@@ -3454,7 +5082,14 @@ function applyGroundMapMarkers(rLat, rLon, uLat, uLon) {
 }
 
 function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
-    pendingMarkerSync = [Number(rLat), Number(rLon), Number(uLat), Number(uLon)];
+    const nextRocket = stabilizeLatLng("rocket", rLat, rLon);
+    const nextUser = stabilizeLatLng("user", uLat, uLon);
+    pendingMarkerSync = [
+        nextRocket ? nextRocket[0] : NaN,
+        nextRocket ? nextRocket[1] : NaN,
+        nextUser ? nextUser[0] : NaN,
+        nextUser ? nextUser[1] : NaN,
+    ];
     const now = Date.now();
     const delayMs = Math.max(0, MARKER_SYNC_MIN_INTERVAL_MS - (now - lastMarkerSyncAtMs));
     if (delayMs <= 0) {
@@ -3463,14 +5098,14 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
         return;
     }
     if (markerSyncTimer != null) return;
-    markerSyncTimer = setTimeout(() => {
+    markerSyncTimer = setTimeout(safeMapCallback("marker sync timer", () => {
         const args = pendingMarkerSync;
         if (!args) {
             markerSyncTimer = null;
             return;
         }
         applyGroundMapMarkers(args[0], args[1], args[2], args[3]);
-    }, delayMs);
+    }), delayMs);
 }
 
 function centerGroundMapOn(lat, lon) {
@@ -3508,44 +5143,66 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     const rLon = Number(rocketLon);
     const uLat = Number(userLat);
     const uLon = Number(userLon);
-    if (Number.isFinite(rLat) && Number.isFinite(rLon)) {
-        lastRocketLatLng = [rLat, rLon];
+    const stableRocket = stabilizeLatLng("rocket", rLat, rLon);
+    const stableUser = stabilizeLatLng("user", uLat, uLon);
+    if (stableRocket) {
+        lastRocketLatLng = [stableRocket[0], stableRocket[1]];
     }
-    if (Number.isFinite(uLat) && Number.isFinite(uLon)) {
-        lastUserLatLng = [uLat, uLon];
+    if (stableUser) {
+        lastUserLatLng = [stableUser[0], stableUser[1]];
     }
 
-    scheduleTrackingTilePrefetch();
+    if (stableUser) {
+        scheduleTrackingTilePrefetch();
+    }
 }
 
 (function pinGroundStation26() {
     const api = (window.GS26 = window.GS26 || {});
 
-    api.initGroundMap = initGroundMap;
-    api.updateGroundMapMarkers = updateGroundMapMarkers;
-    api.centerGroundMapOn = centerGroundMapOn;
-    api.getLastUserLatLng = getLastUserLatLng;
-    api.scheduleHighResTilePrefetch = scheduleHighResTilePrefetch;
-    api.setGroundMapPrefetchContext = setGroundMapPrefetchContext;
-    api.setGroundMapFollowUser = setGroundMapFollowUser;
-    api.setGroundMapOrientationMode = setGroundMapOrientationMode;
-    api.disableFollowUserFromMapInteraction = disableFollowUserFromMapInteraction;
-    api.adjustGroundMapBearing = adjustGroundMapBearing;
-    api.setGroundMapBearing = setGroundMapBearing;
-    api.syncRequestedMapControlState = syncRequestedMapControlState;
-    api.initCompassOnce = initCompassOnce;
-    api.handleOrientation = handleOrientation;
+    api.initGroundMap = safeMapCallback("api initGroundMap", initGroundMap);
+    api.updateGroundMapMarkers = safeMapCallback("api updateGroundMapMarkers", updateGroundMapMarkers);
+    api.centerGroundMapOn = safeMapCallback("api centerGroundMapOn", centerGroundMapOn);
+    api.getLastUserLatLng = safeMapCallback("api getLastUserLatLng", getLastUserLatLng);
+    api.scheduleHighResTilePrefetch = safeMapCallback("api scheduleHighResTilePrefetch", scheduleHighResTilePrefetch);
+    api.setGroundMapPrefetchContext = safeMapCallback("api setGroundMapPrefetchContext", setGroundMapPrefetchContext);
+    api.setGroundMapFollowUser = safeMapCallback("api setGroundMapFollowUser", setGroundMapFollowUser);
+    api.setGroundMapOrientationMode = safeMapCallback("api setGroundMapOrientationMode", setGroundMapOrientationMode);
+    api.disableFollowUserFromMapInteraction = safeMapCallback("api disableFollowUserFromMapInteraction", disableFollowUserFromMapInteraction);
+    api.adjustGroundMapBearing = safeMapCallback("api adjustGroundMapBearing", adjustGroundMapBearing);
+    api.setGroundMapBearing = safeMapCallback("api setGroundMapBearing", setGroundMapBearing);
+    api.syncRequestedMapControlState = safeMapCallback("api syncRequestedMapControlState", syncRequestedMapControlState);
+    api.initCompassOnce = safeMapCallback("api initCompassOnce", initCompassOnce);
+    api.handleOrientation = safeMapCallback("api handleOrientation", handleOrientation);
     api.getMapLibre = getMapLibre;
     api.normalizeAngle = normalizeAngle;
     api.shortestAngleDiff = shortestAngleDiff;
+    api.setTileCacheEnabled = safeMapCallback("api setTileCacheEnabled", (enabled) => {
+        const nextEnabled = enabled === true;
+        window.__gs26_tile_cache_enabled = nextEnabled;
+        window.__gs26_tile_cache_disabled = !nextEnabled;
+        try {
+            if (window.localStorage) {
+                window.localStorage.setItem("gs26_tile_cache_enabled", nextEnabled ? "on" : "off");
+            }
+        } catch (e) {
+        }
+        if (!nextEnabled) {
+            tileMemoryCache.clear();
+            tileMemoryCacheBytes = 0;
+            tileCacheHandles.clear();
+            stopTrackingTilePrefetch();
+            suppressHighResPrefetch(60_000);
+        }
+    });
     api.ensureMarkerStylesOnce = ensureMarkerStylesOnce;
-    api.rememberMapView = rememberMapView;
-    api.updateUserMarkerRotation = updateUserMarkerRotation;
-    api.setGroundMapUserHeading = setGroundMapUserHeading;
-    api.applyMapOrientation = applyMapOrientation;
-    api.syncRocketGuideLine = syncRocketGuideLine;
-    api.reloadPersistedMapState = loadPersistedMapState;
-    window.__gs26_reload_persisted_map_state = loadPersistedMapState;
+    api.rememberMapView = safeMapCallback("api rememberMapView", rememberMapView);
+    api.updateUserMarkerRotation = safeMapCallback("api updateUserMarkerRotation", updateUserMarkerRotation);
+    api.setGroundMapUserHeading = safeMapCallback("api setGroundMapUserHeading", setGroundMapUserHeading);
+    api.applyMapOrientation = safeMapCallback("api applyMapOrientation", applyMapOrientation);
+    api.syncRocketGuideLine = safeMapCallback("api syncRocketGuideLine", syncRocketGuideLine);
+    api.reloadPersistedMapState = safeMapCallback("api reloadPersistedMapState", loadPersistedMapState);
+    window.__gs26_reload_persisted_map_state = api.reloadPersistedMapState;
 
     api.state = api.state || {};
     Object.assign(api.state, {
@@ -3600,6 +5257,7 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     window.setGroundMapBearing = api.setGroundMapBearing;
     window.syncRequestedMapControlState = api.syncRequestedMapControlState;
     window.scheduleHighResTilePrefetch = api.scheduleHighResTilePrefetch;
+    window.setGroundMapTileCacheEnabled = api.setTileCacheEnabled;
 
     window.__gs26_ground_station_loaded = true;
     try {

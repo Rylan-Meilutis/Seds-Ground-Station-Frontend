@@ -4,14 +4,14 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::network_topology_tab::collect_endpoint_rows;
 use super::types::{
-    display_flight_state, BoardStatusEntry, FlightState, NetworkTopologyMsg,
-    NetworkTopologyNodeKind, NetworkTopologyStatus,
+    BoardStatusEntry, FlightState, NetworkTopologyMsg, NetworkTopologyNodeKind,
+    NetworkTopologyStatus, display_flight_state,
 };
 use super::{
+    AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
     compensated_network_time_ms, current_language, current_wallclock_ms, format_network_time,
     format_timestamp_ms_clock, layout::ThemeConfig, localized_copy, monotonic_now_ms,
-    translate_text, AlertMsg, FrontendNetworkMetrics, NetworkTimeSync,
-    PersistentNotification,
+    translate_text,
 };
 
 #[component]

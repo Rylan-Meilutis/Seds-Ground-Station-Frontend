@@ -8,6 +8,7 @@ pub fn SettingsPage(
     theme_preset: Signal<String>,
     language_code: Signal<String>,
     network_flow_animation_enabled: Signal<bool>,
+    network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
     map_prefetch_enabled: Signal<bool>,
     calibration_capture_sample_count: Signal<usize>,
@@ -26,6 +27,7 @@ pub fn SettingsPage(
     let selected_theme = theme_preset.read().clone();
     let selected_language = language_code.read().clone();
     let flow_animation_enabled = *network_flow_animation_enabled.read();
+    let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
     let map_prefetch_enabled_value = *map_prefetch_enabled.read();
     let calibration_capture_sample_count_value = *calibration_capture_sample_count.read();
@@ -131,6 +133,20 @@ pub fn SettingsPage(
     );
     let flow_on_label = localized_copy(&language, "On", "Activado", "Active");
     let flow_off_label = localized_copy(&language, "Off", "Desactivado", "Desactive");
+    let topology_layout_title = localized_copy(
+        &language,
+        "Topology Layout",
+        "Diseno de topologia",
+        "Disposition topologie",
+    );
+    let topology_layout_desc = localized_copy(
+        &language,
+        "Choose whether the network graph expands across columns or down rows.",
+        "Elige si el grafo de red se expande en columnas o en filas.",
+        "Choisissez si le graphe reseau s'etend en colonnes ou en lignes.",
+    );
+    let topology_columns_label = localized_copy(&language, "Columns", "Columnas", "Colonnes");
+    let topology_rows_label = localized_copy(&language, "Rows", "Filas", "Lignes");
     let chart_labels_title = localized_copy(
         &language,
         "State Chart Scale Labels",
@@ -329,6 +345,22 @@ pub fn SettingsPage(
                         style: if !flow_animation_enabled { chip_selected.clone() } else { chip_idle.clone() },
                         onclick: move |_| network_flow_animation_enabled.set(false),
                         "{flow_off_label}"
+                    }
+                }
+                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{topology_layout_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{topology_layout_desc}" }
+                    div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                        button {
+                            style: if !topology_vertical_enabled { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| network_topology_vertical.set(false),
+                            "{topology_columns_label}"
+                        }
+                        button {
+                            style: if topology_vertical_enabled { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| network_topology_vertical.set(true),
+                            "{topology_rows_label}"
+                        }
                     }
                 }
             }

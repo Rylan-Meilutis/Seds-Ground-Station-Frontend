@@ -52,8 +52,8 @@ use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
 use types::{
-    display_flight_state, BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg,
-    TelemetryRow,
+    BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
+    display_flight_state,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use version_page::VersionTab;
@@ -61,8 +61,8 @@ use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering}, Arc,
-    Mutex,
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering},
 };
 
 use once_cell::sync::Lazy;
@@ -288,6 +288,8 @@ static LATEST_TELEMETRY: Lazy<Mutex<HashMap<LatestTelemetryKey, LatestTelemetryS
     Lazy::new(|| Mutex::new(HashMap::new()));
 static LATEST_TELEMETRY_BY_TYPE: Lazy<Mutex<HashMap<String, LatestTelemetrySample>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static TELEMETRY_PACKET_COUNTS_BY_SENDER: Lazy<Mutex<HashMap<String, u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 static LAST_TELEMETRY_CACHE_PERSIST_MS: AtomicI64 = AtomicI64::new(0);
 static RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD: AtomicBool = AtomicBool::new(false);
 
@@ -337,6 +339,7 @@ fn reset_latest_telemetry(rows: &[TelemetryRow]) {
             update_latest_telemetry_locked(&mut latest, &mut latest_by_type, row);
         }
     }
+    reset_telemetry_packet_counts(rows);
 }
 
 /// Inserts a single row into the latest-row indexes.
@@ -346,6 +349,7 @@ fn update_latest_telemetry(row: &TelemetryRow) {
     {
         update_latest_telemetry_locked(&mut latest, &mut latest_by_type, row);
     }
+    note_sender_packet_count(row);
 }
 
 /// Inserts a batch of rows into the latest-row indexes under a single lock.
@@ -357,6 +361,44 @@ fn update_latest_telemetry_batch(rows: &[TelemetryRow]) {
             update_latest_telemetry_locked(&mut latest, &mut latest_by_type, row);
         }
     }
+    note_sender_packet_count_batch(rows);
+}
+
+fn reset_telemetry_packet_counts(rows: &[TelemetryRow]) {
+    if let Ok(mut counts) = TELEMETRY_PACKET_COUNTS_BY_SENDER.lock() {
+        counts.clear();
+        for row in rows {
+            if !row.sender_id.trim().is_empty() {
+                *counts.entry(row.sender_id.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+}
+
+fn note_sender_packet_count(row: &TelemetryRow) {
+    if row.sender_id.trim().is_empty() {
+        return;
+    }
+    if let Ok(mut counts) = TELEMETRY_PACKET_COUNTS_BY_SENDER.lock() {
+        *counts.entry(row.sender_id.clone()).or_insert(0) += 1;
+    }
+}
+
+fn note_sender_packet_count_batch(rows: &[TelemetryRow]) {
+    if let Ok(mut counts) = TELEMETRY_PACKET_COUNTS_BY_SENDER.lock() {
+        for row in rows {
+            if !row.sender_id.trim().is_empty() {
+                *counts.entry(row.sender_id.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+}
+
+pub(crate) fn telemetry_packet_counts_by_sender() -> HashMap<String, u64> {
+    TELEMETRY_PACKET_COUNTS_BY_SENDER
+        .lock()
+        .map(|counts| counts.clone())
+        .unwrap_or_default()
 }
 
 /// Applies latest-row replacement rules while both latest-row maps are already locked.
@@ -489,7 +531,7 @@ fn fallback_latest_telemetry_value(
 
 #[cfg(test)]
 mod latest_telemetry_tests {
-    use super::{latest_telemetry_value, reset_latest_telemetry, TelemetryRow};
+    use super::{TelemetryRow, latest_telemetry_value, reset_latest_telemetry};
 
     #[test]
     fn derives_latest_loadcell_labels_from_kg1000_samples() {
@@ -613,6 +655,7 @@ const MAP_DISTANCE_UNITS_STORAGE_KEY: &str = "gs_map_distance_units";
 const THEME_PRESET_STORAGE_KEY: &str = "gs_theme_preset";
 const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
+const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertical";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
 const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
 const CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY: &str = "gs_calibration_capture_sample_count";
@@ -775,19 +818,11 @@ fn mark_chart_render_dirty() {
 }
 
 fn default_live_tick_ms() -> u32 {
-    if cfg!(target_os = "ios") {
-        66
-    } else {
-        50
-    }
+    if cfg!(target_os = "ios") { 66 } else { 50 }
 }
 
 fn default_chart_tick_ms() -> u32 {
-    if cfg!(target_os = "ios") {
-        125
-    } else {
-        100
-    }
+    if cfg!(target_os = "ios") { 125 } else { 100 }
 }
 
 fn bump_chart_render_epoch() {
@@ -1322,6 +1357,8 @@ pub fn NativeSettingsPage() -> Element {
     let language_code = use_signal(|| persist::get_or(LANGUAGE_STORAGE_KEY, "en"));
     let network_flow_animation_enabled =
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
+    let network_topology_vertical =
+        use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
     let map_prefetch_enabled =
@@ -1369,6 +1406,17 @@ pub fn NativeSettingsPage() -> Element {
                 "off"
             };
             persist::set_string(NETWORK_FLOW_ANIMATION_STORAGE_KEY, value);
+        });
+    }
+    {
+        let network_topology_vertical = network_topology_vertical;
+        use_effect(move || {
+            let value = if *network_topology_vertical.read() {
+                "on"
+            } else {
+                "off"
+            };
+            persist::set_string(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, value);
         });
     }
     {
@@ -1445,6 +1493,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut theme_preset = theme_preset;
         let mut language_code = language_code;
         let mut network_flow_animation_enabled = network_flow_animation_enabled;
+        let mut network_topology_vertical = network_topology_vertical;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
         let mut map_prefetch_enabled = map_prefetch_enabled;
         let mut calibration_capture_sample_count = calibration_capture_sample_count;
@@ -1454,6 +1503,7 @@ pub fn NativeSettingsPage() -> Element {
             theme_preset.set("default".to_string());
             language_code.set("en".to_string());
             network_flow_animation_enabled.set(true);
+            network_topology_vertical.set(false);
             state_chart_labels_vertical.set(false);
             map_prefetch_enabled.set(true);
             calibration_capture_sample_count.set(200);
@@ -1466,6 +1516,7 @@ pub fn NativeSettingsPage() -> Element {
             theme_preset,
             language_code,
             network_flow_animation_enabled,
+            network_topology_vertical,
             state_chart_labels_vertical,
             map_prefetch_enabled,
             calibration_capture_sample_count,
@@ -1808,8 +1859,8 @@ fn reset_tminus_display_latch() {
 #[cfg(test)]
 mod launch_clock_tests {
     use super::{
-        launch_clock_tminus_remaining_ms, monotonic_tminus_display_ms, reset_tminus_display_latch,
-        LaunchClockKind, LaunchClockMsg,
+        LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms,
+        monotonic_tminus_display_ms, reset_tminus_display_latch,
     };
     use std::sync::Mutex;
 
@@ -2500,6 +2551,8 @@ fn TelemetryDashboardInner() -> Element {
     let language_code = use_signal(|| persist::get_or(LANGUAGE_STORAGE_KEY, "en"));
     let network_flow_animation_enabled =
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
+    let network_topology_vertical =
+        use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
     let map_prefetch_enabled =
@@ -2928,6 +2981,17 @@ fn TelemetryDashboardInner() -> Element {
         });
     }
     {
+        let network_topology_vertical = network_topology_vertical;
+        use_effect(move || {
+            let value = if *network_topology_vertical.read() {
+                "on"
+            } else {
+                "off"
+            };
+            persist::set_string(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
         let state_chart_labels_vertical = state_chart_labels_vertical;
         use_effect(move || {
             let value = if *state_chart_labels_vertical.read() {
@@ -3139,7 +3203,8 @@ fn TelemetryDashboardInner() -> Element {
                     gloo_timers::future::TimeoutFuture::new(chart_tick_ms).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(chart_tick_ms as u64)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(chart_tick_ms as u64))
+                        .await;
 
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
@@ -4059,6 +4124,7 @@ fn TelemetryDashboardInner() -> Element {
                             theme_preset: theme_preset,
                             language_code: language_code,
                             network_flow_animation_enabled: network_flow_animation_enabled,
+                            network_topology_vertical: network_topology_vertical,
                             state_chart_labels_vertical: state_chart_labels_vertical,
                             map_prefetch_enabled: map_prefetch_enabled,
                             calibration_capture_sample_count: calibration_capture_sample_count,
@@ -4076,6 +4142,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut theme_preset = theme_preset;
                                 let mut language_code = language_code;
                                 let mut network_flow_animation_enabled = network_flow_animation_enabled;
+                                let mut network_topology_vertical = network_topology_vertical;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
                                 let mut map_prefetch_enabled = map_prefetch_enabled;
                                 let mut calibration_capture_sample_count = calibration_capture_sample_count;
@@ -4090,6 +4157,7 @@ fn TelemetryDashboardInner() -> Element {
                                     theme_preset.set("default".to_string());
                                     language_code.set("en".to_string());
                                     network_flow_animation_enabled.set(true);
+                                    network_topology_vertical.set(false);
                                     state_chart_labels_vertical.set(false);
                                     map_prefetch_enabled.set(true);
                                     calibration_capture_sample_count.set(200);
@@ -5059,6 +5127,7 @@ fn TelemetryDashboardInner() -> Element {
                                         topology: network_topology,
                                         layout: layout.network_tab.clone(),
                                         flow_animation_enabled: *network_flow_animation_enabled.read(),
+                                        vertical_layout: *network_topology_vertical.read(),
                                         theme: theme.clone(),
                                     }
                                 }

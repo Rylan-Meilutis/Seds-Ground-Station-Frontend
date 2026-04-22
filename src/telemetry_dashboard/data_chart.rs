@@ -33,8 +33,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::HISTORY_MS;
 
@@ -535,7 +535,10 @@ impl ChartsCache {
     }
 
     fn ingest_row_for_key(&self, chart: &mut CachedChart, key: &str, row: &TelemetryRow) {
-        if chart_keys_for_row(row).iter().any(|candidate| candidate == key) {
+        if chart_keys_for_row(row)
+            .iter()
+            .any(|candidate| candidate == key)
+        {
             chart.ingest(row);
         }
     }

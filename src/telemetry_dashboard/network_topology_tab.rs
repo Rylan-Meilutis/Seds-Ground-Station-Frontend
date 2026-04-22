@@ -1,6 +1,8 @@
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
+use once_cell::sync::Lazy;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Mutex;
 
 const GRAPH_VIEWPORT_ID: &str = "network-topology-viewport";
 const GRAPH_SURFACE_ID: &str = "network-topology-surface";
@@ -44,13 +46,31 @@ struct GraphViewportFocus {
     bottom_extent: i32,
 }
 
+#[derive(Clone, Copy, Default)]
+struct NodePacketPulse {
+    last_count: u64,
+    active_until_ms: u64,
+    serial: u64,
+}
+
+#[derive(Clone)]
+struct NodePacketStats {
+    sender_id: String,
+    total: u64,
+}
+
+static NODE_PACKET_PULSES: Lazy<Mutex<HashMap<String, NodePacketPulse>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 const GRAPH_MIN_WIDTH: i32 = 1080;
 const GRAPH_MIN_HEIGHT: i32 = 720;
 const EMBEDDED_GRAPH_MIN_HEIGHT: i32 = 520;
+const PACKET_PULSE_MS: u64 = 3_400;
 const ZOOM_MIN: f32 = 0.12;
 const ZOOM_MAX: f32 = 2.2;
 const ZOOM_STEP: f32 = 0.2;
 const GRAPH_LINK_CHANNEL_COLOR: &str = "#243447";
+const GRAPH_LINK_NODE_CLEARANCE: f32 = 7.0;
 
 fn graph_viewport_style(
     theme: &ThemeConfig,
@@ -96,6 +116,7 @@ pub fn NetworkTopologyTab(
     topology: Signal<NetworkTopologyMsg>,
     layout: NetworkTabLayout,
     flow_animation_enabled: bool,
+    vertical_layout: bool,
     theme: ThemeConfig,
 ) -> Element {
     let snapshot = topology.read();
@@ -122,7 +143,11 @@ pub fn NetworkTopologyTab(
         .cloned()
         .collect::<Vec<_>>();
     let graph_links = collapse_visible_links(&snapshot.nodes, &snapshot.links, &visible_node_ids);
-    let graph_layout = compute_graph_layout(&graph_nodes, &graph_links);
+    let graph_layout = compute_graph_layout(&graph_nodes, &graph_links, vertical_layout);
+    let packet_stats =
+        packet_stats_by_node(&graph_nodes, &super::telemetry_packet_counts_by_sender());
+    let packet_pulses =
+        node_packet_pulse_serials(&graph_nodes, &packet_stats, flow_animation_enabled);
     let router_placement = graph_nodes
         .iter()
         .find(|node| node.kind == NetworkTopologyNodeKind::Router)
@@ -178,7 +203,6 @@ pub fn NetworkTopologyTab(
             bottom_extent: (bound_max_y - router.y).max(router_radius),
         }
     });
-    let endpoint_rows = collect_endpoint_rows(&snapshot.nodes, &snapshot.links);
     let viewport_id = if *is_fullscreen.read() {
         GRAPH_VIEWPORT_FULLSCREEN_ID
     } else {
@@ -278,6 +302,26 @@ pub fn NetworkTopologyTab(
                 width: 0;
                 height: 0;
             }
+            @keyframes gs26-network-node-packet-pulse {
+                0% {
+                    opacity: 0;
+                    transform: scale(0.88);
+                    border-color: rgba(125, 211, 252, 0.1);
+                    box-shadow: 0 0 10px rgba(56, 189, 248, 0.08), inset 0 0 8px rgba(14, 165, 233, 0.06);
+                }
+                24% {
+                    opacity: 0.9;
+                    transform: scale(1.02);
+                    border-color: rgba(125, 211, 252, 0.95);
+                    box-shadow: 0 0 44px rgba(56, 189, 248, 0.48), inset 0 0 24px rgba(14, 165, 233, 0.24);
+                }
+                100% {
+                    opacity: 0;
+                    transform: scale(1.48);
+                    border-color: rgba(125, 211, 252, 0);
+                    box-shadow: 0 0 8px rgba(56, 189, 248, 0), inset 0 0 6px rgba(14, 165, 233, 0);
+                }
+            }
             "#}
         }
         if *is_fullscreen.read() {
@@ -322,7 +366,7 @@ pub fn NetworkTopologyTab(
                 div {
                     style: "{graph_viewport_style(&theme, EMBEDDED_GRAPH_MIN_HEIGHT, None, true)}",
                     id: "{viewport_id}",
-                    {render_graph_surface(&theme, surface_id, canvas_id, render_width, render_height, &graph_links, &graph_nodes, &snapshot.nodes, &render_placements, flow_animation_enabled, expanded_node_id)}
+                    {render_graph_surface(&theme, surface_id, canvas_id, render_width, render_height, &graph_links, &graph_nodes, &snapshot.nodes, &render_placements, &packet_stats, &packet_pulses, flow_animation_enabled, expanded_node_id)}
                 }
             }
         } else {
@@ -369,9 +413,8 @@ pub fn NetworkTopologyTab(
                 div {
                     id: "{viewport_id}",
                     style: "padding:8px; {graph_viewport_style(&theme, EMBEDDED_GRAPH_MIN_HEIGHT, Some(\"calc(var(--gs26-app-height) - 260px)\"), false)}",
-                    {render_graph_surface(&theme, surface_id, canvas_id, render_width, render_height, &graph_links, &graph_nodes, &snapshot.nodes, &render_placements, flow_animation_enabled, expanded_node_id)}
+                    {render_graph_surface(&theme, surface_id, canvas_id, render_width, render_height, &graph_links, &graph_nodes, &snapshot.nodes, &render_placements, &packet_stats, &packet_pulses, flow_animation_enabled, expanded_node_id)}
                 }
-                {render_endpoint_section(&endpoint_rows, &theme)}
             }
         }
     }
@@ -388,6 +431,8 @@ fn render_graph_surface(
     graph_nodes: &[NetworkTopologyNode],
     snapshot_nodes: &[NetworkTopologyNode],
     render_placements: &HashMap<String, NodePlacement>,
+    packet_stats: &HashMap<String, NodePacketStats>,
+    packet_pulses: &HashMap<String, u64>,
     flow_animation_enabled: bool,
     expanded_node_id: Signal<Option<String>>,
 ) -> Element {
@@ -397,12 +442,12 @@ fn render_graph_surface(
             style: "position:relative; width:{render_width}px; height:{render_height}px; min-width:{render_width}px; min-height:{render_height}px;",
             div {
                 id: "{canvas_id}",
-                style: "position:absolute; inset:0 auto auto 0; width:{render_width}px; height:{render_height}px; transform:scale(1); transform-origin:top left;",
+                style: "position:absolute; inset:0 auto auto 0; width:{render_width}px; height:{render_height}px; transform:scale(1); transform-origin:top left; isolation:isolate;",
                 svg {
                     width: "{render_width}",
                     height: "{render_height}",
                     view_box: "0 0 {render_width} {render_height}",
-                    style: "position:absolute; inset:0; overflow:visible;",
+                    style: "position:absolute; inset:0; overflow:visible; z-index:0; pointer-events:none;",
                     for link in graph_links.iter() {
                         {render_link(link, snapshot_nodes, render_placements, flow_animation_enabled)}
                     }
@@ -416,40 +461,10 @@ fn render_graph_surface(
                         snapshot_nodes,
                         render_placements,
                         render_width,
+                        packet_stats.get(&node.id),
+                        packet_pulses.get(&node.id).copied(),
                         expanded_node_id,
                     )}
-                }
-            }
-        }
-    }
-}
-
-fn render_endpoint_section(
-    endpoint_rows: &[(String, Vec<String>)],
-    theme: &ThemeConfig,
-) -> Element {
-    rsx! {
-        div {
-            style: "border:1px solid {theme.border}; border-radius:18px; background:{theme.panel_background}; padding:14px;",
-            h3 { style: "margin:0 0 10px 0; color:{theme.text_primary};", "Endpoint Ownership" }
-            p {
-                style: "margin:0 0 12px 0; color:{theme.text_muted}; font-size:0.9rem;",
-                "One row per endpoint, with every board or local node that currently owns or advertises it."
-            }
-            table { style: "width:100%; border-collapse:collapse; font-size:0.92rem;",
-                thead {
-                    tr {
-                        th { style: topology_th_style(theme), "Endpoint" }
-                        th { style: topology_th_style(theme), "Owners" }
-                    }
-                }
-                tbody {
-                    for (endpoint, owners) in endpoint_rows.iter() {
-                        tr {
-                            td { style: topology_td_style(theme, true), "{endpoint}" }
-                            td { style: topology_td_style(theme, false), "{owners.join(\", \")}" }
-                        }
-                    }
                 }
             }
         }
@@ -556,8 +571,10 @@ fn install_drag_handlers(
             const maxY = focus ? focus.max_y : {graph_height};
             const scaledWidth = Math.round((maxX - minX) * state.scale);
             const scaledHeight = Math.round((maxY - minY) * state.scale);
-            const basePadX = Math.max(Math.round((state.viewport.clientWidth - scaledWidth) / 2), 48);
-            const basePadY = Math.max(Math.round((state.viewport.clientHeight - scaledHeight) / 2), 36);
+            const panPadX = Math.max(360, Math.round(state.viewport.clientWidth * 0.75));
+            const panPadY = Math.max(300, Math.round(state.viewport.clientHeight * 0.75));
+            const basePadX = Math.max(Math.round((state.viewport.clientWidth - scaledWidth) / 2), panPadX);
+            const basePadY = Math.max(Math.round((state.viewport.clientHeight - scaledHeight) / 2), panPadY);
             if (focus) {{
               state.padLeft = Math.max(basePadX, Math.ceil(state.viewport.clientWidth / 2 - (focus.center_x - focus.min_x) * state.scale + 24));
               state.padRight = Math.max(basePadX, Math.ceil(state.viewport.clientWidth / 2 - (focus.max_x - focus.center_x) * state.scale + 24));
@@ -938,17 +955,25 @@ fn render_link(
     let dx = (target.x - source.x) as f32;
     let dy = (target.y - source.y) as f32;
     let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let ux = dx / len;
+    let uy = dy / len;
     let nx = -dy / len;
     let ny = dx / len;
+    let source_clearance = (source.size as f32 / 2.0 + GRAPH_LINK_NODE_CLEARANCE).min(len / 2.0);
+    let target_clearance = (target.size as f32 / 2.0 + GRAPH_LINK_NODE_CLEARANCE).min(len / 2.0);
+    let link_x1 = source.x as f32 + ux * source_clearance;
+    let link_y1 = source.y as f32 + uy * source_clearance;
+    let link_x2 = target.x as f32 - ux * target_clearance;
+    let link_y2 = target.y as f32 - uy * target_clearance;
     let lane_offset = if len < 220.0 { 2.2 } else { 2.4 };
-    let lane1_x1 = source.x as f32 + nx * lane_offset;
-    let lane1_y1 = source.y as f32 + ny * lane_offset;
-    let lane1_x2 = target.x as f32 + nx * lane_offset;
-    let lane1_y2 = target.y as f32 + ny * lane_offset;
-    let lane2_x1 = source.x as f32 - nx * lane_offset;
-    let lane2_y1 = source.y as f32 - ny * lane_offset;
-    let lane2_x2 = target.x as f32 - nx * lane_offset;
-    let lane2_y2 = target.y as f32 - ny * lane_offset;
+    let lane1_x1 = link_x1 + nx * lane_offset;
+    let lane1_y1 = link_y1 + ny * lane_offset;
+    let lane1_x2 = link_x2 + nx * lane_offset;
+    let lane1_y2 = link_y2 + ny * lane_offset;
+    let lane2_x1 = link_x1 - nx * lane_offset;
+    let lane2_y1 = link_y1 - ny * lane_offset;
+    let lane2_x2 = link_x2 - nx * lane_offset;
+    let lane2_y2 = link_y2 - ny * lane_offset;
     let upload_color = match link.status {
         NetworkTopologyStatus::Online => "#38bdf8",
         NetworkTopologyStatus::Offline => "#ef4444",
@@ -972,10 +997,10 @@ fn render_link(
         g {
             if !animated {
                 line {
-                    x1: "{source.x}",
-                    y1: "{source.y}",
-                    x2: "{target.x}",
-                    y2: "{target.y}",
+                    x1: "{link_x1}",
+                    y1: "{link_y1}",
+                    x2: "{link_x2}",
+                    y2: "{link_y2}",
                     stroke: "{glow}",
                     stroke_width: "10",
                     stroke_opacity: "0.15",
@@ -984,10 +1009,10 @@ fn render_link(
             }
             if !animated {
                 line {
-                    x1: "{source.x}",
-                    y1: "{source.y}",
-                    x2: "{target.x}",
-                    y2: "{target.y}",
+                    x1: "{link_x1}",
+                    y1: "{link_y1}",
+                    x2: "{link_x2}",
+                    y2: "{link_y2}",
                     stroke: "{stroke}",
                     stroke_width: "3",
                     stroke_dasharray: "{dash}",
@@ -997,20 +1022,20 @@ fn render_link(
             if animated {
                 g {
                     line {
-                        x1: "{source.x}",
-                        y1: "{source.y}",
-                        x2: "{target.x}",
-                        y2: "{target.y}",
+                        x1: "{link_x1}",
+                        y1: "{link_y1}",
+                        x2: "{link_x2}",
+                        y2: "{link_y2}",
                         stroke: "{glow}",
                         stroke_width: "8.5",
                         stroke_opacity: "0.12",
                         stroke_linecap: "round",
                     }
                     line {
-                        x1: "{source.x}",
-                        y1: "{source.y}",
-                        x2: "{target.x}",
-                        y2: "{target.y}",
+                        x1: "{link_x1}",
+                        y1: "{link_y1}",
+                        x2: "{link_x2}",
+                        y2: "{link_y2}",
                         stroke: "{GRAPH_LINK_CHANNEL_COLOR}",
                         stroke_width: "6",
                         stroke_opacity: "1.0",
@@ -1031,12 +1056,7 @@ fn render_link(
                             from: "0",
                             to: "-28",
                             dur: if matches!(link.status, NetworkTopologyStatus::Simulated) { "1.6s" } else { "1.1s" },
-                            repeat_count: "indefinite",
-                        }
-                        animate {
-                            attribute_name: "stroke-opacity",
-                            values: "0.35;0.95;0.35",
-                            dur: if matches!(link.status, NetworkTopologyStatus::Simulated) { "1.8s" } else { "1.2s" },
+                            calc_mode: "linear",
                             repeat_count: "indefinite",
                         }
                     }
@@ -1055,12 +1075,7 @@ fn render_link(
                             from: "-28",
                             to: "0",
                             dur: if matches!(link.status, NetworkTopologyStatus::Simulated) { "1.8s" } else { "1.25s" },
-                            repeat_count: "indefinite",
-                        }
-                        animate {
-                            attribute_name: "stroke-opacity",
-                            values: "0.35;0.95;0.35",
-                            dur: if matches!(link.status, NetworkTopologyStatus::Simulated) { "2.0s" } else { "1.35s" },
+                            calc_mode: "linear",
                             repeat_count: "indefinite",
                         }
                     }
@@ -1078,6 +1093,8 @@ fn render_node(
     nodes: &[NetworkTopologyNode],
     placements: &HashMap<String, NodePlacement>,
     graph_width: i32,
+    packet_stats: Option<&NodePacketStats>,
+    packet_pulse_serial: Option<u64>,
     expanded_node_id: Signal<Option<String>>,
 ) -> Element {
     let Some(placement) = placement_for(&node.id, placements) else {
@@ -1112,6 +1129,7 @@ fn render_node(
         "auto"
     };
     let node_z_index = if is_expanded { "20" } else { "2" };
+    let packet_count_label = packet_stats.map(|stats| format_packet_count(stats.total));
 
     rsx! {
         div {
@@ -1131,6 +1149,12 @@ fn render_node(
                     expanded_node_id.set(next);
                 }
             },
+            if let Some(serial) = packet_pulse_serial {
+                div {
+                    key: "packet-pulse-{node.id}-{serial}",
+                    style: "position:absolute; inset:-18px; border-radius:999px; border:3px solid rgba(125, 211, 252, 0); box-shadow:0 0 8px rgba(56, 189, 248, 0), inset 0 0 6px rgba(14, 165, 233, 0); transform-origin:center; animation:gs26-network-node-packet-pulse 3.2s linear both; pointer-events:none;",
+                }
+            }
             div { style: "font-size:0.95rem; font-weight:800; line-height:1.1;", "{node.label}" }
             if let Some(sender_id) = &node.sender_id {
                 div { style: "font-size:0.72rem; color:#93c5fd; text-transform:uppercase; letter-spacing:0.08em;", "{sender_id}" }
@@ -1143,7 +1167,9 @@ fn render_node(
             }
             div {
                 style: "font-size:0.68rem; color:{theme.text_muted}; max-width:100%; line-height:1.2;",
-                if node.endpoints.is_empty() {
+                if let Some(packet_count_label) = packet_count_label.as_ref() {
+                    "{packet_count_label} packet(s)"
+                } else if node.endpoints.is_empty() {
                     "Tap for details"
                 } else {
                     "{node.endpoints.len()} endpoint(s)"
@@ -1156,6 +1182,18 @@ fn render_node(
                             border:1px solid {theme.border}; background:{theme.panel_background}; box-shadow:0 20px 40px rgba(2, 6, 23, 0.55); z-index:4; text-align:left;",
                     div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{kind} details" }
                     div { style: "font-size:0.95rem; color:{theme.text_primary}; font-weight:700; margin:4px 0 10px 0;", "{node.label}" }
+                    div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Packet stats" }
+                    if let Some(stats) = packet_stats {
+                        div { style: "display:flex; flex-direction:column; gap:6px; margin-bottom:12px;",
+                            div {
+                                style: "display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border-radius:10px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:0.8rem;",
+                                span { "From {stats.sender_id}" }
+                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.total)}" }
+                            }
+                        }
+                    } else {
+                        div { style: "font-size:0.82rem; color:{theme.text_muted}; margin-bottom:12px;", "No packets seen for this node sender yet." }
+                    }
                     div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Connected to" }
                     if neighbors.is_empty() {
                         div { style: "font-size:0.82rem; color:{theme.text_muted}; margin-bottom:12px;", "No active links." }
@@ -1190,6 +1228,93 @@ fn render_node(
 
 fn placement_for(id: &str, placements: &HashMap<String, NodePlacement>) -> Option<NodePlacement> {
     placements.get(id).copied()
+}
+
+fn packet_stats_by_node(
+    nodes: &[NetworkTopologyNode],
+    counts_by_sender: &HashMap<String, u64>,
+) -> HashMap<String, NodePacketStats> {
+    nodes
+        .iter()
+        .filter_map(|node| {
+            let sender_id = node.sender_id.as_ref()?;
+            let total = counts_by_sender.get(sender_id).copied().unwrap_or(0);
+            Some((
+                node.id.clone(),
+                NodePacketStats {
+                    sender_id: sender_id.clone(),
+                    total,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn node_packet_pulse_serials(
+    nodes: &[NetworkTopologyNode],
+    packet_stats: &HashMap<String, NodePacketStats>,
+    animations_enabled: bool,
+) -> HashMap<String, u64> {
+    let node_ids = nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<HashSet<_>>();
+    let now = current_millis();
+    let mut active = HashMap::new();
+
+    let Ok(mut pulses) = NODE_PACKET_PULSES.lock() else {
+        return active;
+    };
+
+    pulses.retain(|id, _| node_ids.contains(id));
+    for node in nodes {
+        let count = packet_stats
+            .get(&node.id)
+            .map(|stats| stats.total)
+            .unwrap_or(0);
+        let pulse = pulses.entry(node.id.clone()).or_default();
+        if count > pulse.last_count {
+            if animations_enabled && now >= pulse.active_until_ms {
+                pulse.serial = pulse.serial.saturating_add(1);
+                pulse.active_until_ms = now.saturating_add(PACKET_PULSE_MS);
+                pulse.last_count = count;
+            } else if !animations_enabled {
+                pulse.last_count = count;
+                pulse.active_until_ms = 0;
+            }
+        }
+        if animations_enabled && now < pulse.active_until_ms {
+            active.insert(node.id.clone(), pulse.serial);
+        }
+    }
+
+    active
+}
+
+fn current_millis() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now().max(0.0) as u64
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0)
+    }
+}
+
+fn format_packet_count(total: u64) -> String {
+    if total >= 1_000_000 {
+        format!("{:.1}M", total as f64 / 1_000_000.0)
+    } else if total >= 10_000 {
+        format!("{:.1}k", total as f64 / 1_000.0)
+    } else {
+        total.to_string()
+    }
 }
 
 fn node_label(id: &str, nodes: &[NetworkTopologyNode]) -> String {
@@ -1239,27 +1364,6 @@ fn link_style(status: NetworkTopologyStatus) -> (&'static str, &'static str, &'s
 fn link_color(link: &NetworkTopologyLink, default: &'static str) -> &'static str {
     let _ = link;
     default
-}
-
-fn topology_th_style(theme: &ThemeConfig) -> String {
-    format!(
-        "text-align:left; color:{}; border-bottom:1px solid {}; padding:8px 6px;",
-        theme.text_muted, theme.border_soft
-    )
-}
-
-fn topology_td_style(theme: &ThemeConfig, mono: bool) -> String {
-    if mono {
-        format!(
-            "padding:8px 6px; border-bottom:1px solid {}; color:{}; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;",
-            theme.border_soft, theme.text_secondary
-        )
-    } else {
-        format!(
-            "padding:8px 6px; border-bottom:1px solid {}; color:{};",
-            theme.border_soft, theme.text_secondary
-        )
-    }
 }
 
 fn node_style(
@@ -1496,8 +1600,9 @@ fn relay_board_ids(
 fn compute_graph_layout(
     nodes: &[NetworkTopologyNode],
     links: &[NetworkTopologyLink],
+    vertical_layout: bool,
 ) -> GraphLayout {
-    let horizontal_gap = 320_i32;
+    let layer_gap = 320_i32;
     let node_gap = 40_i32;
     let margin_x = 160_i32;
     let margin_y = 120_i32;
@@ -1686,8 +1791,13 @@ fn compute_graph_layout(
 
             for node in branch_nodes.iter() {
                 let size = node_diameter(node);
-                let x = margin_x + layer_idx as i32 * horizontal_gap;
-                let y = cursor_y + (size / 2);
+                let layer_axis = margin_x + layer_idx as i32 * layer_gap;
+                let stack_axis = cursor_y + (size / 2);
+                let (x, y) = if vertical_layout {
+                    (stack_axis, layer_axis)
+                } else {
+                    (layer_axis, stack_axis)
+                };
                 placements.insert(node.id.clone(), NodePlacement { x, y, size });
                 cursor_y += size + node_gap;
             }
@@ -1699,11 +1809,17 @@ fn compute_graph_layout(
         .map(|placement| placement.x + placement.size / 2)
         .max()
         .unwrap_or(GRAPH_MIN_WIDTH - margin_x);
+    let bottommost = placements
+        .values()
+        .map(|placement| placement.y + placement.size / 2)
+        .max()
+        .unwrap_or(GRAPH_MIN_HEIGHT - margin_y);
     let width = (rightmost + margin_x).max(GRAPH_MIN_WIDTH);
+    let height = (bottommost + margin_y).max(GRAPH_MIN_HEIGHT);
 
     GraphLayout {
         width,
-        height: total_height,
+        height,
         placements,
     }
 }
