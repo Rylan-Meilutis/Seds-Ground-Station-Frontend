@@ -34,6 +34,7 @@ let tileTrackingPrefetchInterval = null;
 let currentTrackingPrefetchKey = null;
 let tileTrackingPrefetchRunId = 0;
 let tileTrackingPrefetchActive = false;
+let tileMemoryCacheBytes = 0;
 let wheelRotateFrame = null;
 let wheelRotateTargetBearing = null;
 let wheelGestureMode = null;
@@ -60,6 +61,7 @@ let userHeadingIndicatorDeg = null;
 let userHeadingArrowDeg = null;
 let nativeHeadingDeg = null;
 let deviceHeadingDeg = null;
+let lastHeadingVisualSyncAtMs = 0;
 let compassInitialized = false;
 let maplibreProtocolInstalled = false;
 let mapReady = false;
@@ -105,6 +107,10 @@ const WHEEL_ROTATE_AXIS_DOMINANCE = 1.0;
 const WHEEL_GESTURE_LOCK_MS = 180;
 const WHEEL_ZOOM_LIMIT_EPSILON = 0.001;
 const CACHE_SWEEP_DELAY_MS = 15000;
+const TILE_STARTUP_CACHE_ONLY_MS = 1800;
+const TILE_MEMORY_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+const tileCacheHandles = new Map();
+const tileMemoryCache = new Map();
 const USER_MARKER_SMOOTH_MIN_MS = 120;
 const USER_MARKER_SMOOTH_MAX_MS = 520;
 const USER_MARKER_SMOOTH_SKIP_M = 0.35;
@@ -114,16 +120,17 @@ const USER_MARKER_RATE_MIN_CATCHUP_MS = 150;
 const USER_MARKER_RATE_MAX_CATCHUP_MS = 430;
 const USER_ORIENTATION_DEADZONE_DEG = 2.2;
 const USER_ORIENTATION_INPUT_DEADZONE_DEG = 0.9;
-const USER_ORIENTATION_CAMERA_EPSILON_DEG = 0.32;
+const USER_ORIENTATION_CAMERA_EPSILON_DEG = 0.45;
 const USER_ORIENTATION_MAX_STEP_DEG = 6.0;
 const USER_ORIENTATION_INDICATOR_DEADZONE_DEG = 0.8;
 const USER_ORIENTATION_EASE_MS = 320;
 const USER_ORIENTATION_DISPLAY_DEADZONE_DEG = 0.18;
-const USER_ORIENTATION_DISPLAY_CATCHUP_MS = 185;
+const USER_ORIENTATION_DISPLAY_CATCHUP_MS = 160;
 const USER_ORIENTATION_INDICATOR_CATCHUP_MS = 180;
 const USER_ORIENTATION_ARROW_CATCHUP_MS = 95;
 const USER_ORIENTATION_ARROW_DEADZONE_DEG = 0.12;
 const USER_ORIENTATION_SMALL_ERROR_GAIN = 0.025;
+const USER_HEADING_VISUAL_SYNC_MIN_MS = 33;
 const FOLLOW_CAMERA_CENTER_EPSILON_M = 0.2;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
@@ -219,6 +226,60 @@ function tileCacheRequestKey(url) {
     const raw = String(url || "");
     if (/^https?:/i.test(raw)) return raw;
     return `https://gs26.tile-cache.local/${encodeURIComponent(raw)}`;
+}
+
+function cloneTileArrayBuffer(data) {
+    if (!data || typeof data.byteLength !== "number") return data;
+    try {
+        return data.slice(0);
+    } catch (e) {
+        return data;
+    }
+}
+
+function tileMemoryKey(cacheName, url) {
+    return `${cacheName}\n${tileCacheRequestKey(url)}`;
+}
+
+function readTileMemoryCache(cacheName, url) {
+    const key = tileMemoryKey(cacheName, url);
+    const entry = tileMemoryCache.get(key);
+    if (!entry || !entry.data) return null;
+    tileMemoryCache.delete(key);
+    tileMemoryCache.set(key, entry);
+    return cloneTileArrayBuffer(entry.data);
+}
+
+function writeTileMemoryCache(cacheName, url, data) {
+    if (!data || typeof data.byteLength !== "number") return;
+    const key = tileMemoryKey(cacheName, url);
+    const existing = tileMemoryCache.get(key);
+    if (existing && Number.isFinite(existing.bytes)) {
+        tileMemoryCacheBytes = Math.max(0, tileMemoryCacheBytes - existing.bytes);
+        tileMemoryCache.delete(key);
+    }
+    const bytes = data.byteLength;
+    tileMemoryCache.set(key, {data: cloneTileArrayBuffer(data), bytes});
+    tileMemoryCacheBytes += bytes;
+    while (tileMemoryCacheBytes > TILE_MEMORY_CACHE_MAX_BYTES && tileMemoryCache.size > 0) {
+        const firstKey = tileMemoryCache.keys().next().value;
+        const removed = tileMemoryCache.get(firstKey);
+        tileMemoryCache.delete(firstKey);
+        if (removed && Number.isFinite(removed.bytes)) {
+            tileMemoryCacheBytes = Math.max(0, tileMemoryCacheBytes - removed.bytes);
+        }
+    }
+}
+
+async function openTileCache(cacheName) {
+    if (!tileCacheSupported()) return null;
+    if (!tileCacheHandles.has(cacheName)) {
+        tileCacheHandles.set(cacheName, caches.open(cacheName).catch((e) => {
+            tileCacheHandles.delete(cacheName);
+            throw e;
+        }));
+    }
+    return await tileCacheHandles.get(cacheName);
 }
 
 function requestPersistentTileStorage() {
@@ -374,6 +435,12 @@ function ensureMapProtocolOnce() {
             if (cached) {
                 return {data: cached};
             }
+            const startupCacheOnly = mapInitStartedAtMs > 0
+                && Date.now() - mapInitStartedAtMs <= TILE_STARTUP_CACHE_ONLY_MS;
+            if (startupCacheOnly) {
+                warmTileInBackground(cacheName, url);
+                throw new Error("tile cache miss during startup");
+            }
             const data = await fetchAndCacheTileArrayBuffer(cacheName, url);
             return {data};
         } catch (primaryError) {
@@ -389,18 +456,22 @@ function ensureMapProtocolOnce() {
 
 async function readCachedTileArrayBuffer(cacheName, url) {
     if (!tileCacheSupported() || !url) return null;
+    const hot = readTileMemoryCache(cacheName, url);
+    if (hot) return hot;
     try {
-        const cache = await caches.open(cacheName);
+        const cache = await openTileCache(cacheName);
         const cached = await cache.match(tileCacheRequestKey(url), {ignoreVary: true});
         if (!cached || !cached.ok) return null;
-        return await cached.arrayBuffer();
+        const data = await cached.arrayBuffer();
+        writeTileMemoryCache(cacheName, url, data);
+        return cloneTileArrayBuffer(data);
     } catch (e) {
         console.warn("[GS26 map] cache read failed", url, e);
         return null;
     }
 }
 
-async function fetchAndCacheTileArrayBuffer(cacheName, url) {
+async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     if (!url) throw new Error("tile url missing");
     if (!tileFetchAllowedForUrl(url)) throw new Error(`unsupported tile url: ${url}`);
 
@@ -410,16 +481,27 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url) {
         return await response.arrayBuffer();
     }
 
-    const cache = await caches.open(cacheName);
+    const hot = readTileMemoryCache(cacheName, url);
+    if (hot) return hot;
+
+    const cache = await openTileCache(cacheName);
     const cacheKey = tileCacheRequestKey(url);
     const cached = await cache.match(cacheKey, {ignoreVary: true});
     if (cached && cached.ok) {
-        return await cached.arrayBuffer();
+        const data = await cached.arrayBuffer();
+        writeTileMemoryCache(cacheName, url, data);
+        return cloneTileArrayBuffer(data);
+    }
+
+    if (options.cacheOnly === true) {
+        throw new Error("tile cache miss");
     }
 
     const response = await fetch(url);
     if (!response.ok) throw new Error(`tile fetch failed: ${response.status}`);
     const cacheResponse = response.clone();
+    const data = await response.arrayBuffer();
+    writeTileMemoryCache(cacheName, url, data);
     Promise.resolve().then(async () => {
         try {
             await cache.put(cacheKey, cacheResponse);
@@ -427,7 +509,16 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url) {
             console.warn("[GS26 map] cache put failed", url, e);
         }
     });
-    return await response.arrayBuffer();
+    return cloneTileArrayBuffer(data);
+}
+
+function warmTileInBackground(cacheName, url) {
+    Promise.resolve().then(async () => {
+        try {
+            await fetchAndCacheTileArrayBuffer(cacheName, url);
+        } catch (e) {
+        }
+    });
 }
 
 function setTilePrefetchState(next) {
@@ -989,7 +1080,7 @@ function guideLineDataKey(rocketLatLng, userLatLng) {
 
 function headingDataKey(latLng, bearingDeg) {
     if (!Array.isArray(latLng) || !Number.isFinite(bearingDeg)) return SOURCE_EMPTY_KEY;
-    return `${pointDataKey(latLng)}|${normalizeAngle(bearingDeg).toFixed(2)}`;
+    return `${pointDataKey(latLng)}|${normalizeAngle(bearingDeg).toFixed(1)}`;
 }
 
 function syncWindowMapControlState() {
@@ -1502,6 +1593,15 @@ function updateUserMarkerRotation() {
     syncUserHeadingIndicator();
 }
 
+function updateUserMarkerRotationThrottled(force = false) {
+    const now = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    if (!force && now - lastHeadingVisualSyncAtMs < USER_HEADING_VISUAL_SYNC_MIN_MS) return;
+    lastHeadingVisualSyncAtMs = now;
+    updateUserMarkerRotation();
+}
+
 function centerControlMode() {
     if (followUserEnabled && orientationMode === "user" && hasUsableUserHeading()) return "user-up";
     if (followUserEnabled) return "follow";
@@ -1913,7 +2013,8 @@ function scheduleHeadingAnimation() {
         const now = performance.now();
         const dtMs = Math.max(1.0, Math.min(80.0, now - (headingAnimationLastFrameAt || now)));
         headingAnimationLastFrameAt = now;
-        let changed = false;
+        let visualChanged = false;
+        let mapChanged = false;
 
         const arrowTarget = Number.isFinite(userHeadingDegRaw)
             ? userHeadingDegRaw
@@ -1921,7 +2022,7 @@ function scheduleHeadingAnimation() {
         if (Number.isFinite(arrowTarget)) {
             if (!Number.isFinite(userHeadingArrowDeg)) {
                 userHeadingArrowDeg = normalizeAngle(arrowTarget);
-                changed = true;
+                visualChanged = true;
             } else {
                 const arrowDiff = shortestAngleDiff(userHeadingArrowDeg, arrowTarget);
                 if (Math.abs(arrowDiff) >= USER_ORIENTATION_ARROW_DEADZONE_DEG) {
@@ -1931,7 +2032,7 @@ function scheduleHeadingAnimation() {
                         Math.min(USER_ORIENTATION_MAX_STEP_DEG * 2.0, arrowDiff * alpha)
                     );
                     userHeadingArrowDeg = normalizeAngle(userHeadingArrowDeg + arrowStep);
-                    changed = true;
+                    visualChanged = true;
                 }
             }
         }
@@ -1939,7 +2040,6 @@ function scheduleHeadingAnimation() {
         if (Number.isFinite(arrowTarget)) {
             if (!Number.isFinite(userHeadingDeg)) {
                 userHeadingDeg = normalizeAngle(arrowTarget);
-                changed = true;
             } else {
                 const filterDiff = shortestAngleDiff(userHeadingDeg, arrowTarget);
                 const absFilterDiff = Math.abs(filterDiff);
@@ -1954,7 +2054,6 @@ function scheduleHeadingAnimation() {
                         Math.min(USER_ORIENTATION_MAX_STEP_DEG, filterDiff * gain)
                     );
                     userHeadingDeg = normalizeAngle(userHeadingDeg + filterStep);
-                    changed = true;
                 }
             }
         }
@@ -1962,7 +2061,6 @@ function scheduleHeadingAnimation() {
         if (Number.isFinite(userHeadingDeg)) {
             if (!Number.isFinite(userHeadingDisplayDeg)) {
                 userHeadingDisplayDeg = userHeadingDeg;
-                changed = true;
             } else {
                 const displayDiff = shortestAngleDiff(userHeadingDisplayDeg, userHeadingDeg);
                 if (Math.abs(displayDiff) >= USER_ORIENTATION_DISPLAY_DEADZONE_DEG) {
@@ -1972,7 +2070,6 @@ function scheduleHeadingAnimation() {
                         Math.min(USER_ORIENTATION_MAX_STEP_DEG, displayDiff * alpha)
                     );
                     userHeadingDisplayDeg = normalizeAngle(userHeadingDisplayDeg + displayStep);
-                    changed = true;
                 }
             }
         }
@@ -1982,13 +2079,16 @@ function scheduleHeadingAnimation() {
             : (Number.isFinite(userHeadingDisplayDeg) ? userHeadingDisplayDeg : userHeadingDeg);
         if (Number.isFinite(indicatorTarget)) {
             if (followUserEnabled && orientationMode === "user") {
-                if (userHeadingIndicatorDeg !== indicatorTarget) {
+                if (
+                    !Number.isFinite(userHeadingIndicatorDeg)
+                    || Math.abs(shortestAngleDiff(userHeadingIndicatorDeg, indicatorTarget)) >= USER_ORIENTATION_ARROW_DEADZONE_DEG
+                ) {
                     userHeadingIndicatorDeg = indicatorTarget;
-                    changed = true;
+                    visualChanged = true;
                 }
             } else if (!Number.isFinite(userHeadingIndicatorDeg)) {
                 userHeadingIndicatorDeg = indicatorTarget;
-                changed = true;
+                visualChanged = true;
             } else {
                 const indicatorDiff = shortestAngleDiff(userHeadingIndicatorDeg, indicatorTarget);
                 if (Math.abs(indicatorDiff) >= USER_ORIENTATION_INDICATOR_DEADZONE_DEG) {
@@ -1998,7 +2098,7 @@ function scheduleHeadingAnimation() {
                         Math.min(USER_ORIENTATION_MAX_STEP_DEG, indicatorDiff * alpha)
                     );
                     userHeadingIndicatorDeg = normalizeAngle(userHeadingIndicatorDeg + indicatorStep);
-                    changed = true;
+                    visualChanged = true;
                 }
             }
         }
@@ -2011,14 +2111,14 @@ function scheduleHeadingAnimation() {
             ) {
                 mapBearingDeg = nextBearing;
                 pendingUserUpRealign = false;
-                changed = true;
+                mapChanged = true;
             }
         }
 
-        if (changed) {
+        if (mapChanged) {
             applyMapOrientation();
-        } else {
-            updateUserMarkerRotation();
+        } else if (visualChanged) {
+            updateUserMarkerRotationThrottled();
         }
 
         const displaySettled = !Number.isFinite(userHeadingDeg)
@@ -2862,6 +2962,9 @@ function installMapHooks() {
         mapReady = true;
         restorePendingZoomIfPossible();
         updateZoomControlAppearance();
+        setTimeout(() => {
+            refreshRasterTileSourceForZoom();
+        }, TILE_STARTUP_CACHE_ONLY_MS + 150);
         syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng || lastUserLatLng);
         syncPointSource(ROCKET_SOURCE_ID, lastRocketLatLng);
         syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng || lastUserLatLng);
@@ -2987,6 +3090,8 @@ function resetMapObjects() {
         clearTimeout(tileZoomDiscoveryTimer);
         tileZoomDiscoveryTimer = null;
     }
+    tileMemoryCache.clear();
+    tileMemoryCacheBytes = 0;
     if (markerSyncTimer) {
         clearTimeout(markerSyncTimer);
         markerSyncTimer = null;
