@@ -41,6 +41,8 @@ let wheelGestureMode = null;
 let wheelGestureLastAtMs = 0;
 let prefetchSuppressedUntilMs = 0;
 let mapInitStartedAtMs = 0;
+let mapInitTimingLogged = false;
+let firstTileTimingLogged = false;
 let lastPersistedMapStateAtMs = 0;
 let lastMarkerSyncAtMs = 0;
 let markerSyncTimer = null;
@@ -52,6 +54,7 @@ let suppressFollowCameraUntilMs = 0;
 let suppressFollowDisableUntilMs = 0;
 let followEnableGuardUntilMs = 0;
 let internalCameraUpdateUntilMs = 0;
+let orientationModeAnimationUntilMs = 0;
 let suppressManualOrientationDropUntilMs = 0;
 let pendingUserUpRealign = false;
 let userHeadingDegRaw = null;
@@ -100,6 +103,7 @@ const TRACKING_PREFETCH_DELAY_MS = 250;
 const TRACKING_PREFETCH_CONCURRENCY = 2;
 const MARKER_SYNC_MIN_INTERVAL_MS = 100;
 const ZOOM_BUTTON_ANIMATION_MS = 160;
+const ORIENTATION_MODE_ANIMATION_MS = 520;
 const WHEEL_ROTATE_DEG_PER_PIXEL = 0.18;
 const WHEEL_ROTATE_EASE = 0.24;
 const WHEEL_ROTATE_SETTLE_DEG = 0.08;
@@ -107,7 +111,6 @@ const WHEEL_ROTATE_AXIS_DOMINANCE = 1.0;
 const WHEEL_GESTURE_LOCK_MS = 180;
 const WHEEL_ZOOM_LIMIT_EPSILON = 0.001;
 const CACHE_SWEEP_DELAY_MS = 15000;
-const TILE_STARTUP_CACHE_ONLY_MS = 1800;
 const TILE_MEMORY_CACHE_MAX_BYTES = 24 * 1024 * 1024;
 const tileCacheHandles = new Map();
 const tileMemoryCache = new Map();
@@ -433,25 +436,38 @@ function ensureMapProtocolOnce() {
         try {
             const cached = await readCachedTileArrayBuffer(cacheName, url);
             if (cached) {
+                logMapInitTiming("first-tile", {source: "cache", url});
                 return {data: cached};
             }
-            const startupCacheOnly = mapInitStartedAtMs > 0
-                && Date.now() - mapInitStartedAtMs <= TILE_STARTUP_CACHE_ONLY_MS;
-            if (startupCacheOnly) {
-                warmTileInBackground(cacheName, url);
-                throw new Error("tile cache miss during startup");
-            }
-            const data = await fetchAndCacheTileArrayBuffer(cacheName, url);
+            const data = await fetchAndCacheTileArrayBuffer(cacheName, url, {skipCacheLookup: true});
+            logMapInitTiming("first-tile", {source: "fetch", url});
             return {data};
         } catch (primaryError) {
             const cached = await readCachedTileArrayBuffer(cacheName, url);
             if (cached) {
+                logMapInitTiming("first-tile", {source: "cache-after-error", url});
                 return {data: cached};
             }
             throw primaryError;
         }
     });
     maplibreProtocolInstalled = true;
+}
+
+function logMapInitTiming(label, extra = {}) {
+    if (label === "first-tile") {
+        if (firstTileTimingLogged) return;
+        firstTileTimingLogged = true;
+    }
+    if (mapInitTimingLogged && label !== "first-tile") return;
+    try {
+        const elapsed = mapInitStartedAtMs > 0 ? Math.round(Date.now() - mapInitStartedAtMs) : null;
+        console.info("[GS26 map timing]", label, {elapsedMs: elapsed, ...extra});
+    } catch (e) {
+    }
+    if (label === "load") {
+        mapInitTimingLogged = true;
+    }
 }
 
 async function readCachedTileArrayBuffer(cacheName, url) {
@@ -481,8 +497,10 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
         return await response.arrayBuffer();
     }
 
-    const hot = readTileMemoryCache(cacheName, url);
-    if (hot) return hot;
+    if (options.skipCacheLookup !== true) {
+        const hot = await readCachedTileArrayBuffer(cacheName, url);
+        if (hot) return hot;
+    }
 
     const cache = await openTileCache(cacheName);
     const cacheKey = tileCacheRequestKey(url);
@@ -2005,6 +2023,30 @@ function hasUsableUserHeading() {
     return Number.isFinite(fusedHeadingTarget()) || Number.isFinite(userHeadingDeg);
 }
 
+function currentUserUpBearingTarget() {
+    if (Number.isFinite(userHeadingDisplayDeg)) return normalizeAngle(userHeadingDisplayDeg);
+    if (Number.isFinite(userHeadingDeg)) return normalizeAngle(userHeadingDeg);
+    const fused = fusedHeadingTarget();
+    return Number.isFinite(fused) ? normalizeAngle(fused) : null;
+}
+
+function applyKnownUserUpBearingNow() {
+    const target = currentUserUpBearingTarget();
+    if (!Number.isFinite(target)) return false;
+    if (!Number.isFinite(userHeadingDeg)) {
+        userHeadingDeg = target;
+    }
+    if (!Number.isFinite(userHeadingDisplayDeg)) {
+        userHeadingDisplayDeg = target;
+    }
+    if (!Number.isFinite(userHeadingIndicatorDeg)) {
+        userHeadingIndicatorDeg = target;
+    }
+    mapBearingDeg = target;
+    pendingUserUpRealign = false;
+    return true;
+}
+
 function scheduleHeadingAnimation() {
     if (headingAnimationFrame != null) return;
     headingAnimationLastFrameAt = performance.now();
@@ -2145,8 +2187,10 @@ function scheduleHeadingAnimation() {
     headingAnimationFrame = requestAnimationFrame(step);
 }
 
-function applyMapOrientation() {
+function applyMapOrientation(options = {}) {
     if (!groundMap) return;
+    const animate = options && options.animate === true;
+    const durationMs = Math.max(0, Number(options && options.durationMs) || ORIENTATION_MODE_ANIMATION_MS);
     const targetBearing = normalizeAngle(mapBearingDeg);
     const currentBearing = normalizeAngle(groundMap.getBearing());
     const cameraDiff = Math.abs(shortestAngleDiff(currentBearing, targetBearing));
@@ -2154,15 +2198,33 @@ function applyMapOrientation() {
         ? USER_ORIENTATION_CAMERA_EPSILON_DEG
         : 0.05;
     if (cameraDiff > minCameraDiff) {
-        markInternalCameraUpdate(orientationMode === "user" ? 32 : 250);
-        if (orientationMode === "user") {
-            groundMap.jumpTo({bearing: targetBearing});
+        markInternalCameraUpdate(animate ? durationMs + 80 : (orientationMode === "user" ? 32 : 250));
+        if (animate && typeof groundMap.easeTo === "function") {
+            const targetBeforeStop = targetBearing;
+            try {
+                if (typeof groundMap.stop === "function") {
+                    groundMap.stop();
+                }
+            } catch (e) {
+            }
+            mapBearingDeg = targetBeforeStop;
+            groundMap.easeTo({
+                bearing: targetBeforeStop,
+                duration: durationMs,
+                easing: (t) => 1 - Math.pow(1 - t, 3),
+                essential: true,
+            });
         } else {
             groundMap.jumpTo({bearing: targetBearing});
         }
     }
     updateUserMarkerRotation();
-    rememberMapView();
+    if (animate) {
+        syncWindowMapControlState();
+        persistMapStateSoon();
+    } else {
+        rememberMapView();
+    }
 }
 
 function applyFusedHeading() {
@@ -2353,29 +2415,26 @@ function syncRequestedMapControlState() {
 
 function setGroundMapOrientationMode(mode) {
     cancelSmoothWheelRotation();
+    const previousMode = orientationMode;
     orientationMode = mode === "user" ? "user" : (mode === "manual" ? "manual" : "north");
     pendingUserUpRealign = orientationMode === "user";
     if (orientationMode === "north") {
         mapBearingDeg = 0;
         pendingUserUpRealign = false;
     } else if (orientationMode === "user" && followUserEnabled) {
-        const currentBearing = normalizeAngle(groundMap ? groundMap.getBearing() : mapBearingDeg);
         const headingTarget = fusedHeadingTarget();
         if (Number.isFinite(headingTarget)) {
             userHeadingDegRaw = headingTarget;
-            userHeadingDeg = headingTarget;
-            userHeadingDisplayDeg = currentBearing;
-            userHeadingIndicatorDeg = currentBearing;
-            mapBearingDeg = currentBearing;
-        } else if (Number.isFinite(userHeadingDeg)) {
-            userHeadingDisplayDeg = currentBearing;
-            userHeadingIndicatorDeg = currentBearing;
-            mapBearingDeg = currentBearing;
         }
+        applyKnownUserUpBearingNow();
     }
     syncWindowMapControlState();
     persistMapState();
-    applyMapOrientation();
+    applyMapOrientation({
+        animate: previousMode !== orientationMode || orientationMode === "north",
+        durationMs: ORIENTATION_MODE_ANIMATION_MS,
+    });
+    scheduleHeadingAnimation();
     updateCenterControlAppearance();
 }
 
@@ -2545,8 +2604,8 @@ function setGroundMapFollowUser(enabled) {
         }));
     } catch (e) {
     }
-    if (followUserEnabled && orientationMode === "user" && Number.isFinite(userHeadingDeg)) {
-        mapBearingDeg = normalizeAngle(userHeadingDeg);
+    if (followUserEnabled && orientationMode === "user") {
+        applyKnownUserUpBearingNow();
     }
     if (followUserEnabled) {
         applyFollowUserIfPossible();
@@ -2958,6 +3017,7 @@ function installMapHooks() {
     if (!groundMap) return;
 
     groundMap.on("load", () => {
+        logMapInitTiming("load");
         ensureMapMarkerImages();
         mapReady = true;
         restorePendingZoomIfPossible();
@@ -2997,7 +3057,16 @@ function installMapHooks() {
         updateZoomControlAppearance();
     });
     groundMap.on("rotateend", () => {
-        mapBearingDeg = normalizeAngle(groundMap.getBearing());
+        if (isInternalCameraUpdate() && orientationMode === "north") {
+            mapBearingDeg = 0;
+        } else if (isInternalCameraUpdate() && orientationMode === "user") {
+            const target = currentUserUpBearingTarget();
+            mapBearingDeg = Number.isFinite(target)
+                ? normalizeAngle(target)
+                : normalizeAngle(groundMap.getBearing());
+        } else {
+            mapBearingDeg = normalizeAngle(groundMap.getBearing());
+        }
         if (
             !isInternalCameraUpdate()
             && Date.now() >= suppressManualOrientationDropUntilMs
@@ -3110,6 +3179,9 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     initCompassOnce();
     ensureMapProtocolOnce();
     mapInitStartedAtMs = Date.now();
+    mapInitTimingLogged = false;
+    firstTileTimingLogged = false;
+    logMapInitTiming("init");
     if (groundMap) {
         rememberMapView();
         persistMapState();
@@ -3142,7 +3214,6 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     currentMaxNativeZoom = nextMaxNativeZoom;
     currentMaxZoom = nextMaxZoom;
     persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
-    applyDiscoveredCachedMaxNativeZoom(tilesUrl);
     currentPrefetchKey = null;
     scheduleTileCacheSweep(tilesUrl);
 
@@ -3154,18 +3225,8 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         : (Number.isFinite(lastMapZoom)
             ? lastMapZoom
             : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : zoom));
-    if (Number.isFinite(desiredZoom) && desiredZoom > currentMaxNativeZoom) {
-        currentMaxNativeZoom = clampMaxNativeZoom(desiredZoom);
-        currentMaxZoom = Math.max(
-            currentMaxZoom,
-            currentMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA,
-            desiredZoom
-        );
-        persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
-    }
     if (Number.isFinite(desiredZoom) && desiredZoom > currentMaxZoom) {
-        pendingRestoreZoom = desiredZoom;
-        lastMapZoom = desiredZoom;
+        currentMaxZoom = desiredZoom;
     }
     const clampedZoom = Math.min(currentMaxZoom, Math.max(MIN_ZOOM, desiredZoom));
     if (Number.isFinite(pendingRestoreZoom) && pendingRestoreZoom <= currentMaxZoom) {

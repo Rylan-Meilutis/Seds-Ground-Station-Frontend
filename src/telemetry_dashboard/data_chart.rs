@@ -111,6 +111,7 @@ const X_SHRINK_EPS_MS: i64 = 250;
 const Y_SHRINK_ALPHA: f32 = 0.10; // used only during refit_pending
 const Y_PAD_FRAC: f32 = 0.06;
 const Y_MIN_PAD_ABS: f32 = 1.0;
+const CHART_INTEREST_TTL_GENERATIONS: u64 = 50_000;
 
 #[allow(dead_code)]
 pub fn charts_cache_request_refit() {
@@ -200,6 +201,7 @@ pub fn charts_cache_get_subset(
 ) -> (Rc<Vec<ChartRenderChunk>>, f32, f32, f32) {
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
+        c.ensure_interested_chart(data_type);
         if let Some(chart) = c.charts.get_mut(data_type) {
             chart.build_subset(channels, width, height)
         } else {
@@ -239,6 +241,7 @@ pub fn charts_cache_get_subset_per_series_with_grid(
 ) -> PerSeriesChartCacheResult {
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
+        c.ensure_interested_chart(data_type);
         if let Some(chart) = c.charts.get_mut(data_type) {
             chart.build_subset_per_series_with_grid(
                 channels,
@@ -293,6 +296,7 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
         let mut span_min = 0.0_f32;
 
         for (series_idx, (data_type, channel)) in series.iter().enumerate() {
+            cache.ensure_interested_chart(data_type);
             let Some(chart) = cache.charts.get_mut(data_type) else {
                 series_scales.push(None);
                 continue;
@@ -364,6 +368,7 @@ pub fn charts_cache_get_channel_minmax(
 ) -> (Vec<Option<f32>>, Vec<Option<f32>>) {
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
+        c.ensure_interested_chart(data_type);
         if let Some(ch) = c.charts.get_mut(data_type) {
             ch.build_if_needed(width, height);
             (ch.chan_min.clone(), ch.chan_max.clone())
@@ -379,49 +384,164 @@ pub fn charts_cache_get_channel_minmax(
 
 struct ChartsCache {
     charts: HashMap<String, CachedChart>,
+    raw_rows: BTreeMap<ChartRawRowKey, TelemetryRow>,
+    source_generation: HashMap<String, u64>,
+    interested_until_generation: HashMap<String, u64>,
+    generation: u64,
+    newest_ts: i64,
 }
 
 impl ChartsCache {
     fn new() -> Self {
         Self {
             charts: HashMap::new(),
+            raw_rows: BTreeMap::new(),
+            source_generation: HashMap::new(),
+            interested_until_generation: HashMap::new(),
+            generation: 0,
+            newest_ts: 0,
         }
     }
 
     fn _clear(&mut self) {
         self.charts.clear();
+        self.raw_rows.clear();
+        self.source_generation.clear();
+        self.interested_until_generation.clear();
+        self.generation = 0;
+        self.newest_ts = 0;
     }
 
     fn ingest_row(&mut self, r: &TelemetryRow) {
-        self.ingest_chart_row(r);
-        self.ingest_sender_scoped_row(r);
+        self.generation = self.generation.wrapping_add(1).max(1);
+        self.store_raw_row(r);
+        self.note_source_row(r);
+        self.ingest_interested_row(r);
 
         for derived in derived_chart_rows(r) {
-            self.ingest_chart_row(&derived);
-            self.ingest_sender_scoped_row(&derived);
+            self.note_source_row(&derived);
+            self.ingest_interested_row(&derived);
         }
+
+        self.prune_interest();
     }
 
-    fn ingest_chart_row(&mut self, r: &TelemetryRow) {
-        let chart = self
-            .charts
-            .entry(r.data_type.clone())
-            .or_insert_with(CachedChart::new);
-        chart.ingest(r);
+    fn store_raw_row(&mut self, r: &TelemetryRow) {
+        if self.newest_ts == 0 || r.timestamp_ms > self.newest_ts {
+            self.newest_ts = r.timestamp_ms;
+        }
+        let key = ChartRawRowKey {
+            bucket: r.timestamp_ms.div_euclid(BUCKET_MS),
+            data_type: r.data_type.clone(),
+            sender_id: r.sender_id.clone(),
+        };
+        self.raw_rows.insert(key, r.clone());
+        self.prune_raw_rows();
     }
 
-    fn ingest_sender_scoped_row(&mut self, r: &TelemetryRow) {
-        if !should_split_sender_chart(&r.data_type) || r.sender_id.is_empty() {
+    fn prune_raw_rows(&mut self) {
+        if self.newest_ts == 0 {
             return;
         }
-        let chart = self
+        let oldest_allowed_bid = self
+            .newest_ts
+            .saturating_sub(HISTORY_MS)
+            .div_euclid(BUCKET_MS);
+        while self
+            .raw_rows
+            .first_key_value()
+            .is_some_and(|(key, _)| key.bucket < oldest_allowed_bid)
+        {
+            self.raw_rows.pop_first();
+        }
+    }
+
+    fn note_source_row(&mut self, r: &TelemetryRow) {
+        for key in chart_keys_for_row(r) {
+            self.source_generation.insert(key, self.generation);
+        }
+    }
+
+    fn ingest_interested_row(&mut self, r: &TelemetryRow) {
+        for key in chart_keys_for_row(r) {
+            if !self.is_key_interested(&key) {
+                continue;
+            }
+            let chart = self.charts.entry(key).or_insert_with(CachedChart::new);
+            chart.ingest(r);
+            chart.source_generation = self.generation;
+        }
+    }
+
+    fn is_key_interested(&self, key: &str) -> bool {
+        self.interested_until_generation
+            .get(key)
+            .is_some_and(|until| *until >= self.generation)
+    }
+
+    fn prune_interest(&mut self) {
+        let generation = self.generation;
+        let expired = self
+            .interested_until_generation
+            .iter()
+            .filter_map(|(key, until)| {
+                if *until < generation {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        self.interested_until_generation
+            .retain(|_, until| *until >= generation);
+        for key in expired {
+            self.charts.remove(&key);
+        }
+    }
+
+    fn mark_interested(&mut self, key: &str) {
+        self.interested_until_generation.insert(
+            key.to_string(),
+            self.generation
+                .saturating_add(CHART_INTEREST_TTL_GENERATIONS),
+        );
+    }
+
+    fn ensure_interested_chart(&mut self, key: &str) {
+        self.mark_interested(key);
+        let source_generation = self.source_generation.get(key).copied().unwrap_or(0);
+        let chart_generation = self
             .charts
-            .entry(sender_scoped_chart_key(&r.data_type, &r.sender_id))
-            .or_insert_with(CachedChart::new);
-        chart.ingest(r);
+            .get(key)
+            .map(|chart| chart.source_generation)
+            .unwrap_or(0);
+        if chart_generation >= source_generation {
+            return;
+        }
+        self.rebuild_chart_for_key(key, source_generation);
+    }
+
+    fn rebuild_chart_for_key(&mut self, key: &str, source_generation: u64) {
+        let rows = self.raw_rows.values().cloned().collect::<Vec<_>>();
+        let mut chart = CachedChart::new();
+        for row in rows.iter() {
+            self.ingest_row_for_key(&mut chart, key, row);
+            for derived in derived_chart_rows(row) {
+                self.ingest_row_for_key(&mut chart, key, &derived);
+            }
+        }
+        chart.source_generation = source_generation;
+        self.charts.insert(key.to_string(), chart);
+    }
+
+    fn ingest_row_for_key(&self, chart: &mut CachedChart, key: &str, row: &TelemetryRow) {
+        if chart_keys_for_row(row).iter().any(|candidate| candidate == key) {
+            chart.ingest(row);
+        }
     }
 
     fn get(&mut self, dt: &str, w: f32, h: f32) -> (Rc<Vec<ChartRenderChunk>>, f32, f32, f32) {
+        self.ensure_interested_chart(dt);
         if let Some(c) = self.charts.get_mut(dt) {
             c.build_if_needed(w, h);
             (c.chunks.clone(), c.disp_min, c.disp_max, c.span_min)
@@ -436,6 +556,21 @@ impl ChartsCache {
             ch.request_refit();
         }
     }
+}
+
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct ChartRawRowKey {
+    bucket: i64,
+    data_type: String,
+    sender_id: String,
+}
+
+fn chart_keys_for_row(r: &TelemetryRow) -> Vec<String> {
+    let mut keys = vec![r.data_type.clone()];
+    if should_split_sender_chart(&r.data_type) && !r.sender_id.is_empty() {
+        keys.push(sender_scoped_chart_key(&r.data_type, &r.sender_id));
+    }
+    keys
 }
 
 fn derived_chart_rows(row: &TelemetryRow) -> Vec<TelemetryRow> {
@@ -635,6 +770,7 @@ struct CachedChart {
     buckets: VecDeque<Bucket>,
     newest_bucket_id: i64,
     newest_ts: i64,
+    source_generation: u64,
     dirty: bool,
     channel_count: usize,
 
@@ -682,6 +818,7 @@ impl CachedChart {
             buckets: VecDeque::new(),
             newest_bucket_id: 0,
             newest_ts: 0,
+            source_generation: 0,
             dirty: true,
             channel_count: 0,
             chunks: Rc::new(Vec::new()),

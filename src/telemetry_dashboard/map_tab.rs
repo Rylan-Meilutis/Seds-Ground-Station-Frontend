@@ -752,8 +752,6 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
       window.__gs26_default_center_lon = __CENTER_LON__;
       window.__gs26_default_zoom = __DEFAULT_ZOOM__;
       window.__gs26_tracked_asset_title = __TRACKED_ASSET_TITLE__;
-      if (window.__gs26_init_retry_installed) return;
-      window.__gs26_init_retry_installed = true;
 
       function tryInit() {
         try {
@@ -803,15 +801,18 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
         }
       }
 
-      if (!tryInit()) {
+      const initialized = tryInit();
+      try {
+        requestAnimationFrame(() => { tryInit(); });
+      } catch (e) {}
+
+      if (!initialized && !window.__gs26_init_retry_installed) {
+        window.__gs26_init_retry_installed = true;
         window.addEventListener("gs26-ground-map-ready", tryInit, { once: true });
-        const retryMs = [25, 75, 150, 300, 600, 1000, 2000];
+        const retryMs = [16, 50, 100, 200, 400, 800, 1200];
         for (const ms of retryMs) {
           setTimeout(tryInit, ms);
         }
-        try {
-          requestAnimationFrame(() => { tryInit(); });
-        } catch (e) {}
       }
     })();
     "#;
@@ -984,7 +985,19 @@ fn js_setup_map_size_guard() {
     js_eval(
         r#"
         (function() {
-          if (window.__gs26_map_size_hook) return;
+          if (window.__gs26_map_size_hook) {
+            try {
+              if (typeof window.__gs26_map_size_hook_update === "function") {
+                window.__gs26_map_size_hook_update();
+              }
+              const observer = window.__gs26_map_resize_observer;
+              const card = document.getElementById("map-card");
+              const map = document.getElementById("ground-map");
+              if (observer && card) observer.observe(card);
+              if (observer && map) observer.observe(map);
+            } catch (e) {}
+            return;
+          }
           window.__gs26_map_size_hook = true;
 
           function getH() {
