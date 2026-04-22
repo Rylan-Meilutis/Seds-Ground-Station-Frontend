@@ -34,8 +34,9 @@ APP_BUNDLE_NAME = f"{APP_NAME}.app"
 MACOS_ALT_APP_BUNDLE_NAME = f"{MACOS_ALT_APP_NAME}.app"
 LEGACY_APP_BUNDLE_NAME = f"{LEGACY_APP_NAME}.app"
 
-# fixed provisioning profile path (repo-local)
+# fixed provisioning profile paths (repo-local)
 FIXED_MOBILEPROVISION_REL = Path("Groundstation_26.mobileprovision")
+DEVELOPMENT_MOBILEPROVISION_REL = Path("Groundstation_dev.mobileprovision")
 
 LOG_FILE: Optional[Path] = None
 INTERRUPTED_EXIT_CODE = 130
@@ -370,6 +371,10 @@ def run_script(path: Path, cwd: Path, env: Optional[dict[str, str]] = None) -> N
 
 
 def _list_connected_ios_device_ids(frontend_dir: Path) -> list[str]:
+    return [udid for udid, _label in _list_connected_ios_devices(frontend_dir)]
+
+
+def _list_connected_ios_devices(frontend_dir: Path) -> list[tuple[str, str]]:
     if platform.system() != "Darwin":
         print("Error: iOS device deploy requires macOS.", file=sys.stderr)
         sys.exit(1)
@@ -386,7 +391,7 @@ def _list_connected_ios_device_ids(frontend_dir: Path) -> list[str]:
         print("Error: ios-deploy not found. Install it first (e.g. `brew install ios-deploy`).", file=sys.stderr)
         sys.exit(1)
 
-    ids: list[str] = []
+    devices: list[tuple[str, str]] = []
     pat = re.compile(r"\bFound\s+([0-9A-Fa-f-]+)\s+\(([^)]*)\)(.*)$")
 
     for line in out.splitlines():
@@ -397,28 +402,29 @@ def _list_connected_ios_device_ids(frontend_dir: Path) -> list[str]:
         udid = m.group(1).strip()
         meta = m.group(2).lower()
         tail = m.group(3).lower()
+        label = f"{m.group(2).strip()} {m.group(3).strip()}".strip()
 
         if "watch" in meta or "watch" in tail or "companion" in tail:
             continue
 
         if "iphoneos" in meta or "ipados" in meta:
-            ids.append(udid)
+            devices.append((udid, label))
             continue
 
         if "unknownos" in meta or "uknownos" in meta:
             if "a.k.a." in tail and ("ipad" in tail or "iphone" in tail):
-                ids.append(udid)
+                devices.append((udid, label))
                 continue
             if "connected through usb" in tail and "a.k.a." in tail:
-                ids.append(udid)
+                devices.append((udid, label))
                 continue
 
     seen = set()
-    deduped: list[str] = []
-    for d in ids:
-        if d not in seen:
-            seen.add(d)
-            deduped.append(d)
+    deduped: list[tuple[str, str]] = []
+    for udid, label in devices:
+        if udid not in seen:
+            seen.add(udid)
+            deduped.append((udid, label))
 
     return deduped
 
@@ -3949,17 +3955,111 @@ def _ensure_ios_deployment_env(
 SignKind = Literal["development", "distribution"]
 
 
-def fixed_mobileprovision_path(frontend_dir: Path) -> Path:
-    p = frontend_dir / FIXED_MOBILEPROVISION_REL
-    if not p.exists():
-        raise FileNotFoundError(
-            f"Missing provisioning profile: {p}\n"
-            f"Expected at: {frontend_dir / FIXED_MOBILEPROVISION_REL}"
+def _decode_mobileprovision(profile: Path, frontend_dir: Path) -> dict:
+    try:
+        raw = subprocess.check_output(
+            ["security", "cms", "-D", "-i", str(profile)],
+            cwd=frontend_dir,
+            stderr=DEVNULL,
         )
-    return p
+    except Exception:
+        raw = subprocess.check_output(
+            ["openssl", "smime", "-inform", "der", "-verify", "-noverify", "-in", str(profile)],
+            cwd=frontend_dir,
+            stderr=DEVNULL,
+        )
+    return plistlib.loads(raw)
 
 
-def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind) -> Path:
+def _profile_matches_bundle(profile_info: dict, bundle_id: str) -> bool:
+    entitlements = profile_info.get("Entitlements", {})
+    app_identifier = str(entitlements.get("application-identifier", ""))
+    if "." not in app_identifier:
+        return False
+    profile_bundle = app_identifier.split(".", 1)[1]
+    if profile_bundle == bundle_id:
+        return True
+    if profile_bundle.endswith("*"):
+        return bundle_id.startswith(profile_bundle[:-1])
+    return False
+
+
+def _find_installed_ios_development_profile(frontend_dir: Path, bundle_id: str) -> Optional[Path]:
+    profiles_dir = Path.home() / "Library" / "MobileDevice" / "Provisioning Profiles"
+    if not profiles_dir.exists():
+        return None
+
+    matches: list[tuple[float, Path]] = []
+    for profile in profiles_dir.glob("*.mobileprovision"):
+        try:
+            info = _decode_mobileprovision(profile, frontend_dir)
+        except Exception:
+            continue
+
+        entitlements = info.get("Entitlements", {})
+        if entitlements.get("get-task-allow") is not True:
+            continue
+        if not info.get("ProvisionedDevices"):
+            continue
+        if not _profile_matches_bundle(info, bundle_id):
+            continue
+
+        expiration = info.get("ExpirationDate")
+        expiration_ts = expiration.timestamp() if hasattr(expiration, "timestamp") else 0.0
+        matches.append((expiration_ts, profile))
+
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return matches[0][1]
+
+
+def fixed_mobileprovision_path(frontend_dir: Path) -> Path:
+    return ios_mobileprovision_path(frontend_dir, sign_kind="distribution")
+
+
+def ios_mobileprovision_path(
+        frontend_dir: Path,
+        *,
+        sign_kind: SignKind,
+        bundle_id: Optional[str] = None,
+) -> Path:
+    if sign_kind == "distribution":
+        override = os.environ.get("IOS_DISTRIBUTION_MOBILEPROVISION", "").strip()
+        p = Path(override).expanduser() if override else frontend_dir / FIXED_MOBILEPROVISION_REL
+        if not p.exists():
+            raise FileNotFoundError(
+                f"Missing iOS distribution provisioning profile: {p}\n"
+                f"Set IOS_DISTRIBUTION_MOBILEPROVISION or place it at: {frontend_dir / FIXED_MOBILEPROVISION_REL}"
+            )
+        return p
+
+    override = os.environ.get("IOS_DEVELOPMENT_MOBILEPROVISION", "").strip()
+    if override:
+        p = Path(override).expanduser()
+        if not p.exists():
+            raise FileNotFoundError(f"IOS_DEVELOPMENT_MOBILEPROVISION does not exist: {p}")
+        return p
+
+    local = frontend_dir / DEVELOPMENT_MOBILEPROVISION_REL
+    if local.exists():
+        return local
+
+    if bundle_id:
+        installed = _find_installed_ios_development_profile(frontend_dir, bundle_id)
+        if installed is not None:
+            print(f"Using installed iOS development provisioning profile: {installed}")
+            return installed
+
+    raise FileNotFoundError(
+        "Missing iOS development provisioning profile for physical-device deploy.\n"
+        f"Set IOS_DEVELOPMENT_MOBILEPROVISION=/path/to/profile.mobileprovision, place one at "
+        f"{frontend_dir / DEVELOPMENT_MOBILEPROVISION_REL}, or install an Xcode-managed development profile "
+        f"for {bundle_id or 'this app'} that includes the target device UDID."
+    )
+
+
+def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debug_mode: bool = False) -> Path:
     if platform.system() != "Darwin":
         print("Error: iOS packaging/signing requires macOS.", file=sys.stderr)
         sys.exit(1)
@@ -3968,13 +4068,15 @@ def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind) -> P
         frontend_dir,
         platform_name="ios",
         preferred_bundle_name=APP_BUNDLE_NAME,
+        debug_mode=debug_mode,
     ) or app_bundle_path(frontend_dir)
     if not app.exists():
         raise FileNotFoundError(f"App bundle not found: {app}")
 
     patch_plist(frontend_dir, app)
 
-    profile = fixed_mobileprovision_path(frontend_dir)
+    bundle_id = _bundle_id_from_app(app)
+    profile = ios_mobileprovision_path(frontend_dir, sign_kind=sign_kind, bundle_id=bundle_id)
 
     signer = frontend_dir / "scripts" / "ios_package_sign.sh"
     if not signer.exists():
@@ -4005,6 +4107,7 @@ def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind) -> P
     env = {
         "CERT_REGEX": cert_regex,
         "CERT_PICK": cert_pick,
+        "GET_TASK_ALLOW": "true" if sign_kind == "development" else "false",
     }
 
     run(
@@ -4067,6 +4170,80 @@ def _bundle_id_from_app(app: Path) -> str:
     if not bundle_id:
         raise RuntimeError(f"CFBundleIdentifier missing in {plist_path}")
     return str(bundle_id)
+
+
+def _select_ios_device_udids(frontend_dir: Path) -> list[Optional[str]]:
+    devices = _list_connected_ios_devices(frontend_dir)
+    if not devices:
+        print("No specific iPhone/iPad detected by ios-deploy; using ios-deploy's default device selection.")
+        return [None]
+    if len(devices) == 1:
+        udid, label = devices[0]
+        print(f"Using connected iOS device: {label or udid}")
+        return [udid]
+
+    print("Multiple connected iOS devices found:")
+    print("  0. All devices")
+    for index, (udid, label) in enumerate(devices, start=1):
+        display = label or "iPhone/iPad"
+        print(f"  {index}. {display} ({udid})")
+
+    while True:
+        choice = input(f"Select iOS device [0-{len(devices)} or all]: ").strip().lower()
+        if choice in {"", "0", "a", "all"}:
+            return [udid for udid, _label in devices]
+
+        parts = [part.strip() for part in choice.split(",") if part.strip()]
+        if not parts:
+            print(f"Enter 0, all, or one or more numbers from 1 to {len(devices)}.")
+            continue
+
+        selected_indexes: list[int] = []
+        valid = True
+        for part in parts:
+            try:
+                selected = int(part)
+            except ValueError:
+                valid = False
+                break
+            if selected == 0:
+                return [udid for udid, _label in devices]
+            if not (1 <= selected <= len(devices)):
+                valid = False
+                break
+            if selected not in selected_indexes:
+                selected_indexes.append(selected)
+
+        if valid and selected_indexes:
+            return [devices[index - 1][0] for index in selected_indexes]
+        print(f"Enter 0, all, or one or more numbers from 1 to {len(devices)}.")
+
+
+def ios_device_deploy(frontend_dir: Path, debug_mode: bool = False) -> tuple[list[Optional[str]], str]:
+    if platform.system() != "Darwin":
+        print("Error: iOS device deploy requires macOS.", file=sys.stderr)
+        sys.exit(1)
+
+    ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="development", debug_mode=debug_mode)
+    print(f"Dev-signed IPA created: {ipa}")
+
+    app = app_bundle_path(frontend_dir)
+    if not app.exists():
+        raise FileNotFoundError(f"Signed app bundle not found: {app}")
+
+    bundle_id = _bundle_id_from_app(app)
+    udids = _select_ios_device_udids(frontend_dir)
+
+    for udid in udids:
+        cmd = ["ios-deploy"]
+        if udid:
+            cmd.extend(["--id", udid])
+        cmd.extend(["--bundle", str(app)])
+
+        device_label = udid or "default device"
+        print(f"Installing iOS app on {device_label}: {bundle_id}")
+        run(cmd, cwd=frontend_dir)
+    return udids, bundle_id
 
 
 def ios_sim_deploy(frontend_dir: Path, debug_mode: bool = False) -> tuple[str, str]:
@@ -4940,7 +5117,7 @@ def print_usage(exit_code: int = 1) -> None:
     print(f"  {build_script} android [apk|aab] [debug] [existing] [no_sign] [log=<path>]")
     print("")
     print("Frontend packaging and deploy actions:")
-    print(f"  {build_script} ios_deploy [debug] [existing]")
+    print(f"  {build_script} ios_deploy [debug] [existing]   # dev-sign/install on connected iPhone/iPad")
     print(f"  {build_script} ios_sim_deploy [debug] [existing]")
     print(
         f"  {build_script} ios_sim_screenshot [debug] [existing] [screenshot_delay=<seconds>] ["
@@ -4963,7 +5140,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("What this script owns:")
     print("  - Dioxus frontend builds for web/desktop/mobile")
     print("  - wasm optimization and compression for web")
-    print("  - iOS packaging/signing")
+    print("  - iOS packaging/signing (`ios` signs a distribution IPA; `ios_deploy` uses development signing)")
     print("  - Android bundle/APK generation and install")
     print("  - macOS signing/notarization/deploy")
     print("  - Windows/Linux packaging helpers (AppImage, deb, rpm, Arch, Flatpak)")
@@ -4986,6 +5163,8 @@ def print_usage(exit_code: int = 1) -> None:
     print("Environment:")
     print("  CERT_REGEX=...                    # override cert regex for signer script")
     print("  CERT_PICK=newest|first            # override cert selection for signer script")
+    print("  IOS_DEVELOPMENT_MOBILEPROVISION=...   # physical-device deploy provisioning profile")
+    print("  IOS_DISTRIBUTION_MOBILEPROVISION=...  # distribution/TestFlight provisioning profile")
     print("  MACOS_ENTITLEMENTS=...            # optional entitlements file for macOS codesign")
     print("  NOTARY_PROFILE=...                # notarytool keychain profile")
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")
@@ -5004,7 +5183,8 @@ def print_usage(exit_code: int = 1) -> None:
     print("  ANDROID_COMPILE_SDK=...           # defaults to ANDROID_TARGET_SDK")
     print("")
     print("Provisioning profile path:")
-    print(f"  {FIXED_MOBILEPROVISION_REL}")
+    print(f"  distribution: {FIXED_MOBILEPROVISION_REL}")
+    print(f"  development : {DEVELOPMENT_MOBILEPROVISION_REL} or installed Xcode-managed profile")
     sys.exit(exit_code)
 
 
@@ -5152,8 +5332,9 @@ def main() -> None:
                     debug_mode=debug_mode,
                     max_size=max_size_mode,
                 )
-            ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="distribution")
-            print(f"Distribution IPA created: {ipa}")
+            udids, bundle_id = ios_device_deploy(frontend_dir, debug_mode=debug_mode)
+            device_labels = ", ".join(udid or "default device" for udid in udids)
+            print(f"iOS device install complete ({device_labels}) for {bundle_id}")
             return
 
         if action == "android_install":
@@ -5253,7 +5434,7 @@ def main() -> None:
                     debug_mode=debug_mode,
                     max_size=max_size_mode,
                 )
-            ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="development")
+            ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="development", debug_mode=debug_mode)
             print(f"Dev IPA created: {ipa}")
             return
 
@@ -5266,7 +5447,7 @@ def main() -> None:
                     debug_mode=debug_mode,
                     max_size=max_size_mode,
                 )
-            ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="distribution")
+            ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="distribution", debug_mode=debug_mode)
             print(f"Distribution IPA created: {ipa}")
             return
 
@@ -5324,6 +5505,9 @@ def main() -> None:
 
     if use_existing:
         print("Skipping frontend build (existing requested).")
+        if frontend_only_platform == "ios":
+            ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="distribution", debug_mode=debug_mode)
+            print(f"Distribution IPA created: {ipa}")
         return
 
     build_frontend(
@@ -5335,6 +5519,10 @@ def main() -> None:
         android_package_type=android_package_type,
         sign_macos=not no_sign_mode,
     )
+
+    if frontend_only_platform == "ios":
+        ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="distribution", debug_mode=debug_mode)
+        print(f"Distribution IPA created: {ipa}")
 
 
 if __name__ == "__main__":

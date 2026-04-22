@@ -28,6 +28,11 @@ let tileZoomDiscoveryKey = "";
 let tileZoomDiscoveryRunId = 0;
 let currentPrefetchKey = null;
 let tilePrefetchRunId = 0;
+let tileTrackingPrefetchTimer = null;
+let tileTrackingPrefetchInterval = null;
+let currentTrackingPrefetchKey = null;
+let tileTrackingPrefetchRunId = 0;
+let tileTrackingPrefetchActive = false;
 let wheelRotateFrame = null;
 let wheelRotateTargetBearing = null;
 let wheelGestureMode = null;
@@ -76,8 +81,16 @@ const DEFAULT_MAX_OVERZOOM_DELTA = 1;
 const HIGH_RES_PREFETCH_RADIUS_M = 1609.344;
 const HIGH_RES_PREFETCH_MAX_TILES = 96;
 const HIGH_RES_PREFETCH_CONCURRENCY = 1;
+const HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES = 0;
+const HIGH_RES_PREFETCH_LOCATION_BUFFER_TILES = 0;
+const HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA = 2;
 const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 5000;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
+const TRACKING_PREFETCH_TILE_RADIUS = 5;
+const TRACKING_PREFETCH_ZOOM_DELTA = 3;
+const TRACKING_PREFETCH_INTERVAL_MS = 5000;
+const TRACKING_PREFETCH_DELAY_MS = 250;
+const TRACKING_PREFETCH_CONCURRENCY = 2;
 const WHEEL_ROTATE_DEG_PER_PIXEL = 0.18;
 const WHEEL_ROTATE_EASE = 0.24;
 const WHEEL_ROTATE_SETTLE_DEG = 0.08;
@@ -187,8 +200,14 @@ function tileCacheSupported() {
         && typeof window.fetch === "function";
 }
 
-function tileCacheAllowedForUrl(url) {
-    return tileCacheSupported() && /^https?:/i.test(String(url || ""));
+function tileFetchAllowedForUrl(url) {
+    return /^https?:/i.test(String(url || "")) || /^gs26:\/\//i.test(String(url || ""));
+}
+
+function tileCacheRequestKey(url) {
+    const raw = String(url || "");
+    if (/^https?:/i.test(raw)) return raw;
+    return `https://gs26.tile-cache.local/${encodeURIComponent(raw)}`;
 }
 
 function requestPersistentTileStorage() {
@@ -233,6 +252,20 @@ function suppressHighResPrefetch(ms) {
     tilePrefetchRunId += 1;
 }
 
+function stopTrackingTilePrefetch() {
+    if (tileTrackingPrefetchTimer) {
+        cancelIdleDelay(tileTrackingPrefetchTimer);
+        tileTrackingPrefetchTimer = null;
+    }
+    if (tileTrackingPrefetchInterval) {
+        clearInterval(tileTrackingPrefetchInterval);
+        tileTrackingPrefetchInterval = null;
+    }
+    currentTrackingPrefetchKey = null;
+    tileTrackingPrefetchRunId += 1;
+    tileTrackingPrefetchActive = false;
+}
+
 function tileCacheName(tilesUrl) {
     return `gs26-tiles-v1:${String(tilesUrl || "")
         .replace(/[^a-z0-9]+/gi, "_")
@@ -243,6 +276,32 @@ function tileCacheName(tilesUrl) {
 function resolveTileUrl(z, x, y) {
     if (!currentTilesUrl) return "";
     return String(currentTilesUrl)
+        .replace("{z}", String(z))
+        .replace("{x}", String(x))
+        .replace("{y}", String(y));
+}
+
+function effectivePrefetchTilesUrl() {
+    return String(currentTilesUrl || window.__gs26_tiles_url || "").trim();
+}
+
+function effectivePrefetchMaxNativeZoom(tilesUrl) {
+    const candidates = [
+        currentMaxNativeZoom,
+        window.__gs26_max_native_zoom,
+        loadPersistedMaxNativeZoom(tilesUrl),
+        DEFAULT_MAX_NATIVE_ZOOM,
+    ];
+    for (const raw of candidates) {
+        if (raw == null || raw === "") continue;
+        const value = Number(raw);
+        if (Number.isFinite(value)) return clampMaxNativeZoom(value);
+    }
+    return DEFAULT_MAX_NATIVE_ZOOM;
+}
+
+function resolvePrefetchTileUrl(tilesUrl, z, x, y) {
+    return String(tilesUrl || "")
         .replace("{z}", String(z))
         .replace("{x}", String(x))
         .replace("{y}", String(y));
@@ -259,10 +318,6 @@ function shouldUseNativeTileTemplate(tilesUrl) {
 
 function tilesUseNativeProxy() {
     return shouldUseNativeTileTemplate(currentTilesUrl);
-}
-
-function tilesUseCustomSchemeProxy() {
-    return /^gs26:\/\//i.test(String(currentTilesUrl || ""));
 }
 
 function mapPrefetchEnabled() {
@@ -322,10 +377,10 @@ function ensureMapProtocolOnce() {
 }
 
 async function readCachedTileArrayBuffer(cacheName, url) {
-    if (!tileCacheAllowedForUrl(url) || !url) return null;
+    if (!tileCacheSupported() || !url) return null;
     try {
         const cache = await caches.open(cacheName);
-        const cached = await cache.match(url, {ignoreVary: true});
+        const cached = await cache.match(tileCacheRequestKey(url), {ignoreVary: true});
         if (!cached || !cached.ok) return null;
         return await cached.arrayBuffer();
     } catch (e) {
@@ -336,15 +391,17 @@ async function readCachedTileArrayBuffer(cacheName, url) {
 
 async function fetchAndCacheTileArrayBuffer(cacheName, url) {
     if (!url) throw new Error("tile url missing");
+    if (!tileFetchAllowedForUrl(url)) throw new Error(`unsupported tile url: ${url}`);
 
-    if (!tileCacheAllowedForUrl(url)) {
+    if (!tileCacheSupported()) {
         const response = await fetch(url);
         if (!response.ok) throw new Error(`tile fetch failed: ${response.status}`);
         return await response.arrayBuffer();
     }
 
     const cache = await caches.open(cacheName);
-    const cached = await cache.match(url, {ignoreVary: true});
+    const cacheKey = tileCacheRequestKey(url);
+    const cached = await cache.match(cacheKey, {ignoreVary: true});
     if (cached && cached.ok) {
         return await cached.arrayBuffer();
     }
@@ -354,7 +411,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url) {
     const cacheResponse = response.clone();
     Promise.resolve().then(async () => {
         try {
-            await cache.put(url, cacheResponse);
+            await cache.put(cacheKey, cacheResponse);
         } catch (e) {
             console.warn("[GS26 map] cache put failed", url, e);
         }
@@ -531,13 +588,19 @@ function tileCoordsAround(lat, lon, zoom, radiusM) {
     const west = lon - dLon;
     const nw = latLonToTileXY(north, west, zoom);
     const se = latLonToTileXY(south, east, zoom);
-    return tileCoordsForRange(nw, se, zoom);
+    return tileCoordsForRange(nw, se, zoom, HIGH_RES_PREFETCH_LOCATION_BUFFER_TILES);
 }
 
-function tileCoordsForRange(nw, se, zoom) {
+function tileCoordsForRange(nw, se, zoom, bufferTiles = 0) {
     const coords = [];
-    for (let x = nw.x; x <= se.x; x++) {
-        for (let y = nw.y; y <= se.y; y++) {
+    const scale = Math.pow(2, zoom);
+    const buffer = Math.max(0, Math.floor(Number(bufferTiles) || 0));
+    const xMin = Math.max(0, Math.min(nw.x, se.x) - buffer);
+    const xMax = Math.min(scale - 1, Math.max(nw.x, se.x) + buffer);
+    const yMin = Math.max(0, Math.min(nw.y, se.y) - buffer);
+    const yMax = Math.min(scale - 1, Math.max(nw.y, se.y) + buffer);
+    for (let x = xMin; x <= xMax; x++) {
+        for (let y = yMin; y <= yMax; y++) {
             coords.push({x, y, z: zoom});
         }
     }
@@ -552,14 +615,57 @@ function tileCoordsForBounds(bounds, zoom) {
     const west = bounds.getWest();
     const nw = latLonToTileXY(north, west, zoom);
     const se = latLonToTileXY(south, east, zoom);
-    return tileCoordsForRange(nw, se, zoom);
+    return tileCoordsForRange(nw, se, zoom, HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES);
 }
 
-function prefetchZoomLevels(maxNativeZoom) {
+function tileCoordsAroundTileRadius(lat, lon, zoom, radiusTiles) {
+    const center = latLonToTileXY(lat, lon, zoom);
+    return tileCoordsForRange(center, center, zoom, radiusTiles);
+}
+
+function prefetchZoomLevels(maxNativeZoom, focusZoom) {
     const top = Math.max(MIN_ZOOM, Math.floor(Number(maxNativeZoom) || DEFAULT_MAX_NATIVE_ZOOM));
     const zooms = [];
-    for (let z = MIN_ZOOM; z <= top; z++) {
+    const seen = new Set();
+    const add = (value) => {
+        const z = Math.max(MIN_ZOOM, Math.min(top, Math.floor(Number(value))));
+        if (!Number.isFinite(z) || seen.has(z)) return;
+        seen.add(z);
         zooms.push(z);
+    };
+
+    if (Number.isFinite(focusZoom)) {
+        const center = Math.floor(focusZoom);
+        add(center);
+        for (let delta = 1; delta <= HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA; delta++) {
+            add(center + delta);
+            add(center - delta);
+        }
+    }
+    for (let z = top; z >= MIN_ZOOM; z--) {
+        add(z);
+    }
+    return zooms;
+}
+
+function trackingZoomLevels(maxNativeZoom, focusZoom) {
+    const top = Math.max(MIN_ZOOM, Math.floor(Number(maxNativeZoom) || DEFAULT_MAX_NATIVE_ZOOM));
+    const center = Math.max(
+        MIN_ZOOM,
+        Math.min(top, Math.floor(Number.isFinite(focusZoom) ? focusZoom : top))
+    );
+    const zooms = [];
+    const seen = new Set();
+    const add = (value) => {
+        const z = Math.max(MIN_ZOOM, Math.min(top, Math.floor(Number(value))));
+        if (!Number.isFinite(z) || seen.has(z)) return;
+        seen.add(z);
+        zooms.push(z);
+    };
+    add(center);
+    for (let delta = 1; delta <= TRACKING_PREFETCH_ZOOM_DELTA; delta++) {
+        add(center + delta);
+        add(center - delta);
     }
     return zooms;
 }
@@ -748,19 +854,68 @@ function scheduleTileZoomDiscovery() {
     return;
 }
 
-function buildHighResPrefetchPlan() {
-    if (!groundMap || !currentTilesUrl) {
+function buildTrackingPrefetchPlan() {
+    const tilesUrl = effectivePrefetchTilesUrl();
+    if (!tilesUrl || !Array.isArray(lastUserLatLng)) {
         return {key: "", coords: []};
     }
 
-    const zooms = prefetchZoomLevels(currentMaxNativeZoom);
+    const userLat = Number(lastUserLatLng[0]);
+    const userLon = Number(lastUserLatLng[1]);
+    if (!Number.isFinite(userLat) || !Number.isFinite(userLon)) {
+        return {key: "", coords: []};
+    }
+
+    const maxNativeZoom = effectivePrefetchMaxNativeZoom(tilesUrl);
+    const focusZoom = groundMap && typeof groundMap.getZoom === "function"
+        ? groundMap.getZoom()
+        : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : maxNativeZoom);
+    const zooms = trackingZoomLevels(maxNativeZoom, focusZoom);
+    const focusTile = latLonToTileXY(userLat, userLon, Math.max(MIN_ZOOM, Math.min(maxNativeZoom, Math.floor(focusZoom))));
+    const key = [
+        "tracking",
+        tilesUrl,
+        String(maxNativeZoom),
+        Number.isFinite(focusZoom) ? Math.floor(focusZoom).toString() : "",
+        focusTile.x,
+        focusTile.y,
+        Number.isFinite(userLat) ? userLat.toFixed(5) : "",
+        Number.isFinite(userLon) ? userLon.toFixed(5) : "",
+    ].join("|");
+
+    const coords = [];
+    const seen = new Set();
+    const maxTiles = Math.max(1, zooms.length * Math.pow(TRACKING_PREFETCH_TILE_RADIUS * 2 + 1, 2));
+    for (const zoom of zooms) {
+        appendUniqueCoords(
+            coords,
+            seen,
+            tileCoordsAroundTileRadius(userLat, userLon, zoom, TRACKING_PREFETCH_TILE_RADIUS),
+            maxTiles
+        );
+    }
+
+    return {key, coords};
+}
+
+function buildHighResPrefetchPlan() {
+    const tilesUrl = effectivePrefetchTilesUrl();
+    if (!tilesUrl) {
+        return {key: "", coords: []};
+    }
+
+    const maxNativeZoom = effectivePrefetchMaxNativeZoom(tilesUrl);
+    const mapZoom = groundMap && typeof groundMap.getZoom === "function"
+        ? groundMap.getZoom()
+        : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : NaN);
+    const zooms = prefetchZoomLevels(maxNativeZoom, mapZoom);
     const coords = [];
     const seen = new Set();
     const userLat = Array.isArray(lastUserLatLng) ? lastUserLatLng[0] : NaN;
     const userLon = Array.isArray(lastUserLatLng) ? lastUserLatLng[1] : NaN;
     const rocketLat = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[0] : NaN;
     const rocketLon = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[1] : NaN;
-    const bounds = groundMap.getBounds ? groundMap.getBounds() : null;
+    const bounds = groundMap && groundMap.getBounds ? groundMap.getBounds() : null;
     const viewportKey = bounds
         ? [
             bounds.getNorth().toFixed(4),
@@ -770,8 +925,9 @@ function buildHighResPrefetchPlan() {
         ].join(",")
         : "";
     const key = [
-        currentTilesUrl || "",
-        String(currentMaxNativeZoom || ""),
+        tilesUrl,
+        String(maxNativeZoom || ""),
+        Number.isFinite(mapZoom) ? mapZoom.toFixed(2) : "",
         Number.isFinite(userLat) ? userLat.toFixed(4) : "",
         Number.isFinite(userLon) ? userLon.toFixed(4) : "",
         Number.isFinite(rocketLat) ? rocketLat.toFixed(4) : "",
@@ -780,20 +936,20 @@ function buildHighResPrefetchPlan() {
     ].join("|");
 
     for (const zoom of zooms) {
-        if (Number.isFinite(userLat) && Number.isFinite(userLon) && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
-            appendUniqueCoords(
-                coords,
-                seen,
-                tileCoordsAround(userLat, userLon, zoom, HIGH_RES_PREFETCH_RADIUS_M),
-                HIGH_RES_PREFETCH_MAX_TILES
-            );
-        }
-
         if (bounds && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
             appendUniqueCoords(
                 coords,
                 seen,
                 tileCoordsForBounds(bounds, zoom),
+                HIGH_RES_PREFETCH_MAX_TILES
+            );
+        }
+
+        if (Number.isFinite(userLat) && Number.isFinite(userLon) && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+            appendUniqueCoords(
+                coords,
+                seen,
+                tileCoordsAround(userLat, userLon, zoom, HIGH_RES_PREFETCH_RADIUS_M),
                 HIGH_RES_PREFETCH_MAX_TILES
             );
         }
@@ -812,7 +968,7 @@ function buildHighResPrefetchPlan() {
 }
 
 async function runHighResTilePrefetch(runId, key) {
-    const tilesUrl = currentTilesUrl;
+    const tilesUrl = effectivePrefetchTilesUrl();
     if (!tilesUrl) return;
 
     const plan = buildHighResPrefetchPlan();
@@ -845,14 +1001,14 @@ async function runHighResTilePrefetch(runId, key) {
 
     const worker = async () => {
         while (true) {
-            if (runId !== tilePrefetchRunId || currentTilesUrl !== tilesUrl) return;
+            if (runId !== tilePrefetchRunId || effectivePrefetchTilesUrl() !== tilesUrl) return;
             const index = nextIndex++;
             if (index >= total) return;
             const coord = plan.coords[index];
             try {
                 await fetchAndCacheTileArrayBuffer(
                     cacheName,
-                    resolveTileUrl(coord.z, coord.x, coord.y)
+                    resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y)
                 );
             } catch (e) {
                 failed += 1;
@@ -887,8 +1043,78 @@ async function runHighResTilePrefetch(runId, key) {
     }
 }
 
+async function runTrackingTilePrefetch(runId, plan) {
+    if (tileTrackingPrefetchActive) return;
+    const tilesUrl = effectivePrefetchTilesUrl();
+    if (!tilesUrl || !plan || !plan.coords.length) return;
+
+    tileTrackingPrefetchActive = true;
+    const cacheName = tileCacheName(tilesUrl);
+    let nextIndex = 0;
+    const total = plan.coords.length;
+
+    const worker = async () => {
+        while (true) {
+            if (runId !== tileTrackingPrefetchRunId || effectivePrefetchTilesUrl() !== tilesUrl) return;
+            const index = nextIndex++;
+            if (index >= total) return;
+            const coord = plan.coords[index];
+            try {
+                await fetchAndCacheTileArrayBuffer(
+                    cacheName,
+                    resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y)
+                );
+            } catch (e) {
+            }
+        }
+    };
+
+    try {
+        const concurrency = Math.max(1, Math.min(TRACKING_PREFETCH_CONCURRENCY, total));
+        await Promise.allSettled(Array.from({length: concurrency}, () => worker()));
+    } finally {
+        tileTrackingPrefetchActive = false;
+    }
+}
+
+function ensureTrackingTilePrefetchLoop() {
+    if (tileTrackingPrefetchInterval) return;
+    tileTrackingPrefetchInterval = setInterval(() => {
+        scheduleTrackingTilePrefetch({force: true});
+    }, TRACKING_PREFETCH_INTERVAL_MS);
+}
+
+function scheduleTrackingTilePrefetch(options = {}) {
+    const force = options.force === true;
+    const tilesUrl = effectivePrefetchTilesUrl();
+    if (!tilesUrl || !mapPrefetchEnabled() || !tileFetchAllowedForUrl(tilesUrl) || !tileCacheSupported()) {
+        stopTrackingTilePrefetch();
+        return;
+    }
+    const plan = buildTrackingPrefetchPlan();
+    if (!plan.key || !plan.coords.length) {
+        stopTrackingTilePrefetch();
+        return;
+    }
+
+    ensureTrackingTilePrefetchLoop();
+    if (!force && currentTrackingPrefetchKey === plan.key) {
+        return;
+    }
+    currentTrackingPrefetchKey = plan.key;
+
+    if (tileTrackingPrefetchTimer) {
+        cancelIdleDelay(tileTrackingPrefetchTimer);
+    }
+    const runId = ++tileTrackingPrefetchRunId;
+    tileTrackingPrefetchTimer = idleDelay(async () => {
+        tileTrackingPrefetchTimer = null;
+        await runTrackingTilePrefetch(runId, plan);
+    }, TRACKING_PREFETCH_DELAY_MS);
+}
+
 function scheduleTileCacheSweep(tilesUrl) {
-    if (!tileCacheAllowedForUrl(tilesUrl)) return;
+    if (!tileCacheSupported()) return;
     if (tileCacheSweepTimer) clearTimeout(tileCacheSweepTimer);
     tileCacheSweepTimer = setTimeout(async () => {
         try {
@@ -906,11 +1132,13 @@ function scheduleTileCacheSweep(tilesUrl) {
 }
 
 function scheduleHighResTilePrefetch() {
-    if (!groundMap || !currentTilesUrl) return;
+    const tilesUrl = effectivePrefetchTilesUrl();
+    if (!tilesUrl) return;
     if (!mapPrefetchEnabled()) {
         currentPrefetchKey = "";
         if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
         tilePrefetchTimer = null;
+        stopTrackingTilePrefetch();
         setTilePrefetchState({
             key: "",
             state: "idle",
@@ -920,8 +1148,9 @@ function scheduleHighResTilePrefetch() {
         });
         return;
     }
-    if (tilesUseCustomSchemeProxy() || !tileCacheAllowedForUrl(currentTilesUrl)) {
+    if (!tileFetchAllowedForUrl(tilesUrl) || !tileCacheSupported()) {
         currentPrefetchKey = "";
+        stopTrackingTilePrefetch();
         setTilePrefetchState({
             key: "",
             state: "idle",
@@ -2167,7 +2396,6 @@ function installCustomGestureHooks() {
         if (!groundMap || event.button !== 0) return;
         cancelSmoothWheelRotation();
         if (!event.shiftKey) {
-            unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
             return;
         }
         event.preventDefault();
@@ -2196,7 +2424,6 @@ function installCustomGestureHooks() {
     canvas.addEventListener("touchstart", (event) => {
         if (!groundMap) return;
         if (event.touches.length === 1) {
-            unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
             state.touchGesture = null;
             state.touchCarryId = event.touches[0] ? event.touches[0].identifier : null;
             return;
@@ -2303,6 +2530,7 @@ function installMapHooks() {
         syncPointSource(ROCKET_SOURCE_ID, lastRocketLatLng);
         syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng || lastUserLatLng);
         syncUserHeadingIndicator();
+        scheduleTrackingTilePrefetch();
         scheduleHighResTilePrefetch();
         scheduleTileZoomDiscovery();
     });
@@ -2313,11 +2541,15 @@ function installMapHooks() {
         scheduleHighResTilePrefetch();
         scheduleTileZoomDiscovery();
     });
+    groundMap.on("move", () => {
+        scheduleTrackingTilePrefetch();
+    });
     groundMap.on("zoomend", () => {
         suppressFollowCameraUntilMs = 0;
-        suppressHighResPrefetch(1200);
+        suppressHighResPrefetch(300);
         rememberMapView();
         persistMapStateSoon();
+        scheduleTrackingTilePrefetch();
         scheduleHighResTilePrefetch();
         if (followUserEnabled) {
             applyFollowUserIfPossible();
@@ -2360,12 +2592,12 @@ function installMapHooks() {
 
     groundMap.on("dragstart", () => {
         cancelSmoothWheelRotation();
-        suppressHighResPrefetch(2500);
+        suppressHighResPrefetch(300);
         unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
     });
     groundMap.on("zoomstart", () => {
         cancelSmoothWheelRotation();
-        suppressHighResPrefetch(2500);
+        suppressHighResPrefetch(300);
         suppressFollowCameraUntilMs = Date.now() + 1000;
         suppressManualOrientationDropUntilMs = Date.now() + 1500;
         unlockMapInteraction({force: true, dropFollow: false, dropOrientation: false});
@@ -2374,7 +2606,7 @@ function installMapHooks() {
         if (!isInternalCameraUpdate()) {
             cancelSmoothWheelRotation();
         }
-        suppressHighResPrefetch(2500);
+        suppressHighResPrefetch(300);
         if (isInternalCameraUpdate()) return;
         suppressFollowCameraUntilMs = Date.now() + 1500;
         unlockMapInteraction({force: true, dropFollow: true, dropOrientation: true});
@@ -2592,7 +2824,12 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     if (hasUser) {
         lastUserLatLng = [uLat, uLon];
     }
-    if (!groundMap) return;
+    if (!groundMap) {
+        if (hasRocket || hasUser) {
+            scheduleTrackingTilePrefetch();
+        }
+        return;
+    }
 
     if (hasRocket) {
         syncPointSource(ROCKET_SOURCE_ID, lastRocketLatLng);
@@ -2621,6 +2858,7 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     applyMapOrientation();
     if (hasRocket || hasUser) {
         scheduleTileZoomDiscovery();
+        scheduleTrackingTilePrefetch();
         scheduleHighResTilePrefetch();
     }
 }
@@ -2642,6 +2880,34 @@ function getLastUserLatLng() {
     return {lat: lastUserLatLng[0], lon: lastUserLatLng[1]};
 }
 
+function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketLon, userLat, userLon) {
+    const nextTilesUrl = String(tilesUrl || "").trim();
+    if (nextTilesUrl) {
+        currentTilesUrl = nextTilesUrl;
+        window.__gs26_tiles_url = nextTilesUrl;
+    }
+
+    const nextMaxNativeZoom = Number(maxNativeZoom);
+    if (Number.isFinite(nextMaxNativeZoom)) {
+        currentMaxNativeZoom = clampMaxNativeZoom(nextMaxNativeZoom);
+        window.__gs26_max_native_zoom = currentMaxNativeZoom;
+        persistMaxNativeZoom(effectivePrefetchTilesUrl(), currentMaxNativeZoom);
+    }
+
+    const rLat = Number(rocketLat);
+    const rLon = Number(rocketLon);
+    const uLat = Number(userLat);
+    const uLon = Number(userLon);
+    if (Number.isFinite(rLat) && Number.isFinite(rLon)) {
+        lastRocketLatLng = [rLat, rLon];
+    }
+    if (Number.isFinite(uLat) && Number.isFinite(uLon)) {
+        lastUserLatLng = [uLat, uLon];
+    }
+
+    scheduleTrackingTilePrefetch();
+}
+
 (function pinGroundStation26() {
     const api = (window.GS26 = window.GS26 || {});
 
@@ -2650,6 +2916,7 @@ function getLastUserLatLng() {
     api.centerGroundMapOn = centerGroundMapOn;
     api.getLastUserLatLng = getLastUserLatLng;
     api.scheduleHighResTilePrefetch = scheduleHighResTilePrefetch;
+    api.setGroundMapPrefetchContext = setGroundMapPrefetchContext;
     api.setGroundMapFollowUser = setGroundMapFollowUser;
     api.setGroundMapOrientationMode = setGroundMapOrientationMode;
     api.disableFollowUserFromMapInteraction = disableFollowUserFromMapInteraction;
@@ -2714,6 +2981,7 @@ function getLastUserLatLng() {
     window.updateGroundMapMarkers = api.updateGroundMapMarkers;
     window.centerGroundMapOn = api.centerGroundMapOn;
     window.getLastUserLatLng = api.getLastUserLatLng;
+    window.setGroundMapPrefetchContext = api.setGroundMapPrefetchContext;
     window.initCompassOnce = api.initCompassOnce;
     window.setGroundMapUserHeading = api.setGroundMapUserHeading;
     window.setGroundMapFollowUser = api.setGroundMapFollowUser;

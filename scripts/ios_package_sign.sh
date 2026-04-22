@@ -12,6 +12,7 @@ set -euo pipefail
 # Optional env:
 #   CERT_REGEX='Apple Distribution:'   (default)
 #   CERT_PICK='newest'|'first'         (default: newest)
+#   GET_TASK_ALLOW='false'|'true'|'profile' (default: false)
 # -----------------------------------------------------------------------------
 
 APP="${1:?Missing .app path}"
@@ -20,11 +21,13 @@ IPA_OUT="${3:?Missing output .ipa path}"
 
 CERT_REGEX="${CERT_REGEX:-Apple Distribution:}"
 CERT_PICK="${CERT_PICK:-newest}"  # newest|first
+GET_TASK_ALLOW="${GET_TASK_ALLOW:-false}"
 
 PB="/usr/libexec/PlistBuddy"
 CODESIGN="/usr/bin/codesign"
 SECURITY="/usr/bin/security"
 PLUTIL="/usr/bin/plutil"
+OPENSSL="/usr/bin/openssl"
 
 log() { printf "[%s] %s\n" "$(date '+%H:%M:%S')" "$*"; }
 die() { printf "[ERROR] %s\n" "$*" >&2; exit 1; }
@@ -38,7 +41,10 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Decode provisioning profile once (used for cert matching + entitlements)
-$SECURITY cms -D -i "$PROVISION" > "$TMP/profile.plist"
+if ! $SECURITY cms -D -i "$PROVISION" > "$TMP/profile.plist" 2>/dev/null; then
+  $OPENSSL smime -inform der -verify -noverify -in "$PROVISION" -out "$TMP/profile.plist" >/dev/null 2>&1 \
+    || die "Failed to decode provisioning profile: $PROVISION"
+fi
 
 # -----------------------------------------------------------------------------
 # Pick a signing identity from keychain WITHOUT hardcoding PII
@@ -214,11 +220,20 @@ rm -f  "$APP/CodeResources" 2>/dev/null || true
 log "Extracting entitlements from provisioning profile..."
 $PB -x -c "Print :Entitlements" "$TMP/profile.plist" > "$TMP/entitlements.plist"
 
-if $PB -c "Print :get-task-allow" "$TMP/entitlements.plist" >/dev/null 2>&1; then
-  $PB -c "Set :get-task-allow false" "$TMP/entitlements.plist" >/dev/null
-else
-  $PB -c "Add :get-task-allow bool false" "$TMP/entitlements.plist" >/dev/null
-fi
+case "$GET_TASK_ALLOW" in
+  false|true)
+    if $PB -c "Print :get-task-allow" "$TMP/entitlements.plist" >/dev/null 2>&1; then
+      $PB -c "Set :get-task-allow $GET_TASK_ALLOW" "$TMP/entitlements.plist" >/dev/null
+    else
+      $PB -c "Add :get-task-allow bool $GET_TASK_ALLOW" "$TMP/entitlements.plist" >/dev/null
+    fi
+    ;;
+  profile)
+    ;;
+  *)
+    die "GET_TASK_ALLOW must be 'false', 'true', or 'profile' (got: $GET_TASK_ALLOW)"
+    ;;
+esac
 
 $PLUTIL -convert xml1 "$TMP/entitlements.plist" >/dev/null 2>&1 || true
 

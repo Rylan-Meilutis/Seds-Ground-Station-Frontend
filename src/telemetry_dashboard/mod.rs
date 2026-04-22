@@ -2643,6 +2643,53 @@ fn TelemetryDashboardInner() -> Element {
     });
     let user_gps = use_signal(|| None::<(f64, f64)>);
 
+    {
+        let rocket_gps = rocket_gps;
+        let user_gps = user_gps;
+        use_effect(move || {
+            let tiles_url = map_tiles_url();
+            let tiles_js = serde_json::to_string(&tiles_url).unwrap_or_else(|_| "\"\"".to_string());
+            let coord_js = |value: Option<(f64, f64)>| -> (String, String) {
+                if let Some((lat, lon)) = value
+                    && lat.is_finite()
+                    && lon.is_finite()
+                {
+                    return (lat.to_string(), lon.to_string());
+                }
+                ("null".to_string(), "null".to_string())
+            };
+            let (rocket_lat, rocket_lon) = coord_js(*rocket_gps.read());
+            let (user_lat, user_lon) = coord_js(*user_gps.read());
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    if (typeof window.setGroundMapPrefetchContext === "function") {{
+                      window.setGroundMapPrefetchContext(
+                        {tiles_js},
+                        null,
+                        {rocket_lat},
+                        {rocket_lon},
+                        {user_lat},
+                        {user_lon}
+                      );
+                    }} else {{
+                      window.__gs26_tiles_url = {tiles_js};
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 prefetch context sync failed:", e);
+                  }}
+                }})();
+                "#,
+                tiles_js = tiles_js,
+                rocket_lat = rocket_lat,
+                rocket_lon = rocket_lon,
+                user_lat = user_lat,
+                user_lon = user_lon,
+            ));
+        });
+    }
+
     // ---------------------------------------------------------
     // Base URL sync
     // ---------------------------------------------------------
