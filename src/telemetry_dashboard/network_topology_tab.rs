@@ -81,10 +81,11 @@ fn graph_viewport_style(
     let size_constraints = if fullscreen {
         "flex:1; min-height:0;".to_string()
     } else {
-        let mut style = format!("min-height:{min_height_px}px;");
+        let mut style = format!("flex:1 1 auto; min-height:0; max-height:100%;");
         if let Some(max_height) = max_height {
             style.push_str(&format!(" max-height:{max_height};"));
         }
+        let _ = min_height_px;
         style
     };
     format!(
@@ -372,7 +373,7 @@ pub fn NetworkTopologyTab(
         } else {
             div {
                 key: "network-embedded-{fullscreen_state}",
-                style: "padding:10px 14px 14px 14px; display:flex; flex-direction:column; gap:12px; height:100%; min-height:{EMBEDDED_GRAPH_MIN_HEIGHT}px; overflow-y:auto;",
+                style: "display:flex; flex:1 1 auto; flex-direction:column; gap:12px; width:100%; height:100%; max-height:100%; min-height:0; box-sizing:border-box; overflow:hidden; padding:10px 14px 14px 14px;",
                 h2 { style: "margin:0; color:{theme.text_primary};", "{title}" }
                 p {
                     style: "margin:0; color:{theme.text_muted}; font-size:0.95rem;",
@@ -412,7 +413,7 @@ pub fn NetworkTopologyTab(
 
                 div {
                     id: "{viewport_id}",
-                    style: "padding:8px; {graph_viewport_style(&theme, EMBEDDED_GRAPH_MIN_HEIGHT, Some(\"calc(var(--gs26-app-height) - 260px)\"), false)}",
+                    style: "padding:8px; {graph_viewport_style(&theme, EMBEDDED_GRAPH_MIN_HEIGHT, None, false)}",
                     {render_graph_surface(&theme, surface_id, canvas_id, render_width, render_height, &graph_links, &graph_nodes, &snapshot.nodes, &render_placements, &packet_stats, &packet_pulses, flow_animation_enabled, expanded_node_id)}
                 }
             }
