@@ -120,7 +120,7 @@ const HIGH_RES_PREFETCH_CONCURRENCY = 1;
 const HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES = 5;
 const HIGH_RES_PREFETCH_LOCATION_BUFFER_TILES = 5;
 const HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA = 3;
-const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 5000;
+const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 500;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
 const TRACKING_PREFETCH_TILE_RADIUS = 14;
 const TRACKING_PREFETCH_ZOOM_DELTA = 3;
@@ -158,18 +158,18 @@ const MAP_FIRST_PAINT_GATE_TIMEOUT_MS = 180;
 const MAP_FIRST_PAINT_FADE_MS = 45;
 const tileCacheHandles = new Map();
 const tileMemoryCache = new Map();
-const USER_MARKER_SMOOTH_MIN_MS = 220;
-const USER_MARKER_SMOOTH_MAX_MS = 900;
+const USER_MARKER_SMOOTH_MIN_MS = 120;
+const USER_MARKER_SMOOTH_MAX_MS = 650;
 const USER_MARKER_SMOOTH_SKIP_M = 0.04;
-const USER_MARKER_PREDICTION_MAX_MS = 1200;
-const USER_MARKER_PREDICTION_RATIO = 0.75;
-const USER_MARKER_PREDICTION_STALE_RATIO = 1.35;
-const USER_MARKER_RATE_MIN_CATCHUP_MS = 320;
-const USER_MARKER_RATE_MAX_CATCHUP_MS = 950;
-const USER_MARKER_VISUAL_MIN_SPEED_MPS = 8;
-const USER_MARKER_VISUAL_MAX_SPEED_MPS = 60;
-const USER_MARKER_VISUAL_SPEED_GAIN = 1.35;
-const USER_MARKER_VISUAL_CATCHUP_MS = 850;
+const USER_MARKER_PREDICTION_MAX_MS = 650;
+const USER_MARKER_PREDICTION_RATIO = 0.42;
+const USER_MARKER_PREDICTION_STALE_RATIO = 1.05;
+const USER_MARKER_RATE_MIN_CATCHUP_MS = 150;
+const USER_MARKER_RATE_MAX_CATCHUP_MS = 620;
+const USER_MARKER_VISUAL_MIN_SPEED_MPS = 0.5;
+const USER_MARKER_VISUAL_MAX_SPEED_MPS = 90;
+const USER_MARKER_VISUAL_SPEED_GAIN = 1.12;
+const USER_MARKER_VISUAL_CATCHUP_MS = 320;
 const USER_GPS_SNAP_DISTANCE_M = 120;
 const USER_GPS_SNAP_SPEED_MPS = 45;
 const USER_ORIENTATION_DEADZONE_DEG = 2.2;
@@ -186,11 +186,11 @@ const USER_ORIENTATION_ARROW_CATCHUP_MS = 95;
 const USER_ORIENTATION_ARROW_DEADZONE_DEG = 0.12;
 const USER_ORIENTATION_SMALL_ERROR_GAIN = 0.025;
 const USER_HEADING_VISUAL_SYNC_MIN_MS = 33;
-const GPS_STABLE_FIX_REQUIRED = 3;
+const GPS_STABLE_FIX_REQUIRED = 1;
 const GPS_STABLE_DISTANCE_M = 50;
-const FOLLOW_CAMERA_SETTLE_EPSILON_PX = 0.45;
-const FOLLOW_CAMERA_MAX_STEP_PX = 84.0;
-const FOLLOW_CAMERA_CATCHUP_MS = 170;
+const FOLLOW_CAMERA_SETTLE_EPSILON_PX = 0.05;
+const FOLLOW_CAMERA_MAX_STEP_PX = 160.0;
+const FOLLOW_CAMERA_CATCHUP_MS = 90;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
 const MAP_BACKGROUND_LAYER_ID = "gs26-map-background-layer";
@@ -249,6 +249,7 @@ function normalizeAngle(deg) {
 
 function reportMapRuntimeError(label, error) {
     try {
+        if (isExpectedTileFallbackError(error)) return;
         console.warn("[GS26 map]", label, error);
     } catch (e) {
     }
@@ -287,6 +288,15 @@ function isExpectedTileFallbackError(error) {
         || message.includes("tile cache miss")
         || message.includes("unsupported tile url")
         || message.includes("tile url missing");
+}
+
+function mapDebugLoggingEnabled() {
+    try {
+        return window.__gs26_map_debug === true
+            || window.localStorage?.getItem("gs26_map_debug") === "on";
+    } catch (e) {
+        return false;
+    }
 }
 
 function markInternalCameraUpdate(durationMs) {
@@ -581,7 +591,7 @@ function tileProtocolTemplate() {
 
 function shouldUseNativeTileTemplate(tilesUrl) {
     const url = String(tilesUrl || "");
-    return /^gs26:\/\//i.test(url) && !isIosPlatform();
+    return /^gs26:\/\//i.test(url) && !isIosPlatform() && !tileCacheEnabled();
 }
 
 function tilesUseNativeProxy() {
@@ -739,23 +749,70 @@ function startMapFirstPaintGate(zoom) {
     }), MAP_FIRST_PAINT_GATE_TIMEOUT_MS);
 }
 
-function warmInitialMapTilesFromCache(tilesUrl, center, zoom) {
-    if (!tileCacheSupported() || !tileFetchAllowedForUrl(tilesUrl) || !Array.isArray(center)) return;
+function warmInitialMapTilesFromCache(tilesUrl, center, zoom, container = null) {
+    if (!tileCacheSupported() || !tileFetchAllowedForUrl(tilesUrl) || !Array.isArray(center)) return Promise.resolve(false);
     const lon = Number(center[0]);
     const lat = Number(center[1]);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return Promise.resolve(false);
     const nativeZoom = mapFirstPaintNativeZoomFor(zoom);
-    const coords = tileCoordsAroundTileRadius(lat, lon, nativeZoom, 1).slice(0, 9);
-    if (!coords.length) return;
+    let coords = [];
+    if (container) {
+        coords = tileCoordsForViewportAround(lat, lon, nativeZoom, 1);
+    }
+    if (!coords.length) {
+        coords = tileCoordsAroundTileRadius(lat, lon, nativeZoom, 1);
+    }
+    coords = coords.slice(0, DOM_MAP_MAX_RENDER_TILES);
+    if (!coords.length) return Promise.resolve(false);
     const cacheName = tileCacheName(tilesUrl);
-    Promise.resolve().then(async () => {
+    return Promise.resolve().then(async () => {
+        let foundCachedTile = false;
         for (const coord of coords) {
             if (currentTilesUrl !== tilesUrl) return;
             const url = resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y);
             if (!url) continue;
-            await readCachedTileArrayBuffer(cacheName, url);
+            const cached = await readCachedTileArrayBuffer(cacheName, url);
+            if (cached) {
+                foundCachedTile = true;
+                maybeFinishMapFirstPaintFromTile(coord);
+            }
         }
-    }).catch(() => {
+        if (foundCachedTile) {
+            logMapInitTiming("first-tile", {source: "startup-cache-warm"});
+            if (isDomMapActive()) {
+                renderDomMap();
+            } else if (groundMap && typeof groundMap.triggerRepaint === "function") {
+                groundMap.triggerRepaint();
+            }
+        }
+        return foundCachedTile;
+    }).catch(() => false);
+}
+
+function usePersistedCachedZoomForStartup(tilesUrl, desiredZoom) {
+    const cachedNativeZoom = loadPersistedMaxNativeZoom(tilesUrl);
+    const requestedNativeZoom = Math.floor(Number(desiredZoom));
+    if (!Number.isFinite(cachedNativeZoom) || !Number.isFinite(requestedNativeZoom)) return;
+    if (cachedNativeZoom < requestedNativeZoom || currentMaxNativeZoom >= requestedNativeZoom) return;
+    currentMaxNativeZoom = Math.max(currentMaxNativeZoom, Math.min(cachedNativeZoom, requestedNativeZoom));
+    currentMaxZoom = Math.max(
+        Number.isFinite(currentMaxZoom) ? currentMaxZoom : DEFAULT_SAFE_MIN_ZOOM,
+        Math.min(MAX_DISPLAY_ZOOM_LIMIT, currentMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA)
+    );
+    try {
+        window.__gs26_max_native_zoom = currentMaxNativeZoom;
+    } catch (e) {
+    }
+}
+
+function renderAfterStartupCacheWarm(warmPromise) {
+    Promise.resolve(warmPromise).then((foundCachedTile) => {
+        if (!foundCachedTile) return;
+        if (isDomMapActive()) {
+            renderDomMap();
+        } else if (groundMap && typeof groundMap.triggerRepaint === "function") {
+            groundMap.triggerRepaint();
+        }
     });
 }
 
@@ -816,6 +873,7 @@ function ensureMapProtocolOnce() {
 }
 
 function logMapInitTiming(label, extra = {}) {
+    if (!mapDebugLoggingEnabled()) return;
     if (label === "first-tile") {
         if (firstTileTimingLogged) return;
         firstTileTimingLogged = true;
@@ -849,7 +907,7 @@ async function readPersistentTileArrayBuffer(cacheName, url) {
         if (!cached || !cached.ok) return null;
         return await cached.arrayBuffer();
     } catch (e) {
-        console.warn("[GS26 map] cache read failed", url, e);
+        if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache read failed", url, e);
         return null;
     }
 }
@@ -922,7 +980,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
             try {
                 await cache.put(cacheKey, cacheResponse);
             } catch (e) {
-                console.warn("[GS26 map] cache put failed", url, e);
+                if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
             }
         });
     }
@@ -961,7 +1019,7 @@ async function prefetchTileToPersistentCache(cacheName, url) {
         await cache.put(cacheKey, response);
         forgetMissingTile(cacheName, url);
     } catch (e) {
-        console.warn("[GS26 map] cache put failed", url, e);
+        if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
     }
 }
 
@@ -1037,6 +1095,15 @@ function stabilizeLatLng(stateName, lat, lon) {
     }
 
     const next = [Number(lat), Number(lon)];
+    if (nextState.accepted) {
+        nextState.acceptedLatLng = next;
+        nextState.candidate = next;
+        nextState.count = GPS_STABLE_FIX_REQUIRED;
+        if (stateName === "rocket") rocketGpsStability = nextState;
+        else userGpsStability = nextState;
+        return next;
+    }
+
     const acceptedDistanceM = Array.isArray(nextState.acceptedLatLng)
         ? distanceMetersBetween(nextState.acceptedLatLng, next)
         : Infinity;
@@ -1629,6 +1696,31 @@ function loadPersistedMapState() {
         if (Number.isFinite(parsed.bearingDeg)) {
             mapBearingDeg = normalizeAngle(parsed.bearingDeg);
         }
+        if (isUsableLatLng(parsed.rocketLat, parsed.rocketLon)) {
+            lastRocketLatLng = [Number(parsed.rocketLat), Number(parsed.rocketLon)];
+            rocketGpsStability = {
+                candidate: lastRocketLatLng,
+                count: GPS_STABLE_FIX_REQUIRED,
+                accepted: true,
+                acceptedLatLng: lastRocketLatLng,
+            };
+        }
+        if (isUsableLatLng(parsed.userLat, parsed.userLon)) {
+            lastUserLatLng = [Number(parsed.userLat), Number(parsed.userLon)];
+            userMarkerDisplayedLatLng = [lastUserLatLng[0], lastUserLatLng[1]];
+            userMarkerHasLiveFix = true;
+            userGpsStability = {
+                candidate: lastUserLatLng,
+                count: GPS_STABLE_FIX_REQUIRED,
+                accepted: true,
+                acceptedLatLng: lastUserLatLng,
+            };
+            try {
+                window.__gs26_user_lat = lastUserLatLng[0];
+                window.__gs26_user_lon = lastUserLatLng[1];
+            } catch (e) {
+            }
+        }
     } catch (e) {
     }
 }
@@ -1679,6 +1771,10 @@ function persistMapState() {
             orientationMode,
             followUserEnabled,
             bearingDeg: mapBearingDeg,
+            rocketLat: Array.isArray(lastRocketLatLng) ? lastRocketLatLng[0] : null,
+            rocketLon: Array.isArray(lastRocketLatLng) ? lastRocketLatLng[1] : null,
+            userLat: Array.isArray(lastUserLatLng) ? lastUserLatLng[0] : null,
+            userLon: Array.isArray(lastUserLatLng) ? lastUserLatLng[1] : null,
         };
         const raw = JSON.stringify(payload);
         window.__gs26_ground_map_state_json = raw;
@@ -1727,6 +1823,10 @@ function pointDataKey(latLng) {
 function guideLineDataKey(rocketLatLng, userLatLng) {
     if (!Array.isArray(rocketLatLng) || !Array.isArray(userLatLng)) return SOURCE_EMPTY_KEY;
     return `${pointDataKey(userLatLng)}|${pointDataKey(rocketLatLng)}`;
+}
+
+function currentUserVisualOrLastLatLng() {
+    return currentUserMarkerVisualLatLng() || userMarkerDisplayedLatLng || lastUserLatLng;
 }
 
 function headingDataKey(latLng, bearingDeg) {
@@ -2059,7 +2159,7 @@ function scheduleTileCacheSweep(tilesUrl) {
                     .map((key) => caches.delete(key))
             );
         } catch (e) {
-            console.warn("[GS26 map] cache sweep failed", e);
+            if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache sweep failed", e);
         }
     }), CACHE_SWEEP_DELAY_MS);
 }
@@ -2502,7 +2602,7 @@ function syncUserHeadingIndicator() {
         source.setData(emptyFeatureCollection());
         return;
     }
-    const latLng = userMarkerDisplayedLatLng || lastUserLatLng;
+    const latLng = currentUserVisualOrLastLatLng();
     const displayHeadingDeg = Number.isFinite(userHeadingArrowDeg)
         ? userHeadingArrowDeg
         : (Number.isFinite(userHeadingIndicatorDeg)
@@ -2543,7 +2643,7 @@ function snapFollowCameraTo(latLng) {
 
 function currentFollowUserZoomCenter() {
     if (!followUserEnabled) return null;
-    const visual = currentUserMarkerVisualLatLng() || userMarkerDisplayedLatLng || lastUserLatLng;
+    const visual = currentUserVisualOrLastLatLng();
     if (!Array.isArray(visual)) return null;
     const lat = Number(visual[0]);
     const lon = Number(visual[1]);
@@ -2796,7 +2896,7 @@ function setUserMarkerVisualLatLng(latLng, options = {}) {
     }
     syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng);
     syncUserHeadingIndicator();
-    syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng);
+    syncRocketGuideLine(lastRocketLatLng, currentUserVisualOrLastLatLng());
 }
 
 function currentUserMarkerVisualLatLng() {
@@ -2838,7 +2938,7 @@ function resetUserMotionSmoothing(latLng) {
     }
     syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng);
     syncUserHeadingIndicator();
-    syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng);
+    syncRocketGuideLine(lastRocketLatLng, currentUserVisualOrLastLatLng());
 }
 
 function shouldSnapUserGpsJump(from, target, previousTarget, previousFixAtMs) {
@@ -2941,7 +3041,7 @@ function animateUserMarkerTo(targetLatLng) {
             USER_MARKER_SMOOTH_MIN_MS,
             anim.smoothedIntervalMs * USER_MARKER_PREDICTION_STALE_RATIO
         );
-        const predictiveLeadMs = fixAgeMs <= staleAtMs
+        const predictiveLeadMs = fixAgeMs <= staleAtMs && (Number(anim.fixSpeedMps) || 0.0) >= 0.4
             ? Math.max(
                 0.0,
                 Math.min(
@@ -3901,7 +4001,7 @@ function renderDomMapMarker(element, latLng, headingDeg, options = {}) {
 function renderDomMapOverlays() {
     if (!isDomMapActive()) return;
     const state = groundMap.__gs26_state;
-    const userLatLng = userMarkerDisplayedLatLng || lastUserLatLng;
+    const userLatLng = currentUserVisualOrLastLatLng();
     renderDomMapMarker(groundMap.__gs26_rocket_marker, lastRocketLatLng, null);
     renderDomMapMarker(groundMap.__gs26_user_marker, userLatLng, null);
     const headingDeg = Number.isFinite(userHeadingArrowDeg) ? userHeadingArrowDeg : userHeadingDeg;
@@ -4595,9 +4695,9 @@ function installMapHooks() {
         mapReady = true;
         restorePendingZoomIfPossible();
         updateZoomControlAppearance();
-        syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng || lastUserLatLng);
+        syncRocketGuideLine(lastRocketLatLng, currentUserVisualOrLastLatLng());
         syncPointSource(ROCKET_SOURCE_ID, lastRocketLatLng);
-        syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng || lastUserLatLng);
+        syncPointSource(USER_SOURCE_ID, currentUserVisualOrLastLatLng());
         syncUserHeadingIndicator();
         scheduleTrackingTilePrefetch();
         scheduleHighResTilePrefetch();
@@ -4858,6 +4958,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         : (Number.isFinite(lastMapZoom)
             ? lastMapZoom
             : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : zoom));
+    usePersistedCachedZoomForStartup(tilesUrl, desiredZoom);
     promoteNativeZoomForDisplayZoom(desiredZoom, tilesUrl);
     if (Number.isFinite(desiredZoom) && desiredZoom > currentMaxZoom) {
         currentMaxZoom = Math.min(MAX_DISPLAY_ZOOM_LIMIT, desiredZoom);
@@ -4893,6 +4994,9 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
             }
             resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
             applyDiscoveredCachedMaxNativeZoom(currentTilesUrl);
+            renderAfterStartupCacheWarm(
+                warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
+            );
             createDomGroundMap(container, startCenter, clampedZoom, startBearing);
         }
         rememberMapView();
@@ -4947,7 +5051,9 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
     applyDiscoveredCachedMaxNativeZoom(currentTilesUrl);
     startMapFirstPaintGate(clampedZoom);
-    warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom);
+    renderAfterStartupCacheWarm(
+        warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
+    );
 
     let maplibre = null;
     try {
@@ -5018,7 +5124,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     }
 
     syncPointSource(ROCKET_SOURCE_ID, lastRocketLatLng);
-    syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng || lastUserLatLng);
+    syncPointSource(USER_SOURCE_ID, currentUserVisualOrLastLatLng());
     syncUserHeadingIndicator();
 
     applyPendingCenterIfPossible();
@@ -5040,6 +5146,11 @@ function applyGroundMapMarkers(rLat, rLon, uLat, uLon) {
     }
     if (hasUser) {
         lastUserLatLng = [uLat, uLon];
+        try {
+            window.__gs26_user_lat = uLat;
+            window.__gs26_user_lon = uLon;
+        } catch (e) {
+        }
     }
     if (!groundMap) {
         if (hasRocket || hasUser) {
@@ -5070,7 +5181,7 @@ function applyGroundMapMarkers(rLat, rLon, uLat, uLon) {
 
     syncRocketGuideLine(
         hasRocket ? lastRocketLatLng : null,
-        hasUser ? (userMarkerDisplayedLatLng || lastUserLatLng) : null
+        hasUser ? currentUserVisualOrLastLatLng() : null
     );
     applyPendingCenterIfPossible();
     applyMapOrientation();

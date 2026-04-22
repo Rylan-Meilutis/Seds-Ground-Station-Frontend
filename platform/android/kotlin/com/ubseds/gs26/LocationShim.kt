@@ -22,8 +22,8 @@ import kotlin.math.sin
 
 object LocationShim : LocationListener, SensorEventListener {
     private const val LOCATION_PERMISSION_REQUEST_CODE = 2601
-    private const val LOCATION_MIN_TIME_MS = 250L
-    private const val LOCATION_MIN_DISTANCE_M = 0.25f
+    private const val LOCATION_MIN_TIME_MS = 100L
+    private const val LOCATION_MIN_DISTANCE_M = 0.0f
     private const val HEADING_SMOOTHING_ALPHA_HIGH = 0.92f
     private const val HEADING_SMOOTHING_ALPHA_LOW = 0.78f
     private const val HEADING_JITTER_THRESHOLD_DEG = 0.12f

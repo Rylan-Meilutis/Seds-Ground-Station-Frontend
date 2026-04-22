@@ -249,17 +249,17 @@ pub fn MapTab(
                     }
                 }
 
-                gloo_timers::future::TimeoutFuture::new(200).await;
+                gloo_timers::future::TimeoutFuture::new(80).await;
             }
         });
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", target_os = "android"))]
         let mut native_user_gps = user_gps;
         use_future(move || async move {
-            #[cfg(target_os = "ios")]
+            #[cfg(any(target_os = "ios", target_os = "android"))]
             let mut last_location = None::<(f64, f64)>;
             #[cfg(any(target_os = "ios", target_os = "android"))]
             let mut last_heading = None::<f64>;
@@ -268,7 +268,20 @@ pub fn MapTab(
                 if let Some((lat, lon)) = gps_apple::latest_location() {
                     let changed = last_location
                         .map(|(prev_lat, prev_lon)| {
-                            haversine_meters(prev_lat, prev_lon, lat, lon) >= 0.5
+                            haversine_meters(prev_lat, prev_lon, lat, lon) >= 0.02
+                        })
+                        .unwrap_or(true);
+                    if changed {
+                        last_location = Some((lat, lon));
+                        native_user_gps.set(Some((lat, lon)));
+                    }
+                }
+
+                #[cfg(target_os = "android")]
+                if let Some((lat, lon)) = gps_android::latest_location() {
+                    let changed = last_location
+                        .map(|(prev_lat, prev_lon)| {
+                            haversine_meters(prev_lat, prev_lon, lat, lon) >= 0.02
                         })
                         .unwrap_or(true);
                     if changed {
@@ -299,7 +312,7 @@ pub fn MapTab(
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             }
         });
     }
@@ -847,7 +860,7 @@ fn _js_setup_js_geolocation_watch() {
                 } catch (e) {}
                 console.warn("geolocation watch error:", err);
               },
-              { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+              { enableHighAccuracy: true, maximumAge: 50, timeout: 2000 }
             );
           } catch (e) {}
         })();
@@ -1064,6 +1077,14 @@ pub(crate) fn js_update_markers(r_lat: f64, r_lon: f64, u_lat: f64, u_lon: f64) 
             window.__gs26_pending_r_lon = {r_lon};
             window.__gs26_pending_u_lat = {u_lat};
             window.__gs26_pending_u_lon = {u_lon};
+            if (Number.isFinite(window.__gs26_pending_r_lat) && Number.isFinite(window.__gs26_pending_r_lon)) {{
+              window.__gs26_rocket_lat = window.__gs26_pending_r_lat;
+              window.__gs26_rocket_lon = window.__gs26_pending_r_lon;
+            }}
+            if (Number.isFinite(window.__gs26_pending_u_lat) && Number.isFinite(window.__gs26_pending_u_lon)) {{
+              window.__gs26_user_lat = window.__gs26_pending_u_lat;
+              window.__gs26_user_lon = window.__gs26_pending_u_lon;
+            }}
           }} catch (e) {{}}
         }})();
         "#,

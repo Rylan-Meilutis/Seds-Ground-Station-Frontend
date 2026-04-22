@@ -660,6 +660,7 @@ const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_ver
 const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
 const CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY: &str = "gs_calibration_capture_sample_count";
 const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v9_";
+const CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX: &str = "gs_calibration_visibility_v1_";
 const NOTIFICATION_DISMISSED_STORAGE_KEY: &str = "gs_notification_dismissed_ids_v1";
 const _SKIP_TLS_VERIFY_KEY_PREFIX: &str = "gs_skip_tls_verify_";
 const TELEMETRY_CACHE_STORAGE_KEY: &str = "gs_telemetry_rows_cache_v1";
@@ -671,6 +672,7 @@ const MAX_NOTIFICATION_HISTORY: usize = 500;
 
 fn clear_cached_layout_configs() {
     persist::remove_prefix(LAYOUT_CACHE_KEY_PREFIX);
+    persist::remove_prefix(CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1003,6 +1005,25 @@ fn layout_cache_key_for_base(base: &str) -> String {
 
     let mut key = String::with_capacity(LAYOUT_CACHE_KEY_PREFIX.len() + normalized.len());
     key.push_str(LAYOUT_CACHE_KEY_PREFIX);
+    for ch in normalized.chars() {
+        if ch.is_ascii_alphanumeric() {
+            key.push(ch);
+        } else {
+            key.push('_');
+        }
+    }
+    key
+}
+
+fn calibration_visibility_cache_key_for_base(base: &str) -> String {
+    let normalized = normalize_base_url(base.to_string());
+    if normalized.is_empty() {
+        return format!("{CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX}default");
+    }
+
+    let mut key =
+        String::with_capacity(CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX.len() + normalized.len());
+    key.push_str(CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX);
     for ch in normalized.chars() {
         if ch.is_ascii_alphanumeric() {
             key.push(ch);
@@ -2680,10 +2701,31 @@ fn TelemetryDashboardInner() -> Element {
                 return;
             }
             calibration_request_base.set(base.clone());
+            let visibility_cache_key = calibration_visibility_cache_key_for_base(&base);
+            if let Some(cached) = persist::get_string(&visibility_cache_key) {
+                match cached.as_str() {
+                    "true" => calibration_has_sensors.set(Some(true)),
+                    "false" => calibration_has_sensors.set(Some(false)),
+                    _ => calibration_has_sensors.set(None),
+                }
+            } else {
+                calibration_has_sensors.set(None);
+            }
             spawn(async move {
                 match http_get_json::<CalibrationTabLayout>("/api/calibration_config").await {
-                    Ok(layout) => calibration_has_sensors.set(Some(!layout.sensors.is_empty())),
-                    Err(_) => calibration_has_sensors.set(Some(false)),
+                    Ok(layout) => {
+                        let has_sensors = !layout.sensors.is_empty();
+                        calibration_has_sensors.set(Some(has_sensors));
+                        persist::set_string(
+                            &visibility_cache_key,
+                            if has_sensors { "true" } else { "false" },
+                        );
+                    }
+                    Err(_) => {
+                        if persist::get_string(&visibility_cache_key).is_none() {
+                            calibration_has_sensors.set(Some(false));
+                        }
+                    }
                 }
             });
         });
@@ -3883,14 +3925,20 @@ fn TelemetryDashboardInner() -> Element {
     let mut layout_error = layout_error;
     let mut layout_error_dismissed = layout_error_dismissed;
     let mut layout_request_base = layout_request_base;
+    let mut calibration_has_sensors = calibration_has_sensors;
+    let mut calibration_request_base = calibration_request_base;
     let mut _refresh_layout = move || {
         let base = UrlConfig::base_http();
         let cache_key = layout_cache_key_for_base(&base);
+        let calibration_cache_key = calibration_visibility_cache_key_for_base(&base);
         layout_request_base.set(String::new());
+        calibration_request_base.set(String::new());
+        calibration_has_sensors.set(None);
         layout_loading.set(true);
         layout_error.set(None);
         layout_error_dismissed.set(None);
         persist::_remove(&cache_key);
+        persist::_remove(&calibration_cache_key);
         let mut layout_config = layout_config;
         let mut layout_loading = layout_loading;
         let mut layout_error = layout_error;

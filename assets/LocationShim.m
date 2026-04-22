@@ -121,6 +121,11 @@ static volatile int g_gs26_last_location_error_code = 0;
   _mgr = [[CLLocationManager alloc] init];
   _mgr.delegate = self;
   _mgr.desiredAccuracy = kCLLocationAccuracyBest;
+  _mgr.distanceFilter = kCLDistanceFilterNone;
+#if TARGET_OS_IOS
+  _mgr.pausesLocationUpdatesAutomatically = NO;
+  _mgr.activityType = CLActivityTypeOtherNavigation;
+#endif
   _mgr.headingFilter = kCLHeadingFilterNone;
 
   // iOS can ignore an early auth request if it happens before the app is fully active.
