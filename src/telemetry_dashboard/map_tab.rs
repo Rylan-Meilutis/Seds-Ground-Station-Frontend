@@ -117,7 +117,6 @@ pub fn MapTab(
 
     #[cfg(target_arch = "wasm32")]
     let browser_user_gps = use_signal(|| None::<(f64, f64)>);
-    let has_centered_on_user = use_signal(|| false);
     let map_config = use_signal(MapConfig::default);
     let theme = theme.unwrap_or_default();
     let warning_button_style = format!(
@@ -222,22 +221,11 @@ pub fn MapTab(
     #[cfg(target_arch = "wasm32")]
     {
         let mut browser_user_gps = browser_user_gps;
-        let mut has_centered_on_user = has_centered_on_user;
         use_effect(move || {
             if let Some((lat, lon)) = js_cached_user_latlon() {
                 browser_user_gps.set(Some((lat, lon)));
-                let already_centered = *has_centered_on_user.read();
-                if !already_centered {
-                    js_center_on(lat, lon);
-                    has_centered_on_user.set(true);
-                }
             } else if let Some((lat, lon)) = js_read_user_latlon_from_window() {
                 browser_user_gps.set(Some((lat, lon)));
-                let already_centered = *has_centered_on_user.read();
-                if !already_centered {
-                    js_center_on(lat, lon);
-                    has_centered_on_user.set(true);
-                }
             }
         });
     }
@@ -246,18 +234,12 @@ pub fn MapTab(
     #[cfg(target_arch = "wasm32")]
     {
         let mut browser_user_gps = browser_user_gps;
-        let mut has_centered_on_user = has_centered_on_user;
         use_future(move || async move {
             loop {
                 if let Some((lat, lon)) = js_read_user_latlon_from_window() {
                     let current_browser_gps = *browser_user_gps.read();
                     if current_browser_gps != Some((lat, lon)) {
                         browser_user_gps.set(Some((lat, lon)));
-                    }
-                    let already_centered = *has_centered_on_user.read();
-                    if !already_centered {
-                        js_center_on(lat, lon);
-                        has_centered_on_user.set(true);
                     }
                 }
 
@@ -266,26 +248,17 @@ pub fn MapTab(
         });
     }
 
-    // --- 2c) Native platforms trust the parent/native GPS signal directly ---
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut has_centered_on_user = has_centered_on_user;
-        use_effect(move || {
-            let native_user_gps = *user_gps.read();
-            let already_centered = *has_centered_on_user.read();
-            if let Some((lat, lon)) = native_user_gps
-                && !already_centered
-            {
-                js_center_on(lat, lon);
-                has_centered_on_user.set(true);
-            }
-        });
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
+        #[cfg(target_os = "ios")]
+        let mut native_user_gps = user_gps;
         use_future(move || async move {
             loop {
+                #[cfg(target_os = "ios")]
+                if let Some((lat, lon)) = gps_apple::latest_location() {
+                    native_user_gps.set(Some((lat, lon)));
+                }
+
                 #[cfg(target_os = "ios")]
                 if let Some(deg) = gps_apple::latest_heading_deg() {
                     js_set_user_heading(deg);
@@ -803,6 +776,13 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
 
       if (!tryInit()) {
         window.addEventListener("gs26-ground-map-ready", tryInit, { once: true });
+        const retryMs = [25, 75, 150, 300, 600, 1000, 2000];
+        for (const ms of retryMs) {
+          setTimeout(tryInit, ms);
+        }
+        try {
+          requestAnimationFrame(() => { tryInit(); });
+        } catch (e) {}
       }
     })();
     "#;
@@ -1054,52 +1034,6 @@ pub(crate) fn js_update_markers(r_lat: f64, r_lon: f64, u_lat: f64, u_lon: f64) 
         })();
         "#,
     );
-}
-
-fn js_center_on(lat: f64, lon: f64) {
-    js_eval(&format!(
-        r#"
-        (function() {{
-          try {{
-            // Cache the requested center so first-time permission grants can
-            // still center once the map bridge finishes initializing.
-            window.__gs26_pending_center_lat = {lat};
-            window.__gs26_pending_center_lon = {lon};
-
-            const tryCenter = function() {{
-              try {{
-                const centerFn = (typeof window.centerGroundMapOn === "function")
-                  ? window.centerGroundMapOn
-                  : (window.GS26 && typeof window.GS26.centerGroundMapOn === "function" ? window.GS26.centerGroundMapOn : null);
-                if (typeof centerFn !== "function") return false;
-                const clat = window.__gs26_pending_center_lat;
-                const clon = window.__gs26_pending_center_lon;
-                if (!Number.isFinite(clat) || !Number.isFinite(clon)) return false;
-                centerFn(clat, clon);
-                return true;
-              }} catch (e) {{
-                console.warn("centerGroundMapOn threw:", e);
-                return false;
-              }}
-            }};
-
-            if (tryCenter()) {{
-              return;
-            }}
-
-            // Retry a few times for startup races (permission granted before map ready).
-            const retryMs = [50, 150, 300, 600, 1000];
-            for (const ms of retryMs) {{
-              setTimeout(tryCenter, ms);
-            }}
-          }} catch (e) {{
-            console.warn("queue center request failed:", e);
-          }}
-        }})();
-        "#,
-        lat = lat,
-        lon = lon
-    ));
 }
 
 fn js_setup_follow_user_listener() {

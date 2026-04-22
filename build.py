@@ -34,8 +34,7 @@ APP_BUNDLE_NAME = f"{APP_NAME}.app"
 MACOS_ALT_APP_BUNDLE_NAME = f"{MACOS_ALT_APP_NAME}.app"
 LEGACY_APP_BUNDLE_NAME = f"{LEGACY_APP_NAME}.app"
 
-# fixed provisioning profile paths (repo-local)
-FIXED_MOBILEPROVISION_REL = Path("Groundstation_26.mobileprovision")
+# fixed development provisioning profile path (repo-local)
 DEVELOPMENT_MOBILEPROVISION_REL = Path("Groundstation_dev.mobileprovision")
 
 LOG_FILE: Optional[Path] = None
@@ -4014,26 +4013,11 @@ def _find_installed_ios_development_profile(frontend_dir: Path, bundle_id: str) 
     return matches[0][1]
 
 
-def fixed_mobileprovision_path(frontend_dir: Path) -> Path:
-    return ios_mobileprovision_path(frontend_dir, sign_kind="distribution")
-
-
-def ios_mobileprovision_path(
+def ios_development_mobileprovision_path(
         frontend_dir: Path,
         *,
-        sign_kind: SignKind,
         bundle_id: Optional[str] = None,
 ) -> Path:
-    if sign_kind == "distribution":
-        override = os.environ.get("IOS_DISTRIBUTION_MOBILEPROVISION", "").strip()
-        p = Path(override).expanduser() if override else frontend_dir / FIXED_MOBILEPROVISION_REL
-        if not p.exists():
-            raise FileNotFoundError(
-                f"Missing iOS distribution provisioning profile: {p}\n"
-                f"Set IOS_DISTRIBUTION_MOBILEPROVISION or place it at: {frontend_dir / FIXED_MOBILEPROVISION_REL}"
-            )
-        return p
-
     override = os.environ.get("IOS_DEVELOPMENT_MOBILEPROVISION", "").strip()
     if override:
         p = Path(override).expanduser()
@@ -4059,6 +4043,40 @@ def ios_mobileprovision_path(
     )
 
 
+def _validate_ios_mobileprovision(
+        profile: Path,
+        profile_info: dict,
+        *,
+        bundle_id: str,
+) -> None:
+    if not _profile_matches_bundle(profile_info, bundle_id):
+        raise RuntimeError(
+            f"Provisioning profile does not match bundle id {bundle_id}: {profile}"
+        )
+
+    entitlements = profile_info.get("Entitlements", {})
+    get_task_allow = entitlements.get("get-task-allow")
+    provisioned_devices = profile_info.get("ProvisionedDevices") or []
+
+    if get_task_allow is not True:
+        raise RuntimeError(
+            "Refusing to deploy to a physical iOS device with a non-development provisioning profile: "
+            f"{profile}"
+        )
+    if not provisioned_devices:
+        raise RuntimeError(
+            "Development provisioning profile has no ProvisionedDevices entries: "
+            f"{profile}"
+        )
+
+
+def _ios_ipa_output_path(frontend_dir: Path, sign_kind: SignKind) -> Path:
+    ipas_dir = frontend_dir / "dist" / "ipas"
+    ipas_dir.mkdir(parents=True, exist_ok=True)
+    filename = "UBSEDS GS.ipa" if sign_kind == "distribution" else "UBSEDS GS Development.ipa"
+    return ipas_dir / filename
+
+
 def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debug_mode: bool = False) -> Path:
     if platform.system() != "Darwin":
         print("Error: iOS packaging/signing requires macOS.", file=sys.stderr)
@@ -4076,22 +4094,24 @@ def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debu
     patch_plist(frontend_dir, app)
 
     bundle_id = _bundle_id_from_app(app)
-    profile = ios_mobileprovision_path(frontend_dir, sign_kind=sign_kind, bundle_id=bundle_id)
+    profile_arg = "-"
+    if sign_kind == "development":
+        profile = ios_development_mobileprovision_path(frontend_dir, bundle_id=bundle_id)
+        profile_info = _decode_mobileprovision(profile, frontend_dir)
+        _validate_ios_mobileprovision(profile, profile_info, bundle_id=bundle_id)
+        profile_arg = str(profile.resolve())
 
     signer = frontend_dir / "scripts" / "ios_package_sign.sh"
     if not signer.exists():
         raise FileNotFoundError(f"Missing signer script: {signer}")
 
     dist = frontend_dir / "dist"
-    ipas_dir = frontend_dir / "dist" / "ipas"
-    ipas_dir.mkdir(parents=True, exist_ok=True)
 
     for stale_ipa in sorted(dist.glob("*.ipa")):
         print(f"Removing stale IPA artifact: {stale_ipa}")
         stale_ipa.unlink()
 
-    ipa_name = "UBSEDS GS.ipa"
-    ipa_out = ipas_dir / ipa_name
+    ipa_out = _ios_ipa_output_path(frontend_dir, sign_kind)
 
     try:
         ipa_out.unlink()
@@ -4107,11 +4127,11 @@ def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debu
     env = {
         "CERT_REGEX": cert_regex,
         "CERT_PICK": cert_pick,
-        "GET_TASK_ALLOW": "true" if sign_kind == "development" else "false",
+        "GET_TASK_ALLOW": "true" if sign_kind == "development" else "none",
     }
 
     run(
-        ["bash", str(signer), str(app.resolve()), str(profile.resolve()), str(ipa_out.resolve())],
+        ["bash", str(signer), str(app.resolve()), profile_arg, str(ipa_out.resolve())],
         cwd=frontend_dir,
         env=env,
     )
@@ -5164,7 +5184,6 @@ def print_usage(exit_code: int = 1) -> None:
     print("  CERT_REGEX=...                    # override cert regex for signer script")
     print("  CERT_PICK=newest|first            # override cert selection for signer script")
     print("  IOS_DEVELOPMENT_MOBILEPROVISION=...   # physical-device deploy provisioning profile")
-    print("  IOS_DISTRIBUTION_MOBILEPROVISION=...  # distribution/TestFlight provisioning profile")
     print("  MACOS_ENTITLEMENTS=...            # optional entitlements file for macOS codesign")
     print("  NOTARY_PROFILE=...                # notarytool keychain profile")
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")
@@ -5182,9 +5201,8 @@ def print_usage(exit_code: int = 1) -> None:
     print("  ANDROID_TARGET_SDK=...            # defaults to 35")
     print("  ANDROID_COMPILE_SDK=...           # defaults to ANDROID_TARGET_SDK")
     print("")
-    print("Provisioning profile path:")
-    print(f"  distribution: {FIXED_MOBILEPROVISION_REL}")
-    print(f"  development : {DEVELOPMENT_MOBILEPROVISION_REL} or installed Xcode-managed profile")
+    print("Development provisioning profile path:")
+    print(f"  {DEVELOPMENT_MOBILEPROVISION_REL} or installed Xcode-managed profile")
     sys.exit(exit_code)
 
 

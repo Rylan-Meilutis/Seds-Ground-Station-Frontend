@@ -14,9 +14,16 @@ unsafe extern "C" {
 // We intentionally keep this as `static mut` and ONLY use it to *best-effort* write.
 // We never unwrap in the callback, and we detach it in `stop()`.
 static mut GPS_SIGNAL: Option<Signal<Option<(f64, f64)>>> = None;
+static LAT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
+static LON_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static HEADING_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 
 extern "C" fn on_loc(lat: f64, lon: f64) {
+    if lat.is_finite() && lon.is_finite() {
+        LAT_BITS.store(lat.to_bits(), Ordering::Relaxed);
+        LON_BITS.store(lon.to_bits(), Ordering::Relaxed);
+    }
+
     unsafe {
         let Some(mut sig) = GPS_SIGNAL else { return };
 
@@ -51,6 +58,17 @@ pub fn stop() {
         GPS_SIGNAL = None;
         // Optional:
         // gs26_location_stop();
+    }
+}
+
+#[cfg(target_os = "ios")]
+pub fn latest_location() -> Option<(f64, f64)> {
+    let lat = f64::from_bits(LAT_BITS.load(Ordering::Relaxed));
+    let lon = f64::from_bits(LON_BITS.load(Ordering::Relaxed));
+    if lat.is_finite() && lon.is_finite() {
+        Some((lat, lon))
+    } else {
+        None
     }
 }
 

@@ -7,6 +7,7 @@ let groundMap = null;
 let userMarkerDisplayedLatLng = null;
 let userMarkerAnimationFrame = null;
 let userMarkerAnimation = null;
+let userMarkerHasLiveFix = false;
 let headingAnimationFrame = null;
 let headingAnimationLastFrameAt = 0;
 let followCameraFrame = null;
@@ -40,7 +41,7 @@ let wheelGestureLastAtMs = 0;
 let prefetchSuppressedUntilMs = 0;
 let mapInitStartedAtMs = 0;
 let lastPersistedMapStateAtMs = 0;
-let followUserEnabled = true;
+let followUserEnabled = false;
 let orientationMode = "north";
 let mapBearingDeg = 0;
 let suppressFollowCameraUntilMs = 0;
@@ -737,6 +738,116 @@ function persistMaxNativeZoom(tilesUrl, maxNativeZoom) {
     }
 }
 
+function cachedRequestUrlToOriginal(rawUrl) {
+    const value = String(rawUrl || "");
+    const prefix = "https://gs26.tile-cache.local/";
+    if (value.startsWith(prefix)) {
+        try {
+            return decodeURIComponent(value.slice(prefix.length));
+        } catch (e) {
+            return value;
+        }
+    }
+    return value;
+}
+
+function tileUrlZoomRegex(tilesUrl) {
+    const template = String(tilesUrl || "");
+    if (!template.includes("{z}") || !template.includes("{x}") || !template.includes("{y}")) return null;
+    const escaped = template
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace("\\{z\\}", "(\\d+)")
+        .replace("\\{x\\}", "\\d+")
+        .replace("\\{y\\}", "\\d+");
+    return new RegExp(`^${escaped}$`);
+}
+
+async function discoverCachedMaxNativeZoom(tilesUrl) {
+    if (!tileCacheSupported()) return null;
+    const key = tileZoomCacheKey(tilesUrl);
+    if (!key) return null;
+    const matcher = tileUrlZoomRegex(tilesUrl);
+    if (!matcher) return null;
+    try {
+        const cache = await caches.open(tileCacheName(tilesUrl));
+        const requests = await cache.keys();
+        let maxZoom = null;
+        for (const request of requests) {
+            const raw = request && request.url ? request.url : "";
+            const original = cachedRequestUrlToOriginal(raw);
+            const match = original.match(matcher);
+            if (!match) continue;
+            const zoom = Number(match[1]);
+            if (Number.isFinite(zoom)) {
+                maxZoom = maxZoom == null ? zoom : Math.max(maxZoom, zoom);
+            }
+        }
+        return Number.isFinite(maxZoom) ? clampMaxNativeZoom(maxZoom) : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function applyDiscoveredCachedMaxNativeZoom(tilesUrl) {
+    discoverCachedMaxNativeZoom(tilesUrl).then((zoom) => {
+        if (!Number.isFinite(zoom) || effectivePrefetchTilesUrl() !== tilesUrl) return;
+        if (Number.isFinite(currentMaxNativeZoom) && zoom <= currentMaxNativeZoom) {
+            persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+            return;
+        }
+        currentMaxNativeZoom = clampMaxNativeZoom(zoom);
+        currentMaxZoom = Math.max(
+            currentMaxZoom || 0,
+            currentMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA
+        );
+        persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+        try {
+            if (groundMap) {
+                groundMap.setMaxZoom(currentMaxZoom);
+                refreshRasterTileSourceForZoom();
+                updateZoomControlAppearance();
+            }
+        } catch (e) {
+        }
+    }).catch(() => {
+    });
+}
+
+function refreshRasterTileSourceForZoom() {
+    if (!groundMap || !currentTilesUrl) return;
+    try {
+        if (groundMap.getLayer && groundMap.getLayer(TILE_LAYER_ID)) {
+            groundMap.removeLayer(TILE_LAYER_ID);
+        }
+        if (groundMap.getSource && groundMap.getSource(TILE_SOURCE_ID)) {
+            groundMap.removeSource(TILE_SOURCE_ID);
+        }
+        const rasterTemplate = shouldUseNativeTileTemplate(currentTilesUrl)
+            ? String(currentTilesUrl || "")
+            : tileProtocolTemplate();
+        groundMap.addSource(TILE_SOURCE_ID, {
+            type: "raster",
+            tiles: [rasterTemplate],
+            tileSize: 256,
+            bounds: [NA_BOUNDS.lonMin, NA_BOUNDS.latMin, NA_BOUNDS.lonMax, NA_BOUNDS.latMax],
+            minzoom: MIN_ZOOM,
+            maxzoom: clampMaxNativeZoom(currentMaxNativeZoom),
+        });
+        const beforeLayer = groundMap.getLayer && groundMap.getLayer(GUIDE_LAYER_ID)
+            ? GUIDE_LAYER_ID
+            : undefined;
+        groundMap.addLayer({
+            id: TILE_LAYER_ID,
+            type: "raster",
+            source: TILE_SOURCE_ID,
+            paint: {
+                "raster-opacity": 1,
+            },
+        }, beforeLayer);
+    } catch (e) {
+    }
+}
+
 function loadPersistedMapState() {
     try {
         const storage = window.localStorage || null;
@@ -856,13 +967,17 @@ function scheduleTileZoomDiscovery() {
 
 function buildTrackingPrefetchPlan() {
     const tilesUrl = effectivePrefetchTilesUrl();
-    if (!tilesUrl || !Array.isArray(lastUserLatLng)) {
+    if (!tilesUrl) {
         return {key: "", coords: []};
     }
 
-    const userLat = Number(lastUserLatLng[0]);
-    const userLon = Number(lastUserLatLng[1]);
-    if (!Number.isFinite(userLat) || !Number.isFinite(userLon)) {
+    const userLat = Array.isArray(lastUserLatLng) ? Number(lastUserLatLng[0]) : NaN;
+    const userLon = Array.isArray(lastUserLatLng) ? Number(lastUserLatLng[1]) : NaN;
+    const rocketLat = Array.isArray(lastRocketLatLng) ? Number(lastRocketLatLng[0]) : NaN;
+    const rocketLon = Array.isArray(lastRocketLatLng) ? Number(lastRocketLatLng[1]) : NaN;
+    const hasUser = Number.isFinite(userLat) && Number.isFinite(userLon);
+    const hasRocket = Number.isFinite(rocketLat) && Number.isFinite(rocketLon);
+    if (!hasUser && !hasRocket) {
         return {key: "", coords: []};
     }
 
@@ -871,28 +986,42 @@ function buildTrackingPrefetchPlan() {
         ? groundMap.getZoom()
         : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : maxNativeZoom);
     const zooms = trackingZoomLevels(maxNativeZoom, focusZoom);
-    const focusTile = latLonToTileXY(userLat, userLon, Math.max(MIN_ZOOM, Math.min(maxNativeZoom, Math.floor(focusZoom))));
+    const focusZoomInt = Math.max(MIN_ZOOM, Math.min(maxNativeZoom, Math.floor(focusZoom)));
+    const userFocusTile = hasUser ? latLonToTileXY(userLat, userLon, focusZoomInt) : null;
+    const rocketFocusTile = hasRocket ? latLonToTileXY(rocketLat, rocketLon, focusZoomInt) : null;
     const key = [
         "tracking",
         tilesUrl,
         String(maxNativeZoom),
         Number.isFinite(focusZoom) ? Math.floor(focusZoom).toString() : "",
-        focusTile.x,
-        focusTile.y,
+        userFocusTile ? userFocusTile.x : "",
+        userFocusTile ? userFocusTile.y : "",
+        rocketFocusTile ? rocketFocusTile.x : "",
+        rocketFocusTile ? rocketFocusTile.y : "",
         Number.isFinite(userLat) ? userLat.toFixed(5) : "",
         Number.isFinite(userLon) ? userLon.toFixed(5) : "",
+        Number.isFinite(rocketLat) ? rocketLat.toFixed(5) : "",
+        Number.isFinite(rocketLon) ? rocketLon.toFixed(5) : "",
     ].join("|");
 
     const coords = [];
     const seen = new Set();
-    const maxTiles = Math.max(1, zooms.length * Math.pow(TRACKING_PREFETCH_TILE_RADIUS * 2 + 1, 2));
+    const locations = [];
+    if (hasUser) locations.push([userLat, userLon]);
+    if (hasRocket) locations.push([rocketLat, rocketLon]);
+    const maxTiles = Math.max(
+        1,
+        locations.length * zooms.length * Math.pow(TRACKING_PREFETCH_TILE_RADIUS * 2 + 1, 2)
+    );
     for (const zoom of zooms) {
-        appendUniqueCoords(
-            coords,
-            seen,
-            tileCoordsAroundTileRadius(userLat, userLon, zoom, TRACKING_PREFETCH_TILE_RADIUS),
-            maxTiles
-        );
+        for (const [lat, lon] of locations) {
+            appendUniqueCoords(
+                coords,
+                seen,
+                tileCoordsAroundTileRadius(lat, lon, zoom, TRACKING_PREFETCH_TILE_RADIUS),
+                maxTiles
+            );
+        }
     }
 
     return {key, coords};
@@ -1348,6 +1477,87 @@ function updateCenterControlAppearance() {
                 : "Center On Me"
     );
     updateNorthControlAppearance();
+    updateZoomControlAppearance();
+}
+
+function findMapControlButton(className) {
+    try {
+        const container = groundMap && groundMap.getContainer ? groundMap.getContainer() : document;
+        return container ? container.querySelector(`.${className}`) : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function setZoomButtonState(button, enabled, label) {
+    if (!button) return;
+    button.disabled = !enabled;
+    button.setAttribute("aria-disabled", enabled ? "false" : "true");
+    button.title = enabled ? label : `${label} unavailable`;
+}
+
+function updateZoomControlAppearance() {
+    if (!groundMap) return;
+    const zoom = Number(groundMap.getZoom && groundMap.getZoom());
+    const maxZoom = Number.isFinite(currentMaxZoom) ? currentMaxZoom : DEFAULT_MAX_NATIVE_ZOOM + DEFAULT_MAX_OVERZOOM_DELTA;
+    const canZoomIn = Number.isFinite(zoom) && zoom < maxZoom - WHEEL_ZOOM_LIMIT_EPSILON;
+    const canZoomOut = Number.isFinite(zoom) && zoom > MIN_ZOOM + WHEEL_ZOOM_LIMIT_EPSILON;
+    setZoomButtonState(findMapControlButton("maplibregl-ctrl-zoom-in"), canZoomIn, "Zoom In");
+    setZoomButtonState(findMapControlButton("maplibregl-ctrl-zoom-out"), canZoomOut, "Zoom Out");
+}
+
+function applyImmediateZoomStep(delta) {
+    if (!groundMap) return;
+    const currentZoom = Number(groundMap.getZoom && groundMap.getZoom());
+    if (!Number.isFinite(currentZoom)) return;
+    const maxZoom = Number.isFinite(currentMaxZoom)
+        ? currentMaxZoom
+        : DEFAULT_MAX_NATIVE_ZOOM + DEFAULT_MAX_OVERZOOM_DELTA;
+    const nextZoomTarget = delta > 0
+        ? Math.floor(currentZoom + WHEEL_ZOOM_LIMIT_EPSILON) + 1
+        : Math.ceil(currentZoom - WHEEL_ZOOM_LIMIT_EPSILON) - 1;
+    const nextZoom = Math.max(MIN_ZOOM, Math.min(maxZoom, nextZoomTarget));
+    if (Math.abs(nextZoom - currentZoom) <= WHEEL_ZOOM_LIMIT_EPSILON) {
+        updateZoomControlAppearance();
+        return;
+    }
+    try {
+        if (typeof groundMap.stop === "function") {
+            groundMap.stop();
+        }
+    } catch (e) {
+    }
+    markInternalCameraUpdate(120);
+    groundMap.jumpTo({
+        zoom: nextZoom,
+        bearing: mapBearingDeg,
+    });
+    rememberMapView();
+    persistMapStateSoon();
+    scheduleTrackingTilePrefetch();
+    scheduleHighResTilePrefetch();
+    updateZoomControlAppearance();
+}
+
+function installImmediateZoomButtonHandlers() {
+    if (!groundMap) return;
+    const zoomIn = findMapControlButton("maplibregl-ctrl-zoom-in");
+    const zoomOut = findMapControlButton("maplibregl-ctrl-zoom-out");
+    const install = (button, delta) => {
+        if (!button || button.__gs26_immediate_zoom_installed) return;
+        button.__gs26_immediate_zoom_installed = true;
+        button.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (typeof event.stopImmediatePropagation === "function") {
+                event.stopImmediatePropagation();
+            }
+            if (button.disabled || button.getAttribute("aria-disabled") === "true") return;
+            applyImmediateZoomStep(delta);
+        }, {capture: true});
+    };
+    install(zoomIn, 1);
+    install(zoomOut, -1);
 }
 
 function shouldShowNorthControl() {
@@ -1513,6 +1723,11 @@ function resetUserMotionSmoothing(latLng) {
 function animateUserMarkerTo(targetLatLng) {
     if (!Array.isArray(targetLatLng)) return;
     const target = [targetLatLng[0], targetLatLng[1]];
+    if (!userMarkerHasLiveFix) {
+        userMarkerHasLiveFix = true;
+        resetUserMotionSmoothing(target);
+        return;
+    }
     const from = currentUserMarkerVisualLatLng() || target;
     const distanceM = distanceMetersBetween(from, target);
 
@@ -1900,7 +2115,7 @@ function disableFollowUserFromMapInteraction() {
 function syncRequestedMapControlState() {
     try {
         const requested = window.__gs26_follow_user_enabled;
-        const enabled = requested == null ? true : String(requested) === "true";
+        const enabled = requested == null ? false : String(requested) === "true";
         const guard = Number(window.__gs26_follow_user_enable_guard_until || 0);
         followUserEnabled = enabled || (Number.isFinite(guard) && guard > Date.now());
 
@@ -2254,6 +2469,7 @@ function addOverlayControls() {
         visualizePitch: false,
     });
     groundMap.addControl(mapNavigationControl, "top-right");
+    installImmediateZoomButtonHandlers();
 
     class CenterOnUserControl {
         onAdd() {
@@ -2526,6 +2742,7 @@ function installMapHooks() {
     groundMap.on("load", () => {
         ensureMapMarkerImages();
         mapReady = true;
+        updateZoomControlAppearance();
         syncRocketGuideLine(lastRocketLatLng, userMarkerDisplayedLatLng || lastUserLatLng);
         syncPointSource(ROCKET_SOURCE_ID, lastRocketLatLng);
         syncPointSource(USER_SOURCE_ID, userMarkerDisplayedLatLng || lastUserLatLng);
@@ -2540,6 +2757,7 @@ function installMapHooks() {
         persistMapStateSoon();
         scheduleHighResTilePrefetch();
         scheduleTileZoomDiscovery();
+        updateZoomControlAppearance();
     });
     groundMap.on("move", () => {
         scheduleTrackingTilePrefetch();
@@ -2554,6 +2772,10 @@ function installMapHooks() {
         if (followUserEnabled) {
             applyFollowUserIfPossible();
         }
+        updateZoomControlAppearance();
+    });
+    groundMap.on("zoom", () => {
+        updateZoomControlAppearance();
     });
     groundMap.on("rotateend", () => {
         mapBearingDeg = normalizeAngle(groundMap.getBearing());
@@ -2694,6 +2916,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     currentMaxNativeZoom = nextMaxNativeZoom;
     currentMaxZoom = nextMaxZoom;
     persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
+    applyDiscoveredCachedMaxNativeZoom(tilesUrl);
     currentPrefetchKey = null;
     scheduleTileCacheSweep(tilesUrl);
 
@@ -2724,6 +2947,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     if (!needsFullRecreate && groundMap && groundMap.getContainer && groundMap.getContainer() === container) {
         groundMap.resize();
         groundMap.setMaxZoom(currentMaxZoom);
+        updateZoomControlAppearance();
         markInternalCameraUpdate(250);
         groundMap.jumpTo({
             center: startCenter,
@@ -2792,6 +3016,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         groundMap.touchPitch.disable();
     }
     addOverlayControls();
+    updateZoomControlAppearance();
     installMapHooks();
     installCustomGestureHooks();
     rememberMapView();
@@ -2837,9 +3062,10 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
 
     if (hasUser) {
         let userMarkerCreated = false;
-        if (!Array.isArray(userMarkerDisplayedLatLng)) {
-            const seedUserLatLng = currentUserMarkerVisualLatLng() || lastUserLatLng;
+        if (!userMarkerHasLiveFix || !Array.isArray(userMarkerDisplayedLatLng)) {
+            const seedUserLatLng = lastUserLatLng;
             resetUserMotionSmoothing(seedUserLatLng);
+            userMarkerHasLiveFix = true;
             userMarkerCreated = true;
         } else {
             animateUserMarkerTo(lastUserLatLng);

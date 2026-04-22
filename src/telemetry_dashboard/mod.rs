@@ -2489,6 +2489,7 @@ fn TelemetryDashboardInner() -> Element {
     let layout_config = use_signal(|| None::<LayoutConfig>);
     let layout_loading = use_signal(|| true);
     let layout_error = use_signal(|| None::<String>);
+    let layout_error_dismissed = use_signal(|| None::<String>);
     let layout_request_base = use_signal(String::new);
     let calibration_has_sensors = use_signal(|| None::<bool>);
     let calibration_request_base = use_signal(String::new);
@@ -2717,6 +2718,7 @@ fn TelemetryDashboardInner() -> Element {
         let mut layout_config = layout_config;
         let mut layout_loading = layout_loading;
         let mut layout_error = layout_error;
+        let mut layout_error_dismissed = layout_error_dismissed;
         let mut layout_request_base = layout_request_base;
 
         use_effect(move || {
@@ -2728,6 +2730,7 @@ fn TelemetryDashboardInner() -> Element {
             layout_request_base.set(base.clone());
             layout_loading.set(true);
             layout_error.set(None);
+            layout_error_dismissed.set(None);
 
             let cache_key = layout_cache_key_for_base(&base);
             if let Some(cached) = persist::get_string(&cache_key)
@@ -2765,6 +2768,7 @@ fn TelemetryDashboardInner() -> Element {
                         layout_config.set(Some(layout.clone()));
                         layout_loading.set(false);
                         layout_error.set(None);
+                        layout_error_dismissed.set(None);
                         if let Ok(raw) = serde_json::to_string(&layout) {
                             persist::set_string(&cache_key, &raw);
                         }
@@ -3716,6 +3720,7 @@ fn TelemetryDashboardInner() -> Element {
     let layout_config = layout_config;
     let mut layout_loading = layout_loading;
     let mut layout_error = layout_error;
+    let mut layout_error_dismissed = layout_error_dismissed;
     let mut layout_request_base = layout_request_base;
     let mut _refresh_layout = move || {
         let base = UrlConfig::base_http();
@@ -3723,10 +3728,12 @@ fn TelemetryDashboardInner() -> Element {
         layout_request_base.set(String::new());
         layout_loading.set(true);
         layout_error.set(None);
+        layout_error_dismissed.set(None);
         persist::_remove(&cache_key);
         let mut layout_config = layout_config;
         let mut layout_loading = layout_loading;
         let mut layout_error = layout_error;
+        let mut layout_error_dismissed = layout_error_dismissed;
         let mut layout_request_base = layout_request_base;
         spawn(async move {
             match http_get_json::<LayoutConfig>("/api/layout").await {
@@ -3750,6 +3757,7 @@ fn TelemetryDashboardInner() -> Element {
                     layout_config.set(Some(layout.clone()));
                     layout_loading.set(false);
                     layout_error.set(None);
+                    layout_error_dismissed.set(None);
                     if let Ok(raw) = serde_json::to_string(&layout) {
                         persist::set_string(&cache_key, &raw);
                     }
@@ -3796,6 +3804,16 @@ fn TelemetryDashboardInner() -> Element {
 
     let layout_snapshot = layout_config.read().clone();
     let layout_error_snapshot = layout_error.read().clone();
+    let layout_error_dismissed_snapshot = layout_error_dismissed.read().clone();
+    let layout_cached_error_banner = layout_error_snapshot.clone().and_then(|msg| {
+        if layout_snapshot.is_some()
+            && layout_error_dismissed_snapshot.as_deref() != Some(msg.as_str())
+        {
+            Some(msg)
+        } else {
+            None
+        }
+    });
     let layout_loading_snapshot = *layout_loading.read();
     #[cfg(not(target_arch = "wasm32"))]
     let version_overlay_open = *show_version_overlay.read();
@@ -4500,9 +4518,28 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
 
-                    if let Some(msg) = layout_error_snapshot.clone() {
-                        div { style: "margin-bottom:12px; padding:10px 12px; border-radius:10px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:12px;",
-                            "{msg}"
+                    if let Some(msg) = layout_cached_error_banner.clone() {
+                        div { style: "margin-bottom:12px; padding:10px 12px; border-radius:10px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;",
+                            span { style: "flex:1 1 220px; min-width:0;", "{msg}" }
+                            button {
+                                style: format!("
+                                    padding:0.3rem 0.7rem;
+                                    border-radius:0.6rem;
+                                    border:1px solid {};
+                                    background:{};
+                                    color:{};
+                                    font-weight:800;
+                                    cursor:pointer;
+                                ", theme.button_border, theme.button_background, theme.button_text),
+                                onclick: {
+                                    let mut layout_error_dismissed = layout_error_dismissed;
+                                    let msg = msg.clone();
+                                    move |_| {
+                                        layout_error_dismissed.set(Some(msg.clone()));
+                                    }
+                                },
+                                "Dismiss"
+                            }
                         }
                     }
 

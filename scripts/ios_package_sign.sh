@@ -2,21 +2,21 @@
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# iOS App Signer (GUI) equivalent: embed.mobileprovision + sign + package .ipa
+# iOS App Signer (GUI) equivalent: optional embed.mobileprovision + sign + package .ipa
 # - Does NOT build
 # - Does NOT change bundle id
 # - Does NOT change version strings
-# - Enforces get-task-allow=false
+# - Applies get-task-allow from GET_TASK_ALLOW
 # - Picks signing identity via regex from `security find-identity`
 #
 # Optional env:
 #   CERT_REGEX='Apple Distribution:'   (default)
 #   CERT_PICK='newest'|'first'         (default: newest)
-#   GET_TASK_ALLOW='false'|'true'|'profile' (default: false)
+#   GET_TASK_ALLOW='false'|'true'|'profile'|'none' (default: false)
 # -----------------------------------------------------------------------------
 
 APP="${1:?Missing .app path}"
-PROVISION="${2:?Missing .mobileprovision path}"
+PROVISION="${2:?Missing .mobileprovision path, or '-' for no profile}"
 IPA_OUT="${3:?Missing output .ipa path}"
 
 CERT_REGEX="${CERT_REGEX:-Apple Distribution:}"
@@ -34,16 +34,23 @@ die() { printf "[ERROR] %s\n" "$*" >&2; exit 1; }
 
 [[ -d "$APP" ]] || die "App bundle not found: $APP"
 [[ -f "$APP/Info.plist" ]] || die "Missing Info.plist in app: $APP"
-[[ -f "$PROVISION" ]] || die "Provisioning profile not found: $PROVISION"
+USE_PROVISION=1
+if [[ "$PROVISION" == "-" || -z "$PROVISION" ]]; then
+  USE_PROVISION=0
+else
+  [[ -f "$PROVISION" ]] || die "Provisioning profile not found: $PROVISION"
+fi
 [[ -x "$PB" ]] || die "PlistBuddy not found/executable at: $PB"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Decode provisioning profile once (used for cert matching + entitlements)
-if ! $SECURITY cms -D -i "$PROVISION" > "$TMP/profile.plist" 2>/dev/null; then
-  $OPENSSL smime -inform der -verify -noverify -in "$PROVISION" -out "$TMP/profile.plist" >/dev/null 2>&1 \
-    || die "Failed to decode provisioning profile: $PROVISION"
+if [[ "$USE_PROVISION" -eq 1 ]]; then
+  if ! $SECURITY cms -D -i "$PROVISION" > "$TMP/profile.plist" 2>/dev/null; then
+    $OPENSSL smime -inform der -verify -noverify -in "$PROVISION" -out "$TMP/profile.plist" >/dev/null 2>&1 \
+      || die "Failed to decode provisioning profile: $PROVISION"
+  fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -69,14 +76,13 @@ extract_profile_hashes() {
       ' \
     | while IFS= read -r b64; do
         [[ -n "$b64" ]] || continue
-        if echo "$b64" | base64 -D >/dev/null 2>&1; then
-          cert_der="$(echo "$b64" | base64 -D 2>/dev/null || true)"
+        if printf "%s" "$b64" | base64 -D 2>/dev/null \
+          | $OPENSSL x509 -inform DER -noout -fingerprint -sha1 2>/dev/null; then
+          :
         else
-          cert_der="$(echo "$b64" | base64 -d 2>/dev/null || true)"
-        fi
-        [[ -n "$cert_der" ]] || continue
-        echo "$cert_der" \
-          | openssl x509 -inform DER -noout -fingerprint -sha1 2>/dev/null \
+          printf "%s" "$b64" | base64 -d 2>/dev/null \
+            | $OPENSSL x509 -inform DER -noout -fingerprint -sha1 2>/dev/null || true
+        fi \
           | sed 's/^SHA1 Fingerprint=//' \
           | tr -d ':' \
           | tr '[:lower:]' '[:upper:]'
@@ -109,8 +115,12 @@ pick_identity_newest() {
 IDENTITY=""
 IDENTITY_HASH=""
 
-log "Extracting allowed signing certs from provisioning profile..."
-profile_hashes="$(extract_profile_hashes || true)"
+if [[ "$USE_PROVISION" -eq 1 ]]; then
+  log "Extracting allowed signing certs from provisioning profile..."
+  profile_hashes="$(extract_profile_hashes || true)"
+else
+  log "No provisioning profile supplied; using certificate regex only."
+fi
 
 if [[ -n "$profile_hashes" ]]; then
   log "Provisioning profile specifies signing certificates; matching keychain identities..."
@@ -202,10 +212,15 @@ fi
 # (intentionally not printing the identity string to keep logs non-PII)
 
 # -----------------------------------------------------------------------------
-# 1) Embed provisioning profile
+# 1) Embed or remove provisioning profile
 # -----------------------------------------------------------------------------
-log "Embedding provisioning profile..."
-cp -f "$PROVISION" "$APP/embedded.mobileprovision"
+if [[ "$USE_PROVISION" -eq 1 ]]; then
+  log "Embedding provisioning profile..."
+  cp -f "$PROVISION" "$APP/embedded.mobileprovision"
+else
+  log "Removing embedded provisioning profile..."
+  rm -f "$APP/embedded.mobileprovision" 2>/dev/null || true
+fi
 
 # -----------------------------------------------------------------------------
 # 2) Remove old signatures (if any)
@@ -215,27 +230,39 @@ rm -rf "$APP/_CodeSignature" 2>/dev/null || true
 rm -f  "$APP/CodeResources" 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
-# 3) Extract entitlements and enforce get-task-allow=false
+# 3) Extract entitlements
 # -----------------------------------------------------------------------------
-log "Extracting entitlements from provisioning profile..."
-$PB -x -c "Print :Entitlements" "$TMP/profile.plist" > "$TMP/entitlements.plist"
+ENTITLEMENTS_PATH=""
+if [[ "$USE_PROVISION" -eq 1 ]]; then
+  log "Extracting entitlements from provisioning profile..."
+  $PB -x -c "Print :Entitlements" "$TMP/profile.plist" > "$TMP/entitlements.plist"
 
-case "$GET_TASK_ALLOW" in
-  false|true)
-    if $PB -c "Print :get-task-allow" "$TMP/entitlements.plist" >/dev/null 2>&1; then
-      $PB -c "Set :get-task-allow $GET_TASK_ALLOW" "$TMP/entitlements.plist" >/dev/null
-    else
-      $PB -c "Add :get-task-allow bool $GET_TASK_ALLOW" "$TMP/entitlements.plist" >/dev/null
-    fi
-    ;;
-  profile)
-    ;;
-  *)
-    die "GET_TASK_ALLOW must be 'false', 'true', or 'profile' (got: $GET_TASK_ALLOW)"
-    ;;
-esac
+  case "$GET_TASK_ALLOW" in
+    false|true)
+      if $PB -c "Print :get-task-allow" "$TMP/entitlements.plist" >/dev/null 2>&1; then
+        $PB -c "Set :get-task-allow $GET_TASK_ALLOW" "$TMP/entitlements.plist" >/dev/null
+      else
+        $PB -c "Add :get-task-allow bool $GET_TASK_ALLOW" "$TMP/entitlements.plist" >/dev/null
+      fi
+      ;;
+    profile|none)
+      ;;
+    *)
+      die "GET_TASK_ALLOW must be 'false', 'true', 'profile', or 'none' (got: $GET_TASK_ALLOW)"
+      ;;
+  esac
 
-$PLUTIL -convert xml1 "$TMP/entitlements.plist" >/dev/null 2>&1 || true
+  $PLUTIL -convert xml1 "$TMP/entitlements.plist" >/dev/null 2>&1 || true
+  ENTITLEMENTS_PATH="$TMP/entitlements.plist"
+else
+  case "$GET_TASK_ALLOW" in
+    none|false|profile)
+      ;;
+    *)
+      die "GET_TASK_ALLOW must be 'none' when no provisioning profile is supplied (got: $GET_TASK_ALLOW)"
+      ;;
+  esac
+fi
 
 # -----------------------------------------------------------------------------
 # 4) Sign nested content first (Frameworks, dylibs, appex)
@@ -269,14 +296,24 @@ find "$APP" -maxdepth 2 -name "*.appex" -print0 2>/dev/null \
 # -----------------------------------------------------------------------------
 log "Signing main app bundle..."
 signer="${IDENTITY_HASH:-$IDENTITY}"
-if ! $CODESIGN --force --sign "$signer" \
-  --entitlements "$TMP/entitlements.plist" \
-  --options runtime --timestamp \
-  "$APP" 2>/dev/null; then
-  $CODESIGN --force --sign "$signer" \
-    --entitlements "$TMP/entitlements.plist" \
-    --options runtime \
-    "$APP"
+if [[ -n "$ENTITLEMENTS_PATH" ]]; then
+  if ! $CODESIGN --force --sign "$signer" \
+    --entitlements "$ENTITLEMENTS_PATH" \
+    --options runtime --timestamp \
+    "$APP" 2>/dev/null; then
+    $CODESIGN --force --sign "$signer" \
+      --entitlements "$ENTITLEMENTS_PATH" \
+      --options runtime \
+      "$APP"
+  fi
+else
+  if ! $CODESIGN --force --sign "$signer" \
+    --options runtime --timestamp \
+    "$APP" 2>/dev/null; then
+    $CODESIGN --force --sign "$signer" \
+      --options runtime \
+      "$APP"
+  fi
 fi
 
 # -----------------------------------------------------------------------------
