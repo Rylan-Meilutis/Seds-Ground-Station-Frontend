@@ -1525,6 +1525,41 @@ pub fn Connect() -> Element {
                                 test_status.set(String::new());
                                 test_report.set(None);
                             },
+                            onkeydown: move |evt| {
+                                if evt.key() != Key::Enter {
+                                    return;
+                                }
+                                evt.prevent_default();
+                                let u_norm = compose_base_url_for_connect(&scheme_edit(), &host_edit());
+                                if u_norm.is_empty() {
+                                    test_status.set("Enter a URL first.".to_string());
+                                    return;
+                                }
+
+                                objc_poke::poke_url(&u_norm);
+
+                                UrlConfig::set_base_url_and_persist(u_norm.to_string());
+                                UrlConfig::_set_skip_tls_verify_for_base(&u_norm, *skip_tls.read());
+                                if UrlConfig::_stored_base_url().as_deref() != Some(u_norm.as_str()) {
+                                    test_status.set(
+                                        "Failed to save the Ground Station URL on this device. The app stayed disconnected."
+                                            .to_string(),
+                                    );
+                                    return;
+                                }
+                                let tested_ok = test_report
+                                    .read()
+                                    .as_ref()
+                                    .map(|report| all_tests_passed(&report.checks, &report.ws_probe))
+                                    .unwrap_or(false);
+                                if tested_ok {
+                                    crate::telemetry_dashboard::clear_and_reconnect_after_connect();
+                                } else {
+                                    crate::telemetry_dashboard::reconnect_and_reseed_after_auth_change();
+                                }
+                                let _ = persist::write_connect_shown(true);
+                                let _ = nav.replace(Route::Dashboard {});
+                            },
                         }
                     }
 

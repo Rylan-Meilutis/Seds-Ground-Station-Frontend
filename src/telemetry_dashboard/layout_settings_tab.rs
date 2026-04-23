@@ -10,6 +10,7 @@ pub fn SettingsPage(
     network_flow_animation_enabled: Signal<bool>,
     network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
+    data_cache_enabled: Signal<bool>,
     map_tile_cache_enabled: Signal<bool>,
     map_prefetch_enabled: Signal<bool>,
     map_prefetch_user_radius_m: Signal<u32>,
@@ -36,6 +37,7 @@ pub fn SettingsPage(
     let flow_animation_enabled = *network_flow_animation_enabled.read();
     let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
+    let data_cache_enabled_value = *data_cache_enabled.read();
     let map_tile_cache_enabled_value = *map_tile_cache_enabled.read();
     let map_prefetch_enabled_value = *map_prefetch_enabled.read();
     let map_prefetch_user_radius_m_value = *map_prefetch_user_radius_m.read();
@@ -104,6 +106,18 @@ pub fn SettingsPage(
     );
     let prefetch_on = localized_copy(&language, "Enabled", "Activado", "Active");
     let prefetch_off = localized_copy(&language, "Disabled", "Desactivado", "Desactive");
+    let data_cache_title = localized_copy(
+        &language,
+        "Data Cache",
+        "Cache de datos",
+        "Cache de donnees",
+    );
+    let data_cache_desc = localized_copy(
+        &language,
+        "Stores recent telemetry locally for faster startup and offline recovery.",
+        "Guarda telemetria reciente localmente para inicio mas rapido y recuperacion sin conexion.",
+        "Stocke la telemetrie recente localement pour un demarrage plus rapide et la recuperation hors ligne.",
+    );
     let tile_cache_title = localized_copy(
         &language,
         "Map Tile Cache",
@@ -423,22 +437,6 @@ pub fn SettingsPage(
                     }
                 }
                 div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
-                    div { style: "font-size:13px; color:{theme.text_muted};", "{tile_cache_title}" }
-                    div { style: "font-size:13px; color:{theme.text_soft};", "{tile_cache_desc}" }
-                    div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
-                        button {
-                            style: if map_tile_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
-                            onclick: move |_| map_tile_cache_enabled.set(true),
-                            "{prefetch_on}"
-                        }
-                        button {
-                            style: if !map_tile_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
-                            onclick: move |_| map_tile_cache_enabled.set(false),
-                            "{prefetch_off}"
-                        }
-                    }
-                }
-                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
                     div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_desc}" }
                     div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
@@ -615,6 +613,38 @@ pub fn SettingsPage(
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_cache_control}" }
                 div { style: "display:flex; flex-direction:column; gap:12px;",
                     div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{data_cache_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{data_cache_desc}" }
+                        div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                            button {
+                                style: if data_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                                onclick: move |_| data_cache_enabled.set(true),
+                                "{prefetch_on}"
+                            }
+                            button {
+                                style: if !data_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                                onclick: move |_| data_cache_enabled.set(false),
+                                "{prefetch_off}"
+                            }
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{tile_cache_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{tile_cache_desc}" }
+                        div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                            button {
+                                style: if map_tile_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                                onclick: move |_| map_tile_cache_enabled.set(true),
+                                "{prefetch_on}"
+                            }
+                            button {
+                                style: if !map_tile_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                                onclick: move |_| map_tile_cache_enabled.set(false),
+                                "{prefetch_off}"
+                            }
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{clear_data_cache_title}" }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{clear_data_cache_desc}" }
                         div { style: "display:flex; gap:8px; flex-wrap:wrap;",
@@ -639,58 +669,66 @@ pub fn SettingsPage(
                     div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{clear_data_map_cache_title}" }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{clear_data_map_cache_desc}" }
-                        button {
-                            style: chip_idle.clone(),
-                            onclick: {
-                                let cache_cleared_label = cache_cleared_label.clone();
-                                move |_| {
-                                    on_clear_data_and_map_cache.call(());
-                                    maintenance_status.set(cache_cleared_label.clone());
-                                    confirm_reset.set(false);
-                                }
-                            },
-                            "{clear_data_map_cache_title}"
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: chip_idle.clone(),
+                                onclick: {
+                                    let cache_cleared_label = cache_cleared_label.clone();
+                                    move |_| {
+                                        on_clear_data_and_map_cache.call(());
+                                        maintenance_status.set(cache_cleared_label.clone());
+                                        confirm_reset.set(false);
+                                    }
+                                },
+                                "{clear_data_map_cache_title}"
+                            }
                         }
                     }
                     div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{clear_all_caches_title}" }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{clear_all_caches_desc}" }
-                        button {
-                            style: chip_idle.clone(),
-                            onclick: {
-                                let cache_cleared_label = cache_cleared_label.clone();
-                                move |_| {
-                                    on_clear_all_caches.call(());
-                                    maintenance_status.set(cache_cleared_label.clone());
-                                    confirm_reset.set(false);
-                                }
-                            },
-                            "{clear_all_caches_title}"
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: chip_idle.clone(),
+                                onclick: {
+                                    let cache_cleared_label = cache_cleared_label.clone();
+                                    move |_| {
+                                        on_clear_all_caches.call(());
+                                        maintenance_status.set(cache_cleared_label.clone());
+                                        confirm_reset.set(false);
+                                    }
+                                },
+                                "{clear_all_caches_title}"
+                            }
                         }
                     }
                     div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_now_title}" }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_now_desc}" }
-                        button {
-                            style: chip_idle.clone(),
-                            onclick: move |_| {
-                                on_prefetch_map_tiles.call(());
-                                maintenance_status.set(prefetch_started_label.clone());
-                                confirm_reset.set(false);
-                            },
-                            "{prefetch_now_title}"
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: chip_idle.clone(),
+                                onclick: move |_| {
+                                    on_prefetch_map_tiles.call(());
+                                    maintenance_status.set(prefetch_started_label.clone());
+                                    confirm_reset.set(false);
+                                },
+                                "{prefetch_now_title}"
+                            }
                         }
                     }
                     div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{reset_app_data_title}" }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{reset_app_data_desc}" }
-                        button {
-                            style: danger_idle,
-                            onclick: move |_| {
-                                confirm_reset.set(true);
-                                maintenance_status.set(String::new());
-                            },
-                            "{reset_app_data_title}"
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: danger_idle,
+                                onclick: move |_| {
+                                    confirm_reset.set(true);
+                                    maintenance_status.set(String::new());
+                                },
+                                "{reset_app_data_title}"
+                            }
                         }
                     }
                     if !maintenance_status.read().is_empty() {

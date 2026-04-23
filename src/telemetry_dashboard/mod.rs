@@ -571,6 +571,10 @@ struct TelemetryRowsCache {
 }
 
 fn persist_cached_telemetry_rows(rows: &[TelemetryRow]) {
+    if !data_cache_enabled() {
+        persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+        return;
+    }
     if rows.is_empty() {
         persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
         return;
@@ -586,6 +590,11 @@ fn persist_cached_telemetry_rows(rows: &[TelemetryRow]) {
 }
 
 fn persist_cached_telemetry_snapshot_if_due(force: bool) {
+    if !data_cache_enabled() {
+        persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+        LAST_TELEMETRY_CACHE_PERSIST_MS.store(0, Ordering::Relaxed);
+        return;
+    }
     let now_ms = current_wallclock_ms();
     let last_ms = LAST_TELEMETRY_CACHE_PERSIST_MS.load(Ordering::Relaxed);
     if !force && now_ms.saturating_sub(last_ms) < TELEMETRY_CACHE_WRITE_INTERVAL_MS {
@@ -602,6 +611,10 @@ fn persist_cached_telemetry_snapshot_if_due(force: bool) {
 }
 
 fn restore_cached_telemetry_rows_if_needed() -> usize {
+    if !data_cache_enabled() {
+        persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+        return 0;
+    }
     if !ui_telemetry_rows_snapshot().is_empty() {
         return 0;
     }
@@ -674,6 +687,7 @@ const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
 const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertical";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
+const DATA_CACHE_ENABLED_STORAGE_KEY: &str = "gs_data_cache_enabled";
 const MAP_TILE_CACHE_ENABLED_STORAGE_KEY: &str = "gs26_tile_cache_enabled";
 const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
 const MAP_PREFETCH_USER_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_user_radius_m";
@@ -694,6 +708,10 @@ const TILE_CACHE_STATS_TTL_MS: i64 = 5_000;
 const DEFAULT_PREFETCH_RADIUS_M: u32 = 1_609;
 const MIN_PREFETCH_RADIUS_M: u32 = 100;
 const MAX_PREFETCH_RADIUS_M: u32 = 20_000;
+
+fn data_cache_enabled() -> bool {
+    persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off"
+}
 
 fn clamp_prefetch_radius_m(value: u32) -> u32 {
     value.clamp(MIN_PREFETCH_RADIUS_M, MAX_PREFETCH_RADIUS_M)
@@ -726,6 +744,7 @@ fn cache_storage_stats_rows() -> Vec<(String, String)> {
         NETWORK_FLOW_ANIMATION_STORAGE_KEY,
         NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY,
         STATE_CHART_LABELS_VERTICAL_STORAGE_KEY,
+        DATA_CACHE_ENABLED_STORAGE_KEY,
         MAP_TILE_CACHE_ENABLED_STORAGE_KEY,
         MAP_PREFETCH_ENABLED_STORAGE_KEY,
         MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
@@ -1584,6 +1603,8 @@ pub fn NativeSettingsPage() -> Element {
         use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
+    let data_cache_enabled =
+        use_signal(|| persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_tile_cache_enabled =
         use_signal(|| persist::get_or(MAP_TILE_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_prefetch_enabled =
@@ -1657,6 +1678,20 @@ pub fn NativeSettingsPage() -> Element {
                 "off"
             };
             persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
+        let data_cache_enabled = data_cache_enabled;
+        use_effect(move || {
+            let enabled = *data_cache_enabled.read();
+            persist::set_string(
+                DATA_CACHE_ENABLED_STORAGE_KEY,
+                if enabled { "on" } else { "off" },
+            );
+            if !enabled {
+                persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+                LAST_TELEMETRY_CACHE_PERSIST_MS.store(0, Ordering::Relaxed);
+            }
         });
     }
     {
@@ -1784,6 +1819,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut network_flow_animation_enabled = network_flow_animation_enabled;
         let mut network_topology_vertical = network_topology_vertical;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
+        let mut data_cache_enabled = data_cache_enabled;
         let mut map_tile_cache_enabled = map_tile_cache_enabled;
         let mut map_prefetch_enabled = map_prefetch_enabled;
         let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
@@ -1797,6 +1833,7 @@ pub fn NativeSettingsPage() -> Element {
             network_flow_animation_enabled.set(true);
             network_topology_vertical.set(false);
             state_chart_labels_vertical.set(false);
+            data_cache_enabled.set(true);
             map_tile_cache_enabled.set(true);
             map_prefetch_enabled.set(true);
             map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
@@ -1813,6 +1850,7 @@ pub fn NativeSettingsPage() -> Element {
             network_flow_animation_enabled,
             network_topology_vertical,
             state_chart_labels_vertical,
+            data_cache_enabled,
             map_tile_cache_enabled,
             map_prefetch_enabled,
             map_prefetch_user_radius_m,
@@ -2882,6 +2920,8 @@ fn TelemetryDashboardInner() -> Element {
         use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
+    let data_cache_enabled =
+        use_signal(|| persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_tile_cache_enabled =
         use_signal(|| persist::get_or(MAP_TILE_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_prefetch_enabled =
@@ -3362,6 +3402,20 @@ fn TelemetryDashboardInner() -> Element {
                 "off"
             };
             persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
+        let data_cache_enabled = data_cache_enabled;
+        use_effect(move || {
+            let enabled = *data_cache_enabled.read();
+            persist::set_string(
+                DATA_CACHE_ENABLED_STORAGE_KEY,
+                if enabled { "on" } else { "off" },
+            );
+            if !enabled {
+                persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+                LAST_TELEMETRY_CACHE_PERSIST_MS.store(0, Ordering::Relaxed);
+            }
         });
     }
     {
@@ -4563,6 +4617,7 @@ fn TelemetryDashboardInner() -> Element {
                             network_flow_animation_enabled: network_flow_animation_enabled,
                             network_topology_vertical: network_topology_vertical,
                             state_chart_labels_vertical: state_chart_labels_vertical,
+                            data_cache_enabled: data_cache_enabled,
                             map_tile_cache_enabled: map_tile_cache_enabled,
                             map_prefetch_enabled: map_prefetch_enabled,
                             map_prefetch_user_radius_m: map_prefetch_user_radius_m,
@@ -4594,6 +4649,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut network_flow_animation_enabled = network_flow_animation_enabled;
                                 let mut network_topology_vertical = network_topology_vertical;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
+                                let mut data_cache_enabled = data_cache_enabled;
                                 let mut map_tile_cache_enabled = map_tile_cache_enabled;
                                 let mut map_prefetch_enabled = map_prefetch_enabled;
                                 let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
@@ -4612,6 +4668,7 @@ fn TelemetryDashboardInner() -> Element {
                                     network_flow_animation_enabled.set(true);
                                     network_topology_vertical.set(false);
                                     state_chart_labels_vertical.set(false);
+                                    data_cache_enabled.set(true);
                                     map_tile_cache_enabled.set(true);
                                     map_prefetch_enabled.set(true);
                                     map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
