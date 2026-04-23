@@ -2,7 +2,7 @@
 /// Resolves the Android app-private files directory through JNI.
 pub(crate) fn android_files_dir() -> Option<std::path::PathBuf> {
     use ::jni::objects::{JObject, JString};
-    use ::jni::{JavaVM, jni_sig, jni_str};
+    use ::jni::{jni_sig, jni_str, JavaVM};
     use ndk_context::android_context;
 
     let ctx = android_context();

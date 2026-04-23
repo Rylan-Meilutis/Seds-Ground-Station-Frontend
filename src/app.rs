@@ -11,7 +11,7 @@ use crate::telemetry_dashboard::layout::ThemeConfig;
 use dioxus::prelude::*;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 use dioxus_desktop::use_window;
-use dioxus_router::{Routable, Router, use_navigator};
+use dioxus_router::{use_navigator, Routable, Router};
 
 #[allow(unused_imports)]
 use crate::telemetry_dashboard::{self, UrlConfig};
@@ -657,7 +657,7 @@ async fn http_probe_with_client(
     path: &'static str,
     url: String,
 ) -> Result<(u16, String), String> {
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     const MAX_BODY_BYTES: usize = 4096;
     const BODY_SNIP_TIMEOUT_MS: u64 = 400;
@@ -1406,6 +1406,7 @@ pub fn Connect() -> Element {
     let initial_skip_tls = UrlConfig::_skip_tls_verify_for_base(&initial);
 
     let mut scheme_edit = use_signal(|| initial_scheme.to_string());
+    let mut scheme_menu_open = use_signal(|| false);
     let mut host_edit = use_signal(|| initial_host);
     let mut skip_tls = use_signal(|| initial_skip_tls);
 
@@ -1471,43 +1472,63 @@ pub fn Connect() -> Element {
 
                     div {
                         style: format!(
-                            "display:flex; align-items:stretch; min-height:48px; border:1px solid {}; border-radius:12px; background:{}; color:{}; overflow:hidden;",
+                            "position:relative; display:flex; align-items:stretch; min-height:48px; border:1px solid {}; border-radius:12px; background:{}; color:{}; overflow:visible;",
                             theme.border, theme.app_background, theme.text_primary
                         ),
                         div {
                             style: format!(
-                                "flex:0 0 136px; border-right:1px solid {}; background:{}; padding:4px; display:grid; grid-template-columns:1fr 1fr; gap:4px;",
+                                "position:relative; flex:0 0 136px; border-right:1px solid {}; background:{}; padding:4px;",
                                 theme.border, theme.panel_background
                             ),
                             button {
                                 r#type: "button",
                                 style: format!(
-                                    "min-width:0; height:100%; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; cursor:pointer;",
-                                    if scheme_edit() == "https://" { theme.info_accent.as_str() } else { theme.button_border.as_str() },
-                                    if scheme_edit() == "https://" { theme.info_background.as_str() } else { "transparent" },
-                                    theme.text_primary
+                                    "width:100%; height:100%; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 10px;",
+                                    theme.button_border, theme.button_background, theme.text_primary
                                 ),
                                 onclick: move |_| {
-                                    scheme_edit.set("https://".to_string());
-                                    test_status.set(String::new());
-                                    test_report.set(None);
+                                    let next = !*scheme_menu_open.read();
+                                    scheme_menu_open.set(next);
                                 },
-                                "https"
+                                span { if scheme_edit() == "https://" { "https" } else { "http" } }
+                                span { style: "font-size:11px; color:{theme.text_muted};", if *scheme_menu_open.read() { "▲" } else { "▼" } }
                             }
-                            button {
-                                r#type: "button",
-                                style: format!(
-                                    "min-width:0; height:100%; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; cursor:pointer;",
-                                    if scheme_edit() == "http://" { theme.info_accent.as_str() } else { theme.button_border.as_str() },
-                                    if scheme_edit() == "http://" { theme.info_background.as_str() } else { "transparent" },
-                                    theme.text_primary
-                                ),
-                                onclick: move |_| {
-                                    scheme_edit.set("http://".to_string());
-                                    test_status.set(String::new());
-                                    test_report.set(None);
-                                },
-                                "http"
+                            if *scheme_menu_open.read() {
+                                div {
+                                    style: "position:absolute; top:calc(100% + 6px); left:4px; right:4px; z-index:50; display:flex; flex-direction:column; gap:4px; padding:4px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background}; box-shadow:0 12px 30px rgba(0,0,0,0.28);",
+                                    button {
+                                        r#type: "button",
+                                        style: format!(
+                                            "width:100%; padding:9px 10px; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; text-align:left; cursor:pointer;",
+                                            if scheme_edit() == "https://" { theme.info_accent.as_str() } else { theme.button_border.as_str() },
+                                            if scheme_edit() == "https://" { theme.info_background.as_str() } else { theme.button_background.as_str() },
+                                            theme.text_primary
+                                        ),
+                                        onclick: move |_| {
+                                            scheme_edit.set("https://".to_string());
+                                            scheme_menu_open.set(false);
+                                            test_status.set(String::new());
+                                            test_report.set(None);
+                                        },
+                                        "https"
+                                    }
+                                    button {
+                                        r#type: "button",
+                                        style: format!(
+                                            "width:100%; padding:9px 10px; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; text-align:left; cursor:pointer;",
+                                            if scheme_edit() == "http://" { theme.info_accent.as_str() } else { theme.button_border.as_str() },
+                                            if scheme_edit() == "http://" { theme.info_background.as_str() } else { theme.button_background.as_str() },
+                                            theme.text_primary
+                                        ),
+                                        onclick: move |_| {
+                                            scheme_edit.set("http://".to_string());
+                                            scheme_menu_open.set(false);
+                                            test_status.set(String::new());
+                                            test_report.set(None);
+                                        },
+                                        "http"
+                                    }
+                                }
                             }
                         },
 
@@ -1522,6 +1543,7 @@ pub fn Connect() -> Element {
                             spellcheck: "false",
                             oninput: move |evt| {
                                 host_edit.set(evt.value().to_ascii_lowercase());
+                                scheme_menu_open.set(false);
                                 test_status.set(String::new());
                                 test_report.set(None);
                             },

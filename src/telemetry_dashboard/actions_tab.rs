@@ -7,7 +7,7 @@ use crate::auth;
 
 use super::blink::{action_opacity, blink_epoch_ms};
 use super::layout::{ActionSpec, ActionsTabLayout, ThemeConfig};
-use super::{ActionPolicyMsg, BlinkMode, FillTargetsConfig, FluidFillTarget, translate_text};
+use super::{translate_text, ActionPolicyMsg, BlinkMode, FillTargetsConfig, FluidFillTarget};
 
 #[cfg(not(target_arch = "wasm32"))]
 fn target_frame_duration() -> std::time::Duration {

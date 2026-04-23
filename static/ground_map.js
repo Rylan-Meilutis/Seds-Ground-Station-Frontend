@@ -53,6 +53,8 @@ let wheelRotateTargetBearing = null;
 let wheelGestureMode = null;
 let wheelGestureLastAtMs = 0;
 let zoomButtonTargetZoom = null;
+let zoomButtonAnimationFrame = null;
+let zoomButtonAnimationLastAtMs = 0;
 let followZoomAnimationFrame = null;
 let followZoomHoldUntilMs = 0;
 let prefetchSuppressedUntilMs = 0;
@@ -109,6 +111,17 @@ let tilePrefetchState = {
     lastCompletedAt: 0,
 };
 
+let tilePrefetchEstimateState = {
+    tiles: 0,
+    estimatedBytes: 0,
+    estimatedTileBytes: 96 * 1024,
+    budgetBytes: 500 * 1024 * 1024,
+    tooLarge: false,
+    updatedAt: 0,
+};
+let tilePrefetchEstimatedTileBytes = 96 * 1024;
+let tilePrefetchSizeSampleToken = "";
+
 const MIN_ZOOM = 0;
 const DEFAULT_SAFE_MIN_ZOOM = 5;
 const DEFAULT_MAX_NATIVE_ZOOM = 12;
@@ -143,10 +156,14 @@ function configuredPrefetchRadiusM(kind) {
     if (!Number.isFinite(value)) return HIGH_RES_PREFETCH_DEFAULT_RADIUS_M;
     return Math.max(HIGH_RES_PREFETCH_MIN_RADIUS_M, Math.min(HIGH_RES_PREFETCH_MAX_RADIUS_M, value));
 }
+
 const DOM_MAP_MAX_RENDER_TILES = 72;
 const DOM_MAP_TILE_BUFFER_PX = 320;
 const MARKER_SYNC_MIN_INTERVAL_MS = 100;
 const ZOOM_BUTTON_ANIMATION_MS = 240;
+const ZOOM_BUTTON_UNITS_PER_SECOND = 6.5;
+const ZOOM_BUTTON_MAX_DISTANCE_SPEEDUP = 2.6;
+const ZOOM_BUTTON_SETTLE_EPSILON = 0.002;
 const ORIENTATION_MODE_ANIMATION_MS = 520;
 const WHEEL_ROTATE_DEG_PER_PIXEL = 0.18;
 const WHEEL_ROTATE_EASE = 0.24;
@@ -160,6 +177,8 @@ const TILE_CACHE_PREFIXES = ["gs26-tiles-v1:", "gs26-tiles-v2:"];
 const TILE_CACHE_PREFIX = "gs26-tiles-v2:";
 const TILE_MEMORY_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 const TILE_CACHE_MAX_TILE_BYTES = 2 * 1024 * 1024;
+const TILE_CACHE_DEFAULT_BUDGET_BYTES = 500 * 1024 * 1024;
+const TILE_PREFETCH_ESTIMATED_TILE_BYTES = 96 * 1024;
 const TILE_MISSING_CACHE_TTL_MS = 5 * 60 * 1000;
 const TRANSPARENT_TILE_BYTES = Uint8Array.from([
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
@@ -380,6 +399,112 @@ function tileCacheEnabled() {
     } catch (e) {
     }
     return TILE_CACHE_ENABLED_BY_DEFAULT;
+}
+
+function configuredCacheBudgetBytes() {
+    try {
+        const direct = Number(typeof window !== "undefined" ? window.__gs26_cache_budget_bytes : NaN);
+        if (Number.isFinite(direct) && direct > 0) {
+            return Math.max(1, direct);
+        }
+        if (typeof window !== "undefined" && window.localStorage) {
+            const mb = Number(window.localStorage.getItem("gs_cache_budget_mb"));
+            if (Number.isFinite(mb) && mb > 0) {
+                return Math.max(1, mb * 1024 * 1024);
+            }
+        }
+    } catch (e) {
+    }
+    return TILE_CACHE_DEFAULT_BUDGET_BYTES;
+}
+
+function rememberTileSizeSample(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value <= 0 || value > TILE_CACHE_MAX_TILE_BYTES) return;
+    tilePrefetchEstimatedTileBytes = Math.max(
+        1024,
+        Math.round((tilePrefetchEstimatedTileBytes * 0.75) + (value * 0.25))
+    );
+}
+
+function setTilePrefetchEstimate(plan, sampleTileSize = true) {
+    const tiles = plan && Array.isArray(plan.coords) ? plan.coords.length : 0;
+    const breakdown = plan && plan.breakdown ? plan.breakdown : {};
+    const userTiles = Math.max(0, Number(breakdown.userTiles) || 0);
+    const rocketTiles = Math.max(0, Number(breakdown.rocketTiles) || 0);
+    const combinedTiles = Math.max(0, Number(breakdown.combinedTiles) || tiles);
+    const budgetBytes = configuredCacheBudgetBytes();
+    const estimatedTileBytes = Math.max(1024, tilePrefetchEstimatedTileBytes || TILE_PREFETCH_ESTIMATED_TILE_BYTES);
+    const estimatedBytes = tiles * estimatedTileBytes;
+    tilePrefetchEstimateState = {
+        tiles,
+        estimatedBytes,
+        estimatedTileBytes,
+        userTiles,
+        userEstimatedBytes: userTiles * estimatedTileBytes,
+        rocketTiles,
+        rocketEstimatedBytes: rocketTiles * estimatedTileBytes,
+        combinedTiles,
+        combinedEstimatedBytes: combinedTiles * estimatedTileBytes,
+        budgetBytes,
+        tooLarge: estimatedBytes > budgetBytes,
+        updatedAt: Date.now(),
+    };
+    try {
+        window.__gs26_ground_map_prefetch_estimate = {...tilePrefetchEstimateState};
+    } catch (e) {
+    }
+    if (sampleTileSize) {
+        schedulePrefetchTileSizeSample(plan);
+    }
+    return tilePrefetchEstimateState;
+}
+
+function schedulePrefetchTileSizeSample(plan) {
+    if (!plan || !Array.isArray(plan.coords) || !plan.coords.length) return;
+    const tilesUrl = effectivePrefetchTilesUrl();
+    if (!tilesUrl || !tileFetchAllowedForUrl(tilesUrl)) return;
+    const coord = plan.coords.find((item) => item && Number.isFinite(item.z) && Number.isFinite(item.x) && Number.isFinite(item.y));
+    if (!coord) return;
+    const url = resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y);
+    if (!url || isKnownMissingTile(tileCacheName(tilesUrl), url)) return;
+    const token = `${plan.key || ""}|${url}`;
+    if (tilePrefetchSizeSampleToken === token) return;
+    tilePrefetchSizeSampleToken = token;
+
+    Promise.resolve().then(async () => {
+        let sampleBytes = NaN;
+        try {
+            const head = await fetch(url, {method: "HEAD"});
+            if (head && head.ok && head.headers) {
+                sampleBytes = Number(head.headers.get("content-length"));
+            }
+        } catch (e) {
+        }
+        if (!Number.isFinite(sampleBytes) || sampleBytes <= 0) {
+            try {
+                const response = await fetch(url);
+                if (response && response.ok) {
+                    const clone = response.clone();
+                    const data = await response.arrayBuffer();
+                    sampleBytes = data.byteLength;
+                    if (tileCacheEnabled() && tileCacheSupported() && sampleBytes <= TILE_CACHE_MAX_TILE_BYTES) {
+                        try {
+                            const cache = await openTileCache(tileCacheName(tilesUrl));
+                            if (cache) {
+                                await cache.put(tileCacheRequestKey(url), clone);
+                            }
+                        } catch (e) {
+                        }
+                    }
+                }
+            } catch (e) {
+            }
+        }
+        if (tilePrefetchSizeSampleToken !== token) return;
+        rememberTileSizeSample(sampleBytes);
+        setTilePrefetchEstimate(plan, false);
+    });
 }
 
 function tileFetchAllowedForUrl(url) {
@@ -1133,6 +1258,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
         throw new Error(`tile fetch failed: ${response.status}`);
     }
     const data = await response.arrayBuffer();
+    rememberTileSizeSample(data.byteLength);
     writeTileMemoryCache(cacheName, url, data);
     forgetMissingTile(cacheName, url);
     if (data.byteLength <= TILE_CACHE_MAX_TILE_BYTES) {
@@ -1178,6 +1304,7 @@ async function prefetchTileToPersistentCache(cacheName, url) {
     }
     const contentLengthRaw = response.headers ? response.headers.get("content-length") : null;
     const contentLength = contentLengthRaw == null ? NaN : Number(contentLengthRaw);
+    rememberTileSizeSample(contentLength);
     if (Number.isFinite(contentLength) && contentLength > TILE_CACHE_MAX_TILE_BYTES) {
         return;
     }
@@ -2094,7 +2221,7 @@ function buildTrackingPrefetchPlan() {
 function buildHighResPrefetchPlan() {
     const tilesUrl = effectivePrefetchTilesUrl();
     if (!tilesUrl) {
-        return {key: "", coords: []};
+        return {key: "", coords: [], breakdown: {userTiles: 0, rocketTiles: 0, combinedTiles: 0}};
     }
 
     const maxNativeZoom = effectivePrefetchMaxNativeZoom(tilesUrl);
@@ -2104,6 +2231,10 @@ function buildHighResPrefetchPlan() {
     const zooms = prefetchZoomLevels(maxNativeZoom, mapZoom);
     const coords = [];
     const seen = new Set();
+    const userCoords = [];
+    const userSeen = new Set();
+    const rocketCoords = [];
+    const rocketSeen = new Set();
     const userLat = Array.isArray(lastUserLatLng) ? lastUserLatLng[0] : NaN;
     const userLon = Array.isArray(lastUserLatLng) ? lastUserLatLng[1] : NaN;
     const rocketLat = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[0] : NaN;
@@ -2111,7 +2242,7 @@ function buildHighResPrefetchPlan() {
     const userRadiusM = configuredPrefetchRadiusM("user");
     const rocketRadiusM = configuredPrefetchRadiusM("rocket");
     if (!userGpsStability || !userGpsStability.accepted) {
-        return {key: "", coords: []};
+        return {key: "", coords: [], breakdown: {userTiles: 0, rocketTiles: 0, combinedTiles: 0}};
     }
     const bounds = groundMap && groundMap.getBounds ? groundMap.getBounds() : null;
     const viewportKey = bounds
@@ -2146,25 +2277,47 @@ function buildHighResPrefetchPlan() {
         }
 
         if (Number.isFinite(userLat) && Number.isFinite(userLon) && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+            const aroundUser = tileCoordsAround(userLat, userLon, zoom, userRadiusM);
+            appendUniqueCoords(
+                userCoords,
+                userSeen,
+                aroundUser,
+                HIGH_RES_PREFETCH_MAX_TILES
+            );
             appendUniqueCoords(
                 coords,
                 seen,
-                tileCoordsAround(userLat, userLon, zoom, userRadiusM),
+                aroundUser,
                 HIGH_RES_PREFETCH_MAX_TILES
             );
         }
 
         if (Number.isFinite(rocketLat) && Number.isFinite(rocketLon) && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+            const aroundRocket = tileCoordsAround(rocketLat, rocketLon, zoom, rocketRadiusM);
+            appendUniqueCoords(
+                rocketCoords,
+                rocketSeen,
+                aroundRocket,
+                HIGH_RES_PREFETCH_MAX_TILES
+            );
             appendUniqueCoords(
                 coords,
                 seen,
-                tileCoordsAround(rocketLat, rocketLon, zoom, rocketRadiusM),
+                aroundRocket,
                 HIGH_RES_PREFETCH_MAX_TILES
             );
         }
     }
 
-    return {key, coords};
+    return {
+        key,
+        coords,
+        breakdown: {
+            userTiles: userCoords.length,
+            rocketTiles: rocketCoords.length,
+            combinedTiles: coords.length,
+        },
+    };
 }
 
 async function runHighResTilePrefetch(runId, key) {
@@ -2172,6 +2325,19 @@ async function runHighResTilePrefetch(runId, key) {
     if (!tilesUrl) return;
 
     const plan = buildHighResPrefetchPlan();
+    const estimate = setTilePrefetchEstimate(plan);
+    if (estimate.tooLarge) {
+        setTilePrefetchState({
+            key,
+            state: "budget-low",
+            pending: 0,
+            completed: 0,
+            failed: 0,
+            estimatedBytes: estimate.estimatedBytes,
+            budgetBytes: estimate.budgetBytes,
+        });
+        return;
+    }
     if (!plan.coords.length) {
         setTilePrefetchState({
             key,
@@ -2366,6 +2532,22 @@ function scheduleHighResTilePrefetch(options = {}) {
         return;
     }
     const plan = buildHighResPrefetchPlan();
+    const estimate = setTilePrefetchEstimate(plan);
+    if (estimate.tooLarge) {
+        currentPrefetchKey = "";
+        if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
+        tilePrefetchTimer = null;
+        setTilePrefetchState({
+            key: plan.key || "",
+            state: "budget-low",
+            pending: 0,
+            completed: 0,
+            failed: 0,
+            estimatedBytes: estimate.estimatedBytes,
+            budgetBytes: estimate.budgetBytes,
+        });
+        return;
+    }
     const key = plan.key;
     if (!key) {
         currentPrefetchKey = "";
@@ -2615,6 +2797,96 @@ function updateZoomControlAppearance() {
     setZoomButtonState(findMapControlButton("maplibregl-ctrl-zoom-out"), canZoomOut, "Zoom Out");
 }
 
+function applyZoomButtonCameraFrame(zoom) {
+    const nextZoom = Number(zoom);
+    if (!groundMap || !Number.isFinite(nextZoom)) return false;
+    const followCenter = currentFollowUserZoomCenter();
+    markInternalCameraUpdate(80);
+    if (followCenter) {
+        beginFollowZoomHold(120);
+        return recenterFollowUserDuringZoom(nextZoom);
+    }
+    try {
+        groundMap.jumpTo({
+            zoom: nextZoom,
+            bearing: mapBearingDeg,
+        });
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function finishZoomButtonAnimation() {
+    zoomButtonAnimationFrame = null;
+    zoomButtonAnimationLastAtMs = 0;
+    zoomButtonTargetZoom = null;
+    rememberMapView();
+    persistMapStateSoon();
+    scheduleTrackingTilePrefetch();
+    scheduleHighResTilePrefetch();
+    updateZoomControlAppearance();
+}
+
+function cancelZoomButtonAnimation() {
+    if (zoomButtonAnimationFrame != null) {
+        try {
+            cancelAnimationFrame(zoomButtonAnimationFrame);
+        } catch (e) {
+        }
+        zoomButtonAnimationFrame = null;
+    }
+    zoomButtonAnimationLastAtMs = 0;
+}
+
+function startOrRetargetZoomButtonAnimation(targetZoom) {
+    if (!groundMap || !Number.isFinite(Number(targetZoom))) return false;
+    zoomButtonTargetZoom = Number(targetZoom);
+    if (zoomButtonAnimationFrame != null) {
+        return true;
+    }
+    zoomButtonAnimationLastAtMs = performance.now();
+    const step = safeMapCallback("zoom button animation frame", () => {
+        if (!groundMap || !Number.isFinite(zoomButtonTargetZoom)) {
+            finishZoomButtonAnimation();
+            return;
+        }
+        const now = performance.now();
+        const elapsedSeconds = Math.max(
+            0.001,
+            Math.min(0.05, (now - zoomButtonAnimationLastAtMs) / 1000)
+        );
+        zoomButtonAnimationLastAtMs = now;
+
+        const currentZoom = Number(groundMap.getZoom && groundMap.getZoom());
+        if (!Number.isFinite(currentZoom)) {
+            finishZoomButtonAnimation();
+            return;
+        }
+        const diff = zoomButtonTargetZoom - currentZoom;
+        if (Math.abs(diff) <= ZOOM_BUTTON_SETTLE_EPSILON) {
+            applyZoomButtonCameraFrame(zoomButtonTargetZoom);
+            finishZoomButtonAnimation();
+            return;
+        }
+
+        const distanceSpeedup = Math.min(
+            ZOOM_BUTTON_MAX_DISTANCE_SPEEDUP,
+            Math.max(1, Math.abs(diff))
+        );
+        const maxStep = ZOOM_BUTTON_UNITS_PER_SECOND * distanceSpeedup * elapsedSeconds;
+        const nextZoom = currentZoom + Math.sign(diff) * Math.min(Math.abs(diff), maxStep);
+        if (!applyZoomButtonCameraFrame(nextZoom)) {
+            finishZoomButtonAnimation();
+            return;
+        }
+        updateZoomControlAppearance();
+        zoomButtonAnimationFrame = requestAnimationFrame(step);
+    });
+    zoomButtonAnimationFrame = requestAnimationFrame(step);
+    return true;
+}
+
 function applyImmediateZoomStep(delta) {
     if (!groundMap) return;
     const currentZoom = Number(groundMap.getZoom && groundMap.getZoom());
@@ -2643,37 +2915,7 @@ function applyImmediateZoomStep(delta) {
         }
     } catch (e) {
     }
-    const followCenter = holdFollowUserAtScreenCenterForZoom();
-    if (followCenter) {
-        animateFollowZoomTo(nextZoom, ZOOM_BUTTON_ANIMATION_MS);
-        rememberMapView();
-        persistMapStateSoon();
-        scheduleTrackingTilePrefetch();
-        scheduleHighResTilePrefetch();
-        updateZoomControlAppearance();
-        return;
-    }
-    markInternalCameraUpdate(ZOOM_BUTTON_ANIMATION_MS + 80);
-    const zoomOptions = {
-        zoom: nextZoom,
-        bearing: mapBearingDeg,
-        duration: ZOOM_BUTTON_ANIMATION_MS,
-        easing: (t) => t < 0.5
-            ? 4 * t * t * t
-            : 1 - Math.pow(-2 * t + 2, 3) / 2,
-        essential: true,
-    };
-    if (typeof groundMap.easeTo === "function") {
-        groundMap.easeTo(zoomOptions);
-    } else {
-        const jumpOptions = {
-            zoom: nextZoom,
-            bearing: mapBearingDeg,
-        };
-        groundMap.jumpTo(jumpOptions);
-    }
-    rememberMapView();
-    persistMapStateSoon();
+    startOrRetargetZoomButtonAnimation(nextZoom);
     scheduleTrackingTilePrefetch();
     scheduleHighResTilePrefetch();
     updateZoomControlAppearance();
@@ -5069,6 +5311,8 @@ function resetMapObjects(options = {}) {
     const clearTileRuntimeCache = !!(options && options.clearTileRuntimeCache);
     const preservedUserVisual = currentUserMarkerVisualLatLng();
     cancelSmoothWheelRotation();
+    cancelZoomButtonAnimation();
+    zoomButtonTargetZoom = null;
     cancelFollowZoomAnimation();
     followZoomHoldUntilMs = 0;
     cancelUserMarkerAnimation();
@@ -5557,6 +5801,19 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
             suppressHighResPrefetch(60_000);
         }
     });
+    api.setCacheBudgetBytes = safeMapCallback("api setCacheBudgetBytes", (bytes) => {
+        const nextBytes = Number(bytes);
+        if (!Number.isFinite(nextBytes) || nextBytes <= 0) return;
+        window.__gs26_cache_budget_bytes = Math.max(1, nextBytes);
+        try {
+            if (window.localStorage) {
+                window.localStorage.setItem("gs_cache_budget_mb", String(Math.round(window.__gs26_cache_budget_bytes / 1024 / 1024)));
+            }
+        } catch (e) {
+        }
+        setTilePrefetchEstimate(buildHighResPrefetchPlan());
+        scheduleHighResTilePrefetch({force: true});
+    });
     api.clearGroundMapTileCaches = safeMapCallback("api clearGroundMapTileCaches", clearAllGroundMapTileCaches);
     api.ensureMarkerStylesOnce = ensureMarkerStylesOnce;
     api.rememberMapView = safeMapCallback("api rememberMapView", rememberMapView);
@@ -5605,6 +5862,9 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
         get tilePrefetchState() {
             return tilePrefetchState;
         },
+        get tilePrefetchEstimateState() {
+            return tilePrefetchEstimateState;
+        },
     });
 
     window.initGroundMap = api.initGroundMap;
@@ -5622,6 +5882,7 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     window.scheduleHighResTilePrefetch = api.scheduleHighResTilePrefetch;
     window.prefetchGroundMapTiles = api.prefetchGroundMapTiles;
     window.setGroundMapTileCacheEnabled = api.setTileCacheEnabled;
+    window.setGroundMapCacheBudgetBytes = api.setCacheBudgetBytes;
     window.clearGroundMapTileCaches = api.clearGroundMapTileCaches;
 
     window.__gs26_ground_station_loaded = true;
@@ -5630,5 +5891,6 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     } catch (e) {
     }
     window.__gs26_ground_map_cache_state = {...tilePrefetchState};
+    window.__gs26_ground_map_prefetch_estimate = {...tilePrefetchEstimateState};
     window.__gs26_ground_map_cache_ready = false;
 })();

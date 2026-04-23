@@ -4,14 +4,14 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::network_topology_tab::collect_endpoint_rows;
 use super::types::{
-    BoardStatusEntry, FlightState, NetworkTopologyMsg, NetworkTopologyNodeKind,
-    NetworkTopologyStatus, display_flight_state,
+    display_flight_state, BoardStatusEntry, FlightState, NetworkTopologyMsg,
+    NetworkTopologyNodeKind, NetworkTopologyStatus,
 };
 use super::{
-    AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
     compensated_network_time_ms, current_language, current_wallclock_ms, format_network_time,
-    format_timestamp_ms_clock, js_eval, layout::ThemeConfig, localized_copy, monotonic_now_ms,
-    translate_text,
+    format_timestamp_ms_clock, js_eval, layout::ThemeConfig, localized_copy,
+    monotonic_now_ms, translate_text, AlertMsg, FrontendNetworkMetrics, NetworkTimeSync,
+    PersistentNotification,
 };
 
 #[component]
@@ -193,7 +193,6 @@ pub fn DetailedTab(
                         ("WebSocket", metrics_snapshot.ws_url.clone()),
                         ("HTTP RTT", opt_ms(metrics_snapshot.http_rtt_ms)),
                         ("HTTP RTT EMA", opt_ms(metrics_snapshot.http_rtt_ema_ms)),
-                        ("WS epoch", metrics_snapshot.ws_epoch.to_string()),
                     ],
                 )}
                 {metric_card(

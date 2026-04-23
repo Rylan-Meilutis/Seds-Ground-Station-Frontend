@@ -1,4 +1,6 @@
-use super::{builtin_theme_presets, layout::ThemeConfig, localized_copy, set_preferred_language};
+use super::{
+    builtin_theme_presets, js_eval, layout::ThemeConfig, localized_copy, set_preferred_language,
+};
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
 
@@ -12,11 +14,13 @@ pub fn SettingsPage(
     state_chart_labels_vertical: Signal<bool>,
     data_cache_enabled: Signal<bool>,
     map_tile_cache_enabled: Signal<bool>,
+    cache_budget_mb: Signal<u32>,
     map_prefetch_enabled: Signal<bool>,
     map_prefetch_user_radius_m: Signal<u32>,
     map_prefetch_rocket_radius_m: Signal<u32>,
     calibration_capture_sample_count: Signal<usize>,
     storage_breakdown: Vec<(String, String)>,
+    measured_cache_bytes: u64,
     theme: ThemeConfig,
     on_clear_data_cache: EventHandler<()>,
     on_clear_data_and_map_cache: EventHandler<()>,
@@ -39,6 +43,8 @@ pub fn SettingsPage(
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
     let data_cache_enabled_value = *data_cache_enabled.read();
     let map_tile_cache_enabled_value = *map_tile_cache_enabled.read();
+    let cache_budget_mb_value = (*cache_budget_mb.read()).clamp(1, 100_000);
+    let cache_budget_bytes = (cache_budget_mb_value as u64).saturating_mul(1024 * 1024);
     let map_prefetch_enabled_value = *map_prefetch_enabled.read();
     let map_prefetch_user_radius_m_value = *map_prefetch_user_radius_m.read();
     let map_prefetch_rocket_radius_m_value = *map_prefetch_rocket_radius_m.read();
@@ -58,6 +64,29 @@ pub fn SettingsPage(
     };
     let map_prefetch_user_radius_value = radius_to_display(map_prefetch_user_radius_m_value);
     let map_prefetch_rocket_radius_value = radius_to_display(map_prefetch_rocket_radius_m_value);
+    let cache_budget_percent = if cache_budget_bytes > 0 {
+        (measured_cache_bytes as f64 / cache_budget_bytes as f64) * 100.0
+    } else {
+        0.0
+    };
+    let cache_budget_percent_label = format!("{cache_budget_percent:.1}%");
+    let cache_budget_warning = if measured_cache_bytes >= cache_budget_bytes {
+        Some(localized_copy(
+            &language,
+            "Used cache storage is over the configured limit.",
+            "El almacenamiento de cache usado supera el limite configurado.",
+            "Le stockage cache utilise depasse la limite configuree.",
+        ))
+    } else if cache_budget_percent >= 85.0 {
+        Some(localized_copy(
+            &language,
+            "Used cache storage is close to the configured limit.",
+            "El almacenamiento de cache usado esta cerca del limite configurado.",
+            "Le stockage cache utilise approche la limite configuree.",
+        ))
+    } else {
+        None
+    };
 
     let card_style = format!(
         "padding:16px; border-radius:14px; border:1px solid {}; background:{}; display:flex; flex-direction:column; gap:12px;",
@@ -130,6 +159,45 @@ pub fn SettingsPage(
         "Guarda mosaicos del mapa localmente para recargas mas rapidas y recuperacion sin conexion.",
         "Stocke les tuiles localement pour des rechargements plus rapides et la recuperation hors ligne.",
     );
+    let cache_budget_title = localized_copy(
+        &language,
+        "Cache Storage Limit",
+        "Limite de almacenamiento de cache",
+        "Limite de stockage cache",
+    );
+    let cache_budget_desc = localized_copy(
+        &language,
+        "Maximum local storage to use for app data and map tile caches.",
+        "Almacenamiento local maximo para datos de la app y cache de mosaicos.",
+        "Stockage local maximal pour les donnees de l'application et les tuiles.",
+    );
+    let cache_budget_used_label = localized_copy(&language, "Used", "Usado", "Utilise");
+    let prefetch_estimate_title = localized_copy(
+        &language,
+        "Next Map Prefetch Estimate",
+        "Estimacion de la proxima precarga",
+        "Estimation du prochain prechargement",
+    );
+    let prefetch_estimate_waiting = localized_copy(
+        &language,
+        "Waiting for map context.",
+        "Esperando contexto del mapa.",
+        "En attente du contexte carte.",
+    );
+    let prefetch_estimate_user_label = localized_copy(
+        &language,
+        "User radius",
+        "Radio del usuario",
+        "Rayon utilisateur",
+    );
+    let prefetch_estimate_rocket_label = localized_copy(
+        &language,
+        "Rocket radius",
+        "Radio del cohete",
+        "Rayon fusee",
+    );
+    let prefetch_estimate_combined_label =
+        localized_copy(&language, "Combined", "Combinado", "Combine");
     let prefetch_user_radius_title = localized_copy(
         &language,
         "User Prefetch Radius",
@@ -352,6 +420,62 @@ pub fn SettingsPage(
     );
     let theme_presets = builtin_theme_presets();
 
+    use_effect(move || {
+        js_eval(
+            r#"
+            (function() {
+              if (window.__gs26_cache_budget_settings_timer) return;
+              const humanBytes = (bytes) => {
+                const units = ["B", "KiB", "MiB", "GiB"];
+                let value = Math.max(0, Number(bytes) || 0);
+                let unit = 0;
+                while (value >= 1024 && unit + 1 < units.length) {
+                  value /= 1024;
+                  unit += 1;
+                }
+                return `${unit === 0 ? value.toFixed(0) : value.toFixed(2)} ${units[unit]}`;
+              };
+              const update = () => {
+                const root = document.getElementById("gs26-cache-budget-summary");
+                if (!root) return;
+                const budgetBytes = Number(root.dataset.budgetBytes || 0);
+                const measuredBytes = Number(root.dataset.measuredBytes || 0);
+                const estimate = window.__gs26_ground_map_prefetch_estimate || {};
+                const combinedTiles = Number(estimate.combinedTiles || estimate.tiles || 0);
+                const combinedBytes = Number(estimate.combinedEstimatedBytes || estimate.estimatedBytes || 0);
+                const tileBytes = Number(estimate.estimatedTileBytes || 0);
+                const projected = measuredBytes + combinedBytes;
+                const setEstimateText = (id, tiles, bytes) => {
+                  const el = document.getElementById(id);
+                  if (!el) return;
+                  el.textContent = Number(tiles) > 0
+                    ? `${Number(tiles)} tiles x ${humanBytes(tileBytes)} = ${humanBytes(bytes)}`
+                    : el.dataset.waitingText || "Waiting for map context.";
+                };
+                setEstimateText("gs26-prefetch-user-estimate-text", Number(estimate.userTiles || 0), Number(estimate.userEstimatedBytes || 0));
+                setEstimateText("gs26-prefetch-rocket-estimate-text", Number(estimate.rocketTiles || 0), Number(estimate.rocketEstimatedBytes || 0));
+                setEstimateText("gs26-prefetch-combined-estimate-text", combinedTiles, combinedBytes);
+                const warningText = document.getElementById("gs26-prefetch-estimate-warning");
+                if (warningText) {
+                  if (budgetBytes > 0 && combinedBytes > budgetBytes) {
+                    warningText.textContent = "This prefetch is larger than the configured cache limit.";
+                    warningText.style.display = "block";
+                  } else if (budgetBytes > 0 && projected > budgetBytes) {
+                    warningText.textContent = `This prefetch may exceed the cache limit (${humanBytes(projected)} projected).`;
+                    warningText.style.display = "block";
+                  } else {
+                    warningText.textContent = "";
+                    warningText.style.display = "none";
+                  }
+                }
+              };
+              window.__gs26_cache_budget_settings_timer = window.setInterval(update, 500);
+              update();
+            })();
+            "#,
+        );
+    });
+
     rsx! {
         div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
             h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "{title}" }
@@ -518,6 +642,37 @@ pub fn SettingsPage(
                         }
                     }
                 }
+                div {
+                    style: "display:flex; flex-direction:column; gap:6px; margin-top:2px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_estimate_title}" }
+                    div { style: "display:grid; grid-template-columns:minmax(110px, auto) minmax(0, 1fr); gap:4px 12px; align-items:center; max-width:560px;",
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_estimate_user_label}" }
+                        div {
+                            id: "gs26-prefetch-user-estimate-text",
+                            "data-waiting-text": "{prefetch_estimate_waiting}",
+                            style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width:0;",
+                            "{prefetch_estimate_waiting}"
+                        }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_estimate_rocket_label}" }
+                        div {
+                            id: "gs26-prefetch-rocket-estimate-text",
+                            "data-waiting-text": "{prefetch_estimate_waiting}",
+                            style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width:0;",
+                            "{prefetch_estimate_waiting}"
+                        }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_estimate_combined_label}" }
+                        div {
+                            id: "gs26-prefetch-combined-estimate-text",
+                            "data-waiting-text": "{prefetch_estimate_waiting}",
+                            style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width:0;",
+                            "{prefetch_estimate_waiting}"
+                        }
+                    }
+                    div {
+                        id: "gs26-prefetch-estimate-warning",
+                        style: "display:none; font-size:13px; color:{theme.warning_text};",
+                    }
+                }
             }
 
             div { style: "margin-top:12px; {card_style}",
@@ -612,6 +767,39 @@ pub fn SettingsPage(
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_cache_control}" }
                 div { style: "display:flex; flex-direction:column; gap:12px;",
+                    div {
+                        id: "gs26-cache-budget-summary",
+                        "data-budget-bytes": "{cache_budget_bytes}",
+                        "data-measured-bytes": "{measured_cache_bytes}",
+                        style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{cache_budget_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{cache_budget_desc}" }
+                        div { style: "display:flex; align-items:center; gap:8px; flex-wrap:wrap;",
+                            input {
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:160px;",
+                                r#type: "number",
+                                min: "1",
+                                max: "100000",
+                                step: "50",
+                                value: "{cache_budget_mb_value}",
+                                oninput: {
+                                    let mut cache_budget_mb = cache_budget_mb;
+                                    move |e| {
+                                        if let Ok(value) = e.value().trim().parse::<u32>() {
+                                            cache_budget_mb.set(value.clamp(1, 100_000));
+                                        }
+                                    }
+                                }
+                            }
+                            div { style: "font-size:13px; color:{theme.text_secondary};", "MB" }
+                            div { style: "font-size:13px; color:{theme.text_soft};",
+                                "{cache_budget_used_label}: {cache_budget_percent_label}"
+                            }
+                        }
+                        if let Some(warning) = cache_budget_warning.as_ref() {
+                            div { style: "font-size:13px; color:{theme.warning_text};", "{warning}" }
+                        }
+                    }
                     div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{data_cache_title}" }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{data_cache_desc}" }

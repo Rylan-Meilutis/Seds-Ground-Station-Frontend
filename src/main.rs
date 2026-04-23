@@ -5,11 +5,11 @@ mod telemetry_dashboard;
 
 use dioxus::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
-use dioxus_desktop::RequestAsyncResponder;
-#[cfg(not(target_arch = "wasm32"))]
 use dioxus_desktop::tao::window::WindowBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 use dioxus_desktop::wry::http::{Request as HttpRequest, Response as HttpResponse};
+#[cfg(not(target_arch = "wasm32"))]
+use dioxus_desktop::RequestAsyncResponder;
 #[cfg(not(target_arch = "wasm32"))]
 use image::ImageFormat;
 #[cfg(not(target_arch = "wasm32"))]
@@ -17,7 +17,7 @@ use std::backtrace::Backtrace;
 #[cfg(not(target_arch = "wasm32"))]
 use std::borrow::Cow;
 #[cfg(not(target_arch = "wasm32"))]
-use std::fs::{OpenOptions, create_dir_all};
+use std::fs::{create_dir_all, OpenOptions};
 #[cfg(not(target_arch = "wasm32"))]
 use std::hash::{Hash, Hasher};
 #[cfg(not(target_arch = "wasm32"))]
@@ -84,6 +84,14 @@ fn append_native_log(message: &str) {
     let line = format!("[{ts_ms}] {message}\n");
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = file.write_all(line.as_bytes());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn init_rustls_crypto_provider() {
+    match rustls::crypto::aws_lc_rs::default_provider().install_default() {
+        Ok(()) => append_native_log("[startup] rustls crypto provider installed"),
+        Err(_) => append_native_log("[startup] rustls crypto provider already installed"),
     }
 }
 
@@ -169,6 +177,7 @@ fn main() {
 /// Launches the desktop build and wires in the custom tile proxy protocol.
 fn main() {
     init_panic_hook();
+    init_rustls_crypto_provider();
     append_native_log("[startup] native main entered");
     #[cfg(target_os = "android")]
     init_android_platform_tls_verifier();

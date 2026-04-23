@@ -16,17 +16,17 @@ use super::layout::{
 };
 use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
-    ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, FillTargetsConfig, TELEMETRY_RENDER_EPOCH,
-    http_get_json, latest_telemetry_row, latest_telemetry_value, reseed_note_banner,
-    reseed_status_note, translate_text,
+    http_get_json, latest_telemetry_row, latest_telemetry_value, reseed_note_banner, reseed_status_note,
+    translate_text, ActionPolicyMsg, BlinkMode, FillTargetsConfig,
+    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
 };
 
 use crate::telemetry_dashboard::data_chart::{
-    CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
-    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
-    ChartCanvas, ChartRenderChunk, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
-    charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    sender_scoped_chart_key, series_color,
+    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
+    sender_scoped_chart_key, series_color, ChartCanvas, ChartRenderChunk,
+    SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET,
+    CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 
@@ -781,7 +781,7 @@ fn combined_chart_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::{ChartSeriesSpec, chart_key_for_series_spec};
+    use super::{chart_key_for_series_spec, ChartSeriesSpec};
 
     #[test]
     fn chart_series_with_sender_uses_sender_scoped_cache_key() {

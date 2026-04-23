@@ -46,14 +46,14 @@ use dioxus_signals::Signal;
 use errors_tab::ErrorsTab;
 use layout::LayoutConfig;
 use layout_settings_tab::SettingsPage;
-use map_tab::{MapTab, js_update_markers};
+use map_tab::{js_update_markers, MapTab};
 use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
 use types::{
-    BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
-    display_flight_state,
+    display_flight_state, BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg,
+    TelemetryRow,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use version_page::VersionTab;
@@ -61,8 +61,8 @@ use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering}, Arc,
+    Mutex,
 };
 
 use once_cell::sync::Lazy;
@@ -531,7 +531,7 @@ fn fallback_latest_telemetry_value(
 
 #[cfg(test)]
 mod latest_telemetry_tests {
-    use super::{TelemetryRow, latest_telemetry_value, reset_latest_telemetry};
+    use super::{latest_telemetry_value, reset_latest_telemetry, TelemetryRow};
 
     #[test]
     fn derives_latest_loadcell_labels_from_kg1000_samples() {
@@ -572,6 +572,10 @@ struct TelemetryRowsCache {
 
 fn persist_cached_telemetry_rows(rows: &[TelemetryRow]) {
     if !data_cache_enabled() {
+        persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+        return;
+    }
+    if cache_storage_measured_bytes() >= stored_cache_budget_bytes() {
         persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
         return;
     }
@@ -689,6 +693,7 @@ const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertica
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
 const DATA_CACHE_ENABLED_STORAGE_KEY: &str = "gs_data_cache_enabled";
 const MAP_TILE_CACHE_ENABLED_STORAGE_KEY: &str = "gs26_tile_cache_enabled";
+const CACHE_BUDGET_MB_STORAGE_KEY: &str = "gs_cache_budget_mb";
 const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
 const MAP_PREFETCH_USER_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_user_radius_m";
 const MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_rocket_radius_m";
@@ -705,12 +710,32 @@ const MAX_ACTIVE_NOTIFICATIONS: usize = 2;
 const MAX_NOTIFICATION_HISTORY: usize = 500;
 const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
 const TILE_CACHE_STATS_TTL_MS: i64 = 5_000;
+const DEFAULT_CACHE_BUDGET_MB: u32 = 500;
 const DEFAULT_PREFETCH_RADIUS_M: u32 = 1_609;
 const MIN_PREFETCH_RADIUS_M: u32 = 100;
 const MAX_PREFETCH_RADIUS_M: u32 = 20_000;
 
 fn data_cache_enabled() -> bool {
     persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off"
+}
+
+fn stored_cache_budget_mb() -> u32 {
+    persist::get_or(
+        CACHE_BUDGET_MB_STORAGE_KEY,
+        &DEFAULT_CACHE_BUDGET_MB.to_string(),
+    )
+    .parse::<u32>()
+    .ok()
+    .unwrap_or(DEFAULT_CACHE_BUDGET_MB)
+    .clamp(1, 100_000)
+}
+
+fn cache_budget_bytes_from_mb(mb: u32) -> u64 {
+    (mb as u64).saturating_mul(1024 * 1024)
+}
+
+fn stored_cache_budget_bytes() -> u64 {
+    cache_budget_bytes_from_mb(stored_cache_budget_mb())
 }
 
 fn clamp_prefetch_radius_m(value: u32) -> u32 {
@@ -723,6 +748,49 @@ fn stored_prefetch_radius_m(key: &str) -> u32 {
         .ok()
         .map(clamp_prefetch_radius_m)
         .unwrap_or(DEFAULT_PREFETCH_RADIUS_M)
+}
+
+fn cache_storage_measured_bytes() -> u64 {
+    let telemetry_bytes = persist::byte_len(TELEMETRY_CACHE_STORAGE_KEY) as u64;
+    let layout_bytes = persist::byte_len_prefix(LAYOUT_CACHE_KEY_PREFIX) as u64;
+    let calibration_layout_bytes =
+        persist::byte_len_prefix(CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX) as u64;
+    let map_metadata_bytes = persist::byte_len(MAP_MAX_ZOOM_STORAGE_KEY) as u64;
+    let notification_bytes = persist::byte_len(NOTIFICATION_DISMISSED_STORAGE_KEY) as u64;
+    let preference_bytes = [
+        WARNING_ACK_STORAGE_KEY,
+        ERROR_ACK_STORAGE_KEY,
+        MAIN_TAB_STORAGE_KEY,
+        DATA_TAB_STORAGE_KEY,
+        BASE_URL_STORAGE_KEY,
+        MAP_DISTANCE_UNITS_STORAGE_KEY,
+        THEME_PRESET_STORAGE_KEY,
+        LANGUAGE_STORAGE_KEY,
+        NETWORK_FLOW_ANIMATION_STORAGE_KEY,
+        NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY,
+        STATE_CHART_LABELS_VERTICAL_STORAGE_KEY,
+        DATA_CACHE_ENABLED_STORAGE_KEY,
+        MAP_TILE_CACHE_ENABLED_STORAGE_KEY,
+        MAP_PREFETCH_ENABLED_STORAGE_KEY,
+        MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
+        MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY,
+        CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY,
+    ]
+    .iter()
+    .map(|key| persist::byte_len(key) as u64)
+    .sum::<u64>();
+    #[cfg(not(target_arch = "wasm32"))]
+    let tile_bytes = native_tile_cache_stats().0;
+    #[cfg(target_arch = "wasm32")]
+    let tile_bytes = 0u64;
+
+    telemetry_bytes
+        .saturating_add(layout_bytes)
+        .saturating_add(calibration_layout_bytes)
+        .saturating_add(map_metadata_bytes)
+        .saturating_add(notification_bytes)
+        .saturating_add(preference_bytes)
+        .saturating_add(tile_bytes)
 }
 
 fn cache_storage_stats_rows() -> Vec<(String, String)> {
@@ -746,6 +814,7 @@ fn cache_storage_stats_rows() -> Vec<(String, String)> {
         STATE_CHART_LABELS_VERTICAL_STORAGE_KEY,
         DATA_CACHE_ENABLED_STORAGE_KEY,
         MAP_TILE_CACHE_ENABLED_STORAGE_KEY,
+        CACHE_BUDGET_MB_STORAGE_KEY,
         MAP_PREFETCH_ENABLED_STORAGE_KEY,
         MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
         MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY,
@@ -1607,6 +1676,7 @@ pub fn NativeSettingsPage() -> Element {
         use_signal(|| persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_tile_cache_enabled =
         use_signal(|| persist::get_or(MAP_TILE_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
+    let cache_budget_mb = use_signal(stored_cache_budget_mb);
     let map_prefetch_enabled =
         use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
     let map_prefetch_user_radius_m =
@@ -1724,6 +1794,32 @@ pub fn NativeSettingsPage() -> Element {
         });
     }
     {
+        let cache_budget_mb = cache_budget_mb;
+        use_effect(move || {
+            let budget_mb = (*cache_budget_mb.read()).clamp(1, 100_000);
+            let budget_bytes = cache_budget_bytes_from_mb(budget_mb);
+            persist::set_string(CACHE_BUDGET_MB_STORAGE_KEY, &budget_mb.to_string());
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_cache_budget_bytes = {budget_bytes};
+                    if (window.localStorage) {{
+                      window.localStorage.setItem("gs_cache_budget_mb", "{budget_mb}");
+                    }}
+                    const api = window.GS26 || window;
+                    if (typeof api.setCacheBudgetBytes === "function") {{
+                      api.setCacheBudgetBytes({budget_bytes});
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 cache budget sync failed:", e);
+                  }}
+                }})();
+                "#
+            ));
+        });
+    }
+    {
         let map_prefetch_enabled = map_prefetch_enabled;
         use_effect(move || {
             let enabled = *map_prefetch_enabled.read();
@@ -1821,6 +1917,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
         let mut data_cache_enabled = data_cache_enabled;
         let mut map_tile_cache_enabled = map_tile_cache_enabled;
+        let mut cache_budget_mb = cache_budget_mb;
         let mut map_prefetch_enabled = map_prefetch_enabled;
         let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
         let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
@@ -1835,6 +1932,7 @@ pub fn NativeSettingsPage() -> Element {
             state_chart_labels_vertical.set(false);
             data_cache_enabled.set(true);
             map_tile_cache_enabled.set(true);
+            cache_budget_mb.set(DEFAULT_CACHE_BUDGET_MB);
             map_prefetch_enabled.set(true);
             map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
             map_prefetch_rocket_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
@@ -1852,11 +1950,13 @@ pub fn NativeSettingsPage() -> Element {
             state_chart_labels_vertical,
             data_cache_enabled,
             map_tile_cache_enabled,
+            cache_budget_mb,
             map_prefetch_enabled,
             map_prefetch_user_radius_m,
             map_prefetch_rocket_radius_m,
             calibration_capture_sample_count,
             storage_breakdown: cache_storage_stats_rows(),
+            measured_cache_bytes: cache_storage_measured_bytes(),
             theme,
             on_clear_data_cache: move |_| {
                 clear_data_caches_and_reseed();
@@ -2205,8 +2305,8 @@ fn reset_tminus_display_latch() {
 #[cfg(test)]
 mod launch_clock_tests {
     use super::{
-        LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms,
-        monotonic_tminus_display_ms, reset_tminus_display_latch,
+        launch_clock_tminus_remaining_ms, monotonic_tminus_display_ms, reset_tminus_display_latch,
+        LaunchClockKind, LaunchClockMsg,
     };
     use std::sync::Mutex;
 
@@ -2924,6 +3024,7 @@ fn TelemetryDashboardInner() -> Element {
         use_signal(|| persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_tile_cache_enabled =
         use_signal(|| persist::get_or(MAP_TILE_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
+    let cache_budget_mb = use_signal(stored_cache_budget_mb);
     let map_prefetch_enabled =
         use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
     let map_prefetch_user_radius_m =
@@ -2937,6 +3038,33 @@ fn TelemetryDashboardInner() -> Element {
             .unwrap_or(200)
             .clamp(1, 5_000)
     });
+
+    {
+        let cache_budget_mb = cache_budget_mb;
+        use_effect(move || {
+            let budget_mb = (*cache_budget_mb.read()).clamp(1, 100_000);
+            let budget_bytes = cache_budget_bytes_from_mb(budget_mb);
+            persist::set_string(CACHE_BUDGET_MB_STORAGE_KEY, &budget_mb.to_string());
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_cache_budget_bytes = {budget_bytes};
+                    if (window.localStorage) {{
+                      window.localStorage.setItem("gs_cache_budget_mb", "{budget_mb}");
+                    }}
+                    const api = window.GS26 || window;
+                    if (typeof api.setCacheBudgetBytes === "function") {{
+                      api.setCacheBudgetBytes({budget_bytes});
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 cache budget sync failed:", e);
+                  }}
+                }})();
+                "#
+            ));
+        });
+    }
 
     let layout_config = use_signal(|| None::<LayoutConfig>);
     let layout_loading = use_signal(|| true);
@@ -4619,11 +4747,13 @@ fn TelemetryDashboardInner() -> Element {
                             state_chart_labels_vertical: state_chart_labels_vertical,
                             data_cache_enabled: data_cache_enabled,
                             map_tile_cache_enabled: map_tile_cache_enabled,
+                            cache_budget_mb: cache_budget_mb,
                             map_prefetch_enabled: map_prefetch_enabled,
                             map_prefetch_user_radius_m: map_prefetch_user_radius_m,
                             map_prefetch_rocket_radius_m: map_prefetch_rocket_radius_m,
                             calibration_capture_sample_count: calibration_capture_sample_count,
                             storage_breakdown: cache_storage_stats_rows(),
+                            measured_cache_bytes: cache_storage_measured_bytes(),
                             theme: theme.clone(),
                             on_clear_data_cache: move |_| {
                                 clear_data_caches_and_reseed();
@@ -4651,6 +4781,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
                                 let mut data_cache_enabled = data_cache_enabled;
                                 let mut map_tile_cache_enabled = map_tile_cache_enabled;
+                                let mut cache_budget_mb = cache_budget_mb;
                                 let mut map_prefetch_enabled = map_prefetch_enabled;
                                 let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
                                 let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
@@ -4670,6 +4801,7 @@ fn TelemetryDashboardInner() -> Element {
                                     state_chart_labels_vertical.set(false);
                                     data_cache_enabled.set(true);
                                     map_tile_cache_enabled.set(true);
+                                    cache_budget_mb.set(DEFAULT_CACHE_BUDGET_MB);
                                     map_prefetch_enabled.set(true);
                                     map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
                                     map_prefetch_rocket_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);

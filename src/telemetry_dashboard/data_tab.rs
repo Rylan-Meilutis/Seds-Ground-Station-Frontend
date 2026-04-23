@@ -8,15 +8,15 @@ use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::rc::Rc;
 
 use super::data_chart::{
-    CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
-    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
-    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
-    charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color,
+    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
+    charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color, ChartCanvas,
+    SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD,
+    CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
+    CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
 use super::{
-    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value,
-    reseed_note_banner, reseed_status_note, translate_text,
+    latest_telemetry_row, latest_telemetry_value, reseed_note_banner, reseed_status_note,
+    translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
 };
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
@@ -676,7 +676,7 @@ fn chart_series_for_group(
 
 #[cfg(test)]
 mod tests {
-    use super::{DataChartGroup, DataSummaryItem, chart_series_for_group};
+    use super::{chart_series_for_group, DataChartGroup, DataSummaryItem};
 
     #[test]
     fn inferred_chart_series_preserves_summary_sender_id() {
