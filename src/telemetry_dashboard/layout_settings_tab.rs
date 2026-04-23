@@ -11,9 +11,15 @@ pub fn SettingsPage(
     network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
     map_prefetch_enabled: Signal<bool>,
+    map_prefetch_user_radius_m: Signal<u32>,
+    map_prefetch_rocket_radius_m: Signal<u32>,
     calibration_capture_sample_count: Signal<usize>,
+    storage_breakdown: Vec<(String, String)>,
     theme: ThemeConfig,
-    on_clear_cache: EventHandler<()>,
+    on_clear_data_cache: EventHandler<()>,
+    on_clear_data_and_map_cache: EventHandler<()>,
+    on_clear_all_caches: EventHandler<()>,
+    on_prefetch_map_tiles: EventHandler<()>,
     on_reset_app_data: EventHandler<()>,
     #[props(default)] title: Option<String>,
 ) -> Element {
@@ -30,6 +36,8 @@ pub fn SettingsPage(
     let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
     let map_prefetch_enabled_value = *map_prefetch_enabled.read();
+    let map_prefetch_user_radius_value = *map_prefetch_user_radius_m.read();
+    let map_prefetch_rocket_radius_value = *map_prefetch_rocket_radius_m.read();
     let calibration_capture_sample_count_value = *calibration_capture_sample_count.read();
 
     let card_style = format!(
@@ -53,6 +61,12 @@ pub fn SettingsPage(
     let section_calibration =
         localized_copy(&language, "Calibration", "Calibracion", "Calibration");
     let section_storage = localized_copy(&language, "Storage", "Almacenamiento", "Stockage");
+    let storage_breakdown_title = localized_copy(
+        &language,
+        "Used Storage",
+        "Almacenamiento usado",
+        "Stockage utilise",
+    );
     let prefetch_title = localized_copy(
         &language,
         "Map Prefetch",
@@ -67,6 +81,24 @@ pub fn SettingsPage(
     );
     let prefetch_on = localized_copy(&language, "Enabled", "Activado", "Active");
     let prefetch_off = localized_copy(&language, "Disabled", "Desactivado", "Desactive");
+    let prefetch_user_radius_title = localized_copy(
+        &language,
+        "User Prefetch Radius",
+        "Radio de precarga del usuario",
+        "Rayon de prechargement utilisateur",
+    );
+    let prefetch_rocket_radius_title = localized_copy(
+        &language,
+        "Rocket Prefetch Radius",
+        "Radio de precarga del cohete",
+        "Rayon de prechargement fusee",
+    );
+    let prefetch_radius_desc = localized_copy(
+        &language,
+        "Meters of map tiles to grab around each location.",
+        "Metros de mosaicos a capturar alrededor de cada ubicacion.",
+        "Metres de tuiles a recuperer autour de chaque position.",
+    );
     let calibration_samples_title = localized_copy(
         &language,
         "Capture Sample Count",
@@ -161,15 +193,57 @@ pub fn SettingsPage(
     );
     let chart_labels_side = localized_copy(&language, "Side Rail", "Riel lateral", "Rail lateral");
     let chart_labels_vertical = localized_copy(&language, "Vertical", "Vertical", "Vertical");
-    let clear_cache_title =
+    let clear_data_cache_title =
         localized_copy(&language, "Clear Cache", "Limpiar cache", "Vider le cache");
+    let clear_data_map_cache_title = localized_copy(
+        &language,
+        "Clear Cache and Map Tiles",
+        "Limpiar cache y mosaicos",
+        "Vider cache et tuiles",
+    );
+    let clear_all_caches_title = localized_copy(
+        &language,
+        "Clear All Caches",
+        "Limpiar todos los caches",
+        "Vider tous les caches",
+    );
     let clear_cache_done_title =
         localized_copy(&language, "Cache Cleared", "Cache limpiada", "Cache vide");
-    let clear_cache_desc = localized_copy(
+    let clear_data_cache_desc = localized_copy(
         &language,
-        "Clears frontend data caches and cached map tiles without removing login or saved preferences.",
-        "Limpia los caches de datos y los mosaicos del mapa sin borrar el inicio de sesion ni las preferencias guardadas.",
-        "Efface les caches de donnees et les tuiles de carte sans supprimer la session ni les preferences enregistrees.",
+        "Clears telemetry, chart, and runtime data caches without removing map tiles or layout cache.",
+        "Limpia telemetria, graficas y caches de datos sin borrar mosaicos ni layout.",
+        "Efface les caches de telemetrie, graphes et donnees sans supprimer les tuiles ni la disposition.",
+    );
+    let clear_data_map_cache_desc = localized_copy(
+        &language,
+        "Clears data caches and cached map tiles without removing layout cache.",
+        "Limpia caches de datos y mosaicos del mapa sin borrar el layout.",
+        "Efface les caches de donnees et les tuiles de carte sans supprimer la disposition.",
+    );
+    let clear_all_caches_desc = localized_copy(
+        &language,
+        "Clears data caches, cached map tiles, and cached layout files.",
+        "Limpia datos, mosaicos del mapa y layouts en cache.",
+        "Efface les donnees, les tuiles de carte et les dispositions en cache.",
+    );
+    let prefetch_now_title = localized_copy(
+        &language,
+        "Prefetch Map Tiles",
+        "Precargar mosaicos",
+        "Precharger les tuiles",
+    );
+    let prefetch_now_desc = localized_copy(
+        &language,
+        "Manually queues map tile prefetch for the current map area, user, and rocket context.",
+        "Pone en cola la precarga de mosaicos para el mapa actual, usuario y cohete.",
+        "Lance manuellement le prechargement des tuiles autour de la carte, utilisateur et fusee.",
+    );
+    let prefetch_started_label = localized_copy(
+        &language,
+        "Map tile prefetch queued.",
+        "Precarga de mosaicos en cola.",
+        "Prechargement des tuiles lance.",
     );
     let reset_app_data_title = localized_copy(
         &language,
@@ -329,6 +403,48 @@ pub fn SettingsPage(
                         }
                     }
                 }
+                div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:10px;",
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_user_radius_title}" }
+                        div { style: "font-size:12px; color:{theme.text_soft};", "{prefetch_radius_desc}" }
+                        input {
+                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:160px;",
+                            r#type: "number",
+                            min: "100",
+                            max: "20000",
+                            step: "100",
+                            value: "{map_prefetch_user_radius_value}",
+                            oninput: {
+                                let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
+                                move |e| {
+                                    if let Ok(value) = e.value().trim().parse::<u32>() {
+                                        map_prefetch_user_radius_m.set(value.clamp(100, 20_000));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_rocket_radius_title}" }
+                        div { style: "font-size:12px; color:{theme.text_soft};", "{prefetch_radius_desc}" }
+                        input {
+                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:160px;",
+                            r#type: "number",
+                            min: "100",
+                            max: "20000",
+                            step: "100",
+                            value: "{map_prefetch_rocket_radius_value}",
+                            oninput: {
+                                let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
+                                move |e| {
+                                    if let Ok(value) = e.value().trim().parse::<u32>() {
+                                        map_prefetch_rocket_radius_m.set(value.clamp(100, 20_000));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             div { style: "margin-top:12px; {card_style}",
@@ -408,21 +524,80 @@ pub fn SettingsPage(
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_storage}" }
                 div { style: "display:flex; flex-direction:column; gap:12px;",
+                    div { style: "display:flex; flex-direction:column; gap:8px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{storage_breakdown_title}" }
+                        div { style: "display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:6px 14px; align-items:center; max-width:520px;",
+                            for (label, value) in storage_breakdown.iter() {
+                                div { style: "font-size:13px; color:{theme.text_soft}; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{label}" }
+                                div { style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align:right;", "{value}" }
+                            }
+                        }
+                    }
                     div { style: "display:flex; flex-direction:column; gap:6px;",
-                        div { style: "font-size:13px; color:{theme.text_muted};", "{clear_cache_title}" }
-                        div { style: "font-size:13px; color:{theme.text_soft};", "{clear_cache_desc}" }
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{clear_data_cache_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{clear_data_cache_desc}" }
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: chip_idle.clone(),
+                                onclick: {
+                                    let cache_cleared_label = cache_cleared_label.clone();
+                                    move |_| {
+                                        on_clear_data_cache.call(());
+                                        maintenance_status.set(cache_cleared_label.clone());
+                                        confirm_reset.set(false);
+                                    }
+                                },
+                                if maintenance_status.read().as_str() == cache_cleared_label.as_str() {
+                                    "{clear_cache_done_title}"
+                                } else {
+                                    "{clear_data_cache_title}"
+                                }
+                            }
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{clear_data_map_cache_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{clear_data_map_cache_desc}" }
+                        button {
+                            style: chip_idle.clone(),
+                            onclick: {
+                                let cache_cleared_label = cache_cleared_label.clone();
+                                move |_| {
+                                    on_clear_data_and_map_cache.call(());
+                                    maintenance_status.set(cache_cleared_label.clone());
+                                    confirm_reset.set(false);
+                                }
+                            },
+                            "{clear_data_map_cache_title}"
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{clear_all_caches_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{clear_all_caches_desc}" }
+                        button {
+                            style: chip_idle.clone(),
+                            onclick: {
+                                let cache_cleared_label = cache_cleared_label.clone();
+                                move |_| {
+                                    on_clear_all_caches.call(());
+                                    maintenance_status.set(cache_cleared_label.clone());
+                                    confirm_reset.set(false);
+                                }
+                            },
+                            "{clear_all_caches_title}"
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_now_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_now_desc}" }
                         button {
                             style: chip_idle.clone(),
                             onclick: move |_| {
-                                on_clear_cache.call(());
-                                maintenance_status.set(cache_cleared_label.clone());
+                                on_prefetch_map_tiles.call(());
+                                maintenance_status.set(prefetch_started_label.clone());
                                 confirm_reset.set(false);
                             },
-                            if maintenance_status.read().as_str() == cache_cleared_label.as_str() {
-                                "{clear_cache_done_title}"
-                            } else {
-                                "{clear_cache_title}"
-                            }
+                            "{prefetch_now_title}"
                         }
                     }
                     div { style: "display:flex; flex-direction:column; gap:6px;",

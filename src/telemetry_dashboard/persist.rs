@@ -102,6 +102,41 @@ pub fn get_or(key: &str, default: &str) -> String {
     get_string(key).unwrap_or_else(|| default.to_string())
 }
 
+/// Returns the UTF-8 byte size of a persisted string value.
+pub fn byte_len(key: &str) -> usize {
+    get_string(key).map(|value| value.len()).unwrap_or(0)
+}
+
+/// Returns the combined UTF-8 byte size of values whose keys share a prefix.
+pub fn byte_len_prefix(prefix: &str) -> usize {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use web_sys::window;
+        let Some(w) = window() else {
+            return 0;
+        };
+        let Ok(Some(ls)) = w.local_storage() else {
+            return 0;
+        };
+        let len = ls.length().ok().unwrap_or(0);
+        let mut total = 0usize;
+        for idx in 0..len {
+            if let Ok(Some(key)) = ls.key(idx)
+                && key.starts_with(prefix)
+                && let Ok(Some(value)) = ls.get_item(&key)
+            {
+                total = total.saturating_add(value.len());
+            }
+        }
+        total
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        native::byte_len_prefix(prefix).ok().unwrap_or(0)
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::collections::HashMap;
@@ -192,6 +227,16 @@ mod native {
         map.retain(|key, _| !key.starts_with(prefix));
         save_map(&map)?;
         Ok(())
+    }
+
+    /// Sums persisted value sizes for keys that share a prefix.
+    pub fn byte_len_prefix(prefix: &str) -> Result<usize, io::Error> {
+        let map = load_map()?;
+        Ok(map
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .map(|(_, value)| value.len())
+            .sum())
     }
 
     /// Removes the native persistence file entirely.

@@ -1476,30 +1476,39 @@ pub fn Connect() -> Element {
                         ),
                         div {
                             style: format!(
-                                "position:relative; flex:0 0 118px; border-right:1px solid {}; background:{};",
+                                "flex:0 0 136px; border-right:1px solid {}; background:{}; padding:4px; display:grid; grid-template-columns:1fr 1fr; gap:4px;",
                                 theme.border, theme.panel_background
                             ),
-                            select {
+                            button {
+                                r#type: "button",
                                 style: format!(
-                                    "width:100%; height:100%; padding:0 30px 0 14px; border:none; border-radius:0; background:transparent; color:{}; appearance:none; -webkit-appearance:none; font-size:14px; outline:none; cursor:pointer;",
+                                    "min-width:0; height:100%; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; cursor:pointer;",
+                                    if scheme_edit() == "https://" { theme.info_accent.as_str() } else { theme.button_border.as_str() },
+                                    if scheme_edit() == "https://" { theme.info_background.as_str() } else { "transparent" },
                                     theme.text_primary
                                 ),
-                                value: "{scheme_edit()}",
-                                onchange: move |evt| {
-                                    scheme_edit.set(evt.value());
+                                onclick: move |_| {
+                                    scheme_edit.set("https://".to_string());
                                     test_status.set(String::new());
                                     test_report.set(None);
                                 },
-                                option { value: "https://", "https" },
-                                option { value: "http://", "http" },
-                            },
-                            div {
+                                "https"
+                            }
+                            button {
+                                r#type: "button",
                                 style: format!(
-                                    "position:absolute; right:12px; top:50%; transform:translateY(-50%); color:{}; font-size:11px; pointer-events:none;",
-                                    theme.text_muted
+                                    "min-width:0; height:100%; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; cursor:pointer;",
+                                    if scheme_edit() == "http://" { theme.info_accent.as_str() } else { theme.button_border.as_str() },
+                                    if scheme_edit() == "http://" { theme.info_background.as_str() } else { "transparent" },
+                                    theme.text_primary
                                 ),
-                                "▼"
-                            },
+                                onclick: move |_| {
+                                    scheme_edit.set("http://".to_string());
+                                    test_status.set(String::new());
+                                    test_report.set(None);
+                                },
+                                "http"
+                            }
                         },
 
                         input {

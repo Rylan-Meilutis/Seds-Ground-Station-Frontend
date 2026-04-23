@@ -46,7 +46,7 @@ use dioxus_signals::Signal;
 use errors_tab::ErrorsTab;
 use layout::LayoutConfig;
 use layout_settings_tab::SettingsPage;
-use map_tab::MapTab;
+use map_tab::{MapTab, js_update_markers};
 use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
@@ -564,12 +564,23 @@ pub(crate) fn ui_telemetry_rows_snapshot() -> Vec<TelemetryRow> {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct TelemetryRowsCache {
+    base_url: String,
+    rows: Vec<TelemetryRow>,
+}
+
 fn persist_cached_telemetry_rows(rows: &[TelemetryRow]) {
     if rows.is_empty() {
+        persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
         return;
     }
     let start = rows.len().saturating_sub(TELEMETRY_CACHE_MAX_ROWS);
-    if let Ok(raw) = serde_json::to_string(&rows[start..]) {
+    let cache = TelemetryRowsCache {
+        base_url: normalize_base_url(UrlConfig::base_http()),
+        rows: rows[start..].to_vec(),
+    };
+    if let Ok(raw) = serde_json::to_string(&cache) {
         persist::set_string(TELEMETRY_CACHE_STORAGE_KEY, &raw);
     }
 }
@@ -598,9 +609,15 @@ fn restore_cached_telemetry_rows_if_needed() -> usize {
     let Some(raw) = persist::get_string(TELEMETRY_CACHE_STORAGE_KEY) else {
         return 0;
     };
-    let Ok(mut rows) = serde_json::from_str::<Vec<TelemetryRow>>(&raw) else {
+    let Ok(cache) = serde_json::from_str::<TelemetryRowsCache>(&raw) else {
+        persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
         return 0;
     };
+    if normalize_base_url(cache.base_url) != normalize_base_url(UrlConfig::base_http()) {
+        persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+        return 0;
+    }
+    let mut rows = cache.rows;
     if rows.is_empty() {
         return 0;
     }
@@ -658,6 +675,8 @@ const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
 const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertical";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
 const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
+const MAP_PREFETCH_USER_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_user_radius_m";
+const MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_rocket_radius_m";
 const CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY: &str = "gs_calibration_capture_sample_count";
 const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v9_";
 const CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX: &str = "gs_calibration_visibility_v1_";
@@ -669,13 +688,145 @@ const TELEMETRY_CACHE_WRITE_INTERVAL_MS: i64 = 2_500;
 const NOTIFICATION_AUTO_DISMISS_MS: u32 = 5_000;
 const MAX_ACTIVE_NOTIFICATIONS: usize = 2;
 const MAX_NOTIFICATION_HISTORY: usize = 500;
+const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
+const DEFAULT_PREFETCH_RADIUS_M: u32 = 1_609;
+const MIN_PREFETCH_RADIUS_M: u32 = 100;
+const MAX_PREFETCH_RADIUS_M: u32 = 20_000;
+
+fn clamp_prefetch_radius_m(value: u32) -> u32 {
+    value.clamp(MIN_PREFETCH_RADIUS_M, MAX_PREFETCH_RADIUS_M)
+}
+
+fn stored_prefetch_radius_m(key: &str) -> u32 {
+    persist::get_or(key, &DEFAULT_PREFETCH_RADIUS_M.to_string())
+        .parse::<u32>()
+        .ok()
+        .map(clamp_prefetch_radius_m)
+        .unwrap_or(DEFAULT_PREFETCH_RADIUS_M)
+}
+
+fn cache_storage_stats_rows() -> Vec<(String, String)> {
+    let telemetry_bytes = persist::byte_len(TELEMETRY_CACHE_STORAGE_KEY) as u64;
+    let layout_bytes = persist::byte_len_prefix(LAYOUT_CACHE_KEY_PREFIX) as u64;
+    let calibration_layout_bytes =
+        persist::byte_len_prefix(CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX) as u64;
+    let map_metadata_bytes = persist::byte_len(MAP_MAX_ZOOM_STORAGE_KEY) as u64;
+    let notification_bytes = persist::byte_len(NOTIFICATION_DISMISSED_STORAGE_KEY) as u64;
+    let preference_bytes = [
+        WARNING_ACK_STORAGE_KEY,
+        ERROR_ACK_STORAGE_KEY,
+        MAIN_TAB_STORAGE_KEY,
+        DATA_TAB_STORAGE_KEY,
+        BASE_URL_STORAGE_KEY,
+        MAP_DISTANCE_UNITS_STORAGE_KEY,
+        THEME_PRESET_STORAGE_KEY,
+        LANGUAGE_STORAGE_KEY,
+        NETWORK_FLOW_ANIMATION_STORAGE_KEY,
+        NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY,
+        STATE_CHART_LABELS_VERTICAL_STORAGE_KEY,
+        MAP_PREFETCH_ENABLED_STORAGE_KEY,
+        MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
+        MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY,
+        CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY,
+    ]
+    .iter()
+    .map(|key| persist::byte_len(key) as u64)
+    .sum::<u64>();
+    #[cfg(not(target_arch = "wasm32"))]
+    let (tile_bytes, tile_files) = native_tile_cache_stats();
+    #[cfg(target_arch = "wasm32")]
+    let (tile_bytes, tile_files) = (0u64, 0u64);
+
+    let total = telemetry_bytes
+        .saturating_add(layout_bytes)
+        .saturating_add(calibration_layout_bytes)
+        .saturating_add(map_metadata_bytes)
+        .saturating_add(notification_bytes)
+        .saturating_add(preference_bytes)
+        .saturating_add(tile_bytes);
+    vec![
+        (
+            "Telemetry data cache".to_string(),
+            human_bytes_u64(telemetry_bytes),
+        ),
+        ("Layout cache".to_string(), human_bytes_u64(layout_bytes)),
+        (
+            "Calibration tab cache".to_string(),
+            human_bytes_u64(calibration_layout_bytes),
+        ),
+        (
+            "Notification cache".to_string(),
+            human_bytes_u64(notification_bytes),
+        ),
+        (
+            "Settings cache".to_string(),
+            human_bytes_u64(preference_bytes),
+        ),
+        (
+            "Map metadata cache".to_string(),
+            human_bytes_u64(map_metadata_bytes),
+        ),
+        (
+            "Map tile cache".to_string(),
+            if tile_files > 0 {
+                format!("{} / {} files", human_bytes_u64(tile_bytes), tile_files)
+            } else {
+                human_bytes_u64(tile_bytes)
+            },
+        ),
+        ("Measured total".to_string(), human_bytes_u64(total)),
+    ]
+}
+
+fn human_bytes_u64(bytes: u64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit + 1 < units.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value:.0} {}", units[unit])
+    } else {
+        format!("{value:.2} {}", units[unit])
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_tile_cache_stats() -> (u64, u64) {
+    fn walk(path: &std::path::Path) -> (u64, u64) {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return (0, 0);
+        };
+        let mut bytes = 0u64;
+        let mut files = 0u64;
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                let (child_bytes, child_files) = walk(&entry_path);
+                bytes = bytes.saturating_add(child_bytes);
+                files = files.saturating_add(child_files);
+            } else if metadata.is_file() {
+                bytes = bytes.saturating_add(metadata.len());
+                files = files.saturating_add(1);
+            }
+        }
+        (bytes, files)
+    }
+
+    walk(&std::env::temp_dir().join("gs26-tile-cache"))
+}
 
 fn clear_cached_layout_configs() {
     persist::remove_prefix(LAYOUT_CACHE_KEY_PREFIX);
     persist::remove_prefix(CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX);
+    persist::_remove(MAP_MAX_ZOOM_STORAGE_KEY);
 }
 
-#[cfg(target_arch = "wasm32")]
 fn clear_browser_tile_and_data_caches() {
     js_eval(
         r#"
@@ -687,12 +838,21 @@ fn clear_browser_tile_and_data_caches() {
             if (typeof window !== "undefined") {
               window.__gs26_ground_map_cache_state = { key: "", state: "idle", pending: 0, completed: 0, failed: 0, lastStartedAt: 0, lastCompletedAt: 0 };
               window.__gs26_ground_map_cache_ready = false;
+              window.__gs26_ground_map_max_zoom_json = "";
+              if (window.localStorage) {
+                window.localStorage.removeItem("gs26_ground_map_max_zoom_v1");
+              }
+              if (typeof window.clearGroundMapTileCaches === "function") {
+                await window.clearGroundMapTileCaches();
+              } else if (window.GS26 && typeof window.GS26.clearGroundMapTileCaches === "function") {
+                await window.GS26.clearGroundMapTileCaches();
+              }
             }
             if (typeof caches !== "undefined" && typeof caches.keys === "function") {
               const keys = await caches.keys();
               await Promise.all(
                 keys
-                  .filter((key) => key.startsWith("gs26-tiles-v1:"))
+                  .filter((key) => key.startsWith("gs26-tiles-v1:") || key.startsWith("gs26-tiles-v2:"))
                   .map((key) => caches.delete(key))
               );
             }
@@ -710,20 +870,28 @@ fn clear_native_tile_cache() {
     let _ = std::fs::remove_dir_all(path);
 }
 
-fn clear_frontend_caches() {
+fn clear_frontend_data_caches() {
     charts_cache_clear_active();
-    clear_cached_layout_configs();
+    clear_telemetry_runtime_buffers();
+    clear_visible_telemetry_history_without_bridge();
     #[cfg(not(target_arch = "wasm32"))]
     {
-        clear_telemetry_runtime_buffers();
-        clear_visible_telemetry_history();
         reset_frontend_network_metrics_state();
+    }
+}
+
+fn clear_map_tile_caches() {
+    clear_browser_tile_and_data_caches();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
         clear_native_tile_cache();
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        clear_browser_tile_and_data_caches();
-    }
+}
+
+fn clear_frontend_caches() {
+    clear_frontend_data_caches();
+    clear_map_tile_caches();
+    clear_cached_layout_configs();
 }
 
 fn trigger_map_prefetch_now() {
@@ -731,8 +899,10 @@ fn trigger_map_prefetch_now() {
         r#"
         (function() {
           try {
-            if (typeof window.scheduleHighResTilePrefetch === "function") {
-              window.scheduleHighResTilePrefetch();
+            if (typeof window.prefetchGroundMapTiles === "function") {
+              window.prefetchGroundMapTiles();
+            } else if (typeof window.scheduleHighResTilePrefetch === "function") {
+              window.scheduleHighResTilePrefetch({ force: true });
             }
           } catch (e) {
             console.warn("GS26 prefetch trigger failed:", e);
@@ -742,12 +912,26 @@ fn trigger_map_prefetch_now() {
     );
 }
 
-fn clear_frontend_caches_and_reseed() {
+fn clear_data_caches_and_reseed() {
+    clear_frontend_data_caches();
+    set_reseed_status_running();
+    charts_cache_request_refit();
+    reconnect_and_reload_ui();
+}
+
+fn clear_data_and_map_tile_caches_and_reseed() {
+    clear_frontend_data_caches();
+    clear_map_tile_caches();
+    set_reseed_status_running();
+    charts_cache_request_refit();
+    reconnect_and_reload_ui();
+}
+
+fn clear_all_frontend_caches_and_reseed() {
     clear_frontend_caches();
     set_reseed_status_running();
     charts_cache_request_refit();
     reconnect_and_reload_ui();
-    trigger_map_prefetch_now();
 }
 
 fn reset_local_app_data() {
@@ -1384,6 +1568,10 @@ pub fn NativeSettingsPage() -> Element {
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
     let map_prefetch_enabled =
         use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
+    let map_prefetch_user_radius_m =
+        use_signal(|| stored_prefetch_radius_m(MAP_PREFETCH_USER_RADIUS_STORAGE_KEY));
+    let map_prefetch_rocket_radius_m =
+        use_signal(|| stored_prefetch_radius_m(MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY));
     let calibration_capture_sample_count = use_signal(|| {
         persist::get_or(CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY, "200")
             .parse::<usize>()
@@ -1481,6 +1669,37 @@ pub fn NativeSettingsPage() -> Element {
         });
     }
     {
+        let map_prefetch_user_radius_m = map_prefetch_user_radius_m;
+        let map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
+        use_effect(move || {
+            let user_radius = clamp_prefetch_radius_m(*map_prefetch_user_radius_m.read());
+            let rocket_radius = clamp_prefetch_radius_m(*map_prefetch_rocket_radius_m.read());
+            persist::set_string(
+                MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
+                &user_radius.to_string(),
+            );
+            persist::set_string(
+                MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY,
+                &rocket_radius.to_string(),
+            );
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_prefetch_user_radius_m = {user_radius};
+                    window.__gs26_prefetch_rocket_radius_m = {rocket_radius};
+                    if (typeof window.scheduleHighResTilePrefetch === "function") {{
+                      window.scheduleHighResTilePrefetch({{ force: true }});
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 prefetch radius sync failed:", e);
+                  }}
+                }})();
+                "#
+            ));
+        });
+    }
+    {
         let calibration_capture_sample_count = calibration_capture_sample_count;
         use_effect(move || {
             let count = (*calibration_capture_sample_count.read()).clamp(1, 5_000);
@@ -1517,6 +1736,8 @@ pub fn NativeSettingsPage() -> Element {
         let mut network_topology_vertical = network_topology_vertical;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
         let mut map_prefetch_enabled = map_prefetch_enabled;
+        let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
+        let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
         let mut calibration_capture_sample_count = calibration_capture_sample_count;
         move |_| {
             reset_local_app_data();
@@ -1527,6 +1748,8 @@ pub fn NativeSettingsPage() -> Element {
             network_topology_vertical.set(false);
             state_chart_labels_vertical.set(false);
             map_prefetch_enabled.set(true);
+            map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
+            map_prefetch_rocket_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
             calibration_capture_sample_count.set(200);
         }
     };
@@ -1540,10 +1763,22 @@ pub fn NativeSettingsPage() -> Element {
             network_topology_vertical,
             state_chart_labels_vertical,
             map_prefetch_enabled,
+            map_prefetch_user_radius_m,
+            map_prefetch_rocket_radius_m,
             calibration_capture_sample_count,
+            storage_breakdown: cache_storage_stats_rows(),
             theme,
-            on_clear_cache: move |_| {
-                clear_frontend_caches_and_reseed();
+            on_clear_data_cache: move |_| {
+                clear_data_caches_and_reseed();
+            },
+            on_clear_data_and_map_cache: move |_| {
+                clear_data_and_map_tile_caches_and_reseed();
+            },
+            on_clear_all_caches: move |_| {
+                clear_all_frontend_caches_and_reseed();
+            },
+            on_prefetch_map_tiles: move |_| {
+                trigger_map_prefetch_now();
             },
             on_reset_app_data,
             title,
@@ -2291,8 +2526,12 @@ impl UrlConfig {
     /// Normalizes and persists the backend base URL selected by the operator.
     pub fn set_base_url_and_persist(url: String) {
         let clean = normalize_base_url(url);
+        let previous = normalize_base_url(UrlConfig::base_http());
         *BASE_URL.write() = clean.clone();
         persist::set_string(BASE_URL_STORAGE_KEY, &clean);
+        if !previous.trim().is_empty() && previous != clean {
+            clear_frontend_caches();
+        }
     }
 
     /// Returns the stored backend base URL when one exists.
@@ -2453,7 +2692,7 @@ fn clear_telemetry_runtime_buffers() {
     }
 }
 
-fn clear_visible_telemetry_history() {
+fn clear_visible_telemetry_history_preserving_bridge() {
     let snapshot = ui_telemetry_rows_snapshot();
     if let Ok(mut bridge) = RESEED_HISTORY_BRIDGE.lock() {
         if let Some(last) = snapshot.last() {
@@ -2466,19 +2705,34 @@ fn clear_visible_telemetry_history() {
             bridge.clear();
         }
     }
+    clear_visible_telemetry_history_without_bridge();
+}
+
+fn clear_visible_telemetry_history_without_bridge() {
+    if let Ok(mut bridge) = RESEED_HISTORY_BRIDGE.lock() {
+        bridge.clear();
+    }
+    if let Ok(mut live) = RESEED_LIVE_BUFFER.lock() {
+        live.clear();
+    }
     if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
         store.replace_from_rows(&[]);
     }
     persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
     LAST_TELEMETRY_CACHE_PERSIST_MS.store(0, Ordering::Relaxed);
     reset_latest_telemetry(&[]);
+    clear_map_rocket_marker();
     charts_cache_clear_active();
     bump_render_epoch();
 }
 
+fn clear_map_rocket_marker() {
+    js_update_markers(f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+}
+
 pub fn hard_reload_dashboard_data() {
     clear_telemetry_runtime_buffers();
-    clear_visible_telemetry_history();
+    clear_visible_telemetry_history_preserving_bridge();
     set_reseed_status_running();
     #[cfg(not(target_arch = "wasm32"))]
     charts_cache_request_refit();
@@ -2578,6 +2832,10 @@ fn TelemetryDashboardInner() -> Element {
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
     let map_prefetch_enabled =
         use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
+    let map_prefetch_user_radius_m =
+        use_signal(|| stored_prefetch_radius_m(MAP_PREFETCH_USER_RADIUS_STORAGE_KEY));
+    let map_prefetch_rocket_radius_m =
+        use_signal(|| stored_prefetch_radius_m(MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY));
     let calibration_capture_sample_count = use_signal(|| {
         persist::get_or(CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY, "200")
             .parse::<usize>()
@@ -2768,9 +3026,13 @@ fn TelemetryDashboardInner() -> Element {
     {
         let rocket_gps = rocket_gps;
         let user_gps = user_gps;
+        let map_prefetch_user_radius_m = map_prefetch_user_radius_m;
+        let map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
         use_effect(move || {
             let tiles_url = map_tiles_url();
             let tiles_js = serde_json::to_string(&tiles_url).unwrap_or_else(|_| "\"\"".to_string());
+            let user_radius = clamp_prefetch_radius_m(*map_prefetch_user_radius_m.read());
+            let rocket_radius = clamp_prefetch_radius_m(*map_prefetch_rocket_radius_m.read());
             let coord_js = |value: Option<(f64, f64)>| -> (String, String) {
                 if let Some((lat, lon)) = value
                     && lat.is_finite()
@@ -2786,6 +3048,8 @@ fn TelemetryDashboardInner() -> Element {
                 r#"
                 (function() {{
                   try {{
+                    window.__gs26_prefetch_user_radius_m = {user_radius};
+                    window.__gs26_prefetch_rocket_radius_m = {rocket_radius};
                     if (typeof window.setGroundMapPrefetchContext === "function") {{
                       window.setGroundMapPrefetchContext(
                         {tiles_js},
@@ -2804,6 +3068,8 @@ fn TelemetryDashboardInner() -> Element {
                 }})();
                 "#,
                 tiles_js = tiles_js,
+                user_radius = user_radius,
+                rocket_radius = rocket_radius,
                 rocket_lat = rocket_lat,
                 rocket_lon = rocket_lon,
                 user_lat = user_lat,
@@ -3074,6 +3340,37 @@ fn TelemetryDashboardInner() -> Element {
         });
     }
     {
+        let map_prefetch_user_radius_m = map_prefetch_user_radius_m;
+        let map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
+        use_effect(move || {
+            let user_radius = clamp_prefetch_radius_m(*map_prefetch_user_radius_m.read());
+            let rocket_radius = clamp_prefetch_radius_m(*map_prefetch_rocket_radius_m.read());
+            persist::set_string(
+                MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
+                &user_radius.to_string(),
+            );
+            persist::set_string(
+                MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY,
+                &rocket_radius.to_string(),
+            );
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_prefetch_user_radius_m = {user_radius};
+                    window.__gs26_prefetch_rocket_radius_m = {rocket_radius};
+                    if (typeof window.scheduleHighResTilePrefetch === "function") {{
+                      window.scheduleHighResTilePrefetch({{ force: true }});
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 prefetch radius sync failed:", e);
+                  }}
+                }})();
+                "#
+            ));
+        });
+    }
+    {
         let calibration_capture_sample_count = calibration_capture_sample_count;
         use_effect(move || {
             let count = (*calibration_capture_sample_count.read()).clamp(1, 5_000);
@@ -3272,9 +3569,11 @@ fn TelemetryDashboardInner() -> Element {
     // ------------------------------------------------------------------------
     {
         let alive = alive.clone();
+        let rocket_gps_flush = rocket_gps;
 
         use_effect(move || {
             let alive = alive.clone();
+            let mut rocket_gps_flush = rocket_gps_flush;
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
@@ -3310,6 +3609,13 @@ fn TelemetryDashboardInner() -> Element {
 
                     if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
                         store.apply_rows(drained);
+                    }
+                    if let Some(gps) = ui_telemetry_rows_snapshot()
+                        .iter()
+                        .rev()
+                        .find_map(row_to_gps)
+                    {
+                        rocket_gps_flush.set(Some(gps));
                     }
                     persist_cached_telemetry_snapshot_if_due(false);
                 }
@@ -4175,10 +4481,22 @@ fn TelemetryDashboardInner() -> Element {
                             network_topology_vertical: network_topology_vertical,
                             state_chart_labels_vertical: state_chart_labels_vertical,
                             map_prefetch_enabled: map_prefetch_enabled,
+                            map_prefetch_user_radius_m: map_prefetch_user_radius_m,
+                            map_prefetch_rocket_radius_m: map_prefetch_rocket_radius_m,
                             calibration_capture_sample_count: calibration_capture_sample_count,
+                            storage_breakdown: cache_storage_stats_rows(),
                             theme: theme.clone(),
-                            on_clear_cache: move |_| {
-                                clear_frontend_caches_and_reseed();
+                            on_clear_data_cache: move |_| {
+                                clear_data_caches_and_reseed();
+                            },
+                            on_clear_data_and_map_cache: move |_| {
+                                clear_data_and_map_tile_caches_and_reseed();
+                            },
+                            on_clear_all_caches: move |_| {
+                                clear_all_frontend_caches_and_reseed();
+                            },
+                            on_prefetch_map_tiles: move |_| {
+                                trigger_map_prefetch_now();
                             },
                             on_reset_app_data: {
                                 let mut st_warn_ack = st_warn_ack;
@@ -4193,6 +4511,8 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut network_topology_vertical = network_topology_vertical;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
                                 let mut map_prefetch_enabled = map_prefetch_enabled;
+                                let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
+                                let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
                                 let mut calibration_capture_sample_count = calibration_capture_sample_count;
                                 move |_| {
                                     reset_local_app_data();
@@ -4208,6 +4528,8 @@ fn TelemetryDashboardInner() -> Element {
                                     network_topology_vertical.set(false);
                                     state_chart_labels_vertical.set(false);
                                     map_prefetch_enabled.set(true);
+                                    map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
+                                    map_prefetch_rocket_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
                                     calibration_capture_sample_count.set(200);
                                 }
                             },
@@ -5166,6 +5488,7 @@ fn TelemetryDashboardInner() -> Element {
                                     errors: errors,
                                     notifications: notifications,
                                     network_time: network_time,
+                                    cache_stats: cache_storage_stats_rows(),
                                     theme: theme.clone(),
                                 }
                             },
@@ -6033,11 +6356,9 @@ async fn seed_from_db(
 
     // ---- Telemetry history (/api/recent) ----
     let existing_rows_before_seed = ui_telemetry_rows_snapshot();
-    let bridge_rows = if let Ok(mut rows) = RESEED_HISTORY_BRIDGE.lock() {
-        std::mem::take(&mut *rows)
-    } else {
-        Vec::new()
-    };
+    if let Ok(mut rows) = RESEED_HISTORY_BRIDGE.lock() {
+        rows.clear();
+    }
     if existing_rows_before_seed.is_empty() {
         set_reseed_status_running();
     }
@@ -6056,76 +6377,63 @@ async fn seed_from_db(
             list = compact_rows_for_ui(list);
             log!("[seed] /api/recent ok compacted_rows={}", list.len());
 
-            if !bridge_rows.is_empty() {
-                log!(
-                    "[seed] /api/recent merging bridge_rows={}",
-                    bridge_rows.len()
-                );
-                list = merge_db_and_live(list, bridge_rows);
-            }
-
             // Capture rows that arrived while reseed was running and keep them.
-            let mut live_rows = ui_telemetry_rows_snapshot();
-            live_rows.extend(queue_snapshot());
+            // Existing visible rows may be restored offline cache, so successful
+            // /api/recent responses replace them instead of merging stale data.
+            let mut live_rows = queue_snapshot();
             if !live_rows.is_empty() {
                 sort_rows(&mut live_rows);
                 prune_history(&mut live_rows);
                 live_rows = compact_rows_for_ui(live_rows);
-                log!("[seed] /api/recent merging live_rows={}", live_rows.len());
+                log!("[seed] /api/recent merging queued_rows={}", live_rows.len());
                 list = merge_db_and_live(list, live_rows);
             }
 
-            if let Some(gps) = list.iter().rev().find_map(row_to_gps) {
-                rocket_gps.set(Some(gps));
+            rocket_gps.set(list.iter().rev().find_map(row_to_gps));
+
+            // Build reseed cache in a double buffer while active cache keeps live updates.
+            const RESEED_INGEST_CHUNK: usize = 1024;
+            for (i, row) in list.iter().enumerate() {
+                charts_cache_reseed_ingest_row(row);
+                if i % RESEED_INGEST_CHUNK == 0 {
+                    cooperative_yield().await;
+                }
             }
 
-            if list.is_empty() && !existing_rows_before_seed.is_empty() {
-                // Treat empty reseed as transient and keep already-visible history.
-                log!("[seed] /api/recent empty -> keeping existing rows");
-                list = existing_rows_before_seed;
+            // Replay queued rows into reseed cache as a second safety net.
+            let post_reset_queued_rows = queue_snapshot();
+            for row in &post_reset_queued_rows {
+                charts_cache_reseed_ingest_row(row);
+            }
+            if !post_reset_queued_rows.is_empty() {
+                list.extend(post_reset_queued_rows);
+                list = compact_rows_for_ui(list);
+            }
+
+            // Replay live rows received during reseed build.
+            let reseed_live_rows = if let Ok(mut v) = RESEED_LIVE_BUFFER.lock() {
+                std::mem::take(&mut *v)
             } else {
-                // Build reseed cache in a double buffer while active cache keeps live updates.
-                const RESEED_INGEST_CHUNK: usize = 1024;
-                for (i, row) in list.iter().enumerate() {
-                    charts_cache_reseed_ingest_row(row);
-                    if i % RESEED_INGEST_CHUNK == 0 {
-                        cooperative_yield().await;
-                    }
-                }
-
-                // Replay queued rows into reseed cache as a second safety net.
-                let post_reset_queued_rows = queue_snapshot();
-                for row in &post_reset_queued_rows {
+                Vec::new()
+            };
+            if !reseed_live_rows.is_empty() {
+                for row in &reseed_live_rows {
                     charts_cache_reseed_ingest_row(row);
                 }
-                if !post_reset_queued_rows.is_empty() {
-                    list.extend(post_reset_queued_rows);
-                    list = compact_rows_for_ui(list);
-                }
-
-                // Replay live rows received during reseed build.
-                let reseed_live_rows = if let Ok(mut v) = RESEED_LIVE_BUFFER.lock() {
-                    std::mem::take(&mut *v)
-                } else {
-                    Vec::new()
-                };
-                if !reseed_live_rows.is_empty() {
-                    for row in &reseed_live_rows {
-                        charts_cache_reseed_ingest_row(row);
-                    }
-                    list.extend(reseed_live_rows);
-                    list = compact_rows_for_ui(list);
-                }
-
-                // Atomically swap the prepared reseed cache in.
-                charts_cache_finish_reseed_build();
+                list.extend(reseed_live_rows);
+                list = compact_rows_for_ui(list);
             }
+
+            // Atomically swap the prepared reseed cache in. Empty /api/recent
+            // means empty history and should clear stale offline data.
+            charts_cache_finish_reseed_build();
             log!("[seed] applying reseed rows={}", list.len());
             if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
                 store.replace_from_rows(&list);
             }
             reset_latest_telemetry(&list);
-            persist_cached_telemetry_snapshot_if_due(true);
+            persist_cached_telemetry_rows(&list);
+            LAST_TELEMETRY_CACHE_PERSIST_MS.store(current_wallclock_ms(), Ordering::Relaxed);
             if !list.is_empty() {
                 DASHBOARD_HAS_CONNECTED.store(true, Ordering::Relaxed);
             }
@@ -6241,14 +6549,6 @@ async fn seed_from_db(
 
     if !alive.load(Ordering::Relaxed) {
         return Ok(());
-    }
-
-    // ---- Optional GPS seed (/api/gps) ----
-    if let Ok(gps) = http_get_json::<GpsResponse>("/api/gps").await
-        && alive.load(Ordering::Relaxed)
-        && let Some(rocket) = gps.rocket
-    {
-        rocket_gps.set(Some((rocket.lat, rocket.lon)));
     }
 
     Ok(())

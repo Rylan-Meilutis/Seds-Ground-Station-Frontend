@@ -10,7 +10,7 @@ use super::types::{
 use super::{
     AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
     compensated_network_time_ms, current_language, current_wallclock_ms, format_network_time,
-    format_timestamp_ms_clock, layout::ThemeConfig, localized_copy, monotonic_now_ms,
+    format_timestamp_ms_clock, js_eval, layout::ThemeConfig, localized_copy, monotonic_now_ms,
     translate_text,
 };
 
@@ -24,12 +24,43 @@ pub fn DetailedTab(
     errors: Signal<Vec<AlertMsg>>,
     notifications: Signal<Vec<PersistentNotification>>,
     network_time: Signal<Option<NetworkTimeSync>>,
+    cache_stats: Vec<(String, String)>,
     theme: ThemeConfig,
 ) -> Element {
     let tick = use_signal(|| 0u64);
     {
         let mut tick = tick;
         use_effect(move || {
+            js_eval(
+                r#"
+                (function() {
+                  if (window.__gs26_prefetch_detail_timer) return;
+                  const fmtTime = (ms) => {
+                    const n = Number(ms);
+                    if (!Number.isFinite(n) || n <= 0) return "--";
+                    return new Date(n).toLocaleTimeString();
+                  };
+                  const setText = (id, value) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = value;
+                  };
+                  const update = () => {
+                    const state = window.__gs26_ground_map_cache_state || {};
+                    const completed = Number(state.completed);
+                    const failed = Number(state.failed);
+                    const grabbed = Number.isFinite(completed) ? Math.max(0, completed - (Number.isFinite(failed) ? failed : 0)) : 0;
+                    setText("gs26-prefetch-state", state.state ? String(state.state) : "idle");
+                    setText("gs26-prefetch-last-started", fmtTime(state.lastStartedAt));
+                    setText("gs26-prefetch-last-completed", fmtTime(state.lastCompletedAt));
+                    setText("gs26-prefetch-tiles-grabbed", String(grabbed));
+                    setText("gs26-prefetch-tiles-failed", Number.isFinite(failed) ? String(failed) : "0");
+                    setText("gs26-prefetch-tiles-pending", Number.isFinite(Number(state.pending)) ? String(Number(state.pending)) : "0");
+                  };
+                  window.__gs26_prefetch_detail_timer = window.setInterval(update, 500);
+                  update();
+                })();
+                "#,
+            );
             spawn(async move {
                 loop {
                     #[cfg(target_arch = "wasm32")]
@@ -231,6 +262,8 @@ pub fn DetailedTab(
                         ("Slowest board", opt_u64_ms(max_board_age_ms)),
                     ],
                 )}
+                {metric_card_owned(&theme, "Cache Storage", cache_stats.clone())}
+                {prefetch_status_card(&theme)}
             }
 
             div { style: "display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(min(100%, 340px), 1fr)); align-items:start; width:100%;",
@@ -366,6 +399,47 @@ fn metric_card(theme: &ThemeConfig, title: &str, rows: Vec<(&'static str, String
                     div { style: "display:flex; justify-content:space-between; gap:16px; align-items:flex-start; min-width:0;",
                         span { style: "color:{theme.text_muted}; font-size:12px; flex:0 0 auto;", "{label}" }
                         span { style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn metric_card_owned(theme: &ThemeConfig, title: &str, rows: Vec<(String, String)>) -> Element {
+    rsx! {
+        div { style: "border:1px solid {theme.border}; border-radius:16px; padding:14px; background:linear-gradient(180deg, {theme.panel_background} 0%, {theme.panel_background_alt} 100%); box-shadow:0 14px 30px rgba(2, 6, 23, 0.28); min-width:0;",
+            h3 { style: "margin:0 0 10px 0; color:{theme.text_primary}; font-size:15px; letter-spacing:0.02em;", "{title}" }
+            div { style: "display:flex; flex-direction:column; gap:8px;",
+                for (label, value) in rows {
+                    div { style: "display:flex; justify-content:space-between; gap:16px; align-items:flex-start; min-width:0;",
+                        span { style: "color:{theme.text_muted}; font-size:12px; flex:0 0 auto;", "{label}" }
+                        span { style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn prefetch_status_card(theme: &ThemeConfig) -> Element {
+    let rows = [
+        ("State", "gs26-prefetch-state"),
+        ("Last prefetch", "gs26-prefetch-last-started"),
+        ("Completed", "gs26-prefetch-last-completed"),
+        ("Tiles grabbed", "gs26-prefetch-tiles-grabbed"),
+        ("Tiles pending", "gs26-prefetch-tiles-pending"),
+        ("Tiles failed", "gs26-prefetch-tiles-failed"),
+    ];
+
+    rsx! {
+        div { style: "border:1px solid {theme.border}; border-radius:16px; padding:14px; background:linear-gradient(180deg, {theme.panel_background} 0%, {theme.panel_background_alt} 100%); box-shadow:0 14px 30px rgba(2, 6, 23, 0.28); min-width:0;",
+            h3 { style: "margin:0 0 10px 0; color:{theme.text_primary}; font-size:15px; letter-spacing:0.02em;", "Map Prefetch" }
+            div { style: "display:flex; flex-direction:column; gap:8px;",
+                for (label, id) in rows {
+                    div { style: "display:flex; justify-content:space-between; gap:16px; align-items:flex-start; min-width:0;",
+                        span { style: "color:{theme.text_muted}; font-size:12px; flex:0 0 auto;", "{label}" }
+                        span { id: "{id}", style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "--" }
                     }
                 }
             }

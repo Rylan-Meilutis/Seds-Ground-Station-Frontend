@@ -222,20 +222,6 @@ struct AlertDto {
     pub message: String,
 }
 
-// --------------------------
-// GPS DTO (/api/gps)
-// --------------------------
-#[derive(Deserialize, Debug, Clone, Copy)]
-struct GpsPoint {
-    pub lat: f64,
-    pub lon: f64,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct GpsResponse {
-    pub rocket: Option<GpsPoint>,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MainTab {
     State,
