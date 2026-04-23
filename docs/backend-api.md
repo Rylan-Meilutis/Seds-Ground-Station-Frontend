@@ -2,7 +2,7 @@
 
 This document describes the backend contract that the frontend currently expects.
 
-Verified against frontend version `0.3.1`, app build `11`, and the current Dioxus `0.7.5` codebase.
+Verified against frontend version `0.3.1`, app build `23`, and the current Dioxus `0.7.6` codebase.
 
 It is derived from the frontend source, not from an external OpenAPI spec. If you change the frontend route usage, update this file.
 
@@ -286,7 +286,11 @@ Notes:
 - blank or non-finite numeric values are sanitized by the frontend, but the backend should still send valid values.
 - the tile source itself is requested from `/tiles/{z}/{x}/{y}.jpg` on the configured host.
 - the frontend persists the last effective `max_native_zoom` per tile URL template in browser/native storage and reuses it if the backend is unavailable later. This allows cached high-zoom map tiles and previously zoomed-in map views to restore without requiring `/api/map_config` to be reachable.
-- map prefetch warms the visible/user/rocket tile area from zoom `0` through the effective native max zoom so cached maps can remain visible when operators zoom out offline.
+- map tile caches are keyed by tile URL/Ground Station URL. Tiles cached for one configured URL are not reused after the operator switches to another configured URL.
+- map prefetch warms the visible/user/rocket tile area from the effective minimum zoom through the effective native max zoom so cached maps can remain visible when operators zoom out offline.
+- persistent high-resolution map prefetch is budget-controlled by the frontend cache storage limit. It no longer has a fixed tile-count cap; fixed caps are only used in memory-sensitive runtime paths such as tracking prefetch and DOM fallback rendering.
+- the Settings UI lets operators separately enable/disable data cache, map tile cache, and map tile prefetch, and set separate user and rocket prefetch radii. Radius values are displayed in the selected distance units.
+- the frontend estimates user-radius, rocket-radius, and combined prefetch storage by sampling tile size and multiplying by planned tile count. If the combined estimate exceeds the configured cache budget, the prefetch is blocked with a budget warning.
 - display overzoom is allowed above native tile zoom, but the tile source is capped at the native max zoom so offline views reuse cached native tiles instead of requesting uncached synthetic higher-zoom tile URLs.
 
 ### `GET /tiles/{z}/{x}/{y}.jpg`
@@ -298,6 +302,7 @@ Notes:
 - serving standard `image/jpeg` tile responses is sufficient
 - a `404` for a specific missing tile is tolerated by the native connection tester
 - if you proxy an upstream tile source, keep this route shape stable for compatibility
+- if tile size varies heavily by zoom/region, the frontend's prefetch storage estimate is approximate because it samples one tile size and applies that size to the plan
 
 Example:
 
@@ -719,6 +724,9 @@ Generic layout behavior:
 - `state_tab` chart widgets can use either `data_type` for a normal single telemetry chart or `chart_series` for explicit multi-line charts. Multi-line `chart_series` use compact per-series scaling so every configured line remains visible, and each series can include `sender_id` to target a sender-specific chart cache.
 - after any WebSocket reconnect, the frontend reseeds telemetry/history from `/api/recent` and preserves live rows received during the reseed.
 - native builds persist the layout per Ground Station URL plus a compact telemetry snapshot and map state locally. If the configured backend cannot be reached on startup or after a failed connect attempt, the frontend opens the dashboard with cached layout/data/GPS/map state instead of blocking on the connection screen. If there is no valid cached layout for that configured URL, the app shows the connection failure page.
+- when the backend is reachable, `/api/recent` is treated as the source of truth for the telemetry cache and overwrites the cached telemetry snapshot. Cached telemetry is only used as startup/offline fallback.
+- the dashboard reload button refetches `/api/layout` and reapplies the result to the current dashboard session. Cached layout is only used when live layout fetch fails.
+- clear-cache controls are split in the Settings UI: data cache only, data plus map tile cache, and all caches including layout/settings.
 - state summary fill targets require explicit `fill_target_fluid` and `fill_target_kind` on each item that should show a target. The frontend does not infer targets from display labels.
 - loadcell aliases are shared between labels and charts: `LOADCELL_WEIGHT_KG[0]` falls back to `KG1000[0]`, and `LOADCELL_FILL_PERCENT[0]` is derived from that mass using a default 10 kg full-scale target if no backend-derived value is present.
 - calibration sensors, labels, colors, telemetry data types, channel ids, and regression choices come from `/api/calibration_config`.

@@ -6,7 +6,7 @@ Current release:
 
 - Frontend version: `0.3.1`
 - App build: `23`
-- Dioxus line: `0.7.5`
+- Dioxus line: `0.7.6`
 - Targets: web, macOS desktop, Android, iOS
 
 If your goal is to build a backend that works with this frontend, start here:
@@ -58,9 +58,11 @@ The app uses WebSocket for:
 - Telemetry reseed support using either a JSON array or native streamed NDJSON from `/api/recent`
 - Graph-level reseed status notices for running, success, and failure
 - Offline native startup with locally cached layout/telemetry/GPS/map state when the configured Ground Station cannot be reached
+- Per-Ground-Station cache isolation for layout, telemetry, GPS, and map tile state
+- Settings controls for data cache, map tile cache, map tile prefetch, cache storage budget, and manual map tile prefetch
 - Launch clock badge and launch clock synchronization from both HTTP and WebSocket updates
 - Sender-aware multi-series charts and per-series scaling for state/data graphs
-- Network topology graph and endpoint ownership views
+- Network topology graph with configurable flow animation and layout direction
 - Built-in version page showing app/build/package runtime information
 - Localized UI support through translation catalog and on-demand translation routes
 - Ground Station / App wording in user-facing copy instead of internal `backend` / `frontend` terminology
@@ -108,7 +110,7 @@ Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph e
 Web:
 
 ```bash
-cargo install dioxus-cli --version 0.7.5
+cargo install dioxus-cli --version 0.7.6
 dx serve
 ```
 
@@ -120,7 +122,7 @@ python3 build.py web
 
 Use `python3 build.py` for the full build helper usage.
 
-The codebase is currently pinned to Dioxus `0.7.5`. Any compatible `0.7.x` CLI is the safe choice; the helper also contains guards for patch-level CLI/runtime skew.
+The codebase is currently pinned to Dioxus `0.7.6`. Any compatible `0.7.x` CLI is the safe choice; the helper also contains guards for patch-level CLI/runtime skew.
 
 ## Android Build Notes
 
@@ -137,6 +139,54 @@ If Android bundling fails, read the Gradle error block first. The helper disting
 - generated Android project failures
 - Gradle cache corruption
 - upstream R8 / AGP warnings that do not come from this repo
+
+Android native notes:
+
+- the generated WebView client proxies `gs26.local/tiles/...` tile requests to the configured Ground Station and keeps an app-cache tile fallback keyed by Ground Station URL plus tile path
+- Android tile cache entries for one Ground Station URL are not reused for another URL
+- Android location uses both GPS and network providers with high-frequency updates, and heading uses the rotation-vector sensor
+
+## iOS Build And Signing Notes
+
+The build helper owns iOS packaging after `dx bundle`:
+
+- `python3 build.py ios` creates a distribution-signed IPA
+- `python3 build.py ios_dist_sign [existing]` signs an existing app bundle as a distribution IPA
+- `python3 build.py ios_deploy [debug] [existing]` uses development signing for connected-device install
+- `python3 build.py ios_sign [debug] [existing]` signs an existing app bundle with development signing
+
+Provisioning profile defaults are intentionally separate:
+
+- development/device deploy: `Groundstation_dev.mobileprovision`, or `IOS_DEVELOPMENT_MOBILEPROVISION=/path/to/profile.mobileprovision`
+- distribution/TestFlight/App Store style package: `UBSEDS_GroundStation.mobileprovision`, or `IOS_DISTRIBUTION_MOBILEPROVISION=/path/to/profile.mobileprovision`
+
+Distribution signing requires an `Apple Distribution:` identity that matches the distribution profile. Development signing requires an `Apple Development:` identity and a provisioning profile with provisioned devices.
+
+## Settings, Cache, And Map Prefetch
+
+The Settings overlay includes separate storage and cache controls:
+
+- Used Storage shows a breakdown for frontend data cache, map tile cache, layout/settings cache, and related local storage.
+- Cache Storage Limit defaults to `500 MB`. It is a budget/warning gate for data and map caches, not a hard filesystem quota.
+- Data Cache can be disabled independently. When disabled, telemetry/layout restore data is not written or restored from the local data cache.
+- Map Tile Cache can be disabled independently. When disabled, map tiles are fetched for display but not written to the persistent tile cache.
+- Map Tile Prefetch can be disabled independently from normal tile caching.
+- Clear Cache clears only frontend data/telemetry cache.
+- Clear Cache And Map Tiles clears data/telemetry cache plus map tile cache.
+- Clear All Caches clears data/telemetry cache, map tile cache, and layout/settings cache.
+- Prefetch Map Tiles manually triggers the current map/user/rocket tile prefetch plan.
+
+Map prefetch behavior:
+
+- prefetch radius settings are separate for user and rocket
+- radius values are shown and edited in the selected distance units
+- the UI estimates user-radius, rocket-radius, and combined tile/cache usage from the sampled tile size
+- persistent high-resolution prefetch is limited by the configured cache budget estimate instead of a fixed tile-count cap
+- fixed tile-count caps remain only for memory-sensitive paths such as live tracking prefetch and DOM map rendering
+- native/web tile caches are keyed by tile URL/Ground Station URL, so changing the configured URL invalidates old tile cache use for the new URL
+- if the Ground Station is reachable, `/api/recent` overwrites the cached telemetry snapshot; cached telemetry is only a fallback
+
+The dashboard reload button refetches and reapplies layout/config for the active Ground Station. On native builds it also reuses cached layout only when live layout fetch fails.
 
 ## Editing Themes
 
@@ -176,7 +226,8 @@ If you are implementing the backend streaming path, use [`docs/backend-recent-st
 - Some routes can safely return empty data structures. For example, `/api/recent` can return `[]` and `/api/gps` can return `{ "rocket": null }`.
 - `/api/recent` can also stream newline-delimited JSON rows on native builds for faster reseed startup.
 - The map uses `/tiles/{z}/{x}/{y}.jpg` by default. If you expose the map tab, provide that route or an equivalent reverse-proxied path.
-- The map persists the last effective tile `max_native_zoom` per tile URL in browser/native storage and reuses it offline. Prefetch warms tiles from zoom `0` through the remembered native max so zooming out can stay cached. Display zoom can overzoom above native tile zoom, but tile requests stay capped at native max zoom so cached high-zoom native tiles can still be restored after a backend disconnect.
+- The map persists the last effective tile `max_native_zoom` per tile URL in browser/native storage and reuses it offline. Prefetch warms tiles around the viewport, user, and rocket from the effective minimum zoom through the remembered native max so zooming out can stay cached. Display zoom can overzoom above native tile zoom, but tile requests stay capped at native max zoom so cached high-zoom native tiles can still be restored after a backend disconnect.
+- Map tile and offline data caches are isolated by configured Ground Station URL. Changing the URL prevents stale tile/data reuse from the previous URL.
 - WebSocket message tags are case-sensitive because they are deserialized from Rust enum variant names.
 - Commands are sent over WebSocket as JSON objects like `{ "cmd": "Abort" }`.
 - Layout drives a large part of the UI. If your backend returns a small valid layout, the frontend can still function without the full production config.
