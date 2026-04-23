@@ -29,22 +29,6 @@ fn tiles_url() -> String {
     map_tiles_url()
 }
 
-fn map_control_now_ms() -> f64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as f64)
-            .unwrap_or(0.0)
-    }
-}
-
 fn format_distance_label(
     rocket: Option<(f64, f64)>,
     user: Option<(f64, f64)>,
@@ -113,9 +97,6 @@ pub fn MapTab(
     let _ = *rocket_gps.read();
     let _ = *user_gps.read();
     let mut is_fullscreen = use_signal(|| false);
-    let follow_user = use_signal(|| false);
-    let follow_user_latch_until_ms = use_signal(|| 0.0);
-    let user_orientation_up = use_signal(|| false);
     #[cfg(target_os = "ios")]
     let mut show_enable_compass = use_signal(|| false);
     #[cfg(not(target_os = "ios"))]
@@ -360,74 +341,6 @@ pub fn MapTab(
             let (u_lat, u_lon) = u.unwrap_or((f64::NAN, f64::NAN));
 
             js_update_markers(r_lat, r_lon, u_lat, u_lon);
-        });
-    }
-
-    {
-        use_effect(move || {
-            js_setup_follow_user_listener();
-        });
-    }
-
-    {
-        use_future(move || async move {
-            let mut last_saved = persist::get_string(MAP_STATE_STORAGE_KEY).unwrap_or_default();
-            let mut last_saved_max_zoom =
-                persist::get_string(MAP_MAX_ZOOM_STORAGE_KEY).unwrap_or_default();
-            loop {
-                if let Some(raw) = js_read_current_map_state_json().await
-                    && raw != last_saved
-                    && serde_json::from_str::<serde_json::Value>(&raw).is_ok()
-                {
-                    persist::set_string(MAP_STATE_STORAGE_KEY, &raw);
-                    last_saved = raw;
-                }
-                if let Some(raw) = js_read_current_map_max_zoom_json().await
-                    && raw != last_saved_max_zoom
-                    && serde_json::from_str::<serde_json::Value>(&raw).is_ok()
-                {
-                    persist::set_string(MAP_MAX_ZOOM_STORAGE_KEY, &raw);
-                    last_saved_max_zoom = raw;
-                }
-
-                #[cfg(target_arch = "wasm32")]
-                gloo_timers::future::TimeoutFuture::new(1000).await;
-
-                #[cfg(not(target_arch = "wasm32"))]
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-            }
-        });
-    }
-
-    {
-        let mut follow_user = follow_user;
-        let mut user_orientation_up = user_orientation_up;
-        let follow_user_latch_until_ms = follow_user_latch_until_ms;
-        use_effect(move || {
-            spawn(async move {
-                loop {
-                    let enabled = js_read_follow_user_enabled().await;
-                    let orientation_mode = js_read_map_orientation_mode().await;
-                    let follow_user_enabled = *follow_user.read();
-                    let latch_until_ms = *follow_user_latch_until_ms.read();
-                    let latch_active =
-                        follow_user_enabled && !enabled && map_control_now_ms() < latch_until_ms;
-                    if !latch_active && follow_user_enabled != enabled {
-                        follow_user.set(enabled);
-                    }
-                    let user_up = orientation_mode == "user";
-                    let current_user_orientation_up = *user_orientation_up.read();
-                    if current_user_orientation_up != user_up {
-                        user_orientation_up.set(user_up);
-                    }
-
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(100).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-            });
         });
     }
 
@@ -1005,13 +918,15 @@ fn js_setup_map_size_guard() {
               }
               const observer = window.__gs26_map_resize_observer;
               const card = document.getElementById("map-card");
-              const map = document.getElementById("ground-map");
               if (observer && card) observer.observe(card);
-              if (observer && map) observer.observe(map);
             } catch (e) {}
             return;
           }
           window.__gs26_map_size_hook = true;
+          let lastAppliedMaxPx = null;
+          let lastMapWidth = -1;
+          let lastMapHeight = -1;
+          let sizeUpdateFrame = null;
 
           function getH() {
             try {
@@ -1021,19 +936,34 @@ fn js_setup_map_size_guard() {
             return window.innerHeight || 800;
           }
 
-          function updateSize() {
+          function runSizeUpdate() {
+            sizeUpdateFrame = null;
             try {
               const card = document.getElementById("map-card");
               if (!card) return;
               const rect = card.getBoundingClientRect();
               const h = getH();
-              const max = Math.max(220, h - rect.top - 24);
-              card.style.setProperty('--gs26-map-max', max + 'px');
+              const max = Math.round(Math.max(220, h - rect.top - 24));
+              if (lastAppliedMaxPx !== max) {
+                card.style.setProperty('--gs26-map-max', max + 'px');
+                lastAppliedMaxPx = max;
+              }
               const m = window.__gs26_ground_map;
-              if (m && typeof m.invalidateSize === "function") {
+              const map = document.getElementById("ground-map");
+              const mapWidth = map ? Math.round(map.clientWidth || map.offsetWidth || 0) : 0;
+              const mapHeight = map ? Math.round(map.clientHeight || map.offsetHeight || 0) : 0;
+              const mapSizeChanged = mapWidth !== lastMapWidth || mapHeight !== lastMapHeight;
+              lastMapWidth = mapWidth;
+              lastMapHeight = mapHeight;
+              if (mapSizeChanged && m && typeof m.invalidateSize === "function") {
                 requestAnimationFrame(() => { try { m.invalidateSize(); } catch(e) {} });
               }
             } catch (e) {}
+          }
+
+          function updateSize() {
+            if (sizeUpdateFrame != null) return;
+            sizeUpdateFrame = requestAnimationFrame(runSizeUpdate);
           }
 
           window.__gs26_map_size_hook_update = updateSize;
@@ -1049,12 +979,12 @@ fn js_setup_map_size_guard() {
           } catch (e) {}
           try {
             if (typeof ResizeObserver === 'function') {
-              const observer = new ResizeObserver(updateSize);
+              const observer = new ResizeObserver(() => {
+                updateSize();
+              });
               const observeTargets = () => {
                 const card = document.getElementById("map-card");
-                const map = document.getElementById("ground-map");
                 if (card) observer.observe(card);
-                if (map) observer.observe(map);
               };
               observeTargets();
               window.__gs26_map_resize_observer = observer;
@@ -1116,199 +1046,6 @@ pub(crate) fn js_update_markers(r_lat: f64, r_lon: f64, u_lat: f64, u_lon: f64) 
         })();
         "#,
     );
-}
-
-fn js_setup_follow_user_listener() {
-    js_eval(
-        r#"
-        (function() {
-          try {
-            if (window.__gs26_follow_listener_installed) return;
-            window.__gs26_follow_listener_installed = true;
-            window.addEventListener("gs26-follow-user-changed", function(evt) {
-              try {
-                window.__gs26_follow_user_enabled = (evt && evt.detail && evt.detail.enabled) ? "true" : "false";
-              } catch (e) {}
-            });
-          } catch (e) {}
-        })();
-        "#,
-    );
-}
-
-async fn js_read_current_map_state_json() -> Option<String> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_eval(&format!(
-            r#"
-            (function() {{
-              try {{
-                const key = {key:?};
-                window.__gs26_tmp_map_state_json =
-                  window.__gs26_ground_map_state_json ||
-                  (window.localStorage ? window.localStorage.getItem(key) : "") ||
-                  "";
-              }} catch (e) {{
-                window.__gs26_tmp_map_state_json = "";
-              }}
-            }})();
-            "#,
-            key = MAP_STATE_STORAGE_KEY,
-        ));
-        js_read_window_string("__gs26_tmp_map_state_json").filter(|raw| !raw.is_empty())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let eval = dioxus::document::eval(&format!(
-            r#"
-            (function() {{
-              try {{
-                const key = {key:?};
-                return String(
-                  window.__gs26_ground_map_state_json ||
-                  (window.localStorage ? window.localStorage.getItem(key) : "") ||
-                  ""
-                );
-              }} catch (e) {{
-                return "";
-              }}
-            }})()
-            "#,
-            key = MAP_STATE_STORAGE_KEY,
-        ));
-        eval.join::<String>()
-            .await
-            .ok()
-            .filter(|raw| !raw.is_empty())
-    }
-}
-
-async fn js_read_current_map_max_zoom_json() -> Option<String> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_eval(&format!(
-            r#"
-            (function() {{
-              try {{
-                const key = {key:?};
-                window.__gs26_tmp_map_max_zoom_json =
-                  window.__gs26_ground_map_max_zoom_json ||
-                  (window.localStorage ? window.localStorage.getItem(key) : "") ||
-                  "";
-              }} catch (e) {{
-                window.__gs26_tmp_map_max_zoom_json = "";
-              }}
-            }})();
-            "#,
-            key = MAP_MAX_ZOOM_STORAGE_KEY,
-        ));
-        js_read_window_string("__gs26_tmp_map_max_zoom_json").filter(|raw| !raw.is_empty())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let eval = dioxus::document::eval(&format!(
-            r#"
-            (function() {{
-              try {{
-                const key = {key:?};
-                return String(
-                  window.__gs26_ground_map_max_zoom_json ||
-                  (window.localStorage ? window.localStorage.getItem(key) : "") ||
-                  ""
-                );
-              }} catch (e) {{
-                return "";
-              }}
-            }})()
-            "#,
-            key = MAP_MAX_ZOOM_STORAGE_KEY,
-        ));
-        eval.join::<String>()
-            .await
-            .ok()
-            .filter(|raw| !raw.is_empty())
-    }
-}
-
-async fn js_read_follow_user_enabled() -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_read_window_string("__gs26_follow_user_enabled")
-            .map(|value| {
-                if value == "true" {
-                    true
-                } else {
-                    js_read_window_string("__gs26_follow_user_enable_guard_until")
-                        .and_then(|guard| guard.parse::<f64>().ok())
-                        .is_some_and(|guard| guard > js_now_ms())
-                }
-            })
-            .unwrap_or(false)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let eval = dioxus::document::eval(
-            r#"
-            (function() {
-              try {
-                const enabled = String(window.__gs26_follow_user_enabled ?? "false") === "true";
-                const guard = Number(window.__gs26_follow_user_enable_guard_until || 0);
-                return String(enabled || (Number.isFinite(guard) && guard > Date.now()));
-              } catch (e) {
-                return "false";
-              }
-            })()
-            "#,
-        );
-        eval.join::<String>()
-            .await
-            .map(|value| value == "true")
-            .unwrap_or(false)
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn js_now_ms() -> f64 {
-    js_eval(
-        r#"
-        (function() {
-          try {
-            window.__gs26_tmp_now_ms = Date.now();
-          } catch (e) {
-            window.__gs26_tmp_now_ms = 0;
-          }
-        })();
-        "#,
-    );
-    js_read_window_f64("__gs26_tmp_now_ms").unwrap_or(0.0)
-}
-
-async fn js_read_map_orientation_mode() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_read_window_string("__gs26_map_orientation_mode").unwrap_or_else(|| "north".to_string())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let eval = dioxus::document::eval(
-            r#"
-            (function() {
-              try {
-                return String(window.__gs26_map_orientation_mode ?? "north");
-              } catch (e) {
-                return "north";
-              }
-            })()
-            "#,
-        );
-        eval.join::<String>()
-            .await
-            .unwrap_or_else(|_| "north".to_string())
-    }
 }
 
 #[cfg(any(target_os = "ios", target_os = "android"))]

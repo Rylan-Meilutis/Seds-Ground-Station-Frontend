@@ -709,6 +709,8 @@ const NOTIFICATION_AUTO_DISMISS_MS: u32 = 5_000;
 const MAX_ACTIVE_NOTIFICATIONS: usize = 2;
 const MAX_NOTIFICATION_HISTORY: usize = 500;
 const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
+#[cfg(target_arch = "wasm32")]
+const MAP_TILE_CACHE_USAGE_BYTES_STORAGE_KEY: &str = "gs26_tile_cache_usage_bytes";
 #[cfg(not(target_arch = "wasm32"))]
 const TILE_CACHE_STATS_TTL_MS: i64 = 5_000;
 const DEFAULT_CACHE_BUDGET_MB: u32 = 500;
@@ -751,6 +753,14 @@ fn stored_prefetch_radius_m(key: &str) -> u32 {
         .unwrap_or(DEFAULT_PREFETCH_RADIUS_M)
 }
 
+#[cfg(target_arch = "wasm32")]
+fn browser_tile_cache_measured_bytes() -> u64 {
+    persist::get_or(MAP_TILE_CACHE_USAGE_BYTES_STORAGE_KEY, "0")
+        .parse::<u64>()
+        .ok()
+        .unwrap_or(0)
+}
+
 fn cache_storage_measured_bytes() -> u64 {
     let telemetry_bytes = persist::byte_len(TELEMETRY_CACHE_STORAGE_KEY) as u64;
     let layout_bytes = persist::byte_len_prefix(LAYOUT_CACHE_KEY_PREFIX) as u64;
@@ -783,7 +793,7 @@ fn cache_storage_measured_bytes() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     let tile_bytes = native_tile_cache_stats().0;
     #[cfg(target_arch = "wasm32")]
-    let tile_bytes = 0u64;
+    let tile_bytes = browser_tile_cache_measured_bytes();
 
     telemetry_bytes
         .saturating_add(layout_bytes)
@@ -827,7 +837,7 @@ fn cache_storage_stats_rows() -> Vec<(String, String)> {
     #[cfg(not(target_arch = "wasm32"))]
     let (tile_bytes, tile_files) = native_tile_cache_stats();
     #[cfg(target_arch = "wasm32")]
-    let (tile_bytes, tile_files) = (0u64, 0u64);
+    let (tile_bytes, tile_files) = (browser_tile_cache_measured_bytes(), 0u64);
 
     let total = telemetry_bytes
         .saturating_add(layout_bytes)
@@ -946,8 +956,10 @@ fn clear_browser_tile_and_data_caches() {
               window.__gs26_ground_map_cache_state = { key: "", state: "idle", pending: 0, completed: 0, failed: 0, lastStartedAt: 0, lastCompletedAt: 0 };
               window.__gs26_ground_map_cache_ready = false;
               window.__gs26_ground_map_max_zoom_json = "";
+              window.__gs26_tile_cache_usage_bytes = 0;
               if (window.localStorage) {
                 window.localStorage.removeItem("gs26_ground_map_max_zoom_v1");
+                window.localStorage.removeItem("gs26_tile_cache_usage_bytes");
               }
               if (typeof window.clearGroundMapTileCaches === "function") {
                 await window.clearGroundMapTileCaches();
@@ -1691,6 +1703,24 @@ pub fn NativeSettingsPage() -> Element {
             .unwrap_or(200)
             .clamp(1, 5_000)
     });
+    let cache_usage_tick = use_signal(|| 0u64);
+
+    {
+        let mut cache_usage_tick = cache_usage_tick;
+        use_future(move || async move {
+            loop {
+                #[cfg(target_arch = "wasm32")]
+                gloo_timers::future::TimeoutFuture::new(1000).await;
+
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+                let next_tick = cache_usage_tick.read().wrapping_add(1);
+                cache_usage_tick.set(next_tick);
+            }
+        });
+    }
+    let _cache_usage_tick_snapshot = *cache_usage_tick.read();
 
     {
         let distance_units_metric = distance_units_metric;

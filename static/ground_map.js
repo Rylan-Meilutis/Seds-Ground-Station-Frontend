@@ -44,9 +44,11 @@ let tileTrackingPrefetchInterval = null;
 let currentTrackingPrefetchKey = null;
 let tileTrackingPrefetchRunId = 0;
 let tileTrackingPrefetchActive = false;
+let tileCacheUsageMeasureTimer = null;
 let tileMemoryCacheBytes = 0;
 let tilePersistentClearPromise = null;
 const tileMissingCache = new Map();
+const tileFetchInflight = new Map();
 let transparentTileArrayBufferPromise = null;
 let wheelRotateFrame = null;
 let wheelRotateTargetBearing = null;
@@ -174,6 +176,7 @@ const CACHE_SWEEP_DELAY_MS = 15000;
 const TILE_CACHE_ENABLED_BY_DEFAULT = true;
 const TILE_CACHE_PREFIXES = ["gs26-tiles-v1:", "gs26-tiles-v2:"];
 const TILE_CACHE_PREFIX = "gs26-tiles-v2:";
+const TILE_CACHE_USAGE_BYTES_STORAGE_KEY = "gs26_tile_cache_usage_bytes";
 const TILE_MEMORY_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 const TILE_CACHE_MAX_TILE_BYTES = 2 * 1024 * 1024;
 const TILE_CACHE_DEFAULT_BUDGET_BYTES = 500 * 1024 * 1024;
@@ -459,6 +462,81 @@ function setTilePrefetchEstimate(plan, sampleTileSize = true) {
     return tilePrefetchEstimateState;
 }
 
+function storedTileCacheUsageBytes() {
+    try {
+        const direct = Number(typeof window !== "undefined" ? window.__gs26_tile_cache_usage_bytes : NaN);
+        if (Number.isFinite(direct) && direct >= 0) {
+            return Math.max(0, Math.round(direct));
+        }
+        if (typeof window !== "undefined" && window.localStorage) {
+            const stored = Number(window.localStorage.getItem(TILE_CACHE_USAGE_BYTES_STORAGE_KEY));
+            if (Number.isFinite(stored) && stored >= 0) {
+                return Math.max(0, Math.round(stored));
+            }
+        }
+    } catch (e) {
+    }
+    return 0;
+}
+
+function setStoredTileCacheUsageBytes(bytes) {
+    const next = Math.max(0, Math.round(Number(bytes) || 0));
+    try {
+        window.__gs26_tile_cache_usage_bytes = next;
+        if (window.localStorage) {
+            window.localStorage.setItem(TILE_CACHE_USAGE_BYTES_STORAGE_KEY, String(next));
+        }
+    } catch (e) {
+    }
+}
+
+function bumpStoredTileCacheUsageBytes(deltaBytes) {
+    const delta = Math.round(Number(deltaBytes) || 0);
+    if (!Number.isFinite(delta) || delta === 0) return;
+    setStoredTileCacheUsageBytes(storedTileCacheUsageBytes() + delta);
+}
+
+async function measurePersistentTileCacheUsageBytes() {
+    if (!tileCacheSupported() || typeof caches.keys !== "function") return storedTileCacheUsageBytes();
+    let total = 0;
+    try {
+        const cacheKeys = await caches.keys();
+        for (const cacheKey of cacheKeys) {
+            if (!isGroundMapTileCacheName(cacheKey)) continue;
+            const cache = await caches.open(cacheKey);
+            const requests = await cache.keys();
+            for (const request of requests) {
+                try {
+                    const response = await cache.match(request, {ignoreVary: true});
+                    if (!response || !response.ok) continue;
+                    const contentLength = Number(response.headers && response.headers.get("content-length"));
+                    if (Number.isFinite(contentLength) && contentLength >= 0) {
+                        total += contentLength;
+                    } else {
+                        total += (await response.clone().arrayBuffer()).byteLength;
+                    }
+                } catch (e) {
+                }
+            }
+        }
+    } catch (e) {
+        return storedTileCacheUsageBytes();
+    }
+    setStoredTileCacheUsageBytes(total);
+    return total;
+}
+
+function schedulePersistentTileCacheUsageMeasure(delayMs = 0) {
+    if (tileCacheUsageMeasureTimer) {
+        cancelIdleDelay(tileCacheUsageMeasureTimer);
+        tileCacheUsageMeasureTimer = null;
+    }
+    tileCacheUsageMeasureTimer = idleDelay(safeMapCallback("tile cache usage measure", async () => {
+        tileCacheUsageMeasureTimer = null;
+        await measurePersistentTileCacheUsageBytes();
+    }), Math.max(0, Number(delayMs) || 0));
+}
+
 function schedulePrefetchTileSizeSample(plan) {
     if (!plan || !Array.isArray(plan.coords) || !plan.coords.length) return;
     const tilesUrl = effectivePrefetchTilesUrl();
@@ -474,9 +552,18 @@ function schedulePrefetchTileSizeSample(plan) {
     Promise.resolve().then(async () => {
         let sampleBytes = NaN;
         try {
-            const head = await fetch(url, {method: "HEAD"});
-            if (head && head.ok && head.headers) {
-                sampleBytes = Number(head.headers.get("content-length"));
+            const cached = await readCachedTileArrayBuffer(tileCacheName(tilesUrl), url);
+            if (cached) {
+                sampleBytes = cached.byteLength;
+            }
+        } catch (e) {
+        }
+        try {
+            if (!Number.isFinite(sampleBytes) || sampleBytes <= 0) {
+                const head = await fetch(url, {method: "HEAD"});
+                if (head && head.ok && head.headers) {
+                    sampleBytes = Number(head.headers.get("content-length"));
+                }
             }
         } catch (e) {
         }
@@ -492,8 +579,10 @@ function schedulePrefetchTileSizeSample(plan) {
                             const cache = await openTileCache(tileCacheName(tilesUrl));
                             if (cache) {
                                 await cache.put(tileCacheRequestKey(url), clone);
+                                bumpStoredTileCacheUsageBytes(sampleBytes);
                             }
                         } catch (e) {
+                            schedulePersistentTileCacheUsageMeasure(0);
                         }
                     }
                 }
@@ -648,6 +737,25 @@ async function openTileCache(cacheName) {
     return await tileCacheHandles.get(cacheName);
 }
 
+function inflightTileFetchKey(cacheName, url) {
+    return `${cacheName}\n${tileCacheRequestKey(url)}`;
+}
+
+function runInflightTileFetch(cacheName, url, factory) {
+    const key = inflightTileFetchKey(cacheName, url);
+    const existing = tileFetchInflight.get(key);
+    if (existing) return existing;
+    const created = Promise.resolve()
+        .then(factory)
+        .finally(() => {
+            if (tileFetchInflight.get(key) === created) {
+                tileFetchInflight.delete(key);
+            }
+        });
+    tileFetchInflight.set(key, created);
+    return created;
+}
+
 function requestPersistentTileStorage() {
     try {
         if (!tileCacheEnabled()) return;
@@ -665,6 +773,7 @@ function clearTileRuntimeCaches(options = {}) {
     tileMemoryCacheBytes = 0;
     tileMissingCache.clear();
     tileCacheHandles.clear();
+    tileFetchInflight.clear();
     if (tileCacheSweepTimer) {
         clearTimeout(tileCacheSweepTimer);
         tileCacheSweepTimer = null;
@@ -701,6 +810,11 @@ async function clearPersistentTileCaches(options = {}) {
             .filter((key) => isGroundMapTileCacheName(key) && key !== keepName)
             .map((key) => caches.delete(key))
     );
+    if (!keepName) {
+        setStoredTileCacheUsageBytes(0);
+    } else {
+        schedulePersistentTileCacheUsageMeasure(0);
+    }
 }
 
 async function clearAllGroundMapTileCaches() {
@@ -1194,34 +1308,39 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     }
 
     if (options.skipCacheLookup === true) {
-        const response = await fetch(url);
-        if (!response.ok) {
-            if (response.status === 404 || response.status === 410) {
-                rememberMissingTile(cacheName, url, response.status);
-            }
-            throw new Error(`tile fetch failed: ${response.status}`);
-        }
-        const data = await response.arrayBuffer();
-        writeTileMemoryCache(cacheName, url, data);
-        forgetMissingTile(cacheName, url);
-        if (data.byteLength <= TILE_CACHE_MAX_TILE_BYTES) {
-            const headers = new Headers(response.headers);
-            const cacheResponse = new Response(cloneTileArrayBuffer(data), {
-                status: response.status,
-                statusText: response.statusText,
-                headers,
-            });
-            Promise.resolve().then(async () => {
-                try {
-                    const cache = await openTileCache(cacheName);
-                    if (cache) {
-                        await cache.put(tileCacheRequestKey(url), cacheResponse);
-                    }
-                } catch (e) {
-                    if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
+        const data = await runInflightTileFetch(cacheName, url, async () => {
+            const response = await fetch(url);
+            if (!response.ok) {
+                if (response.status === 404 || response.status === 410) {
+                    rememberMissingTile(cacheName, url, response.status);
                 }
-            });
-        }
+                throw new Error(`tile fetch failed: ${response.status}`);
+            }
+            const data = await response.arrayBuffer();
+            writeTileMemoryCache(cacheName, url, data);
+            forgetMissingTile(cacheName, url);
+            if (data.byteLength <= TILE_CACHE_MAX_TILE_BYTES) {
+                const headers = new Headers(response.headers);
+                const cacheResponse = new Response(cloneTileArrayBuffer(data), {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers,
+                });
+                Promise.resolve().then(async () => {
+                    try {
+                        const cache = await openTileCache(cacheName);
+                        if (cache) {
+                            await cache.put(tileCacheRequestKey(url), cacheResponse);
+                            bumpStoredTileCacheUsageBytes(data.byteLength);
+                        }
+                    } catch (e) {
+                        if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
+                        schedulePersistentTileCacheUsageMeasure(0);
+                    }
+                });
+            }
+            return cloneTileArrayBuffer(data);
+        });
         return cloneTileArrayBuffer(data);
     }
 
@@ -1249,32 +1368,37 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
         throw new Error("tile cache miss");
     }
 
-    const response = await fetch(url);
-    if (!response.ok) {
-        if (response.status === 404 || response.status === 410) {
-            rememberMissingTile(cacheName, url, response.status);
-        }
-        throw new Error(`tile fetch failed: ${response.status}`);
-    }
-    const data = await response.arrayBuffer();
-    rememberTileSizeSample(data.byteLength);
-    writeTileMemoryCache(cacheName, url, data);
-    forgetMissingTile(cacheName, url);
-    if (data.byteLength <= TILE_CACHE_MAX_TILE_BYTES) {
-        const headers = new Headers(response.headers);
-        const cacheResponse = new Response(cloneTileArrayBuffer(data), {
-            status: response.status,
-            statusText: response.statusText,
-            headers,
-        });
-        Promise.resolve().then(async () => {
-            try {
-                await cache.put(cacheKey, cacheResponse);
-            } catch (e) {
-                if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
+    const data = await runInflightTileFetch(cacheName, url, async () => {
+        const response = await fetch(url);
+        if (!response.ok) {
+            if (response.status === 404 || response.status === 410) {
+                rememberMissingTile(cacheName, url, response.status);
             }
-        });
-    }
+            throw new Error(`tile fetch failed: ${response.status}`);
+        }
+        const data = await response.arrayBuffer();
+        rememberTileSizeSample(data.byteLength);
+        writeTileMemoryCache(cacheName, url, data);
+        forgetMissingTile(cacheName, url);
+        if (data.byteLength <= TILE_CACHE_MAX_TILE_BYTES) {
+            const headers = new Headers(response.headers);
+            const cacheResponse = new Response(cloneTileArrayBuffer(data), {
+                status: response.status,
+                statusText: response.statusText,
+                headers,
+            });
+            Promise.resolve().then(async () => {
+                try {
+                    await cache.put(cacheKey, cacheResponse);
+                    bumpStoredTileCacheUsageBytes(data.byteLength);
+                } catch (e) {
+                    if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
+                    schedulePersistentTileCacheUsageMeasure(0);
+                }
+            });
+        }
+        return cloneTileArrayBuffer(data);
+    });
     return cloneTileArrayBuffer(data);
 }
 
@@ -1294,25 +1418,33 @@ async function prefetchTileToPersistentCache(cacheName, url) {
         return;
     }
 
-    const response = await fetch(url);
-    if (!response.ok) {
-        if (response.status === 404 || response.status === 410) {
-            rememberMissingTile(cacheName, url, response.status);
+    await runInflightTileFetch(cacheName, url, async () => {
+        const response = await fetch(url);
+        if (!response.ok) {
+            if (response.status === 404 || response.status === 410) {
+                rememberMissingTile(cacheName, url, response.status);
+            }
+            throw new Error(`tile fetch failed: ${response.status}`);
         }
-        throw new Error(`tile fetch failed: ${response.status}`);
-    }
-    const contentLengthRaw = response.headers ? response.headers.get("content-length") : null;
-    const contentLength = contentLengthRaw == null ? NaN : Number(contentLengthRaw);
-    rememberTileSizeSample(contentLength);
-    if (Number.isFinite(contentLength) && contentLength > TILE_CACHE_MAX_TILE_BYTES) {
-        return;
-    }
-    try {
-        await cache.put(cacheKey, response);
-        forgetMissingTile(cacheName, url);
-    } catch (e) {
-        if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
-    }
+        const contentLengthRaw = response.headers ? response.headers.get("content-length") : null;
+        const contentLength = contentLengthRaw == null ? NaN : Number(contentLengthRaw);
+        rememberTileSizeSample(contentLength);
+        if (Number.isFinite(contentLength) && contentLength > TILE_CACHE_MAX_TILE_BYTES) {
+            return;
+        }
+        try {
+            await cache.put(cacheKey, response);
+            forgetMissingTile(cacheName, url);
+            if (Number.isFinite(contentLength) && contentLength >= 0) {
+                bumpStoredTileCacheUsageBytes(contentLength);
+            } else {
+                schedulePersistentTileCacheUsageMeasure(0);
+            }
+        } catch (e) {
+            if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
+            schedulePersistentTileCacheUsageMeasure(0);
+        }
+    });
 }
 
 function warmTileInBackground(cacheName, url) {
@@ -1930,11 +2062,12 @@ function applyDiscoveredCachedMaxNativeZoom(tilesUrl) {
 
 function scheduleCachedZoomDiscoveryAfterStartup(tilesUrl) {
     if (!tileCacheEnabled() || !tilesUrl) return;
-    window.setTimeout(safeMapCallback("startup cached zoom discovery", () => {
+    if (Number.isFinite(loadPersistedMaxNativeZoom(tilesUrl))) return;
+    idleDelay(safeMapCallback("startup cached zoom discovery", () => {
         if (currentTilesUrl === tilesUrl) {
             applyDiscoveredCachedMaxNativeZoom(tilesUrl);
         }
-    }), STARTUP_ZOOM_DISCOVERY_DELAY_MS);
+    }), STARTUP_ZOOM_DISCOVERY_DELAY_MS + 2500);
 }
 
 function refreshRasterTileSourceForZoom() {
@@ -2146,6 +2279,20 @@ function effectiveMaxNativeZoomFor(configMaxNativeZoom, tilesUrl) {
     return configured;
 }
 
+function tileRangeKeyForBounds(bounds, zoom, bufferTiles = 0) {
+    if (!bounds) return "";
+    const z = Math.max(effectiveMinZoom(), Math.floor(Number(zoom) || effectiveMinZoom()));
+    const nw = latLonToTileXY(bounds.getNorth(), bounds.getWest(), z);
+    const se = latLonToTileXY(bounds.getSouth(), bounds.getEast(), z);
+    const scale = Math.pow(2, z);
+    const buffer = Math.max(0, Math.floor(Number(bufferTiles) || 0));
+    const xMin = Math.max(0, Math.min(nw.x, se.x) - buffer);
+    const xMax = Math.min(scale - 1, Math.max(nw.x, se.x) + buffer);
+    const yMin = Math.max(0, Math.min(nw.y, se.y) - buffer);
+    const yMax = Math.min(scale - 1, Math.max(nw.y, se.y) + buffer);
+    return `${z}:${xMin}:${yMin}:${xMax}:${yMax}`;
+}
+
 function scheduleTileZoomDiscovery() {
     return;
 }
@@ -2181,8 +2328,6 @@ function buildTrackingPrefetchPlan() {
         Number.isFinite(focusZoom) ? Math.floor(focusZoom).toString() : "",
         userFocusTile.x,
         userFocusTile.y,
-        userLat.toFixed(5),
-        userLon.toFixed(5),
         container ? Math.round(container.clientWidth || 0) : "",
         container ? Math.round(container.clientHeight || 0) : "",
     ].join("|");
@@ -2246,22 +2391,23 @@ function buildHighResPrefetchPlan() {
         return {key: "", coords: [], breakdown: {userTiles: 0, rocketTiles: 0, combinedTiles: 0}};
     }
     const bounds = groundMap && groundMap.getBounds ? groundMap.getBounds() : null;
-    const viewportKey = bounds
-        ? [
-            bounds.getNorth().toFixed(4),
-            bounds.getSouth().toFixed(4),
-            bounds.getEast().toFixed(4),
-            bounds.getWest().toFixed(4),
-        ].join(",")
-        : "";
+    const viewportZoom = Math.max(
+        effectiveMinZoom(),
+        Math.min(maxNativeZoom, Math.floor(Number.isFinite(mapZoom) ? mapZoom : maxNativeZoom))
+    );
+    const viewportKey = tileRangeKeyForBounds(bounds, viewportZoom, HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES);
+    const userTile = Number.isFinite(userLat) && Number.isFinite(userLon)
+        ? latLonToTileXY(userLat, userLon, maxNativeZoom)
+        : null;
+    const rocketTile = Number.isFinite(rocketLat) && Number.isFinite(rocketLon)
+        ? latLonToTileXY(rocketLat, rocketLon, maxNativeZoom)
+        : null;
     const key = [
         tilesUrl,
         String(maxNativeZoom || ""),
-        Number.isFinite(mapZoom) ? mapZoom.toFixed(2) : "",
-        Number.isFinite(userLat) ? userLat.toFixed(4) : "",
-        Number.isFinite(userLon) ? userLon.toFixed(4) : "",
-        Number.isFinite(rocketLat) ? rocketLat.toFixed(4) : "",
-        Number.isFinite(rocketLon) ? rocketLon.toFixed(4) : "",
+        Number.isFinite(mapZoom) ? Math.floor(mapZoom).toString() : "",
+        userTile ? `${userTile.x}:${userTile.y}` : "",
+        rocketTile ? `${rocketTile.x}:${rocketTile.y}` : "",
         userRadiusM.toFixed(0),
         rocketRadiusM.toFixed(0),
         viewportKey,
@@ -5762,6 +5908,8 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
 
 (function pinGroundStation26() {
     const api = (window.GS26 = window.GS26 || {});
+    setStoredTileCacheUsageBytes(storedTileCacheUsageBytes());
+    schedulePersistentTileCacheUsageMeasure(4000);
 
     api.initGroundMap = safeMapCallback("api initGroundMap", initGroundMap);
     api.updateGroundMapMarkers = safeMapCallback("api updateGroundMapMarkers", updateGroundMapMarkers);
