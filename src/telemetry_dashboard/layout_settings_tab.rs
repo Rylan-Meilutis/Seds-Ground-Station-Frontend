@@ -437,7 +437,11 @@ pub fn SettingsPage(
               };
               const update = () => {
                 const root = document.getElementById("gs26-cache-budget-summary");
-                if (!root) return;
+                if (!root) {
+                  clearInterval(window.__gs26_cache_budget_settings_timer);
+                  window.__gs26_cache_budget_settings_timer = null;
+                  return;
+                }
                 const budgetBytes = Number(root.dataset.budgetBytes || 0);
                 const measuredBytes = Number(root.dataset.measuredBytes || 0);
                 const estimate = window.__gs26_ground_map_prefetch_estimate || {};
@@ -448,25 +452,25 @@ pub fn SettingsPage(
                 const setEstimateText = (id, tiles, bytes) => {
                   const el = document.getElementById(id);
                   if (!el) return;
-                  el.textContent = Number(tiles) > 0
+                  const next = Number(tiles) > 0
                     ? `${Number(tiles)} tiles x ${humanBytes(tileBytes)} = ${humanBytes(bytes)}`
                     : el.dataset.waitingText || "Waiting for map context.";
+                  if (el.textContent !== next) el.textContent = next;
                 };
                 setEstimateText("gs26-prefetch-user-estimate-text", Number(estimate.userTiles || 0), Number(estimate.userEstimatedBytes || 0));
                 setEstimateText("gs26-prefetch-rocket-estimate-text", Number(estimate.rocketTiles || 0), Number(estimate.rocketEstimatedBytes || 0));
                 setEstimateText("gs26-prefetch-combined-estimate-text", combinedTiles, combinedBytes);
                 const warningText = document.getElementById("gs26-prefetch-estimate-warning");
                 if (warningText) {
+                  let nextWarning = "";
                   if (budgetBytes > 0 && combinedBytes > budgetBytes) {
-                    warningText.textContent = "This prefetch is larger than the configured cache limit.";
-                    warningText.style.display = "block";
+                    nextWarning = "This prefetch is larger than the configured cache limit.";
                   } else if (budgetBytes > 0 && projected > budgetBytes) {
-                    warningText.textContent = `This prefetch may exceed the cache limit (${humanBytes(projected)} projected).`;
-                    warningText.style.display = "block";
-                  } else {
-                    warningText.textContent = "";
-                    warningText.style.display = "none";
+                    nextWarning = `This prefetch may exceed the cache limit (${humanBytes(projected)} projected).`;
                   }
+                  if (warningText.textContent !== nextWarning) warningText.textContent = nextWarning;
+                  const nextDisplay = nextWarning ? "block" : "none";
+                  if (warningText.style.display !== nextDisplay) warningText.style.display = nextDisplay;
                 }
               };
               window.__gs26_cache_budget_settings_timer = window.setInterval(update, 500);

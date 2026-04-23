@@ -65,9 +65,11 @@ static volatile int g_gs26_last_location_error_code = 0;
 #endif
 
   if (authorized) {
-    [self.mgr startUpdatingLocation];
-    g_gs26_location_started = 1;
-    if ([CLLocationManager headingAvailable]) {
+    if (!g_gs26_location_started) {
+      [self.mgr startUpdatingLocation];
+      g_gs26_location_started = 1;
+    }
+    if (!g_gs26_heading_started && [CLLocationManager headingAvailable]) {
       [self.mgr startUpdatingHeading];
       g_gs26_heading_started = 1;
     }
@@ -198,7 +200,12 @@ static GS26LocationShim *g_shim = nil;
 void gs26_location_start(LocationCallback cb) {
   dispatch_async(dispatch_get_main_queue(), ^{
     @autoreleasepool {
-      g_shim = [[GS26LocationShim alloc] initWithCallback:cb];
+      if (!g_shim) {
+        g_shim = [[GS26LocationShim alloc] initWithCallback:cb];
+      } else {
+        g_shim.cb = cb;
+        [g_shim kickLocationAuthFlow];
+      }
     }
   });
 }

@@ -40,6 +40,7 @@ object LocationShim : LocationListener, SensorEventListener {
     private var smoothedHeadingDeg: Float? = null
     private var headingAccuracy: Int = SensorManager.SENSOR_STATUS_UNRELIABLE
     private val headingSamples = ArrayDeque<Float>()
+    private val rotationMatrix = FloatArray(9)
 
     @JvmStatic
     external fun nativeOnLocationUpdate(lat: Double, lon: Double)
@@ -203,7 +204,6 @@ object LocationShim : LocationListener, SensorEventListener {
             return
         }
 
-        val rotationMatrix = FloatArray(9)
         SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
         // Use absolute yaw from the raw world/device rotation matrix.
         // This keeps north stable regardless of screen rotation, pitch, or roll,
@@ -226,6 +226,34 @@ object LocationShim : LocationListener, SensorEventListener {
     }
 
     private fun smoothHeading(sampleDeg: Float): Float {
+        if (HEADING_SAMPLE_WINDOW <= 1) {
+            val previous = smoothedHeadingDeg
+            if (previous == null) {
+                smoothedHeadingDeg = sampleDeg
+                return sampleDeg
+            }
+
+            var delta = sampleDeg - previous
+            if (delta > 180f) {
+                delta -= 360f
+            } else if (delta < -180f) {
+                delta += 360f
+            }
+
+            if (abs(delta) < HEADING_JITTER_THRESHOLD_DEG) {
+                return previous
+            }
+
+            val alpha = if (headingAccuracy >= SensorManager.SENSOR_STATUS_ACCURACY_HIGH) {
+                HEADING_SMOOTHING_ALPHA_HIGH
+            } else {
+                HEADING_SMOOTHING_ALPHA_LOW
+            }
+            val next = normalizeHeading(previous + (delta * alpha))
+            smoothedHeadingDeg = next
+            return next
+        }
+
         headingSamples.addLast(sampleDeg)
         while (headingSamples.size > HEADING_SAMPLE_WINDOW) {
             headingSamples.removeFirst()

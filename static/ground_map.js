@@ -132,7 +132,6 @@ const DOM_MAP_MAX_OVERZOOM_DELTA = 6;
 const HIGH_RES_PREFETCH_DEFAULT_RADIUS_M = 1609.344;
 const HIGH_RES_PREFETCH_MIN_RADIUS_M = 100;
 const HIGH_RES_PREFETCH_MAX_RADIUS_M = 20000;
-const HIGH_RES_PREFETCH_MAX_TILES = 900;
 const HIGH_RES_PREFETCH_CONCURRENCY = 8;
 const HIGH_RES_PREFETCH_STATE_UPDATE_INTERVAL_MS = 250;
 const HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES = 5;
@@ -1712,12 +1711,14 @@ function trackingZoomLevels(maxNativeZoom, focusZoom) {
 }
 
 function appendUniqueCoords(target, seen, coords, maxTiles) {
+    const hasLimit = Number.isFinite(Number(maxTiles)) && Number(maxTiles) > 0;
+    const limit = hasLimit ? Number(maxTiles) : Infinity;
     for (const coord of coords) {
         const id = `${coord.z}/${coord.x}/${coord.y}`;
         if (seen.has(id)) continue;
         seen.add(id);
         target.push(coord);
-        if (target.length >= maxTiles) break;
+        if (target.length >= limit) break;
     }
 }
 
@@ -2267,44 +2268,39 @@ function buildHighResPrefetchPlan() {
     ].join("|");
 
     for (const zoom of zooms) {
-        if (bounds && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+        if (bounds) {
             appendUniqueCoords(
                 coords,
                 seen,
-                tileCoordsForBounds(bounds, zoom),
-                HIGH_RES_PREFETCH_MAX_TILES
+                tileCoordsForBounds(bounds, zoom)
             );
         }
 
-        if (Number.isFinite(userLat) && Number.isFinite(userLon) && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+        if (Number.isFinite(userLat) && Number.isFinite(userLon)) {
             const aroundUser = tileCoordsAround(userLat, userLon, zoom, userRadiusM);
             appendUniqueCoords(
                 userCoords,
                 userSeen,
-                aroundUser,
-                HIGH_RES_PREFETCH_MAX_TILES
+                aroundUser
             );
             appendUniqueCoords(
                 coords,
                 seen,
-                aroundUser,
-                HIGH_RES_PREFETCH_MAX_TILES
+                aroundUser
             );
         }
 
-        if (Number.isFinite(rocketLat) && Number.isFinite(rocketLon) && coords.length < HIGH_RES_PREFETCH_MAX_TILES) {
+        if (Number.isFinite(rocketLat) && Number.isFinite(rocketLon)) {
             const aroundRocket = tileCoordsAround(rocketLat, rocketLon, zoom, rocketRadiusM);
             appendUniqueCoords(
                 rocketCoords,
                 rocketSeen,
-                aroundRocket,
-                HIGH_RES_PREFETCH_MAX_TILES
+                aroundRocket
             );
             appendUniqueCoords(
                 coords,
                 seen,
-                aroundRocket,
-                HIGH_RES_PREFETCH_MAX_TILES
+                aroundRocket
             );
         }
     }

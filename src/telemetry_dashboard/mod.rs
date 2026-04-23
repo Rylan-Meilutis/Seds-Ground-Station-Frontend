@@ -46,14 +46,14 @@ use dioxus_signals::Signal;
 use errors_tab::ErrorsTab;
 use layout::LayoutConfig;
 use layout_settings_tab::SettingsPage;
-use map_tab::{js_update_markers, MapTab};
+use map_tab::{MapTab, js_update_markers};
 use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
 use types::{
-    display_flight_state, BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg,
-    TelemetryRow,
+    BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
+    display_flight_state,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use version_page::VersionTab;
@@ -61,8 +61,8 @@ use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering}, Arc,
-    Mutex,
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering},
 };
 
 use once_cell::sync::Lazy;
@@ -531,7 +531,7 @@ fn fallback_latest_telemetry_value(
 
 #[cfg(test)]
 mod latest_telemetry_tests {
-    use super::{latest_telemetry_value, reset_latest_telemetry, TelemetryRow};
+    use super::{TelemetryRow, latest_telemetry_value, reset_latest_telemetry};
 
     #[test]
     fn derives_latest_loadcell_labels_from_kg1000_samples() {
@@ -2305,8 +2305,8 @@ fn reset_tminus_display_latch() {
 #[cfg(test)]
 mod launch_clock_tests {
     use super::{
-        launch_clock_tminus_remaining_ms, monotonic_tminus_display_ms, reset_tminus_display_latch,
-        LaunchClockKind, LaunchClockMsg,
+        LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms,
+        monotonic_tminus_display_ms, reset_tminus_display_latch,
     };
     use std::sync::Mutex;
 

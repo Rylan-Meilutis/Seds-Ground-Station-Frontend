@@ -5,7 +5,7 @@ This repository contains the Dioxus-based frontend for the UBSEDS ground station
 Current release:
 
 - Frontend version: `0.3.1`
-- App build: `11`
+- App build: `23`
 - Dioxus line: `0.7.5`
 - Targets: web, macOS desktop, Android, iOS
 

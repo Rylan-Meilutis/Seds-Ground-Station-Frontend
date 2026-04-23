@@ -42,9 +42,14 @@ pub fn DetailedTab(
                   };
                   const setText = (id, value) => {
                     const el = document.getElementById(id);
-                    if (el) el.textContent = value;
+                    if (el && el.textContent !== value) el.textContent = value;
                   };
                   const update = () => {
+                    if (!document.getElementById("gs26-prefetch-state")) {
+                      clearInterval(window.__gs26_prefetch_detail_timer);
+                      window.__gs26_prefetch_detail_timer = null;
+                      return;
+                    }
                     const state = window.__gs26_ground_map_cache_state || {};
                     const completed = Number(state.completed);
                     const failed = Number(state.failed);
