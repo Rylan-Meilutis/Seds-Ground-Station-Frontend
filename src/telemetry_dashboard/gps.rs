@@ -58,19 +58,13 @@ pub fn GpsDriver(
 
     #[cfg(target_os = "windows")]
     {
-        use dioxus_sdk_geolocation::{init_geolocator, use_geolocation, PowerMode};
-
-        let _geo = init_geolocator(PowerMode::High);
-        let geo = use_geolocation();
-
         use_effect(move || {
-            if let Ok(pos) = geo() {
-                let lat = pos.latitude;
-                let lon = pos.longitude;
-                if lat.is_finite() && lon.is_finite() {
-                    user_gps.set(Some((lat, lon)));
-                }
-            }
+            spawn(async move {
+                crate::telemetry_dashboard::gps_webview::run(user_gps).await;
+            });
+        });
+        use_drop(|| {
+            crate::telemetry_dashboard::gps_webview::stop();
         });
 
         return rsx!(div {});

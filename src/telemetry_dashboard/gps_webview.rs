@@ -57,7 +57,12 @@ pub async fn run(mut user_gps: Signal<Option<(f64, f64)>>) {
 
     loop {
         if let Some((lat, lon)) = read_user_latlon_from_window().await {
-            user_gps.set(Some((lat, lon)));
+            if lat.is_finite()
+                && lon.is_finite()
+                && !(lat.abs() < 0.000_001 && lon.abs() < 0.000_001)
+            {
+                user_gps.set(Some((lat, lon)));
+            }
         } else if let Some(message) = read_window_string("__gs26_geo_error").await
             && !message.is_empty()
         {

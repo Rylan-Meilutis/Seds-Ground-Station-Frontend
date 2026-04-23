@@ -2139,13 +2139,26 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         }}
                         targetCtx.restore();
                       }};
-                      let cache = cacheRoot.get(canvasId);
+                      let cache = cacheRoot.get(canvasId) || {{
+                        signature: data.signature,
+                        pxW,
+                        pxH,
+                        gridBuffer: null,
+                        chunkCache: new Map(),
+                        path2dCache: new Map(),
+                        historyBuffer: null,
+                        historyKey: null,
+                      }};
                       const cacheMiss = !cache
                           || cache.signature !== data.signature
                           || cache.pxW !== pxW
                           || cache.pxH !== pxH;
 
                       if (isWindows) {{
+                        cache.signature = data.signature;
+                        cache.pxW = pxW;
+                        cache.pxH = pxH;
+                        cacheRoot.set(canvasId, cache);
                         if (typeof ctx.resetTransform === "function") {{
                           ctx.resetTransform();
                         }} else {{
