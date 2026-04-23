@@ -10,6 +10,7 @@ pub fn SettingsPage(
     network_flow_animation_enabled: Signal<bool>,
     network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
+    map_tile_cache_enabled: Signal<bool>,
     map_prefetch_enabled: Signal<bool>,
     map_prefetch_user_radius_m: Signal<u32>,
     map_prefetch_rocket_radius_m: Signal<u32>,
@@ -35,10 +36,26 @@ pub fn SettingsPage(
     let flow_animation_enabled = *network_flow_animation_enabled.read();
     let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
+    let map_tile_cache_enabled_value = *map_tile_cache_enabled.read();
     let map_prefetch_enabled_value = *map_prefetch_enabled.read();
-    let map_prefetch_user_radius_value = *map_prefetch_user_radius_m.read();
-    let map_prefetch_rocket_radius_value = *map_prefetch_rocket_radius_m.read();
+    let map_prefetch_user_radius_m_value = *map_prefetch_user_radius_m.read();
+    let map_prefetch_rocket_radius_m_value = *map_prefetch_rocket_radius_m.read();
     let calibration_capture_sample_count_value = *calibration_capture_sample_count.read();
+    let radius_unit_label = if metric_enabled { "m" } else { "ft" };
+    let radius_min_display = if metric_enabled { 100 } else { 328 };
+    let radius_max_display = if metric_enabled { 20_000 } else { 65_617 };
+    let radius_step_display = if metric_enabled { 100 } else { 100 };
+    let radius_to_display = |meters: u32| -> u32 {
+        if metric_enabled {
+            meters
+        } else {
+            ((meters as f64) * 3.280_839_895)
+                .round()
+                .clamp(328.0, 65_617.0) as u32
+        }
+    };
+    let map_prefetch_user_radius_value = radius_to_display(map_prefetch_user_radius_m_value);
+    let map_prefetch_rocket_radius_value = radius_to_display(map_prefetch_rocket_radius_m_value);
 
     let card_style = format!(
         "padding:16px; border-radius:14px; border:1px solid {}; background:{}; display:flex; flex-direction:column; gap:12px;",
@@ -61,6 +78,12 @@ pub fn SettingsPage(
     let section_calibration =
         localized_copy(&language, "Calibration", "Calibracion", "Calibration");
     let section_storage = localized_copy(&language, "Storage", "Almacenamiento", "Stockage");
+    let section_cache_control = localized_copy(
+        &language,
+        "Cache Control",
+        "Control de cache",
+        "Controle cache",
+    );
     let storage_breakdown_title = localized_copy(
         &language,
         "Used Storage",
@@ -69,7 +92,7 @@ pub fn SettingsPage(
     );
     let prefetch_title = localized_copy(
         &language,
-        "Map Prefetch",
+        "Map Tile Prefetch",
         "Precarga del mapa",
         "Prechargement carte",
     );
@@ -81,6 +104,18 @@ pub fn SettingsPage(
     );
     let prefetch_on = localized_copy(&language, "Enabled", "Activado", "Active");
     let prefetch_off = localized_copy(&language, "Disabled", "Desactivado", "Desactive");
+    let tile_cache_title = localized_copy(
+        &language,
+        "Map Tile Cache",
+        "Cache de mosaicos",
+        "Cache des tuiles",
+    );
+    let tile_cache_desc = localized_copy(
+        &language,
+        "Stores fetched map tiles locally for faster reloads and offline map recovery.",
+        "Guarda mosaicos del mapa localmente para recargas mas rapidas y recuperacion sin conexion.",
+        "Stocke les tuiles localement pour des rechargements plus rapides et la recuperation hors ligne.",
+    );
     let prefetch_user_radius_title = localized_copy(
         &language,
         "User Prefetch Radius",
@@ -95,9 +130,9 @@ pub fn SettingsPage(
     );
     let prefetch_radius_desc = localized_copy(
         &language,
-        "Meters of map tiles to grab around each location.",
-        "Metros de mosaicos a capturar alrededor de cada ubicacion.",
-        "Metres de tuiles a recuperer autour de chaque position.",
+        "Distance of map tiles to grab around each location.",
+        "Distancia de mosaicos a capturar alrededor de cada ubicacion.",
+        "Distance de tuiles a recuperer autour de chaque position.",
     );
     let calibration_samples_title = localized_copy(
         &language,
@@ -388,6 +423,22 @@ pub fn SettingsPage(
                     }
                 }
                 div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{tile_cache_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{tile_cache_desc}" }
+                    div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                        button {
+                            style: if map_tile_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| map_tile_cache_enabled.set(true),
+                            "{prefetch_on}"
+                        }
+                        button {
+                            style: if !map_tile_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| map_tile_cache_enabled.set(false),
+                            "{prefetch_off}"
+                        }
+                    }
+                }
+                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
                     div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_desc}" }
                     div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
@@ -406,42 +457,66 @@ pub fn SettingsPage(
                 div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:10px;",
                     div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_user_radius_title}" }
-                        div { style: "font-size:12px; color:{theme.text_soft};", "{prefetch_radius_desc}" }
-                        input {
-                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:160px;",
-                            r#type: "number",
-                            min: "100",
-                            max: "20000",
-                            step: "100",
-                            value: "{map_prefetch_user_radius_value}",
-                            oninput: {
-                                let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
-                                move |e| {
-                                    if let Ok(value) = e.value().trim().parse::<u32>() {
-                                        map_prefetch_user_radius_m.set(value.clamp(100, 20_000));
+                        div { style: "font-size:12px; color:{theme.text_soft};", "{prefetch_radius_desc} ({radius_unit_label})" }
+                        div { style: "display:flex; align-items:center; gap:8px;",
+                            input {
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:160px;",
+                                r#type: "number",
+                                min: "{radius_min_display}",
+                                max: "{radius_max_display}",
+                                step: "{radius_step_display}",
+                                value: "{map_prefetch_user_radius_value}",
+                                oninput: {
+                                    let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
+                                    let metric_enabled = metric_enabled;
+                                    move |e| {
+                                        if let Ok(value) = e.value().trim().parse::<u32>() {
+                                            let meters = if metric_enabled {
+                                                value.clamp(100, 20_000)
+                                            } else {
+                                                ((value as f64) / 3.280_839_895)
+                                                    .round()
+                                                    .clamp(100.0, 20_000.0)
+                                                    as u32
+                                            };
+                                            map_prefetch_user_radius_m.set(meters);
+                                        }
                                     }
                                 }
                             }
+                            div { style: "font-size:13px; color:{theme.text_secondary}; min-width:24px;", "{radius_unit_label}" }
                         }
                     }
                     div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_rocket_radius_title}" }
-                        div { style: "font-size:12px; color:{theme.text_soft};", "{prefetch_radius_desc}" }
-                        input {
-                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:160px;",
-                            r#type: "number",
-                            min: "100",
-                            max: "20000",
-                            step: "100",
-                            value: "{map_prefetch_rocket_radius_value}",
-                            oninput: {
-                                let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
-                                move |e| {
-                                    if let Ok(value) = e.value().trim().parse::<u32>() {
-                                        map_prefetch_rocket_radius_m.set(value.clamp(100, 20_000));
+                        div { style: "font-size:12px; color:{theme.text_soft};", "{prefetch_radius_desc} ({radius_unit_label})" }
+                        div { style: "display:flex; align-items:center; gap:8px;",
+                            input {
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:160px;",
+                                r#type: "number",
+                                min: "{radius_min_display}",
+                                max: "{radius_max_display}",
+                                step: "{radius_step_display}",
+                                value: "{map_prefetch_rocket_radius_value}",
+                                oninput: {
+                                    let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
+                                    let metric_enabled = metric_enabled;
+                                    move |e| {
+                                        if let Ok(value) = e.value().trim().parse::<u32>() {
+                                            let meters = if metric_enabled {
+                                                value.clamp(100, 20_000)
+                                            } else {
+                                                ((value as f64) / 3.280_839_895)
+                                                    .round()
+                                                    .clamp(100.0, 20_000.0)
+                                                    as u32
+                                            };
+                                            map_prefetch_rocket_radius_m.set(meters);
+                                        }
                                     }
                                 }
                             }
+                            div { style: "font-size:13px; color:{theme.text_secondary}; min-width:24px;", "{radius_unit_label}" }
                         }
                     }
                 }
@@ -533,6 +608,12 @@ pub fn SettingsPage(
                             }
                         }
                     }
+                }
+            }
+
+            div { style: "margin-top:12px; {card_style}",
+                div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_cache_control}" }
+                div { style: "display:flex; flex-direction:column; gap:12px;",
                     div { style: "display:flex; flex-direction:column; gap:6px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{clear_data_cache_title}" }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{clear_data_cache_desc}" }

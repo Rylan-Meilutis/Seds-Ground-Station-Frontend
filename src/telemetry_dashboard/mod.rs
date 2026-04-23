@@ -674,6 +674,7 @@ const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
 const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertical";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
+const MAP_TILE_CACHE_ENABLED_STORAGE_KEY: &str = "gs26_tile_cache_enabled";
 const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
 const MAP_PREFETCH_USER_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_user_radius_m";
 const MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_rocket_radius_m";
@@ -689,6 +690,7 @@ const NOTIFICATION_AUTO_DISMISS_MS: u32 = 5_000;
 const MAX_ACTIVE_NOTIFICATIONS: usize = 2;
 const MAX_NOTIFICATION_HISTORY: usize = 500;
 const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
+const TILE_CACHE_STATS_TTL_MS: i64 = 5_000;
 const DEFAULT_PREFETCH_RADIUS_M: u32 = 1_609;
 const MIN_PREFETCH_RADIUS_M: u32 = 100;
 const MAX_PREFETCH_RADIUS_M: u32 = 20_000;
@@ -724,6 +726,7 @@ fn cache_storage_stats_rows() -> Vec<(String, String)> {
         NETWORK_FLOW_ANIMATION_STORAGE_KEY,
         NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY,
         STATE_CHART_LABELS_VERTICAL_STORAGE_KEY,
+        MAP_TILE_CACHE_ENABLED_STORAGE_KEY,
         MAP_PREFETCH_ENABLED_STORAGE_KEY,
         MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
         MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY,
@@ -795,6 +798,17 @@ fn human_bytes_u64(bytes: u64) -> String {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_tile_cache_stats() -> (u64, u64) {
+    static TILE_CACHE_STATS_CACHE: Lazy<Mutex<(i64, u64, u64)>> =
+        Lazy::new(|| Mutex::new((0, 0, 0)));
+
+    let now = current_wallclock_ms();
+    if let Ok(cache) = TILE_CACHE_STATS_CACHE.lock() {
+        let (last_ms, bytes, files) = *cache;
+        if now.saturating_sub(last_ms) < TILE_CACHE_STATS_TTL_MS {
+            return (bytes, files);
+        }
+    }
+
     fn walk(path: &std::path::Path) -> (u64, u64) {
         let Ok(entries) = std::fs::read_dir(path) else {
             return (0, 0);
@@ -818,7 +832,11 @@ fn native_tile_cache_stats() -> (u64, u64) {
         (bytes, files)
     }
 
-    walk(&std::env::temp_dir().join("gs26-tile-cache"))
+    let (bytes, files) = walk(&std::env::temp_dir().join("gs26-tile-cache"));
+    if let Ok(mut cache) = TILE_CACHE_STATS_CACHE.lock() {
+        *cache = (now, bytes, files);
+    }
+    (bytes, files)
 }
 
 fn clear_cached_layout_configs() {
@@ -1566,6 +1584,8 @@ pub fn NativeSettingsPage() -> Element {
         use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
+    let map_tile_cache_enabled =
+        use_signal(|| persist::get_or(MAP_TILE_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_prefetch_enabled =
         use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
     let map_prefetch_user_radius_m =
@@ -1637,6 +1657,35 @@ pub fn NativeSettingsPage() -> Element {
                 "off"
             };
             persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
+        let map_tile_cache_enabled = map_tile_cache_enabled;
+        use_effect(move || {
+            let enabled = *map_tile_cache_enabled.read();
+            persist::set_string(
+                MAP_TILE_CACHE_ENABLED_STORAGE_KEY,
+                if enabled { "on" } else { "off" },
+            );
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_tile_cache_enabled = {enabled};
+                    window.__gs26_tile_cache_disabled = !{enabled};
+                    if (window.localStorage) {{
+                      window.localStorage.setItem("gs26_tile_cache_enabled", {enabled} ? "on" : "off");
+                    }}
+                    const api = window.GS26 || window;
+                    if (typeof api.setTileCacheEnabled === "function") {{
+                      api.setTileCacheEnabled({enabled});
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 tile cache toggle sync failed:", e);
+                  }}
+                }})();
+                "#
+            ));
         });
     }
     {
@@ -1735,6 +1784,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut network_flow_animation_enabled = network_flow_animation_enabled;
         let mut network_topology_vertical = network_topology_vertical;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
+        let mut map_tile_cache_enabled = map_tile_cache_enabled;
         let mut map_prefetch_enabled = map_prefetch_enabled;
         let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
         let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
@@ -1747,6 +1797,7 @@ pub fn NativeSettingsPage() -> Element {
             network_flow_animation_enabled.set(true);
             network_topology_vertical.set(false);
             state_chart_labels_vertical.set(false);
+            map_tile_cache_enabled.set(true);
             map_prefetch_enabled.set(true);
             map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
             map_prefetch_rocket_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
@@ -1762,6 +1813,7 @@ pub fn NativeSettingsPage() -> Element {
             network_flow_animation_enabled,
             network_topology_vertical,
             state_chart_labels_vertical,
+            map_tile_cache_enabled,
             map_prefetch_enabled,
             map_prefetch_user_radius_m,
             map_prefetch_rocket_radius_m,
@@ -2830,6 +2882,8 @@ fn TelemetryDashboardInner() -> Element {
         use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
+    let map_tile_cache_enabled =
+        use_signal(|| persist::get_or(MAP_TILE_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_prefetch_enabled =
         use_signal(|| persist::get_or(MAP_PREFETCH_ENABLED_STORAGE_KEY, "on") != "off");
     let map_prefetch_user_radius_m =
@@ -3308,6 +3362,35 @@ fn TelemetryDashboardInner() -> Element {
                 "off"
             };
             persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
+        let map_tile_cache_enabled = map_tile_cache_enabled;
+        use_effect(move || {
+            let enabled = *map_tile_cache_enabled.read();
+            persist::set_string(
+                MAP_TILE_CACHE_ENABLED_STORAGE_KEY,
+                if enabled { "on" } else { "off" },
+            );
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_tile_cache_enabled = {enabled};
+                    window.__gs26_tile_cache_disabled = !{enabled};
+                    if (window.localStorage) {{
+                      window.localStorage.setItem("gs26_tile_cache_enabled", {enabled} ? "on" : "off");
+                    }}
+                    const api = window.GS26 || window;
+                    if (typeof api.setTileCacheEnabled === "function") {{
+                      api.setTileCacheEnabled({enabled});
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 tile cache toggle sync failed:", e);
+                  }}
+                }})();
+                "#
+            ));
         });
     }
     {
@@ -4480,6 +4563,7 @@ fn TelemetryDashboardInner() -> Element {
                             network_flow_animation_enabled: network_flow_animation_enabled,
                             network_topology_vertical: network_topology_vertical,
                             state_chart_labels_vertical: state_chart_labels_vertical,
+                            map_tile_cache_enabled: map_tile_cache_enabled,
                             map_prefetch_enabled: map_prefetch_enabled,
                             map_prefetch_user_radius_m: map_prefetch_user_radius_m,
                             map_prefetch_rocket_radius_m: map_prefetch_rocket_radius_m,
@@ -4510,6 +4594,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut network_flow_animation_enabled = network_flow_animation_enabled;
                                 let mut network_topology_vertical = network_topology_vertical;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
+                                let mut map_tile_cache_enabled = map_tile_cache_enabled;
                                 let mut map_prefetch_enabled = map_prefetch_enabled;
                                 let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
                                 let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
@@ -4527,6 +4612,7 @@ fn TelemetryDashboardInner() -> Element {
                                     network_flow_animation_enabled.set(true);
                                     network_topology_vertical.set(false);
                                     state_chart_labels_vertical.set(false);
+                                    map_tile_cache_enabled.set(true);
                                     map_prefetch_enabled.set(true);
                                     map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
                                     map_prefetch_rocket_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);

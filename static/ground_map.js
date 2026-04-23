@@ -120,7 +120,8 @@ const HIGH_RES_PREFETCH_DEFAULT_RADIUS_M = 1609.344;
 const HIGH_RES_PREFETCH_MIN_RADIUS_M = 100;
 const HIGH_RES_PREFETCH_MAX_RADIUS_M = 20000;
 const HIGH_RES_PREFETCH_MAX_TILES = 900;
-const HIGH_RES_PREFETCH_CONCURRENCY = 20;
+const HIGH_RES_PREFETCH_CONCURRENCY = 8;
+const HIGH_RES_PREFETCH_STATE_UPDATE_INTERVAL_MS = 250;
 const HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES = 5;
 const HIGH_RES_PREFETCH_LOCATION_BUFFER_TILES = 5;
 const HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA = 3;
@@ -2188,6 +2189,7 @@ async function runHighResTilePrefetch(runId, key) {
     let completed = 0;
     let failed = 0;
     const total = plan.coords.length;
+    let lastStateUpdateAt = 0;
 
     setTilePrefetchState({
         key,
@@ -2198,6 +2200,23 @@ async function runHighResTilePrefetch(runId, key) {
         lastStartedAt: Date.now(),
     });
 
+    const publishProgress = (force = false) => {
+        if (runId !== tilePrefetchRunId) return;
+        const now = Date.now();
+        if (!force && completed < total && now - lastStateUpdateAt < HIGH_RES_PREFETCH_STATE_UPDATE_INTERVAL_MS) {
+            return;
+        }
+        lastStateUpdateAt = now;
+        setTilePrefetchState({
+            key,
+            state: completed >= total ? "ready" : "warming",
+            pending: Math.max(0, total - completed),
+            completed,
+            failed,
+            lastCompletedAt: completed >= total ? now : tilePrefetchState.lastCompletedAt,
+        });
+    };
+
     const worker = async () => {
         while (true) {
             if (runId !== tilePrefetchRunId || effectivePrefetchTilesUrl() !== tilesUrl) return;
@@ -2207,6 +2226,7 @@ async function runHighResTilePrefetch(runId, key) {
             const url = resolvePrefetchTileUrl(tilesUrl, coord.z, coord.x, coord.y);
             if (!url || isKnownMissingTile(cacheName, url)) {
                 completed += 1;
+                publishProgress();
                 continue;
             }
             try {
@@ -2215,16 +2235,7 @@ async function runHighResTilePrefetch(runId, key) {
                 failed += 1;
             } finally {
                 completed += 1;
-                if (runId === tilePrefetchRunId) {
-                    setTilePrefetchState({
-                        key,
-                        state: completed >= total ? "ready" : "warming",
-                        pending: Math.max(0, total - completed),
-                        completed,
-                        failed,
-                        lastCompletedAt: completed >= total ? Date.now() : tilePrefetchState.lastCompletedAt,
-                    });
-                }
+                publishProgress();
             }
         }
     };
@@ -2233,14 +2244,7 @@ async function runHighResTilePrefetch(runId, key) {
     await Promise.allSettled(Array.from({length: concurrency}, () => worker()));
 
     if (runId === tilePrefetchRunId) {
-        setTilePrefetchState({
-            key,
-            state: "ready",
-            pending: 0,
-            completed,
-            failed,
-            lastCompletedAt: Date.now(),
-        });
+        publishProgress(true);
     }
 }
 
@@ -2349,7 +2353,7 @@ function scheduleHighResTilePrefetch(options = {}) {
         });
         return;
     }
-    if (!tileFetchAllowedForUrl(tilesUrl) || !tileCacheSupported()) {
+    if (!tileCacheEnabled() || !tileFetchAllowedForUrl(tilesUrl) || !tileCacheSupported()) {
         currentPrefetchKey = "";
         stopTrackingTilePrefetch();
         setTilePrefetchState({
