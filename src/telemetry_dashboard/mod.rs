@@ -1703,24 +1703,6 @@ pub fn NativeSettingsPage() -> Element {
             .unwrap_or(200)
             .clamp(1, 5_000)
     });
-    let cache_usage_tick = use_signal(|| 0u64);
-
-    {
-        let mut cache_usage_tick = cache_usage_tick;
-        use_future(move || async move {
-            loop {
-                #[cfg(target_arch = "wasm32")]
-                gloo_timers::future::TimeoutFuture::new(1000).await;
-
-                #[cfg(not(target_arch = "wasm32"))]
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-
-                let next_tick = cache_usage_tick.read().wrapping_add(1);
-                cache_usage_tick.set(next_tick);
-            }
-        });
-    }
-    let _cache_usage_tick_snapshot = *cache_usage_tick.read();
 
     {
         let distance_units_metric = distance_units_metric;
