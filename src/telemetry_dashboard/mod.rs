@@ -709,6 +709,7 @@ const NOTIFICATION_AUTO_DISMISS_MS: u32 = 5_000;
 const MAX_ACTIVE_NOTIFICATIONS: usize = 2;
 const MAX_NOTIFICATION_HISTORY: usize = 500;
 const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
+#[cfg(not(target_arch = "wasm32"))]
 const TILE_CACHE_STATS_TTL_MS: i64 = 5_000;
 const DEFAULT_CACHE_BUDGET_MB: u32 = 500;
 const DEFAULT_PREFETCH_RADIUS_M: u32 = 1_609;
