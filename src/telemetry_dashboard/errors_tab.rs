@@ -3,10 +3,34 @@ use dioxus::prelude::*;
 use dioxus_signals::Signal;
 
 #[component]
-pub fn ErrorsTab(errors: Signal<Vec<AlertMsg>>, theme: ThemeConfig) -> Element {
+pub fn ErrorsTab(
+    errors: Signal<Vec<AlertMsg>>,
+    theme: ThemeConfig,
+    on_ack: EventHandler<()>,
+) -> Element {
+    let has_errors = !errors.read().is_empty();
+    let ack_button_style = format!(
+        "padding:0.25rem 0.65rem; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.75rem; cursor:{}; opacity:{};",
+        theme.button_border,
+        theme.button_background,
+        theme.button_text,
+        if has_errors { "pointer" } else { "default" },
+        if has_errors { "1" } else { "0.45" },
+    );
+
     rsx! {
         div { style: "padding:4px 0 0 0; color:{theme.text_primary}; height:100%; box-sizing:border-box;",
-            h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Errors\")}" }
+            div { style: "display:flex; align-items:center; gap:10px; margin:0 0 8px 0;",
+                h2 { style: "margin:0; color:{theme.text_primary}; flex:1;", "{translate_text(\"Errors\")}" }
+                button {
+                    disabled: !has_errors,
+                    style: "{ack_button_style}",
+                    onclick: move |_| {
+                        on_ack.call(());
+                    },
+                    "{translate_text(\"Acknowledge\")}"
+                }
+            }
 
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 for e in errors.read().iter() {

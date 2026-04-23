@@ -46,14 +46,14 @@ use dioxus_signals::Signal;
 use errors_tab::ErrorsTab;
 use layout::LayoutConfig;
 use layout_settings_tab::SettingsPage;
-use map_tab::{MapTab, js_update_markers};
+use map_tab::{js_update_markers, MapTab};
 use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
 use types::{
-    BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
-    display_flight_state,
+    display_flight_state, BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg,
+    TelemetryRow,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use version_page::VersionTab;
@@ -61,8 +61,8 @@ use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering}, Arc,
+    Mutex,
 };
 
 use once_cell::sync::Lazy;
@@ -531,7 +531,7 @@ fn fallback_latest_telemetry_value(
 
 #[cfg(test)]
 mod latest_telemetry_tests {
-    use super::{TelemetryRow, latest_telemetry_value, reset_latest_telemetry};
+    use super::{latest_telemetry_value, reset_latest_telemetry, TelemetryRow};
 
     #[test]
     fn derives_latest_loadcell_labels_from_kg1000_samples() {
@@ -2306,8 +2306,8 @@ fn reset_tminus_display_latch() {
 #[cfg(test)]
 mod launch_clock_tests {
     use super::{
-        LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms,
-        monotonic_tminus_display_ms, reset_tminus_display_latch,
+        launch_clock_tminus_remaining_ms, monotonic_tminus_display_ms, reset_tminus_display_latch,
+        LaunchClockKind, LaunchClockMsg,
     };
     use std::sync::Mutex;
 
@@ -4115,39 +4115,6 @@ fn TelemetryDashboardInner() -> Element {
         "display:inline-flex; align-items:center; min-width:13ch; color:#fde68a; opacity:{}; flex:0 0 auto;",
         if has_warnings { "1" } else { "0" }
     );
-    let show_ack_warnings = *active_main_tab.read() == MainTab::Warnings && has_warnings;
-    let show_ack_errors = *active_main_tab.read() == MainTab::Errors && has_errors;
-    let ack_button_visible = show_ack_warnings || show_ack_errors;
-    let ack_button_label = if show_ack_warnings {
-        translate_text("Acknowledge warnings")
-    } else if show_ack_errors {
-        translate_text("Acknowledge errors")
-    } else {
-        "Acknowledge".to_string()
-    };
-    let ack_button_style = format!(
-        "
-            margin-left:auto;
-            padding:0.25rem 0.7rem;
-            border-radius:999px;
-            border:1px solid #4b5563;
-            background:#020617;
-            color:#e5e7eb;
-            font-size:0.75rem;
-            cursor:{};
-            visibility:{};
-        ",
-        if ack_button_visible {
-            "pointer"
-        } else {
-            "default"
-        },
-        if ack_button_visible {
-            "visible"
-        } else {
-            "hidden"
-        },
-    );
     let network_time_visible = network_time.read().is_some();
 
     // Initial flightstate (HTTP)
@@ -4173,8 +4140,7 @@ fn TelemetryDashboardInner() -> Element {
         });
     }
 
-    // Checking the Notifications tab dismisses currently active notifications
-    // and clears the unread indicator.
+    // Opening the Notifications tab dismisses active toasts while preserving history.
     {
         let notifications = notifications;
         let dismissed_notifications = dismissed_notifications;
@@ -5627,99 +5593,6 @@ fn TelemetryDashboardInner() -> Element {
                             div { class: "gs26-status-launch",
                                 LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
                             }
-                            button {
-                                class: "gs26-status-ack",
-                                "data-active": if ack_button_visible { "true" } else { "false" },
-                                style: "{ack_button_style}",
-                                onclick: {
-                                    let mut ack_warning_ts = ack_warning_ts;
-                                    let mut ack_warning_count = ack_warning_count;
-                                    let mut ack_error_ts = ack_error_ts;
-                                    let mut ack_error_count = ack_error_count;
-                                    move |_| {
-                                        if show_ack_warnings {
-                                            ack_warning_ts.set(latest_warning_ts);
-                                            ack_warning_count.set(*warning_event_counter.read());
-                                        } else if show_ack_errors {
-                                            ack_error_ts.set(latest_error_ts);
-                                            ack_error_count.set(*error_event_counter.read());
-                                        }
-                                    }
-                                },
-                                "{ack_button_label}"
-                            }
-                        }
-                    }
-
-                    // Main body
-                    if !notifications.read().is_empty() {
-                        div {
-                            style: "display:flex; flex:0 1 auto; flex-direction:column; gap:8px; margin-bottom:10px; max-height:min(30vh, 180px); overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; min-height:0; padding-right:2px;",
-                            for n in notifications.read().iter() {
-                                div {
-                                    style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0;",
-                                    span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
-                                    if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
-                                        && auth::can_send_command(action_cmd)
-                                    {
-                                        button {
-                                            style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; cursor:pointer; touch-action:manipulation;",
-                                            onmousedown: {
-                                                let cmd = action_cmd.to_string();
-                                                move |_| {
-                                                    send_cmd_from_press(&cmd);
-                                                }
-                                            },
-                                            ontouchstart: {
-                                                let cmd = action_cmd.to_string();
-                                                move |_| {
-                                                    send_cmd_from_press(&cmd);
-                                                }
-                                            },
-                                            onclick: {
-                                                let cmd = action_cmd.to_string();
-                                                move |_| {
-                                                    send_cmd_from_click(&cmd);
-                                                }
-                                            },
-                                            {translate_text(action_label)}
-                                        }
-                                    }
-                                    button {
-                                        style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; cursor:pointer;",
-                                        onclick: {
-                                            let id = n.id;
-                                            let ts = n.timestamp_ms;
-                                            let mut notifications = notifications;
-                                            let mut dismissed_notifications = dismissed_notifications;
-                                            let mut unread_notification_ids = unread_notification_ids;
-                                            move |_| {
-                                                let mut v = notifications.read().clone();
-                                                v.retain(|x| x.id != id);
-                                                notifications.set(v);
-                                                let mut unread = unread_notification_ids.read().clone();
-                                                unread.retain(|x| *x != id);
-                                                unread_notification_ids.set(unread);
-                                                let mut ids = dismissed_notifications.read().clone();
-                                                let item = DismissedNotification {
-                                                    id,
-                                                    timestamp_ms: ts,
-                                                };
-                                                if !ids.contains(&item) {
-                                                    ids.push(item);
-                                                    ids.sort_by_key(|x| (x.id, x.timestamp_ms));
-                                                    dismissed_notifications.set(ids.clone());
-                                                    persist_dismissed_notifications(&ids);
-                                                }
-                                                spawn_detached(async move {
-                                                    let _ = dismiss_notification_remote(id).await;
-                                                });
-                                            }
-                                        },
-                                        {translate_text("Dismiss")}
-                                    }
-                                }
-                            }
                         }
                     }
 
@@ -5833,12 +5706,34 @@ fn TelemetryDashboardInner() -> Element {
                             },
                             MainTab::Warnings => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    WarningsTab { warnings: warnings, theme: theme.clone() }
+                                    WarningsTab {
+                                        warnings: warnings,
+                                        theme: theme.clone(),
+                                        on_ack: {
+                                            let mut ack_warning_ts = ack_warning_ts;
+                                            let mut ack_warning_count = ack_warning_count;
+                                            move |_| {
+                                                ack_warning_ts.set(latest_warning_ts);
+                                                ack_warning_count.set(*warning_event_counter.read());
+                                            }
+                                        }
+                                    }
                                 }
                             },
                             MainTab::Errors => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    ErrorsTab { errors: errors, theme: theme.clone() }
+                                    ErrorsTab {
+                                        errors: errors,
+                                        theme: theme.clone(),
+                                        on_ack: {
+                                            let mut ack_error_ts = ack_error_ts;
+                                            let mut ack_error_count = ack_error_count;
+                                            move |_| {
+                                                ack_error_ts.set(latest_error_ts);
+                                                ack_error_count.set(*error_event_counter.read());
+                                            }
+                                        }
+                                    }
                                 }
                             },
                             MainTab::Data => rsx! {
@@ -5851,6 +5746,76 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
                 }
+                }
+                if *active_main_tab.read() != MainTab::Notifications && !notifications.read().is_empty() {
+                    div {
+                        style: "position:fixed; top:16px; right:16px; z-index:2000; width:min(420px, calc(100vw - 32px)); max-height:min(40vh, 280px); display:flex; flex-direction:column; gap:8px; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; pointer-events:none; font-family:{dashboard_font_stack};",
+                        for n in notifications.read().iter() {
+                            div {
+                                style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0; box-shadow:0 16px 40px rgba(0,0,0,0.35); pointer-events:auto; font-family:{dashboard_font_stack};",
+                                span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
+                                if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
+                                    && auth::can_send_command(action_cmd)
+                                {
+                                    button {
+                                        style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer; touch-action:manipulation;",
+                                        onmousedown: {
+                                            let cmd = action_cmd.to_string();
+                                            move |_| {
+                                                send_cmd_from_press(&cmd);
+                                            }
+                                        },
+                                        ontouchstart: {
+                                            let cmd = action_cmd.to_string();
+                                            move |_| {
+                                                send_cmd_from_press(&cmd);
+                                            }
+                                        },
+                                        onclick: {
+                                            let cmd = action_cmd.to_string();
+                                            move |_| {
+                                                send_cmd_from_click(&cmd);
+                                            }
+                                        },
+                                        {translate_text(action_label)}
+                                    }
+                                }
+                                button {
+                                    style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer;",
+                                    onclick: {
+                                        let id = n.id;
+                                        let ts = n.timestamp_ms;
+                                        let mut notifications = notifications;
+                                        let mut dismissed_notifications = dismissed_notifications;
+                                        let mut unread_notification_ids = unread_notification_ids;
+                                        move |_| {
+                                            let mut v = notifications.read().clone();
+                                            v.retain(|x| x.id != id);
+                                            notifications.set(v);
+                                            let mut unread = unread_notification_ids.read().clone();
+                                            unread.retain(|x| *x != id);
+                                            unread_notification_ids.set(unread);
+                                            let mut ids = dismissed_notifications.read().clone();
+                                            let item = DismissedNotification {
+                                                id,
+                                                timestamp_ms: ts,
+                                            };
+                                            if !ids.contains(&item) {
+                                                ids.push(item);
+                                                ids.sort_by_key(|x| (x.id, x.timestamp_ms));
+                                                dismissed_notifications.set(ids.clone());
+                                                persist_dismissed_notifications(&ids);
+                                            }
+                                            spawn_detached(async move {
+                                                let _ = dismiss_notification_remote(id).await;
+                                            });
+                                        }
+                                    },
+                                    {translate_text("Dismiss")}
+                                }
+                            }
+                        }
+                    }
                 }
                 {settings_overlay}
                 {version_overlay}

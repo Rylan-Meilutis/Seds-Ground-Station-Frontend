@@ -1,5 +1,13 @@
 use super::*;
 
+const WS_DISCONNECT_NOTIFICATION_PREFIX: &str = "WebSocket disconnected.\nURL:";
+
+fn is_ws_disconnect_notification(notification: &PersistentNotification) -> bool {
+    notification
+        .message
+        .starts_with(WS_DISCONNECT_NOTIFICATION_PREFIX)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FrontendNetworkMetrics {
     pub(crate) ws_connected: bool,
@@ -126,7 +134,7 @@ pub(super) fn note_ws_connection_state(
 
 pub(super) fn note_ws_connection_notification(
     notifications: &mut Signal<Vec<PersistentNotification>>,
-    _notification_history: &mut Signal<Vec<PersistentNotification>>,
+    notification_history: &mut Signal<Vec<PersistentNotification>>,
     unread_notification_ids: &mut Signal<Vec<u64>>,
     ws_url: &str,
     reason: &str,
@@ -134,7 +142,7 @@ pub(super) fn note_ws_connection_notification(
     if notifications
         .read()
         .iter()
-        .any(|n| n.message.starts_with("WebSocket disconnected.\nURL:"))
+        .any(is_ws_disconnect_notification)
     {
         return;
     }
@@ -161,7 +169,7 @@ pub(super) fn note_ws_connection_notification(
     };
 
     let mut active = notifications.read().clone();
-    active.retain(|n| !n.message.starts_with("WebSocket disconnected.\nURL:"));
+    active.retain(|n| !is_ws_disconnect_notification(n));
     active.push(item.clone());
     active.sort_by_key(|n| n.timestamp_ms);
     if active.len() > MAX_ACTIVE_NOTIFICATIONS {
@@ -169,6 +177,15 @@ pub(super) fn note_ws_connection_notification(
         active = active.split_off(keep_from);
     }
     notifications.set(active);
+
+    let mut history = notification_history.read().clone();
+    history.retain(|n| !is_ws_disconnect_notification(n));
+    history.push(item.clone());
+    history.sort_by_key(|n| -n.timestamp_ms);
+    if history.len() > MAX_NOTIFICATION_HISTORY {
+        history.truncate(MAX_NOTIFICATION_HISTORY);
+    }
+    notification_history.set(history);
 
     let mut unread: HashSet<u64> = unread_notification_ids.read().iter().copied().collect();
     unread.insert(item.id);
@@ -189,12 +206,12 @@ pub(super) fn clear_ws_connection_notification(
     let removed_ids: HashSet<u64> = notifications
         .read()
         .iter()
-        .filter(|n| n.message.starts_with("WebSocket disconnected.\nURL:"))
+        .filter(|n| is_ws_disconnect_notification(n))
         .map(|n| n.id)
         .collect();
     if removed_ids.is_empty() {
         let mut history = notification_history.read().clone();
-        history.retain(|n| !n.message.starts_with("WebSocket disconnected.\nURL:"));
+        history.retain(|n| !is_ws_disconnect_notification(n));
         notification_history.set(history);
         return;
     }
@@ -208,7 +225,7 @@ pub(super) fn clear_ws_connection_notification(
     unread_notification_ids.set(unread);
 
     let mut history = notification_history.read().clone();
-    history.retain(|n| !n.message.starts_with("WebSocket disconnected.\nURL:"));
+    history.retain(|n| !is_ws_disconnect_notification(n));
     notification_history.set(history);
 }
 

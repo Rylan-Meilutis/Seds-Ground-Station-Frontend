@@ -13,6 +13,10 @@ const LATENCY_SAMPLE_MS: u64 = 200;
 const SCROLL_TRIGGER_THRESHOLD_MS: i64 = 200;
 const LATENCY_CHART_HEIGHT_PX: u32 = 220;
 const LATENCY_FULLSCREEN_CHART_HEIGHT_PX: u32 = 240;
+const LATENCY_PLOT_LEFT_PX: f64 = 74.0;
+const LATENCY_PLOT_RIGHT_PX: f64 = 20.0;
+const LATENCY_PLOT_TOP_PX: f64 = 20.0;
+const LATENCY_PLOT_BOTTOM_PX: f64 = 34.0;
 
 #[component]
 pub fn ConnectionStatusTab(
@@ -55,7 +59,7 @@ pub fn ConnectionStatusTab(
                     {
                         let mut map = history.write();
                         for entry in merged.iter() {
-                            let Some(age_ms) = entry.age_ms else {
+                            let Some(age_ms) = current_board_age_ms(entry, now_ms) else {
                                 continue;
                             };
                             let key = entry.sender_id.clone();
@@ -268,10 +272,10 @@ fn render_latency_chart(
     }
 
     let width = 1200.0_f64;
-    let left = 74.0_f64;
-    let right = width - 20.0_f64;
-    let pad_top = 20.0_f64;
-    let pad_bottom = 34.0_f64;
+    let left = LATENCY_PLOT_LEFT_PX;
+    let right = width - LATENCY_PLOT_RIGHT_PX;
+    let pad_top = LATENCY_PLOT_TOP_PX;
+    let pad_bottom = LATENCY_PLOT_BOTTOM_PX;
     let inner_w = right - left;
     let inner_h = height - pad_top - pad_bottom;
     let grid_x_step = inner_w / 6.0_f64;
@@ -295,6 +299,17 @@ fn render_latency_chart(
                     style: "position:absolute; inset:0; width:100%; height:100%; display:block; background:{theme.app_background}; border-radius:10px; border:1px solid {theme.border_soft};",
                     view_box: "0 0 {width} {height}",
 
+                    defs {
+                        clipPath { id: "latency-plot-clip",
+                            rect {
+                                x: "{left}",
+                                y: "{pad_top}",
+                                width: "{inner_w}",
+                                height: "{inner_h}",
+                            }
+                        }
+                    }
+
                     // gridlines
                     for i in 1..=5 {
                         line {
@@ -317,36 +332,38 @@ fn render_latency_chart(
                     line { x1:"{left}", y1:"{height - pad_bottom}", x2:"{right}", y2:"{height - pad_bottom}", stroke:"{theme.border}", "stroke-width":"1" }
                     line { x1:"{left}", y1:"{pad_top}",  x2:"{left}",   y2:"{height - pad_bottom}", stroke:"{theme.border}", "stroke-width":"1" }
 
-                    for pts in solid.iter() {
-                        if !pts.is_empty() {
-                            polyline {
-                                points: "{pts}",
-                                fill: "none",
-                                stroke: "#22d3ee",
-                                "stroke-width": "2",
-                                "stroke-linejoin": "round",
-                                "stroke-linecap": "round",
+                    g { "clip-path": "url(#latency-plot-clip)",
+                        for pts in solid.iter() {
+                            if !pts.is_empty() {
+                                polyline {
+                                    points: "{pts}",
+                                    fill: "none",
+                                    stroke: "#22d3ee",
+                                    "stroke-width": "2",
+                                    "stroke-linejoin": "round",
+                                    "stroke-linecap": "round",
+                                }
                             }
                         }
-                    }
-                    for pts in dotted.iter() {
-                        if !pts.is_empty() {
-                            polyline {
-                                points: "{pts}",
-                                fill: "none",
-                                stroke: "#fbbf24",
-                                "stroke-width": "2",
-                                stroke_dasharray: "4 4",
-                                "stroke-linejoin": "round",
-                                "stroke-linecap": "round",
+                        for pts in dotted.iter() {
+                            if !pts.is_empty() {
+                                polyline {
+                                    points: "{pts}",
+                                    fill: "none",
+                                    stroke: "#fbbf24",
+                                    "stroke-width": "2",
+                                    stroke_dasharray: "4 4",
+                                    "stroke-linejoin": "round",
+                                    "stroke-linecap": "round",
+                                }
                             }
                         }
                     }
                 }
                 div { style: "position:absolute; inset:0; pointer-events:none; font-size:clamp(8px, 1.8vw, 10px); color:{theme.text_muted};",
-                    span { style: "position:absolute; left:10px; top:{y_pct(pad_top + 6.0, height)}; max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_max)} }
-                    span { style: "position:absolute; left:10px; top:{y_pct(pad_top + inner_h / 2.0 + 4.0, height)}; transform:translateY(-50%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_mid)} }
-                    span { style: "position:absolute; left:10px; top:{y_pct(height - pad_bottom + 2.0, height)}; transform:translateY(-100%); max-width:56px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", {format!("{:.2}", y_min)} }
+                    span { style: "position:absolute; left:8px; top:{y_pct(pad_top + 6.0, height)}; width:{x_pct(left - 16.0, width)}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right;", {format!("{:.2}", y_max)} }
+                    span { style: "position:absolute; left:8px; top:{y_pct(pad_top + inner_h / 2.0 + 4.0, height)}; transform:translateY(-50%); width:{x_pct(left - 16.0, width)}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right;", {format!("{:.2}", y_mid)} }
+                    span { style: "position:absolute; left:8px; top:{y_pct(height - pad_bottom + 2.0, height)}; transform:translateY(-100%); width:{x_pct(left - 16.0, width)}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right;", {format!("{:.2}", y_min)} }
                     span { style: "position:absolute; left:{x_pct(left + 16.0, width)}; bottom:8px;", {format!("-{:.1} min", span_min)} }
                     span { style: "position:absolute; left:{x_pct(width * 0.5, width)}; bottom:8px; transform:translateX(-50%);", {format!("-{:.1} min", span_min * 0.5)} }
                     span { style: "position:absolute; left:{x_pct(right - 52.0, width)}; bottom:8px;", "now" }
@@ -438,17 +455,17 @@ fn build_latency_polylines(
         y_span = 1.0;
     }
 
-    let pad_l = 60.0;
-    let pad_r = 20.0;
-    let pad_t = 20.0;
-    let pad_b = 20.0;
+    let pad_l = LATENCY_PLOT_LEFT_PX;
+    let pad_r = LATENCY_PLOT_RIGHT_PX;
+    let pad_t = LATENCY_PLOT_TOP_PX;
+    let pad_b = LATENCY_PLOT_BOTTOM_PX;
     let inner_w = width - pad_l - pad_r;
     let inner_h = height - pad_t - pad_b;
 
     let to_xy = |t: i64, y: f64| -> (f64, f64) {
-        let x = pad_l + ((t - t_min) as f64 / t_span) * inner_w;
+        let x = (pad_l + ((t - t_min) as f64 / t_span) * inner_w).clamp(pad_l, width - pad_r);
         let y_norm = (y - y_min) / y_span;
-        let y_px = pad_t + (1.0 - y_norm) * inner_h;
+        let y_px = (pad_t + (1.0 - y_norm) * inner_h).clamp(pad_t, height - pad_b);
         (x, y_px)
     };
 
@@ -501,6 +518,8 @@ fn render_board_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Eleme
         };
     }
 
+    let now_ms = current_wallclock_ms();
+
     rsx! {
         div { style: "border:1px solid {theme.border_soft}; border-radius:10px; overflow:hidden;",
             div { style: "display:grid; grid-template-columns: 1.1fr 1.1fr 0.7fr 1fr 1fr; font-size:13px; color:{theme.text_secondary}; background:{theme.app_background};",
@@ -518,12 +537,21 @@ fn render_board_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Eleme
                         "{format_last_seen(entry.last_seen_ms)}"
                     }
                     div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};",
-                        if let Some(age) = entry.age_ms { "{age}" } else { "—" }
+                        if let Some(age) = current_board_age_ms(entry, now_ms) { "{age}" } else { "—" }
                     }
                 }
             }
         }
     }
+}
+
+fn current_board_age_ms(entry: &BoardStatusEntry, now_ms: i64) -> Option<u64> {
+    if let Some(last_seen_ms) = entry.last_seen_ms {
+        let now_ms = u64::try_from(now_ms.max(0)).unwrap_or(0);
+        return Some(now_ms.saturating_sub(last_seen_ms));
+    }
+
+    entry.age_ms
 }
 
 fn format_last_seen(last_seen_ms: Option<u64>) -> String {
