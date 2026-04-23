@@ -497,44 +497,11 @@ function bumpStoredTileCacheUsageBytes(deltaBytes) {
 }
 
 async function measurePersistentTileCacheUsageBytes() {
-    if (!tileCacheSupported() || typeof caches.keys !== "function") return storedTileCacheUsageBytes();
-    let total = 0;
-    try {
-        const cacheKeys = await caches.keys();
-        for (const cacheKey of cacheKeys) {
-            if (!isGroundMapTileCacheName(cacheKey)) continue;
-            const cache = await caches.open(cacheKey);
-            const requests = await cache.keys();
-            for (const request of requests) {
-                try {
-                    const response = await cache.match(request, {ignoreVary: true});
-                    if (!response || !response.ok) continue;
-                    const contentLength = Number(response.headers && response.headers.get("content-length"));
-                    if (Number.isFinite(contentLength) && contentLength >= 0) {
-                        total += contentLength;
-                    } else {
-                        total += (await response.clone().arrayBuffer()).byteLength;
-                    }
-                } catch (e) {
-                }
-            }
-        }
-    } catch (e) {
-        return storedTileCacheUsageBytes();
-    }
-    setStoredTileCacheUsageBytes(total);
-    return total;
+    return storedTileCacheUsageBytes();
 }
 
 function schedulePersistentTileCacheUsageMeasure(delayMs = 0) {
-    if (tileCacheUsageMeasureTimer) {
-        cancelIdleDelay(tileCacheUsageMeasureTimer);
-        tileCacheUsageMeasureTimer = null;
-    }
-    tileCacheUsageMeasureTimer = idleDelay(safeMapCallback("tile cache usage measure", async () => {
-        tileCacheUsageMeasureTimer = null;
-        await measurePersistentTileCacheUsageBytes();
-    }), Math.max(0, Number(delayMs) || 0));
+    void delayMs;
 }
 
 function schedulePrefetchTileSizeSample(plan) {
@@ -5915,7 +5882,6 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
 (function pinGroundStation26() {
     const api = (window.GS26 = window.GS26 || {});
     setStoredTileCacheUsageBytes(storedTileCacheUsageBytes());
-    schedulePersistentTileCacheUsageMeasure(4000);
 
     api.initGroundMap = safeMapCallback("api initGroundMap", initGroundMap);
     api.updateGroundMapMarkers = safeMapCallback("api updateGroundMapMarkers", updateGroundMapMarkers);
