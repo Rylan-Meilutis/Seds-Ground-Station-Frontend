@@ -1100,6 +1100,12 @@ function startMapFirstPaintGate(zoom) {
 }
 
 function warmInitialMapTilesFromCache(tilesUrl, center, zoom, container = null) {
+    try {
+        if (typeof window !== "undefined" && window.location && /^https?:$/i.test(String(window.location.protocol || ""))) {
+            return Promise.resolve(false);
+        }
+    } catch (e) {
+    }
     if (!tileCacheSupported() || !tileFetchAllowedForUrl(tilesUrl) || !Array.isArray(center)) return Promise.resolve(false);
     const lon = Number(center[0]);
     const lat = Number(center[1]);
