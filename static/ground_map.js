@@ -27,6 +27,8 @@ let pendingRuntimeMinZoom = null;
 let runtimeMinZoomTimer = null;
 let lastRocketLatLng = null;
 let lastUserLatLng = null;
+let prefetchRocketLatLng = null;
+let prefetchUserLatLng = null;
 let rocketGpsStability = null;
 let userGpsStability = null;
 let lastMapView = null;
@@ -109,6 +111,7 @@ const SOURCE_EMPTY_KEY = "__empty__";
 let tilePrefetchState = {
     key: "",
     state: "idle",
+    detail: "",
     pending: 0,
     completed: 0,
     failed: 0,
@@ -122,6 +125,17 @@ let tilePrefetchEstimateState = {
     estimatedTileBytes: 96 * 1024,
     budgetBytes: 500 * 1024 * 1024,
     tooLarge: false,
+    updatedAt: 0,
+};
+let tilePrefetchContextState = {
+    userAvailable: false,
+    rocketAvailable: false,
+    userStatus: "waiting",
+    rocketStatus: "waiting",
+    summaryStatus: "waiting",
+    userMessage: "Waiting for user location.",
+    rocketMessage: "Waiting for rocket telemetry.",
+    summaryMessage: "Waiting for user location and rocket telemetry.",
     updatedAt: 0,
 };
 let tilePrefetchEstimatedTileBytes = 96 * 1024;
@@ -535,6 +549,7 @@ function setTilePrefetchEstimate(plan, sampleTileSize = true) {
     const budgetBytes = configuredCacheBudgetBytes();
     const estimatedTileBytes = Math.max(1024, tilePrefetchEstimatedTileBytes || TILE_PREFETCH_ESTIMATED_TILE_BYTES);
     const estimatedBytes = tiles * estimatedTileBytes;
+    const context = publishTilePrefetchContextState();
     tilePrefetchEstimateState = {
         tiles,
         estimatedBytes,
@@ -547,6 +562,14 @@ function setTilePrefetchEstimate(plan, sampleTileSize = true) {
         combinedEstimatedBytes: combinedTiles * estimatedTileBytes,
         budgetBytes,
         tooLarge: estimatedBytes > budgetBytes,
+        userAvailable: context.userAvailable,
+        rocketAvailable: context.rocketAvailable,
+        userStatus: context.userStatus,
+        rocketStatus: context.rocketStatus,
+        summaryStatus: context.summaryStatus,
+        userMessage: context.userMessage,
+        rocketMessage: context.rocketMessage,
+        summaryMessage: context.summaryMessage,
         updatedAt: Date.now(),
     };
     try {
@@ -1563,8 +1586,18 @@ function warmTileInBackground(cacheName, url) {
 }
 
 function setTilePrefetchState(next) {
+    const context = publishTilePrefetchContextState();
     tilePrefetchState = {
         ...tilePrefetchState,
+        detail: "",
+        userAvailable: context.userAvailable,
+        rocketAvailable: context.rocketAvailable,
+        userStatus: context.userStatus,
+        rocketStatus: context.rocketStatus,
+        contextStatus: context.summaryStatus,
+        userMessage: context.userMessage,
+        rocketMessage: context.rocketMessage,
+        contextMessage: context.summaryMessage,
         ...next,
     };
     try {
@@ -1572,6 +1605,45 @@ function setTilePrefetchState(next) {
         window.__gs26_ground_map_cache_ready = tilePrefetchState.state === "ready";
     } catch (e) {
     }
+}
+
+function buildTilePrefetchContextState() {
+    const hasUser = Array.isArray(prefetchUserLatLng)
+        && isUsableUserLatLng(prefetchUserLatLng[0], prefetchUserLatLng[1]);
+    const hasRocket = Array.isArray(prefetchRocketLatLng)
+        && isUsableLatLng(prefetchRocketLatLng[0], prefetchRocketLatLng[1]);
+    let summaryStatus = "ready";
+    let summaryMessage = "User and rocket prefetch are ready.";
+    if (!hasUser && !hasRocket) {
+        summaryStatus = "waiting";
+        summaryMessage = "Waiting for user location and rocket telemetry.";
+    } else if (!hasUser) {
+        summaryStatus = "partial";
+        summaryMessage = "User prefetch is deferred until location is available.";
+    } else if (!hasRocket) {
+        summaryStatus = "partial";
+        summaryMessage = "Rocket prefetch is deferred until telemetry is available.";
+    }
+    return {
+        userAvailable: hasUser,
+        rocketAvailable: hasRocket,
+        userStatus: hasUser ? "ready" : "waiting",
+        rocketStatus: hasRocket ? "ready" : "waiting",
+        summaryStatus,
+        userMessage: hasUser ? "Ready" : "Waiting for user location.",
+        rocketMessage: hasRocket ? "Ready" : "Waiting for rocket telemetry.",
+        summaryMessage,
+        updatedAt: Date.now(),
+    };
+}
+
+function publishTilePrefetchContextState() {
+    tilePrefetchContextState = buildTilePrefetchContextState();
+    try {
+        window.__gs26_ground_map_prefetch_context = {...tilePrefetchContextState};
+    } catch (e) {
+    }
+    return tilePrefetchContextState;
 }
 
 function metersPerDegreeLat() {
@@ -2433,8 +2505,8 @@ function buildTrackingPrefetchPlan() {
         return {key: "", coords: []};
     }
 
-    const userLat = Array.isArray(lastUserLatLng) ? Number(lastUserLatLng[0]) : NaN;
-    const userLon = Array.isArray(lastUserLatLng) ? Number(lastUserLatLng[1]) : NaN;
+    const userLat = Array.isArray(prefetchUserLatLng) ? Number(prefetchUserLatLng[0]) : NaN;
+    const userLon = Array.isArray(prefetchUserLatLng) ? Number(prefetchUserLatLng[1]) : NaN;
     const hasUser = isUsableUserLatLng(userLat, userLon);
     if (!hasUser) {
         return {key: "", coords: []};
@@ -2462,15 +2534,6 @@ function buildTrackingPrefetchPlan() {
     const coords = [];
     const seen = new Set();
     const maxTiles = Number.POSITIVE_INFINITY;
-    if (isBrowserHostedMapRuntime()) {
-        appendUniqueCoords(
-            coords,
-            seen,
-            tileCoordsAroundTileRadius(userLat, userLon, focusZoomInt, TRACKING_PREFETCH_TILE_RADIUS),
-            maxTiles
-        );
-        return {key, coords};
-    }
     const viewportBaseZoom = Math.max(
         effectiveMinZoom(),
         Math.min(maxNativeZoom, Math.floor(Number.isFinite(focusZoom) ? focusZoom : maxNativeZoom))
@@ -2517,10 +2580,10 @@ function buildHighResPrefetchPlan() {
     const userSeen = new Set();
     const rocketCoords = [];
     const rocketSeen = new Set();
-    const userLat = Array.isArray(lastUserLatLng) ? lastUserLatLng[0] : NaN;
-    const userLon = Array.isArray(lastUserLatLng) ? lastUserLatLng[1] : NaN;
-    const rocketLat = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[0] : NaN;
-    const rocketLon = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[1] : NaN;
+    const userLat = Array.isArray(prefetchUserLatLng) ? prefetchUserLatLng[0] : NaN;
+    const userLon = Array.isArray(prefetchUserLatLng) ? prefetchUserLatLng[1] : NaN;
+    const rocketLat = Array.isArray(prefetchRocketLatLng) ? prefetchRocketLatLng[0] : NaN;
+    const rocketLon = Array.isArray(prefetchRocketLatLng) ? prefetchRocketLatLng[1] : NaN;
     const hasUser = isUsableUserLatLng(userLat, userLon);
     const hasRocket = isUsableLatLng(rocketLat, rocketLon);
     const userRadiusM = configuredPrefetchRadiusM("user");
@@ -2550,29 +2613,6 @@ function buildHighResPrefetchPlan() {
         rocketRadiusM.toFixed(0),
         viewportKey,
     ].join("|");
-
-    if (isBrowserHostedMapRuntime()) {
-        const zoom = viewportZoom;
-        if (hasUser) {
-            const aroundUser = tileCoordsAround(userLat, userLon, zoom, userRadiusM);
-            appendUniqueCoords(userCoords, userSeen, aroundUser);
-            appendUniqueCoords(coords, seen, aroundUser);
-        }
-        if (hasRocket) {
-            const aroundRocket = tileCoordsAround(rocketLat, rocketLon, zoom, rocketRadiusM);
-            appendUniqueCoords(rocketCoords, rocketSeen, aroundRocket);
-            appendUniqueCoords(coords, seen, aroundRocket);
-        }
-        return {
-            key,
-            coords,
-            breakdown: {
-                userTiles: userCoords.length,
-                rocketTiles: rocketCoords.length,
-                combinedTiles: coords.length,
-            },
-        };
-    }
 
     for (const zoom of zooms) {
         if (bounds) {
@@ -2873,12 +2913,14 @@ function scheduleHighResTilePrefetch(options = {}) {
     }
     const key = plan.key;
     if (!key) {
+        const context = publishTilePrefetchContextState();
         currentPrefetchKey = "";
         if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
         tilePrefetchTimer = null;
         setTilePrefetchState({
             key: "",
-            state: "idle",
+            state: context.userAvailable || context.rocketAvailable ? "idle" : "waiting-context",
+            detail: context.summaryMessage,
             pending: 0,
             completed: 0,
             failed: 0,
@@ -5500,8 +5542,10 @@ function applyGroundMapMarkers(rLat, rLon, uLat, uLon) {
 
     if (hasRocket) {
         lastRocketLatLng = [rLat, rLon];
+        prefetchRocketLatLng = [rLat, rLon];
     } else {
         lastRocketLatLng = null;
+        prefetchRocketLatLng = null;
         rocketGpsStability = null;
         try {
             delete window.__gs26_rocket_lat;
@@ -5513,12 +5557,16 @@ function applyGroundMapMarkers(rLat, rLon, uLat, uLon) {
     }
     if (hasUser) {
         lastUserLatLng = [uLat, uLon];
+        prefetchUserLatLng = [uLat, uLon];
         try {
             window.__gs26_user_lat = uLat;
             window.__gs26_user_lon = uLon;
         } catch (e) {
         }
+    } else {
+        prefetchUserLatLng = null;
     }
+    publishTilePrefetchContextState();
     if (!groundMap) {
         if (hasRocket || hasUser) {
             scheduleTrackingTilePrefetch();
@@ -5565,6 +5613,9 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
         rocketGpsStability = null;
     }
     const nextUser = stabilizeLatLng("user", uLat, uLon);
+    prefetchRocketLatLng = nextRocket ? [nextRocket[0], nextRocket[1]] : null;
+    prefetchUserLatLng = nextUser ? [nextUser[0], nextUser[1]] : null;
+    publishTilePrefetchContextState();
     pendingMarkerSync = [
         nextRocket ? nextRocket[0] : NaN,
         nextRocket ? nextRocket[1] : NaN,
@@ -5635,16 +5686,20 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
         ? stabilizeLatLng("rocket", rLat, rLon)
         : null;
     const stableUser = stabilizeLatLng("user", uLat, uLon);
+    prefetchRocketLatLng = stableRocket ? [stableRocket[0], stableRocket[1]] : null;
+    prefetchUserLatLng = stableUser ? [stableUser[0], stableUser[1]] : null;
     if (stableRocket) {
         lastRocketLatLng = [stableRocket[0], stableRocket[1]];
     }
     if (stableUser) {
         lastUserLatLng = [stableUser[0], stableUser[1]];
     }
+    publishTilePrefetchContextState();
 
     if (stableUser) {
         scheduleTrackingTilePrefetch();
     }
+    scheduleHighResTilePrefetch();
 }
 
 (function pinGroundStation26() {
@@ -5749,6 +5804,9 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
         get tilePrefetchEstimateState() {
             return tilePrefetchEstimateState;
         },
+        get tilePrefetchContextState() {
+            return tilePrefetchContextState;
+        },
     });
 
     window.initGroundMap = api.initGroundMap;
@@ -5776,5 +5834,6 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     }
     window.__gs26_ground_map_cache_state = {...tilePrefetchState};
     window.__gs26_ground_map_prefetch_estimate = {...tilePrefetchEstimateState};
+    window.__gs26_ground_map_prefetch_context = {...publishTilePrefetchContextState()};
     window.__gs26_ground_map_cache_ready = false;
 })();

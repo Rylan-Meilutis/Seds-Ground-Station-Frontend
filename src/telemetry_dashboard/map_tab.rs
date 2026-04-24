@@ -12,7 +12,7 @@ use crate::telemetry_dashboard::{
 };
 use dioxus::prelude::*;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const RESIZE_DEBOUNCE_MS: u64 = 250;
 const FULLSCREEN_REINIT_DELAY_MS: u64 = 0;
@@ -24,6 +24,7 @@ const DEFAULT_MAP_TITLE: &str = "Map";
 const DEFAULT_TRACKED_ASSET_LABEL: &str = "Tracked Asset";
 const MAP_STATE_STORAGE_KEY: &str = "gs26_ground_map_state_v3";
 const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
+const MAP_CONFIG_CACHE_STORAGE_KEY: &str = "gs26_ground_map_config_v1";
 
 fn tiles_url() -> String {
     map_tiles_url()
@@ -104,7 +105,8 @@ pub fn MapTab(
 
     #[cfg(target_arch = "wasm32")]
     let browser_user_gps = use_signal(|| None::<(f64, f64)>);
-    let map_config = use_signal(MapConfig::default);
+    let initial_map_config = load_cached_map_config().unwrap_or_default();
+    let map_config = use_signal(|| initial_map_config.clone());
     let theme = theme.unwrap_or_default();
     let warning_button_style = format!(
         "padding:6px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.85rem; cursor:pointer;",
@@ -120,14 +122,16 @@ pub fn MapTab(
         title.clone().unwrap_or_default()
     };
     let did_install_map_js = use_signal(|| false);
-    let map_config_ready = use_signal(|| false);
+    let map_config_ready = use_signal(|| load_cached_map_config().is_some());
 
     {
         let mut map_config = map_config;
         let mut map_config_ready = map_config_ready;
         use_future(move || async move {
             if let Ok(cfg) = http_get_json::<MapConfig>("/api/map_config").await {
-                map_config.set(cfg.sanitized());
+                let sanitized = cfg.sanitized();
+                store_cached_map_config(&sanitized);
+                map_config.set(sanitized);
             }
             map_config_ready.set(true);
         });
@@ -1159,7 +1163,7 @@ fn js_read_user_latlon_from_window() -> Option<(f64, f64)> {
     Some((lat, lon))
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct MapConfig {
     max_native_zoom: u32,
     #[serde(default = "default_max_display_zoom")]
@@ -1237,6 +1241,19 @@ fn default_map_title() -> String {
 
 fn default_tracked_asset_label() -> String {
     DEFAULT_TRACKED_ASSET_LABEL.to_string()
+}
+
+fn load_cached_map_config() -> Option<MapConfig> {
+    let raw = persist::get_string(MAP_CONFIG_CACHE_STORAGE_KEY)?;
+    serde_json::from_str::<MapConfig>(&raw)
+        .ok()
+        .map(MapConfig::sanitized)
+}
+
+fn store_cached_map_config(config: &MapConfig) {
+    if let Ok(raw) = serde_json::to_string(config) {
+        persist::set_string(MAP_CONFIG_CACHE_STORAGE_KEY, &raw);
+    }
 }
 
 #[cfg(target_os = "ios")]

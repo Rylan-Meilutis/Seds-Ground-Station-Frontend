@@ -51,15 +51,21 @@ pub fn DetailedTab(
                       return;
                     }
                     const state = window.__gs26_ground_map_cache_state || {};
+                    const context = window.__gs26_ground_map_prefetch_context || {};
                     const completed = Number(state.completed);
                     const failed = Number(state.failed);
                     const grabbed = Number.isFinite(completed) ? Math.max(0, completed - (Number.isFinite(failed) ? failed : 0)) : 0;
-                    setText("gs26-prefetch-state", state.state ? String(state.state) : "idle");
+                    const stateName = state.state ? String(state.state) : "idle";
+                    const stateDetail = state.detail ? ` (${String(state.detail)})` : "";
+                    setText("gs26-prefetch-state", `${stateName}${stateDetail}`);
                     setText("gs26-prefetch-last-started", fmtTime(state.lastStartedAt));
                     setText("gs26-prefetch-last-completed", fmtTime(state.lastCompletedAt));
                     setText("gs26-prefetch-tiles-grabbed", String(grabbed));
                     setText("gs26-prefetch-tiles-failed", Number.isFinite(failed) ? String(failed) : "0");
                     setText("gs26-prefetch-tiles-pending", Number.isFinite(Number(state.pending)) ? String(Number(state.pending)) : "0");
+                    setText("gs26-prefetch-user-context", context.userMessage ? String(context.userMessage) : "--");
+                    setText("gs26-prefetch-rocket-context", context.rocketMessage ? String(context.rocketMessage) : "--");
+                    setText("gs26-prefetch-context-summary", context.summaryMessage ? String(context.summaryMessage) : "--");
                   };
                   window.__gs26_prefetch_detail_timer = window.setInterval(update, 500);
                   update();
@@ -429,6 +435,9 @@ fn metric_card_owned(theme: &ThemeConfig, title: &str, rows: Vec<(String, String
 fn prefetch_status_card(theme: &ThemeConfig) -> Element {
     let rows = [
         ("State", "gs26-prefetch-state"),
+        ("Context", "gs26-prefetch-context-summary"),
+        ("User context", "gs26-prefetch-user-context"),
+        ("Rocket context", "gs26-prefetch-rocket-context"),
         ("Last prefetch", "gs26-prefetch-last-started"),
         ("Completed", "gs26-prefetch-last-completed"),
         ("Tiles grabbed", "gs26-prefetch-tiles-grabbed"),

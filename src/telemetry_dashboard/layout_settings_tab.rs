@@ -462,21 +462,22 @@ pub fn SettingsPage(
                 const budgetBytes = Number(root.dataset.budgetBytes || 0);
                 const measuredBytes = Number(root.dataset.measuredBytes || 0);
                 const estimate = window.__gs26_ground_map_prefetch_estimate || {};
+                const context = window.__gs26_ground_map_prefetch_context || {};
                 const combinedTiles = Number(estimate.combinedTiles || estimate.tiles || 0);
                 const combinedBytes = Number(estimate.combinedEstimatedBytes || estimate.estimatedBytes || 0);
                 const tileBytes = Number(estimate.estimatedTileBytes || 0);
                 const projected = measuredBytes + combinedBytes;
-                const setEstimateText = (id, tiles, bytes) => {
+                const setEstimateText = (id, tiles, bytes, waitingText) => {
                   const el = document.getElementById(id);
                   if (!el) return;
                   const next = Number(tiles) > 0
                     ? `${Number(tiles)} tiles x ${humanBytes(tileBytes)} = ${humanBytes(bytes)}`
-                    : el.dataset.waitingText || "Waiting for map context.";
+                    : waitingText || el.dataset.waitingText || "Waiting for map context.";
                   if (el.textContent !== next) el.textContent = next;
                 };
-                setEstimateText("gs26-prefetch-user-estimate-text", Number(estimate.userTiles || 0), Number(estimate.userEstimatedBytes || 0));
-                setEstimateText("gs26-prefetch-rocket-estimate-text", Number(estimate.rocketTiles || 0), Number(estimate.rocketEstimatedBytes || 0));
-                setEstimateText("gs26-prefetch-combined-estimate-text", combinedTiles, combinedBytes);
+                setEstimateText("gs26-prefetch-user-estimate-text", Number(estimate.userTiles || 0), Number(estimate.userEstimatedBytes || 0), String(estimate.userMessage || context.userMessage || ""));
+                setEstimateText("gs26-prefetch-rocket-estimate-text", Number(estimate.rocketTiles || 0), Number(estimate.rocketEstimatedBytes || 0), String(estimate.rocketMessage || context.rocketMessage || ""));
+                setEstimateText("gs26-prefetch-combined-estimate-text", combinedTiles, combinedBytes, String(estimate.summaryMessage || context.summaryMessage || ""));
                 const warningText = document.getElementById("gs26-prefetch-estimate-warning");
                 if (warningText) {
                   let nextWarning = "";
