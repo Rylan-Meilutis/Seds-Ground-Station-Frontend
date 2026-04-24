@@ -195,6 +195,7 @@ const STARTUP_CACHE_WARM_MAX_TILES = 16;
 const STARTUP_CACHE_WARM_CONCURRENCY = 4;
 const STARTUP_ZOOM_DISCOVERY_DELAY_MS = 1200;
 const STARTUP_TILE_CACHE_LOOKUP_BUDGET_MS = 45;
+const STARTUP_CACHE_BYPASS_MS = 10000;
 const tileCacheHandles = new Map();
 const tileMemoryCache = new Map();
 const USER_MARKER_SMOOTH_MIN_MS = 180;
@@ -1221,10 +1222,18 @@ function logMapInitTiming(label, extra = {}) {
     }
 }
 
+function shouldBypassPersistentTileCacheRead() {
+    if (mapInitStartedAtMs <= 0) return false;
+    return (Date.now() - mapInitStartedAtMs) < STARTUP_CACHE_BYPASS_MS;
+}
+
 async function readCachedTileArrayBuffer(cacheName, url, options = {}) {
     if (!tileCacheEnabled() || !tileCacheSupported() || !url) return null;
     const hot = readTileMemoryCache(cacheName, url);
     if (hot) return hot;
+    if (options.allowPersistent !== true && shouldBypassPersistentTileCacheRead()) {
+        return null;
+    }
     const originalPersistentPromise = readPersistentTileArrayBuffer(cacheName, url);
     let persistentPromise = originalPersistentPromise;
     const timeoutMs = Number(options.timeoutMs);
@@ -5285,9 +5294,11 @@ function installMapHooks() {
         syncPointSource(ROCKET_SOURCE_ID, lastRocketLatLng);
         syncPointSource(USER_SOURCE_ID, currentUserVisualOrLastLatLng());
         syncUserHeadingIndicator();
-        scheduleTrackingTilePrefetch();
-        scheduleHighResTilePrefetch();
-        scheduleTileZoomDiscovery();
+        setTimeout(safeMapCallback("map load deferred prefetch", () => {
+            scheduleTrackingTilePrefetch();
+            scheduleHighResTilePrefetch();
+            scheduleTileZoomDiscovery();
+        }), STARTUP_CACHE_BYPASS_MS);
     });
 
     onMap("moveend", "map moveend", () => {
