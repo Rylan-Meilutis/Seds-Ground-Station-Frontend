@@ -201,18 +201,18 @@ pub fn MapTab(
         let tiles = tiles_url();
         let map_config = map_config;
         let is_fullscreen_sig = is_fullscreen;
-        let mut did_mount_fullscreen_effect = use_signal(|| false);
+        let mut last_applied_fullscreen = use_signal(|| None::<bool>);
         use_effect(move || {
             let config = map_config.read().clone();
             let fs = *is_fullscreen_sig.read();
-            let has_mounted = *did_mount_fullscreen_effect.read();
+            let previous_fullscreen = *last_applied_fullscreen.read();
             #[cfg(target_arch = "wasm32")]
             js_eval(&format!(
                 r#"
                 (function() {{
                   try {{
                     console.info("[GS26 rust] fullscreen effect", {{
-                      hasMounted: {has_mounted},
+                      previousFullscreen: {previous_fullscreen},
                       fullscreen: {fullscreen},
                       ts: Date.now(),
                       maxNativeZoom: {max_native_zoom}
@@ -220,14 +220,27 @@ pub fn MapTab(
                   }} catch (e) {{}}
                 }})();
                 "#,
-                has_mounted = if has_mounted { "true" } else { "false" },
+                previous_fullscreen = match previous_fullscreen {
+                    Some(value) => {
+                        if value {
+                            "true"
+                        } else {
+                            "false"
+                        }
+                    }
+                    None => "null",
+                },
                 fullscreen = if fs { "true" } else { "false" },
                 max_native_zoom = config.max_native_zoom,
             ));
-            if !has_mounted {
-                did_mount_fullscreen_effect.set(true);
+            if previous_fullscreen.is_none() {
+                last_applied_fullscreen.set(Some(fs));
                 return;
             }
+            if previous_fullscreen == Some(fs) {
+                return;
+            }
+            last_applied_fullscreen.set(Some(fs));
             js_force_map_reinit_now(&tiles, &config, fs, FULLSCREEN_REINIT_DELAY_MS);
         });
     }
@@ -237,7 +250,6 @@ pub fn MapTab(
         let tiles = tiles_url();
         let map_config = map_config;
         let is_fullscreen_sig = is_fullscreen;
-        let mut did_mount_map_config_effect = use_signal(|| false);
         let mut last_applied_map_config = use_signal(|| None::<(String, u32, u32)>);
         use_effect(move || {
             let config = map_config.read().clone();
@@ -247,14 +259,14 @@ pub fn MapTab(
                 config.max_native_zoom,
                 config.max_display_zoom,
             );
-            let has_mounted = *did_mount_map_config_effect.read();
+            let previous_map_config = last_applied_map_config.read().clone();
             #[cfg(target_arch = "wasm32")]
             js_eval(&format!(
                 r#"
                 (function() {{
                   try {{
                     console.info("[GS26 rust] map-config effect", {{
-                      hasMounted: {has_mounted},
+                      hasPreviousConfig: {has_previous_config},
                       fullscreen: {fullscreen},
                       ts: Date.now(),
                       maxNativeZoom: {max_native_zoom},
@@ -263,18 +275,20 @@ pub fn MapTab(
                   }} catch (e) {{}}
                 }})();
                 "#,
-                has_mounted = if has_mounted { "true" } else { "false" },
+                has_previous_config = if previous_map_config.is_some() {
+                    "true"
+                } else {
+                    "false"
+                },
                 fullscreen = if fs { "true" } else { "false" },
                 max_native_zoom = config.max_native_zoom,
                 max_display_zoom = config.max_display_zoom,
             ));
-            if !has_mounted {
-                did_mount_map_config_effect.set(true);
+            if previous_map_config.is_none() {
                 last_applied_map_config.set(Some(next_key));
                 return;
             }
-            let current_map_config = last_applied_map_config.read().clone();
-            if current_map_config == Some(next_key.clone()) {
+            if previous_map_config == Some(next_key.clone()) {
                 return;
             }
             last_applied_map_config.set(Some(next_key));
