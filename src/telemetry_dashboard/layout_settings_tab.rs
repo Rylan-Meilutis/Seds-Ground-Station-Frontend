@@ -69,7 +69,7 @@ pub fn SettingsPage(
     let radius_unit_label = if metric_enabled { "m" } else { "ft" };
     let radius_min_display = if metric_enabled { 100 } else { 328 };
     let radius_max_display = if metric_enabled { 20_000 } else { 65_617 };
-    let radius_step_display = if metric_enabled { 100 } else { 100 };
+    let radius_step_display = 100;
     let radius_to_display = |meters: u32| -> u32 {
         if metric_enabled {
             meters

@@ -60,11 +60,11 @@ pub fn GpsDriver(
     {
         use_effect(move || {
             spawn(async move {
-                crate::telemetry_dashboard::gps_webview::run(user_gps).await;
+                crate::telemetry_dashboard::gps_windows::run(user_gps).await;
             });
         });
         use_drop(|| {
-            crate::telemetry_dashboard::gps_webview::stop();
+            crate::telemetry_dashboard::gps_windows::stop();
         });
 
         return rsx!(div {});

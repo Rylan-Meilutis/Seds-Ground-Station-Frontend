@@ -2111,7 +2111,14 @@ function clampMaxNativeZoom(value) {
 
 function clampMaxDisplayZoom(value, maxNativeZoom) {
     const nativeZoom = clampMaxNativeZoom(maxNativeZoom);
-    return Math.min(MAX_DISPLAY_ZOOM_LIMIT, nativeZoom + DEFAULT_MAX_OVERZOOM_DELTA);
+    const requested = Math.floor(Number(value));
+    if (!Number.isFinite(requested)) {
+        return Math.min(MAX_DISPLAY_ZOOM_LIMIT, nativeZoom + DEFAULT_MAX_OVERZOOM_DELTA);
+    }
+    return Math.max(
+        nativeZoom + DEFAULT_MAX_OVERZOOM_DELTA,
+        Math.min(MAX_DISPLAY_ZOOM_LIMIT, requested)
+    );
 }
 
 function promoteNativeZoomForDisplayZoom(displayZoom, tilesUrl = currentTilesUrl) {
