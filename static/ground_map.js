@@ -47,6 +47,7 @@ let tileTrackingPrefetchActive = false;
 let tileCacheUsageMeasureTimer = null;
 let tileMemoryCacheBytes = 0;
 let tilePersistentClearPromise = null;
+let browserTileCacheQueue = Promise.resolve();
 const tileMissingCache = new Map();
 const tileFetchInflight = new Map();
 let transparentTileArrayBufferPromise = null;
@@ -102,8 +103,6 @@ let trackedAssetLabel = "Tracked Asset";
 let mapNavigationControl = null;
 let mapCenterControl = null;
 let mapNorthControl = null;
-let domMapTileRenderId = 0;
-let domMapBlobUrls = new Map();
 const TILE_PROTOCOL = "gs26map";
 const SOURCE_EMPTY_KEY = "__empty__";
 
@@ -134,7 +133,6 @@ const DEFAULT_MAX_NATIVE_ZOOM = 12;
 const MAX_NATIVE_ZOOM_LIMIT = 18;
 const DEFAULT_MAX_OVERZOOM_DELTA = 1;
 const MAX_DISPLAY_ZOOM_LIMIT = MAX_NATIVE_ZOOM_LIMIT + DEFAULT_MAX_OVERZOOM_DELTA;
-const DOM_MAP_MAX_OVERZOOM_DELTA = 6;
 const HIGH_RES_PREFETCH_DEFAULT_RADIUS_M = 1609.344;
 const HIGH_RES_PREFETCH_MIN_RADIUS_M = 100;
 const HIGH_RES_PREFETCH_MAX_RADIUS_M = 20000;
@@ -169,8 +167,6 @@ function configuredPrefetchRadiusM(kind) {
     return Math.max(HIGH_RES_PREFETCH_MIN_RADIUS_M, Math.min(HIGH_RES_PREFETCH_MAX_RADIUS_M, value));
 }
 
-const DOM_MAP_MAX_RENDER_TILES = 72;
-const DOM_MAP_TILE_BUFFER_PX = 320;
 const MARKER_SYNC_MIN_INTERVAL_MS = 100;
 const ZOOM_BUTTON_ANIMATION_MS = 240;
 const ZOOM_BUTTON_UNITS_PER_SECOND = 6.5;
@@ -444,6 +440,24 @@ function tileCacheSupported() {
     return typeof window !== "undefined"
         && typeof window.caches !== "undefined"
         && typeof window.fetch === "function";
+}
+
+function shouldSerializeBrowserTileCacheOps() {
+    return isBrowserHostedMapRuntime();
+}
+
+async function yieldBrowserTileWork() {
+    if (!isBrowserHostedMapRuntime()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function runBrowserTileCacheOp(task) {
+    if (!shouldSerializeBrowserTileCacheOps()) {
+        return Promise.resolve().then(task);
+    }
+    const next = browserTileCacheQueue.then(task, task);
+    browserTileCacheQueue = next.catch(() => {});
+    return next;
 }
 
 function tileCacheEnabled() {
@@ -1181,9 +1195,7 @@ function warmInitialMapTilesFromCache(tilesUrl, center, zoom, container = null) 
         await Promise.all(workers);
         if (foundCachedTile) {
             logMapInitTiming("first-tile", {source: "startup-cache-warm"});
-            if (isDomMapActive()) {
-                renderDomMap();
-            } else if (groundMap && typeof groundMap.triggerRepaint === "function") {
+            if (groundMap && typeof groundMap.triggerRepaint === "function") {
                 groundMap.triggerRepaint();
             }
         }
@@ -1210,9 +1222,7 @@ function usePersistedCachedZoomForStartup(tilesUrl, desiredZoom) {
 function renderAfterStartupCacheWarm(warmPromise) {
     Promise.resolve(warmPromise).then((foundCachedTile) => {
         if (!foundCachedTile) return;
-        if (isDomMapActive()) {
-            renderDomMap();
-        } else if (groundMap && typeof groundMap.triggerRepaint === "function") {
+        if (groundMap && typeof groundMap.triggerRepaint === "function") {
             groundMap.triggerRepaint();
         }
     });
@@ -1328,8 +1338,10 @@ async function readCachedTileArrayBuffer(cacheName, url, options = {}) {
 async function readPersistentTileArrayBuffer(cacheName, url) {
     if (!tileCacheEnabled() || !tileCacheSupported() || !url) return null;
     try {
-        const cache = await openTileCache(cacheName);
-        const cached = await cache.match(tileCacheRequestKey(url), {ignoreVary: true});
+        const cached = await runBrowserTileCacheOp(async () => {
+            const cache = await openTileCache(cacheName);
+            return await cache.match(tileCacheRequestKey(url), {ignoreVary: true});
+        });
         if (!cached || !cached.ok) return null;
         return await cached.arrayBuffer();
     } catch (e) {
@@ -1382,11 +1394,13 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
                 });
                 Promise.resolve().then(async () => {
                     try {
-                        const cache = await openTileCache(cacheName);
-                        if (cache) {
-                            await cache.put(tileCacheRequestKey(url), cacheResponse);
-                            bumpStoredTileCacheUsageBytes(data.byteLength);
-                        }
+                        await runBrowserTileCacheOp(async () => {
+                            const cache = await openTileCache(cacheName);
+                            if (cache) {
+                                await cache.put(tileCacheRequestKey(url), cacheResponse);
+                                bumpStoredTileCacheUsageBytes(data.byteLength);
+                            }
+                        });
                     } catch (e) {
                         if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
                         schedulePersistentTileCacheUsageMeasure(0);
@@ -1398,7 +1412,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
         return cloneTileArrayBuffer(data);
     }
 
-    const cache = await openTileCache(cacheName);
+    const cache = await runBrowserTileCacheOp(async () => await openTileCache(cacheName));
     if (!cache) {
         const response = await fetch(url);
         if (!response.ok) {
@@ -1410,7 +1424,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
         return await response.arrayBuffer();
     }
     const cacheKey = tileCacheRequestKey(url);
-    const cached = await cache.match(cacheKey, {ignoreVary: true});
+    const cached = await runBrowserTileCacheOp(async () => await cache.match(cacheKey, {ignoreVary: true}));
     if (cached && cached.ok) {
         const data = await cached.arrayBuffer();
         writeTileMemoryCache(cacheName, url, data);
@@ -1443,8 +1457,10 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
             });
             Promise.resolve().then(async () => {
                 try {
-                    await cache.put(cacheKey, cacheResponse);
-                    bumpStoredTileCacheUsageBytes(data.byteLength);
+                    await runBrowserTileCacheOp(async () => {
+                        await cache.put(cacheKey, cacheResponse);
+                        bumpStoredTileCacheUsageBytes(data.byteLength);
+                    });
                 } catch (e) {
                     if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache put failed", url, e);
                     schedulePersistentTileCacheUsageMeasure(0);
@@ -1463,10 +1479,10 @@ async function prefetchTileToPersistentCache(cacheName, url) {
     if (isKnownMissingTile(cacheName, url)) return;
     if (hasTileMemoryCache(cacheName, url)) return;
 
-    const cache = await openTileCache(cacheName);
+    const cache = await runBrowserTileCacheOp(async () => await openTileCache(cacheName));
     if (!cache) return;
     const cacheKey = tileCacheRequestKey(url);
-    const cached = await cache.match(cacheKey, {ignoreVary: true});
+    const cached = await runBrowserTileCacheOp(async () => await cache.match(cacheKey, {ignoreVary: true}));
     if (cached && cached.ok) {
         forgetMissingTile(cacheName, url);
         return;
@@ -1487,7 +1503,9 @@ async function prefetchTileToPersistentCache(cacheName, url) {
             return;
         }
         try {
-            await cache.put(cacheKey, response);
+            await runBrowserTileCacheOp(async () => {
+                await cache.put(cacheKey, response);
+            });
             forgetMissingTile(cacheName, url);
             if (Number.isFinite(contentLength) && contentLength >= 0) {
                 bumpStoredTileCacheUsageBytes(contentLength);
@@ -2113,9 +2131,6 @@ function applyDiscoveredCachedMaxNativeZoom(tilesUrl) {
         try {
             if (groundMap) {
                 groundMap.setMaxZoom(currentMaxZoom);
-                if (isDomMapActive()) {
-                    renderDomMap();
-                }
                 updateZoomControlAppearance();
                 restorePendingZoomIfPossible();
             }
@@ -2629,6 +2644,7 @@ async function runHighResTilePrefetch(runId, key) {
             } finally {
                 completed += 1;
                 publishProgress();
+                await yieldBrowserTileWork();
             }
         }
     };
@@ -2663,6 +2679,7 @@ async function runTrackingTilePrefetch(runId, plan) {
                 await prefetchTileToPersistentCache(cacheName, url);
             } catch (e) {
             }
+            await yieldBrowserTileWork();
         }
     };
 
@@ -3201,10 +3218,6 @@ function updateNorthControlAppearance() {
 }
 
 function syncRocketGuideLine(rocketLatLng, userLatLng) {
-    if (isDomMapActive()) {
-        renderDomMapOverlays();
-        return;
-    }
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(GUIDE_SOURCE_ID);
     if (!source) return;
@@ -3238,10 +3251,6 @@ function syncRocketGuideLine(rocketLatLng, userLatLng) {
 }
 
 function syncPointSource(sourceId, latLng) {
-    if (isDomMapActive()) {
-        renderDomMapOverlays();
-        return;
-    }
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(sourceId);
     if (!source) return;
@@ -3252,10 +3261,6 @@ function syncPointSource(sourceId, latLng) {
 }
 
 function syncUserHeadingIndicator() {
-    if (isDomMapActive()) {
-        renderDomMapOverlays();
-        return;
-    }
     if (!groundMap || !mapReady) return;
     const source = groundMap.getSource(USER_HEADING_SOURCE_ID);
     if (!source) return;
@@ -4456,10 +4461,6 @@ function trackedAssetTitle() {
     return window.__gs26_tracked_asset_title || trackedAssetLabel || "Tracked Asset";
 }
 
-function shouldUseDomMapRenderer() {
-    return false;
-}
-
 function shouldRunBrowserMapPrefetch() {
     return true;
 }
@@ -4506,10 +4507,6 @@ function highResPrefetchIdleDelayMs() {
         : HIGH_RES_PREFETCH_IDLE_DELAY_MS;
 }
 
-function isDomMapActive() {
-    return !!(groundMap && groundMap.__gs26_dom_map === true);
-}
-
 function worldSizeAtZoom(zoom) {
     return 256 * Math.pow(2, Math.max(MIN_ZOOM, Math.floor(Number(zoom) || MIN_ZOOM)));
 }
@@ -4533,492 +4530,6 @@ function worldPointToLatLonAtZoom(x, y, zoom) {
     const n = Math.PI - (2.0 * Math.PI * Number(y)) / scale;
     const lat = (180.0 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
     return [clampLat(lat), clampLon(lon)];
-}
-
-function domMapNativeZoom(state) {
-    const nativeMax = Number.isFinite(currentMaxNativeZoom)
-        ? currentMaxNativeZoom
-        : DEFAULT_MAX_NATIVE_ZOOM;
-    return Math.max(effectiveMinZoom(), Math.min(Math.max(nativeMax, effectiveMinZoom()), Math.floor(Number(state.zoom) || effectiveMinZoom())));
-}
-
-function revokeDomMapBlobUrls() {
-    for (const url of domMapBlobUrls.values()) {
-        try {
-            URL.revokeObjectURL(url);
-        } catch (e) {
-        }
-    }
-    domMapBlobUrls = new Map();
-}
-
-function releaseDomMapTileImages(root) {
-    if (!root || typeof root.querySelectorAll !== "function") return;
-    const images = root.querySelectorAll("img");
-    for (const img of images) {
-        if (img && img.__gs26_object_url) {
-            try {
-                URL.revokeObjectURL(img.__gs26_object_url);
-            } catch (e) {
-            }
-            img.__gs26_object_url = "";
-        }
-    }
-}
-
-function domMapTileBlobUrl(data) {
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    const mime = bytes[0] === 0xff && bytes[1] === 0xd8
-        ? "image/jpeg"
-        : "image/png";
-    const blob = new Blob([data], {type: mime});
-    return URL.createObjectURL(blob);
-}
-
-function setDomMapTileImage(img, cacheName, url, coord, renderId) {
-    if (!img || !url) return;
-    Promise.resolve().then(async () => {
-        if (!groundMap || !groundMap.__gs26_dom_map || renderId !== domMapTileRenderId) return;
-        let data = null;
-        try {
-            data = await readCachedTileArrayBuffer(cacheName, url);
-            if (!data && !isKnownMissingTile(cacheName, url)) {
-                data = await fetchAndCacheTileArrayBuffer(cacheName, url, {skipCacheLookup: true});
-            }
-        } catch (e) {
-            try {
-                data = await readCachedTileArrayBuffer(cacheName, url);
-            } catch (fallbackError) {
-                data = null;
-            }
-            if (!data) {
-                rememberMissingTile(cacheName, url, 0);
-                handleMissingTileCoord(coord);
-            }
-        }
-        if (!groundMap || !groundMap.__gs26_dom_map || renderId !== domMapTileRenderId) return;
-        const bytes = data || await transparentTileArrayBuffer();
-        if (img.__gs26_object_url) {
-            try {
-                URL.revokeObjectURL(img.__gs26_object_url);
-            } catch (e) {
-            }
-            img.__gs26_object_url = "";
-        }
-        const objectUrl = domMapTileBlobUrl(bytes);
-        img.__gs26_object_url = objectUrl;
-        const releaseObjectUrl = () => {
-            const urlToRelease = img.__gs26_object_url;
-            if (!urlToRelease) return;
-            img.__gs26_object_url = "";
-            setTimeout(() => {
-                try {
-                    URL.revokeObjectURL(urlToRelease);
-                } catch (e) {
-                }
-            }, 0);
-        };
-        img.onload = releaseObjectUrl;
-        img.onerror = releaseObjectUrl;
-        img.src = objectUrl;
-        img.style.opacity = data ? "1" : "0";
-    }).catch((error) => {
-        reportMapRuntimeError("dom tile load", error);
-    });
-}
-
-function renderDomMap() {
-    if (!isDomMapActive()) return;
-    const state = groundMap.__gs26_state;
-    const container = groundMap.__gs26_container;
-    const tilePane = groundMap.__gs26_tile_pane;
-    if (!state || !container || !tilePane) return;
-    const width = Math.max(1, container.clientWidth || container.offsetWidth || 1);
-    const height = Math.max(1, container.clientHeight || container.offsetHeight || 1);
-    const z = domMapNativeZoom(state);
-    const zoomScale = Math.pow(2, Math.max(0, state.zoom - z));
-    const center = worldPointToLatLonAtZoom(
-        latLonToWorldPointAtZoom(state.center[1], state.center[0], z).x,
-        latLonToWorldPointAtZoom(state.center[1], state.center[0], z).y,
-        z
-    );
-    state.center = [center[1], center[0]];
-    const centerPoint = latLonToWorldPointAtZoom(state.center[1], state.center[0], z);
-    const cover = Math.ceil(Math.hypot(width, height) / (2 * zoomScale)) + DOM_MAP_TILE_BUFFER_PX;
-    const tileMinX = Math.floor((centerPoint.x - cover) / 256);
-    const tileMaxX = Math.ceil((centerPoint.x + cover) / 256);
-    const tileMinY = Math.floor((centerPoint.y - cover) / 256);
-    const tileMaxY = Math.ceil((centerPoint.y + cover) / 256);
-    const tileCount = Math.pow(2, z);
-    const cacheName = tileCacheName(currentTilesUrl);
-    const renderId = ++domMapTileRenderId;
-    const frag = document.createDocumentFragment();
-    const candidates = [];
-    for (let x = tileMinX; x <= tileMaxX; x++) {
-        for (let y = tileMinY; y <= tileMaxY; y++) {
-            if (y < 0 || y >= tileCount) continue;
-            const wrappedX = ((x % tileCount) + tileCount) % tileCount;
-            const coord = normalizeTileCoord(z, wrappedX, y);
-            if (!coord) continue;
-            const url = resolvePrefetchTileUrl(currentTilesUrl, coord.z, coord.x, coord.y);
-            if (!url) continue;
-            const tileCenterX = x * 256 + 128;
-            const tileCenterY = y * 256 + 128;
-            candidates.push({
-                x,
-                y,
-                coord,
-                url,
-                distance: Math.hypot(tileCenterX - centerPoint.x, tileCenterY - centerPoint.y),
-            });
-        }
-    }
-    candidates.sort((a, b) => a.distance - b.distance);
-    for (const item of candidates.slice(0, DOM_MAP_MAX_RENDER_TILES)) {
-        const img = document.createElement("img");
-        img.decoding = "async";
-        img.draggable = false;
-        img.alt = "";
-        img.style.position = "absolute";
-        img.style.left = `${width / 2 + (item.x * 256 - centerPoint.x) * zoomScale}px`;
-        img.style.top = `${height / 2 + (item.y * 256 - centerPoint.y) * zoomScale}px`;
-        img.style.width = `${256 * zoomScale + 0.5}px`;
-        img.style.height = `${256 * zoomScale + 0.5}px`;
-        img.style.imageRendering = "auto";
-        img.style.userSelect = "none";
-        img.style.pointerEvents = "none";
-        frag.appendChild(img);
-        setDomMapTileImage(img, cacheName, item.url, item.coord, renderId);
-    }
-    releaseDomMapTileImages(tilePane);
-    tilePane.replaceChildren(frag);
-    tilePane.style.transform = `rotate(${-normalizeAngle(state.bearing)}deg)`;
-    renderDomMapOverlays();
-    updateZoomControlAppearance();
-    updateNorthControlAppearance();
-}
-
-function domMapScreenPointForLatLng(latLng) {
-    if (!isDomMapActive() || !Array.isArray(latLng)) return null;
-    const state = groundMap.__gs26_state;
-    const container = groundMap.__gs26_container;
-    const width = Math.max(1, container.clientWidth || container.offsetWidth || 1);
-    const height = Math.max(1, container.clientHeight || container.offsetHeight || 1);
-    const z = domMapNativeZoom(state);
-    const zoomScale = Math.pow(2, Math.max(0, state.zoom - z));
-    const centerPoint = latLonToWorldPointAtZoom(state.center[1], state.center[0], z);
-    const point = latLonToWorldPointAtZoom(latLng[0], latLng[1], z);
-    return {
-        x: width / 2 + (point.x - centerPoint.x) * zoomScale,
-        y: height / 2 + (point.y - centerPoint.y) * zoomScale,
-    };
-}
-
-function renderDomMapMarker(element, latLng, headingDeg, options = {}) {
-    if (!element) return;
-    const point = domMapScreenPointForLatLng(latLng);
-    if (!point) {
-        element.hidden = true;
-        return;
-    }
-    element.hidden = false;
-    const bearing = isDomMapActive() ? normalizeAngle(groundMap.__gs26_state.bearing) : 0;
-    const keepUpright = options.keepUpright !== false;
-    const rotate = Number.isFinite(headingDeg)
-        ? normalizeAngle(headingDeg - bearing)
-        : (keepUpright ? -bearing : 0);
-    element.style.transform = `translate(${point.x}px, ${point.y}px) translate(-50%, -50%) rotate(${rotate}deg)`;
-}
-
-function renderDomMapOverlays() {
-    if (!isDomMapActive()) return;
-    const state = groundMap.__gs26_state;
-    const userLatLng = currentUserVisualOrLastLatLng();
-    renderDomMapMarker(groundMap.__gs26_rocket_marker, lastRocketLatLng, null);
-    renderDomMapMarker(groundMap.__gs26_user_marker, userLatLng, null);
-    const headingDeg = Number.isFinite(userHeadingArrowDeg) ? userHeadingArrowDeg : userHeadingDeg;
-    if (Number.isFinite(headingDeg)) {
-        renderDomMapMarker(groundMap.__gs26_user_heading_marker, userLatLng, headingDeg, {keepUpright: false});
-    } else if (groundMap.__gs26_user_heading_marker) {
-        groundMap.__gs26_user_heading_marker.hidden = true;
-    }
-    const hasLine = Array.isArray(lastRocketLatLng) && Array.isArray(userLatLng);
-    if (groundMap.__gs26_guide_line) {
-        if (!hasLine) {
-            groundMap.__gs26_guide_line.hidden = true;
-        } else {
-            const a = domMapScreenPointForLatLng(userLatLng);
-            const b = domMapScreenPointForLatLng(lastRocketLatLng);
-            if (a && b) {
-                const dx = b.x - a.x;
-                const dy = b.y - a.y;
-                groundMap.__gs26_guide_line.hidden = false;
-                groundMap.__gs26_guide_line.style.width = `${Math.hypot(dx, dy)}px`;
-                groundMap.__gs26_guide_line.style.transform = `translate(${a.x}px, ${a.y}px) rotate(${Math.atan2(dy, dx)}rad)`;
-            }
-        }
-    }
-    if (state) {
-        mapBearingDeg = normalizeAngle(state.bearing);
-    }
-}
-
-function createDomMapControlButton(label, title, onClick, className = "") {
-    const button = document.createElement("button");
-    button.type = "button";
-    if (className) button.className = className;
-    button.title = title;
-    button.setAttribute("aria-label", title);
-    button.textContent = label;
-    button.style.width = "32px";
-    button.style.height = "32px";
-    button.style.border = "0";
-    button.style.background = "#fff";
-    button.style.color = "#111827";
-    button.style.font = "600 18px/1 system-ui, sans-serif";
-    button.style.display = "grid";
-    button.style.placeItems = "center";
-    button.addEventListener("click", safeMapCallback(`dom map ${title}`, (event) => {
-        event.preventDefault();
-        onClick();
-    }));
-    return button;
-}
-
-function createDomEmojiMarker(label, sizePx, background, borderColor) {
-    const marker = document.createElement("div");
-    marker.style.position = "absolute";
-    marker.style.width = `${sizePx}px`;
-    marker.style.height = `${sizePx}px`;
-    marker.style.borderRadius = "999px";
-    marker.style.display = "grid";
-    marker.style.placeItems = "center";
-    marker.style.background = background;
-    marker.style.border = `2px solid ${borderColor}`;
-    marker.style.boxShadow = "0 2px 10px rgba(0,0,0,0.55)";
-    marker.style.font = `${Math.round(sizePx * 0.58)}px/1 system-ui, -apple-system, BlinkMacSystemFont, sans-serif`;
-    marker.style.transformOrigin = "50% 50%";
-    marker.style.pointerEvents = "none";
-    marker.textContent = label;
-    marker.hidden = true;
-    return marker;
-}
-
-function createDomHeadingMarker() {
-    const marker = document.createElement("div");
-    marker.style.position = "absolute";
-    marker.style.width = "0";
-    marker.style.height = "0";
-    marker.style.borderLeft = "8px solid transparent";
-    marker.style.borderRight = "8px solid transparent";
-    marker.style.borderBottom = "22px solid #f8fafc";
-    marker.style.filter = "drop-shadow(0 1px 2px rgba(0,0,0,0.9))";
-    marker.style.transformOrigin = "50% 34px";
-    marker.style.marginTop = "-34px";
-    marker.style.pointerEvents = "none";
-    marker.hidden = true;
-    return marker;
-}
-
-function installDomMapGestures(container) {
-    const state = groundMap.__gs26_state;
-    let dragging = false;
-    let lastX = 0;
-    let lastY = 0;
-    container.addEventListener("pointerdown", safeMapCallback("dom map pointerdown", (event) => {
-        dragging = true;
-        lastX = event.clientX;
-        lastY = event.clientY;
-        container.setPointerCapture(event.pointerId);
-        unlockMapInteraction({force: true, dropFollow: true, dropOrientation: false});
-    }));
-    container.addEventListener("pointermove", safeMapCallback("dom map pointermove", (event) => {
-        if (!dragging) return;
-        const dx = event.clientX - lastX;
-        const dy = event.clientY - lastY;
-        lastX = event.clientX;
-        lastY = event.clientY;
-        const z = domMapNativeZoom(state);
-        const zoomScale = Math.pow(2, Math.max(0, state.zoom - z));
-        const centerPoint = latLonToWorldPointAtZoom(state.center[1], state.center[0], z);
-        const next = worldPointToLatLonAtZoom(centerPoint.x - dx / zoomScale, centerPoint.y - dy / zoomScale, z);
-        state.center = [next[1], next[0]];
-        renderDomMap();
-        rememberMapView();
-    }));
-    const endDrag = safeMapCallback("dom map pointerup", (event) => {
-        dragging = false;
-        try {
-            container.releasePointerCapture(event.pointerId);
-        } catch (e) {
-        }
-        persistMapStateSoon();
-    });
-    container.addEventListener("pointerup", endDrag);
-    container.addEventListener("pointercancel", endDrag);
-}
-
-function createDomGroundMap(container, center, zoom, bearing) {
-    revokeDomMapBlobUrls();
-    releaseDomMapTileImages(container);
-    container.replaceChildren();
-    container.style.position = "relative";
-    container.style.overflow = "hidden";
-    container.style.backgroundColor = MAP_BACKGROUND_COLOR;
-
-    const tilePane = document.createElement("div");
-    tilePane.style.position = "absolute";
-    tilePane.style.inset = "0";
-    tilePane.style.transformOrigin = "50% 50%";
-    tilePane.style.pointerEvents = "none";
-
-    const overlayPane = document.createElement("div");
-    overlayPane.style.position = "absolute";
-    overlayPane.style.inset = "0";
-    overlayPane.style.pointerEvents = "none";
-
-    const guide = document.createElement("div");
-    guide.style.position = "absolute";
-    guide.style.height = "3px";
-    guide.style.background = "#ef4444";
-    guide.style.opacity = "0.95";
-    guide.style.transformOrigin = "0 50%";
-    guide.hidden = true;
-
-    const rocket = createDomEmojiMarker("🚀", 42, "rgba(127, 29, 29, 0.92)", "#fecaca");
-    const user = createDomEmojiMarker("🧍", 40, "rgba(12, 74, 110, 0.94)", "#bae6fd");
-    const userHeading = createDomHeadingMarker();
-
-    const controls = document.createElement("div");
-    controls.style.position = "absolute";
-    controls.style.top = "10px";
-    controls.style.right = "10px";
-    controls.style.display = "grid";
-    controls.style.gap = "1px";
-    controls.style.borderRadius = "4px";
-    controls.style.overflow = "hidden";
-    controls.style.boxShadow = "0 1px 5px rgba(0,0,0,0.35)";
-    controls.style.pointerEvents = "auto";
-
-    const domMap = {
-        __gs26_dom_map: true,
-        __gs26_container: container,
-        __gs26_tile_pane: tilePane,
-        __gs26_overlay_pane: overlayPane,
-        __gs26_guide_line: guide,
-        __gs26_rocket_marker: rocket,
-        __gs26_user_marker: user,
-        __gs26_user_heading_marker: userHeading,
-        __gs26_state: {
-            center: [Number(center[0]), Number(center[1])],
-            zoom: Math.max(effectiveMinZoom(), Math.min(currentMaxZoom, Number(zoom) || effectiveMinZoom())),
-            bearing: normalizeAngle(bearing),
-        },
-        getContainer: () => container,
-        getCanvas: () => container,
-        getCanvasContainer: () => container,
-        getCenter() {
-            return {lng: this.__gs26_state.center[0], lat: this.__gs26_state.center[1]};
-        },
-        getZoom() {
-            return this.__gs26_state.zoom;
-        },
-        getBearing() {
-            return this.__gs26_state.bearing;
-        },
-        setMaxZoom(value) {
-            const nextMax = Number(value);
-            currentMaxZoom = Number.isFinite(nextMax)
-                ? Math.max(effectiveMinZoom(), nextMax)
-                : effectiveMinZoom();
-            this.__gs26_state.zoom = Math.min(this.__gs26_state.zoom, currentMaxZoom);
-            renderDomMap();
-        },
-        setMinZoom(value) {
-            const nextMin = Number(value);
-            currentMinZoom = Number.isFinite(nextMin)
-                ? Math.max(DEFAULT_SAFE_MIN_ZOOM, nextMin)
-                : DEFAULT_SAFE_MIN_ZOOM;
-            this.__gs26_state.zoom = Math.max(this.__gs26_state.zoom, effectiveMinZoom());
-            renderDomMap();
-        },
-        jumpTo(options = {}) {
-            if (Array.isArray(options.center)) {
-                this.__gs26_state.center = [Number(options.center[0]), Number(options.center[1])];
-            }
-            if (Number.isFinite(Number(options.zoom))) {
-                this.__gs26_state.zoom = Math.max(effectiveMinZoom(), Math.min(currentMaxZoom, Number(options.zoom)));
-            }
-            if (Number.isFinite(Number(options.bearing))) {
-                this.__gs26_state.bearing = normalizeAngle(Number(options.bearing));
-            }
-            renderDomMap();
-        },
-        easeTo(options = {}) {
-            this.jumpTo(options);
-        },
-        resize() {
-            renderDomMap();
-        },
-        invalidateSize() {
-            renderDomMap();
-        },
-        remove() {
-            revokeDomMapBlobUrls();
-            releaseDomMapTileImages(container);
-            container.replaceChildren();
-        },
-        stop() {
-        },
-        on() {
-        },
-        addControl() {
-        },
-        getLayer() {
-            return null;
-        },
-        getSource() {
-            return null;
-        },
-        project(lngLat) {
-            const lat = Number(lngLat.lat);
-            const lng = Number(lngLat.lng);
-            return domMapScreenPointForLatLng([lat, lng]) || {x: 0, y: 0};
-        },
-        unproject(point) {
-            const state = this.__gs26_state;
-            const width = Math.max(1, container.clientWidth || container.offsetWidth || 1);
-            const height = Math.max(1, container.clientHeight || container.offsetHeight || 1);
-            const z = domMapNativeZoom(state);
-            const zoomScale = Math.pow(2, Math.max(0, state.zoom - z));
-            const centerPoint = latLonToWorldPointAtZoom(state.center[1], state.center[0], z);
-            const x = Array.isArray(point) ? point[0] : point.x;
-            const y = Array.isArray(point) ? point[1] : point.y;
-            const latLng = worldPointToLatLonAtZoom(
-                centerPoint.x + (Number(x) - width / 2) / zoomScale,
-                centerPoint.y + (Number(y) - height / 2) / zoomScale,
-                z
-            );
-            return {lat: latLng[0], lng: latLng[1]};
-        },
-    };
-
-    groundMap = domMap;
-    controls.appendChild(createDomMapControlButton("+", "Zoom In", () => applyImmediateZoomStep(1), "maplibregl-ctrl-zoom-in"));
-    controls.appendChild(createDomMapControlButton("-", "Zoom Out", () => applyImmediateZoomStep(-1), "maplibregl-ctrl-zoom-out"));
-    controls.appendChild(createDomMapControlButton("◎", "Center On Me", () => activateLocateControl()));
-    controls.appendChild(createDomMapControlButton("N", "Reset North Up", () => setGroundMapOrientationMode("north")));
-    overlayPane.appendChild(guide);
-    overlayPane.appendChild(userHeading);
-    overlayPane.appendChild(rocket);
-    overlayPane.appendChild(user);
-    container.appendChild(tilePane);
-    container.appendChild(overlayPane);
-    container.appendChild(controls);
-    installDomMapGestures(container);
-    mapReady = true;
-    window.__gs26_ground_map = groundMap;
-    renderDomMap();
 }
 
 function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
@@ -5720,9 +5231,6 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         nextConfiguredMaxDisplayZoom,
         nextMaxNativeZoom + DEFAULT_MAX_OVERZOOM_DELTA
     );
-    if (shouldUseDomMapRenderer()) {
-        nextMaxZoom = Math.max(nextMaxZoom, nextMaxNativeZoom + DOM_MAP_MAX_OVERZOOM_DELTA);
-    }
     trackedAssetLabel = assetTitle || trackedAssetTitle();
     currentTilesUrl = tilesUrl;
     configuredMaxNativeZoom = nextConfiguredMaxNativeZoom;
@@ -5768,68 +5276,16 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     const startBearing = orientationMode === "north" ? 0 : mapBearingDeg;
     logMapRuntimeBoundary("initGroundMap:computed-start-state", {
         clampedZoom,
-        useDomRenderer: shouldUseDomMapRenderer(),
         useNativeTemplate: shouldUseNativeTileTemplate(currentTilesUrl),
     });
     pushMapTrace("initGroundMap:computed-start-state", {
         desiredZoom,
         clampedZoom,
-        usingDomRenderer: shouldUseDomMapRenderer(),
         usingNativeTiles: shouldUseNativeTileTemplate(currentTilesUrl),
     });
 
-    if (shouldUseDomMapRenderer()) {
-        logMapRuntimeBoundary("initGroundMap:dom-branch:start");
-        if (isDomMapActive() && groundMap.getContainer && groundMap.getContainer() === container) {
-            logMapRuntimeBoundary("initGroundMap:dom-branch:reuse");
-            pushMapTrace("initGroundMap:reuse-dom-map");
-            groundMap.setMaxZoom(currentMaxZoom);
-            groundMap.jumpTo({
-                center: startCenter,
-                zoom: clampedZoom,
-                bearing: startBearing,
-            });
-        } else {
-            if (groundMap) {
-                logMapRuntimeBoundary("initGroundMap:dom-branch:remove-existing");
-                pushMapTrace("initGroundMap:remove-existing-map-before-dom");
-                try {
-                    groundMap.remove();
-                } catch (e) {
-                }
-                groundMap = null;
-                window.__gs26_ground_map = null;
-            }
-            resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
-            scheduleCachedZoomDiscoveryAfterStartup(currentTilesUrl);
-            renderAfterStartupCacheWarm(
-                warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
-            );
-            logMapRuntimeBoundary("initGroundMap:dom-branch:create:start");
-            pushMapTrace("initGroundMap:create-dom-map:start");
-            createDomGroundMap(container, startCenter, clampedZoom, startBearing);
-            logMapRuntimeBoundary("initGroundMap:dom-branch:create:done");
-            pushMapTrace("initGroundMap:create-dom-map:done");
-        }
-        rememberMapView();
-        syncRequestedMapControlState();
-        if (Array.isArray(userMarkerDisplayedLatLng)) {
-            userMarkerDisplayedLatLng = [userMarkerDisplayedLatLng[0], userMarkerDisplayedLatLng[1]];
-        } else if (lastUserLatLng) {
-            userMarkerDisplayedLatLng = [lastUserLatLng[0], lastUserLatLng[1]];
-        }
-        renderDomMapOverlays();
-        scheduleTrackingTilePrefetch();
-        scheduleHighResTilePrefetch();
-        scheduleTileZoomDiscovery();
-        logMapRuntimeBoundary("initGroundMap:dom-branch:complete");
-        pushMapTrace("initGroundMap:dom-complete");
-        return;
-    }
-
     const needsFullRecreate =
         !!groundMap && (
-            isDomMapActive() ||
             previousTilesUrl !== tilesUrl
         );
     persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
