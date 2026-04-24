@@ -120,6 +120,22 @@ pub fn MapTab(
         title.clone().unwrap_or_default()
     };
     let did_install_map_js = use_signal(|| false);
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_eval(
+            r#"
+            (function() {
+              try {
+                window.__gs26_rust_maptab_mounts = (window.__gs26_rust_maptab_mounts || 0) + 1;
+                console.info("[GS26 rust] MapTab render", {
+                  mounts: window.__gs26_rust_maptab_mounts,
+                  ts: Date.now()
+                });
+              } catch (e) {}
+            })();
+            "#,
+        );
+    }
 
     {
         let mut map_config = map_config;
@@ -138,6 +154,24 @@ pub fn MapTab(
         use_effect(move || {
             let already_installed = *did_install_map_js.read();
             let config = map_config.read().clone();
+            #[cfg(target_arch = "wasm32")]
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    console.info("[GS26 rust] MapTab setup effect", {{
+                      alreadyInstalled: {already_installed},
+                      ts: Date.now(),
+                      maxNativeZoom: {max_native_zoom},
+                      maxDisplayZoom: {max_display_zoom}
+                    }});
+                  }} catch (e) {{}}
+                }})();
+                "#,
+                already_installed = if already_installed { "true" } else { "false" },
+                max_native_zoom = config.max_native_zoom,
+                max_display_zoom = config.max_display_zoom,
+            ));
             #[cfg(target_os = "ios")]
             {
                 *show_enable_compass.write() = js_is_compass_denied();
@@ -175,6 +209,24 @@ pub fn MapTab(
             let config = map_config.read().clone();
             let fs = *is_fullscreen_sig.read();
             let has_mounted = *did_mount_fullscreen_effect.read();
+            #[cfg(target_arch = "wasm32")]
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    console.info("[GS26 rust] fullscreen effect", {{
+                      hasMounted: {has_mounted},
+                      fullscreen: {fullscreen},
+                      ts: Date.now(),
+                      maxNativeZoom: {max_native_zoom}
+                    }});
+                  }} catch (e) {{}}
+                }})();
+                "#,
+                has_mounted = if has_mounted { "true" } else { "false" },
+                fullscreen = if fs { "true" } else { "false" },
+                max_native_zoom = config.max_native_zoom,
+            ));
             if !has_mounted {
                 did_mount_fullscreen_effect.set(true);
                 return;
@@ -199,6 +251,26 @@ pub fn MapTab(
                 config.max_display_zoom,
             );
             let has_mounted = *did_mount_map_config_effect.read();
+            #[cfg(target_arch = "wasm32")]
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    console.info("[GS26 rust] map-config effect", {{
+                      hasMounted: {has_mounted},
+                      fullscreen: {fullscreen},
+                      ts: Date.now(),
+                      maxNativeZoom: {max_native_zoom},
+                      maxDisplayZoom: {max_display_zoom}
+                    }});
+                  }} catch (e) {{}}
+                }})();
+                "#,
+                has_mounted = if has_mounted { "true" } else { "false" },
+                fullscreen = if fs { "true" } else { "false" },
+                max_native_zoom = config.max_native_zoom,
+                max_display_zoom = config.max_display_zoom,
+            ));
             if !has_mounted {
                 did_mount_map_config_effect.set(true);
                 last_applied_map_config.set(Some(next_key));
@@ -635,10 +707,19 @@ fn js_setup_js_fullscreen_reinit(tiles: &str, config: &MapConfig) {
       window.__gs26_force_map_reinit = function(isFullscreen, delayMs) {
         try {
           const d = (typeof delayMs === "number") ? delayMs : 60;
+          console.info("[GS26 bridge] force_map_reinit", {
+            isFullscreen,
+            delayMs: d,
+            ts: Date.now()
+          });
           const run = () => {
             try {
               if (window.__gs26_ground_station_loaded === true &&
                   typeof window.initGroundMap === "function") {
+                console.info("[GS26 bridge] force_map_reinit -> initGroundMap", {
+                  ts: Date.now(),
+                  tiles: window.__gs26_tiles_url
+                });
                 window.initGroundMap(
                   window.__gs26_tiles_url,
                   window.__gs26_default_center_lat,
@@ -681,6 +762,11 @@ fn js_force_map_reinit_now(tiles: &str, config: &MapConfig, is_fullscreen: bool,
     let script = r#"
     (function() {
       try {
+        console.info("[GS26 bridge] js_force_map_reinit_now", {
+          fullscreen: __FS__,
+          delayMs: __DELAY__,
+          ts: Date.now()
+        });
         window.__gs26_tiles_url = __TILES__;
         window.__gs26_max_native_zoom = __MAX_NATIVE_ZOOM__;
         window.__gs26_max_display_zoom = __MAX_DISPLAY_ZOOM__;
@@ -707,6 +793,7 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
 
     let script = r#"
     (function() {
+      console.info("[GS26 bridge] js_setup_js_init_retry install", {ts: Date.now()});
       window.__gs26_tiles_url = __TILES__;
       window.__gs26_max_native_zoom = __MAX_NATIVE_ZOOM__;
       window.__gs26_max_display_zoom = __MAX_DISPLAY_ZOOM__;
@@ -719,17 +806,29 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
 
       function tryInit() {
         try {
+          console.info("[GS26 bridge] tryInit:start", {
+            ts: Date.now(),
+            loaded: window.__gs26_ground_station_loaded === true,
+            hasInit: typeof window.initGroundMap === "function",
+            hasMap: !!window.__gs26_ground_map
+          });
           const el = document.getElementById("ground-map");
           if (!el) return false;
           if (window.__gs26_ground_map && window.__gs26_ground_map.getContainer &&
               window.__gs26_ground_map.getContainer() === el) {
+            console.info("[GS26 bridge] tryInit:existing-map", {ts: Date.now()});
             return true;
           }
           if (!(window.__gs26_ground_station_loaded === true &&
                 typeof window.initGroundMap === "function")) {
+            console.info("[GS26 bridge] tryInit:not-ready", {ts: Date.now()});
             return false;
           }
 
+          console.info("[GS26 bridge] tryInit:calling-initGroundMap", {
+            ts: Date.now(),
+            tiles: window.__gs26_tiles_url
+          });
           window.initGroundMap(
             window.__gs26_tiles_url,
             window.__gs26_default_center_lat,
@@ -765,6 +864,7 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
 
           return true;
         } catch (e) {
+          console.error("[GS26 bridge] tryInit:error", e);
           return false;
         }
       }
