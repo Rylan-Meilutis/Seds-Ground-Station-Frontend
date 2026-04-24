@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![cfg(target_os = "linux")]
 
-use dioxus_signals::{Signal, WritableExt};
+use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 use zbus::Proxy;
 use zbus::zvariant::OwnedObjectPath;
@@ -66,7 +66,7 @@ async fn open_geoclue_client(
         .await
         .map_err(|e| format!("Linux GeoClue accuracy set failed: {e}"))?;
     client
-        .call::<(), _, _>("Start", &())
+        .call::<_, _, ()>("Start", &())
         .await
         .map_err(|e| format!("Linux GeoClue Start failed: {e}"))?;
 
@@ -134,7 +134,7 @@ pub async fn run(mut user_gps: Signal<Option<(f64, f64)>>) {
                         )
                         .await
                         {
-                            let _ = client.call::<(), _, _>("Stop", &()).await;
+                            let _ = client.call::<_, _, ()>("Stop", &()).await;
                         }
                         break;
                     }

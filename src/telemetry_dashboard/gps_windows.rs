@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![cfg(target_os = "windows")]
 
-use dioxus_signals::{Signal, WritableExt};
+use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows::core::initialize_mta;
 use windows::Devices::Geolocation::{GeolocationAccessStatus, Geolocator, PositionAccuracy};
@@ -47,7 +47,9 @@ fn read_location_once_blocking() -> Result<Option<(f64, f64)>, String> {
     let point = coordinate
         .Point()
         .map_err(|e| format!("Windows GPS point read failed: {e}"))?;
-    let basic = point.Position();
+    let basic = point
+        .Position()
+        .map_err(|e| format!("Windows GPS basic position read failed: {e}"))?;
     let lat = basic.Latitude;
     let lon = basic.Longitude;
 
