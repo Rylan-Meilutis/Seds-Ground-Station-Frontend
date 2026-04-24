@@ -155,8 +155,8 @@ const TRACKING_PREFETCH_INTERVAL_MS_WEB = 12000;
 const TRACKING_PREFETCH_DELAY_MS = 80;
 const TRACKING_PREFETCH_DELAY_MS_WEB = 2000;
 const TRACKING_PREFETCH_CONCURRENCY = 3;
-const TRACKING_PREFETCH_CONCURRENCY_WEB = 5;
-const HIGH_RES_PREFETCH_CONCURRENCY_WEB = 5;
+const TRACKING_PREFETCH_CONCURRENCY_WEB = 1;
+const HIGH_RES_PREFETCH_CONCURRENCY_WEB = 1;
 
 function configuredPrefetchRadiusM(kind) {
     const key = kind === "rocket" ? "__gs26_prefetch_rocket_radius_m" : "__gs26_prefetch_user_radius_m";
@@ -483,6 +483,16 @@ function tileCacheEnabled() {
     } catch (e) {
     }
     return TILE_CACHE_ENABLED_BY_DEFAULT;
+}
+
+function persistentTileCacheEnabled() {
+    if (!tileCacheEnabled()) return false;
+    try {
+        if (!isBrowserHostedMapRuntime()) return true;
+        if (window.__gs26_enable_web_persistent_tile_cache === true) return true;
+    } catch (e) {
+    }
+    return !isBrowserHostedMapRuntime();
 }
 
 function configuredCacheBudgetBytes() {
@@ -2420,10 +2430,7 @@ function buildTrackingPrefetchPlan() {
 
     const userLat = Array.isArray(lastUserLatLng) ? Number(lastUserLatLng[0]) : NaN;
     const userLon = Array.isArray(lastUserLatLng) ? Number(lastUserLatLng[1]) : NaN;
-    const hasUser = Number.isFinite(userLat) && Number.isFinite(userLon);
-    if (!userGpsStability || !userGpsStability.accepted) {
-        return {key: "", coords: []};
-    }
+    const hasUser = isUsableUserLatLng(userLat, userLon);
     if (!hasUser) {
         return {key: "", coords: []};
     }
@@ -2450,6 +2457,15 @@ function buildTrackingPrefetchPlan() {
     const coords = [];
     const seen = new Set();
     const maxTiles = Number.POSITIVE_INFINITY;
+    if (isBrowserHostedMapRuntime()) {
+        appendUniqueCoords(
+            coords,
+            seen,
+            tileCoordsAroundTileRadius(userLat, userLon, focusZoomInt, TRACKING_PREFETCH_TILE_RADIUS),
+            maxTiles
+        );
+        return {key, coords};
+    }
     const viewportBaseZoom = Math.max(
         effectiveMinZoom(),
         Math.min(maxNativeZoom, Math.floor(Number.isFinite(focusZoom) ? focusZoom : maxNativeZoom))
@@ -2500,9 +2516,11 @@ function buildHighResPrefetchPlan() {
     const userLon = Array.isArray(lastUserLatLng) ? lastUserLatLng[1] : NaN;
     const rocketLat = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[0] : NaN;
     const rocketLon = Array.isArray(lastRocketLatLng) ? lastRocketLatLng[1] : NaN;
+    const hasUser = isUsableUserLatLng(userLat, userLon);
+    const hasRocket = isUsableLatLng(rocketLat, rocketLon);
     const userRadiusM = configuredPrefetchRadiusM("user");
     const rocketRadiusM = configuredPrefetchRadiusM("rocket");
-    if (!userGpsStability || !userGpsStability.accepted) {
+    if (!hasUser && !hasRocket) {
         return {key: "", coords: [], breakdown: {userTiles: 0, rocketTiles: 0, combinedTiles: 0}};
     }
     const bounds = groundMap && groundMap.getBounds ? groundMap.getBounds() : null;
@@ -2511,10 +2529,10 @@ function buildHighResPrefetchPlan() {
         Math.min(maxNativeZoom, Math.floor(Number.isFinite(mapZoom) ? mapZoom : maxNativeZoom))
     );
     const viewportKey = tileRangeKeyForBounds(bounds, viewportZoom, HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES);
-    const userTile = Number.isFinite(userLat) && Number.isFinite(userLon)
+    const userTile = hasUser
         ? latLonToTileXY(userLat, userLon, maxNativeZoom)
         : null;
-    const rocketTile = Number.isFinite(rocketLat) && Number.isFinite(rocketLon)
+    const rocketTile = hasRocket
         ? latLonToTileXY(rocketLat, rocketLon, maxNativeZoom)
         : null;
     const key = [
@@ -2528,6 +2546,29 @@ function buildHighResPrefetchPlan() {
         viewportKey,
     ].join("|");
 
+    if (isBrowserHostedMapRuntime()) {
+        const zoom = viewportZoom;
+        if (hasUser) {
+            const aroundUser = tileCoordsAround(userLat, userLon, zoom, userRadiusM);
+            appendUniqueCoords(userCoords, userSeen, aroundUser);
+            appendUniqueCoords(coords, seen, aroundUser);
+        }
+        if (hasRocket) {
+            const aroundRocket = tileCoordsAround(rocketLat, rocketLon, zoom, rocketRadiusM);
+            appendUniqueCoords(rocketCoords, rocketSeen, aroundRocket);
+            appendUniqueCoords(coords, seen, aroundRocket);
+        }
+        return {
+            key,
+            coords,
+            breakdown: {
+                userTiles: userCoords.length,
+                rocketTiles: rocketCoords.length,
+                combinedTiles: coords.length,
+            },
+        };
+    }
+
     for (const zoom of zooms) {
         if (bounds) {
             appendUniqueCoords(
@@ -2537,7 +2578,7 @@ function buildHighResPrefetchPlan() {
             );
         }
 
-        if (Number.isFinite(userLat) && Number.isFinite(userLon)) {
+        if (hasUser) {
             const aroundUser = tileCoordsAround(userLat, userLon, zoom, userRadiusM);
             appendUniqueCoords(
                 userCoords,
@@ -2551,7 +2592,7 @@ function buildHighResPrefetchPlan() {
             );
         }
 
-        if (Number.isFinite(rocketLat) && Number.isFinite(rocketLon)) {
+        if (hasRocket) {
             const aroundRocket = tileCoordsAround(rocketLat, rocketLon, zoom, rocketRadiusM);
             appendUniqueCoords(
                 rocketCoords,
