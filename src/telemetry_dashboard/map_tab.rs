@@ -24,6 +24,10 @@ const DEFAULT_TRACKED_ASSET_LABEL: &str = "Tracked Asset";
 const MAP_STATE_STORAGE_KEY: &str = "gs26_ground_map_state_v3";
 const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
 const MAP_CONFIG_CACHE_STORAGE_KEY: &str = "gs26_ground_map_config_v1";
+#[cfg(target_arch = "wasm32")]
+const WEB_GEO_SYNC_INTERVAL_MS: u32 = 250;
+#[cfg(not(target_arch = "wasm32"))]
+const NATIVE_GEO_SYNC_INTERVAL_MS: u64 = 250;
 
 fn tiles_url() -> String {
     map_tiles_url()
@@ -264,7 +268,7 @@ pub fn MapTab(
                     }
                 }
 
-                gloo_timers::future::TimeoutFuture::new(80).await;
+                gloo_timers::future::TimeoutFuture::new(WEB_GEO_SYNC_INTERVAL_MS).await;
             }
         });
     }
@@ -327,7 +331,8 @@ pub fn MapTab(
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(NATIVE_GEO_SYNC_INTERVAL_MS))
+                    .await;
             }
         });
     }
