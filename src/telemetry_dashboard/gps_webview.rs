@@ -6,6 +6,13 @@ use dioxus_signals::{Signal, WritableExt};
 const GEOLOCATION_WATCH_JS: &str = r#"
 (function() {
   try {
+    try {
+      delete window.__gs26_user_lat;
+      delete window.__gs26_user_lon;
+    } catch (e) {
+      window.__gs26_user_lat = NaN;
+      window.__gs26_user_lon = NaN;
+    }
     if (typeof window.isSecureContext === "boolean" && window.isSecureContext !== true) {
       window.__gs26_geo_error = "navigator.geolocation requires a secure context";
       return;

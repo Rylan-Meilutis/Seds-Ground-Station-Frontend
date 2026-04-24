@@ -907,8 +907,20 @@ function tileProtocolTemplate() {
     return `${TILE_PROTOCOL}://tiles/{z}/{x}/{y}.jpg`;
 }
 
+function isBrowserHostedMapRuntime() {
+    try {
+        const protocol = String(window.location && window.location.protocol || "");
+        return /^https?:$/i.test(protocol);
+    } catch (e) {
+        return false;
+    }
+}
+
 function shouldUseNativeTileTemplate(tilesUrl) {
     const url = String(tilesUrl || "");
+    if (isBrowserHostedMapRuntime() && /^https?:\/\//i.test(url)) {
+        return true;
+    }
     return /^gs26:\/\//i.test(url) && !isIosPlatform() && !tileCacheEnabled();
 }
 
@@ -1484,6 +1496,14 @@ function isUsableLatLng(lat, lon) {
     return true;
 }
 
+function isUsableUserLatLng(lat, lon) {
+    if (!isUsableLatLng(lat, lon)) return false;
+    const latNum = Number(lat);
+    const lonNum = Number(lon);
+    if (Math.abs(latNum) < 0.000001 && Math.abs(lonNum) < 0.000001) return false;
+    return true;
+}
+
 function stabilizeLatLng(stateName, lat, lon) {
     const state = stateName === "rocket" ? rocketGpsStability : userGpsStability;
     const nextState = state || {
@@ -1492,7 +1512,10 @@ function stabilizeLatLng(stateName, lat, lon) {
         accepted: false,
         acceptedLatLng: null,
     };
-    if (!isUsableLatLng(lat, lon)) {
+    const isUsable = stateName === "user"
+        ? isUsableUserLatLng(lat, lon)
+        : isUsableLatLng(lat, lon);
+    if (!isUsable) {
         nextState.candidate = null;
         nextState.count = 0;
         if (stateName === "rocket") rocketGpsStability = nextState;
@@ -2114,7 +2137,7 @@ function loadPersistedMapState() {
         if (Number.isFinite(parsed.bearingDeg)) {
             mapBearingDeg = normalizeAngle(parsed.bearingDeg);
         }
-        if (isUsableLatLng(parsed.userLat, parsed.userLon)) {
+        if (isUsableUserLatLng(parsed.userLat, parsed.userLon)) {
             lastUserLatLng = [Number(parsed.userLat), Number(parsed.userLon)];
             userMarkerDisplayedLatLng = [lastUserLatLng[0], lastUserLatLng[1]];
             userMarkerHasLiveFix = true;
@@ -2128,6 +2151,18 @@ function loadPersistedMapState() {
                 window.__gs26_user_lat = lastUserLatLng[0];
                 window.__gs26_user_lon = lastUserLatLng[1];
             } catch (e) {
+            }
+        } else {
+            lastUserLatLng = null;
+            userMarkerDisplayedLatLng = null;
+            userMarkerHasLiveFix = false;
+            userGpsStability = null;
+            try {
+                delete window.__gs26_user_lat;
+                delete window.__gs26_user_lon;
+            } catch (e) {
+                window.__gs26_user_lat = NaN;
+                window.__gs26_user_lon = NaN;
             }
         }
     } catch (e) {
@@ -2180,8 +2215,12 @@ function persistMapState() {
             orientationMode,
             followUserEnabled,
             bearingDeg: mapBearingDeg,
-            userLat: Array.isArray(lastUserLatLng) ? lastUserLatLng[0] : null,
-            userLon: Array.isArray(lastUserLatLng) ? lastUserLatLng[1] : null,
+            userLat: Array.isArray(lastUserLatLng) && isUsableUserLatLng(lastUserLatLng[0], lastUserLatLng[1])
+                ? lastUserLatLng[0]
+                : null,
+            userLon: Array.isArray(lastUserLatLng) && isUsableUserLatLng(lastUserLatLng[0], lastUserLatLng[1])
+                ? lastUserLatLng[1]
+                : null,
         };
         const raw = JSON.stringify(payload);
         window.__gs26_ground_map_state_json = raw;
@@ -5505,9 +5544,11 @@ function mapCameraAlreadyAt(center, zoom, bearing) {
 function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, assetTitle) {
     installMapRuntimeGuardsOnce();
     ensureMarkerStylesOnce();
-    requestPersistentTileStorage();
+    setTimeout(() => {
+        requestPersistentTileStorage();
+    }, 0);
     initCompassOnce();
-    if (!shouldUseDomMapRenderer()) {
+    if (!shouldUseDomMapRenderer() && !shouldUseNativeTileTemplate(tilesUrl)) {
         ensureMapProtocolOnce();
     }
     mapInitStartedAtMs = Date.now();
@@ -5648,10 +5689,14 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     }
     resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
     scheduleCachedZoomDiscoveryAfterStartup(currentTilesUrl);
-    startMapFirstPaintGate(clampedZoom);
-    renderAfterStartupCacheWarm(
-        warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
-    );
+    if (!shouldUseNativeTileTemplate(currentTilesUrl)) {
+        startMapFirstPaintGate(clampedZoom);
+        renderAfterStartupCacheWarm(
+            warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
+        );
+    } else {
+        finishMapFirstPaintGate("browser-direct-tiles");
+    }
 
     let maplibre = null;
     try {
@@ -5852,7 +5897,9 @@ function centerGroundMapOn(lat, lon) {
 }
 
 function getLastUserLatLng() {
-    if (!lastUserLatLng) return null;
+    if (!Array.isArray(lastUserLatLng) || !isUsableUserLatLng(lastUserLatLng[0], lastUserLatLng[1])) {
+        return null;
+    }
     return {lat: lastUserLatLng[0], lon: lastUserLatLng[1]};
 }
 

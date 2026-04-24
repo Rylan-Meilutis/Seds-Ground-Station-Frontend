@@ -501,13 +501,27 @@ fn js_hydrate_persisted_map_state() {
     let Some(raw) = persist::get_string(MAP_STATE_STORAGE_KEY) else {
         return;
     };
-    if serde_json::from_str::<serde_json::Value>(&raw).is_err() {
+    let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return;
+    };
+
+    if let Some(object) = parsed.as_object_mut() {
+        let user_lat = object.get("userLat").and_then(|value| value.as_f64());
+        let user_lon = object.get("userLon").and_then(|value| value.as_f64());
+        if !is_usable_persisted_user_latlon(user_lat, user_lon) {
+            object.insert("userLat".to_string(), serde_json::Value::Null);
+            object.insert("userLon".to_string(), serde_json::Value::Null);
+        }
+    }
+
+    let sanitized_raw = serde_json::to_string(&parsed).unwrap_or(raw.clone());
+    if sanitized_raw != raw {
+        persist::set_string(MAP_STATE_STORAGE_KEY, &sanitized_raw);
     }
 
     let key_js =
         serde_json::to_string(MAP_STATE_STORAGE_KEY).unwrap_or_else(|_| "\"\"".to_string());
-    let raw_js = serde_json::to_string(&raw).unwrap_or_else(|_| "\"\"".to_string());
+    let raw_js = serde_json::to_string(&sanitized_raw).unwrap_or_else(|_| "\"\"".to_string());
     js_eval(&format!(
         r#"
         (function() {{
@@ -527,6 +541,19 @@ fn js_hydrate_persisted_map_state() {
         key_js = key_js,
         raw_js = raw_js,
     ));
+}
+
+fn is_usable_persisted_user_latlon(lat: Option<f64>, lon: Option<f64>) -> bool {
+    let (Some(lat), Some(lon)) = (lat, lon) else {
+        return false;
+    };
+    if !lat.is_finite() || !lon.is_finite() {
+        return false;
+    }
+    if lat.abs() > 85.051_128_78 || lon.abs() > 180.0 {
+        return false;
+    }
+    !(lat.abs() < 0.000_001 && lon.abs() < 0.000_001)
 }
 
 fn js_hydrate_persisted_map_max_zoom() {
