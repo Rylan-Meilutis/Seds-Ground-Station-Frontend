@@ -150,15 +150,13 @@ const TRACKING_PREFETCH_ZOOM_OUT_VIEWPORT_LEVELS = 3;
 const TRACKING_PREFETCH_ZOOM_IN_VIEWPORT_LEVELS = 3;
 const TRACKING_PREFETCH_VIEWPORT_BUFFER_TILES = 4;
 const TRACKING_PREFETCH_MAX_TILES = 3200;
-const TRACKING_PREFETCH_MAX_TILES_WEB = 96;
 const TRACKING_PREFETCH_INTERVAL_MS = 2500;
 const TRACKING_PREFETCH_INTERVAL_MS_WEB = 12000;
 const TRACKING_PREFETCH_DELAY_MS = 80;
 const TRACKING_PREFETCH_DELAY_MS_WEB = 2000;
 const TRACKING_PREFETCH_CONCURRENCY = 3;
-const TRACKING_PREFETCH_CONCURRENCY_WEB = 1;
-const HIGH_RES_PREFETCH_CONCURRENCY_WEB = 1;
-const HIGH_RES_PREFETCH_MAX_TILES_WEB = 128;
+const TRACKING_PREFETCH_CONCURRENCY_WEB = 5;
+const HIGH_RES_PREFETCH_CONCURRENCY_WEB = 5;
 
 function configuredPrefetchRadiusM(kind) {
     const key = kind === "rocket" ? "__gs26_prefetch_rocket_radius_m" : "__gs26_prefetch_user_radius_m";
@@ -2430,7 +2428,7 @@ function buildTrackingPrefetchPlan() {
 
     const coords = [];
     const seen = new Set();
-    const maxTiles = trackingPrefetchMaxTiles();
+    const maxTiles = Number.POSITIVE_INFINITY;
     const viewportBaseZoom = Math.max(
         effectiveMinZoom(),
         Math.min(maxNativeZoom, Math.floor(Number.isFinite(focusZoom) ? focusZoom : maxNativeZoom))
@@ -2545,10 +2543,6 @@ function buildHighResPrefetchPlan() {
                 aroundRocket
             );
         }
-    }
-
-    if (coords.length > highResPrefetchMaxTiles()) {
-        coords.length = highResPrefetchMaxTiles();
     }
 
     return {
@@ -4469,18 +4463,6 @@ function highResPrefetchConcurrencyLimit() {
     return isBrowserHostedMapRuntime()
         ? HIGH_RES_PREFETCH_CONCURRENCY_WEB
         : HIGH_RES_PREFETCH_CONCURRENCY;
-}
-
-function highResPrefetchMaxTiles() {
-    return isBrowserHostedMapRuntime()
-        ? HIGH_RES_PREFETCH_MAX_TILES_WEB
-        : Number.POSITIVE_INFINITY;
-}
-
-function trackingPrefetchMaxTiles() {
-    return isBrowserHostedMapRuntime()
-        ? TRACKING_PREFETCH_MAX_TILES_WEB
-        : TRACKING_PREFETCH_MAX_TILES;
 }
 
 function trackingPrefetchIntervalMs() {
