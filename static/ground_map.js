@@ -374,6 +374,22 @@ function pushMapTrace(label, extra = {}) {
     }
 }
 
+function logMapRuntimeBoundary(label, extra = {}) {
+    const payload = {
+        ts: Date.now(),
+        phase: label,
+        ...extra,
+    };
+    try {
+        window.__gs26_map_runtime_phase = payload;
+    } catch (e) {
+    }
+    try {
+        console.info("[GS26 runtime]", payload);
+    } catch (e) {
+    }
+}
+
 function startMapMainThreadWatchdog(source) {
     if (mapMainThreadWatchdogTimer != null) return;
     mapMainThreadWatchdogLastTickAt = Date.now();
@@ -5610,20 +5626,29 @@ function mapCameraAlreadyAt(center, zoom, bearing) {
 }
 
 function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, assetTitle) {
+    logMapRuntimeBoundary("initGroundMap:start", {
+        tilesUrl,
+        zoom,
+        maxNativeZoom,
+    });
     startMapMainThreadWatchdog("initGroundMap");
     mapInitTrace = [];
     pushMapTrace("initGroundMap:start");
     installMapRuntimeGuardsOnce();
+    logMapRuntimeBoundary("initGroundMap:after-runtime-guards");
     pushMapTrace("initGroundMap:runtime-guards");
     ensureMarkerStylesOnce();
+    logMapRuntimeBoundary("initGroundMap:after-marker-styles");
     pushMapTrace("initGroundMap:marker-styles");
     setTimeout(() => {
         requestPersistentTileStorage();
     }, 0);
     initCompassOnce();
+    logMapRuntimeBoundary("initGroundMap:after-compass");
     pushMapTrace("initGroundMap:compass");
     if (!shouldUseDomMapRenderer() && !shouldUseNativeTileTemplate(tilesUrl)) {
         ensureMapProtocolOnce();
+        logMapRuntimeBoundary("initGroundMap:after-protocol-ready");
         pushMapTrace("initGroundMap:protocol-ready");
     }
     mapInitStartedAtMs = Date.now();
@@ -5634,9 +5659,11 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     if (groundMap) {
         rememberMapView();
         persistMapState();
+        logMapRuntimeBoundary("initGroundMap:after-persist-existing-map");
         pushMapTrace("initGroundMap:persist-existing-map");
     } else {
         loadPersistedMapState();
+        logMapRuntimeBoundary("initGroundMap:after-load-persisted-state");
         pushMapTrace("initGroundMap:load-persisted-state");
     }
 
@@ -5670,9 +5697,11 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
 
     const container = document.getElementById("ground-map");
     if (!container) {
+        logMapRuntimeBoundary("initGroundMap:no-container");
         pushMapTrace("initGroundMap:no-container");
         return;
     }
+    logMapRuntimeBoundary("initGroundMap:container-ready");
     pushMapTrace("initGroundMap:container-ready");
 
     const desiredZoom = Number.isFinite(pendingRestoreZoom)
@@ -5696,6 +5725,11 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         ? [lastMapView.lon, lastMapView.lat]
         : [centerLon, centerLat];
     const startBearing = orientationMode === "north" ? 0 : mapBearingDeg;
+    logMapRuntimeBoundary("initGroundMap:computed-start-state", {
+        clampedZoom,
+        useDomRenderer: shouldUseDomMapRenderer(),
+        useNativeTemplate: shouldUseNativeTileTemplate(currentTilesUrl),
+    });
     pushMapTrace("initGroundMap:computed-start-state", {
         desiredZoom,
         clampedZoom,
@@ -5704,7 +5738,9 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     });
 
     if (shouldUseDomMapRenderer()) {
+        logMapRuntimeBoundary("initGroundMap:dom-branch:start");
         if (isDomMapActive() && groundMap.getContainer && groundMap.getContainer() === container) {
+            logMapRuntimeBoundary("initGroundMap:dom-branch:reuse");
             pushMapTrace("initGroundMap:reuse-dom-map");
             groundMap.setMaxZoom(currentMaxZoom);
             groundMap.jumpTo({
@@ -5714,6 +5750,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
             });
         } else {
             if (groundMap) {
+                logMapRuntimeBoundary("initGroundMap:dom-branch:remove-existing");
                 pushMapTrace("initGroundMap:remove-existing-map-before-dom");
                 try {
                     groundMap.remove();
@@ -5727,8 +5764,10 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
             renderAfterStartupCacheWarm(
                 warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
             );
+            logMapRuntimeBoundary("initGroundMap:dom-branch:create:start");
             pushMapTrace("initGroundMap:create-dom-map:start");
             createDomGroundMap(container, startCenter, clampedZoom, startBearing);
+            logMapRuntimeBoundary("initGroundMap:dom-branch:create:done");
             pushMapTrace("initGroundMap:create-dom-map:done");
         }
         rememberMapView();
@@ -5742,6 +5781,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         scheduleTrackingTilePrefetch();
         scheduleHighResTilePrefetch();
         scheduleTileZoomDiscovery();
+        logMapRuntimeBoundary("initGroundMap:dom-branch:complete");
         pushMapTrace("initGroundMap:dom-complete");
         return;
     }
@@ -5754,6 +5794,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
 
     if (!needsFullRecreate && groundMap && groundMap.getContainer && groundMap.getContainer() === container) {
+        logMapRuntimeBoundary("initGroundMap:maplibre-reuse:start");
         pushMapTrace("initGroundMap:reuse-maplibre");
         groundMap.resize();
         groundMap.setMaxZoom(currentMaxZoom);
@@ -5771,11 +5812,13 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         applyPendingCenterIfPossible();
         applyFollowUserIfPossible();
         scheduleTileZoomDiscovery();
+        logMapRuntimeBoundary("initGroundMap:maplibre-reuse:complete");
         pushMapTrace("initGroundMap:reuse-maplibre-complete");
         return;
     }
 
     if (groundMap) {
+        logMapRuntimeBoundary("initGroundMap:remove-existing-map");
         pushMapTrace("initGroundMap:remove-existing-map");
         try {
             groundMap.remove();
@@ -5787,20 +5830,24 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     resetMapObjects({clearTileRuntimeCache: previousTilesUrl && previousTilesUrl !== currentTilesUrl});
     scheduleCachedZoomDiscoveryAfterStartup(currentTilesUrl);
     if (!shouldUseNativeTileTemplate(currentTilesUrl)) {
+        logMapRuntimeBoundary("initGroundMap:first-paint-gate:start");
         pushMapTrace("initGroundMap:first-paint-gate:start");
         startMapFirstPaintGate(clampedZoom);
         renderAfterStartupCacheWarm(
             warmInitialMapTilesFromCache(currentTilesUrl, startCenter, clampedZoom, container)
         );
     } else {
+        logMapRuntimeBoundary("initGroundMap:first-paint-gate:skip");
         pushMapTrace("initGroundMap:first-paint-gate:skip");
         finishMapFirstPaintGate("browser-direct-tiles");
     }
 
     let maplibre = null;
     try {
+        logMapRuntimeBoundary("initGroundMap:maplibre-ctor:pre-get");
         pushMapTrace("initGroundMap:maplibre-ctor:start");
         maplibre = getMapLibre();
+        logMapRuntimeBoundary("initGroundMap:maplibre-ctor:pre-new");
         groundMap = new maplibre.Map({
             container,
             style: makeMapStyle(currentTilesUrl, currentMaxNativeZoom),
@@ -5824,8 +5871,12 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
             fadeDuration: 0,
             refreshExpiredTiles: false,
         });
+        logMapRuntimeBoundary("initGroundMap:maplibre-ctor:post-new");
         pushMapTrace("initGroundMap:maplibre-ctor:done");
     } catch (error) {
+        logMapRuntimeBoundary("initGroundMap:maplibre-ctor:error", {
+            error: String(error && (error.message || error) || ""),
+        });
         pushMapTrace("initGroundMap:maplibre-ctor:error", {
             error: String(error && (error.message || error) || ""),
         });
@@ -5841,6 +5892,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         } catch (e) {
         }
     };
+    logMapRuntimeBoundary("initGroundMap:after-maplibre-wrap");
     if (groundMap.dragPan && !groundMap.dragPan.isEnabled()) {
         groundMap.dragPan.enable();
     }
@@ -5857,11 +5909,14 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         groundMap.touchPitch.disable();
     }
     addOverlayControls();
+    logMapRuntimeBoundary("initGroundMap:after-addOverlayControls");
     pushMapTrace("initGroundMap:add-overlay-controls");
     updateZoomControlAppearance();
     installMapHooks();
+    logMapRuntimeBoundary("initGroundMap:after-installMapHooks");
     pushMapTrace("initGroundMap:install-map-hooks");
     installCustomGestureHooks();
+    logMapRuntimeBoundary("initGroundMap:after-installCustomGestureHooks");
     pushMapTrace("initGroundMap:install-gesture-hooks");
     rememberMapView();
     window.__gs26_ground_map = groundMap;
@@ -5881,6 +5936,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     applyFollowUserIfPossible();
     applyMapOrientation();
     updateCenterControlAppearance();
+    logMapRuntimeBoundary("initGroundMap:complete");
     pushMapTrace("initGroundMap:complete");
 }
 
