@@ -70,8 +70,26 @@ pub fn GpsDriver(
         return rsx!(div {});
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        use_effect(move || {
+            spawn(async move {
+                crate::telemetry_dashboard::gps_linux::run(user_gps).await;
+            });
+        });
+        use_drop(|| {
+            crate::telemetry_dashboard::gps_linux::stop();
+        });
+
+        return rsx!(div {});
+    }
+
     // native imperative backends: start on mount, stop on unmount
-    #[cfg(not(any(target_arch = "wasm32", target_os = "windows")))]
+    #[cfg(not(any(
+        target_arch = "wasm32",
+        target_os = "windows",
+        target_os = "linux"
+    )))]
     {
         use_effect({
             let user_gps = user_gps;
@@ -141,7 +159,8 @@ mod imp {
     target_os = "ios",
     target_os = "android",
     target_arch = "wasm32",
-    target_os = "windows"
+    target_os = "windows",
+    target_os = "linux"
 )))]
 mod imp {
     use dioxus_signals::Signal;

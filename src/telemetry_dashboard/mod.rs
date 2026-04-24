@@ -11,9 +11,11 @@ mod detailed_tab;
 pub mod errors_tab;
 mod gps;
 pub(crate) mod gps_android;
+#[cfg(target_os = "linux")]
+mod gps_linux;
+mod gps_webview;
 #[cfg(target_os = "windows")]
 mod gps_windows;
-mod gps_webview;
 pub mod layout;
 mod layout_settings_tab;
 mod network_topology_tab;

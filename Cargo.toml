@@ -68,6 +68,9 @@ native-tls = "0.2.18"
 tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots", "native-tls"] }
 windows = { version = "0.61.3", features = ["Devices_Geolocation"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "4.4.0"
+
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))'.dependencies]
 tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
 
