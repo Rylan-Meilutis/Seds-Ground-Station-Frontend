@@ -4,7 +4,6 @@
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows::Devices::Geolocation::{GeolocationAccessStatus, Geolocator, PositionAccuracy};
-use windows::initialize_mta;
 
 static GPS_RUN_TOKEN: AtomicU64 = AtomicU64::new(0);
 
@@ -21,8 +20,6 @@ pub fn stop() {
 }
 
 fn read_location_once_blocking() -> Result<Option<(f64, f64)>, String> {
-    let _mta = initialize_mta().map_err(|e| format!("Windows GPS MTA init failed: {e}"))?;
-
     let access = Geolocator::RequestAccessAsync()
         .map_err(|e| format!("Windows GPS access request failed: {e}"))?
         .get()
