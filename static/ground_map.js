@@ -5198,7 +5198,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     initCompassOnce();
     logMapRuntimeBoundary("initGroundMap:after-compass");
     pushMapTrace("initGroundMap:compass");
-    if (!shouldUseDomMapRenderer() && !shouldUseNativeTileTemplate(tilesUrl)) {
+    if (!shouldUseNativeTileTemplate(tilesUrl)) {
         ensureMapProtocolOnce();
         logMapRuntimeBoundary("initGroundMap:after-protocol-ready");
         pushMapTrace("initGroundMap:protocol-ready");
