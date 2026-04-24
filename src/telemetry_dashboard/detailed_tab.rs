@@ -52,10 +52,15 @@ pub fn DetailedTab(
                     }
                     const state = window.__gs26_ground_map_cache_state || {};
                     const context = window.__gs26_ground_map_prefetch_context || {};
+                    const prefetchEnabled = typeof window.__gs26_prefetch_enabled === "boolean"
+                      ? window.__gs26_prefetch_enabled
+                      : true;
                     const completed = Number(state.completed);
                     const failed = Number(state.failed);
                     const grabbed = Number.isFinite(completed) ? Math.max(0, completed - (Number.isFinite(failed) ? failed : 0)) : 0;
-                    const stateName = state.state ? String(state.state) : "idle";
+                    const stateName = !prefetchEnabled
+                      ? "disabled"
+                      : (state.state ? String(state.state) : "idle");
                     const stateDetail = state.detail ? ` (${String(state.detail)})` : "";
                     setText("gs26-prefetch-state", `${stateName}${stateDetail}`);
                     setText("gs26-prefetch-last-started", fmtTime(state.lastStartedAt));

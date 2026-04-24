@@ -41,6 +41,7 @@ let tileZoomDiscoveryKey = "";
 let tileZoomDiscoveryRunId = 0;
 let currentPrefetchKey = null;
 let tilePrefetchRunId = 0;
+let autoHighResPrefetchCompleted = false;
 let tileTrackingPrefetchTimer = null;
 let tileTrackingPrefetchInterval = null;
 let currentTrackingPrefetchKey = null;
@@ -158,6 +159,7 @@ const HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA = 3;
 const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 500;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS_WEB = 12000;
+const MAP_VISIBLE_PREFETCH_SUSPEND_DETAIL = "Auto-prefetch is paused while the live map is visible.";
 const TRACKING_PREFETCH_TILE_RADIUS = 14;
 const TRACKING_PREFETCH_ZOOM_DELTA = 3;
 const TRACKING_PREFETCH_ZOOM_OUT_VIEWPORT_LEVELS = 3;
@@ -582,6 +584,27 @@ function setTilePrefetchEstimate(plan, sampleTileSize = true) {
     return tilePrefetchEstimateState;
 }
 
+function refreshTilePrefetchEstimate(options = {}) {
+    const forceSample = options && options.sampleTileSize === true;
+    const enabled = mapPrefetchEnabled();
+    const context = publishTilePrefetchContextState();
+    const hasRunnableContext = context.userAvailable || context.rocketAvailable;
+    const plan = enabled && hasRunnableContext ? buildHighResPrefetchPlan() : emptyTilePrefetchPlan();
+    const estimate = setTilePrefetchEstimate(plan, forceSample);
+    if (!enabled) {
+        estimate.summaryStatus = "disabled";
+        estimate.summaryMessage = "Map prefetch is disabled.";
+        estimate.userMessage = context.userAvailable ? "Ready" : "Waiting for user location.";
+        estimate.rocketMessage = context.rocketAvailable ? "Ready" : "Waiting for rocket telemetry.";
+        estimate.tooLarge = false;
+        try {
+            window.__gs26_ground_map_prefetch_estimate = {...estimate};
+        } catch (e) {
+        }
+    }
+    return estimate;
+}
+
 function storedTileCacheUsageBytes() {
     try {
         const direct = Number(typeof window !== "undefined" ? window.__gs26_tile_cache_usage_bytes : NaN);
@@ -868,6 +891,7 @@ function clearTileRuntimeCaches(options = {}) {
     suppressHighResPrefetch(500);
     stopTrackingTilePrefetch();
     currentPrefetchKey = null;
+    autoHighResPrefetchCompleted = false;
     setTilePrefetchState({
         key: "",
         state: "idle",
@@ -924,6 +948,10 @@ function invalidateTileCachesForUrlChange() {
     }).finally(() => {
         tilePersistentClearPromise = null;
     });
+}
+
+function shouldRunAutomaticHighResPrefetch() {
+    return !autoHighResPrefetchCompleted;
 }
 
 function idleDelay(callback, timeoutMs) {
@@ -1644,6 +1672,18 @@ function publishTilePrefetchContextState() {
     } catch (e) {
     }
     return tilePrefetchContextState;
+}
+
+function emptyTilePrefetchPlan() {
+    return {
+        key: "",
+        coords: [],
+        breakdown: {
+            userTiles: 0,
+            rocketTiles: 0,
+            combinedTiles: 0,
+        },
+    };
 }
 
 function metersPerDegreeLat() {
@@ -2802,17 +2842,20 @@ function ensureTrackingTilePrefetchLoop() {
 function scheduleTrackingTilePrefetch(options = {}) {
     if (!shouldRunBrowserMapPrefetch()) {
         stopTrackingTilePrefetch();
+        refreshTilePrefetchEstimate();
         return;
     }
     const force = options.force === true;
     const tilesUrl = effectivePrefetchTilesUrl();
     if (!tilesUrl || !mapPrefetchEnabled() || !tileFetchAllowedForUrl(tilesUrl) || !tilePrefetchSupported()) {
         stopTrackingTilePrefetch();
+        refreshTilePrefetchEstimate();
         return;
     }
     const plan = buildTrackingPrefetchPlan();
     if (!plan.key || !plan.coords.length) {
         stopTrackingTilePrefetch();
+        refreshTilePrefetchEstimate();
         return;
     }
 
@@ -2851,21 +2894,31 @@ function scheduleTileCacheSweep(tilesUrl) {
 }
 
 function scheduleHighResTilePrefetch(options = {}) {
+    const force = options && options.force === true;
+    if (!force && !shouldRunAutomaticHighResPrefetch()) {
+        refreshTilePrefetchEstimate();
+        return;
+    }
     if (!shouldRunBrowserMapPrefetch()) {
         currentPrefetchKey = "";
         if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
         tilePrefetchTimer = null;
         stopTrackingTilePrefetch();
+        refreshTilePrefetchEstimate();
         setTilePrefetchState({
             key: "",
-            state: "idle",
+            state: isBrowserHostedMapRuntime() && isGroundMapVisibleForPrefetch()
+                ? "suspended-visible-map"
+                : "idle",
+            detail: isBrowserHostedMapRuntime() && isGroundMapVisibleForPrefetch()
+                ? MAP_VISIBLE_PREFETCH_SUSPEND_DETAIL
+                : "",
             pending: 0,
             completed: 0,
             failed: 0,
         });
         return;
     }
-    const force = options && options.force === true;
     const tilesUrl = effectivePrefetchTilesUrl();
     if (!tilesUrl) return;
     if (!force && !mapPrefetchEnabled()) {
@@ -2873,9 +2926,11 @@ function scheduleHighResTilePrefetch(options = {}) {
         if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
         tilePrefetchTimer = null;
         stopTrackingTilePrefetch();
+        refreshTilePrefetchEstimate();
         setTilePrefetchState({
             key: "",
-            state: "idle",
+            state: "disabled",
+            detail: "Map prefetch is disabled.",
             pending: 0,
             completed: 0,
             failed: 0,
@@ -2885,6 +2940,7 @@ function scheduleHighResTilePrefetch(options = {}) {
     if (!tileCacheEnabled() || !tileFetchAllowedForUrl(tilesUrl) || !tilePrefetchSupported()) {
         currentPrefetchKey = "";
         stopTrackingTilePrefetch();
+        refreshTilePrefetchEstimate();
         setTilePrefetchState({
             key: "",
             state: "idle",
@@ -2914,6 +2970,7 @@ function scheduleHighResTilePrefetch(options = {}) {
     const key = plan.key;
     if (!key) {
         const context = publishTilePrefetchContextState();
+        refreshTilePrefetchEstimate();
         currentPrefetchKey = "";
         if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
         tilePrefetchTimer = null;
@@ -2951,6 +3008,9 @@ function scheduleHighResTilePrefetch(options = {}) {
             return;
         }
         await runHighResTilePrefetch(runId, key);
+        if (runId === tilePrefetchRunId) {
+            autoHighResPrefetchCompleted = true;
+        }
     }), delayMs);
 }
 
@@ -3189,7 +3249,6 @@ function finishZoomButtonAnimation() {
     rememberMapView();
     persistMapStateSoon();
     scheduleTrackingTilePrefetch();
-    scheduleHighResTilePrefetch();
     updateZoomControlAppearance();
 }
 
@@ -3282,7 +3341,6 @@ function applyImmediateZoomStep(delta) {
     }
     startOrRetargetZoomButtonAnimation(nextZoom);
     scheduleTrackingTilePrefetch();
-    scheduleHighResTilePrefetch();
     updateZoomControlAppearance();
 }
 
@@ -3562,7 +3620,6 @@ function applyFollowWheelZoom(deltaY) {
     rememberMapView();
     persistMapStateSoon();
     scheduleTrackingTilePrefetch();
-    scheduleHighResTilePrefetch();
     updateZoomControlAppearance();
     return true;
 }
@@ -4258,7 +4315,6 @@ function applyFollowUserIfPossible() {
     if (Date.now() < suppressFollowCameraUntilMs) return;
     const visualTarget = currentUserMarkerVisualLatLng() || lastUserLatLng;
     scheduleFollowCameraUpdate(visualTarget);
-    scheduleHighResTilePrefetch();
 }
 
 function unlockMapInteraction(options) {
@@ -4538,7 +4594,6 @@ function setGroundMapFollowUser(enabled) {
 function centerOnUserNow() {
     if (!groundMap || !lastUserLatLng) return false;
     snapFollowCameraTo(currentUserMarkerVisualLatLng() || lastUserLatLng);
-    scheduleHighResTilePrefetch();
     return true;
 }
 
@@ -4564,7 +4619,22 @@ function trackedAssetTitle() {
     return window.__gs26_tracked_asset_title || trackedAssetLabel || "Tracked Asset";
 }
 
+function isGroundMapVisibleForPrefetch() {
+    if (!groundMap || typeof document === "undefined") return false;
+    if (document.visibilityState && document.visibilityState !== "visible") return false;
+    try {
+        const container = groundMap.getContainer ? groundMap.getContainer() : null;
+        if (!container) return false;
+        return (container.clientWidth || 0) > 0 && (container.clientHeight || 0) > 0;
+    } catch (e) {
+        return false;
+    }
+}
+
 function shouldRunBrowserMapPrefetch() {
+    if (isBrowserHostedMapRuntime() && isGroundMapVisibleForPrefetch()) {
+        return false;
+    }
     return true;
 }
 
@@ -5070,7 +5140,6 @@ function installMapHooks() {
     onMap("moveend", "map moveend", () => {
         rememberMapView();
         persistMapStateSoon();
-        scheduleHighResTilePrefetch();
         scheduleTileZoomDiscovery();
         updateZoomControlAppearance();
     });
@@ -5101,7 +5170,6 @@ function installMapHooks() {
         rememberMapView();
         persistMapStateSoon();
         scheduleTrackingTilePrefetch();
-        scheduleHighResTilePrefetch();
         if (followUserEnabled) {
             applyFollowUserIfPossible();
         }
@@ -5602,7 +5670,6 @@ function applyGroundMapMarkers(rLat, rLon, uLat, uLon) {
     if (hasRocket || hasUser) {
         scheduleTileZoomDiscovery();
         scheduleTrackingTilePrefetch();
-        scheduleHighResTilePrefetch();
     }
 }
 
@@ -5616,6 +5683,7 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
     prefetchRocketLatLng = nextRocket ? [nextRocket[0], nextRocket[1]] : null;
     prefetchUserLatLng = nextUser ? [nextUser[0], nextUser[1]] : null;
     publishTilePrefetchContextState();
+    refreshTilePrefetchEstimate();
     pendingMarkerSync = [
         nextRocket ? nextRocket[0] : NaN,
         nextRocket ? nextRocket[1] : NaN,
@@ -5654,7 +5722,6 @@ function centerGroundMapOn(lat, lon) {
     });
     rememberMapView();
     scheduleTileZoomDiscovery();
-    scheduleHighResTilePrefetch();
 }
 
 function getLastUserLatLng() {
@@ -5695,11 +5762,14 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
         lastUserLatLng = [stableUser[0], stableUser[1]];
     }
     publishTilePrefetchContextState();
+    refreshTilePrefetchEstimate();
 
     if (stableUser) {
         scheduleTrackingTilePrefetch();
+        if (shouldRunAutomaticHighResPrefetch()) {
+            scheduleHighResTilePrefetch();
+        }
     }
-    scheduleHighResTilePrefetch();
 }
 
 (function pinGroundStation26() {
@@ -5750,8 +5820,7 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
             }
         } catch (e) {
         }
-        setTilePrefetchEstimate(buildHighResPrefetchPlan());
-        scheduleHighResTilePrefetch({force: true});
+        refreshTilePrefetchEstimate({sampleTileSize: true});
     });
     api.clearGroundMapTileCaches = safeMapCallback("api clearGroundMapTileCaches", clearAllGroundMapTileCaches);
     api.ensureMarkerStylesOnce = ensureMarkerStylesOnce;

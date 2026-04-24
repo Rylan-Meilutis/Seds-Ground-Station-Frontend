@@ -463,6 +463,9 @@ pub fn SettingsPage(
                 const measuredBytes = Number(root.dataset.measuredBytes || 0);
                 const estimate = window.__gs26_ground_map_prefetch_estimate || {};
                 const context = window.__gs26_ground_map_prefetch_context || {};
+                const prefetchEnabled = typeof window.__gs26_prefetch_enabled === "boolean"
+                  ? window.__gs26_prefetch_enabled
+                  : true;
                 const combinedTiles = Number(estimate.combinedTiles || estimate.tiles || 0);
                 const combinedBytes = Number(estimate.combinedEstimatedBytes || estimate.estimatedBytes || 0);
                 const tileBytes = Number(estimate.estimatedTileBytes || 0);
@@ -481,9 +484,10 @@ pub fn SettingsPage(
                 const warningText = document.getElementById("gs26-prefetch-estimate-warning");
                 if (warningText) {
                   let nextWarning = "";
-                  if (budgetBytes > 0 && combinedBytes > budgetBytes) {
+                  const hasRunnablePlan = prefetchEnabled && combinedTiles > 0 && combinedBytes > 0;
+                  if (hasRunnablePlan && budgetBytes > 0 && combinedBytes > budgetBytes) {
                     nextWarning = "This prefetch is larger than the configured cache limit.";
-                  } else if (budgetBytes > 0 && projected > budgetBytes) {
+                  } else if (hasRunnablePlan && budgetBytes > 0 && projected > budgetBytes) {
                     nextWarning = `This prefetch may exceed the cache limit (${humanBytes(projected)} projected).`;
                   }
                   if (warningText.textContent !== nextWarning) warningText.textContent = nextWarning;
