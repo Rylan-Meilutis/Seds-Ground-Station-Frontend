@@ -453,8 +453,17 @@ function runBrowserTileCacheOp(task) {
     if (!shouldSerializeBrowserTileCacheOps()) {
         return Promise.resolve().then(task);
     }
-    const next = browserTileCacheQueue.then(task, task);
-    browserTileCacheQueue = next.catch(() => {});
+    const wrapped = async () => {
+        await yieldBrowserTileWork();
+        try {
+            return await task();
+        } finally {
+            await yieldBrowserTileWork();
+        }
+    };
+    const next = browserTileCacheQueue.then(wrapped, wrapped);
+    browserTileCacheQueue = next.catch(() => {
+    });
     return next;
 }
 
@@ -1356,6 +1365,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     }
 
     if (!tileCacheEnabled() || !tileCacheSupported()) {
+        await yieldBrowserTileWork();
         const response = await fetch(url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
@@ -1363,6 +1373,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
             }
             throw new Error(`tile fetch failed: ${response.status}`);
         }
+        await yieldBrowserTileWork();
         return await response.arrayBuffer();
     }
 
@@ -1373,6 +1384,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
 
     if (options.skipCacheLookup === true) {
         const data = await runInflightTileFetch(cacheName, url, async () => {
+            await yieldBrowserTileWork();
             const response = await fetch(url);
             if (!response.ok) {
                 if (response.status === 404 || response.status === 410) {
@@ -1380,7 +1392,9 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
                 }
                 throw new Error(`tile fetch failed: ${response.status}`);
             }
+            await yieldBrowserTileWork();
             const data = await response.arrayBuffer();
+            await yieldBrowserTileWork();
             writeTileMemoryCache(cacheName, url, data);
             forgetMissingTile(cacheName, url);
             if (data.byteLength <= TILE_CACHE_MAX_TILE_BYTES) {
@@ -1412,6 +1426,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
 
     const cache = await runBrowserTileCacheOp(async () => await openTileCache(cacheName));
     if (!cache) {
+        await yieldBrowserTileWork();
         const response = await fetch(url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
@@ -1419,6 +1434,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
             }
             throw new Error(`tile fetch failed: ${response.status}`);
         }
+        await yieldBrowserTileWork();
         return await response.arrayBuffer();
     }
     const cacheKey = tileCacheRequestKey(url);
@@ -1435,6 +1451,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     }
 
     const data = await runInflightTileFetch(cacheName, url, async () => {
+        await yieldBrowserTileWork();
         const response = await fetch(url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
@@ -1442,7 +1459,9 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
             }
             throw new Error(`tile fetch failed: ${response.status}`);
         }
+        await yieldBrowserTileWork();
         const data = await response.arrayBuffer();
+        await yieldBrowserTileWork();
         rememberTileSizeSample(data.byteLength);
         writeTileMemoryCache(cacheName, url, data);
         forgetMissingTile(cacheName, url);
@@ -1487,6 +1506,7 @@ async function prefetchTileToPersistentCache(cacheName, url) {
     }
 
     await runInflightTileFetch(cacheName, url, async () => {
+        await yieldBrowserTileWork();
         const response = await fetch(url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
@@ -1494,6 +1514,7 @@ async function prefetchTileToPersistentCache(cacheName, url) {
             }
             throw new Error(`tile fetch failed: ${response.status}`);
         }
+        await yieldBrowserTileWork();
         const contentLengthRaw = response.headers ? response.headers.get("content-length") : null;
         const contentLength = contentLengthRaw == null ? NaN : Number(contentLengthRaw);
         rememberTileSizeSample(contentLength);
