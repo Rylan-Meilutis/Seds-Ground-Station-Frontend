@@ -466,6 +466,8 @@ pub fn SettingsPage(
                 const prefetchEnabled = typeof window.__gs26_prefetch_enabled === "boolean"
                   ? window.__gs26_prefetch_enabled
                   : true;
+                const summaryStatus = String(estimate.summaryStatus || context.summaryStatus || "");
+                const summaryMessage = String(estimate.summaryMessage || context.summaryMessage || "");
                 const combinedTiles = Number(estimate.combinedTiles || estimate.tiles || 0);
                 const combinedBytes = Number(estimate.combinedEstimatedBytes || estimate.estimatedBytes || 0);
                 const tileBytes = Number(estimate.estimatedTileBytes || 0);
@@ -489,6 +491,8 @@ pub fn SettingsPage(
                     nextWarning = "This prefetch is larger than the configured cache limit.";
                   } else if (hasRunnablePlan && budgetBytes > 0 && projected > budgetBytes) {
                     nextWarning = `This prefetch may exceed the cache limit (${humanBytes(projected)} projected).`;
+                  } else if (hasRunnablePlan && (summaryStatus === "tracking" || (estimate.userAvailable && !estimate.rocketAvailable))) {
+                    nextWarning = summaryMessage;
                   }
                   if (warningText.textContent !== nextWarning) warningText.textContent = nextWarning;
                   const nextDisplay = nextWarning ? "block" : "none";

@@ -589,7 +589,13 @@ function refreshTilePrefetchEstimate(options = {}) {
     const enabled = mapPrefetchEnabled();
     const context = publishTilePrefetchContextState();
     const hasRunnableContext = context.userAvailable || context.rocketAvailable;
-    const plan = enabled && hasRunnableContext ? buildHighResPrefetchPlan() : emptyTilePrefetchPlan();
+    const canRunNow = enabled && hasRunnableContext && shouldRunBrowserMapPrefetch();
+    let plan = emptyTilePrefetchPlan();
+    if (canRunNow) {
+        plan = shouldRunAutomaticHighResPrefetch()
+            ? buildHighResPrefetchPlan()
+            : buildTrackingPrefetchPlan();
+    }
     const estimate = setTilePrefetchEstimate(plan, forceSample);
     if (!enabled) {
         estimate.summaryStatus = "disabled";
@@ -597,6 +603,21 @@ function refreshTilePrefetchEstimate(options = {}) {
         estimate.userMessage = context.userAvailable ? "Ready" : "Waiting for user location.";
         estimate.rocketMessage = context.rocketAvailable ? "Ready" : "Waiting for rocket telemetry.";
         estimate.tooLarge = false;
+        try {
+            window.__gs26_ground_map_prefetch_estimate = {...estimate};
+        } catch (e) {
+        }
+    } else if (canRunNow && !shouldRunAutomaticHighResPrefetch()) {
+        estimate.summaryStatus = "tracking";
+        estimate.summaryMessage = context.userAvailable && !context.rocketAvailable
+            ? "Tracking prefetch only. Rocket tiles are deferred until telemetry appears."
+            : "Tracking prefetch only.";
+        try {
+            window.__gs26_ground_map_prefetch_estimate = {...estimate};
+        } catch (e) {
+        }
+    } else if (canRunNow && context.userAvailable && !context.rocketAvailable && estimate.combinedTiles > 0) {
+        estimate.summaryMessage = "Current estimate excludes rocket tiles. Cache need may increase when rocket telemetry appears.";
         try {
             window.__gs26_ground_map_prefetch_estimate = {...estimate};
         } catch (e) {
@@ -2368,11 +2389,6 @@ function loadPersistedMapState() {
                 accepted: true,
                 acceptedLatLng: lastUserLatLng,
             };
-            try {
-                window.__gs26_user_lat = lastUserLatLng[0];
-                window.__gs26_user_lon = lastUserLatLng[1];
-            } catch (e) {
-            }
         } else {
             lastUserLatLng = null;
             userMarkerDisplayedLatLng = null;
@@ -2542,14 +2558,14 @@ function scheduleTileZoomDiscovery() {
 function buildTrackingPrefetchPlan() {
     const tilesUrl = effectivePrefetchTilesUrl();
     if (!tilesUrl) {
-        return {key: "", coords: []};
+        return {key: "", coords: [], breakdown: {userTiles: 0, rocketTiles: 0, combinedTiles: 0}};
     }
 
     const userLat = Array.isArray(prefetchUserLatLng) ? Number(prefetchUserLatLng[0]) : NaN;
     const userLon = Array.isArray(prefetchUserLatLng) ? Number(prefetchUserLatLng[1]) : NaN;
     const hasUser = isUsableUserLatLng(userLat, userLon);
     if (!hasUser) {
-        return {key: "", coords: []};
+        return {key: "", coords: [], breakdown: {userTiles: 0, rocketTiles: 0, combinedTiles: 0}};
     }
 
     const maxNativeZoom = effectivePrefetchMaxNativeZoom(tilesUrl);
@@ -2600,7 +2616,15 @@ function buildTrackingPrefetchPlan() {
         );
     }
 
-    return {key, coords};
+    return {
+        key,
+        coords,
+        breakdown: {
+            userTiles: coords.length,
+            rocketTiles: 0,
+            combinedTiles: coords.length,
+        },
+    };
 }
 
 function buildHighResPrefetchPlan() {

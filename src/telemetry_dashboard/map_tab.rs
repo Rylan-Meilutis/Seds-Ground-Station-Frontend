@@ -236,9 +236,7 @@ pub fn MapTab(
     {
         let mut browser_user_gps = browser_user_gps;
         use_effect(move || {
-            if let Some((lat, lon)) = js_cached_user_latlon() {
-                browser_user_gps.set(Some((lat, lon)));
-            } else if let Some((lat, lon)) = js_read_user_latlon_from_window() {
+            if let Some((lat, lon)) = js_read_user_latlon_from_window() {
                 browser_user_gps.set(Some((lat, lon)));
             }
         });
