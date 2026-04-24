@@ -7,8 +7,7 @@ use crate::telemetry_dashboard::gps_apple;
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 use crate::telemetry_dashboard::js_read_window_string;
 use crate::telemetry_dashboard::{
-    http_get_json, js_eval, js_is_ground_map_ready, layout::ThemeConfig, map_tiles_url, persist,
-    translate_text,
+    http_get_json, js_eval, layout::ThemeConfig, map_tiles_url, persist, translate_text,
 };
 use dioxus::prelude::*;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
@@ -28,6 +27,16 @@ const MAP_CONFIG_CACHE_STORAGE_KEY: &str = "gs26_ground_map_config_v1";
 
 fn tiles_url() -> String {
     map_tiles_url()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn can_dispatch_map_markers() -> bool {
+    crate::telemetry_dashboard::js_is_ground_map_ready()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn can_dispatch_map_markers() -> bool {
+    true
 }
 
 fn format_distance_label(
@@ -1082,7 +1091,7 @@ pub(crate) fn js_update_markers(r_lat: f64, r_lon: f64, u_lat: f64, u_lon: f64) 
         u_lon = u_lon,
     ));
 
-    if !js_is_ground_map_ready() {
+    if !can_dispatch_map_markers() {
         return;
     }
 
@@ -1122,36 +1131,6 @@ fn js_set_user_heading(deg: f64) {
         "#,
         deg = deg
     ));
-}
-
-#[cfg(target_arch = "wasm32")]
-fn js_cached_user_latlon() -> Option<(f64, f64)> {
-    js_eval(
-        r#"
-        (function() {
-          try {
-            if (typeof window.getLastUserLatLng === "function") {
-              const v = window.getLastUserLatLng();
-              window.__gs26_tmp_latlng = v ? JSON.stringify(v) : "";
-            } else {
-              window.__gs26_tmp_latlng = "";
-            }
-          } catch (e) {
-            window.__gs26_tmp_latlng = "";
-          }
-        })();
-        "#,
-    );
-
-    let s = js_read_window_string("__gs26_tmp_latlng")?;
-    if s.is_empty() {
-        return None;
-    }
-
-    let v: serde_json::Value = serde_json::from_str(&s).ok()?;
-    let lat = v.get("lat")?.as_f64()?;
-    let lon = v.get("lon")?.as_f64()?;
-    Some((lat, lon))
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -234,6 +234,7 @@ const USER_MARKER_VISUAL_MIN_SPEED_MPS = 0.2;
 const USER_MARKER_VISUAL_MAX_SPEED_MPS = 90;
 const USER_MARKER_VISUAL_SPEED_GAIN = 1.12;
 const USER_MARKER_VISUAL_CATCHUP_MS = 520;
+const USER_MARKER_FRAME_STALL_SNAP_MS = 220;
 const USER_GPS_SNAP_DISTANCE_M = 120;
 const USER_GPS_SNAP_SPEED_MPS = 45;
 const USER_ORIENTATION_DEADZONE_DEG = 2.2;
@@ -258,6 +259,7 @@ const FOLLOW_CAMERA_MAX_STEP_PX = 900.0;
 const FOLLOW_CAMERA_STEP_DISTANCE_RATIO = 0.42;
 const FOLLOW_CAMERA_CATCHUP_MS = 110;
 const FOLLOW_CAMERA_LOCK_DISTANCE_PX = 6.0;
+const FOLLOW_CAMERA_FRAME_STALL_SNAP_MS = 180;
 const TILE_SOURCE_ID = "gs26-raster-source";
 const TILE_LAYER_ID = "gs26-raster-layer";
 const MAP_BACKGROUND_LAYER_ID = "gs26-map-background-layer";
@@ -3689,7 +3691,8 @@ function scheduleFollowCameraUpdate(latLng) {
             return;
         }
         const now = performance.now();
-        const dtMs = Math.max(1.0, Math.min(50.0, now - (followCameraLastFrameAt || now)));
+        const rawDtMs = Math.max(1.0, now - (followCameraLastFrameAt || now));
+        const dtMs = Math.max(1.0, Math.min(50.0, rawDtMs));
         followCameraLastFrameAt = now;
         let center;
         let centerPoint;
@@ -3705,6 +3708,15 @@ function scheduleFollowCameraUpdate(latLng) {
         const errorX = targetPoint.x - centerPoint.x;
         const errorY = targetPoint.y - centerPoint.y;
         const distancePx = Math.hypot(errorX, errorY);
+        if (rawDtMs >= FOLLOW_CAMERA_FRAME_STALL_SNAP_MS) {
+            snapFollowCameraTo(target);
+            followCameraVisualPoint = targetPoint;
+            followCameraVelocityXPps = 0;
+            followCameraVelocityYPps = 0;
+            pendingFollowCameraLatLng = null;
+            followCameraFrame = null;
+            return;
+        }
         if (distancePx <= FOLLOW_CAMERA_LOCK_DISTANCE_PX) {
             snapFollowCameraTo(target);
             followCameraVisualPoint = targetPoint;
@@ -3918,7 +3930,8 @@ function animateUserMarkerTo(targetLatLng) {
             return;
         }
         const now = performance.now();
-        const dtMs = Math.max(1.0, Math.min(80.0, now - (anim.lastFrameAt || now)));
+        const rawDtMs = Math.max(1.0, now - (anim.lastFrameAt || now));
+        const dtMs = Math.max(1.0, Math.min(80.0, rawDtMs));
         anim.lastFrameAt = now;
         const current = currentUserMarkerVisualLatLng() || anim.target;
         const fixAgeMs = Math.max(0.0, Date.now() - (anim.targetFixAtMs || Date.now()));
@@ -3926,6 +3939,15 @@ function animateUserMarkerTo(targetLatLng) {
             USER_MARKER_SMOOTH_MIN_MS,
             anim.smoothedIntervalMs * USER_MARKER_PREDICTION_STALE_RATIO
         );
+        if (rawDtMs >= USER_MARKER_FRAME_STALL_SNAP_MS) {
+            setUserMarkerVisualLatLng(anim.target, {
+                followTarget: anim.target,
+                holdCenter: followUserEnabled,
+            });
+            userMarkerAnimation = null;
+            userMarkerAnimationFrame = null;
+            return;
+        }
         const predictiveLeadMs = fixAgeMs <= staleAtMs && (Number(anim.fixSpeedMps) || 0.0) >= 0.05
             ? Math.max(
                 0.0,

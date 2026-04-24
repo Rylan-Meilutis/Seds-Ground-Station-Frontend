@@ -50,7 +50,7 @@ use dioxus_signals::Signal;
 use errors_tab::ErrorsTab;
 use layout::LayoutConfig;
 use layout_settings_tab::SettingsPage;
-use map_tab::{js_update_markers, MapTab};
+use map_tab::MapTab;
 use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
@@ -2934,7 +2934,24 @@ fn clear_visible_telemetry_history_without_bridge() {
 }
 
 fn clear_map_rocket_marker() {
-    js_update_markers(f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+    js_eval(
+        r#"
+        (function() {
+          try {
+            window.__gs26_pending_r_lat = NaN;
+            window.__gs26_pending_r_lon = NaN;
+            if (typeof window.updateGroundMapMarkers === "function") {
+              window.updateGroundMapMarkers(
+                NaN,
+                NaN,
+                window.__gs26_user_lat,
+                window.__gs26_user_lon
+              );
+            }
+          } catch (e) {}
+        })();
+        "#,
+    );
 }
 
 pub fn hard_reload_dashboard_data() {
@@ -7563,14 +7580,10 @@ fn js_get_tmp_str() -> Option<String> {
     None
 }
 
+#[cfg(target_arch = "wasm32")]
 fn js_is_ground_map_ready() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    return true;
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_eval(
-            r#"
+    js_eval(
+        r#"
         (function() {
           try {
             const ok =
@@ -7584,10 +7597,9 @@ fn js_is_ground_map_ready() -> bool {
           }
         })();
         "#,
-        );
+    );
 
-        js_read_window_string("__gs26_tmp_ready")
-            .unwrap_or_else(|| "false".to_string())
-            .eq_ignore_ascii_case("true")
-    }
+    js_read_window_string("__gs26_tmp_ready")
+        .unwrap_or_else(|| "false".to_string())
+        .eq_ignore_ascii_case("true")
 }
