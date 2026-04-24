@@ -4460,6 +4460,7 @@ function shouldUseDomMapRenderer() {
     try {
         if (window.__gs26_force_maplibre === true) return false;
         if (window.__gs26_force_dom_map === true) return true;
+        if (isBrowserHostedMapRuntime()) return true;
     } catch (e) {
     }
     return false;
