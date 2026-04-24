@@ -192,10 +192,7 @@ pub fn MapTab(
 
                 // Fullscreen enter/exit explicit reinit hook (independent of rotation)
                 js_setup_js_fullscreen_reinit(&tiles, &config);
-                return;
             }
-
-            js_force_map_reinit_now(&tiles, &config, *is_fullscreen.read(), 0);
         });
     }
 
