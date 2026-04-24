@@ -145,15 +145,22 @@ const HIGH_RES_PREFETCH_LOCATION_BUFFER_TILES = 5;
 const HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA = 3;
 const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 500;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
+const HIGH_RES_PREFETCH_IDLE_DELAY_MS_WEB = 12000;
 const TRACKING_PREFETCH_TILE_RADIUS = 14;
 const TRACKING_PREFETCH_ZOOM_DELTA = 3;
 const TRACKING_PREFETCH_ZOOM_OUT_VIEWPORT_LEVELS = 3;
 const TRACKING_PREFETCH_ZOOM_IN_VIEWPORT_LEVELS = 3;
 const TRACKING_PREFETCH_VIEWPORT_BUFFER_TILES = 4;
 const TRACKING_PREFETCH_MAX_TILES = 3200;
+const TRACKING_PREFETCH_MAX_TILES_WEB = 96;
 const TRACKING_PREFETCH_INTERVAL_MS = 2500;
+const TRACKING_PREFETCH_INTERVAL_MS_WEB = 12000;
 const TRACKING_PREFETCH_DELAY_MS = 80;
+const TRACKING_PREFETCH_DELAY_MS_WEB = 2000;
 const TRACKING_PREFETCH_CONCURRENCY = 3;
+const TRACKING_PREFETCH_CONCURRENCY_WEB = 1;
+const HIGH_RES_PREFETCH_CONCURRENCY_WEB = 1;
+const HIGH_RES_PREFETCH_MAX_TILES_WEB = 128;
 
 function configuredPrefetchRadiusM(kind) {
     const key = kind === "rocket" ? "__gs26_prefetch_rocket_radius_m" : "__gs26_prefetch_user_radius_m";
@@ -361,33 +368,9 @@ function pushMapTrace(label, extra = {}) {
     if (mapInitTrace.length > MAP_INIT_TRACE_MAX_ENTRIES) {
         mapInitTrace.splice(0, mapInitTrace.length - MAP_INIT_TRACE_MAX_ENTRIES);
     }
-    try {
-        window.__gs26_map_last_phase = label;
-        window.__gs26_map_trace = mapInitTrace.slice();
-    } catch (e) {
-    }
-    if (mapDebugLoggingEnabled()) {
-        try {
-            console.info("[GS26 map trace]", entry);
-        } catch (e) {
-        }
-    }
 }
 
-function logMapRuntimeBoundary(label, extra = {}) {
-    const payload = {
-        ts: Date.now(),
-        phase: label,
-        ...extra,
-    };
-    try {
-        window.__gs26_map_runtime_phase = payload;
-    } catch (e) {
-    }
-    try {
-        console.info("[GS26 runtime]", payload);
-    } catch (e) {
-    }
+function logMapRuntimeBoundary(_label, _extra = {}) {
 }
 
 function startMapMainThreadWatchdog(source) {
@@ -409,11 +392,6 @@ function startMapMainThreadWatchdog(source) {
             };
         } catch (e) {
         }
-        console.error("[GS26 map stall]", {
-            blockedForMs: deltaMs,
-            phase: mapInitPhase,
-            trace: snapshot,
-        });
     }, MAP_MAIN_THREAD_WATCHDOG_INTERVAL_MS);
 }
 
@@ -2437,7 +2415,7 @@ function buildTrackingPrefetchPlan() {
 
     const coords = [];
     const seen = new Set();
-    const maxTiles = TRACKING_PREFETCH_MAX_TILES;
+    const maxTiles = trackingPrefetchMaxTiles();
     const viewportBaseZoom = Math.max(
         effectiveMinZoom(),
         Math.min(maxNativeZoom, Math.floor(Number.isFinite(focusZoom) ? focusZoom : maxNativeZoom))
@@ -2554,6 +2532,10 @@ function buildHighResPrefetchPlan() {
         }
     }
 
+    if (coords.length > highResPrefetchMaxTiles()) {
+        coords.length = highResPrefetchMaxTiles();
+    }
+
     return {
         key,
         coords,
@@ -2651,7 +2633,7 @@ async function runHighResTilePrefetch(runId, key) {
         }
     };
 
-    const concurrency = Math.max(1, Math.min(HIGH_RES_PREFETCH_CONCURRENCY, total));
+    const concurrency = Math.max(1, Math.min(highResPrefetchConcurrencyLimit(), total));
     await Promise.allSettled(Array.from({length: concurrency}, () => worker()));
 
     if (runId === tilePrefetchRunId) {
@@ -2685,7 +2667,7 @@ async function runTrackingTilePrefetch(runId, plan) {
     };
 
     try {
-        const concurrency = Math.max(1, Math.min(TRACKING_PREFETCH_CONCURRENCY, total));
+        const concurrency = Math.max(1, Math.min(trackingPrefetchConcurrencyLimit(), total));
         await Promise.allSettled(Array.from({length: concurrency}, () => worker()));
     } finally {
         tileTrackingPrefetchActive = false;
@@ -2696,7 +2678,7 @@ function ensureTrackingTilePrefetchLoop() {
     if (tileTrackingPrefetchInterval) return;
     tileTrackingPrefetchInterval = setInterval(safeMapCallback("tracking tile prefetch interval", () => {
         scheduleTrackingTilePrefetch({force: true});
-    }), TRACKING_PREFETCH_INTERVAL_MS);
+    }), trackingPrefetchIntervalMs());
 }
 
 function scheduleTrackingTilePrefetch(options = {}) {
@@ -2729,7 +2711,7 @@ function scheduleTrackingTilePrefetch(options = {}) {
     tileTrackingPrefetchTimer = idleDelay(safeMapCallback("tracking tile prefetch timer", async () => {
         tileTrackingPrefetchTimer = null;
         await runTrackingTilePrefetch(runId, plan);
-    }), TRACKING_PREFETCH_DELAY_MS);
+    }), trackingPrefetchDelayMs());
 }
 
 function scheduleTileCacheSweep(tilesUrl) {
@@ -2839,7 +2821,7 @@ function scheduleHighResTilePrefetch(options = {}) {
     });
     const now = Date.now();
     const sinceInitMs = mapInitStartedAtMs > 0 ? Math.max(0, now - mapInitStartedAtMs) : HIGH_RES_PREFETCH_STARTUP_DELAY_MS;
-    const startupDelayMs = Math.max(HIGH_RES_PREFETCH_IDLE_DELAY_MS, HIGH_RES_PREFETCH_STARTUP_DELAY_MS - sinceInitMs);
+    const startupDelayMs = Math.max(highResPrefetchIdleDelayMs(), HIGH_RES_PREFETCH_STARTUP_DELAY_MS - sinceInitMs);
     const suppressionDelayMs = Math.max(0, prefetchSuppressedUntilMs - now);
     const delayMs = force ? 0 : Math.max(startupDelayMs, suppressionDelayMs);
     tilePrefetchTimer = idleDelay(safeMapCallback("high-res tile prefetch timer", async () => {
@@ -4475,21 +4457,53 @@ function trackedAssetTitle() {
 }
 
 function shouldUseDomMapRenderer() {
-    try {
-        if (window.__gs26_force_maplibre === true) return false;
-        if (window.__gs26_force_dom_map === true) return true;
-    } catch (e) {
-    }
     return false;
 }
 
 function shouldRunBrowserMapPrefetch() {
-    try {
-        if (!isBrowserHostedMapRuntime()) return true;
-        return window.__gs26_enable_web_map_prefetch === true;
-    } catch (e) {
-        return !isBrowserHostedMapRuntime();
-    }
+    return true;
+}
+
+function highResPrefetchConcurrencyLimit() {
+    return isBrowserHostedMapRuntime()
+        ? HIGH_RES_PREFETCH_CONCURRENCY_WEB
+        : HIGH_RES_PREFETCH_CONCURRENCY;
+}
+
+function highResPrefetchMaxTiles() {
+    return isBrowserHostedMapRuntime()
+        ? HIGH_RES_PREFETCH_MAX_TILES_WEB
+        : Number.POSITIVE_INFINITY;
+}
+
+function trackingPrefetchMaxTiles() {
+    return isBrowserHostedMapRuntime()
+        ? TRACKING_PREFETCH_MAX_TILES_WEB
+        : TRACKING_PREFETCH_MAX_TILES;
+}
+
+function trackingPrefetchIntervalMs() {
+    return isBrowserHostedMapRuntime()
+        ? TRACKING_PREFETCH_INTERVAL_MS_WEB
+        : TRACKING_PREFETCH_INTERVAL_MS;
+}
+
+function trackingPrefetchDelayMs() {
+    return isBrowserHostedMapRuntime()
+        ? TRACKING_PREFETCH_DELAY_MS_WEB
+        : TRACKING_PREFETCH_DELAY_MS;
+}
+
+function trackingPrefetchConcurrencyLimit() {
+    return isBrowserHostedMapRuntime()
+        ? TRACKING_PREFETCH_CONCURRENCY_WEB
+        : TRACKING_PREFETCH_CONCURRENCY;
+}
+
+function highResPrefetchIdleDelayMs() {
+    return isBrowserHostedMapRuntime()
+        ? HIGH_RES_PREFETCH_IDLE_DELAY_MS_WEB
+        : HIGH_RES_PREFETCH_IDLE_DELAY_MS;
 }
 
 function isDomMapActive() {
