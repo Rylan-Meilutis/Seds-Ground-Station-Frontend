@@ -3,8 +3,8 @@
 
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::sync::atomic::{AtomicU64, Ordering};
-use windows::core::initialize_mta;
 use windows::Devices::Geolocation::{GeolocationAccessStatus, Geolocator, PositionAccuracy};
+use windows::initialize_mta;
 
 static GPS_RUN_TOKEN: AtomicU64 = AtomicU64::new(0);
 
