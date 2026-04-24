@@ -2700,6 +2700,10 @@ function ensureTrackingTilePrefetchLoop() {
 }
 
 function scheduleTrackingTilePrefetch(options = {}) {
+    if (!shouldRunBrowserMapPrefetch()) {
+        stopTrackingTilePrefetch();
+        return;
+    }
     const force = options.force === true;
     const tilesUrl = effectivePrefetchTilesUrl();
     if (!tilesUrl || !mapPrefetchEnabled() || !tileFetchAllowedForUrl(tilesUrl) || !tileCacheSupported()) {
@@ -2747,6 +2751,20 @@ function scheduleTileCacheSweep(tilesUrl) {
 }
 
 function scheduleHighResTilePrefetch(options = {}) {
+    if (!shouldRunBrowserMapPrefetch()) {
+        currentPrefetchKey = "";
+        if (tilePrefetchTimer) cancelIdleDelay(tilePrefetchTimer);
+        tilePrefetchTimer = null;
+        stopTrackingTilePrefetch();
+        setTilePrefetchState({
+            key: "",
+            state: "idle",
+            pending: 0,
+            completed: 0,
+            failed: 0,
+        });
+        return;
+    }
     const force = options && options.force === true;
     const tilesUrl = effectivePrefetchTilesUrl();
     if (!tilesUrl) return;
@@ -4460,10 +4478,18 @@ function shouldUseDomMapRenderer() {
     try {
         if (window.__gs26_force_maplibre === true) return false;
         if (window.__gs26_force_dom_map === true) return true;
-        if (isBrowserHostedMapRuntime()) return true;
     } catch (e) {
     }
     return false;
+}
+
+function shouldRunBrowserMapPrefetch() {
+    try {
+        if (!isBrowserHostedMapRuntime()) return true;
+        return window.__gs26_enable_web_map_prefetch === true;
+    } catch (e) {
+        return !isBrowserHostedMapRuntime();
+    }
 }
 
 function isDomMapActive() {
