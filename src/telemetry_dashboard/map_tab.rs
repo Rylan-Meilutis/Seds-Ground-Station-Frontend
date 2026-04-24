@@ -119,6 +119,7 @@ pub fn MapTab(
     } else {
         title.clone().unwrap_or_default()
     };
+    let did_install_map_js = use_signal(|| false);
 
     {
         let mut map_config = map_config;
@@ -133,26 +134,34 @@ pub fn MapTab(
     {
         let tiles = tiles_url();
         let map_config = map_config;
+        let mut did_install_map_js = did_install_map_js;
         use_effect(move || {
+            let already_installed = *did_install_map_js.read();
             let config = map_config.read().clone();
             #[cfg(target_os = "ios")]
             {
                 *show_enable_compass.write() = js_is_compass_denied();
             }
 
-            js_setup_map_touch_guard();
-            js_setup_map_size_guard();
-            js_hydrate_persisted_map_state();
-            js_hydrate_persisted_map_max_zoom();
-            js_setup_js_init_retry(&tiles, &config);
-            #[cfg(target_arch = "wasm32")]
-            _js_setup_js_geolocation_watch();
+            if !already_installed {
+                did_install_map_js.set(true);
+                js_setup_map_touch_guard();
+                js_setup_map_size_guard();
+                js_hydrate_persisted_map_state();
+                js_hydrate_persisted_map_max_zoom();
+                js_setup_js_init_retry(&tiles, &config);
+                #[cfg(target_arch = "wasm32")]
+                _js_setup_js_geolocation_watch();
 
-            // Debounced resize/orientation/visualViewport reinit path
-            js_setup_js_resize_reinit(&tiles, &config, RESIZE_DEBOUNCE_MS);
+                // Debounced resize/orientation/visualViewport reinit path
+                js_setup_js_resize_reinit(&tiles, &config, RESIZE_DEBOUNCE_MS);
 
-            // Fullscreen enter/exit explicit reinit hook (independent of rotation)
-            js_setup_js_fullscreen_reinit(&tiles, &config);
+                // Fullscreen enter/exit explicit reinit hook (independent of rotation)
+                js_setup_js_fullscreen_reinit(&tiles, &config);
+                return;
+            }
+
+            js_force_map_reinit_now(&tiles, &config, *is_fullscreen.read(), 0);
         });
     }
 
@@ -705,11 +714,17 @@ fn js_setup_js_init_retry(tiles: &str, config: &MapConfig) {
       window.__gs26_default_center_lon = __CENTER_LON__;
       window.__gs26_default_zoom = __DEFAULT_ZOOM__;
       window.__gs26_tracked_asset_title = __TRACKED_ASSET_TITLE__;
+      if (window.__gs26_map_init_bootstrapped === true) return;
+      window.__gs26_map_init_bootstrapped = true;
 
       function tryInit() {
         try {
           const el = document.getElementById("ground-map");
           if (!el) return false;
+          if (window.__gs26_ground_map && window.__gs26_ground_map.getContainer &&
+              window.__gs26_ground_map.getContainer() === el) {
+            return true;
+          }
           if (!(window.__gs26_ground_station_loaded === true &&
                 typeof window.initGroundMap === "function")) {
             return false;

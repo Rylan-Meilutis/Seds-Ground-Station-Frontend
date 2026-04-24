@@ -5666,7 +5666,6 @@ fn TelemetryDashboardInner() -> Element {
                             },
                             MainTab::Map => rsx! {
                                 MapTab {
-                                    key: "{*WS_EPOCH.read()}",
                                     rocket_gps: rocket_gps,
                                     user_gps: user_gps,
                                     distance_units_metric: *distance_units_metric.read(),
