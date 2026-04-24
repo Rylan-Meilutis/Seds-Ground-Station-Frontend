@@ -120,6 +120,7 @@ pub fn MapTab(
         title.clone().unwrap_or_default()
     };
     let did_install_map_js = use_signal(|| false);
+    let map_config_ready = use_signal(|| false);
     #[cfg(target_arch = "wasm32")]
     {
         js_eval(
@@ -139,10 +140,12 @@ pub fn MapTab(
 
     {
         let mut map_config = map_config;
+        let mut map_config_ready = map_config_ready;
         use_future(move || async move {
             if let Ok(cfg) = http_get_json::<MapConfig>("/api/map_config").await {
                 map_config.set(cfg.sanitized());
             }
+            map_config_ready.set(true);
         });
     }
 
@@ -151,8 +154,10 @@ pub fn MapTab(
         let tiles = tiles_url();
         let map_config = map_config;
         let mut did_install_map_js = did_install_map_js;
+        let map_config_ready = map_config_ready;
         use_effect(move || {
             let already_installed = *did_install_map_js.read();
+            let config_ready = *map_config_ready.read();
             let config = map_config.read().clone();
             #[cfg(target_arch = "wasm32")]
             js_eval(&format!(
@@ -161,6 +166,7 @@ pub fn MapTab(
                   try {{
                     console.info("[GS26 rust] MapTab setup effect", {{
                       alreadyInstalled: {already_installed},
+                      configReady: {config_ready},
                       ts: Date.now(),
                       maxNativeZoom: {max_native_zoom},
                       maxDisplayZoom: {max_display_zoom}
@@ -169,9 +175,13 @@ pub fn MapTab(
                 }})();
                 "#,
                 already_installed = if already_installed { "true" } else { "false" },
+                config_ready = if config_ready { "true" } else { "false" },
                 max_native_zoom = config.max_native_zoom,
                 max_display_zoom = config.max_display_zoom,
             ));
+            if !config_ready {
+                return;
+            }
             #[cfg(target_os = "ios")]
             {
                 *show_enable_compass.write() = js_is_compass_denied();
@@ -202,7 +212,11 @@ pub fn MapTab(
         let map_config = map_config;
         let is_fullscreen_sig = is_fullscreen;
         let mut last_applied_fullscreen = use_signal(|| None::<bool>);
+        let map_config_ready = map_config_ready;
         use_effect(move || {
+            if !*map_config_ready.read() {
+                return;
+            }
             let config = map_config.read().clone();
             let fs = *is_fullscreen_sig.read();
             let previous_fullscreen = *last_applied_fullscreen.read();
@@ -251,7 +265,11 @@ pub fn MapTab(
         let map_config = map_config;
         let is_fullscreen_sig = is_fullscreen;
         let mut last_applied_map_config = use_signal(|| None::<(String, u32, u32)>);
+        let map_config_ready = map_config_ready;
         use_effect(move || {
+            if !*map_config_ready.read() {
+                return;
+            }
             let config = map_config.read().clone();
             let fs = *is_fullscreen_sig.read();
             let next_key = (
