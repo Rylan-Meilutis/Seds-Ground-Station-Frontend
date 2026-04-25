@@ -732,6 +732,7 @@ const MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_rocket_rad
 const CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY: &str = "gs_calibration_capture_sample_count";
 const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v9_";
 const CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX: &str = "gs_calibration_visibility_v1_";
+const DATA_SUBTAB_STORAGE_KEY_PREFIX: &str = "gs26_active_data_subtab::";
 const NOTIFICATION_DISMISSED_STORAGE_KEY: &str = "gs_notification_dismissed_ids_v1";
 const _SKIP_TLS_VERIFY_KEY_PREFIX: &str = "gs_skip_tls_verify_";
 const TELEMETRY_CACHE_STORAGE_KEY: &str = "gs_telemetry_rows_cache_v1";
@@ -973,6 +974,7 @@ fn native_tile_cache_stats() -> (u64, u64) {
 fn clear_cached_layout_configs() {
     persist::remove_prefix(LAYOUT_CACHE_KEY_PREFIX);
     persist::remove_prefix(CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX);
+    persist::remove_prefix(DATA_SUBTAB_STORAGE_KEY_PREFIX);
     persist::_remove(MAP_MAX_ZOOM_STORAGE_KEY);
 }
 

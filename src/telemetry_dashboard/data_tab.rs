@@ -5,6 +5,7 @@ use super::layout::{
 // frontend/src/telemetry_dashboard/data_tab.rs
 use dioxus::prelude::*;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::data_chart::{
@@ -161,7 +162,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     let _ = *TELEMETRY_RENDER_EPOCH.read();
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
-    let active_subtab = use_signal(String::new);
+    let active_subtabs = use_signal(HashMap::<String, String>::new);
     let tabs_expanded = use_signal(|| false);
     let subtabs_expanded = use_signal(|| false);
 
@@ -208,13 +209,17 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
         .and_then(|tab| tab.subtabs.as_ref())
         .cloned()
         .unwrap_or_default();
+    let selected_subtab_id = active_subtabs
+        .read()
+        .get(&current)
+        .cloned()
+        .unwrap_or_default();
     let selected_subtab = if current_subtabs.is_empty() {
         None
     } else {
-        let selected_id = active_subtab.read().clone();
         current_subtabs
             .iter()
-            .find(|subtab| subtab.id == selected_id)
+            .find(|subtab| subtab.id == selected_subtab_id)
             .cloned()
             .or_else(|| current_subtabs.first().cloned())
     };
@@ -222,26 +227,30 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     use_effect({
         let current_tab_id = current.clone();
         let current_subtabs = current_subtabs.clone();
-        let mut active_subtab = active_subtab;
+        let mut active_subtabs = active_subtabs;
         move || {
             if current_tab_id.is_empty() || current_subtabs.is_empty() {
+                return;
+            }
+            let current_selection = active_subtabs.read().get(&current_tab_id).cloned();
+            if current_selection
+                .as_ref()
+                .is_some_and(|selected| current_subtabs.iter().any(|subtab| subtab.id == *selected))
+            {
                 return;
             }
             let persisted = persist::get_string(&subtab_storage_key(&current_tab_id));
             if let Some(saved) = persisted.filter(|saved| {
                 current_subtabs.iter().any(|subtab| subtab.id == *saved)
             }) {
-                if active_subtab.read().as_str() != saved {
-                    active_subtab.set(saved);
-                }
+                active_subtabs.write().insert(current_tab_id.clone(), saved);
                 return;
             }
 
-            let current = active_subtab.read().clone();
-            if !current_subtabs.iter().any(|subtab| subtab.id == current)
-                && let Some(first) = current_subtabs.first()
-            {
-                active_subtab.set(first.id.clone());
+            if let Some(first) = current_subtabs.first() {
+                active_subtabs
+                    .write()
+                    .insert(current_tab_id.clone(), first.id.clone());
             }
         }
     });
@@ -249,13 +258,17 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     use_effect({
         let current_tab_id = current.clone();
         let current_subtabs = current_subtabs.clone();
-        let active_subtab = active_subtab;
+        let active_subtabs = active_subtabs;
         let mut last_saved_subtab = last_saved_subtab;
         move || {
             if current_tab_id.is_empty() || current_subtabs.is_empty() {
                 return;
             }
-            let subtab = active_subtab.read().clone();
+            let subtab = active_subtabs
+                .read()
+                .get(&current_tab_id)
+                .cloned()
+                .unwrap_or_default();
             if subtab.is_empty() {
                 return;
             }
@@ -517,10 +530,11 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                                 },
                                 onclick: {
                                     let id = subtab.id.clone();
-                                    let mut active_subtab = active_subtab;
+                                    let current_tab_id = current.clone();
+                                    let mut active_subtabs = active_subtabs;
                                     let mut subtabs_expanded = subtabs_expanded;
                                     move |_| {
-                                        active_subtab.set(id.clone());
+                                        active_subtabs.write().insert(current_tab_id.clone(), id.clone());
                                         subtabs_expanded.set(false);
                                     }
                                 },
