@@ -248,14 +248,18 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
 
     use_effect({
         let current_tab_id = current.clone();
+        let current_subtabs = current_subtabs.clone();
         let active_subtab = active_subtab;
         let mut last_saved_subtab = last_saved_subtab;
         move || {
-            if current_tab_id.is_empty() {
+            if current_tab_id.is_empty() || current_subtabs.is_empty() {
                 return;
             }
             let subtab = active_subtab.read().clone();
             if subtab.is_empty() {
+                return;
+            }
+            if !current_subtabs.iter().any(|candidate| candidate.id == subtab) {
                 return;
             }
             let cache_marker = format!("{current_tab_id}:{subtab}");
