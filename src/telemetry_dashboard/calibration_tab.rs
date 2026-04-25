@@ -7,6 +7,7 @@ use super::{
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -235,10 +236,18 @@ fn matching_point_idx(points: &[(f32, f32)], expected: f32) -> Option<usize> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::from_secs(0))
-        .as_millis() as u64
+    #[cfg(target_arch = "wasm32")]
+    {
+        return js_sys::Date::now().max(0.0) as u64;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0))
+            .as_millis() as u64;
+    }
 }
 
 fn reset_channel_by_key(cfg: &mut CalibrationFile, channel: &str) {
