@@ -1925,14 +1925,75 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
             r##"
                 (function() {{
                   if (typeof window.__gs26DrawChartCanvas === "function") return;
+                  const chartCanvasCacheRoot = window.__gs26ChartCanvasCache || (window.__gs26ChartCanvasCache = new Map());
+                  const chartCanvasVisibilityObserver = typeof IntersectionObserver === "function"
+                    ? new IntersectionObserver((entries) => {{
+                        for (const entry of entries) {{
+                          const target = entry && entry.target;
+                          const canvasId = target && target.id;
+                          if (!canvasId) continue;
+                          const cache = chartCanvasCacheRoot.get(canvasId);
+                          if (!cache) continue;
+                          cache.isVisible = !!(entry.isIntersecting && entry.intersectionRatio > 0);
+                          if (cache.isVisible && cache.pendingData) {{
+                            const pending = cache.pendingData;
+                            cache.pendingData = null;
+                            if (typeof requestAnimationFrame === "function") {{
+                              requestAnimationFrame(() => {{
+                                if (typeof window.__gs26DrawChartCanvas === "function") {{
+                                  window.__gs26DrawChartCanvas(canvasId, pending);
+                                }}
+                              }});
+                            }} else if (typeof window.__gs26DrawChartCanvas === "function") {{
+                              window.__gs26DrawChartCanvas(canvasId, pending);
+                            }}
+                          }}
+                        }}
+                      }}, {{ root: null, threshold: 0 }})
+                    : null;
+                  const ensureChartCanvasObserved = (el) => {{
+                    if (!el || el.__gs26ChartCanvasObserved) return;
+                    el.__gs26ChartCanvasObserved = true;
+                    if (chartCanvasVisibilityObserver) {{
+                      chartCanvasVisibilityObserver.observe(el);
+                    }}
+                  }};
                   window.__gs26DrawChartCanvas = function(canvasId, data) {{
                     const isWindows = /Windows/i.test(navigator.userAgent || navigator.platform || "");
-                    const cacheRoot = window.__gs26ChartCanvasCache || (window.__gs26ChartCanvasCache = new Map());
                     const draw = () => {{
                       const el = document.getElementById(canvasId);
                       if (!el || !data) return;
+                      ensureChartCanvasObserved(el);
 
+                      const docVisible = !(document && document.visibilityState === "hidden");
                       const rect = el.getBoundingClientRect();
+                      const viewportW = Math.max(1, window.innerWidth || document.documentElement?.clientWidth || 0);
+                      const viewportH = Math.max(1, window.innerHeight || document.documentElement?.clientHeight || 0);
+                      const rectVisible = rect.width > 0
+                        && rect.height > 0
+                        && rect.bottom > 0
+                        && rect.right > 0
+                        && rect.top < viewportH
+                        && rect.left < viewportW;
+                      let cache = chartCanvasCacheRoot.get(canvasId) || {{
+                        signature: null,
+                        pxW: 0,
+                        pxH: 0,
+                        gridBuffer: null,
+                        chunkCache: new Map(),
+                        path2dCache: new Map(),
+                        historyBuffer: null,
+                        historyKey: null,
+                        isVisible: rectVisible,
+                        pendingData: null,
+                      }};
+                      cache.isVisible = cache.isVisible !== false && rectVisible;
+                      if (!docVisible || !rectVisible || cache.isVisible === false) {{
+                        cache.pendingData = data;
+                        chartCanvasCacheRoot.set(canvasId, cache);
+                        return;
+                      }}
+
                       const cssW = Math.max(1, Math.round(rect.width || data.view_w || 1));
                       const cssH = Math.max(1, Math.round(rect.height || data.view_h || 1));
                       const mobilePlatform = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || navigator.platform || "");
@@ -1959,8 +2020,11 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         data.grid_top,
                         data.grid_bottom
                       ].join("|");
-                      if (el.__gs26RenderSignature === renderSignature) return;
-                      el.__gs26RenderSignature = renderSignature;
+                      if (el.__gs26RenderSignature === renderSignature) {{
+                        cache.pendingData = null;
+                        chartCanvasCacheRoot.set(canvasId, cache);
+                        return;
+                      }}
 
                       if (el.width !== pxW) el.width = pxW;
                       if (el.height !== pxH) el.height = pxH;
@@ -2139,16 +2203,6 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         }}
                         targetCtx.restore();
                       }};
-                      let cache = cacheRoot.get(canvasId) || {{
-                        signature: data.signature,
-                        pxW,
-                        pxH,
-                        gridBuffer: null,
-                        chunkCache: new Map(),
-                        path2dCache: new Map(),
-                        historyBuffer: null,
-                        historyKey: null,
-                      }};
                       const cacheMiss = !cache
                           || cache.signature !== data.signature
                           || cache.pxW !== pxW
@@ -2158,7 +2212,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         cache.signature = data.signature;
                         cache.pxW = pxW;
                         cache.pxH = pxH;
-                        cacheRoot.set(canvasId, cache);
+                        chartCanvasCacheRoot.set(canvasId, cache);
                         if (typeof ctx.resetTransform === "function") {{
                           ctx.resetTransform();
                         }} else {{
@@ -2203,8 +2257,10 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           path2dCache: new Map(),
                           historyBuffer: null,
                           historyKey: null,
+                          isVisible: true,
+                          pendingData: null,
                         }};
-                        cacheRoot.set(canvasId, cache);
+                        chartCanvasCacheRoot.set(canvasId, cache);
                       }}
 
                       function buildChunkBuffer(chunk, destW, cacheable = true) {{
@@ -2328,6 +2384,9 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         ctx.imageSmoothingEnabled = false;
                         ctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
                       }}
+                      cache.pendingData = null;
+                      chartCanvasCacheRoot.set(canvasId, cache);
+                      el.__gs26RenderSignature = renderSignature;
                     }};
 
                     if (typeof requestAnimationFrame === "function") {{

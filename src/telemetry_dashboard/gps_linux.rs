@@ -3,8 +3,8 @@
 
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::sync::atomic::{AtomicU64, Ordering};
-use zbus::Proxy;
 use zbus::zvariant::OwnedObjectPath;
+use zbus::Proxy;
 
 static GPS_RUN_TOKEN: AtomicU64 = AtomicU64::new(0);
 
@@ -28,8 +28,7 @@ pub fn stop() {
     GPS_RUN_TOKEN.fetch_add(1, Ordering::SeqCst);
 }
 
-async fn open_geoclue_client(
-) -> Result<(zbus::Connection, OwnedObjectPath), String> {
+async fn open_geoclue_client() -> Result<(zbus::Connection, OwnedObjectPath), String> {
     let connection = zbus::Connection::system()
         .await
         .map_err(|e| format!("Linux GeoClue system bus connect failed: {e}"))?;

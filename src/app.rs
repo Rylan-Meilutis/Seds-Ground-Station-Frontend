@@ -463,6 +463,11 @@ fn compose_base_url_for_connect(scheme: &str, host_input: &str) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn connect_scheme_supports_skip_tls(scheme: &str) -> bool {
+    scheme == "https://"
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Converts an HTTP base URL into a WebSocket origin.
 fn ws_origin_for_base(parsed: &ParsedBaseUrl) -> String {
     let ws_scheme = if parsed.scheme == "https" {
@@ -1403,7 +1408,8 @@ pub fn Connect() -> Element {
     let initial = UrlConfig::_stored_base_url()
         .unwrap_or_else(|| "https://your-ground-station-url.com".to_string());
     let (initial_scheme, initial_host) = split_base_url_for_connect(&initial);
-    let initial_skip_tls = UrlConfig::_skip_tls_verify_for_base(&initial);
+    let initial_skip_tls = connect_scheme_supports_skip_tls(initial_scheme)
+        && UrlConfig::_skip_tls_verify_for_base(&initial);
 
     let mut scheme_edit = use_signal(|| initial_scheme.to_string());
     let mut scheme_menu_open = use_signal(|| false);
@@ -1414,6 +1420,25 @@ pub fn Connect() -> Element {
     let mut test_report = use_signal(|| None::<ConnectionTestReport>);
     let mut testing = use_signal(|| false);
     let has_test_report = test_report.read().is_some();
+
+    use_effect({
+        let scheme_edit = scheme_edit;
+        let host_edit = host_edit;
+        let mut skip_tls = skip_tls;
+        move || {
+            let scheme = scheme_edit.read().clone();
+            if connect_scheme_supports_skip_tls(&scheme) {
+                return;
+            }
+            if *skip_tls.read() {
+                skip_tls.set(false);
+            }
+            let base = compose_base_url_for_connect(&scheme, &host_edit.read());
+            if !base.is_empty() {
+                UrlConfig::_set_skip_tls_verify_for_base(&base, false);
+            }
+        }
+    });
 
     rsx! {
         div {
@@ -1506,6 +1531,10 @@ pub fn Connect() -> Element {
                                         ),
                                         onclick: move |_| {
                                             scheme_edit.set("https://".to_string());
+                                            let base = compose_base_url_for_connect("https://", &host_edit.read());
+                                            if !base.is_empty() {
+                                                skip_tls.set(UrlConfig::_skip_tls_verify_for_base(&base));
+                                            }
                                             scheme_menu_open.set(false);
                                             test_status.set(String::new());
                                             test_report.set(None);
@@ -1522,6 +1551,11 @@ pub fn Connect() -> Element {
                                         ),
                                         onclick: move |_| {
                                             scheme_edit.set("http://".to_string());
+                                            skip_tls.set(false);
+                                            let base = compose_base_url_for_connect("http://", &host_edit.read());
+                                            if !base.is_empty() {
+                                                UrlConfig::_set_skip_tls_verify_for_base(&base, false);
+                                            }
                                             scheme_menu_open.set(false);
                                             test_status.set(String::new());
                                             test_report.set(None);
@@ -1561,7 +1595,10 @@ pub fn Connect() -> Element {
                                 objc_poke::poke_url(&u_norm);
 
                                 UrlConfig::set_base_url_and_persist(u_norm.to_string());
-                                UrlConfig::_set_skip_tls_verify_for_base(&u_norm, *skip_tls.read());
+                                UrlConfig::_set_skip_tls_verify_for_base(
+                                    &u_norm,
+                                    connect_scheme_supports_skip_tls(&scheme_edit()) && *skip_tls.read(),
+                                );
                                 if UrlConfig::_stored_base_url().as_deref() != Some(u_norm.as_str()) {
                                     test_status.set(
                                         "Failed to save the Ground Station URL on this device. The app stayed disconnected."
@@ -1588,8 +1625,13 @@ pub fn Connect() -> Element {
                     div { style: "margin-top:12px; display:flex; align-items:center; gap:10px;",
                         input {
                             r#type: "checkbox",
+                            disabled: !connect_scheme_supports_skip_tls(&scheme_edit()),
                             checked: *skip_tls.read(),
                             onclick: move |_| {
+                                if !connect_scheme_supports_skip_tls(&scheme_edit()) {
+                                    skip_tls.set(false);
+                                    return;
+                                }
                                 let next = {
                                     let current = *skip_tls.read();
                                     !current
@@ -1602,7 +1644,11 @@ pub fn Connect() -> Element {
                             }
                         }
                         div { style: "font-size:13px; color:{theme.text_muted};",
-                            "Disable TLS certificate verification for this host (self-signed certs)"
+                            if connect_scheme_supports_skip_tls(&scheme_edit()) {
+                                "Disable TLS certificate verification for this host (self-signed certs)"
+                            } else {
+                                "TLS certificate validation only applies to https:// connections"
+                            }
                         }
                     }
 
@@ -1755,7 +1801,8 @@ pub fn Connect() -> Element {
 
                             objc_poke::poke_url(&u_norm);
 
-                            let skip_tls_verify = *skip_tls.read();
+                            let skip_tls_verify =
+                                connect_scheme_supports_skip_tls(&scheme_edit()) && *skip_tls.read();
                             spawn(async move {
                                 let (checks, ws_probe) = futures_util::join!(
                                     test_routes_host_only(&u_norm, skip_tls_verify),
@@ -1780,11 +1827,13 @@ pub fn Connect() -> Element {
                                 test_status.set("Enter a URL first.".to_string());
                                 return;
                             }
+                            let skip_tls_verify =
+                                connect_scheme_supports_skip_tls(&scheme_edit()) && *skip_tls.read();
 
                             objc_poke::poke_url(&u_norm);
 
                             UrlConfig::set_base_url_and_persist(u_norm.to_string());
-                            UrlConfig::_set_skip_tls_verify_for_base(&u_norm, *skip_tls.read());
+                            UrlConfig::_set_skip_tls_verify_for_base(&u_norm, skip_tls_verify);
                             if UrlConfig::_stored_base_url().as_deref() != Some(u_norm.as_str()) {
                                 test_status.set(
                                     "Failed to save the Ground Station URL on this device. The app stayed disconnected."

@@ -26,7 +26,9 @@ const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
 const MAP_CONFIG_CACHE_STORAGE_KEY: &str = "gs26_ground_map_config_v1";
 #[cfg(target_arch = "wasm32")]
 const WEB_GEO_SYNC_INTERVAL_MS: u32 = 250;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "ios"))]
+const NATIVE_GEO_SYNC_INTERVAL_MS: u64 = 500;
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 const NATIVE_GEO_SYNC_INTERVAL_MS: u64 = 250;
 
 fn tiles_url() -> String {
@@ -331,8 +333,10 @@ pub fn MapTab(
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(NATIVE_GEO_SYNC_INTERVAL_MS))
-                    .await;
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    NATIVE_GEO_SYNC_INTERVAL_MS,
+                ))
+                .await;
             }
         });
     }

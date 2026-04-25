@@ -165,7 +165,7 @@ include!("dashboard_messages.rs");
 
 const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
-const DASHBOARD_CLOCK_REFRESH_MS: u32 = 16;
+const DASHBOARD_CLOCK_REFRESH_MS: u32 = 1_000;
 
 pub(crate) use network_metrics::FrontendNetworkMetrics;
 use network_metrics::{
@@ -188,6 +188,31 @@ pub(crate) fn current_wallclock_ms() -> i64 {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dashboard_page_visible() -> bool {
+    js_eval(
+        r#"
+        (function() {
+          try {
+            const visible = !(document && document.visibilityState === "hidden");
+            window.__gs26_tmp_page_visible = visible ? "true" : "false";
+          } catch (e) {
+            window.__gs26_tmp_page_visible = "true";
+          }
+        })();
+        "#,
+    );
+
+    js_read_window_string("__gs26_tmp_page_visible")
+        .unwrap_or_else(|| "true".to_string())
+        .eq_ignore_ascii_case("true")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn dashboard_page_visible() -> bool {
+    true
 }
 
 macro_rules! log {
@@ -2807,6 +2832,11 @@ impl UrlConfig {
         if clean.is_empty() {
             return;
         }
+        if !clean.starts_with("https://") {
+            let key = _tls_skip_key(&clean);
+            persist::set_string(&key, "false");
+            return;
+        }
         let key = _tls_skip_key(&clean);
         persist::set_string(&key, if value { "true" } else { "false" });
     }
@@ -2814,7 +2844,7 @@ impl UrlConfig {
     /// Returns whether TLS validation is disabled for a specific backend base URL.
     pub fn _skip_tls_verify_for_base(base: &str) -> bool {
         let clean = normalize_base_url(base.to_string());
-        if clean.is_empty() {
+        if clean.is_empty() || !clean.starts_with("https://") {
             return false;
         }
         let key = _tls_skip_key(&clean);
@@ -3798,14 +3828,22 @@ fn TelemetryDashboardInner() -> Element {
                     .clamp(33, 250);
 
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    let page_visible = dashboard_page_visible();
+                    let effective_tick_ms = if page_visible { live_tick_ms } else { 1_000 };
+
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(live_tick_ms).await;
+                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(live_tick_ms as u64)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms as u64))
+                        .await;
 
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
+                    }
+
+                    if !page_visible {
+                        continue;
                     }
 
                     if TELEMETRY_RENDER_DIRTY.swap(false, Ordering::AcqRel) {
@@ -3837,19 +3875,26 @@ fn TelemetryDashboardInner() -> Element {
                     .clamp(75, 2_000);
 
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    let page_visible = dashboard_page_visible();
+                    let effective_tick_ms = if page_visible {
+                        chart_tick_ms
+                    } else {
+                        chart_tick_ms.max(1_000)
+                    };
+
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(chart_tick_ms).await;
+                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(chart_tick_ms as u64))
+                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms as u64))
                         .await;
 
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
                     }
 
-                    let chart_tab_visible =
-                        matches!(*active_main_tab.read(), MainTab::Data | MainTab::State);
+                    let chart_tab_visible = page_visible
+                        && matches!(*active_main_tab.read(), MainTab::Data | MainTab::State);
                     if !chart_tab_visible {
                         CHART_RENDER_DIRTY.store(false, Ordering::Release);
                         continue;
@@ -3885,11 +3930,22 @@ fn TelemetryDashboardInner() -> Element {
                     .clamp(16, 500);
 
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    let page_visible = dashboard_page_visible();
+                    let queue_len = TELEMETRY_QUEUE.lock().map(|q| q.len()).unwrap_or(0);
+                    let effective_tick_ms = if !page_visible {
+                        tick_ms.max(500)
+                    } else if queue_len == 0 {
+                        tick_ms.max(250)
+                    } else {
+                        tick_ms
+                    };
+
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(tick_ms).await;
+                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(tick_ms as u64)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms as u64))
+                        .await;
 
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
@@ -4047,14 +4103,39 @@ fn TelemetryDashboardInner() -> Element {
             let epoch = *WS_EPOCH.read();
             spawn(async move {
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    let has_unacked = {
+                        let latest_warning_ts = warnings
+                            .read()
+                            .iter()
+                            .map(|w| w.timestamp_ms)
+                            .max()
+                            .unwrap_or(0);
+                        let latest_error_ts = errors
+                            .read()
+                            .iter()
+                            .map(|e| e.timestamp_ms)
+                            .max()
+                            .unwrap_or(0);
+                        latest_warning_ts > *ack_warning_ts.read()
+                            || latest_error_ts > *ack_error_ts.read()
+                    };
+                    let effective_tick_ms = if dashboard_page_visible() { 500 } else { 1_500 };
+
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(500).await;
+                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms)).await;
 
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
+                    }
+
+                    if !has_unacked {
+                        if *flash_on.read() {
+                            flash_on.set(false);
+                        }
+                        continue;
                     }
 
                     let next = {

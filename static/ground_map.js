@@ -591,7 +591,11 @@ function refreshTilePrefetchEstimate(options = {}) {
     const enabled = mapPrefetchEnabled();
     const context = publishTilePrefetchContextState();
     const hasRunnableContext = context.userAvailable || context.rocketAvailable;
-    const canRunNow = enabled && hasRunnableContext && shouldRunBrowserMapPrefetch();
+    const canRunNow = enabled
+        && hasRunnableContext
+        && (shouldRunAutomaticHighResPrefetch()
+            ? shouldRunHighResBrowserMapPrefetch()
+            : shouldRunBrowserMapPrefetch());
     let plan = emptyTilePrefetchPlan();
     if (canRunNow) {
         plan = shouldRunAutomaticHighResPrefetch()
@@ -2873,7 +2877,7 @@ function ensureTrackingTilePrefetchLoop() {
 }
 
 function scheduleTrackingTilePrefetch(options = {}) {
-    if (!shouldRunBrowserMapPrefetch()) {
+    if (!shouldRunHighResBrowserMapPrefetch()) {
         stopTrackingTilePrefetch();
         refreshTilePrefetchEstimate();
         return;
@@ -2940,10 +2944,10 @@ function scheduleHighResTilePrefetch(options = {}) {
         refreshTilePrefetchEstimate();
         setTilePrefetchState({
             key: "",
-            state: isBrowserHostedMapRuntime() && isGroundMapVisibleForPrefetch()
+            state: (isBrowserHostedMapRuntime() || isIosPlatform() || isAndroidPlatform()) && isGroundMapVisibleForPrefetch()
                 ? "suspended-visible-map"
                 : "idle",
-            detail: isBrowserHostedMapRuntime() && isGroundMapVisibleForPrefetch()
+            detail: (isBrowserHostedMapRuntime() || isIosPlatform() || isAndroidPlatform()) && isGroundMapVisibleForPrefetch()
                 ? MAP_VISIBLE_PREFETCH_SUSPEND_DETAIL
                 : "",
             pending: 0,
@@ -4685,7 +4689,11 @@ function isGroundMapVisibleForPrefetch() {
 }
 
 function shouldRunBrowserMapPrefetch() {
-    if (isBrowserHostedMapRuntime() && isGroundMapVisibleForPrefetch()) {
+    return true;
+}
+
+function shouldRunHighResBrowserMapPrefetch() {
+    if (isGroundMapVisibleForPrefetch() && (isBrowserHostedMapRuntime() || isIosPlatform() || isAndroidPlatform())) {
         return false;
     }
     return true;

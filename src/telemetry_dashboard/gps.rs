@@ -85,11 +85,7 @@ pub fn GpsDriver(
     }
 
     // native imperative backends: start on mount, stop on unmount
-    #[cfg(not(any(
-        target_arch = "wasm32",
-        target_os = "windows",
-        target_os = "linux"
-    )))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "windows", target_os = "linux")))]
     {
         use_effect({
             let user_gps = user_gps;
