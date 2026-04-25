@@ -13,6 +13,7 @@ use super::{
     monotonic_now_ms, translate_text, AlertMsg, FrontendNetworkMetrics, NetworkTimeSync,
     PersistentNotification,
 };
+use crate::telemetry_dashboard::map_tab::{format_elevation, format_precise_distance};
 
 #[component]
 pub fn DetailedTab(
@@ -20,6 +21,11 @@ pub fn DetailedTab(
     board_status: Signal<Vec<BoardStatusEntry>>,
     network_topology: Signal<NetworkTopologyMsg>,
     flight_state: Signal<FlightState>,
+    rocket_gps: Signal<Option<(f64, f64)>>,
+    user_gps: Signal<Option<(f64, f64)>>,
+    rocket_altitude_m: Signal<Option<f64>>,
+    user_altitude_m: Signal<Option<f64>>,
+    #[props(default = false)] distance_units_metric: bool,
     warnings: Signal<Vec<AlertMsg>>,
     errors: Signal<Vec<AlertMsg>>,
     notifications: Signal<Vec<PersistentNotification>>,
@@ -110,6 +116,19 @@ pub fn DetailedTab(
     let errors_count = errors.read().len();
     let notifications_count = notifications.read().len();
     let now_ms = current_wallclock_ms();
+    let rocket_coords = *rocket_gps.read();
+    let user_coords = *user_gps.read();
+    let rocket_altitude = *rocket_altitude_m.read();
+    let user_altitude = *user_altitude_m.read();
+    let precise_distance_to_rocket = match (rocket_coords, user_coords) {
+        (Some((rocket_lat, rocket_lon)), Some((user_lat, user_lon))) => {
+            Some(format_precise_distance(
+                super::map_tab::haversine_meters(rocket_lat, rocket_lon, user_lat, user_lon),
+                distance_units_metric,
+            ))
+        }
+        _ => None,
+    };
 
     let board_seen = seen_boards.len();
     let online_nodes = visible_topology_nodes
@@ -199,86 +218,121 @@ pub fn DetailedTab(
 
     rsx! {
         div { style: "padding:18px; height:100%; overflow-y:auto; overflow-x:hidden; color:{theme.text_primary}; background:{theme.app_background};",
-            div { style: "display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); margin-bottom:14px; align-items:start;",
-                {metric_card(
-                    &theme,
-                    &app_ground_station_title,
-                    vec![
-                        ("Status", if metrics_snapshot.ws_connected { translate_text("Connected") } else { translate_text("Disconnected") }),
-                        ("Base URL", metrics_snapshot.base_http.clone()),
-                        ("WebSocket", metrics_snapshot.ws_url.clone()),
-                        ("HTTP RTT", opt_ms(metrics_snapshot.http_rtt_ms)),
-                        ("HTTP RTT EMA", opt_ms(metrics_snapshot.http_rtt_ema_ms)),
-                    ],
-                )}
-                {metric_card(
-                    &theme,
-                    "Traffic",
-                    vec![
-                        ("Inbound messages", metrics_snapshot.ws_messages_total.to_string()),
-                        ("Inbound bytes", human_bytes(metrics_snapshot.ws_bytes_total)),
-                        ("Telemetry rows", metrics_snapshot.telemetry_rows_total.to_string()),
-                        ("Telemetry batches", metrics_snapshot.telemetry_batches_total.to_string()),
-                        ("Msg rate", format!("{:.1}/s", metrics_snapshot.msgs_per_sec)),
-                        ("Bandwidth", format!("{}/s", human_bytes_f64(metrics_snapshot.bytes_per_sec))),
-                        ("Avg bytes/msg", avg_bytes_per_msg.map(|v| format!("{v:.1} B")).unwrap_or_else(|| "--".to_string())),
-                        ("Avg rows/batch", avg_rows_per_batch.map(|v| format!("{v:.1}")).unwrap_or_else(|| "--".to_string())),
-                    ],
-                )}
-                {metric_card(
-                    &theme,
-                    "Session",
-                    vec![
-                        ("Rows per second", format!("{:.1}/s", metrics_snapshot.rows_per_sec)),
-                        ("WS disconnects", metrics_snapshot.ws_disconnects_total.to_string()),
-                        ("Connected for", opt_i64_ms(ws_connected_for_ms)),
-                        ("WS idle", opt_i64_ms(ws_idle_ms)),
-                        ("Last WS message", opt_timestamp(metrics_snapshot.last_ws_message_wall_ms)),
-                        ("Last disconnect", metrics_snapshot.last_disconnect_reason.clone().map(|v| translate_text(&v)).unwrap_or_else(|| translate_text("None"))),
-                        ("Last connect", opt_timestamp(metrics_snapshot.last_connect_wall_ms)),
-                    ],
-                )}
-                {metric_card(
-                    &theme,
-                    "Mission State",
-                    vec![
-                        ("Flight state", translate_text(&display_flight_state(&flight_state.read()))),
-                        ("Rocket time", network_time_display.unwrap_or_else(|| translate_text("Unavailable"))),
-                        ("Clock delta", opt_signed_ms(network_clock_delta_ms)),
-                        ("Server time age", opt_i64_ms(network_time_age_ms)),
-                        ("Warnings", warnings_count.to_string()),
-                        ("Errors", errors_count.to_string()),
-                        ("Notifications", notifications_count.to_string()),
-                    ],
-                )}
-                {metric_card(
-                    &theme,
-                    "Topology",
-                    vec![
-                        ("Boards seen", board_seen.to_string()),
-                        ("Visible nodes", visible_topology_nodes.len().to_string()),
-                        ("Visible links", visible_topology_links.len().to_string()),
-                        ("Routers", router_nodes.to_string()),
-                        ("Boards", board_nodes.to_string()),
-                        ("Online nodes", online_nodes.to_string()),
-                        ("Offline nodes", offline_nodes.to_string()),
-                        ("Simulated nodes", simulated_nodes.to_string()),
-                        ("Online links", online_links.to_string()),
-                        ("Offline links", offline_links.to_string()),
-                        ("Topology age", opt_i64_ms(topology_age_ms)),
-                        ("Topology simulated", translate_text(&yes_no(topology.simulated))),
-                    ],
-                )}
-                {metric_card(
-                    &theme,
-                    "Board Timing",
-                    vec![
-                        ("Fastest board", opt_u64_ms(min_board_age_ms)),
-                        ("Slowest board", opt_u64_ms(max_board_age_ms)),
-                    ],
-                )}
-                {metric_card_owned(&theme, "Cache Storage", cache_stats.clone())}
-                {prefetch_status_card(&theme)}
+            div { style: "column-width:320px; column-gap:14px; margin-bottom:14px;",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card(
+                        &theme,
+                        &app_ground_station_title,
+                        vec![
+                            ("Status", if metrics_snapshot.ws_connected { translate_text("Connected") } else { translate_text("Disconnected") }),
+                            ("Base URL", metrics_snapshot.base_http.clone()),
+                            ("WebSocket", metrics_snapshot.ws_url.clone()),
+                            ("HTTP RTT", opt_ms(metrics_snapshot.http_rtt_ms)),
+                            ("HTTP RTT EMA", opt_ms(metrics_snapshot.http_rtt_ema_ms)),
+                        ],
+                    )}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card(
+                        &theme,
+                        "Traffic",
+                        vec![
+                            ("Inbound messages", metrics_snapshot.ws_messages_total.to_string()),
+                            ("Inbound bytes", human_bytes(metrics_snapshot.ws_bytes_total)),
+                            ("Telemetry rows", metrics_snapshot.telemetry_rows_total.to_string()),
+                            ("Telemetry batches", metrics_snapshot.telemetry_batches_total.to_string()),
+                            ("Msg rate", format!("{:.1}/s", metrics_snapshot.msgs_per_sec)),
+                            ("Bandwidth", format!("{}/s", human_bytes_f64(metrics_snapshot.bytes_per_sec))),
+                            ("Avg bytes/msg", avg_bytes_per_msg.map(|v| format!("{v:.1} B")).unwrap_or_else(|| "--".to_string())),
+                            ("Avg rows/batch", avg_rows_per_batch.map(|v| format!("{v:.1}")).unwrap_or_else(|| "--".to_string())),
+                        ],
+                    )}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card(
+                        &theme,
+                        "Session",
+                        vec![
+                            ("Rows per second", format!("{:.1}/s", metrics_snapshot.rows_per_sec)),
+                            ("WS disconnects", metrics_snapshot.ws_disconnects_total.to_string()),
+                            ("Connected for", opt_i64_ms(ws_connected_for_ms)),
+                            ("WS idle", opt_i64_ms(ws_idle_ms)),
+                            ("Last WS message", opt_timestamp(metrics_snapshot.last_ws_message_wall_ms)),
+                            ("Last disconnect", metrics_snapshot.last_disconnect_reason.clone().map(|v| translate_text(&v)).unwrap_or_else(|| translate_text("None"))),
+                            ("Last connect", opt_timestamp(metrics_snapshot.last_connect_wall_ms)),
+                        ],
+                    )}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card(
+                        &theme,
+                        "Mission State",
+                        vec![
+                            ("Flight state", translate_text(&display_flight_state(&flight_state.read()))),
+                            ("Rocket time", network_time_display.unwrap_or_else(|| translate_text("Unavailable"))),
+                            ("Clock delta", opt_signed_ms(network_clock_delta_ms)),
+                            ("Server time age", opt_i64_ms(network_time_age_ms)),
+                            ("Warnings", warnings_count.to_string()),
+                            ("Errors", errors_count.to_string()),
+                            ("Notifications", notifications_count.to_string()),
+                        ],
+                    )}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card_owned(
+                        &theme,
+                        "Positioning",
+                        vec![
+                            ("Distance to rocket".to_string(), precise_distance_to_rocket.unwrap_or_else(|| "--".to_string())),
+                            ("Rocket coordinates".to_string(), format_coords(rocket_coords)),
+                            ("Rocket elevation".to_string(), format_elevation(rocket_altitude, distance_units_metric)),
+                            ("User coordinates".to_string(), format_coords(user_coords)),
+                            (
+                                "User elevation".to_string(),
+                                user_altitude
+                                    .filter(|value| value.is_finite())
+                                    .map(|value| format_elevation(Some(value), distance_units_metric))
+                                    .unwrap_or_else(|| "Not available".to_string()),
+                            ),
+                        ],
+                    )}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card(
+                        &theme,
+                        "Topology",
+                        vec![
+                            ("Boards seen", board_seen.to_string()),
+                            ("Visible nodes", visible_topology_nodes.len().to_string()),
+                            ("Visible links", visible_topology_links.len().to_string()),
+                            ("Routers", router_nodes.to_string()),
+                            ("Boards", board_nodes.to_string()),
+                            ("Online nodes", online_nodes.to_string()),
+                            ("Offline nodes", offline_nodes.to_string()),
+                            ("Simulated nodes", simulated_nodes.to_string()),
+                            ("Online links", online_links.to_string()),
+                            ("Offline links", offline_links.to_string()),
+                            ("Topology age", opt_i64_ms(topology_age_ms)),
+                            ("Topology simulated", translate_text(&yes_no(topology.simulated))),
+                        ],
+                    )}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card(
+                        &theme,
+                        "Board Timing",
+                        vec![
+                            ("Fastest board", opt_u64_ms(min_board_age_ms)),
+                            ("Slowest board", opt_u64_ms(max_board_age_ms)),
+                        ],
+                    )}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card_owned(&theme, "Cache Storage", cache_stats.clone())}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {prefetch_status_card(&theme)}
+                }
             }
 
             div { style: "display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(min(100%, 340px), 1fr)); align-items:start; width:100%;",
@@ -512,6 +566,13 @@ fn human_bytes_f64(bytes: f64) -> String {
     } else {
         format!("{value:.2} {}", units[unit])
     }
+}
+
+fn format_coords(coords: Option<(f64, f64)>) -> String {
+    let Some((lat, lon)) = coords else {
+        return "--".to_string();
+    };
+    format!("{lat:.6}, {lon:.6}")
 }
 
 fn section_style(theme: &ThemeConfig) -> String {

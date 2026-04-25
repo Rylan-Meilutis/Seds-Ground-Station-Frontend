@@ -7,6 +7,8 @@ use dioxus_signals::Signal;
 #[component]
 pub fn SettingsPage(
     distance_units_metric: Signal<bool>,
+    map_header_distance_visible: Signal<bool>,
+    map_header_altitude_visible: Signal<bool>,
     theme_preset: Signal<String>,
     language_code: Signal<String>,
     network_flow_animation_enabled: Signal<bool>,
@@ -53,6 +55,8 @@ pub fn SettingsPage(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| localized_copy(&language, "Settings", "Ajustes", "Parametres"));
     let metric_enabled = *distance_units_metric.read();
+    let map_header_distance_visible_value = *map_header_distance_visible.read();
+    let map_header_altitude_visible_value = *map_header_altitude_visible.read();
     let selected_theme = theme_preset.read().clone();
     let selected_language = language_code.read().clone();
     let flow_animation_enabled = *network_flow_animation_enabled.read();
@@ -285,6 +289,32 @@ pub fn SettingsPage(
         "Pies hasta 1000 ft y luego millas.",
         "Pieds jusqu'a 1000 ft puis miles.",
     );
+    let map_header_distance_title = localized_copy(
+        &language,
+        "Map Distance",
+        "Distancia del mapa",
+        "Distance de la carte",
+    );
+    let map_header_distance_desc = localized_copy(
+        &language,
+        "Shows or hides the live distance in the map header.",
+        "Muestra u oculta la distancia en vivo en el encabezado del mapa.",
+        "Affiche ou masque la distance en direct dans l'en-tete de la carte.",
+    );
+    let map_header_altitude_title = localized_copy(
+        &language,
+        "Map Altitude",
+        "Elevacion del mapa",
+        "Altitude de la carte",
+    );
+    let map_header_altitude_desc = localized_copy(
+        &language,
+        "Shows or hides rocket and user elevation in the map header.",
+        "Muestra u oculta la elevacion del cohete y del usuario en el encabezado del mapa.",
+        "Affiche ou masque l'altitude de la fusee et de l'utilisateur dans l'en-tete de la carte.",
+    );
+    let map_header_on = localized_copy(&language, "Show", "Mostrar", "Afficher");
+    let map_header_off = localized_copy(&language, "Hide", "Ocultar", "Masquer");
     let network_anim_title = localized_copy(
         &language,
         "Flow Animations",
@@ -588,6 +618,38 @@ pub fn SettingsPage(
                     }
                     div { style: "font-size:13px; color:{theme.text_secondary};",
                         if metric_enabled { "{metric_hint}" } else { "{imperial_hint}" }
+                    }
+                }
+                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{map_header_distance_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{map_header_distance_desc}" }
+                    div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                        button {
+                            style: if map_header_distance_visible_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| map_header_distance_visible.set(true),
+                            "{map_header_on}"
+                        }
+                        button {
+                            style: if !map_header_distance_visible_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| map_header_distance_visible.set(false),
+                            "{map_header_off}"
+                        }
+                    }
+                }
+                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{map_header_altitude_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{map_header_altitude_desc}" }
+                    div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                        button {
+                            style: if map_header_altitude_visible_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| map_header_altitude_visible.set(true),
+                            "{map_header_on}"
+                        }
+                        button {
+                            style: if !map_header_altitude_visible_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| map_header_altitude_visible.set(false),
+                            "{map_header_off}"
+                        }
                     }
                 }
                 div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",

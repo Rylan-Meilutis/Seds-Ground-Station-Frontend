@@ -4,6 +4,8 @@
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
 
+const NATIVE_ALTITUDE_SYNC_MS: u64 = 250;
+
 /// Imperative start (only meaningful on platforms that need it).
 /// Safe to call multiple times.
 pub fn start_gps_updates(_user_gps: Signal<Option<(f64, f64)>>) {
@@ -27,6 +29,7 @@ pub fn stop_gps_updates() {
 #[component]
 pub fn GpsDriver(
     user_gps: Signal<Option<(f64, f64)>>,
+    #[props(optional)] user_altitude_m: Option<Signal<Option<f64>>>,
     #[props(optional)] js_ready: Option<bool>,
 ) -> Element {
     // wasm: hook-based SDK (no globals, no stop needed)
@@ -47,6 +50,7 @@ pub fn GpsDriver(
                 if lat.is_finite() && lon.is_finite() {
                     user_gps.set(Some((lat, lon)));
                 }
+                let _ = user_altitude_m;
             } else {
                 // not supported / permission denied / unavailable / etc.
                 // ignore (or log if you want)
@@ -60,7 +64,9 @@ pub fn GpsDriver(
     {
         use_effect(move || {
             spawn(async move {
-                crate::telemetry_dashboard::gps_windows::run(user_gps).await;
+                if let Some(user_altitude_m) = user_altitude_m {
+                    crate::telemetry_dashboard::gps_windows::run(user_gps, user_altitude_m).await;
+                }
             });
         });
         use_drop(|| {
@@ -74,7 +80,9 @@ pub fn GpsDriver(
     {
         use_effect(move || {
             spawn(async move {
-                crate::telemetry_dashboard::gps_linux::run(user_gps).await;
+                if let Some(user_altitude_m) = user_altitude_m {
+                    crate::telemetry_dashboard::gps_linux::run(user_gps, user_altitude_m).await;
+                }
             });
         });
         use_drop(|| {
@@ -91,19 +99,40 @@ pub fn GpsDriver(
             let user_gps = user_gps;
             move || {
                 start_gps_updates(user_gps);
+                #[cfg(target_os = "ios")]
+                if let Some(mut alt_signal) = user_altitude_m {
+                    alt_signal.set(crate::telemetry_dashboard::gps_apple::latest_altitude_m());
+                }
+                #[cfg(target_os = "android")]
+                if let Some(mut alt_signal) = user_altitude_m {
+                    alt_signal.set(crate::telemetry_dashboard::gps_android::latest_altitude_m());
+                }
             }
         });
 
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
         use_effect(move || {
             spawn(async move {
                 loop {
+                    #[cfg(target_os = "android")]
                     if let Some((lat, lon)) =
                         crate::telemetry_dashboard::gps_android::latest_location()
                     {
                         user_gps.set(Some((lat, lon)));
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+                    #[cfg(any(target_os = "ios", target_os = "macos"))]
+                    if let Some(mut alt_signal) = user_altitude_m {
+                        alt_signal.set(crate::telemetry_dashboard::gps_apple::latest_altitude_m());
+                    }
+
+                    #[cfg(target_os = "android")]
+                    if let Some(mut alt_signal) = user_altitude_m {
+                        alt_signal
+                            .set(crate::telemetry_dashboard::gps_android::latest_altitude_m());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(NATIVE_ALTITUDE_SYNC_MS))
+                        .await;
                 }
             });
         });

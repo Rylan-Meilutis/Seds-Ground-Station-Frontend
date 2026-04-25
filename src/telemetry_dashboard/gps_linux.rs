@@ -75,7 +75,7 @@ async fn open_geoclue_client() -> Result<(zbus::Connection, OwnedObjectPath), St
 async fn read_location_once(
     connection: &zbus::Connection,
     client_path: &OwnedObjectPath,
-) -> Result<Option<(f64, f64)>, String> {
+) -> Result<Option<(f64, f64, Option<f64>)>, String> {
     let client = Proxy::new(
         connection,
         GEOCLUE_SERVICE,
@@ -107,15 +107,20 @@ async fn read_location_once(
         .get_property("Longitude")
         .await
         .map_err(|e| format!("Linux GeoClue longitude read failed: {e}"))?;
+    let altitude: Result<f64, _> = location.get_property("Altitude").await;
+    let altitude = altitude.ok().filter(|value| value.is_finite());
 
     if lat.is_finite() && lon.is_finite() && !(lat.abs() < 0.000_001 && lon.abs() < 0.000_001) {
-        Ok(Some((lat, lon)))
+        Ok(Some((lat, lon, altitude)))
     } else {
         Ok(None)
     }
 }
 
-pub async fn run(mut user_gps: Signal<Option<(f64, f64)>>) {
+pub async fn run(
+    mut user_gps: Signal<Option<(f64, f64)>>,
+    mut user_altitude_m: Signal<Option<f64>>,
+) {
     let token = begin_new_run();
     let mut last_error = String::new();
 
@@ -139,9 +144,12 @@ pub async fn run(mut user_gps: Signal<Option<(f64, f64)>>) {
                     }
 
                     match read_location_once(&connection, &client_path).await {
-                        Ok(Some((lat, lon))) => {
+                        Ok(Some((lat, lon, altitude_m))) => {
                             if *user_gps.read() != Some((lat, lon)) {
                                 user_gps.set(Some((lat, lon)));
+                            }
+                            if *user_altitude_m.read() != altitude_m {
+                                user_altitude_m.set(altitude_m);
                             }
                         }
                         Ok(None) => {}

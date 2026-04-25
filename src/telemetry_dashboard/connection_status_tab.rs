@@ -519,24 +519,37 @@ fn render_board_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Eleme
     }
 
     let now_ms = current_wallclock_ms();
+    let header_cell_style = format!(
+        "font-weight:600; color:{}; padding:8px; border-bottom:1px solid {}; background:{}; min-width:0; white-space:normal; overflow-wrap:anywhere; word-break:break-word; line-height:1.2;",
+        theme.text_primary, theme.border_soft, theme.app_background
+    );
+    let text_cell_style = format!(
+        "padding:8px; border-bottom:1px solid {}; background:{}; color:{}; min-width:0; white-space:normal; overflow-wrap:anywhere; word-break:break-word; line-height:1.25;",
+        theme.border_soft, theme.app_background, theme.text_primary
+    );
+    let numeric_cell_style = format!(
+        "padding:8px; border-bottom:1px solid {}; background:{}; color:{}; min-width:0; white-space:nowrap; font-variant-numeric:tabular-nums; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;",
+        theme.border_soft, theme.app_background, theme.text_primary
+    );
+    let border_right = format!("border-right:1px solid {};", theme.border_soft);
 
     rsx! {
         div { style: "border:1px solid {theme.border_soft}; border-radius:10px; overflow:hidden;",
-            div { style: "display:grid; grid-template-columns: 1.1fr 1.1fr 0.7fr 1fr 1fr; font-size:13px; color:{theme.text_secondary}; background:{theme.app_background};",
-                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft};", "Board" }
-                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft};", "Sender ID" }
-                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft};", "Seen" }
-                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft};", "Last Seen (ms)" }
-                div { style: "font-weight:600; color:{theme.text_primary}; padding:8px; border-bottom:1px solid {theme.border_soft};", "Age (ms)" }
+            div { style: "display:grid; grid-template-columns:minmax(120px, 1.15fr) minmax(120px, 1.15fr) minmax(64px, 0.7fr) minmax(140px, 1fr) minmax(92px, 0.8fr); font-size:13px; color:{theme.text_secondary}; background:{theme.app_background};",
+                div { style: "{header_cell_style}{border_right}", "Board" }
+                div { style: "{header_cell_style}{border_right}", "Sender ID" }
+                div { style: "{header_cell_style}{border_right}", "Seen" }
+                div { style: "{header_cell_style}{border_right}", "Last Seen (ms)" }
+                div { style: "{header_cell_style}", "Age (ms)" }
 
                 for entry in boards.iter() {
-                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};", "{entry.display_name()}" }
-                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};", "{entry.sender_id}" }
-                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};", if entry.seen { "yes" } else { "no" } }
-                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; border-right:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};",
+                    div { style: "{text_cell_style}{border_right}", "{entry.display_name()}" }
+                    div { style: "{text_cell_style}{border_right}", "{entry.sender_id}" }
+                    div { style: "{numeric_cell_style}{border_right}", if entry.seen { "yes" } else { "no" } }
+                    div { style: "{numeric_cell_style}{border_right}",
                         "{format_last_seen(entry.last_seen_ms)}"
                     }
-                    div { style: "padding:8px; border-bottom:1px solid {theme.border_soft}; background:{theme.app_background}; color:{theme.text_primary};",
+                    div { style: "{numeric_cell_style}",
                         if let Some(age) = current_board_age_ms(entry, now_ms) { "{age}" } else { "—" }
                     }
                 }

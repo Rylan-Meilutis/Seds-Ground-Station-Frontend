@@ -19,7 +19,7 @@ pub fn stop() {
     GPS_RUN_TOKEN.fetch_add(1, Ordering::SeqCst);
 }
 
-fn read_location_once_blocking() -> Result<Option<(f64, f64)>, String> {
+fn read_location_once_blocking() -> Result<Option<(f64, f64, Option<f64>)>, String> {
     let access = Geolocator::RequestAccessAsync()
         .map_err(|e| format!("Windows GPS access request failed: {e}"))?
         .get()
@@ -49,15 +49,20 @@ fn read_location_once_blocking() -> Result<Option<(f64, f64)>, String> {
         .map_err(|e| format!("Windows GPS basic position read failed: {e}"))?;
     let lat = basic.Latitude;
     let lon = basic.Longitude;
+    let altitude = basic.Altitude;
+    let altitude = altitude.is_finite().then_some(altitude);
 
     if lat.is_finite() && lon.is_finite() && !(lat.abs() < 0.000_001 && lon.abs() < 0.000_001) {
-        Ok(Some((lat, lon)))
+        Ok(Some((lat, lon, altitude)))
     } else {
         Ok(None)
     }
 }
 
-pub async fn run(mut user_gps: Signal<Option<(f64, f64)>>) {
+pub async fn run(
+    mut user_gps: Signal<Option<(f64, f64)>>,
+    mut user_altitude_m: Signal<Option<f64>>,
+) {
     let token = begin_new_run();
     let mut last_error = String::new();
 
@@ -67,9 +72,12 @@ pub async fn run(mut user_gps: Signal<Option<(f64, f64)>>) {
         }
 
         match tokio::task::spawn_blocking(read_location_once_blocking).await {
-            Ok(Ok(Some((lat, lon)))) => {
+            Ok(Ok(Some((lat, lon, altitude_m)))) => {
                 if *user_gps.read() != Some((lat, lon)) {
                     user_gps.set(Some((lat, lon)));
+                }
+                if *user_altitude_m.read() != altitude_m {
+                    user_altitude_m.set(altitude_m);
                 }
                 last_error.clear();
             }

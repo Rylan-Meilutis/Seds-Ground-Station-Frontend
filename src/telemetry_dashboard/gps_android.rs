@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static LAT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static LON_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
+static GPS_ALT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
+static BARO_ALT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static HEADING_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 
 const LOCATION_SHIM_CLASS_DOT: &str = "com.ubseds.gs26.LocationShim";
@@ -120,16 +122,44 @@ pub fn latest_location() -> Option<(f64, f64)> {
     }
 }
 
+pub fn latest_altitude_m() -> Option<f64> {
+    let baro = f64::from_bits(BARO_ALT_BITS.load(Ordering::Relaxed));
+    if baro.is_finite() {
+        return Some(baro);
+    }
+    let gps = f64::from_bits(GPS_ALT_BITS.load(Ordering::Relaxed));
+    if gps.is_finite() { Some(gps) } else { None }
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_ubseds_gs26_LocationShim_nativeOnLocationUpdate(
     _env: EnvUnowned<'_>,
     _class: JClass<'_>,
     lat: jdouble,
     lon: jdouble,
+    altitude_m: jdouble,
 ) {
     if lat.is_finite() && lon.is_finite() {
         LAT_BITS.store(lat.to_bits(), Ordering::Relaxed);
         LON_BITS.store(lon.to_bits(), Ordering::Relaxed);
+    }
+    if altitude_m.is_finite() {
+        GPS_ALT_BITS.store(altitude_m.to_bits(), Ordering::Relaxed);
+    } else {
+        GPS_ALT_BITS.store(f64::NAN.to_bits(), Ordering::Relaxed);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubseds_gs26_LocationShim_nativeOnBarometricAltitudeUpdate(
+    _env: EnvUnowned<'_>,
+    _class: JClass<'_>,
+    altitude_m: jdouble,
+) {
+    if altitude_m.is_finite() {
+        BARO_ALT_BITS.store(altitude_m.to_bits(), Ordering::Relaxed);
+    } else {
+        BARO_ALT_BITS.store(f64::NAN.to_bits(), Ordering::Relaxed);
     }
 }
 

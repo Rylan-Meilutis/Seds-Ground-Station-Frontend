@@ -34,6 +34,7 @@ object LocationShim : LocationListener, SensorEventListener {
     private var locationManager: LocationManager? = null
     private var sensorManager: SensorManager? = null
     private var rotationVectorSensor: Sensor? = null
+    private var pressureSensor: Sensor? = null
     private var activity: Activity? = null
     private var started = false
     private var permissionRequested = false
@@ -43,10 +44,13 @@ object LocationShim : LocationListener, SensorEventListener {
     private val rotationMatrix = FloatArray(9)
 
     @JvmStatic
-    external fun nativeOnLocationUpdate(lat: Double, lon: Double)
+    external fun nativeOnLocationUpdate(lat: Double, lon: Double, altitudeM: Double)
 
     @JvmStatic
     external fun nativeOnHeadingUpdate(headingDeg: Float)
+
+    @JvmStatic
+    external fun nativeOnBarometricAltitudeUpdate(altitudeM: Double)
 
     @JvmStatic
     fun start(context: Context) {
@@ -102,6 +106,7 @@ object LocationShim : LocationListener, SensorEventListener {
         if (sensorManager == null) {
             sensorManager = appContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
             rotationVectorSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            pressureSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PRESSURE)
         }
 
         val locationManager = locationManager ?: return
@@ -142,6 +147,9 @@ object LocationShim : LocationListener, SensorEventListener {
         rotationVectorSensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
+        pressureSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        }
 
         tryEmitLastKnownLocation(locationManager)
     }
@@ -149,7 +157,7 @@ object LocationShim : LocationListener, SensorEventListener {
     private fun tryEmitLastKnownLocation(locationManager: LocationManager) {
         try {
             locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let {
-                nativeOnLocationUpdate(it.latitude, it.longitude)
+                nativeOnLocationUpdate(it.latitude, it.longitude, altitudeOrNaN(it))
                 return
             }
         } catch (_: SecurityException) {
@@ -157,7 +165,7 @@ object LocationShim : LocationListener, SensorEventListener {
 
         try {
             locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let {
-                nativeOnLocationUpdate(it.latitude, it.longitude)
+                nativeOnLocationUpdate(it.latitude, it.longitude, altitudeOrNaN(it))
             }
         } catch (_: SecurityException) {
         }
@@ -189,7 +197,7 @@ object LocationShim : LocationListener, SensorEventListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        nativeOnLocationUpdate(location.latitude, location.longitude)
+        nativeOnLocationUpdate(location.latitude, location.longitude, altitudeOrNaN(location))
     }
 
     override fun onProviderEnabled(provider: String) {}
@@ -201,6 +209,17 @@ object LocationShim : LocationListener, SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) {
+            if (event.sensor.type == Sensor.TYPE_PRESSURE && event.values.isNotEmpty()) {
+                val pressureHpa = event.values[0]
+                if (pressureHpa.isFinite()) {
+                    nativeOnBarometricAltitudeUpdate(
+                        SensorManager.getAltitude(
+                            SensorManager.PRESSURE_STANDARD_ATMOSPHERE,
+                            pressureHpa
+                        ).toDouble()
+                    )
+                }
+            }
             return
         }
 
@@ -284,6 +303,10 @@ object LocationShim : LocationListener, SensorEventListener {
         val next = normalizeHeading(previous + (delta * alpha))
         smoothedHeadingDeg = next
         return next
+    }
+
+    private fun altitudeOrNaN(location: Location): Double {
+        return if (location.hasAltitude()) location.altitude else Double.NaN
     }
 
     private fun circularMeanDeg(values: Iterable<Float>): Float {

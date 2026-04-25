@@ -4,7 +4,7 @@ use dioxus_signals::{Signal, WritableExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 unsafe extern "C" {
-    fn gs26_location_start(cb: extern "C" fn(f64, f64));
+    fn gs26_location_start(cb: extern "C" fn(f64, f64, f64));
     fn gs26_heading_start(cb: extern "C" fn(f64));
     // Optional if you have it:
     // fn gs26_location_stop();
@@ -16,12 +16,18 @@ unsafe extern "C" {
 static mut GPS_SIGNAL: Option<Signal<Option<(f64, f64)>>> = None;
 static LAT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static LON_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
+static GPS_ALT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static HEADING_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 
-extern "C" fn on_loc(lat: f64, lon: f64) {
+extern "C" fn on_loc(lat: f64, lon: f64, alt_m: f64) {
     if lat.is_finite() && lon.is_finite() {
         LAT_BITS.store(lat.to_bits(), Ordering::Relaxed);
         LON_BITS.store(lon.to_bits(), Ordering::Relaxed);
+    }
+    if alt_m.is_finite() {
+        GPS_ALT_BITS.store(alt_m.to_bits(), Ordering::Relaxed);
+    } else {
+        GPS_ALT_BITS.store(f64::NAN.to_bits(), Ordering::Relaxed);
     }
 
     unsafe {
@@ -70,6 +76,12 @@ pub fn latest_location() -> Option<(f64, f64)> {
     } else {
         None
     }
+}
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+pub fn latest_altitude_m() -> Option<f64> {
+    let gps = f64::from_bits(GPS_ALT_BITS.load(Ordering::Relaxed));
+    if gps.is_finite() { Some(gps) } else { None }
 }
 
 #[cfg(target_os = "ios")]

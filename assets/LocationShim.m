@@ -26,7 +26,7 @@
 
 #pragma mark - Location shim
 
-typedef void (*LocationCallback)(double lat, double lon);
+typedef void (*LocationCallback)(double lat, double lon, double altitude_m);
 typedef void (*HeadingCallback)(double heading_deg);
 
 static volatile int g_gs26_auth_status = -999;
@@ -61,7 +61,8 @@ static volatile int g_gs26_last_location_error_code = 0;
 
   BOOL authorized = (status == kCLAuthorizationStatusAuthorizedAlways);
 #if TARGET_OS_IOS
-  authorized = authorized || (status == kCLAuthorizationStatusAuthorizedWhenInUse);
+  authorized =
+      authorized || (status == kCLAuthorizationStatusAuthorizedWhenInUse);
 #endif
 
   if (authorized) {
@@ -99,17 +100,19 @@ static volatile int g_gs26_last_location_error_code = 0;
   [self startSensorsIfAuthorized];
 
 #if TARGET_OS_IOS
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)),
-                 dispatch_get_main_queue(), ^{
-                   [self requestAuthorizationIfNeeded];
-                   [self startSensorsIfAuthorized];
-                 });
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)),
+      dispatch_get_main_queue(), ^{
+        [self requestAuthorizationIfNeeded];
+        [self startSensorsIfAuthorized];
+      });
 
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)),
-                 dispatch_get_main_queue(), ^{
-                   [self requestAuthorizationIfNeeded];
-                   [self startSensorsIfAuthorized];
-                 });
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)),
+      dispatch_get_main_queue(), ^{
+        [self requestAuthorizationIfNeeded];
+        [self startSensorsIfAuthorized];
+      });
 #endif
 }
 
@@ -129,8 +132,8 @@ static volatile int g_gs26_last_location_error_code = 0;
   _mgr.activityType = CLActivityTypeOtherNavigation;
 #endif
   _mgr.headingFilter = kCLHeadingFilterNone;
-
-  // iOS can ignore an early auth request if it happens before the app is fully active.
+  // iOS can ignore an early auth request if it happens before the app is fully
+  // active.
   dispatch_async(dispatch_get_main_queue(), ^{
     [self kickLocationAuthFlow];
   });
@@ -153,7 +156,7 @@ static volatile int g_gs26_last_location_error_code = 0;
 }
 
 - (void)locationManager:(CLLocationManager *)manager
-didChangeAuthorizationStatus:(CLAuthorizationStatus)status {
+    didChangeAuthorizationStatus:(CLAuthorizationStatus)status {
   (void)manager;
   g_gs26_auth_status = (int)status;
   [self startSensorsIfAuthorized];
@@ -166,7 +169,11 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status {
   if (!last || !self.cb)
     return;
   g_gs26_location_callback_seen = 1;
-  self.cb(last.coordinate.latitude, last.coordinate.longitude);
+  double altitude = NAN;
+  if (@available(iOS 4.2, macOS 10.7, *)) {
+    altitude = last.verticalAccuracy >= 0 ? last.altitude : NAN;
+  }
+  self.cb(last.coordinate.latitude, last.coordinate.longitude, altitude);
 }
 
 - (void)locationManager:(CLLocationManager *)manager
@@ -227,7 +234,9 @@ int gs26_location_started(void) { return g_gs26_location_started; }
 int gs26_heading_started(void) { return g_gs26_heading_started; }
 int gs26_location_callback_seen(void) { return g_gs26_location_callback_seen; }
 int gs26_heading_callback_seen(void) { return g_gs26_heading_callback_seen; }
-int gs26_last_location_error_code(void) { return g_gs26_last_location_error_code; }
+int gs26_last_location_error_code(void) {
+  return g_gs26_last_location_error_code;
+}
 
 #pragma mark - Keep awake (iOS only)
 

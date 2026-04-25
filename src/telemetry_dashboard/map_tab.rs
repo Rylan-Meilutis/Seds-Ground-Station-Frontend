@@ -24,12 +24,94 @@ const DEFAULT_TRACKED_ASSET_LABEL: &str = "Tracked Asset";
 const MAP_STATE_STORAGE_KEY: &str = "gs26_ground_map_state_v3";
 const MAP_MAX_ZOOM_STORAGE_KEY: &str = "gs26_ground_map_max_zoom_v1";
 const MAP_CONFIG_CACHE_STORAGE_KEY: &str = "gs26_ground_map_config_v1";
+const MAP_HEADER_CSS: &str = r#"
+    .gs26-map-header-shell {
+      display:flex;
+      flex-direction:column;
+      gap:4px;
+      min-width:0;
+    }
+    .gs26-map-header-row {
+      display:grid;
+      grid-template-columns:minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items:center;
+      gap:6px 8px;
+      box-sizing:border-box;
+      min-width:0;
+    }
+    .gs26-map-header-title-wrap {
+      display:flex;
+      align-items:center;
+      grid-column:1;
+      min-width:0;
+    }
+    .gs26-map-header-main {
+      display:flex;
+      align-items:center;
+      gap:8px;
+      flex:1 1 auto;
+      min-width:0;
+      min-height:28px;
+    }
+    .gs26-map-header-inline-meta {
+      display:none;
+      grid-column:2;
+      align-items:center;
+      justify-content:center;
+      min-width:0;
+      max-width:100%;
+    }
+    .gs26-map-header-actions {
+      display:flex;
+      align-items:center;
+      gap:6px;
+      grid-column:3;
+      justify-self:end;
+      flex-wrap:nowrap;
+      min-height:28px;
+    }
+    .gs26-map-header-meta-shell {
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      min-width:0;
+    }
+    .gs26-map-header-shell.gs26-map-header-inline-compact .gs26-map-header-inline-meta {
+      display:flex;
+    }
+    .gs26-map-header-shell.gs26-map-header-inline-compact .gs26-map-header-stacked-meta {
+      display:none;
+    }
+    @media (min-width: 980px) {
+      .gs26-map-header-shell.gs26-map-header-inline-wide {
+        gap:0;
+      }
+      .gs26-map-header-shell.gs26-map-header-inline-wide .gs26-map-header-row {
+        align-items:center;
+        gap:8px;
+      }
+      .gs26-map-header-shell.gs26-map-header-inline-wide .gs26-map-header-main {
+        flex:0 1 auto;
+        min-width:100px;
+      }
+      .gs26-map-header-shell.gs26-map-header-inline-wide .gs26-map-header-inline-meta {
+        display:flex;
+        min-width:280px;
+        max-width:min(52vw, 720px);
+      }
+      .gs26-map-header-shell.gs26-map-header-inline-wide .gs26-map-header-stacked-meta {
+        display:none;
+      }
+    }
+"#;
 #[cfg(target_arch = "wasm32")]
-const WEB_GEO_SYNC_INTERVAL_MS: u32 = 250;
-#[cfg(all(not(target_arch = "wasm32"), target_os = "ios"))]
+const WEB_GEO_SYNC_INTERVAL_MS: u32 = 500;
+#[cfg(any(target_os = "ios", target_os = "android"))]
 const NATIVE_GEO_SYNC_INTERVAL_MS: u64 = 500;
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
-const NATIVE_GEO_SYNC_INTERVAL_MS: u64 = 250;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const NATIVE_HEADING_SYNC_INTERVAL_ACTIVE_MS: u64 = 100;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const NATIVE_HEADING_SYNC_IDLE_MS: u64 = 500;
 
 fn tiles_url() -> String {
     map_tiles_url()
@@ -56,7 +138,7 @@ fn format_distance_label(
     Some(format_human_distance(meters, metric))
 }
 
-fn haversine_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+pub(crate) fn haversine_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     const EARTH_RADIUS_M: f64 = 6_371_000.0;
     let lat1 = lat1.to_radians();
     let lon1 = lon1.to_radians();
@@ -102,10 +184,42 @@ fn format_human_distance(meters: f64, metric: bool) -> String {
     }
 }
 
+pub(crate) fn format_precise_distance(meters: f64, metric: bool) -> String {
+    if metric {
+        if meters < 1_000.0 {
+            format!("{meters:.2} m")
+        } else {
+            format!("{:.2} km", meters / 1_000.0)
+        }
+    } else {
+        let feet = meters * 3.280_839_895;
+        if feet < 5_280.0 {
+            format!("{feet:.2} ft")
+        } else {
+            format!("{:.2} mi", feet / 5_280.0)
+        }
+    }
+}
+
+pub(crate) fn format_elevation(meters: Option<f64>, metric: bool) -> String {
+    let Some(meters) = meters.filter(|value| value.is_finite()) else {
+        return "--".to_string();
+    };
+    if metric {
+        format!("{meters:.2} m")
+    } else {
+        format!("{:.2} ft", meters * 3.280_839_895)
+    }
+}
+
 #[component]
 pub fn MapTab(
     rocket_gps: Signal<Option<(f64, f64)>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    #[props(default)] rocket_altitude_m: Option<Signal<Option<f64>>>,
+    #[props(default)] user_altitude_m: Option<Signal<Option<f64>>>,
+    #[props(default = true)] show_header_distance: bool,
+    #[props(default = false)] show_header_altitude: bool,
     #[props(default = false)] distance_units_metric: bool,
     #[props(default)] theme: Option<ThemeConfig>,
     #[props(default)] title: Option<String>,
@@ -284,9 +398,17 @@ pub fn MapTab(
             let mut last_location = None::<(f64, f64)>;
             #[cfg(any(target_os = "ios", target_os = "android"))]
             let mut last_heading = None::<f64>;
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            let mut last_location_poll_ms = 0_i64;
             loop {
+                #[cfg(any(target_os = "ios", target_os = "android"))]
+                let now_ms = crate::telemetry_dashboard::current_wallclock_ms();
+
                 #[cfg(target_os = "ios")]
-                if let Some((lat, lon)) = gps_apple::latest_location() {
+                if now_ms - last_location_poll_ms >= NATIVE_GEO_SYNC_INTERVAL_MS as i64
+                    && let Some((lat, lon)) = gps_apple::latest_location()
+                {
+                    last_location_poll_ms = now_ms;
                     let changed = last_location
                         .map(|(prev_lat, prev_lon)| {
                             haversine_meters(prev_lat, prev_lon, lat, lon) >= 0.02
@@ -299,7 +421,10 @@ pub fn MapTab(
                 }
 
                 #[cfg(target_os = "android")]
-                if let Some((lat, lon)) = gps_android::latest_location() {
+                if now_ms - last_location_poll_ms >= NATIVE_GEO_SYNC_INTERVAL_MS as i64
+                    && let Some((lat, lon)) = gps_android::latest_location()
+                {
+                    last_location_poll_ms = now_ms;
                     let changed = last_location
                         .map(|(prev_lat, prev_lon)| {
                             haversine_meters(prev_lat, prev_lon, lat, lon) >= 0.02
@@ -333,10 +458,18 @@ pub fn MapTab(
                     }
                 }
 
+                #[cfg(any(target_os = "ios", target_os = "android"))]
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    NATIVE_GEO_SYNC_INTERVAL_MS,
+                    if last_heading.is_some() {
+                        NATIVE_HEADING_SYNC_INTERVAL_ACTIVE_MS
+                    } else {
+                        NATIVE_HEADING_SYNC_IDLE_MS
+                    },
                 ))
                 .await;
+
+                #[cfg(not(any(target_os = "ios", target_os = "android")))]
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         });
     }
@@ -349,6 +482,10 @@ pub fn MapTab(
     let effective_user = move || -> Option<(f64, f64)> { *browser_user_gps.read() };
     let distance_text =
         format_distance_label(*rocket_gps.read(), effective_user(), distance_units_metric);
+    let rocket_altitude_value = rocket_altitude_m.as_ref().and_then(|signal| *signal.read());
+    let user_altitude_value = user_altitude_m.as_ref().and_then(|signal| *signal.read());
+    let rocket_elevation_text = format_elevation(rocket_altitude_value, distance_units_metric);
+    let user_elevation_text = format_elevation(user_altitude_value, distance_units_metric);
     #[cfg(any(target_os = "ios", target_os = "macos", target_os = "android"))]
     let native_location_warning = if (*user_gps.read()).is_none() {
         Some(translate_text(
@@ -421,32 +558,26 @@ pub fn MapTab(
     };
 
     rsx! {
+        style { "{MAP_HEADER_CSS}" }
         if *is_fullscreen.read() {
-            div { style: "position:fixed; inset:0; z-index:9999; padding:16px; background:{theme.app_background}; display:flex; flex-direction:column; gap:12px;",
-                div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:space-between; padding:4px 4px 0 4px; box-sizing:border-box;",
-                    div { style: "display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;",
-                        h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
-                        if let Some(distance_text) = distance_text.clone() {
-                            span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "({translate_text(\"Distance\")}: {distance_text})" }
-                        }
-                    }
-                    div { style: "display:flex; gap:8px; flex-wrap:wrap;",
-                        if cfg!(target_os = "ios") && *show_enable_compass.read() {
-                            button {
-                                style: "{warning_button_style}",
-                                onclick: on_enable_compass,
-                                "{translate_text(\"Enable Compass\")}"
-                            }
-                        }
-                        button {
-                            style: "{neutral_button_style}",
-                            onclick: on_toggle_fullscreen,
-                            "{translate_text(\"Exit Fullscreen\")}"
-                        }
-                    }
-                }
+            div { style: "position:fixed; inset:0; z-index:9999; padding:10px; background:{theme.app_background}; display:flex; flex-direction:column; gap:8px;",
+                {map_header_row(
+                    &theme,
+                    &resolved_title,
+                    if show_header_distance { distance_text.clone() } else { None },
+                    &rocket_elevation_text,
+                    &user_elevation_text,
+                    rocket_altitude_value,
+                    user_altitude_value,
+                    show_header_distance,
+                    show_header_altitude,
+                    cfg!(target_os = "ios") && *show_enable_compass.read(),
+                    Some((warning_button_style.clone(), EventHandler::new(on_enable_compass))),
+                    (neutral_button_style.clone(), EventHandler::new(on_toggle_fullscreen)),
+                    true,
+                )}
                 if let Some(warning_text) = diagnostics_warning.clone() {
-                    div { style: "padding:10px 12px; border-radius:12px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:0.92rem; font-weight:700;",
+                    div { style: "padding:6px 8px; border-radius:10px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:0.82rem; font-weight:700; line-height:1.15;",
                         "{warning_text}"
                     }
                 }
@@ -457,30 +588,26 @@ pub fn MapTab(
         } else {
             div {
                 id: "map-card",
-                style: "display:flex; flex:1 1 auto; flex-direction:column; gap:12px; width:100%; height:100%; max-height:100%; min-height:0; \
+                style: "display:flex; flex:1 1 auto; flex-direction:column; gap:8px; width:100%; height:100%; max-height:100%; min-height:0; \
                         border-radius:12px; background:{theme.tab_shell_background}; border:1px solid {theme.border_strong}; \
                         box-shadow:0 10px 25px rgba(0,0,0,0.45); box-sizing:border-box; overflow:hidden;",
-                div {
-                    style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:10px 12px 0 12px; box-sizing:border-box;",
-                    h2 { style: "margin:0; color:{theme.text_primary};", "{resolved_title}" }
-                    if let Some(distance_text) = distance_text {
-                        span { style: "color:{theme.text_secondary}; font-size:0.95rem; font-weight:700;", "({translate_text(\"Distance\")}: {distance_text})" }
-                    }
-                    if cfg!(target_os = "ios") && *show_enable_compass.read() {
-                        button {
-                            style: "{warning_button_style}",
-                            onclick: on_enable_compass,
-                            "{translate_text(\"Enable Compass\")}"
-                        }
-                    }
-                    button {
-                        style: "{neutral_button_style}",
-                        onclick: on_toggle_fullscreen,
-                        "{translate_text(\"Fullscreen\")}"
-                    }
-                }
+                {map_header_row(
+                    &theme,
+                    &resolved_title,
+                    if show_header_distance { distance_text } else { None },
+                    &rocket_elevation_text,
+                    &user_elevation_text,
+                    rocket_altitude_value,
+                    user_altitude_value,
+                    show_header_distance,
+                    show_header_altitude,
+                    cfg!(target_os = "ios") && *show_enable_compass.read(),
+                    Some((warning_button_style.clone(), EventHandler::new(on_enable_compass))),
+                    (neutral_button_style.clone(), EventHandler::new(on_toggle_fullscreen)),
+                    false,
+                )}
                 if let Some(warning_text) = diagnostics_warning {
-                    div { style: "margin:0 12px; padding:10px 12px; border-radius:12px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:0.92rem; font-weight:700;",
+                    div { style: "margin:0 8px; padding:6px 8px; border-radius:10px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:0.82rem; font-weight:700; line-height:1.15;",
                         "{warning_text}"
                     }
                 }
@@ -491,6 +618,145 @@ pub fn MapTab(
             }
         }
     }
+}
+
+fn map_header_row(
+    theme: &ThemeConfig,
+    resolved_title: &str,
+    distance_text: Option<String>,
+    rocket_elevation_text: &str,
+    user_elevation_text: &str,
+    rocket_altitude_value: Option<f64>,
+    user_altitude_value: Option<f64>,
+    show_header_distance: bool,
+    show_header_altitude: bool,
+    show_enable_compass: bool,
+    compass_button: Option<(String, EventHandler<MouseEvent>)>,
+    fullscreen_button: (String, EventHandler<MouseEvent>),
+    fullscreen_mode: bool,
+) -> Element {
+    let shell_padding = if fullscreen_mode {
+        "0 2px"
+    } else {
+        "6px 8px 0 8px"
+    };
+    let title_size = if fullscreen_mode { "1rem" } else { "0.98rem" };
+    let show_header_metadata = show_header_distance || show_header_altitude;
+    let distance_only = show_header_distance && !show_header_altitude;
+    let altitude_only = show_header_altitude && !show_header_distance;
+    let compact_inline = distance_only || altitude_only;
+    let shell_class = if compact_inline {
+        "gs26-map-header-shell gs26-map-header-inline-compact"
+    } else if show_header_metadata {
+        "gs26-map-header-shell gs26-map-header-inline-wide"
+    } else {
+        "gs26-map-header-shell"
+    };
+
+    rsx! {
+        div { class: "{shell_class}", style: "padding:{shell_padding};",
+            div { class: "gs26-map-header-row",
+                div { class: "gs26-map-header-title-wrap",
+                    div { class: "gs26-map-header-main",
+                        h2 { style: "margin:0; color:{theme.text_primary}; font-size:{title_size}; line-height:1; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{resolved_title}" }
+                    }
+                }
+                if show_header_metadata {
+                    div { class: "gs26-map-header-inline-meta",
+                        {map_meta_row(
+                            theme,
+                            distance_text.clone(),
+                            rocket_elevation_text,
+                            user_elevation_text,
+                            rocket_altitude_value,
+                            user_altitude_value,
+                            show_header_distance,
+                            show_header_altitude,
+                        )}
+                    }
+                }
+                div { class: "gs26-map-header-actions",
+                    if show_enable_compass {
+                        if let Some((style, onclick)) = compass_button {
+                            button {
+                                style: "{compact_button_style(&style)}",
+                                onclick,
+                                "{translate_text(\"Enable Compass\")}"
+                            }
+                        }
+                    }
+                    button {
+                        style: "{compact_button_style(&fullscreen_button.0)}",
+                        onclick: fullscreen_button.1,
+                        if fullscreen_mode {
+                            "{translate_text(\"Exit Fullscreen\")}"
+                        } else {
+                            "{translate_text(\"Fullscreen\")}"
+                        }
+                    }
+                }
+            }
+            if show_header_metadata {
+                div { class: "gs26-map-header-meta-shell gs26-map-header-stacked-meta",
+                    {map_meta_row(
+                        theme,
+                        distance_text,
+                        rocket_elevation_text,
+                        user_elevation_text,
+                        rocket_altitude_value,
+                        user_altitude_value,
+                        show_header_distance,
+                        show_header_altitude,
+                    )}
+                }
+            }
+        }
+    }
+}
+
+fn map_meta_row(
+    theme: &ThemeConfig,
+    distance_text: Option<String>,
+    rocket_elevation_text: &str,
+    user_elevation_text: &str,
+    rocket_altitude_value: Option<f64>,
+    user_altitude_value: Option<f64>,
+    show_distance: bool,
+    show_altitude: bool,
+) -> Element {
+    let distance_label = "Dist";
+    let rocket_label = "🚀 Alt";
+    let user_label = "🧍 Alt";
+    let distance_value = distance_text.unwrap_or_else(|| "--".to_string());
+    let rocket_altitude_available = rocket_altitude_value.is_some_and(|value| value.is_finite());
+    let user_altitude_available = user_altitude_value.is_some_and(|value| value.is_finite());
+    let any_altitude_available = rocket_altitude_available || user_altitude_available;
+
+    rsx! {
+        div { style: "display:flex; align-items:center; justify-content:center; gap:4px; min-width:0; overflow:hidden; white-space:nowrap;",
+            if show_distance {
+                span { style: "color:{theme.text_secondary}; font-size:0.76rem; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; line-height:1;", "{distance_label}: {distance_value}" }
+            }
+            if show_distance && show_altitude && any_altitude_available {
+                span { style: "color:{theme.border_soft}; font-size:0.7rem; font-weight:700; line-height:1; flex:0 0 auto;", "|" }
+            }
+            if show_altitude {
+                if rocket_altitude_available {
+                    span { style: "color:{theme.text_muted}; font-size:0.72rem; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; line-height:1;", "{rocket_label}: {rocket_elevation_text}" }
+                }
+                if rocket_altitude_available && user_altitude_available {
+                    span { style: "color:{theme.border_soft}; font-size:0.7rem; font-weight:700; line-height:1; flex:0 0 auto;", "|" }
+                }
+                if user_altitude_available {
+                    span { style: "color:{theme.text_muted}; font-size:0.72rem; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; line-height:1;", "{user_label}: {user_elevation_text}" }
+                }
+            }
+        }
+    }
+}
+
+fn compact_button_style(base: &str) -> String {
+    format!("{base} padding:4px 9px; font-size:0.78rem; line-height:1;")
 }
 
 fn map_canvas(theme: &ThemeConfig) -> Element {

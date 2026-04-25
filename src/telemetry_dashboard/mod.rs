@@ -166,6 +166,7 @@ include!("dashboard_messages.rs");
 const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
 const DASHBOARD_CLOCK_REFRESH_MS: u32 = 1_000;
+const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 250;
 
 pub(crate) use network_metrics::FrontendNetworkMetrics;
 use network_metrics::{
@@ -715,6 +716,8 @@ const MAIN_TAB_STORAGE_KEY: &str = "gs_main_tab";
 const DATA_TAB_STORAGE_KEY: &str = "gs_data_tab";
 const BASE_URL_STORAGE_KEY: &str = "gs_base_url";
 const MAP_DISTANCE_UNITS_STORAGE_KEY: &str = "gs_map_distance_units";
+const MAP_HEADER_DISTANCE_VISIBLE_STORAGE_KEY: &str = "gs_map_header_distance_visible";
+const MAP_HEADER_ALTITUDE_VISIBLE_STORAGE_KEY: &str = "gs_map_header_altitude_visible";
 const THEME_PRESET_STORAGE_KEY: &str = "gs_theme_preset";
 const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
@@ -1699,6 +1702,10 @@ pub fn NativeSettingsPage() -> Element {
             .map(|v| v == "metric")
             .unwrap_or(false)
     });
+    let map_header_distance_visible =
+        use_signal(|| persist::get_or(MAP_HEADER_DISTANCE_VISIBLE_STORAGE_KEY, "on") != "off");
+    let map_header_altitude_visible =
+        use_signal(|| persist::get_or(MAP_HEADER_ALTITUDE_VISIBLE_STORAGE_KEY, "off") != "off");
     let theme_preset = use_signal(|| {
         let stored = persist::get_or(THEME_PRESET_STORAGE_KEY, "default");
         if stored == "layout" {
@@ -1742,6 +1749,32 @@ pub fn NativeSettingsPage() -> Element {
                 "imperial"
             };
             persist::set_string(MAP_DISTANCE_UNITS_STORAGE_KEY, value);
+        });
+    }
+    {
+        let map_header_distance_visible = map_header_distance_visible;
+        use_effect(move || {
+            persist::set_string(
+                MAP_HEADER_DISTANCE_VISIBLE_STORAGE_KEY,
+                if *map_header_distance_visible.read() {
+                    "on"
+                } else {
+                    "off"
+                },
+            );
+        });
+    }
+    {
+        let map_header_altitude_visible = map_header_altitude_visible;
+        use_effect(move || {
+            persist::set_string(
+                MAP_HEADER_ALTITUDE_VISIBLE_STORAGE_KEY,
+                if *map_header_altitude_visible.read() {
+                    "on"
+                } else {
+                    "off"
+                },
+            );
         });
     }
     {
@@ -1952,6 +1985,8 @@ pub fn NativeSettingsPage() -> Element {
     );
     let on_reset_app_data = {
         let mut distance_units_metric = distance_units_metric;
+        let mut map_header_distance_visible = map_header_distance_visible;
+        let mut map_header_altitude_visible = map_header_altitude_visible;
         let mut theme_preset = theme_preset;
         let mut language_code = language_code;
         let mut network_flow_animation_enabled = network_flow_animation_enabled;
@@ -1967,6 +2002,8 @@ pub fn NativeSettingsPage() -> Element {
         move |_| {
             reset_local_app_data();
             distance_units_metric.set(false);
+            map_header_distance_visible.set(true);
+            map_header_altitude_visible.set(false);
             theme_preset.set("default".to_string());
             language_code.set("en".to_string());
             network_flow_animation_enabled.set(true);
@@ -1985,6 +2022,8 @@ pub fn NativeSettingsPage() -> Element {
     rsx! {
         SettingsPage {
             distance_units_metric,
+            map_header_distance_visible,
+            map_header_altitude_visible,
             theme_preset,
             language_code,
             network_flow_animation_enabled,
@@ -2216,14 +2255,18 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
         use_effect(move || {
             spawn(async move {
                 loop {
+                    let effective_tick_ms = if dashboard_page_visible() {
+                        NETWORK_TIME_BADGE_REFRESH_MS
+                    } else {
+                        1_000
+                    };
+
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(DASHBOARD_CLOCK_REFRESH_MS).await;
+                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        DASHBOARD_CLOCK_REFRESH_MS as u64,
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms as u64))
+                        .await;
 
                     let next_tick = {
                         let current_tick = *tick.read();
@@ -3069,6 +3112,10 @@ fn TelemetryDashboardInner() -> Element {
             .map(|v| v == "metric")
             .unwrap_or(false)
     });
+    let map_header_distance_visible =
+        use_signal(|| persist::get_or(MAP_HEADER_DISTANCE_VISIBLE_STORAGE_KEY, "on") != "off");
+    let map_header_altitude_visible =
+        use_signal(|| persist::get_or(MAP_HEADER_ALTITUDE_VISIBLE_STORAGE_KEY, "off") != "off");
     let theme_preset = use_signal(|| {
         let stored = persist::get_or(THEME_PRESET_STORAGE_KEY, "default");
         if stored == "layout" {
@@ -3307,7 +3354,14 @@ fn TelemetryDashboardInner() -> Element {
             .rev()
             .find_map(row_to_gps)
     });
+    let rocket_gps_altitude_m = use_signal(|| {
+        ui_telemetry_rows_snapshot()
+            .iter()
+            .rev()
+            .find_map(row_to_gps_altitude_m)
+    });
     let user_gps = use_signal(|| None::<(f64, f64)>);
+    let user_gps_altitude_m = use_signal(|| None::<f64>);
 
     {
         let rocket_gps = rocket_gps;
@@ -3546,6 +3600,32 @@ fn TelemetryDashboardInner() -> Element {
                 "imperial"
             };
             persist::set_string(MAP_DISTANCE_UNITS_STORAGE_KEY, value);
+        });
+    }
+    {
+        let map_header_distance_visible = map_header_distance_visible;
+        use_effect(move || {
+            persist::set_string(
+                MAP_HEADER_DISTANCE_VISIBLE_STORAGE_KEY,
+                if *map_header_distance_visible.read() {
+                    "on"
+                } else {
+                    "off"
+                },
+            );
+        });
+    }
+    {
+        let map_header_altitude_visible = map_header_altitude_visible;
+        use_effect(move || {
+            persist::set_string(
+                MAP_HEADER_ALTITUDE_VISIBLE_STORAGE_KEY,
+                if *map_header_altitude_visible.read() {
+                    "on"
+                } else {
+                    "off"
+                },
+            );
         });
     }
     {
@@ -3918,6 +3998,7 @@ fn TelemetryDashboardInner() -> Element {
         use_effect(move || {
             let alive = alive.clone();
             let mut rocket_gps_flush = rocket_gps_flush;
+            let mut rocket_gps_altitude_flush = rocket_gps_altitude_m;
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
@@ -3972,6 +4053,13 @@ fn TelemetryDashboardInner() -> Element {
                     {
                         rocket_gps_flush.set(Some(gps));
                     }
+                    if let Some(altitude_m) = ui_telemetry_rows_snapshot()
+                        .iter()
+                        .rev()
+                        .find_map(row_to_gps_altitude_m)
+                    {
+                        rocket_gps_altitude_flush.set(Some(altitude_m));
+                    }
                     persist_cached_telemetry_snapshot_if_due(false);
                 }
             });
@@ -3984,7 +4072,9 @@ fn TelemetryDashboardInner() -> Element {
         let mut errors_s = errors;
         let mut board_status_s = board_status;
         let mut rocket_gps_s = rocket_gps;
+        let mut rocket_gps_altitude_s = rocket_gps_altitude_m;
         let mut user_gps_s = user_gps;
+        let mut user_gps_altitude_s = user_gps_altitude_m;
         let mut ack_warning_ts_s = ack_warning_ts;
         let mut ack_error_ts_s = ack_error_ts;
         let mut notifications_s = notifications;
@@ -4047,7 +4137,9 @@ fn TelemetryDashboardInner() -> Element {
                             &mut network_topology_s,
                             &mut board_status_s,
                             &mut rocket_gps_s,
+                            &mut rocket_gps_altitude_s,
                             &mut user_gps_s,
+                            &mut user_gps_altitude_s,
                             &mut ack_warning_ts_s,
                             &mut ack_error_ts_s,
                             alive.clone(),
@@ -4320,7 +4412,9 @@ fn TelemetryDashboardInner() -> Element {
                     flight_state,
                     board_status,
                     rocket_gps,
+                    rocket_gps_altitude_m,
                     user_gps,
+                    user_gps_altitude_m,
                     alive.clone(),
                 )
                 .await
@@ -4821,6 +4915,8 @@ fn TelemetryDashboardInner() -> Element {
                         }
                         SettingsPage {
                             distance_units_metric: distance_units_metric,
+                            map_header_distance_visible: map_header_distance_visible,
+                            map_header_altitude_visible: map_header_altitude_visible,
                             theme_preset: theme_preset,
                             language_code: language_code,
                             network_flow_animation_enabled: network_flow_animation_enabled,
@@ -4855,6 +4951,8 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut st_data_tab = st_data_tab;
                                 let mut st_base_url = st_base_url;
                                 let mut distance_units_metric = distance_units_metric;
+                                let mut map_header_distance_visible = map_header_distance_visible;
+                                let mut map_header_altitude_visible = map_header_altitude_visible;
                                 let mut theme_preset = theme_preset;
                                 let mut language_code = language_code;
                                 let mut network_flow_animation_enabled = network_flow_animation_enabled;
@@ -4875,6 +4973,8 @@ fn TelemetryDashboardInner() -> Element {
                                     st_data_tab.set("GYRO_DATA".to_string());
                                     st_base_url.set(String::new());
                                     distance_units_metric.set(false);
+                                    map_header_distance_visible.set(true);
+                                    map_header_altitude_visible.set(false);
                                     theme_preset.set("default".to_string());
                                     language_code.set("en".to_string());
                                     network_flow_animation_enabled.set(true);
@@ -4903,6 +5003,7 @@ fn TelemetryDashboardInner() -> Element {
     rsx! {
             gps::GpsDriver {
                 user_gps: user_gps,
+                user_altitude_m: Some(user_gps_altitude_m),
                 // Only needed if you want to gate geolocation until the JS is ready on wasm:
                 js_ready: Some(start_gps_js()),
             }
@@ -4980,7 +5081,7 @@ fn TelemetryDashboardInner() -> Element {
                  display:none !important;
                }}
              }}
-             @media (max-width: 720px) {{
+             @media (max-width: 860px) {{
                .gs26-status-shell {{
                  grid-template-columns:minmax(0, 1fr);
                  grid-template-rows:auto auto auto auto;
@@ -5747,6 +5848,11 @@ fn TelemetryDashboardInner() -> Element {
                                     board_status: board_status,
                                     network_topology: network_topology,
                                     flight_state: flight_state,
+                                    rocket_gps: rocket_gps,
+                                    user_gps: user_gps,
+                                    rocket_altitude_m: rocket_gps_altitude_m,
+                                    user_altitude_m: user_gps_altitude_m,
+                                    distance_units_metric: *distance_units_metric.read(),
                                     warnings: warnings,
                                     errors: errors,
                                     notifications: notifications,
@@ -5770,6 +5876,10 @@ fn TelemetryDashboardInner() -> Element {
                                 MapTab {
                                     rocket_gps: rocket_gps,
                                     user_gps: user_gps,
+                                    rocket_altitude_m: Some(rocket_gps_altitude_m),
+                                    user_altitude_m: Some(user_gps_altitude_m),
+                                    show_header_distance: *map_header_distance_visible.read(),
+                                    show_header_altitude: *map_header_altitude_visible.read(),
                                     distance_units_metric: *distance_units_metric.read(),
                                     theme: theme.clone(),
                                     title: _main_tab_label(&layout, MainTab::Map),
@@ -5996,6 +6106,18 @@ fn row_to_gps(row: &TelemetryRow) -> Option<(f64, f64)> {
         row.values.first().copied().flatten()? as f64,
         row.values.get(1).copied().flatten()? as f64,
     ))
+}
+
+fn row_to_gps_altitude_m(row: &TelemetryRow) -> Option<f64> {
+    let is_gps_type = matches!(row.data_type.as_str(), "GPS" | "GPS_DATA" | "ROCKET_GPS");
+    if !is_gps_type {
+        return None;
+    }
+    row.values
+        .get(2)
+        .copied()
+        .flatten()
+        .map(|value| value as f64)
 }
 
 // ---------- Web vs Native logging ----------
@@ -6663,7 +6785,9 @@ async fn seed_from_db(
     network_topology: &mut Signal<NetworkTopologyMsg>,
     board_status: &mut Signal<Vec<BoardStatusEntry>>,
     rocket_gps: &mut Signal<Option<(f64, f64)>>,
+    rocket_gps_altitude_m: &mut Signal<Option<f64>>,
     _user_gps: &mut Signal<Option<(f64, f64)>>,
+    _user_gps_altitude_m: &mut Signal<Option<f64>>,
     ack_warning_ts: &mut Signal<i64>,
     ack_error_ts: &mut Signal<i64>,
     alive: Arc<AtomicBool>,
@@ -6744,6 +6868,7 @@ async fn seed_from_db(
             }
 
             rocket_gps.set(list.iter().rev().find_map(row_to_gps));
+            rocket_gps_altitude_m.set(list.iter().rev().find_map(row_to_gps_altitude_m));
 
             // Build reseed cache in a double buffer while active cache keeps live updates.
             const RESEED_INGEST_CHUNK: usize = 1024;
@@ -6930,7 +7055,9 @@ async fn connect_ws_supervisor(
     flight_state: Signal<FlightState>,
     board_status: Signal<Vec<BoardStatusEntry>>,
     rocket_gps: Signal<Option<(f64, f64)>>,
+    rocket_gps_altitude_m: Signal<Option<f64>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    user_gps_altitude_m: Signal<Option<f64>>,
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let mut notifications = notifications;
@@ -6972,7 +7099,9 @@ async fn connect_ws_supervisor(
                     flight_state,
                     board_status,
                     rocket_gps,
+                    rocket_gps_altitude_m,
                     user_gps,
+                    user_gps_altitude_m,
                     alive.clone(),
                 )
                 .await
@@ -6998,7 +7127,9 @@ async fn connect_ws_supervisor(
                     flight_state,
                     board_status,
                     rocket_gps,
+                    rocket_gps_altitude_m,
                     user_gps,
+                    user_gps_altitude_m,
                     alive.clone(),
                 )
                 .await
@@ -7055,7 +7186,9 @@ async fn connect_ws_once_wasm(
     flight_state: Signal<FlightState>,
     board_status: Signal<Vec<BoardStatusEntry>>,
     rocket_gps: Signal<Option<(f64, f64)>>,
+    rocket_gps_altitude_m: Signal<Option<f64>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    user_gps_altitude_m: Signal<Option<f64>>,
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use futures_channel::oneshot;
@@ -7127,7 +7260,9 @@ async fn connect_ws_once_wasm(
                     flight_state,
                     board_status,
                     rocket_gps,
+                    rocket_gps_altitude_m,
                     user_gps,
+                    user_gps_altitude_m,
                 );
             }
         });
@@ -7316,7 +7451,9 @@ async fn connect_ws_once_native(
     flight_state: Signal<FlightState>,
     board_status: Signal<Vec<BoardStatusEntry>>,
     rocket_gps: Signal<Option<(f64, f64)>>,
+    rocket_gps_altitude_m: Signal<Option<f64>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    user_gps_altitude_m: Signal<Option<f64>>,
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use futures_util::{SinkExt, StreamExt};
@@ -7420,7 +7557,9 @@ async fn connect_ws_once_native(
                 flight_state,
                 board_status,
                 rocket_gps,
+                rocket_gps_altitude_m,
                 user_gps,
+                user_gps_altitude_m,
             );
         }
     }
@@ -7455,7 +7594,9 @@ fn handle_ws_message(
     flight_state: Signal<FlightState>,
     board_status: Signal<Vec<BoardStatusEntry>>,
     rocket_gps: Signal<Option<(f64, f64)>>,
+    rocket_gps_altitude_m: Signal<Option<f64>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    _user_gps_altitude_m: Signal<Option<f64>>,
 ) {
     let mut warnings = warnings;
     let mut errors = errors;
@@ -7473,6 +7614,7 @@ fn handle_ws_message(
     let mut flight_state = flight_state;
     let mut board_status = board_status;
     let mut rocket_gps = rocket_gps;
+    let mut rocket_gps_altitude_m = rocket_gps_altitude_m;
     let _user_gps = user_gps;
 
     let Ok(msg) = serde_json::from_str::<WsInMsg>(s) else {
@@ -7495,6 +7637,9 @@ fn handle_ws_message(
 
             if let Some((lat, lon)) = row_to_gps(&row) {
                 rocket_gps.set(Some((lat, lon)));
+            }
+            if let Some(altitude_m) = row_to_gps_altitude_m(&row) {
+                rocket_gps_altitude_m.set(Some(altitude_m));
             }
 
             // Queue telemetry for UI batch flush
@@ -7523,6 +7668,7 @@ fn handle_ws_message(
                 None
             };
             let mut latest_gps = None;
+            let mut latest_gps_altitude_m = None;
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
                 q.reserve(batch.len());
                 for row in batch {
@@ -7533,6 +7679,9 @@ fn handle_ws_message(
                     if let Some((lat, lon)) = row_to_gps(&row) {
                         latest_gps = Some((lat, lon));
                     }
+                    if let Some(altitude_m) = row_to_gps_altitude_m(&row) {
+                        latest_gps_altitude_m = Some(altitude_m);
+                    }
                     q.push_back(row);
                 }
 
@@ -7542,6 +7691,9 @@ fn handle_ws_message(
             }
             if latest_gps.is_some() {
                 rocket_gps.set(latest_gps);
+            }
+            if latest_gps_altitude_m.is_some() {
+                rocket_gps_altitude_m.set(latest_gps_altitude_m);
             }
         }
 
