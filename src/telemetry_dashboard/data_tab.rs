@@ -4,7 +4,7 @@ use super::layout::{
 };
 // frontend/src/telemetry_dashboard/data_tab.rs
 use dioxus::prelude::*;
-use dioxus_signals::{ReadableExt, Signal, WritableExt};
+use dioxus_signals::{Signal, WritableExt};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -20,7 +20,6 @@ use super::{
     reseed_status_note, translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
 };
 
-const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
 const _ACTIVE_SUBTAB_STORAGE_KEY_PREFIX: &str = "gs26_active_data_subtab::";
 const DATA_TAB_RESPONSIVE_CSS: &str = r#"
 .gs26-data-tab-shell, .gs26-data-subtab-shell { min-width: 0; width:100%; align-self:stretch; box-sizing:border-box; }
@@ -96,63 +95,6 @@ const DATA_CHART_NORMALIZED_GRID_LEFT: f32 = 18.0;
 const DATA_CHART_NORMALIZED_GRID_RIGHT_PAD: f32 = 12.0;
 const DATA_CHART_PER_SERIES_LABEL_ROW_GAP: f64 = 18.0;
 
-#[cfg(target_arch = "wasm32")]
-fn localstorage_get(key: &str) -> Option<String> {
-    use web_sys::window;
-    let w = window()?;
-    let ls = w.local_storage().ok()??;
-    ls.get_item(key).ok().flatten()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn localstorage_set(key: &str, value: &str) {
-    use web_sys::window;
-    if let Some(w) = window()
-        && let Ok(Some(ls)) = w.local_storage()
-    {
-        let _ = ls.set_item(key, value);
-    }
-}
-
-fn persist_nonempty_selection(key: &str, current: String, last_saved: &mut Signal<String>) {
-    let last_saved_value = last_saved.read().clone();
-    if current.is_empty() || current == last_saved_value {
-        return;
-    }
-    last_saved.set(current.clone());
-
-    #[cfg(target_arch = "wasm32")]
-    localstorage_set(key, &current);
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = key;
-}
-
-#[cfg(target_arch = "wasm32")]
-fn restore_selection_from_localstorage(key: &str, selection: &mut Signal<String>) -> bool {
-    if let Some(saved) = localstorage_get(key)
-        && !saved.is_empty()
-    {
-        selection.set(saved);
-        return true;
-    }
-    false
-}
-
-fn use_persisted_selection(
-    key: &'static str,
-    selection: Signal<String>,
-    last_saved: Signal<String>,
-) {
-    use_effect({
-        let selection = selection;
-        let mut last_saved = last_saved;
-        move || {
-            persist_nonempty_selection(key, selection.read().clone(), &mut last_saved);
-        }
-    });
-}
-
 fn subtab_storage_key(tab_id: &str) -> String {
     format!("{_ACTIVE_SUBTAB_STORAGE_KEY_PREFIX}{tab_id}")
 }
@@ -165,41 +107,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     let active_subtabs = use_signal(HashMap::<String, String>::new);
     let tabs_expanded = use_signal(|| false);
     let subtabs_expanded = use_signal(|| false);
-
-    // -------- Restore + persist active tab --------
-    let did_restore = use_signal(|| false);
-    let last_saved = use_signal(String::new);
     let last_saved_subtab = use_signal(String::new);
-
-    // Restore ONCE
-    use_effect({
-        let mut active_tab = active_tab;
-        let mut did_restore = did_restore;
-        let layout_tabs = layout.tabs.clone();
-
-        move || {
-            let already_restored = *did_restore.read();
-            if already_restored {
-                return;
-            }
-            did_restore.set(true);
-
-            #[cfg(target_arch = "wasm32")]
-            if restore_selection_from_localstorage(_ACTIVE_TAB_STORAGE_KEY, &mut active_tab) {
-                return;
-            }
-
-            let current_active_tab = active_tab.read().clone();
-            if current_active_tab.is_empty()
-                && let Some(first) = layout_tabs.first()
-            {
-                active_tab.set(first.id.clone());
-            }
-        }
-    });
-
-    // Persist whenever it changes (avoid rewriting same value)
-    use_persisted_selection(_ACTIVE_TAB_STORAGE_KEY, active_tab, last_saved);
 
     // Layout-defined data types (for buttons)
     let types = layout.tabs.clone();
