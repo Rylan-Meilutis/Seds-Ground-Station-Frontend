@@ -15,12 +15,12 @@ use super::data_chart::{
     CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
 use super::{
-    latest_telemetry_row, latest_telemetry_value, reseed_note_banner, reseed_status_note,
-    translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
+    latest_telemetry_row, latest_telemetry_value, persist, reseed_note_banner,
+    reseed_status_note, translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
 };
 
 const _ACTIVE_TAB_STORAGE_KEY: &str = "gs26_active_tab";
-const _ACTIVE_SUBTAB_STORAGE_KEY: &str = "gs26_active_data_subtab";
+const _ACTIVE_SUBTAB_STORAGE_KEY_PREFIX: &str = "gs26_active_data_subtab::";
 const DATA_TAB_RESPONSIVE_CSS: &str = r#"
 .gs26-data-tab-shell, .gs26-data-subtab-shell { min-width: 0; width:100%; align-self:stretch; box-sizing:border-box; }
 .gs26-data-tab-toggle, .gs26-data-subtab-toggle { display:none; }
@@ -152,6 +152,10 @@ fn use_persisted_selection(
     });
 }
 
+fn subtab_storage_key(tab_id: &str) -> String {
+    format!("{_ACTIVE_SUBTAB_STORAGE_KEY_PREFIX}{tab_id}")
+}
+
 #[component]
 pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeConfig) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
@@ -196,18 +200,6 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     // Persist whenever it changes (avoid rewriting same value)
     use_persisted_selection(_ACTIVE_TAB_STORAGE_KEY, active_tab, last_saved);
 
-    #[cfg(target_arch = "wasm32")]
-    use_effect({
-        let mut active_subtab = active_subtab;
-        move || {
-            if active_subtab.read().is_empty() {
-                restore_selection_from_localstorage(_ACTIVE_SUBTAB_STORAGE_KEY, &mut active_subtab);
-            }
-        }
-    });
-
-    use_persisted_selection(_ACTIVE_SUBTAB_STORAGE_KEY, active_subtab, last_saved_subtab);
-
     // Layout-defined data types (for buttons)
     let types = layout.tabs.clone();
     let current = active_tab.read().clone();
@@ -235,10 +227,43 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
             if current_tab_id.is_empty() || current_subtabs.is_empty() {
                 return;
             }
-            let current = active_subtab.read().clone();
-            if !current_subtabs.iter().any(|subtab| subtab.id == current) {
-                active_subtab.set(current_subtabs[0].id.clone());
+            let persisted = persist::get_string(&subtab_storage_key(&current_tab_id));
+            if let Some(saved) = persisted.filter(|saved| {
+                current_subtabs.iter().any(|subtab| subtab.id == *saved)
+            }) {
+                if active_subtab.read().as_str() != saved {
+                    active_subtab.set(saved);
+                }
+                return;
             }
+
+            let current = active_subtab.read().clone();
+            if !current_subtabs.iter().any(|subtab| subtab.id == current)
+                && let Some(first) = current_subtabs.first()
+            {
+                active_subtab.set(first.id.clone());
+            }
+        }
+    });
+
+    use_effect({
+        let current_tab_id = current.clone();
+        let active_subtab = active_subtab;
+        let mut last_saved_subtab = last_saved_subtab;
+        move || {
+            if current_tab_id.is_empty() {
+                return;
+            }
+            let subtab = active_subtab.read().clone();
+            if subtab.is_empty() {
+                return;
+            }
+            let cache_marker = format!("{current_tab_id}:{subtab}");
+            if *last_saved_subtab.read() == cache_marker {
+                return;
+            }
+            last_saved_subtab.set(cache_marker);
+            persist::set_string(&subtab_storage_key(&current_tab_id), &subtab);
         }
     });
 
