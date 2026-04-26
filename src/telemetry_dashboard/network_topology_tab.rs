@@ -323,6 +323,22 @@ pub fn NetworkTopologyTab(
                     box-shadow: 0 0 8px rgba(56, 189, 248, 0), inset 0 0 6px rgba(14, 165, 233, 0);
                 }
             }
+            @keyframes gs26-network-flow-forward {
+                from {
+                    stroke-dashoffset: 0;
+                }
+                to {
+                    stroke-dashoffset: -28;
+                }
+            }
+            @keyframes gs26-network-flow-reverse {
+                from {
+                    stroke-dashoffset: -28;
+                }
+                to {
+                    stroke-dashoffset: 0;
+                }
+            }
             "#}
         }
         if *is_fullscreen.read() {
@@ -572,8 +588,8 @@ fn install_drag_handlers(
             const maxY = focus ? focus.max_y : {graph_height};
             const scaledWidth = Math.round((maxX - minX) * state.scale);
             const scaledHeight = Math.round((maxY - minY) * state.scale);
-            const panPadX = Math.max(360, Math.round(state.viewport.clientWidth * 0.75));
-            const panPadY = Math.max(300, Math.round(state.viewport.clientHeight * 0.75));
+            const panPadX = Math.max(640, Math.round(state.viewport.clientWidth * 1.2));
+            const panPadY = Math.max(520, Math.round(state.viewport.clientHeight * 1.15));
             const basePadX = Math.max(Math.round((state.viewport.clientWidth - scaledWidth) / 2), panPadX);
             const basePadY = Math.max(Math.round((state.viewport.clientHeight - scaledHeight) / 2), panPadY);
             if (focus) {{
@@ -722,9 +738,6 @@ fn install_drag_handlers(
             if (!withinSurface(evt.target)) return;
             const target = evt.target;
             if (target && typeof target.closest === "function" && target.closest("button")) {{
-              return;
-            }}
-            if (target && typeof target.closest === "function" && target.closest("[data-network-node='true'], [data-network-panel='true']")) {{
               return;
             }}
             state.pointers.set(evt.pointerId, {{ x: evt.clientX, y: evt.clientY }});
@@ -985,6 +998,16 @@ fn render_link(
         NetworkTopologyStatus::Offline => "#f87171",
         NetworkTopologyStatus::Simulated => "#c084fc",
     };
+    let upload_dur = if matches!(link.status, NetworkTopologyStatus::Simulated) {
+        "1.6s"
+    } else {
+        "1.1s"
+    };
+    let download_dur = if matches!(link.status, NetworkTopologyStatus::Simulated) {
+        "1.8s"
+    } else {
+        "1.25s"
+    };
     let lane_dash = if matches!(link.status, NetworkTopologyStatus::Simulated) {
         "12 16"
     } else {
@@ -1050,16 +1073,10 @@ fn render_link(
                         stroke: "{upload_color}",
                         stroke_width: "2.5",
                         stroke_dasharray: "{lane_dash}",
+                        stroke_dashoffset: "0",
                         stroke_linecap: "round",
                         stroke_opacity: "0.92",
-                        animate {
-                            attribute_name: "stroke-dashoffset",
-                            from: "0",
-                            to: "-28",
-                            dur: if matches!(link.status, NetworkTopologyStatus::Simulated) { "1.6s" } else { "1.1s" },
-                            calc_mode: "linear",
-                            repeat_count: "indefinite",
-                        }
+                        style: "animation:gs26-network-flow-forward {upload_dur} linear infinite;"
                     }
                     line {
                         x1: "{lane2_x1}",
@@ -1069,16 +1086,10 @@ fn render_link(
                         stroke: "{download_color}",
                         stroke_width: "2.5",
                         stroke_dasharray: "{lane_dash}",
+                        stroke_dashoffset: "-28",
                         stroke_linecap: "round",
                         stroke_opacity: "0.92",
-                        animate {
-                            attribute_name: "stroke-dashoffset",
-                            from: "-28",
-                            to: "0",
-                            dur: if matches!(link.status, NetworkTopologyStatus::Simulated) { "1.8s" } else { "1.25s" },
-                            calc_mode: "linear",
-                            repeat_count: "indefinite",
-                        }
+                        style: "animation:gs26-network-flow-reverse {download_dur} linear infinite;"
                     }
                 }
             }
