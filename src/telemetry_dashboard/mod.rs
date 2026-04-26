@@ -311,6 +311,25 @@ impl UiTelemetryStore {
         self.rows.values().cloned().collect()
     }
 
+    /// Returns whether the compacted UI store currently has any rows.
+    fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Returns up to the newest `limit` rows from the compacted UI store.
+    fn snapshot_tail(&self, limit: usize) -> Vec<TelemetryRow> {
+        let take = self.rows.len().min(limit);
+        self.rows
+            .values()
+            .rev()
+            .take(take)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+
     /// Returns the newest rocket GPS coordinates currently present in the compacted store.
     fn latest_rocket_gps(&self) -> Option<(f64, f64)> {
         self.rows.values().rev().find_map(row_to_gps)
@@ -645,10 +664,14 @@ fn persist_cached_telemetry_snapshot_if_due(force: bool) {
         return;
     }
 
-    let rows = ui_telemetry_rows_snapshot();
-    if rows.is_empty() {
+    let rows = if let Ok(store) = UI_TELEMETRY_STORE.lock() {
+        if store.is_empty() {
+            return;
+        }
+        store.snapshot_tail(TELEMETRY_CACHE_MAX_ROWS)
+    } else {
         return;
-    }
+    };
 
     persist_cached_telemetry_rows(&rows);
     LAST_TELEMETRY_CACHE_PERSIST_MS.store(now_ms, Ordering::Relaxed);
@@ -659,8 +682,10 @@ fn restore_cached_telemetry_rows_if_needed() -> usize {
         persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
         return 0;
     }
-    if !ui_telemetry_rows_snapshot().is_empty() {
-        return 0;
+    if let Ok(store) = UI_TELEMETRY_STORE.lock() {
+        if !store.is_empty() {
+            return 0;
+        }
     }
 
     let Some(raw) = persist::get_string(TELEMETRY_CACHE_STORAGE_KEY) else {
@@ -700,12 +725,14 @@ fn restore_cached_telemetry_rows_if_needed() -> usize {
 }
 
 fn rebuild_chart_cache_from_visible_rows() {
-    let rows = ui_telemetry_rows_snapshot();
-    if rows.is_empty() {
+    let Ok(store) = UI_TELEMETRY_STORE.lock() else {
+        return;
+    };
+    if store.is_empty() {
         return;
     }
     charts_cache_clear_active();
-    for row in &rows {
+    for row in store.rows.values() {
         charts_cache_ingest_row(row);
     }
     bump_chart_render_epoch();
