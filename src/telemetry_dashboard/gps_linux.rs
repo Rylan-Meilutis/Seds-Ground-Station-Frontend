@@ -76,8 +76,9 @@ async fn open_geoclue_client() -> Result<(zbus::Connection, OwnedObjectPath), St
         }
     }
     if !desktop_id_set {
-        return Err(desktop_id_error
-            .unwrap_or_else(|| "Linux GeoClue DesktopId set failed".to_string()));
+        return Err(
+            desktop_id_error.unwrap_or_else(|| "Linux GeoClue DesktopId set failed".to_string())
+        );
     }
     client
         .set_property("RequestedAccuracyLevel", &GEOCLUE_ACCURACY_EXACT)

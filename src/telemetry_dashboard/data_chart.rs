@@ -1349,8 +1349,7 @@ impl CachedChart {
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
         let mut chunks = Vec::new();
         let mut carry_last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
-        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> =
-            vec![None; valid_channels.len()];
+        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);
@@ -1559,8 +1558,7 @@ impl CachedChart {
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
         let mut chunks = Vec::new();
         let mut carry_last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
-        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> =
-            vec![None; valid_channels.len()];
+        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);

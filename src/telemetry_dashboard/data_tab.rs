@@ -192,9 +192,9 @@ pub fn DataTab(
                 return;
             }
             let persisted = persist::get_string(&subtab_storage_key(&current_tab_id));
-            if let Some(saved) = persisted.filter(|saved| {
-                current_subtabs.iter().any(|subtab| subtab.id == *saved)
-            }) {
+            if let Some(saved) =
+                persisted.filter(|saved| current_subtabs.iter().any(|subtab| subtab.id == *saved))
+            {
                 active_subtabs.write().insert(current_tab_id.clone(), saved);
                 return;
             }
@@ -224,7 +224,10 @@ pub fn DataTab(
             if subtab.is_empty() {
                 return;
             }
-            if !current_subtabs.iter().any(|candidate| candidate.id == subtab) {
+            if !current_subtabs
+                .iter()
+                .any(|candidate| candidate.id == subtab)
+            {
                 return;
             }
             let cache_marker = format!("{current_tab_id}:{subtab}");
@@ -1197,9 +1200,27 @@ fn stacked_scale_label_placements(
         let Some((series_min, series_max)) = scale else {
             continue;
         };
-        entries.push(ScaleLabelPlacement { series_index, target_y: top_y, label_y: top_y, rail_column: 0, text: format!("{:.2}", series_max) });
-        entries.push(ScaleLabelPlacement { series_index, target_y: mid_y, label_y: mid_y, rail_column: 0, text: format!("{:.2}", (series_min + series_max) * 0.5) });
-        entries.push(ScaleLabelPlacement { series_index, target_y: bottom_y, label_y: bottom_y, rail_column: 0, text: format!("{:.2}", series_min) });
+        entries.push(ScaleLabelPlacement {
+            series_index,
+            target_y: top_y,
+            label_y: top_y,
+            rail_column: 0,
+            text: format!("{:.2}", series_max),
+        });
+        entries.push(ScaleLabelPlacement {
+            series_index,
+            target_y: mid_y,
+            label_y: mid_y,
+            rail_column: 0,
+            text: format!("{:.2}", (series_min + series_max) * 0.5),
+        });
+        entries.push(ScaleLabelPlacement {
+            series_index,
+            target_y: bottom_y,
+            label_y: bottom_y,
+            rail_column: 0,
+            text: format!("{:.2}", series_min),
+        });
     }
 
     entries.sort_by(|a, b| {
