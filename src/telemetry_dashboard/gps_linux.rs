@@ -13,7 +13,7 @@ const GEOCLUE_MANAGER_PATH: &str = "/org/freedesktop/GeoClue2/Manager";
 const GEOCLUE_MANAGER_IFACE: &str = "org.freedesktop.GeoClue2.Manager";
 const GEOCLUE_CLIENT_IFACE: &str = "org.freedesktop.GeoClue2.Client";
 const GEOCLUE_LOCATION_IFACE: &str = "org.freedesktop.GeoClue2.Location";
-const GS26_LINUX_DESKTOP_ID: &str = "com.ubseds.gs26";
+const GS26_LINUX_DESKTOP_ID: &str = "ubseds-groundstation";
 const GEOCLUE_ACCURACY_EXACT: u32 = 8;
 
 fn current_run_token() -> u64 {
