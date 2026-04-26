@@ -5596,6 +5596,7 @@ fn TelemetryDashboardInner() -> Element {
                                     match tab {
                                         MainTab::State => rsx! {
                                             button {
+                                                key: "{\"main-tab-state\"}",
                                                 style: if *active_main_tab.read() == MainTab::State { tab_style_active(&main_tab_accent("state", "#38bdf8")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5610,6 +5611,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::ConnectionStatus => rsx! {
                                             button {
+                                                key: "{\"main-tab-connection-status\"}",
                                                 style: if *active_main_tab.read() == MainTab::ConnectionStatus { tab_style_active(&main_tab_accent("connection-status", "#06b6d4")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5624,6 +5626,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::Detailed => rsx! {
                                             button {
+                                                key: "{\"main-tab-detailed\"}",
                                                 style: if *active_main_tab.read() == MainTab::Detailed { tab_style_active(&main_tab_accent("detailed", "#0ea5e9")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5638,6 +5641,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::Map => rsx! {
                                             button {
+                                                key: "{\"main-tab-map\"}",
                                                 style: if *active_main_tab.read() == MainTab::Map { tab_style_active(&main_tab_accent("map", "#22c55e")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5652,6 +5656,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::Actions => rsx! {
                                             button {
+                                                key: "{\"main-tab-actions\"}",
                                                 style: if *active_main_tab.read() == MainTab::Actions { tab_style_active(&main_tab_accent("actions", "#a78bfa")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5666,6 +5671,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::Calibration => rsx! {
                                             button {
+                                                key: "{\"main-tab-calibration\"}",
                                                 style: if *active_main_tab.read() == MainTab::Calibration { tab_style_active(&main_tab_accent("calibration", "#14b8a6")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5680,6 +5686,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::Notifications => rsx! {
                                             button {
+                                                key: "{\"main-tab-notifications\"}",
                                                 style: if *active_main_tab.read() == MainTab::Notifications { tab_style_active(&main_tab_accent("notifications", "#3b82f6")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5707,6 +5714,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::Warnings => rsx! {
                                             button {
+                                                key: "{\"main-tab-warnings\"}",
                                                 style: if *active_main_tab.read() == MainTab::Warnings { tab_style_active(&main_tab_accent("warnings", "#facc15")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5726,6 +5734,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::Errors => rsx! {
                                             button {
+                                                key: "{\"main-tab-errors\"}",
                                                 style: if *active_main_tab.read() == MainTab::Errors { tab_style_active(&main_tab_accent("errors", "#ef4444")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5745,6 +5754,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::Data => rsx! {
                                             button {
+                                                key: "{\"main-tab-data\"}",
                                                 style: if *active_main_tab.read() == MainTab::Data { tab_style_active(&main_tab_accent("data", "#f97316")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
@@ -5759,6 +5769,7 @@ fn TelemetryDashboardInner() -> Element {
                                         },
                                         MainTab::NetworkTopology => rsx! {
                                             button {
+                                                key: "{\"main-tab-network-topology\"}",
                                                 style: if *active_main_tab.read() == MainTab::NetworkTopology { tab_style_active(&main_tab_accent("network-topology", "#8b5cf6")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
