@@ -154,6 +154,7 @@ const HIGH_RES_PREFETCH_FOCUS_ZOOM_DELTA = 3;
 const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 500;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS_WEB = 12000;
+const HIGH_RES_PREFETCH_IDLE_DELAY_MS_NATIVE_DESKTOP = 20000;
 const MAP_VISIBLE_PREFETCH_SUSPEND_DETAIL = "Auto-prefetch is paused while the live map is visible.";
 const TRACKING_PREFETCH_TILE_RADIUS = 14;
 const TRACKING_PREFETCH_ZOOM_DELTA = 3;
@@ -168,6 +169,8 @@ const TRACKING_PREFETCH_DELAY_MS_WEB = 2000;
 const TRACKING_PREFETCH_CONCURRENCY = 3;
 const TRACKING_PREFETCH_CONCURRENCY_WEB = 1;
 const HIGH_RES_PREFETCH_CONCURRENCY_WEB = 1;
+const HIGH_RES_PREFETCH_CONCURRENCY_NATIVE_DESKTOP = 1;
+const NATIVE_DESKTOP_PREFETCH_YIELD_MS = 32;
 
 function configuredPrefetchRadiusM(kind) {
     const key = kind === "rocket" ? "__gs26_prefetch_rocket_radius_m" : "__gs26_prefetch_user_radius_m";
@@ -291,6 +294,10 @@ function isIosPlatform() {
     const userAgent = navigator.userAgent || "";
     const platform = navigator.platform || "";
     return /iPad|iPhone|iPod/i.test(userAgent) || /iPad|iPhone|iPod/i.test(platform) || (platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function isDesktopNativeMapRuntime() {
+    return !isBrowserHostedMapRuntime() && !isIosPlatform() && !isAndroidPlatform();
 }
 
 function normalizeAngle(deg) {
@@ -440,8 +447,13 @@ function shouldSerializeBrowserTileCacheOps() {
 }
 
 async function yieldBrowserTileWork() {
-    if (!isBrowserHostedMapRuntime()) return;
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (isBrowserHostedMapRuntime()) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return;
+    }
+    if (isDesktopNativeMapRuntime()) {
+        await new Promise((resolve) => setTimeout(resolve, NATIVE_DESKTOP_PREFETCH_YIELD_MS));
+    }
 }
 
 function runBrowserTileCacheOp(task) {
@@ -2613,7 +2625,7 @@ function ensureTrackingTilePrefetchLoop() {
 }
 
 function scheduleTrackingTilePrefetch(options = {}) {
-    if (!shouldRunHighResBrowserMapPrefetch()) {
+    if (!shouldRunBrowserMapPrefetch()) {
         stopTrackingTilePrefetch();
         refreshTilePrefetchEstimate();
         return;
@@ -4269,7 +4281,9 @@ function shouldRunHighResBrowserMapPrefetch() {
 }
 
 function highResPrefetchConcurrencyLimit() {
-    return isBrowserHostedMapRuntime() ? HIGH_RES_PREFETCH_CONCURRENCY_WEB : HIGH_RES_PREFETCH_CONCURRENCY;
+    if (isBrowserHostedMapRuntime()) return HIGH_RES_PREFETCH_CONCURRENCY_WEB;
+    if (isDesktopNativeMapRuntime()) return HIGH_RES_PREFETCH_CONCURRENCY_NATIVE_DESKTOP;
+    return HIGH_RES_PREFETCH_CONCURRENCY;
 }
 
 function trackingPrefetchIntervalMs() {
@@ -4281,11 +4295,13 @@ function trackingPrefetchDelayMs() {
 }
 
 function trackingPrefetchConcurrencyLimit() {
-    return isBrowserHostedMapRuntime() ? TRACKING_PREFETCH_CONCURRENCY_WEB : TRACKING_PREFETCH_CONCURRENCY;
+    return (isBrowserHostedMapRuntime() || isDesktopNativeMapRuntime()) ? TRACKING_PREFETCH_CONCURRENCY_WEB : TRACKING_PREFETCH_CONCURRENCY;
 }
 
 function highResPrefetchIdleDelayMs() {
-    return isBrowserHostedMapRuntime() ? HIGH_RES_PREFETCH_IDLE_DELAY_MS_WEB : HIGH_RES_PREFETCH_IDLE_DELAY_MS;
+    if (isBrowserHostedMapRuntime()) return HIGH_RES_PREFETCH_IDLE_DELAY_MS_WEB;
+    if (isDesktopNativeMapRuntime()) return HIGH_RES_PREFETCH_IDLE_DELAY_MS_NATIVE_DESKTOP;
+    return HIGH_RES_PREFETCH_IDLE_DELAY_MS;
 }
 
 function worldSizeAtZoom(zoom) {
