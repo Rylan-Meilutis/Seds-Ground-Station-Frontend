@@ -34,23 +34,6 @@ pub fn SettingsPage(
 ) -> Element {
     let mut maintenance_status = use_signal(String::new);
     let mut confirm_reset = use_signal(|| false);
-    let storage_tick = use_signal(|| 0u64);
-    {
-        let mut storage_tick = storage_tick;
-        use_future(move || async move {
-            loop {
-                #[cfg(target_arch = "wasm32")]
-                gloo_timers::future::TimeoutFuture::new(1000).await;
-
-                #[cfg(not(target_arch = "wasm32"))]
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-
-                let next_tick = storage_tick.read().wrapping_add(1);
-                storage_tick.set(next_tick);
-            }
-        });
-    }
-    let _storage_tick_snapshot = *storage_tick.read();
     let language = language_code.read().clone();
     let title = title
         .filter(|value| !value.trim().is_empty())

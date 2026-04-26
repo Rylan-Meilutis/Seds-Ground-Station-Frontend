@@ -33,74 +33,54 @@ pub fn DetailedTab(
     cache_stats: Vec<(String, String)>,
     theme: ThemeConfig,
 ) -> Element {
-    let tick = use_signal(|| 0u64);
-    {
-        let mut tick = tick;
-        use_effect(move || {
-            js_eval(
-                r#"
-                (function() {
-                  if (window.__gs26_prefetch_detail_timer) return;
-                  const fmtTime = (ms) => {
-                    const n = Number(ms);
-                    if (!Number.isFinite(n) || n <= 0) return "--";
-                    return new Date(n).toLocaleTimeString();
-                  };
-                  const setText = (id, value) => {
-                    const el = document.getElementById(id);
-                    if (el && el.textContent !== value) el.textContent = value;
-                  };
-                  const update = () => {
-                    if (!document.getElementById("gs26-prefetch-state")) {
-                      clearInterval(window.__gs26_prefetch_detail_timer);
-                      window.__gs26_prefetch_detail_timer = null;
-                      return;
-                    }
-                    const state = window.__gs26_ground_map_cache_state || {};
-                    const context = window.__gs26_ground_map_prefetch_context || {};
-                    const prefetchEnabled = typeof window.__gs26_prefetch_enabled === "boolean"
-                      ? window.__gs26_prefetch_enabled
-                      : true;
-                    const completed = Number(state.completed);
-                    const failed = Number(state.failed);
-                    const grabbed = Number.isFinite(completed) ? Math.max(0, completed - (Number.isFinite(failed) ? failed : 0)) : 0;
-                    const stateName = !prefetchEnabled
-                      ? "disabled"
-                      : (state.state ? String(state.state) : "idle");
-                    const stateDetail = state.detail ? ` (${String(state.detail)})` : "";
-                    setText("gs26-prefetch-state", `${stateName}${stateDetail}`);
-                    setText("gs26-prefetch-last-started", fmtTime(state.lastStartedAt));
-                    setText("gs26-prefetch-last-completed", fmtTime(state.lastCompletedAt));
-                    setText("gs26-prefetch-tiles-grabbed", String(grabbed));
-                    setText("gs26-prefetch-tiles-failed", Number.isFinite(failed) ? String(failed) : "0");
-                    setText("gs26-prefetch-tiles-pending", Number.isFinite(Number(state.pending)) ? String(Number(state.pending)) : "0");
-                    setText("gs26-prefetch-user-context", context.userMessage ? String(context.userMessage) : "--");
-                    setText("gs26-prefetch-rocket-context", context.rocketMessage ? String(context.rocketMessage) : "--");
-                    setText("gs26-prefetch-context-summary", context.summaryMessage ? String(context.summaryMessage) : "--");
-                  };
-                  window.__gs26_prefetch_detail_timer = window.setInterval(update, 500);
-                  update();
-                })();
-                "#,
-            );
-            spawn(async move {
-                loop {
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(500).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                    let next_tick = {
-                        let current_tick = *tick.read();
-                        current_tick.wrapping_add(1)
-                    };
-                    tick.set(next_tick);
+    use_effect(move || {
+        js_eval(
+            r#"
+            (function() {
+              if (window.__gs26_prefetch_detail_timer) return;
+              const fmtTime = (ms) => {
+                const n = Number(ms);
+                if (!Number.isFinite(n) || n <= 0) return "--";
+                return new Date(n).toLocaleTimeString();
+              };
+              const setText = (id, value) => {
+                const el = document.getElementById(id);
+                if (el && el.textContent !== value) el.textContent = value;
+              };
+              const update = () => {
+                if (!document.getElementById("gs26-prefetch-state")) {
+                  clearInterval(window.__gs26_prefetch_detail_timer);
+                  window.__gs26_prefetch_detail_timer = null;
+                  return;
                 }
-            });
-        });
-    }
-    let _tick_snapshot = *tick.read();
+                const state = window.__gs26_ground_map_cache_state || {};
+                const context = window.__gs26_ground_map_prefetch_context || {};
+                const prefetchEnabled = typeof window.__gs26_prefetch_enabled === "boolean"
+                  ? window.__gs26_prefetch_enabled
+                  : true;
+                const completed = Number(state.completed);
+                const failed = Number(state.failed);
+                const grabbed = Number.isFinite(completed) ? Math.max(0, completed - (Number.isFinite(failed) ? failed : 0)) : 0;
+                const stateName = !prefetchEnabled
+                  ? "disabled"
+                  : (state.state ? String(state.state) : "idle");
+                const stateDetail = state.detail ? ` (${String(state.detail)})` : "";
+                setText("gs26-prefetch-state", `${stateName}${stateDetail}`);
+                setText("gs26-prefetch-last-started", fmtTime(state.lastStartedAt));
+                setText("gs26-prefetch-last-completed", fmtTime(state.lastCompletedAt));
+                setText("gs26-prefetch-tiles-grabbed", String(grabbed));
+                setText("gs26-prefetch-tiles-failed", Number.isFinite(failed) ? String(failed) : "0");
+                setText("gs26-prefetch-tiles-pending", Number.isFinite(Number(state.pending)) ? String(Number(state.pending)) : "0");
+                setText("gs26-prefetch-user-context", context.userMessage ? String(context.userMessage) : "--");
+                setText("gs26-prefetch-rocket-context", context.rocketMessage ? String(context.rocketMessage) : "--");
+                setText("gs26-prefetch-context-summary", context.summaryMessage ? String(context.summaryMessage) : "--");
+              };
+              window.__gs26_prefetch_detail_timer = window.setInterval(update, 500);
+              update();
+            })();
+            "#,
+        );
+    });
     let metrics_snapshot = metrics.read().clone();
     let boards = board_status.read().clone();
     let seen_boards = boards

@@ -310,6 +310,16 @@ impl UiTelemetryStore {
     fn snapshot(&self) -> Vec<TelemetryRow> {
         self.rows.values().cloned().collect()
     }
+
+    /// Returns the newest rocket GPS coordinates currently present in the compacted store.
+    fn latest_rocket_gps(&self) -> Option<(f64, f64)> {
+        self.rows.values().rev().find_map(row_to_gps)
+    }
+
+    /// Returns the newest rocket GPS altitude currently present in the compacted store.
+    fn latest_rocket_gps_altitude_m(&self) -> Option<f64> {
+        self.rows.values().rev().find_map(row_to_gps_altitude_m)
+    }
 }
 
 static UI_TELEMETRY_STORE: Lazy<Mutex<UiTelemetryStore>> =
@@ -4125,20 +4135,12 @@ fn TelemetryDashboardInner() -> Element {
 
                     if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
                         store.apply_rows(drained);
-                    }
-                    if let Some(gps) = ui_telemetry_rows_snapshot()
-                        .iter()
-                        .rev()
-                        .find_map(row_to_gps)
-                    {
-                        rocket_gps_flush.set(Some(gps));
-                    }
-                    if let Some(altitude_m) = ui_telemetry_rows_snapshot()
-                        .iter()
-                        .rev()
-                        .find_map(row_to_gps_altitude_m)
-                    {
-                        rocket_gps_altitude_flush.set(Some(altitude_m));
+                        if let Some(gps) = store.latest_rocket_gps() {
+                            rocket_gps_flush.set(Some(gps));
+                        }
+                        if let Some(altitude_m) = store.latest_rocket_gps_altitude_m() {
+                            rocket_gps_altitude_flush.set(Some(altitude_m));
+                        }
                     }
                     persist_cached_telemetry_snapshot_if_due(false);
                 }
