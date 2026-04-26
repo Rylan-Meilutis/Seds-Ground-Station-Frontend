@@ -1598,13 +1598,13 @@ function buildTilePrefetchContextState() {
     let summaryStatus = "ready";
     let summaryMessage = "User and rocket prefetch are ready.";
     if (!hasUser && !hasRocket) {
-        summaryStatus = "waiting";
+        summaryStatus = "waiting-user-and-rocket";
         summaryMessage = "Waiting for user location and rocket telemetry.";
     } else if (!hasUser) {
-        summaryStatus = "partial";
+        summaryStatus = "waiting-user";
         summaryMessage = "User prefetch is deferred until location is available.";
     } else if (!hasRocket) {
-        summaryStatus = "partial";
+        summaryStatus = "waiting-rocket";
         summaryMessage = "Rocket prefetch is deferred until telemetry is available.";
     }
     return {
@@ -2848,11 +2848,17 @@ function scheduleHighResTilePrefetch(options = {}) {
         return;
     }
     if (!tileCacheEnabled() || !tileFetchAllowedForUrl(tilesUrl) || !tilePrefetchSupported()) {
+        const context = publishTilePrefetchContextState();
         currentPrefetchKey = "";
         stopTrackingTilePrefetch();
         refreshTilePrefetchEstimate();
         setTilePrefetchState({
-            key: "", state: "idle", pending: 0, completed: 0, failed: 0,
+            key: "",
+            state: context.summaryStatus === "ready" ? "idle" : context.summaryStatus,
+            detail: context.summaryStatus === "ready" ? "" : context.summaryMessage,
+            pending: 0,
+            completed: 0,
+            failed: 0,
         });
         return;
     }
@@ -2882,7 +2888,7 @@ function scheduleHighResTilePrefetch(options = {}) {
         tilePrefetchTimer = null;
         setTilePrefetchState({
             key: "",
-            state: context.userAvailable || context.rocketAvailable ? "idle" : "waiting-context",
+            state: context.summaryStatus === "ready" ? "idle" : context.summaryStatus,
             detail: context.summaryMessage,
             pending: 0,
             completed: 0,

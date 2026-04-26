@@ -202,7 +202,7 @@ pub(crate) fn format_precise_distance(meters: f64, metric: bool) -> String {
 }
 
 pub(crate) fn format_elevation(meters: Option<f64>, metric: bool) -> String {
-    let Some(meters) = meters.filter(|value| value.is_finite()) else {
+    let Some(meters) = sanitize_altitude_m(meters) else {
         return "--".to_string();
     };
     if metric {
@@ -210,6 +210,10 @@ pub(crate) fn format_elevation(meters: Option<f64>, metric: bool) -> String {
     } else {
         format!("{:.2} ft", meters * 3.280_839_895)
     }
+}
+
+pub(crate) fn sanitize_altitude_m(meters: Option<f64>) -> Option<f64> {
+    meters.filter(|value| value.is_finite())
 }
 
 #[component]
@@ -482,8 +486,10 @@ pub fn MapTab(
     let effective_user = move || -> Option<(f64, f64)> { *browser_user_gps.read() };
     let distance_text =
         format_distance_label(*rocket_gps.read(), effective_user(), distance_units_metric);
-    let rocket_altitude_value = rocket_altitude_m.as_ref().and_then(|signal| *signal.read());
-    let user_altitude_value = user_altitude_m.as_ref().and_then(|signal| *signal.read());
+    let rocket_altitude_value =
+        sanitize_altitude_m(rocket_altitude_m.as_ref().and_then(|signal| *signal.read()));
+    let user_altitude_value =
+        sanitize_altitude_m(user_altitude_m.as_ref().and_then(|signal| *signal.read()));
     let rocket_elevation_text = format_elevation(rocket_altitude_value, distance_units_metric);
     let user_elevation_text = format_elevation(user_altitude_value, distance_units_metric);
     #[cfg(any(target_os = "ios", target_os = "macos", target_os = "android"))]
@@ -641,9 +647,14 @@ fn map_header_row(
         "6px 8px 0 8px"
     };
     let title_size = if fullscreen_mode { "1rem" } else { "0.98rem" };
-    let show_header_metadata = show_header_distance || show_header_altitude;
-    let distance_only = show_header_distance && !show_header_altitude;
-    let altitude_only = show_header_altitude && !show_header_distance;
+    let distance_available = show_header_distance && distance_text.is_some();
+    let rocket_altitude_available = rocket_altitude_value.is_some();
+    let user_altitude_available = user_altitude_value.is_some();
+    let altitude_available =
+        show_header_altitude && (rocket_altitude_available || user_altitude_available);
+    let show_header_metadata = distance_available || altitude_available;
+    let distance_only = distance_available && !altitude_available;
+    let altitude_only = altitude_available && !distance_available;
     let compact_inline = distance_only || altitude_only;
     let shell_class = if compact_inline {
         "gs26-map-header-shell gs26-map-header-inline-compact"
@@ -670,8 +681,8 @@ fn map_header_row(
                             user_elevation_text,
                             rocket_altitude_value,
                             user_altitude_value,
-                            show_header_distance,
-                            show_header_altitude,
+                            distance_available,
+                            altitude_available,
                         )}
                     }
                 }
@@ -705,8 +716,8 @@ fn map_header_row(
                         user_elevation_text,
                         rocket_altitude_value,
                         user_altitude_value,
-                        show_header_distance,
-                        show_header_altitude,
+                        distance_available,
+                        altitude_available,
                     )}
                 }
             }
@@ -727,15 +738,16 @@ fn map_meta_row(
     let distance_label = "Dist";
     let rocket_label = "🚀 Alt";
     let user_label = "🧍 Alt";
-    let distance_value = distance_text.unwrap_or_else(|| "--".to_string());
-    let rocket_altitude_available = rocket_altitude_value.is_some_and(|value| value.is_finite());
-    let user_altitude_available = user_altitude_value.is_some_and(|value| value.is_finite());
+    let rocket_altitude_available = rocket_altitude_value.is_some();
+    let user_altitude_available = user_altitude_value.is_some();
     let any_altitude_available = rocket_altitude_available || user_altitude_available;
 
     rsx! {
         div { style: "display:flex; align-items:center; justify-content:center; gap:4px; min-width:0; overflow:hidden; white-space:nowrap;",
             if show_distance {
-                span { style: "color:{theme.text_secondary}; font-size:0.76rem; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; line-height:1;", "{distance_label}: {distance_value}" }
+                if let Some(distance_value) = distance_text {
+                    span { style: "color:{theme.text_secondary}; font-size:0.76rem; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; line-height:1;", "{distance_label}: {distance_value}" }
+                }
             }
             if show_distance && show_altitude && any_altitude_available {
                 span { style: "color:{theme.border_soft}; font-size:0.7rem; font-weight:700; line-height:1; flex:0 0 auto;", "|" }

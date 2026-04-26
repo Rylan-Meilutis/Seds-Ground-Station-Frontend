@@ -118,8 +118,8 @@ pub fn DetailedTab(
     let now_ms = current_wallclock_ms();
     let rocket_coords = *rocket_gps.read();
     let user_coords = *user_gps.read();
-    let rocket_altitude = *rocket_altitude_m.read();
-    let user_altitude = *user_altitude_m.read();
+    let rocket_altitude = super::map_tab::sanitize_altitude_m(*rocket_altitude_m.read());
+    let user_altitude = super::map_tab::sanitize_altitude_m(*user_altitude_m.read());
     let precise_distance_to_rocket = match (rocket_coords, user_coords) {
         (Some((rocket_lat, rocket_lon)), Some((user_lat, user_lon))) => {
             Some(format_precise_distance(
@@ -285,12 +285,16 @@ pub fn DetailedTab(
                         vec![
                             ("Distance to rocket".to_string(), precise_distance_to_rocket.unwrap_or_else(|| "--".to_string())),
                             ("Rocket coordinates".to_string(), format_coords(rocket_coords)),
-                            ("Rocket elevation".to_string(), format_elevation(rocket_altitude, distance_units_metric)),
+                            (
+                                "Rocket elevation".to_string(),
+                                rocket_altitude
+                                    .map(|value| format_elevation(Some(value), distance_units_metric))
+                                    .unwrap_or_else(|| "Not available".to_string()),
+                            ),
                             ("User coordinates".to_string(), format_coords(user_coords)),
                             (
                                 "User elevation".to_string(),
                                 user_altitude
-                                    .filter(|value| value.is_finite())
                                     .map(|value| format_elevation(Some(value), distance_units_metric))
                                     .unwrap_or_else(|| "Not available".to_string()),
                             ),
