@@ -761,6 +761,20 @@ pub fn SettingsPage(
                         id: "gs26-prefetch-estimate-warning",
                         style: "display:none; font-size:13px; color:{theme.warning_text};",
                     }
+                    div { style: "display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;",
+                        button {
+                            style: chip_idle.clone(),
+                            onclick: {
+                                let prefetch_started_label = prefetch_started_label.clone();
+                                move |_| {
+                                    on_prefetch_map_tiles.call(());
+                                    maintenance_status.set(prefetch_started_label.clone());
+                                    confirm_reset.set(false);
+                                }
+                            },
+                            "{prefetch_now_title}"
+                        }
+                    }
                 }
             }
 
