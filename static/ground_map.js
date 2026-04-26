@@ -2510,7 +2510,7 @@ function buildHighResPrefetchPlan() {
     if (!hasUser && !hasRocket) {
         return {key: "", coords: [], breakdown: {userTiles: 0, rocketTiles: 0, combinedTiles: 0}};
     }
-    const bounds = groundMap && groundMap.getBounds ? groundMap.getBounds() : null;
+    const bounds = hasUser && hasRocket && groundMap && groundMap.getBounds ? groundMap.getBounds() : null;
     const viewportZoom = Math.max(effectiveMinZoom(), Math.min(maxNativeZoom, Math.floor(Number.isFinite(mapZoom) ? mapZoom : maxNativeZoom)));
     const viewportKey = tileRangeKeyForBounds(bounds, viewportZoom, HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES);
     const userTile = hasUser ? latLonToTileXY(userLat, userLon, maxNativeZoom) : null;
