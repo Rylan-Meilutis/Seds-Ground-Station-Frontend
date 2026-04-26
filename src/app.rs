@@ -1067,7 +1067,7 @@ fn route_for_configured_connection() -> Route {
 fn LoginCard(
     title: String,
     subtitle: String,
-    allow_back_to_connect: bool,
+    back_route: Option<Route>,
     on_success_route: Route,
     #[props(default = false)] overlay_mode: bool,
 ) -> Element {
@@ -1076,18 +1076,13 @@ fn LoginCard(
     let base = UrlConfig::base_http();
     auth::init_from_storage(&base);
     let effect_base = base.clone();
-    let continue_logged_out_base = base.clone();
     let skip_tls = UrlConfig::_skip_tls_verify();
-    let mut logged_out_status = use_signal(|| None::<Result<AuthSessionStatus, String>>);
-    let mut logged_out_probe_base = use_signal(String::new);
-    let continue_logged_out_route = on_success_route.clone();
     let sign_in_route = on_success_route.clone();
     let stored_username = auth::current_session()
         .and_then(|session| session.session.username)
         .unwrap_or_default();
     let mut username = use_signal(|| stored_username);
     let mut password = use_signal(String::new);
-    let mut remember_me = use_signal(|| true);
     let mut status = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut submit_login = move || {
@@ -1102,7 +1097,6 @@ fn LoginCard(
             status.set("Enter both username and password.".to_string());
             return;
         }
-        let remember = *remember_me.read();
         let success_route = sign_in_route.clone();
         busy.set(true);
         status.set("Signing in...".to_string());
@@ -1112,7 +1106,7 @@ fn LoginCard(
                 skip_tls,
                 username_value.trim(),
                 &password_value,
-                remember,
+                true,
             )
             .await
             {
@@ -1135,24 +1129,6 @@ fn LoginCard(
         move || {
             auth::init_from_storage(&effect_base);
         }
-    });
-
-    use_effect(move || {
-        if effect_base.trim().is_empty() {
-            return;
-        }
-        let current_probe_base = logged_out_probe_base.read().clone();
-        if current_probe_base == effect_base {
-            return;
-        }
-        logged_out_probe_base.set(effect_base.clone());
-        logged_out_status.set(None);
-        let base = effect_base.clone();
-        spawn(async move {
-            logged_out_status.set(Some(
-                auth::fetch_logged_out_session_status(&base, skip_tls).await,
-            ));
-        });
     });
 
     rsx! {
@@ -1206,21 +1182,6 @@ fn LoginCard(
                         oninput: move |evt| password.set(evt.value()),
                     }
 
-                    div { style: "margin-top:12px; display:flex; align-items:center; gap:10px;",
-                        input {
-                            r#type: "checkbox",
-                            checked: *remember_me.read(),
-                            onclick: move |_| {
-                                let next = {
-                                    let current = *remember_me.read();
-                                    !current
-                                };
-                                remember_me.set(next);
-                            },
-                        }
-                        div { style: "font-size:13px; color:{theme.text_muted};", "Remember this device until the Ground Station session expires" }
-                    }
-
                     if !status().is_empty() {
                         div {
                             style: shell_notice_style(&theme),
@@ -1229,41 +1190,12 @@ fn LoginCard(
                     }
 
                     div { style: "display:flex; gap:12px; margin-top:16px; justify-content:flex-end; flex-wrap:wrap;",
-                    if matches!(logged_out_status.read().as_ref(), Some(Ok(status)) if status.permissions.view_data) {
+                    if let Some(back_route) = back_route.clone() {
                         button {
                             style: shell_button_alt_style(&theme),
                             r#type: "button",
-                            disabled: busy() || base.trim().is_empty(),
                             onclick: move |_| {
-                                let success_route = continue_logged_out_route.clone();
-                                let base = continue_logged_out_base.clone();
-                                busy.set(true);
-                                status.set("Continuing logged out...".to_string());
-                                spawn(async move {
-                                    match auth::fetch_logged_out_session_status(&base, skip_tls).await {
-                                        Ok(session) => {
-                                            auth::set_logged_out_status(session);
-                                            busy.set(false);
-                                            status.set(String::new());
-                                            let _ = nav.replace(success_route);
-                                        }
-                                        Err(err) => {
-                                            busy.set(false);
-                                            status.set(format!("Logged-out access failed: {err}"));
-                                        }
-                                    }
-                                });
-                            },
-                            "Use Logged Out"
-                        }
-                    }
-
-                    if allow_back_to_connect {
-                        button {
-                            style: shell_button_style(&theme),
-                            r#type: "button",
-                            onclick: move |_| {
-                                let _ = nav.replace(connect_route());
+                                let _ = nav.replace(back_route.clone());
                             },
                             "Back"
                         }
@@ -1318,7 +1250,7 @@ fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element 
 fn LoginOverlay(
     title: String,
     subtitle: String,
-    allow_back_to_connect: bool,
+    back_route: Option<Route>,
     on_success_route: Route,
 ) -> Element {
     let theme = shell_theme();
@@ -1334,7 +1266,7 @@ fn LoginOverlay(
                 LoginCard {
                     title: title.clone(),
                     subtitle: subtitle.clone(),
-                    allow_back_to_connect,
+                    back_route: back_route.clone(),
                     on_success_route: on_success_route.clone(),
                     overlay_mode: true,
                 }
@@ -1383,7 +1315,7 @@ pub fn Login() -> Element {
             LoginOverlay {
                 title: "Sign In".to_string(),
                 subtitle: "Authenticate with the Ground Station to view protected data or send commands.".to_string(),
-                allow_back_to_connect: true,
+                back_route: Some(Route::Dashboard {}),
                 on_success_route: authenticated_route(),
             }
         }
@@ -1392,7 +1324,7 @@ pub fn Login() -> Element {
             LoginCard {
                 title: "Sign In".to_string(),
                 subtitle: "Authenticate with the Ground Station to view protected data or send commands.".to_string(),
-                allow_back_to_connect: true,
+                back_route: Some(connect_route()),
                 on_success_route: authenticated_route(),
             }
         }
@@ -2034,7 +1966,7 @@ pub fn Dashboard() -> Element {
                     LoginCard {
                         title: "Sign In Required".to_string(),
                         subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
-                        allow_back_to_connect: true,
+                        back_route: Some(connect_route()),
                         on_success_route: authenticated_route(),
                     }
                 }
@@ -2045,7 +1977,7 @@ pub fn Dashboard() -> Element {
                     LoginOverlay {
                         title: "Sign In Required".to_string(),
                         subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
-                        allow_back_to_connect: true,
+                        back_route: Some(Route::Dashboard {}),
                         on_success_route: authenticated_route(),
                     }
                 }
@@ -2054,7 +1986,7 @@ pub fn Dashboard() -> Element {
                     LoginCard {
                         title: "Sign In Required".to_string(),
                         subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
-                        allow_back_to_connect: true,
+                        back_route: Some(connect_route()),
                         on_success_route: authenticated_route(),
                     }
                 }

@@ -526,7 +526,9 @@ function rememberTileSizeSample(bytes) {
 }
 
 function setTilePrefetchEstimate(plan, sampleTileSize = true) {
-    const tiles = plan && Array.isArray(plan.coords) ? plan.coords.length : 0;
+    const tiles = plan && Number.isFinite(Number(plan.totalTiles))
+        ? Math.max(0, Number(plan.totalTiles))
+        : (plan && Array.isArray(plan.coords) ? plan.coords.length : 0);
     const breakdown = plan && plan.breakdown ? plan.breakdown : {};
     const userTiles = Math.max(0, Number(breakdown.userTiles) || 0);
     const rocketTiles = Math.max(0, Number(breakdown.rocketTiles) || 0);
@@ -1900,6 +1902,47 @@ function tileCoordsForRange(nw, se, zoom, bufferTiles = 0) {
     return coords;
 }
 
+function tileRangeForBounds(bounds, zoom, bufferTiles = 0) {
+    if (!bounds) return null;
+    const north = bounds.getNorth();
+    const south = bounds.getSouth();
+    const east = bounds.getEast();
+    const west = bounds.getWest();
+    const nw = latLonToTileXY(north, west, zoom);
+    const se = latLonToTileXY(south, east, zoom);
+    return tileRangeForCorners(nw, se, zoom, bufferTiles);
+}
+
+function tileRangeForRadius(lat, lon, zoom, radiusM) {
+    const dLat = radiusM / metersPerDegreeLat();
+    const dLon = radiusM / metersPerDegreeLon(lat);
+    const north = lat + dLat;
+    const south = lat - dLat;
+    const east = lon + dLon;
+    const west = lon - dLon;
+    const nw = latLonToTileXY(north, west, zoom);
+    const se = latLonToTileXY(south, east, zoom);
+    return tileRangeForCorners(nw, se, zoom, HIGH_RES_PREFETCH_LOCATION_BUFFER_TILES);
+}
+
+function tileRangeForCorners(nw, se, zoom, bufferTiles = 0) {
+    const z = Math.max(effectiveMinZoom(), Math.floor(Number(zoom)));
+    if (!Number.isFinite(z)) return null;
+    const scale = Math.pow(2, z);
+    if (!Number.isFinite(scale) || scale < 1) return null;
+    const buffer = Math.max(0, Math.floor(Number(bufferTiles) || 0));
+    const xMin = Math.max(0, Math.min(nw.x, se.x) - buffer);
+    const xMax = Math.min(scale - 1, Math.max(nw.x, se.x) + buffer);
+    const yMin = Math.max(0, Math.min(nw.y, se.y) - buffer);
+    const yMax = Math.min(scale - 1, Math.max(nw.y, se.y) + buffer);
+    return xMax >= xMin && yMax >= yMin ? {z, xMin, xMax, yMin, yMax} : null;
+}
+
+function tileCountForRange(range) {
+    if (!range) return 0;
+    return Math.max(0, (range.xMax - range.xMin + 1) * (range.yMax - range.yMin + 1));
+}
+
 function tileCoordsForBounds(bounds, zoom) {
     if (!bounds) return [];
     const north = bounds.getNorth();
@@ -2446,6 +2489,7 @@ function buildHighResPrefetchPlan() {
         return {key: "", coords: [], breakdown: {userTiles: 0, rocketTiles: 0, combinedTiles: 0}};
     }
 
+    const nativeDesktop = isDesktopNativeMapRuntime();
     const maxNativeZoom = effectivePrefetchMaxNativeZoom(tilesUrl);
     const mapZoom = groundMap && typeof groundMap.getZoom === "function" ? groundMap.getZoom() : (lastMapView && Number.isFinite(lastMapView.zoom) ? lastMapView.zoom : NaN);
     const zooms = prefetchZoomLevels(maxNativeZoom, mapZoom);
@@ -2472,6 +2516,59 @@ function buildHighResPrefetchPlan() {
     const userTile = hasUser ? latLonToTileXY(userLat, userLon, maxNativeZoom) : null;
     const rocketTile = hasRocket ? latLonToTileXY(rocketLat, rocketLon, maxNativeZoom) : null;
     const key = [tilesUrl, String(maxNativeZoom || ""), Number.isFinite(mapZoom) ? Math.floor(mapZoom).toString() : "", userTile ? `${userTile.x}:${userTile.y}` : "", rocketTile ? `${rocketTile.x}:${rocketTile.y}` : "", userRadiusM.toFixed(0), rocketRadiusM.toFixed(0), viewportKey,].join("|");
+
+    if (nativeDesktop) {
+        const segments = [];
+        let userTiles = 0;
+        let rocketTiles = 0;
+        let combinedTiles = 0;
+        const combinedSeen = new Set();
+        const countCombinedRange = (range) => {
+            if (!range) return 0;
+            let added = 0;
+            for (let x = range.xMin; x <= range.xMax; x++) {
+                for (let y = range.yMin; y <= range.yMax; y++) {
+                    const id = `${range.z}/${x}/${y}`;
+                    if (combinedSeen.has(id)) continue;
+                    combinedSeen.add(id);
+                    added += 1;
+                }
+            }
+            return added;
+        };
+        for (const zoom of zooms) {
+            if (bounds) {
+                const range = tileRangeForBounds(bounds, zoom, HIGH_RES_PREFETCH_VIEWPORT_BUFFER_TILES);
+                if (range) {
+                    segments.push({kind: "viewport", range});
+                    combinedTiles += countCombinedRange(range);
+                }
+            }
+            if (hasUser) {
+                const range = tileRangeForRadius(userLat, userLon, zoom, userRadiusM);
+                if (range) {
+                    segments.push({kind: "user", range});
+                    userTiles += tileCountForRange(range);
+                    combinedTiles += countCombinedRange(range);
+                }
+            }
+            if (hasRocket) {
+                const range = tileRangeForRadius(rocketLat, rocketLon, zoom, rocketRadiusM);
+                if (range) {
+                    segments.push({kind: "rocket", range});
+                    rocketTiles += tileCountForRange(range);
+                    combinedTiles += countCombinedRange(range);
+                }
+            }
+        }
+        return {
+            key,
+            coords: [],
+            totalTiles: combinedTiles,
+            segments,
+            breakdown: {userTiles, rocketTiles, combinedTiles},
+        };
+    }
 
     for (const zoom of zooms) {
         if (bounds) {
@@ -2550,6 +2647,45 @@ async function runHighResTilePrefetch(runId, key) {
             lastCompletedAt: completed >= total ? now : tilePrefetchState.lastCompletedAt,
         });
     };
+
+    const processNativeDesktopSegments = async () => {
+        const seen = new Set();
+        for (const segment of Array.isArray(plan.segments) ? plan.segments : []) {
+            const range = segment && segment.range;
+            if (!range) continue;
+            for (let x = range.xMin; x <= range.xMax; x++) {
+                for (let y = range.yMin; y <= range.yMax; y++) {
+                    if (runId !== tilePrefetchRunId || effectivePrefetchTilesUrl() !== tilesUrl) return;
+                    const id = `${range.z}/${x}/${y}`;
+                    if (seen.has(id)) continue;
+                    seen.add(id);
+                    const url = resolvePrefetchTileUrl(tilesUrl, range.z, x, y);
+                    if (!url || isKnownMissingTile(cacheName, url)) {
+                        completed += 1;
+                        publishProgress();
+                        continue;
+                    }
+                    try {
+                        await prefetchTileToPersistentCache(cacheName, url);
+                    } catch (e) {
+                        failed += 1;
+                    } finally {
+                        completed += 1;
+                        publishProgress();
+                        await yieldBrowserTileWork();
+                    }
+                }
+            }
+        }
+    };
+
+    if (isDesktopNativeMapRuntime() && Array.isArray(plan.segments)) {
+        await processNativeDesktopSegments();
+        if (runId === tilePrefetchRunId) {
+            publishProgress(true);
+        }
+        return;
+    }
 
     const worker = async () => {
         while (true) {

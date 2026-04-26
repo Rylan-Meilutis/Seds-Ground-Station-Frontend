@@ -138,6 +138,7 @@ pub fn set_current_session(session: StoredAuthSession) {
     }
 }
 
+#[allow(dead_code)]
 pub fn set_logged_out_status(status: SessionStatus) {
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
@@ -316,6 +317,7 @@ fn format_http_error(status: reqwest::StatusCode, body: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub async fn fetch_logged_out_session_status(
     base: &str,
     skip_tls_verify: bool,
