@@ -1165,6 +1165,40 @@ fn default_chart_tick_ms() -> u32 {
     if cfg!(target_os = "ios") { 125 } else { 100 }
 }
 
+fn effective_live_tick_ms_for_tab(base_ms: u32, tab: MainTab) -> u32 {
+    match tab {
+        MainTab::State => base_ms,
+        MainTab::Data | MainTab::Actions | MainTab::Calibration => base_ms.max(100),
+        MainTab::Map | MainTab::NetworkTopology => base_ms.max(125),
+        MainTab::ConnectionStatus
+        | MainTab::Detailed
+        | MainTab::Notifications
+        | MainTab::Warnings
+        | MainTab::Errors => base_ms.max(200),
+    }
+}
+
+fn effective_chart_tick_ms_for_tab(base_ms: u32, tab: MainTab) -> u32 {
+    match tab {
+        MainTab::State => base_ms,
+        MainTab::Data => base_ms.max(150),
+        _ => base_ms.max(500),
+    }
+}
+
+fn effective_ui_flush_tick_ms_for_tab(base_ms: u32, tab: MainTab) -> u32 {
+    match tab {
+        MainTab::State => base_ms,
+        MainTab::Data | MainTab::Actions | MainTab::Calibration => base_ms.max(125),
+        MainTab::Map | MainTab::NetworkTopology => base_ms.max(150),
+        MainTab::ConnectionStatus
+        | MainTab::Detailed
+        | MainTab::Notifications
+        | MainTab::Warnings
+        | MainTab::Errors => base_ms.max(200),
+    }
+}
+
 fn bump_chart_render_epoch() {
     let mut render_epoch = CHART_RENDER_EPOCH.write();
     *render_epoch = render_epoch.wrapping_add(1);
@@ -3931,9 +3965,11 @@ fn TelemetryDashboardInner() -> Element {
     // ------------------------------------------------------------------------
     {
         let alive = alive.clone();
+        let active_main_tab = active_main_tab;
 
         use_effect(move || {
             let alive = alive.clone();
+            let active_main_tab = active_main_tab;
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
@@ -3945,7 +3981,11 @@ fn TelemetryDashboardInner() -> Element {
 
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
                     let page_visible = dashboard_page_visible();
-                    let effective_tick_ms = if page_visible { live_tick_ms } else { 1_000 };
+                    let effective_tick_ms = if page_visible {
+                        effective_live_tick_ms_for_tab(live_tick_ms, *active_main_tab.read())
+                    } else {
+                        1_000
+                    };
 
                     #[cfg(target_arch = "wasm32")]
                     gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
@@ -3992,8 +4032,9 @@ fn TelemetryDashboardInner() -> Element {
 
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
                     let page_visible = dashboard_page_visible();
+                    let active_tab = *active_main_tab.read();
                     let effective_tick_ms = if page_visible {
-                        chart_tick_ms
+                        effective_chart_tick_ms_for_tab(chart_tick_ms, active_tab)
                     } else {
                         chart_tick_ms.max(1_000)
                     };
@@ -4009,8 +4050,8 @@ fn TelemetryDashboardInner() -> Element {
                         break;
                     }
 
-                    let chart_tab_visible = page_visible
-                        && matches!(*active_main_tab.read(), MainTab::Data | MainTab::State);
+                    let chart_tab_visible =
+                        page_visible && matches!(active_tab, MainTab::Data | MainTab::State);
                     if !chart_tab_visible {
                         CHART_RENDER_DIRTY.store(false, Ordering::Release);
                         continue;
@@ -4029,10 +4070,12 @@ fn TelemetryDashboardInner() -> Element {
     // ------------------------------------------------------------------------
     {
         let alive = alive.clone();
+        let active_main_tab = active_main_tab;
         let rocket_gps_flush = rocket_gps;
 
         use_effect(move || {
             let alive = alive.clone();
+            let active_main_tab = active_main_tab;
             let mut rocket_gps_flush = rocket_gps_flush;
             let mut rocket_gps_altitude_flush = rocket_gps_altitude_m;
             let epoch = *WS_EPOCH.read();
@@ -4049,12 +4092,13 @@ fn TelemetryDashboardInner() -> Element {
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
                     let page_visible = dashboard_page_visible();
                     let queue_len = TELEMETRY_QUEUE.lock().map(|q| q.len()).unwrap_or(0);
+                    let active_tab = *active_main_tab.read();
                     let effective_tick_ms = if !page_visible {
                         tick_ms.max(500)
                     } else if queue_len == 0 {
                         tick_ms.max(250)
                     } else {
-                        tick_ms
+                        effective_ui_flush_tick_ms_for_tab(tick_ms, active_tab)
                     };
 
                     #[cfg(target_arch = "wasm32")]
