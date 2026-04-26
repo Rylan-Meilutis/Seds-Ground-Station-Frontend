@@ -13,7 +13,11 @@ const GEOCLUE_MANAGER_PATH: &str = "/org/freedesktop/GeoClue2/Manager";
 const GEOCLUE_MANAGER_IFACE: &str = "org.freedesktop.GeoClue2.Manager";
 const GEOCLUE_CLIENT_IFACE: &str = "org.freedesktop.GeoClue2.Client";
 const GEOCLUE_LOCATION_IFACE: &str = "org.freedesktop.GeoClue2.Location";
-const GS26_LINUX_DESKTOP_ID: &str = "ubseds-groundstation";
+const GS26_LINUX_DESKTOP_IDS: &[&str] = &[
+    "ubseds-groundstation.desktop",
+    "ubseds-groundstation",
+    "com.ubseds.gs26",
+];
 const GEOCLUE_ACCURACY_EXACT: u32 = 8;
 
 fn current_run_token() -> u64 {
@@ -56,10 +60,25 @@ async fn open_geoclue_client() -> Result<(zbus::Connection, OwnedObjectPath), St
     .await
     .map_err(|e| format!("Linux GeoClue client proxy failed: {e}"))?;
 
-    client
-        .set_property("DesktopId", &GS26_LINUX_DESKTOP_ID)
-        .await
-        .map_err(|e| format!("Linux GeoClue DesktopId set failed: {e}"))?;
+    let mut desktop_id_error = None;
+    let mut desktop_id_set = false;
+    for desktop_id in GS26_LINUX_DESKTOP_IDS {
+        match client.set_property("DesktopId", desktop_id).await {
+            Ok(_) => {
+                desktop_id_set = true;
+                break;
+            }
+            Err(err) => {
+                desktop_id_error = Some(format!(
+                    "Linux GeoClue DesktopId set failed for {desktop_id}: {err}"
+                ));
+            }
+        }
+    }
+    if !desktop_id_set {
+        return Err(desktop_id_error
+            .unwrap_or_else(|| "Linux GeoClue DesktopId set failed".to_string()));
+    }
     client
         .set_property("RequestedAccuracyLevel", &GEOCLUE_ACCURACY_EXACT)
         .await
@@ -123,6 +142,7 @@ pub async fn run(
 ) {
     let token = begin_new_run();
     let mut last_error = String::new();
+    let mut last_waiting_log_ms = 0u64;
 
     while current_run_token() == token {
         match open_geoclue_client().await {
@@ -152,7 +172,19 @@ pub async fn run(
                                 user_altitude_m.set(altitude_m);
                             }
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            if now_ms.saturating_sub(last_waiting_log_ms) >= 10_000 {
+                                eprintln!(
+                                    "Linux GeoClue is running but has not produced a usable location yet. \
+Make sure location services are enabled and this app is allowed to access them."
+                                );
+                                last_waiting_log_ms = now_ms;
+                            }
+                        }
                         Err(message) => {
                             if last_error != message {
                                 eprintln!("{message}");
