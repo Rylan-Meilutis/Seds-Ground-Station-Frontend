@@ -94,13 +94,28 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
 const DATA_CHART_NORMALIZED_GRID_LEFT: f32 = 18.0;
 const DATA_CHART_NORMALIZED_GRID_RIGHT_PAD: f32 = 12.0;
 const DATA_CHART_PER_SERIES_LABEL_ROW_GAP: f64 = 18.0;
+const DATA_CHART_VERTICAL_SCALE_LABEL_RAIL_GAP: f64 = 6.0;
+
+#[derive(Clone)]
+struct ScaleLabelPlacement {
+    series_index: usize,
+    target_y: f64,
+    label_y: f64,
+    rail_column: usize,
+    text: String,
+}
 
 fn subtab_storage_key(tab_id: &str) -> String {
     format!("{_ACTIVE_SUBTAB_STORAGE_KEY_PREFIX}{tab_id}")
 }
 
 #[component]
-pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeConfig) -> Element {
+pub fn DataTab(
+    active_tab: Signal<String>,
+    layout: DataTabLayout,
+    #[props(default = false)] state_chart_labels_vertical: bool,
+    theme: ThemeConfig,
+) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
@@ -492,6 +507,7 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
                     chart_key: chart_key.clone(),
                     labels: labels.clone(),
                     summary_items: summary_items.clone(),
+                    state_chart_labels_vertical: state_chart_labels_vertical,
                     view_w: view_w,
                     view_h: view_h,
                     view_h_full: view_h_full,
@@ -714,6 +730,7 @@ fn DataGraphPanel(
     chart_key: String,
     labels: Vec<String>,
     summary_items: Vec<DataSummaryItem>,
+    state_chart_labels_vertical: bool,
     view_w: f64,
     view_h: f64,
     view_h_full: f64,
@@ -780,6 +797,7 @@ fn DataGraphPanel(
                                 &chart_key,
                                 &labels,
                                 &summary_items,
+                                state_chart_labels_vertical,
                                 view_w,
                                 view_h,
                                 left,
@@ -823,6 +841,7 @@ fn DataGraphPanel(
                                     &chart_key,
                                     &labels,
                                     &summary_items,
+                                    state_chart_labels_vertical,
                                     view_w,
                                     view_h_full,
                                     left,
@@ -850,6 +869,7 @@ fn render_chart_group(
     fallback_chart_key: &str,
     fallback_labels: &[String],
     summary_items: &[DataSummaryItem],
+    state_chart_labels_vertical: bool,
     view_w: f64,
     view_h: f64,
     left: f64,
@@ -1032,18 +1052,42 @@ fn render_chart_group(
     } else {
         Vec::new()
     };
-    let widest_scale_label_chars = scale_entries
-        .iter()
-        .map(|(_, text)| text.len())
-        .max()
-        .unwrap_or(5);
+    let scale_label_placements = if use_per_series_scale && state_chart_labels_vertical {
+        stacked_scale_label_placements(&per_series_scales, pad_top, inner_h, view_h)
+    } else {
+        Vec::new()
+    };
+    let widest_scale_label_chars = if state_chart_labels_vertical {
+        scale_label_placements
+            .iter()
+            .map(|entry| entry.text.len())
+            .max()
+            .unwrap_or(5)
+    } else {
+        scale_entries
+            .iter()
+            .map(|(_, text)| text.len())
+            .max()
+            .unwrap_or(5)
+    };
     let scale_chip_width = (widest_scale_label_chars as f64 * 5.8 + 13.0).clamp(38.0, 74.0);
-    let per_series_label_width = if use_per_series_scale {
+    let per_series_label_width = if use_per_series_scale && state_chart_labels_vertical {
+        let columns = scale_label_placements
+            .iter()
+            .map(|entry| entry.rail_column)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        (columns as f64 * scale_chip_width)
+            + (columns.saturating_sub(1) as f64 * DATA_CHART_VERTICAL_SCALE_LABEL_RAIL_GAP)
+    } else if use_per_series_scale {
         scale_chip_width + 8.0
     } else {
         0.0
     };
-    let rendered_chart_height = if use_per_series_scale {
+    let rendered_chart_height = if use_per_series_scale && state_chart_labels_vertical {
+        view_h
+    } else if use_per_series_scale {
         let rows = scale_entries.len().max(1);
         (CHART_GRID_TOP
             + CHART_GRID_BOTTOM_PAD
@@ -1068,17 +1112,6 @@ fn render_chart_group(
             scale_chip_width = scale_chip_width,
         )
     };
-    let label_y_pct = |idx: usize| {
-        if scale_entries.len() <= 1 {
-            y_pct(CHART_GRID_TOP + 8.0, rendered_chart_height)
-        } else {
-            let min_y = CHART_GRID_TOP + 8.0;
-            let max_y = (rendered_chart_height - CHART_GRID_BOTTOM_PAD - 8.0).max(min_y);
-            let gap = ((max_y - min_y) / (scale_entries.len() as f64 - 1.0))
-                .max(DATA_CHART_PER_SERIES_LABEL_ROW_GAP);
-            y_pct((min_y + idx as f64 * gap).min(max_y), rendered_chart_height)
-        }
-    };
     rsx! {
         div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(title) = group.title.as_ref() {
@@ -1089,14 +1122,18 @@ fn render_chart_group(
             }
             div { style: "display:flex; gap:6px; align-items:stretch; width:100%; {chart_shell_size_style}",
                 if use_per_series_scale {
-                    div { style: "position:relative; flex:0 0 {per_series_label_width}px; width:{per_series_label_width}px; min-width:{per_series_label_width}px; height:100%; overflow:hidden;",
-                        for (entry_idx, (series_idx, text)) in scale_entries.iter().enumerate() {
-                            div {
-                                style: "position:absolute; right:0; top:{label_y_pct(entry_idx)}; transform:translateY(-50%); pointer-events:none;",
-                                div { style: "{per_series_chip_style(*series_idx)}", "{text}" }
-                            }
-                        }
-                    }
+                    {normalized_scale_labels_side(
+                        &legend_labels,
+                        &per_series_scales,
+                        per_series_label_width,
+                        pad_top,
+                        inner_h,
+                        rendered_chart_height,
+                        state_chart_labels_vertical,
+                        &scale_label_placements,
+                        scale_chip_width,
+                        &per_series_chip_style,
+                    )}
                 }
                 div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%;",
                     ChartCanvas {
@@ -1119,6 +1156,16 @@ fn render_chart_group(
                         span { style: "position:absolute; left:{x_pct(view_w * 0.5, view_w)}; top:{y_pct(x_label_top, view_h)}; transform:translateX(-50%);", "{x_mid_s}" }
                         span { style: "position:absolute; left:{x_pct(chart_right - 52.0, view_w)}; top:{y_pct(x_label_top, view_h)};", "{translate_text(\"now\")}" }
                     }
+                    if use_per_series_scale && state_chart_labels_vertical {
+                        {normalized_scale_connector_overlay(
+                            &scale_label_placements,
+                            chart_left,
+                            DATA_CHART_VERTICAL_SCALE_LABEL_RAIL_GAP,
+                            scale_chip_width,
+                            view_w,
+                            rendered_chart_height,
+                        )}
+                    }
                 }
             }
             if !legend_rows.is_empty() {
@@ -1129,6 +1176,157 @@ fn render_chart_group(
                             "{translate_text(label)}"
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+fn stacked_scale_label_placements(
+    series_scales: &[Option<(f32, f32)>],
+    top: f64,
+    inner_h: f64,
+    view_h: f64,
+) -> Vec<ScaleLabelPlacement> {
+    let mut entries = Vec::new();
+    let top_y = top + 8.0;
+    let mid_y = top + inner_h * 0.5;
+    let bottom_y = top + inner_h - 8.0;
+
+    for (series_index, scale) in series_scales.iter().enumerate() {
+        let Some((series_min, series_max)) = scale else {
+            continue;
+        };
+        entries.push(ScaleLabelPlacement { series_index, target_y: top_y, label_y: top_y, rail_column: 0, text: format!("{:.2}", series_max) });
+        entries.push(ScaleLabelPlacement { series_index, target_y: mid_y, label_y: mid_y, rail_column: 0, text: format!("{:.2}", (series_min + series_max) * 0.5) });
+        entries.push(ScaleLabelPlacement { series_index, target_y: bottom_y, label_y: bottom_y, rail_column: 0, text: format!("{:.2}", series_min) });
+    }
+
+    entries.sort_by(|a, b| {
+        a.target_y
+            .partial_cmp(&b.target_y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.series_index.cmp(&b.series_index))
+    });
+
+    let min_y = top_y;
+    let max_y = (view_h - CHART_GRID_BOTTOM_PAD - 8.0).max(min_y);
+    let row_gap = DATA_CHART_PER_SERIES_LABEL_ROW_GAP;
+    let rows_per_column = (((max_y - min_y) / row_gap).floor() as usize + 1).max(1);
+    let columns = entries.len().div_ceil(rows_per_column).max(1);
+    let rows_in_column = entries.len().div_ceil(columns).max(1);
+    let effective_gap = if rows_in_column > 1 {
+        row_gap.max((max_y - min_y) / (rows_in_column as f64 - 1.0))
+    } else {
+        row_gap
+    };
+
+    for (idx, entry) in entries.iter_mut().enumerate() {
+        let column = idx / rows_in_column;
+        let row = idx % rows_in_column;
+        entry.rail_column = column;
+        entry.label_y = (min_y + row as f64 * effective_gap).clamp(min_y, max_y);
+    }
+
+    entries
+}
+
+fn normalized_scale_labels_side<F>(
+    labels: &[String],
+    series_scales: &[Option<(f32, f32)>],
+    label_width: f64,
+    top: f64,
+    inner_h: f64,
+    view_h: f64,
+    vertical_mode: bool,
+    vertical_placements: &[ScaleLabelPlacement],
+    scale_chip_width: f64,
+    scale_chip_style: &F,
+) -> Element
+where
+    F: Fn(usize) -> String,
+{
+    let cols = labels
+        .iter()
+        .enumerate()
+        .filter_map(|(i, _)| {
+            series_scales
+                .get(i)
+                .and_then(|scale| scale.map(|pair| (i, pair)))
+        })
+        .collect::<Vec<_>>();
+    let pct = |value: f64, total: f64| format!("{:.4}%", (value / total) * 100.0);
+    let row_style = |y: f64, transform: &str| {
+        format!(
+            "position:absolute; right:0; top:{}; display:flex; align-items:center; gap:clamp(2px, 0.35vw, 4px); \
+             transform:{transform}; pointer-events:none; white-space:nowrap;",
+            pct(y, view_h)
+        )
+    };
+    let top_row_style = row_style(top + 6.0, "");
+    let mid_row_style = row_style(top + inner_h * 0.5, "translateY(-50%)");
+    let bottom_row_style = row_style(top + inner_h - 6.0, "translateY(-100%)");
+
+    rsx! {
+        div { style: "position:relative; flex:0 0 {label_width}px; width:{label_width}px; min-width:{label_width}px; height:100%; overflow:hidden; container-type:inline-size;",
+            if vertical_mode {
+                for entry in vertical_placements.iter() {
+                    div {
+                        style: "position:absolute; right:{entry.rail_column as f64 * (scale_chip_width + DATA_CHART_VERTICAL_SCALE_LABEL_RAIL_GAP)}px; top:{pct(entry.label_y, view_h)}; transform:translateY(-50%); pointer-events:none; max-width:{scale_chip_width}px;",
+                        div { style: "{scale_chip_style(entry.series_index)}", "{entry.text}" }
+                    }
+                }
+            } else {
+                div { style: "{top_row_style}",
+                    for (i, (_, series_max)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_max)} }
+                    }
+                }
+                div { style: "{mid_row_style}",
+                    for (i, (series_min, series_max)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", (series_min + series_max) * 0.5)} }
+                    }
+                }
+                div { style: "{bottom_row_style}",
+                    for (i, (series_min, _)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_min)} }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn normalized_scale_connector_overlay(
+    placements: &[ScaleLabelPlacement],
+    y_axis_x: f64,
+    rail_gap: f64,
+    scale_chip_width: f64,
+    view_w: f64,
+    view_h: f64,
+) -> Element {
+    rsx! {
+        svg {
+            style: "position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible;",
+            view_box: "0 0 {view_w} {view_h}",
+            preserve_aspect_ratio: "none",
+            for entry in placements.iter() {
+                line {
+                    x1: "{-(rail_gap + entry.rail_column as f64 * (scale_chip_width + DATA_CHART_VERTICAL_SCALE_LABEL_RAIL_GAP))}",
+                    y1: "{entry.label_y}",
+                    x2: "{y_axis_x}",
+                    y2: "{entry.target_y}",
+                    stroke: "#fbbf24",
+                    stroke_width: "1.2",
+                    stroke_opacity: "0.72",
+                    vector_effect: "non-scaling-stroke",
+                }
+                circle {
+                    cx: "{y_axis_x}",
+                    cy: "{entry.target_y}",
+                    r: "1.4",
+                    fill: "#fbbf24",
+                    opacity: "0.86",
                 }
             }
         }

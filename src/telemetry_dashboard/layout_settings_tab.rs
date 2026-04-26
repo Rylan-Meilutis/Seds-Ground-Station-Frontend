@@ -14,6 +14,7 @@ pub fn SettingsPage(
     network_flow_animation_enabled: Signal<bool>,
     network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
+    chart_interpolated_gap_ms: Signal<u64>,
     data_cache_enabled: Signal<bool>,
     map_tile_cache_enabled: Signal<bool>,
     cache_budget_mb: Signal<u32>,
@@ -62,6 +63,7 @@ pub fn SettingsPage(
     let flow_animation_enabled = *network_flow_animation_enabled.read();
     let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
+    let chart_interpolated_gap_ms_value = (*chart_interpolated_gap_ms.read()).clamp(0, 60_000);
     let data_cache_enabled_value = *data_cache_enabled.read();
     let map_tile_cache_enabled_value = *map_tile_cache_enabled.read();
     let cache_budget_mb_value = (*cache_budget_mb.read()).clamp(1, 100_000);
@@ -357,6 +359,18 @@ pub fn SettingsPage(
     );
     let chart_labels_side = localized_copy(&language, "Side Rail", "Riel lateral", "Rail lateral");
     let chart_labels_vertical = localized_copy(&language, "Vertical", "Vertical", "Vertical");
+    let chart_gap_title = localized_copy(
+        &language,
+        "Interpolation Gap Threshold",
+        "Umbral de interpolacion",
+        "Seuil d'interpolation",
+    );
+    let chart_gap_desc = localized_copy(
+        &language,
+        "Milliseconds a sample gap can last before the chart switches to dashed interpolated segments.",
+        "Milisegundos que puede durar un hueco antes de mostrar segmentos interpolados discontinuos.",
+        "Millisecondes qu'un trou peut durer avant d'afficher des segments interpoles en pointille.",
+    );
     let clear_data_cache_title =
         localized_copy(&language, "Clear Cache", "Limpiar cache", "Vider le cache");
     let clear_data_map_cache_title = localized_copy(
@@ -815,6 +829,26 @@ pub fn SettingsPage(
                         style: if state_chart_labels_vertical_enabled { chip_selected.clone() } else { chip_idle.clone() },
                         onclick: move |_| state_chart_labels_vertical.set(true),
                         "{chart_labels_vertical}"
+                    }
+                }
+                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{chart_gap_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{chart_gap_desc}" }
+                    input {
+                        style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:160px;",
+                        r#type: "number",
+                        min: "0",
+                        max: "60000",
+                        step: "100",
+                        value: "{chart_interpolated_gap_ms_value}",
+                        oninput: {
+                            let mut chart_interpolated_gap_ms = chart_interpolated_gap_ms;
+                            move |e| {
+                                if let Ok(value) = e.value().trim().parse::<u64>() {
+                                    chart_interpolated_gap_ms.set(value.clamp(0, 60_000));
+                                }
+                            }
+                        }
                     }
                 }
             }

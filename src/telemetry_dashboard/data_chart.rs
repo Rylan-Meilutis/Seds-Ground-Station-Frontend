@@ -1189,6 +1189,8 @@ impl CachedChart {
         let render_chunk_buckets = (RENDER_CHUNK_MS / lod_bucket_ms).max(1);
         let first_chunk_id = start_view_id.div_euclid(render_chunk_buckets);
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
+        let mut carry_last_bucket_id_drawn: Vec<Option<i64>> = vec![None; self.channel_count];
+        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; self.channel_count];
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);
@@ -1203,8 +1205,8 @@ impl CachedChart {
             let mut paths = vec![String::new(); self.channel_count];
             let mut gap_paths = vec![String::new(); self.channel_count];
             let mut segment_points: Vec<Vec<(f32, f32)>> = vec![Vec::new(); self.channel_count];
-            let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; self.channel_count];
-            let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; self.channel_count];
+            let mut last_bucket_id_drawn = carry_last_bucket_id_drawn.clone();
+            let mut last_point_drawn = carry_last_point_drawn.clone();
 
             for b in &view_buckets {
                 if b.id < chunk_start_bid || b.id > chunk_end_bid {
@@ -1267,6 +1269,9 @@ impl CachedChart {
                 signature: hasher.finish(),
                 live: chunk_id == last_chunk_id,
             });
+
+            carry_last_bucket_id_drawn = last_bucket_id_drawn;
+            carry_last_point_drawn = last_point_drawn;
         }
 
         self.chunks = Rc::new(chunks);
@@ -1343,6 +1348,9 @@ impl CachedChart {
         let first_chunk_id = start_view_id.div_euclid(render_chunk_buckets);
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
         let mut chunks = Vec::new();
+        let mut carry_last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
+        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> =
+            vec![None; valid_channels.len()];
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);
@@ -1357,8 +1365,8 @@ impl CachedChart {
             let mut paths = vec![String::new(); valid_channels.len()];
             let mut gap_paths = vec![String::new(); valid_channels.len()];
             let mut segment_points: Vec<Vec<(f32, f32)>> = vec![Vec::new(); valid_channels.len()];
-            let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
-            let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
+            let mut last_bucket_id_drawn = carry_last_bucket_id_drawn.clone();
+            let mut last_point_drawn = carry_last_point_drawn.clone();
 
             for b in &view_buckets {
                 if b.id < chunk_start_bid || b.id > chunk_end_bid {
@@ -1421,6 +1429,9 @@ impl CachedChart {
                 signature: hasher.finish(),
                 live: chunk_id == last_chunk_id,
             });
+
+            carry_last_bucket_id_drawn = last_bucket_id_drawn;
+            carry_last_point_drawn = last_point_drawn;
         }
 
         let cached = CachedSubset {
@@ -1547,6 +1558,9 @@ impl CachedChart {
         let first_chunk_id = start_view_id.div_euclid(render_chunk_buckets);
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
         let mut chunks = Vec::new();
+        let mut carry_last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
+        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> =
+            vec![None; valid_channels.len()];
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);
@@ -1561,8 +1575,8 @@ impl CachedChart {
             let mut paths = vec![String::new(); valid_channels.len()];
             let mut gap_paths = vec![String::new(); valid_channels.len()];
             let mut segment_points: Vec<Vec<(f32, f32)>> = vec![Vec::new(); valid_channels.len()];
-            let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
-            let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
+            let mut last_bucket_id_drawn = carry_last_bucket_id_drawn.clone();
+            let mut last_point_drawn = carry_last_point_drawn.clone();
 
             for b in &view_buckets {
                 if b.id < chunk_start_bid || b.id > chunk_end_bid {
@@ -1627,6 +1641,9 @@ impl CachedChart {
                 signature: hasher.finish(),
                 live: chunk_id == last_chunk_id,
             });
+
+            carry_last_bucket_id_drawn = last_bucket_id_drawn;
+            carry_last_point_drawn = last_point_drawn;
         }
 
         let cached = CachedSubsetPerSeries {
@@ -1848,6 +1865,11 @@ pub fn SeriesSwatch(index: usize) -> Element {
 static NEXT_CANVAS_ID: AtomicU64 = AtomicU64::new(1);
 static CHART_CANVAS_RENDERER_INSTALLED: AtomicBool = AtomicBool::new(false);
 static CHART_CANVAS_RENDERER_BOOTSTRAP: OnceLock<String> = OnceLock::new();
+static INTERPOLATED_GAP_THRESHOLD_MS: AtomicU64 = AtomicU64::new(5_000);
+
+pub fn set_interpolated_gap_threshold_ms(value_ms: u64) {
+    INTERPOLATED_GAP_THRESHOLD_MS.store(value_ms.clamp(0, 60_000), Ordering::Relaxed);
+}
 
 fn should_smooth_chunk(chunk_width: f32, chunk_bucket_count: i64) -> bool {
     chunk_width >= 220.0 && chunk_bucket_count <= SMOOTHING_MAX_POINTS_PER_SEGMENT as i64
@@ -1875,6 +1897,10 @@ fn bridge_or_mark_gap(
 ) {
     let gap_buckets = current_bid - prev_bid;
     if gap_buckets <= 1 {
+        return;
+    }
+    let gap_ms = (gap_buckets as u64).saturating_mul(BUCKET_MS as u64);
+    if gap_ms <= INTERPOLATED_GAP_THRESHOLD_MS.load(Ordering::Relaxed) {
         return;
     }
     let Some((prev_x, prev_y)) = prev_point else {

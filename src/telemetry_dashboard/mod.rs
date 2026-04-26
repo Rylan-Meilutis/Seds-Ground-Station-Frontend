@@ -723,6 +723,7 @@ const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
 const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertical";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
+const CHART_INTERPOLATED_GAP_MS_STORAGE_KEY: &str = "gs_chart_interpolated_gap_ms";
 const DATA_CACHE_ENABLED_STORAGE_KEY: &str = "gs_data_cache_enabled";
 const MAP_TILE_CACHE_ENABLED_STORAGE_KEY: &str = "gs26_tile_cache_enabled";
 const CACHE_BUDGET_MB_STORAGE_KEY: &str = "gs_cache_budget_mb";
@@ -1723,6 +1724,13 @@ pub fn NativeSettingsPage() -> Element {
         use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
+    let chart_interpolated_gap_ms = use_signal(|| {
+        persist::get_or(CHART_INTERPOLATED_GAP_MS_STORAGE_KEY, "5000")
+            .parse::<u64>()
+            .ok()
+            .unwrap_or(5_000)
+            .clamp(0, 60_000)
+    });
     let data_cache_enabled =
         use_signal(|| persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_tile_cache_enabled =
@@ -1825,6 +1833,14 @@ pub fn NativeSettingsPage() -> Element {
                 "off"
             };
             persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
+        let chart_interpolated_gap_ms = chart_interpolated_gap_ms;
+        use_effect(move || {
+            let value = (*chart_interpolated_gap_ms.read()).clamp(0, 60_000);
+            persist::set_string(CHART_INTERPOLATED_GAP_MS_STORAGE_KEY, &value.to_string());
+            data_chart::set_interpolated_gap_threshold_ms(value);
         });
     }
     {
@@ -1994,6 +2010,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut network_flow_animation_enabled = network_flow_animation_enabled;
         let mut network_topology_vertical = network_topology_vertical;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
+        let mut chart_interpolated_gap_ms = chart_interpolated_gap_ms;
         let mut data_cache_enabled = data_cache_enabled;
         let mut map_tile_cache_enabled = map_tile_cache_enabled;
         let mut cache_budget_mb = cache_budget_mb;
@@ -2011,6 +2028,7 @@ pub fn NativeSettingsPage() -> Element {
             network_flow_animation_enabled.set(true);
             network_topology_vertical.set(false);
             state_chart_labels_vertical.set(false);
+            chart_interpolated_gap_ms.set(5_000);
             data_cache_enabled.set(true);
             map_tile_cache_enabled.set(true);
             cache_budget_mb.set(DEFAULT_CACHE_BUDGET_MB);
@@ -2031,6 +2049,7 @@ pub fn NativeSettingsPage() -> Element {
             network_flow_animation_enabled,
             network_topology_vertical,
             state_chart_labels_vertical,
+            chart_interpolated_gap_ms,
             data_cache_enabled,
             map_tile_cache_enabled,
             cache_budget_mb,
@@ -3133,6 +3152,13 @@ fn TelemetryDashboardInner() -> Element {
         use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
         use_signal(|| persist::get_or(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, "off") == "on");
+    let chart_interpolated_gap_ms = use_signal(|| {
+        persist::get_or(CHART_INTERPOLATED_GAP_MS_STORAGE_KEY, "5000")
+            .parse::<u64>()
+            .ok()
+            .unwrap_or(5_000)
+            .clamp(0, 60_000)
+    });
     let data_cache_enabled =
         use_signal(|| persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_tile_cache_enabled =
@@ -3676,6 +3702,14 @@ fn TelemetryDashboardInner() -> Element {
                 "off"
             };
             persist::set_string(STATE_CHART_LABELS_VERTICAL_STORAGE_KEY, value);
+        });
+    }
+    {
+        let chart_interpolated_gap_ms = chart_interpolated_gap_ms;
+        use_effect(move || {
+            let value = (*chart_interpolated_gap_ms.read()).clamp(0, 60_000);
+            persist::set_string(CHART_INTERPOLATED_GAP_MS_STORAGE_KEY, &value.to_string());
+            data_chart::set_interpolated_gap_threshold_ms(value);
         });
     }
     {
@@ -4924,6 +4958,7 @@ fn TelemetryDashboardInner() -> Element {
                             network_flow_animation_enabled: network_flow_animation_enabled,
                             network_topology_vertical: network_topology_vertical,
                             state_chart_labels_vertical: state_chart_labels_vertical,
+                            chart_interpolated_gap_ms: chart_interpolated_gap_ms,
                             data_cache_enabled: data_cache_enabled,
                             map_tile_cache_enabled: map_tile_cache_enabled,
                             cache_budget_mb: cache_budget_mb,
@@ -4960,6 +4995,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut network_flow_animation_enabled = network_flow_animation_enabled;
                                 let mut network_topology_vertical = network_topology_vertical;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
+                                let mut chart_interpolated_gap_ms = chart_interpolated_gap_ms;
                                 let mut data_cache_enabled = data_cache_enabled;
                                 let mut map_tile_cache_enabled = map_tile_cache_enabled;
                                 let mut cache_budget_mb = cache_budget_mb;
@@ -4982,6 +5018,7 @@ fn TelemetryDashboardInner() -> Element {
                                     network_flow_animation_enabled.set(true);
                                     network_topology_vertical.set(false);
                                     state_chart_labels_vertical.set(false);
+                                    chart_interpolated_gap_ms.set(5_000);
                                     data_cache_enabled.set(true);
                                     map_tile_cache_enabled.set(true);
                                     cache_budget_mb.set(DEFAULT_CACHE_BUDGET_MB);
@@ -5976,6 +6013,7 @@ fn TelemetryDashboardInner() -> Element {
                                 DataTab {
                                     active_tab: active_data_tab,
                                     layout: layout.data_tab.clone(),
+                                    state_chart_labels_vertical: *state_chart_labels_vertical.read(),
                                     theme: theme.clone(),
                                 }
                             },
