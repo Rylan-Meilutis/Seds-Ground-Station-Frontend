@@ -107,7 +107,36 @@ pub fn DataTab(active_tab: Signal<String>, layout: DataTabLayout, theme: ThemeCo
     let active_subtabs = use_signal(HashMap::<String, String>::new);
     let tabs_expanded = use_signal(|| false);
     let subtabs_expanded = use_signal(|| false);
+    let did_restore_subtabs = use_signal(|| false);
     let last_saved_subtab = use_signal(String::new);
+
+    use_effect({
+        let layout_tabs = layout.tabs.clone();
+        let mut active_subtabs = active_subtabs;
+        let mut did_restore_subtabs = did_restore_subtabs;
+        move || {
+            if *did_restore_subtabs.read() {
+                return;
+            }
+            did_restore_subtabs.set(true);
+
+            let mut restored = active_subtabs.read().clone();
+            for tab in &layout_tabs {
+                let Some(subtabs) = tab.subtabs.as_ref() else {
+                    continue;
+                };
+                if subtabs.is_empty() {
+                    continue;
+                }
+                if let Some(saved) = persist::get_string(&subtab_storage_key(&tab.id))
+                    .filter(|saved| subtabs.iter().any(|subtab| subtab.id == *saved))
+                {
+                    restored.insert(tab.id.clone(), saved);
+                }
+            }
+            active_subtabs.set(restored);
+        }
+    });
 
     // Layout-defined data types (for buttons)
     let types = layout.tabs.clone();
