@@ -61,7 +61,9 @@ pub fn ConnectionStatusTab(
                     .filter(|gap| *gap > 0);
 
                 if let Some(gap_ms) = maybe_gap {
-                    let next_value = if let Some(prev_smoothed) = smoothing_map.get(&sender_id).copied() {
+                    let next_value = if let Some(prev_smoothed) =
+                        smoothing_map.get(&sender_id).copied()
+                    {
                         prev_smoothed + (gap_ms as f64 - prev_smoothed) * LATENCY_SMOOTHING_ALPHA
                     } else {
                         gap_ms as f64

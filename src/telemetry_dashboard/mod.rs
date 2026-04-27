@@ -1163,6 +1163,8 @@ static DASHBOARD_RUNTIME_PUMP_SCHEDULED: AtomicBool = AtomicBool::new(false);
 static DASHBOARD_RUNTIME_TX: Lazy<
     Mutex<Option<futures_channel::mpsc::UnboundedSender<DashboardRuntimeEvent>>>,
 > = Lazy::new(|| Mutex::new(None));
+static SEED_WATCHER_TX: Lazy<Mutex<Option<futures_channel::mpsc::UnboundedSender<()>>>> =
+    Lazy::new(|| Mutex::new(None));
 static PREFERRED_LANGUAGE: GlobalSignal<String> = Signal::global(|| "en".to_string());
 static TRANSLATION_CATALOG: GlobalSignal<HashMap<String, String>> = Signal::global(HashMap::new);
 pub(crate) static APP_THEME_CONFIG: GlobalSignal<layout::ThemeConfig> = Signal::global(|| {
@@ -1369,6 +1371,14 @@ fn schedule_dashboard_runtime_pump() {
     if !sent {
         DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
     }
+}
+
+fn schedule_seed_watcher() {
+    let _ = SEED_WATCHER_TX
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned())
+        .map(|sender| sender.unbounded_send(()));
 }
 
 fn set_reseed_status(status: u8, detail: Option<String>) {
@@ -1662,6 +1672,7 @@ fn bump_seed_epoch() {
     let mut epoch = SEED_EPOCH.write();
     *epoch += 1;
     log!("[seed] bump_seed_epoch -> {}", *epoch);
+    schedule_seed_watcher();
 }
 
 fn note_ws_connected_and_restore_data_flow(
@@ -3601,7 +3612,6 @@ fn TelemetryDashboardInner() -> Element {
     let ack_warning_count = use_signal(|| 0u64);
     let ack_error_count = use_signal(|| 0u64);
 
-    let flash_on = use_signal(|| false);
     let rocket_gps = use_signal(latest_rocket_gps_from_store);
     let rocket_gps_altitude_m = use_signal(latest_rocket_gps_altitude_m_from_store);
     let user_gps = use_signal(|| None::<(f64, f64)>);
@@ -4357,27 +4367,28 @@ fn TelemetryDashboardInner() -> Element {
         use_effect(move || {
             let alive = alive.clone();
             spawn(async move {
-                let mut handled_seed_epoch: Option<u64> = None;
-                while alive.load(Ordering::Relaxed) {
-                    // Initial seed waits until layout has loaded and the startup delay completes.
-                    if !*startup_seed_ready.read() {
-                        let sleep_ms = if dashboard_page_visible() { 150 } else { 1_500 };
-                        #[cfg(target_arch = "wasm32")]
-                        gloo_timers::future::TimeoutFuture::new(sleep_ms).await;
+                use futures_util::StreamExt;
 
-                        #[cfg(not(target_arch = "wasm32"))]
-                        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+                let mut handled_seed_epoch: Option<u64> = None;
+                let (tx, mut rx) = futures_channel::mpsc::unbounded::<()>();
+                if let Ok(mut slot) = SEED_WATCHER_TX.lock() {
+                    *slot = Some(tx);
+                }
+                if *startup_seed_ready.read() {
+                    schedule_seed_watcher();
+                }
+
+                while alive.load(Ordering::Relaxed) {
+                    let Some(()) = rx.next().await else { break };
+                    if !alive.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if !*startup_seed_ready.read() {
                         continue;
                     }
 
                     let seed_epoch = *SEED_EPOCH.read();
                     if handled_seed_epoch == Some(seed_epoch) {
-                        let sleep_ms = if dashboard_page_visible() { 150 } else { 1_500 };
-                        #[cfg(target_arch = "wasm32")]
-                        gloo_timers::future::TimeoutFuture::new(sleep_ms).await;
-
-                        #[cfg(not(target_arch = "wasm32"))]
-                        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                         continue;
                     }
                     handled_seed_epoch = Some(seed_epoch);
@@ -4448,60 +4459,9 @@ fn TelemetryDashboardInner() -> Element {
                         set_reseed_status_failed(reseed_error_message(false, &e));
                     }
                 }
-            });
-        });
-    }
 
-    // Flash loop
-    {
-        let mut flash_on = flash_on;
-        let alive = alive.clone();
-
-        use_effect(move || {
-            let alive = alive.clone();
-            let epoch = *WS_EPOCH.read();
-            spawn(async move {
-                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                    let has_unacked = {
-                        let latest_warning_ts = warnings
-                            .read()
-                            .iter()
-                            .map(|w| w.timestamp_ms)
-                            .max()
-                            .unwrap_or(0);
-                        let latest_error_ts = errors
-                            .read()
-                            .iter()
-                            .map(|e| e.timestamp_ms)
-                            .max()
-                            .unwrap_or(0);
-                        latest_warning_ts > *ack_warning_ts.read()
-                            || latest_error_ts > *ack_error_ts.read()
-                    };
-                    let effective_tick_ms = if dashboard_page_visible() { 500 } else { 5_000 };
-
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms)).await;
-
-                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
-                        break;
-                    }
-
-                    if !has_unacked {
-                        if *flash_on.read() {
-                            flash_on.set(false);
-                        }
-                        continue;
-                    }
-
-                    let next = {
-                        let current = *flash_on.read();
-                        !current
-                    };
-                    flash_on.set(next);
+                if let Ok(mut slot) = SEED_WATCHER_TX.lock() {
+                    slot.take();
                 }
             });
         });
@@ -4536,30 +4496,27 @@ fn TelemetryDashboardInner() -> Element {
             || *error_event_counter.read() > *ack_error_count.read());
 
     let border_style = "1px solid transparent";
-    let shell_alert_effect = if has_unacked_errors && *flash_on.read() {
-        "inset 0 0 0 2px #ef4444"
-    } else if has_unacked_errors && has_errors {
+    let shell_alert_effect = if has_unacked_errors && has_errors {
         "inset 0 0 0 1px #ef4444"
-    } else if has_unacked_warnings && *flash_on.read() {
-        "inset 0 0 0 2px #facc15"
     } else if has_unacked_warnings && has_warnings {
         "inset 0 0 0 1px #facc15"
     } else {
         "none"
     };
-    let warnings_tab_icon_style = if has_unacked_warnings && *flash_on.read() {
-        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:1;".to_string()
-    } else if has_unacked_warnings {
-        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:0.4;".to_string()
+    let shell_alert_animation = if has_unacked_errors || has_unacked_warnings {
+        "animation:gs26-alert-shell-pulse 1.15s ease-in-out infinite;"
+    } else {
+        ""
+    };
+    let warnings_tab_icon_style = if has_unacked_warnings {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:1; animation:gs26-alert-icon-pulse 1.15s ease-in-out infinite;".to_string()
     } else if has_warnings {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1;".to_string()
     } else {
         "display:none;".to_string()
     };
-    let errors_tab_icon_style = if has_unacked_errors && *flash_on.read() {
-        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:1;".to_string()
-    } else if has_unacked_errors {
-        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:0.4;".to_string()
+    let errors_tab_icon_style = if has_unacked_errors {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:1; animation:gs26-alert-icon-pulse 1.15s ease-in-out infinite;".to_string()
     } else if has_errors {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1;".to_string()
     } else {
@@ -5290,6 +5247,8 @@ fn TelemetryDashboardInner() -> Element {
              @keyframes gs26-blink-slow-on  {{ 0%, 100% {{ opacity: 1.0; }} 82% {{ opacity: 0.25; }} }}
              @keyframes gs26-blink-fast-off {{ 0%, 100% {{ opacity: 0.15; }} 45% {{ opacity: 1.0; }} }}
              @keyframes gs26-blink-fast-on  {{ 0%, 100% {{ opacity: 1.0; }} 55% {{ opacity: 0.2; }} }}
+             @keyframes gs26-alert-shell-pulse {{ 0%, 100% {{ opacity: 1.0; }} 50% {{ opacity: 0.76; }} }}
+             @keyframes gs26-alert-icon-pulse {{ 0%, 100% {{ opacity: 1.0; }} 50% {{ opacity: 0.36; }} }}
              .gs26-tab-shell {{ min-width:260px; }}
              .gs26-tab-toggle {{ display:none; }}
              .gs26-tab-nav {{ display:flex; gap:0.5rem; flex-wrap:wrap; }}
@@ -5569,6 +5528,7 @@ fn TelemetryDashboardInner() -> Element {
                     justify-content:center;
                     border:{border_style};
                     box-shadow:{shell_alert_effect};
+                    {shell_alert_animation}
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:10px; align-items:center;",
@@ -5593,6 +5553,7 @@ fn TelemetryDashboardInner() -> Element {
                     justify-content:center;
                     border:{border_style};
                     box-shadow:{shell_alert_effect};
+                    {shell_alert_animation}
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
@@ -5622,6 +5583,7 @@ fn TelemetryDashboardInner() -> Element {
                 max-width:100%;
                 border:{border_style};
                 box-shadow:{shell_alert_effect};
+                {shell_alert_animation}
                 box-sizing:border-box;
                 overflow:hidden;
             ",

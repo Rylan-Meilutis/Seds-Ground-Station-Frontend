@@ -2475,7 +2475,7 @@ function rememberMapView() {
 
 function pointDataKey(latLng) {
     if (!Array.isArray(latLng)) return SOURCE_EMPTY_KEY;
-    return `${Number(latLng[0]).toFixed(7)},${Number(latLng[1]).toFixed(7)}`;
+    return `${Number(latLng[0]).toFixed(6)},${Number(latLng[1]).toFixed(6)}`;
 }
 
 function guideLineDataKey(rocketLatLng, userLatLng) {
@@ -2493,7 +2493,7 @@ function currentUserAnchorLatLng() {
 
 function headingDataKey(latLng, bearingDeg) {
     if (!Array.isArray(latLng) || !Number.isFinite(bearingDeg)) return SOURCE_EMPTY_KEY;
-    return `${pointDataKey(latLng)}|${normalizeAngle(bearingDeg).toFixed(1)}`;
+    return `${pointDataKey(latLng)}|${normalizeAngle(bearingDeg).toFixed(0)}`;
 }
 
 function syncWindowMapControlState() {
@@ -2840,10 +2840,7 @@ async function runTrackingTilePrefetch(runId, plan) {
 }
 
 function ensureTrackingTilePrefetchLoop() {
-    if (tileTrackingPrefetchInterval) return;
-    tileTrackingPrefetchInterval = setInterval(safeMapCallback("tracking tile prefetch interval", () => {
-        scheduleTrackingTilePrefetch({force: true});
-    }), trackingPrefetchIntervalMs());
+    return;
 }
 
 function scheduleTrackingTilePrefetch(options = {}) {
@@ -4001,7 +3998,12 @@ function scheduleHeadingAnimation() {
         }
         headingAnimationFrame = null;
         const now = performance.now();
-        const dtMs = Math.max(1.0, Math.min(80.0, now - (headingAnimationLastFrameAt || now)));
+        const rawDtMs = Math.max(1.0, now - (headingAnimationLastFrameAt || now));
+        if (rawDtMs < USER_HEADING_VISUAL_SYNC_MIN_MS) {
+            headingAnimationFrame = requestAnimationFrame(step);
+            return;
+        }
+        const dtMs = Math.max(1.0, Math.min(80.0, rawDtMs));
         headingAnimationLastFrameAt = now;
         let visualChanged = false;
         let mapChanged = false;
@@ -4192,16 +4194,8 @@ function stopBrowserHeadingSyncLoop() {
 }
 
 function scheduleBrowserHeadingSyncLoop() {
-    if (browserHeadingSyncTimer != null) return;
-    const step = safeMapCallback("browser heading sync", () => {
-        browserHeadingSyncTimer = null;
-        if (!Number.isFinite(deviceHeadingDeg)) {
-            return;
-        }
-        applyFusedHeading();
-        browserHeadingSyncTimer = setTimeout(step, BROWSER_HEADING_SYNC_INTERVAL_MS);
-    });
-    browserHeadingSyncTimer = setTimeout(step, BROWSER_HEADING_SYNC_INTERVAL_MS);
+    if (!mapRuntimeActive || !Number.isFinite(deviceHeadingDeg)) return;
+    applyFusedHeading();
 }
 
 function handleOrientation(event) {
@@ -4215,7 +4209,7 @@ function handleOrientation(event) {
     }
     if (heading == null) return;
     deviceHeadingDeg = heading;
-    scheduleBrowserHeadingSyncLoop();
+    applyFusedHeading();
 }
 
 function initCompassOnce() {
