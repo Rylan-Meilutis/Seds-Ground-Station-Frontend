@@ -505,7 +505,9 @@ fn effective_chart_groups(
     tab: Option<&DataTabSpec>,
     subtab: Option<&DataSubtabSpec>,
     channel_count: usize,
+    summary_item_count: usize,
 ) -> Vec<DataChartGroup> {
+    let inferred_channel_count = channel_count.max(summary_item_count);
     subtab
         .and_then(|subtab| subtab.chart_groups.as_ref())
         .or_else(|| tab.and_then(|tab| tab.chart_groups.as_ref()))
@@ -516,11 +518,28 @@ fn effective_chart_groups(
                 data_type: None,
                 sender_id: None,
                 labels: None,
-                channels: (0..channel_count).collect(),
+                channels: (0..inferred_channel_count).collect(),
                 chart_series: None,
                 scale_mode: None,
             }]
         })
+}
+
+fn chart_groups_have_graph_source(
+    chart_groups: &[DataChartGroup],
+    summary_items: &[DataSummaryItem],
+    fallback_labels: &[String],
+) -> bool {
+    chart_groups.iter().any(|group| {
+        group.data_type.is_some()
+            || group
+                .chart_series
+                .as_ref()
+                .is_some_and(|series| !series.is_empty())
+            || chart_series_for_group(group, summary_items, fallback_labels)
+                .is_some_and(|series| !series.is_empty())
+            || (!group.channels.is_empty() && !fallback_labels.is_empty())
+    })
 }
 
 fn chart_key_for_group(group: &DataChartGroup, fallback: &str) -> String {
@@ -590,7 +609,10 @@ fn chart_series_for_group(
 
 #[cfg(test)]
 mod tests {
-    use super::{chart_series_for_group, DataChartGroup, DataSummaryItem};
+    use super::{
+        chart_groups_have_graph_source, chart_series_for_group, effective_chart_groups,
+        DataChartGroup, DataSummaryItem,
+    };
 
     #[test]
     fn inferred_chart_series_preserves_summary_sender_id() {
@@ -618,6 +640,37 @@ mod tests {
         assert_eq!(series.len(), 1);
         assert_eq!(series[0].data_type, "BATTERY_VOLTAGE");
         assert_eq!(series[0].sender_id.as_deref(), Some("PB"));
+    }
+
+    #[test]
+    fn summary_only_subtab_builds_default_chart_group_channels() {
+        let groups = effective_chart_groups(None, None, 0, 2);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].channels, vec![0, 1]);
+    }
+
+    #[test]
+    fn summary_only_subtab_has_graph_source_from_inferred_series() {
+        let group = DataChartGroup {
+            title: None,
+            data_type: None,
+            sender_id: None,
+            labels: None,
+            channels: vec![0],
+            chart_series: None,
+            scale_mode: None,
+        };
+        let summary_items = vec![DataSummaryItem {
+            label: "AV Bay".to_string(),
+            data_type: "BATTERY_VOLTAGE".to_string(),
+            index: 0,
+            sender_id: Some("PB".to_string()),
+            formatter: None,
+            boolean_labels: None,
+        }];
+
+        assert!(chart_groups_have_graph_source(&[group], &summary_items, &[]));
     }
 }
 
@@ -673,14 +726,22 @@ fn DataLivePanel(
         .cloned()
         .unwrap_or_default();
 
+    let chart_groups = effective_chart_groups(
+        current_tab_ref,
+        selected_subtab_ref,
+        labels.len(),
+        summary_items.len(),
+    );
+    let has_chart_source = effective_source.is_some()
+        || !summary_items.is_empty()
+        || chart_groups_have_graph_source(&chart_groups, &summary_items, &labels);
     let has_telemetry = if !summary_items.is_empty() {
         summary_items.iter().any(summary_item_has_value)
     } else {
         latest_row.is_some()
     };
     let show_reseed_banner = reseed_status_note().is_some();
-    let is_graph_allowed =
-        chart_enabled && effective_source.is_some() && (has_telemetry || show_reseed_banner);
+    let is_graph_allowed = chart_enabled && has_chart_source && (has_telemetry || show_reseed_banner);
 
     let view_w = 1200.0_f64;
     let view_h = 360.0_f64;
@@ -696,8 +757,6 @@ fn DataLivePanel(
         .as_ref()
         .map(chart_key_for_source)
         .unwrap_or_else(|| current_tab_id.clone());
-    let chart_groups =
-        effective_chart_groups(current_tab_ref, selected_subtab_ref, labels.len());
     let (chan_min, chan_max) = if is_graph_allowed {
         charts_cache_get_channel_minmax(&chart_key, view_w as f32, view_h as f32)
     } else {
@@ -1221,6 +1280,60 @@ fn chart_group_render_payload_cached(
         || multi_series.is_some_and(|series| series.len() > 1);
     let (filtered_chunks, y_min, y_max, span_min, per_series_scales) =
         if let Some(series) = multi_series {
+            if series.len() == 1 {
+                let spec = &series[0];
+                let single_chart_key = spec
+                    .sender_id
+                    .as_deref()
+                    .map(|sender_id| sender_scoped_chart_key(&spec.data_type, sender_id))
+                    .unwrap_or_else(|| spec.data_type.clone());
+                let single_channel = [spec.index];
+                if use_per_series_scale {
+                    let (chunks, scales, span_min) = charts_cache_get_subset_per_series_with_grid(
+                        &single_chart_key,
+                        &single_channel,
+                        view_w as f32,
+                        view_h as f32,
+                        chart_left as f32,
+                        (view_w - chart_right) as f32,
+                        pad_top as f32,
+                        pad_bottom as f32,
+                    );
+                    let overall_min = scales
+                        .iter()
+                        .flatten()
+                        .map(|(min, _)| *min)
+                        .fold(f32::INFINITY, f32::min);
+                    let overall_max = scales
+                        .iter()
+                        .flatten()
+                        .map(|(_, max)| *max)
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    (
+                        chunks,
+                        if overall_min.is_finite() {
+                            overall_min
+                        } else {
+                            0.0
+                        },
+                        if overall_max.is_finite() {
+                            overall_max
+                        } else {
+                            1.0
+                        },
+                        span_min,
+                        scales,
+                    )
+                } else {
+                    let (chunks, y_min, y_max, span_min) = charts_cache_get_subset(
+                        &single_chart_key,
+                        &single_channel,
+                        view_w as f32,
+                        view_h as f32,
+                    );
+                    (chunks, y_min, y_max, span_min, Rc::new(Vec::new()))
+                }
+            } else {
             let cache_series = series
                 .iter()
                 .map(|spec| {
@@ -1266,6 +1379,7 @@ fn chart_group_render_payload_cached(
                 span_min,
                 scales,
             )
+            }
         } else if use_per_series_scale {
             let (chunks, scales, span_min) = charts_cache_get_subset_per_series_with_grid(
                 chart_key,

@@ -75,6 +75,7 @@ let mapMainThreadWatchdogTimer = null;
 let mapMainThreadWatchdogLastTickAt = 0;
 let overlaySourceSyncFrame = null;
 let lastOverlaySyncKey = "";
+let lastOverlaySyncAtMs = 0;
 let mapInitPhase = "idle";
 let mapInitTrace = [];
 let lastPersistedMapStateAtMs = 0;
@@ -242,9 +243,12 @@ const USER_MARKER_VISUAL_MAX_SPEED_MPS = 90;
 const USER_MARKER_VISUAL_SPEED_GAIN = 1.08;
 const USER_MARKER_VISUAL_CATCHUP_MS = 980;
 const USER_MARKER_FRAME_STALL_SNAP_MS = 220;
+const USER_MARKER_FRAME_MIN_INTERVAL_MS = 33;
 const USER_MARKER_TARGET_SETTLE_DISTANCE_M = 0.45;
 const USER_GPS_SNAP_DISTANCE_M = 120;
 const USER_GPS_SNAP_SPEED_MPS = 45;
+const FOLLOW_CAMERA_FRAME_MIN_INTERVAL_MS = 33;
+const OVERLAY_SYNC_MIN_INTERVAL_MS = 33;
 const USER_ORIENTATION_DEADZONE_DEG = 2.2;
 const USER_ORIENTATION_INPUT_DEADZONE_DEG = 0.9;
 const USER_ORIENTATION_CAMERA_SETTLE_DEG = 0.035;
@@ -1906,6 +1910,9 @@ function createUserIconImage() {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.font = "20px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+        ctx.strokeStyle = "#000000";
+        ctx.lineWidth = 3;
+        ctx.strokeText("🧍", size * 0.5, size * 0.53);
         ctx.fillText("🧍", size * 0.5, size * 0.53);
     });
 }
@@ -1916,6 +1923,9 @@ function createRocketIconImage() {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.font = "32px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+        ctx.strokeStyle = "#000000";
+        ctx.lineWidth = 3;
+        ctx.strokeText("🚀", size * 0.5, size * 0.52);
         ctx.fillText("🚀", size * 0.5, size * 0.52);
     });
 }
@@ -1931,8 +1941,8 @@ function createHeadingArrowImage() {
         ctx.lineWidth = 3;
         // Keep the arrow visually above the user anchor while leaving the symbol
         // itself centered on the shared animation/follow point.
-        ctx.strokeText("▲", size * 0.5, size * 0.2);
-        ctx.fillText("▲", size * 0.5, size * 0.2);
+        ctx.strokeText("▲", size * 0.5, size * 0.16);
+        ctx.fillText("▲", size * 0.5, size * 0.16);
     });
 }
 
@@ -3384,6 +3394,12 @@ function scheduleOverlaySourceSync() {
     if (overlaySourceSyncFrame != null) return;
     overlaySourceSyncFrame = requestAnimationFrame(safeMapCallback("overlay source sync frame", () => {
         overlaySourceSyncFrame = null;
+        const nowMs = performance.now();
+        if (lastOverlaySyncAtMs > 0 && nowMs - lastOverlaySyncAtMs < OVERLAY_SYNC_MIN_INTERVAL_MS) {
+            scheduleOverlaySourceSync();
+            return;
+        }
+        lastOverlaySyncAtMs = nowMs;
         syncOverlaySourcesNow();
     }));
 }
@@ -3594,6 +3610,10 @@ function scheduleFollowCameraUpdate(latLng) {
         }
         const now = performance.now();
         const rawDtMs = Math.max(1.0, now - (followCameraLastFrameAt || now));
+        if (rawDtMs < FOLLOW_CAMERA_FRAME_MIN_INTERVAL_MS) {
+            followCameraFrame = requestAnimationFrame(step);
+            return;
+        }
         const dtMs = Math.max(1.0, Math.min(50.0, rawDtMs));
         followCameraLastFrameAt = now;
         let center;
@@ -3807,6 +3827,10 @@ function animateUserMarkerTo(targetLatLng) {
         }
         const now = performance.now();
         const rawDtMs = Math.max(1.0, now - (anim.lastFrameAt || now));
+        if (rawDtMs < USER_MARKER_FRAME_MIN_INTERVAL_MS) {
+            userMarkerAnimationFrame = requestAnimationFrame(step);
+            return;
+        }
         const dtMs = Math.max(1.0, Math.min(80.0, rawDtMs));
         anim.lastFrameAt = now;
         const current = currentUserMarkerVisualLatLng() || anim.target;

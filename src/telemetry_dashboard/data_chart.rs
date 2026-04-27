@@ -34,31 +34,26 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use super::HISTORY_MS;
 
-thread_local! {
-    static SENDER_SPLIT_DATA_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-}
+static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub fn configure_sender_split_data_types(data_types: &[String]) {
-    SENDER_SPLIT_DATA_TYPES.with(|configured| {
-        *configured.borrow_mut() = data_types
+    let configured = SENDER_SPLIT_DATA_TYPES.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut configured) = configured.lock() {
+        *configured = data_types
             .iter()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
             .collect();
-    });
+    }
 }
 
 pub fn sender_scoped_chart_key(data_type: &str, sender_id: &str) -> String {
     format!("{data_type}@@{sender_id}")
-}
-
-fn should_split_sender_chart(data_type: &str) -> bool {
-    SENDER_SPLIT_DATA_TYPES.with(|configured| configured.borrow().contains(data_type))
 }
 
 // -------------------------
@@ -510,11 +505,12 @@ impl ChartsCache {
     fn ensure_interested_chart(&mut self, key: &str) {
         self.mark_interested(key);
         let source_generation = self.source_generation.get(key).copied().unwrap_or(0);
-        let chart_generation = self
-            .charts
-            .get(key)
-            .map(|chart| chart.source_generation)
-            .unwrap_or(0);
+        let existing_chart = self.charts.get(key);
+        let chart_generation = existing_chart.map(|chart| chart.source_generation).unwrap_or(0);
+        if existing_chart.is_none() {
+            self.rebuild_chart_for_key(key, source_generation);
+            return;
+        }
         if chart_generation >= source_generation {
             return;
         }
@@ -570,7 +566,10 @@ struct ChartRawRowKey {
 
 fn chart_keys_for_row(r: &TelemetryRow) -> Vec<String> {
     let mut keys = vec![r.data_type.clone()];
-    if should_split_sender_chart(&r.data_type) && !r.sender_id.is_empty() {
+    // Explicit sender-scoped chart requests should always be satisfiable when
+    // telemetry includes a sender id, even if the layout did not declare the
+    // data type in sender_split_data_types before rows were ingested.
+    if !r.sender_id.is_empty() {
         keys.push(sender_scoped_chart_key(&r.data_type, &r.sender_id));
     }
     keys
@@ -616,6 +615,7 @@ mod tests {
     use super::{
         charts_cache_clear_active, charts_cache_get,
         charts_cache_get_multi_series_per_series_with_grid, charts_cache_ingest_row,
+        configure_sender_split_data_types,
     };
     use crate::telemetry_dashboard::types::TelemetryRow;
 
@@ -710,6 +710,92 @@ mod tests {
         assert!(
             chart.buckets.len() <= 2,
             "large timestamp jumps must not fill every missing 20 ms bucket"
+        );
+    }
+
+    #[test]
+    fn sender_scoped_battery_chart_builds_distinct_series() {
+        charts_cache_clear_active();
+        configure_sender_split_data_types(&[
+            "BATTERY_VOLTAGE".to_string(),
+            "BATTERY_CURRENT".to_string(),
+        ]);
+
+        for i in 0..3 {
+            let timestamp_ms = 1_700_000_020_000 + i * 40;
+            charts_cache_ingest_row(&TelemetryRow {
+                timestamp_ms,
+                data_type: "BATTERY_VOLTAGE".to_string(),
+                sender_id: "GB".to_string(),
+                values: vec![Some(14.0 + i as f32 * 0.1)],
+            });
+            charts_cache_ingest_row(&TelemetryRow {
+                timestamp_ms,
+                data_type: "BATTERY_VOLTAGE".to_string(),
+                sender_id: "VB".to_string(),
+                values: vec![Some(7.0 + i as f32 * 0.1)],
+            });
+        }
+
+        let (gb_chunks, _, _, _) = charts_cache_get("BATTERY_VOLTAGE@@GB", 1200.0, 260.0);
+        let (vb_chunks, _, _, _) = charts_cache_get("BATTERY_VOLTAGE@@VB", 1200.0, 260.0);
+
+        assert!(
+            gb_chunks
+                .iter()
+                .any(|chunk| chunk.paths.iter().any(|path| !path.is_empty())),
+            "GB battery chart should build a drawable sender-scoped path"
+        );
+        assert!(
+            vb_chunks
+                .iter()
+                .any(|chunk| chunk.paths.iter().any(|path| !path.is_empty())),
+            "VB battery chart should build a drawable sender-scoped path"
+        );
+    }
+
+    #[test]
+    fn single_series_sender_scoped_battery_multi_series_path_builds_drawable_path() {
+        charts_cache_clear_active();
+        configure_sender_split_data_types(&["BATTERY_VOLTAGE".to_string()]);
+
+        for i in 0..3 {
+            charts_cache_ingest_row(&TelemetryRow {
+                timestamp_ms: 1_700_000_030_000 + i * 40,
+                data_type: "BATTERY_VOLTAGE".to_string(),
+                sender_id: "PB".to_string(),
+                values: vec![Some(12.0 + i as f32 * 0.1)],
+            });
+        }
+
+        let (chunks, scales, _) = charts_cache_get_multi_series_per_series_with_grid(
+            &[("BATTERY_VOLTAGE@@PB".to_string(), 0)],
+            1200.0,
+            260.0,
+            18.0,
+            12.0,
+            20.0,
+            52.0,
+        );
+
+        assert_eq!(scales.len(), 1);
+        assert!(scales[0].is_some());
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.paths.first().is_some_and(|path| !path.is_empty())),
+            "single-series sender-scoped battery chart should still build a drawable path"
+        );
+    }
+
+    #[test]
+    fn single_point_curve_segment_is_drawable() {
+        let mut path = String::new();
+        super::flush_curve_segment_with_limit(&mut path, &[(10.0, 20.0)], false, 8);
+
+        assert!(
+            path.contains("L"),
+            "single-point segments should emit a visible stroke, not only a move command"
         );
     }
 }
@@ -1789,6 +1875,9 @@ pub(crate) fn flush_curve_segment_with_limit(
     path.push_str(&format!("M {:.2} {:.2} ", x0, y0));
 
     if points.len() == 1 {
+        // The canvas path renderer will not visibly stroke a lone move command.
+        // Emit a tiny horizontal segment so single-sample charts still show up.
+        path.push_str(&format!("L {:.2} {:.2} ", x0 + 0.75, y0));
         return;
     }
 
