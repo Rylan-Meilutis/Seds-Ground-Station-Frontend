@@ -170,7 +170,7 @@ const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
 const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 250;
 const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 100;
-const CHART_RENDER_MIN_INTERVAL_MS: i64 = 250;
+const CHART_RENDER_MIN_INTERVAL_MS: i64 = 0;
 
 pub(crate) use network_metrics::FrontendNetworkMetrics;
 use network_metrics::{
