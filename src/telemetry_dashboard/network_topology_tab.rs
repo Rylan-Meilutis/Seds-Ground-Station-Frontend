@@ -87,6 +87,8 @@ const PACKET_PULSE_MS: u64 = 3_400;
 const ZOOM_MIN: f32 = 0.12;
 const ZOOM_MAX: f32 = 2.2;
 const ZOOM_STEP: f32 = 0.2;
+const TOUCH_DRAG_FRICTION: f32 = 1.0;
+const GRAPH_FIT_MARGIN_PX: i32 = 36;
 const GRAPH_LINK_CHANNEL_COLOR: &str = "#243447";
 const GRAPH_LINK_NODE_CLEARANCE: f32 = 7.0;
 
@@ -107,7 +109,7 @@ fn graph_viewport_style(
         style
     };
     format!(
-        "{size_constraints} border:1px solid {border}; border-radius:20px; background:radial-gradient(circle at top, {panel_alt} 0%, {panel} 45%, {app} 100%); overflow:auto; cursor:grab; user-select:none; touch-action:none; overscroll-behavior:contain; scrollbar-width:none; -ms-overflow-style:none; box-shadow:0 24px 60px rgba(0,0,0,0.45);",
+        "{size_constraints} border:1px solid {border}; border-radius:20px; background:radial-gradient(circle at top, {panel_alt} 0%, {panel} 45%, {app} 100%); overflow:auto; cursor:grab; user-select:none; touch-action:none; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; scrollbar-width:none; -ms-overflow-style:none; box-shadow:0 24px 60px rgba(0,0,0,0.45);",
         border = theme.border,
         panel_alt = theme.panel_background_alt,
         panel = theme.panel_background,
@@ -509,6 +511,9 @@ fn install_drag_handlers(
             pointers: new Map(),
             pinchDistance: null,
             pinchScale: 1.0,
+            pendingPanX: 0,
+            pendingPanY: 0,
+            panFrame: null,
             canvasLeft: 0,
             canvasTop: 0,
             padLeft: 0,
@@ -530,55 +535,54 @@ fn install_drag_handlers(
             state.viewport.style.cursor = value;
           }};
 
+          const isMouseLikePointer = (evt) => {{
+            const pointerType = String(evt.pointerType || "");
+            return pointerType === "" || pointerType === "mouse";
+          }};
+
+          const pointerIsMouseLike = (pointer) => {{
+            const pointerType = String(pointer && pointer.pointerType || "");
+            return pointerType === "" || pointerType === "mouse";
+          }};
+
+          const pointerDragFriction = (evt) => {{
+            return isMouseLikePointer(evt) ? 1.0 : {touch_drag_friction};
+          }};
+
+          const storedPointerDragFriction = (pointer) => {{
+            return pointerIsMouseLike(pointer) ? 1.0 : {touch_drag_friction};
+          }};
+
           const withinSurface = (target) => {{
             return target === state.surface || state.surface.contains(target);
           }};
 
           const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
           const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-          const focus = {viewport_focus};
           const fitScale = () => {{
-            const marginX = Math.min(64, Math.max(24, state.viewport.clientWidth * 0.06));
-            const marginY = Math.min(64, Math.max(24, state.viewport.clientHeight * 0.06));
+            const marginX = Math.min(72, Math.max({fit_margin_px}, state.viewport.clientWidth * 0.06));
+            const marginY = Math.min(72, Math.max({fit_margin_px}, state.viewport.clientHeight * 0.06));
             const availW = Math.max(state.viewport.clientWidth - marginX * 2, 240);
             const availH = Math.max(state.viewport.clientHeight - marginY * 2, 240);
-            if (!focus) {{
-              return clamp(Math.min(availW / {graph_width}, availH / {graph_height}) * 0.92, {zoom_min}, {zoom_max});
-            }}
-            const fitFromCenter = Math.min(
-              (availW / 2) / Math.max(focus.left_extent, focus.right_extent, 1),
-              (availH / 2) / Math.max(focus.top_extent, focus.bottom_extent, 1),
-            );
-            return clamp(fitFromCenter * 0.95, {zoom_min}, {zoom_max});
+            return clamp(Math.min(availW / {graph_width}, availH / {graph_height}) * 0.98, {zoom_min}, {zoom_max});
           }};
           const refreshSurfaceFrame = () => {{
-            const minX = focus ? focus.min_x : 0;
-            const maxX = focus ? focus.max_x : {graph_width};
-            const minY = focus ? focus.min_y : 0;
-            const maxY = focus ? focus.max_y : {graph_height};
-            const scaledWidth = Math.round((maxX - minX) * state.scale);
-            const scaledHeight = Math.round((maxY - minY) * state.scale);
-            const panPadX = Math.max(640, Math.round(state.viewport.clientWidth * 1.2));
-            const panPadY = Math.max(520, Math.round(state.viewport.clientHeight * 1.15));
-            const basePadX = Math.max(Math.round((state.viewport.clientWidth - scaledWidth) / 2), panPadX);
-            const basePadY = Math.max(Math.round((state.viewport.clientHeight - scaledHeight) / 2), panPadY);
-            if (focus) {{
-              state.padLeft = Math.max(basePadX, Math.ceil(state.viewport.clientWidth / 2 - (focus.center_x - focus.min_x) * state.scale + 24));
-              state.padRight = Math.max(basePadX, Math.ceil(state.viewport.clientWidth / 2 - (focus.max_x - focus.center_x) * state.scale + 24));
-              state.padTop = Math.max(basePadY, Math.ceil(state.viewport.clientHeight / 2 - (focus.center_y - focus.min_y) * state.scale + 24));
-              state.padBottom = Math.max(basePadY, Math.ceil(state.viewport.clientHeight / 2 - (focus.max_y - focus.center_y) * state.scale + 24));
-            }} else {{
-              state.padLeft = basePadX;
-              state.padRight = basePadX;
-              state.padTop = basePadY;
-              state.padBottom = basePadY;
-            }}
+            const scaledWidth = Math.round({graph_width} * state.scale);
+            const scaledHeight = Math.round({graph_height} * state.scale);
+            const fitPadX = Math.max({fit_margin_px}, Math.round((state.viewport.clientWidth - scaledWidth) / 2));
+            const fitPadY = Math.max({fit_margin_px}, Math.round((state.viewport.clientHeight - scaledHeight) / 2));
+            const panPadX = Math.max(fitPadX, Math.round(state.viewport.clientWidth * 0.58));
+            const panPadY = Math.max(fitPadY, Math.round(state.viewport.clientHeight * 0.58));
+            state.padLeft = panPadX;
+            state.padRight = panPadX;
+            state.padTop = panPadY;
+            state.padBottom = panPadY;
             state.surface.style.width = `${{scaledWidth + state.padLeft + state.padRight}}px`;
             state.surface.style.height = `${{scaledHeight + state.padTop + state.padBottom}}px`;
             state.surface.style.minWidth = state.surface.style.width;
             state.surface.style.minHeight = state.surface.style.height;
-            state.canvasLeft = Math.round(state.padLeft - minX * state.scale);
-            state.canvasTop = Math.round(state.padTop - minY * state.scale);
+            state.canvasLeft = Math.round(state.padLeft);
+            state.canvasTop = Math.round(state.padTop);
             state.canvas.style.left = `${{state.canvasLeft}}px`;
             state.canvas.style.top = `${{state.canvasTop}}px`;
           }};
@@ -588,16 +592,26 @@ fn install_drag_handlers(
             state.viewport.scrollLeft = clamp(left, 0, maxLeft);
             state.viewport.scrollTop = clamp(top, 0, maxTop);
           }};
-          const centerGraph = () => {{
-            if (focus) {{
-              const localX = state.viewport.clientWidth / 2;
-              const localY = state.viewport.clientHeight / 2;
-              setViewportScroll(
-                (focus.center_x - focus.min_x) * state.scale + state.padLeft - localX,
-                (focus.center_y - focus.min_y) * state.scale + state.padTop - localY,
-              );
-              return;
+          const flushPendingPan = () => {{
+            if (state.panFrame != null) {{
+              window.cancelAnimationFrame(state.panFrame);
             }}
+            state.panFrame = null;
+            if (state.pendingPanX === 0 && state.pendingPanY === 0) return;
+            state.viewport.scrollLeft += state.pendingPanX;
+            state.viewport.scrollTop += state.pendingPanY;
+            state.pendingPanX = 0;
+            state.pendingPanY = 0;
+          }};
+          const schedulePan = (dx, dy) => {{
+            state.pendingPanX += dx;
+            state.pendingPanY += dy;
+            if (state.panFrame != null) return;
+            state.panFrame = window.requestAnimationFrame(() => {{
+              flushPendingPan();
+            }});
+          }};
+          const centerGraph = () => {{
             const scaledWidth = Math.round({graph_width} * state.scale);
             const scaledHeight = Math.round({graph_height} * state.scale);
             setViewportScroll(
@@ -606,6 +620,7 @@ fn install_drag_handlers(
             );
           }};
           const applyScale = (nextScale, clientX, clientY) => {{
+            flushPendingPan();
             const scale = clamp(nextScale, {zoom_min}, {zoom_max});
             const rect = state.viewport.getBoundingClientRect();
             const localX = clientX - rect.left;
@@ -651,6 +666,7 @@ fn install_drag_handlers(
             state.scale = fitScale();
             state.canvas.style.transform = `scale(${{state.scale}})`;
             refreshSurfaceFrame();
+            centerGraph();
             window.requestAnimationFrame(() => {{
               refreshSurfaceFrame();
               centerGraph();
@@ -694,16 +710,18 @@ fn install_drag_handlers(
             if (target && typeof target.closest === "function" && target.closest("button")) {{
               return;
             }}
-            state.pointers.set(evt.pointerId, {{ x: evt.clientX, y: evt.clientY }});
+            state.pointers.set(evt.pointerId, {{ x: evt.clientX, y: evt.clientY, pointerType: String(evt.pointerType || "") }});
             state.suppressNextClick = false;
             if (state.pointers.size === 1) {{
               state.drag = {{
                 x: evt.clientX,
                 y: evt.clientY,
                 moved: false,
+                friction: pointerDragFriction(evt),
               }};
             }} else if (state.pointers.size === 2) {{
               const [a, b] = Array.from(state.pointers.values());
+              flushPendingPan();
               state.drag = null;
               state.pinchDistance = distance(a, b);
               state.pinchScale = state.scale;
@@ -716,7 +734,12 @@ fn install_drag_handlers(
 
           window.addEventListener("pointermove", (evt) => {{
             if (!state.pointers.has(evt.pointerId)) return;
-            state.pointers.set(evt.pointerId, {{ x: evt.clientX, y: evt.clientY }});
+            const previousPointer = state.pointers.get(evt.pointerId) || null;
+            state.pointers.set(evt.pointerId, {{
+              x: evt.clientX,
+              y: evt.clientY,
+              pointerType: String((previousPointer && previousPointer.pointerType) || evt.pointerType || ""),
+            }});
             if (state.pointers.size >= 2) {{
               const [a, b] = Array.from(state.pointers.values());
               const nextDistance = distance(a, b);
@@ -732,12 +755,13 @@ fn install_drag_handlers(
             if (!state.drag) return;
             const dx = state.drag.x - evt.clientX;
             const dy = state.drag.y - evt.clientY;
-            state.viewport.scrollLeft += dx;
-            state.viewport.scrollTop += dy;
+            const friction = Number.isFinite(state.drag.friction) ? state.drag.friction : pointerDragFriction(evt);
+            schedulePan(dx * friction, dy * friction);
             state.drag = {{
               x: evt.clientX,
               y: evt.clientY,
               moved: state.drag.moved || Math.abs(dx) > 2 || Math.abs(dy) > 2,
+              friction,
             }};
             evt.preventDefault();
           }}, {{ passive: false }});
@@ -753,6 +777,7 @@ fn install_drag_handlers(
                 x: remaining.x,
                 y: remaining.y,
                 moved: true,
+                friction: storedPointerDragFriction(remaining),
               }};
               state.pinchDistance = null;
               state.pinchScale = state.scale;
@@ -781,24 +806,11 @@ fn install_drag_handlers(
         canvas_id = canvas_id,
         zoom_min = ZOOM_MIN,
         zoom_max = ZOOM_MAX,
+        touch_drag_friction = TOUCH_DRAG_FRICTION,
+        fit_margin_px = GRAPH_FIT_MARGIN_PX,
         graph_width = graph_width,
         graph_height = graph_height,
         force_fit = if force_fit { "true" } else { "false" },
-        viewport_focus = viewport_focus
-            .map(|focus| format!(
-                "{{ center_x: {}, center_y: {}, min_x: {}, max_x: {}, min_y: {}, max_y: {}, left_extent: {}, right_extent: {}, top_extent: {}, bottom_extent: {} }}",
-                focus.center_x,
-                focus.center_y,
-                focus.min_x,
-                focus.max_x,
-                focus.min_y,
-                focus.max_y,
-                focus.left_extent,
-                focus.right_extent,
-                focus.top_extent,
-                focus.bottom_extent
-            ))
-            .unwrap_or_else(|| "null".to_string()),
         viewport_focus_key = viewport_focus
             .map(|focus| format!(
                 "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",

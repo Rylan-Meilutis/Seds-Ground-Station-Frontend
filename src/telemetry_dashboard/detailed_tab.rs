@@ -75,7 +75,7 @@ pub fn DetailedTab(
                 setText("gs26-prefetch-rocket-context", context.rocketMessage ? String(context.rocketMessage) : "--");
                 setText("gs26-prefetch-context-summary", context.summaryMessage ? String(context.summaryMessage) : "--");
               };
-              window.__gs26_prefetch_detail_timer = window.setInterval(update, 500);
+              window.__gs26_prefetch_detail_timer = window.setInterval(update, 2000);
               update();
             })();
             "#,

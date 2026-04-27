@@ -18,6 +18,7 @@ mod gps_webview;
 mod gps_windows;
 pub mod layout;
 mod layout_settings_tab;
+mod messages_tab;
 mod network_topology_tab;
 mod notifications_tab;
 pub mod types;
@@ -51,6 +52,7 @@ use errors_tab::ErrorsTab;
 use layout::LayoutConfig;
 use layout_settings_tab::SettingsPage;
 use map_tab::MapTab;
+use messages_tab::MessagesTab;
 use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
@@ -167,6 +169,8 @@ include!("dashboard_messages.rs");
 const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
 const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 250;
+const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 100;
+const CHART_RENDER_MIN_INTERVAL_MS: i64 = 250;
 
 pub(crate) use network_metrics::FrontendNetworkMetrics;
 use network_metrics::{
@@ -191,8 +195,8 @@ pub(crate) fn current_wallclock_ms() -> i64 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-fn dashboard_page_visible() -> bool {
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+pub(crate) fn dashboard_page_visible() -> bool {
     js_eval(
         r#"
         (function() {
@@ -211,8 +215,8 @@ fn dashboard_page_visible() -> bool {
         .eq_ignore_ascii_case("true")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn dashboard_page_visible() -> bool {
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+pub(crate) fn dashboard_page_visible() -> bool {
     true
 }
 
@@ -401,16 +405,6 @@ fn reset_latest_telemetry(rows: &[TelemetryRow]) {
     reset_telemetry_packet_counts(rows);
 }
 
-/// Inserts a single row into the latest-row indexes.
-fn update_latest_telemetry(row: &TelemetryRow) {
-    if let Ok(mut latest) = LATEST_TELEMETRY.lock()
-        && let Ok(mut latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock()
-    {
-        update_latest_telemetry_locked(&mut latest, &mut latest_by_type, row);
-    }
-    note_sender_packet_count(row);
-}
-
 /// Inserts a batch of rows into the latest-row indexes under a single lock.
 fn update_latest_telemetry_batch(rows: &[TelemetryRow]) {
     if let Ok(mut latest) = LATEST_TELEMETRY.lock()
@@ -431,15 +425,6 @@ fn reset_telemetry_packet_counts(rows: &[TelemetryRow]) {
                 *counts.entry(row.sender_id.clone()).or_insert(0) += 1;
             }
         }
-    }
-}
-
-fn note_sender_packet_count(row: &TelemetryRow) {
-    if row.sender_id.trim().is_empty() {
-        return;
-    }
-    if let Ok(mut counts) = TELEMETRY_PACKET_COUNTS_BY_SENDER.lock() {
-        *counts.entry(row.sender_id.clone()).or_insert(0) += 1;
     }
 }
 
@@ -1203,6 +1188,24 @@ static WS_RAW: GlobalSignal<Option<web_sys::WebSocket>> = Signal::global(|| None
 static SEED_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static LAUNCH_TMINUS_DISPLAY_MIN_MS: AtomicI64 = AtomicI64::new(i64::MAX);
 static LAUNCH_TMINUS_ZERO_LATCHED: AtomicBool = AtomicBool::new(false);
+static LAST_TELEMETRY_RENDER_FLUSH_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_CHART_RENDER_FLUSH_MS: AtomicI64 = AtomicI64::new(0);
+static HIDDEN_PENDING_WS_STATE: Lazy<Mutex<HiddenPendingWsState>> =
+    Lazy::new(|| Mutex::new(HiddenPendingWsState::default()));
+
+#[derive(Default, Clone)]
+struct HiddenPendingWsState {
+    flight_state: Option<FlightState>,
+    launch_clock: Option<LaunchClockMsg>,
+    board_status: Option<Vec<BoardStatusEntry>>,
+    network_topology: Option<NetworkTopologyMsg>,
+    notifications: Option<Vec<PersistentNotification>>,
+    messages: Option<Vec<PersistentNotification>>,
+    action_policy: Option<ActionPolicyMsg>,
+    fill_targets: Option<FillTargetsConfig>,
+    recording_status: Option<RecordingStatusMsg>,
+    network_time: Option<NetworkTimeMsg>,
+}
 
 #[derive(Clone, Copy)]
 enum DashboardRuntimeEvent {
@@ -1222,6 +1225,108 @@ fn mark_telemetry_render_dirty() {
 fn mark_chart_render_dirty() {
     CHART_RENDER_DIRTY.store(true, Ordering::Release);
     schedule_dashboard_runtime_pump();
+}
+
+fn telemetry_queue_has_rows() -> bool {
+    TELEMETRY_QUEUE
+        .lock()
+        .map(|q| !q.is_empty())
+        .unwrap_or(false)
+}
+
+fn hidden_pending_ws_state_exists() -> bool {
+    HIDDEN_PENDING_WS_STATE.lock().map(|pending| {
+        pending.flight_state.is_some()
+            || pending.launch_clock.is_some()
+            || pending.board_status.is_some()
+            || pending.network_topology.is_some()
+            || pending.notifications.is_some()
+            || pending.messages.is_some()
+            || pending.action_policy.is_some()
+            || pending.fill_targets.is_some()
+            || pending.recording_status.is_some()
+            || pending.network_time.is_some()
+    }).unwrap_or(false)
+}
+
+fn telemetry_render_flush_due(now_ms: i64) -> bool {
+    now_ms.saturating_sub(LAST_TELEMETRY_RENDER_FLUSH_MS.load(Ordering::Relaxed))
+        >= TELEMETRY_RENDER_MIN_INTERVAL_MS
+}
+
+fn chart_render_flush_due(now_ms: i64) -> bool {
+    now_ms.saturating_sub(LAST_CHART_RENDER_FLUSH_MS.load(Ordering::Relaxed))
+        >= CHART_RENDER_MIN_INTERVAL_MS
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flush_hidden_pending_ws_state(
+    flight_state: &mut Signal<FlightState>,
+    launch_clock: &mut Signal<Option<LaunchClockMsg>>,
+    board_status: &mut Signal<Vec<BoardStatusEntry>>,
+    network_topology: &mut Signal<NetworkTopologyMsg>,
+    notifications: Signal<Vec<PersistentNotification>>,
+    notification_history: Signal<Vec<PersistentNotification>>,
+    message_history: Signal<Vec<PersistentNotification>>,
+    dismissed_notifications: Signal<Vec<DismissedNotification>>,
+    unread_notification_ids: Signal<Vec<u64>>,
+    action_policy: &mut Signal<ActionPolicyMsg>,
+    fill_targets: &mut Signal<Option<FillTargetsConfig>>,
+    recording_status: &mut Signal<RecordingStatusMsg>,
+    network_time: &mut Signal<Option<NetworkTimeSync>>,
+) {
+    let pending = if let Ok(mut slot) = HIDDEN_PENDING_WS_STATE.lock() {
+        std::mem::take(&mut *slot)
+    } else {
+        HiddenPendingWsState::default()
+    };
+
+    if let Some(next) = pending.flight_state {
+        set_signal_if_changed(flight_state, next);
+    }
+    if let Some(next) = pending.launch_clock {
+        set_signal_if_changed(launch_clock, Some(next));
+    }
+    if let Some(next) = pending.board_status {
+        set_signal_if_changed(board_status, next);
+    }
+    if let Some(next) = pending.network_topology {
+        set_signal_if_changed(network_topology, next);
+    }
+    if let Some(next) = pending.notifications {
+        apply_notifications_snapshot(
+            next,
+            notifications,
+            notification_history,
+            dismissed_notifications,
+            unread_notification_ids,
+        );
+    }
+    if let Some(next) = pending.messages {
+        apply_messages_snapshot(next, message_history);
+    }
+    if let Some(next) = pending.action_policy {
+        set_signal_if_changed(action_policy, next);
+    }
+    if let Some(next) = pending.fill_targets {
+        set_signal_if_changed(fill_targets, Some(next));
+    }
+    if let Some(next) = pending.recording_status {
+        set_signal_if_changed(recording_status, next);
+    }
+    if let Some(next) = pending.network_time {
+        let next_sync = NetworkTimeSync {
+            network_ms: next.timestamp_ms,
+            received_mono_ms: monotonic_now_ms(),
+        };
+        let changed = network_time
+            .read()
+            .as_ref()
+            .is_none_or(|current| current.network_ms != next_sync.network_ms);
+        if changed {
+            network_time.set(Some(next_sync));
+        }
+    }
 }
 
 fn set_signal_if_changed<T>(signal: &mut Signal<T>, next: T)
@@ -1572,6 +1677,75 @@ fn note_ws_connected_and_restore_data_flow(
     charts_cache_request_refit();
     bump_render_epoch();
     bump_seed_epoch();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refresh_layout_after_ws_reconnect(
+    layout_config: Signal<Option<LayoutConfig>>,
+    layout_loading: Signal<bool>,
+    layout_error: Signal<Option<String>>,
+    layout_error_dismissed: Signal<Option<String>>,
+    layout_request_base: Signal<String>,
+    calibration_has_sensors: Signal<Option<bool>>,
+    calibration_request_base: Signal<String>,
+) {
+    let base = UrlConfig::base_http();
+    let cache_key = layout_cache_key_for_base(&base);
+    let calibration_cache_key = calibration_visibility_cache_key_for_base(&base);
+    let mut layout_config = layout_config;
+    let mut layout_loading = layout_loading;
+    let mut layout_error = layout_error;
+    let mut layout_error_dismissed = layout_error_dismissed;
+    let mut layout_request_base = layout_request_base;
+    let mut calibration_has_sensors = calibration_has_sensors;
+    let mut calibration_request_base = calibration_request_base;
+
+    layout_error.set(None);
+    layout_error_dismissed.set(None);
+
+    spawn(async move {
+        match http_get_json::<LayoutConfig>("/api/layout").await {
+            Ok(layout) => {
+                if let Err(err) = layout.validate() {
+                    log!("[layout] reconnect validation failed: {err}");
+                    layout_error.set(Some(
+                        "Could not load the dashboard layout. The layout file is not valid for this frontend version.".to_string(),
+                    ));
+                    return;
+                }
+
+                let changed = layout_config
+                    .read()
+                    .as_ref()
+                    .map(|current| current != &layout)
+                    .unwrap_or(true);
+
+                layout_request_base.set(base.clone());
+                layout_error.set(None);
+                layout_error_dismissed.set(None);
+
+                if !changed {
+                    return;
+                }
+
+                configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                rebuild_chart_cache_from_visible_rows();
+                RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.store(false, Ordering::Relaxed);
+                layout_config.set(Some(layout.clone()));
+                layout_loading.set(false);
+                calibration_has_sensors.set(None);
+                calibration_request_base.set(String::new());
+                persist::_remove(&calibration_cache_key);
+                if let Ok(raw) = serde_json::to_string(&layout) {
+                    persist::set_string(&cache_key, &raw);
+                }
+            }
+            Err(err) => {
+                log!("[layout] reconnect refresh failed: {err}");
+                layout_error.set(Some(layout_load_error_message(&err)));
+            }
+        }
+    });
 }
 
 pub(crate) fn localized_copy(lang: &str, en: &str, es: &str, fr: &str) -> String {
@@ -2724,6 +2898,7 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
         MainTab::Map => "map",
         MainTab::Actions => "actions",
         MainTab::Calibration => "calibration",
+        MainTab::Messages => "messages",
         MainTab::Notifications => "notifications",
         MainTab::Warnings => "warnings",
         MainTab::Errors => "errors",
@@ -2754,6 +2929,7 @@ fn _default_main_tab_label(tab: MainTab) -> String {
         MainTab::Map => localized_copy(&lang, "Map", "Mapa", "Carte"),
         MainTab::Actions => localized_copy(&lang, "Actions", "Acciones", "Actions"),
         MainTab::Calibration => localized_copy(&lang, "Calibration", "Calibracion", "Calibration"),
+        MainTab::Messages => localized_copy(&lang, "Messages", "Mensajes", "Messages"),
         MainTab::Notifications => {
             localized_copy(&lang, "Notifications", "Notificaciones", "Notifications")
         }
@@ -2801,6 +2977,7 @@ fn _main_tab_from_str(s: &str) -> MainTab {
         "map" => MainTab::Map,
         "actions" => MainTab::Actions,
         "calibration" => MainTab::Calibration,
+        "messages" => MainTab::Messages,
         "notifications" => MainTab::Notifications,
         "warnings" => MainTab::Warnings,
         "errors" => MainTab::Errors,
@@ -2847,6 +3024,11 @@ fn _configured_main_tabs(
             continue;
         }
         tabs.push(tab);
+    }
+    if !tabs.contains(&MainTab::Messages)
+        && let Some(notifications_idx) = tabs.iter().position(|tab| *tab == MainTab::Notifications)
+    {
+        tabs.insert(notifications_idx, MainTab::Messages);
     }
     if tabs.is_empty() {
         tabs.push(MainTab::State);
@@ -3263,6 +3445,7 @@ fn TelemetryDashboardInner() -> Element {
     let errors = use_signal(Vec::<AlertMsg>::new);
     let notifications = use_signal(Vec::<PersistentNotification>::new);
     let notification_history = use_signal(Vec::<PersistentNotification>::new);
+    let message_history = use_signal(Vec::<PersistentNotification>::new);
     let dismissed_notifications = use_signal(load_dismissed_notifications);
     let unread_notification_ids = use_signal(Vec::<u64>::new);
     let action_policy = use_signal(ActionPolicyMsg::default_locked);
@@ -3886,11 +4069,23 @@ fn TelemetryDashboardInner() -> Element {
             let epoch = *WS_EPOCH.read();
             spawn(async move {
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    let has_pending_translation_misses = TRANSLATION_MISS_QUEUE
+                        .lock()
+                        .map(|pending| !pending.is_empty())
+                        .unwrap_or(false);
+                    let sleep_ms = if has_pending_translation_misses {
+                        300
+                    } else if dashboard_page_visible() {
+                        2_000
+                    } else {
+                        5_000
+                    };
+
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(300).await;
+                    gloo_timers::future::TimeoutFuture::new(sleep_ms).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms as u64)).await;
 
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
@@ -3963,12 +4158,38 @@ fn TelemetryDashboardInner() -> Element {
         let alive = alive.clone();
         let active_main_tab = active_main_tab;
         let rocket_gps_flush = rocket_gps;
+        let notifications_flush = notifications;
+        let notification_history_flush = notification_history;
+        let message_history_flush = message_history;
+        let dismissed_notifications_flush = dismissed_notifications;
+        let unread_notification_ids_flush = unread_notification_ids;
+        let flight_state_flush = flight_state;
+        let board_status_flush = board_status;
+        let network_topology_flush = network_topology;
+        let action_policy_flush = action_policy;
+        let fill_targets_flush = fill_targets;
+        let recording_status_flush = recording_status;
+        let network_time_flush = network_time;
+        let launch_clock_flush = launch_clock;
 
         use_effect(move || {
             let alive = alive.clone();
             let active_main_tab = active_main_tab;
             let mut rocket_gps_flush = rocket_gps_flush;
             let mut rocket_gps_altitude_flush = rocket_gps_altitude_m;
+            let notifications_flush = notifications_flush;
+            let notification_history_flush = notification_history_flush;
+            let message_history_flush = message_history_flush;
+            let dismissed_notifications_flush = dismissed_notifications_flush;
+            let unread_notification_ids_flush = unread_notification_ids_flush;
+            let mut flight_state_flush = flight_state_flush;
+            let mut board_status_flush = board_status_flush;
+            let mut network_topology_flush = network_topology_flush;
+            let mut action_policy_flush = action_policy_flush;
+            let mut fill_targets_flush = fill_targets_flush;
+            let mut recording_status_flush = recording_status_flush;
+            let mut network_time_flush = network_time_flush;
+            let mut launch_clock_flush = launch_clock_flush;
             let epoch = *WS_EPOCH.read();
             let (tx, mut rx) = futures_channel::mpsc::unbounded::<DashboardRuntimeEvent>();
             if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock() {
@@ -3984,6 +4205,23 @@ fn TelemetryDashboardInner() -> Element {
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
                     }
+                    let now_ms = current_wallclock_ms();
+
+                    flush_hidden_pending_ws_state(
+                        &mut flight_state_flush,
+                        &mut launch_clock_flush,
+                        &mut board_status_flush,
+                        &mut network_topology_flush,
+                        notifications_flush,
+                        notification_history_flush,
+                        message_history_flush,
+                        dismissed_notifications_flush,
+                        unread_notification_ids_flush,
+                        &mut action_policy_flush,
+                        &mut fill_targets_flush,
+                        &mut recording_status_flush,
+                        &mut network_time_flush,
+                    );
 
                     let drained: Vec<TelemetryRow> = if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
                         std::mem::take(&mut *q).into_iter().collect()
@@ -3992,6 +4230,10 @@ fn TelemetryDashboardInner() -> Element {
                     };
 
                     if !drained.is_empty() {
+                        update_latest_telemetry_batch(&drained);
+                        for row in &drained {
+                            charts_cache_ingest_row(row);
+                        }
                         if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
                             store.apply_rows(drained);
                             if let Some(gps) = store.latest_rocket_gps() {
@@ -4007,13 +4249,25 @@ fn TelemetryDashboardInner() -> Element {
                         persist_cached_telemetry_snapshot_if_due(false);
                     }
 
-                    if TELEMETRY_RENDER_DIRTY.swap(false, Ordering::AcqRel) {
+                    if TELEMETRY_RENDER_DIRTY.load(Ordering::Acquire)
+                        && dashboard_page_visible()
+                        && telemetry_render_flush_due(now_ms)
+                        && matches!(
+                            *active_main_tab.read(),
+                            MainTab::State | MainTab::Data | MainTab::Calibration
+                        )
+                    {
+                        TELEMETRY_RENDER_DIRTY.store(false, Ordering::Release);
+                        LAST_TELEMETRY_RENDER_FLUSH_MS.store(now_ms, Ordering::Relaxed);
                         bump_telemetry_render_epoch();
                     }
 
-                    if CHART_RENDER_DIRTY.swap(false, Ordering::AcqRel)
+                    if CHART_RENDER_DIRTY.load(Ordering::Acquire)
+                        && chart_render_flush_due(now_ms)
                         && matches!(*active_main_tab.read(), MainTab::Data | MainTab::State)
                     {
+                        CHART_RENDER_DIRTY.store(false, Ordering::Release);
+                        LAST_CHART_RENDER_FLUSH_MS.store(now_ms, Ordering::Relaxed);
                         bump_chart_render_epoch();
                     }
                 }
@@ -4041,8 +4295,21 @@ fn TelemetryDashboardInner() -> Element {
                     let effective_tick_ms = if dashboard_page_visible() {
                         NETWORK_TIME_BADGE_REFRESH_MS
                     } else {
-                        1_000
+                        5_000
                     };
+
+                    if dashboard_page_visible() {
+                        if telemetry_queue_has_rows() {
+                            mark_telemetry_render_dirty();
+                            mark_chart_render_dirty();
+                        } else if TELEMETRY_RENDER_DIRTY.load(Ordering::Acquire)
+                            || CHART_RENDER_DIRTY.load(Ordering::Acquire)
+                        {
+                            schedule_dashboard_runtime_pump();
+                        } else if hidden_pending_ws_state_exists() {
+                            schedule_dashboard_runtime_pump();
+                        }
+                    }
 
                     #[cfg(target_arch = "wasm32")]
                     gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
@@ -4075,6 +4342,7 @@ fn TelemetryDashboardInner() -> Element {
         let mut ack_error_ts_s = ack_error_ts;
         let mut notifications_s = notifications;
         let mut notification_history_s = notification_history;
+        let mut message_history_s = message_history;
         let mut dismissed_notifications_s = dismissed_notifications;
         let mut unread_notification_ids_s = unread_notification_ids;
         let mut action_policy_s = action_policy;
@@ -4093,21 +4361,23 @@ fn TelemetryDashboardInner() -> Element {
                 while alive.load(Ordering::Relaxed) {
                     // Initial seed waits until layout has loaded and the startup delay completes.
                     if !*startup_seed_ready.read() {
+                        let sleep_ms = if dashboard_page_visible() { 150 } else { 1_500 };
                         #[cfg(target_arch = "wasm32")]
-                        gloo_timers::future::TimeoutFuture::new(150).await;
+                        gloo_timers::future::TimeoutFuture::new(sleep_ms).await;
 
                         #[cfg(not(target_arch = "wasm32"))]
-                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                         continue;
                     }
 
                     let seed_epoch = *SEED_EPOCH.read();
                     if handled_seed_epoch == Some(seed_epoch) {
+                        let sleep_ms = if dashboard_page_visible() { 150 } else { 1_500 };
                         #[cfg(target_arch = "wasm32")]
-                        gloo_timers::future::TimeoutFuture::new(150).await;
+                        gloo_timers::future::TimeoutFuture::new(sleep_ms).await;
 
                         #[cfg(not(target_arch = "wasm32"))]
-                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                         continue;
                     }
                     handled_seed_epoch = Some(seed_epoch);
@@ -4124,6 +4394,7 @@ fn TelemetryDashboardInner() -> Element {
                             &mut errors_s,
                             &mut notifications_s,
                             &mut notification_history_s,
+                            &mut message_history_s,
                             &mut dismissed_notifications_s,
                             &mut unread_notification_ids_s,
                             &mut action_policy_s,
@@ -4207,7 +4478,7 @@ fn TelemetryDashboardInner() -> Element {
                         latest_warning_ts > *ack_warning_ts.read()
                             || latest_error_ts > *ack_error_ts.read()
                     };
-                    let effective_tick_ms = if dashboard_page_visible() { 500 } else { 1_500 };
+                    let effective_tick_ms = if dashboard_page_visible() { 500 } else { 5_000 };
 
                     #[cfg(target_arch = "wasm32")]
                     gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
@@ -4396,6 +4667,7 @@ fn TelemetryDashboardInner() -> Element {
                     errors,
                     notifications,
                     notification_history,
+                    message_history,
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
@@ -4412,6 +4684,13 @@ fn TelemetryDashboardInner() -> Element {
                     rocket_gps_altitude_m,
                     user_gps,
                     user_gps_altitude_m,
+                    layout_config,
+                    layout_loading,
+                    layout_error,
+                    layout_error_dismissed,
+                    layout_request_base,
+                    calibration_has_sensors,
+                    calibration_request_base,
                     alive.clone(),
                 )
                 .await
@@ -5706,6 +5985,21 @@ fn TelemetryDashboardInner() -> Element {
                                                 "{_main_tab_label(&layout, MainTab::Calibration)}"
                                             }
                                         },
+                                        MainTab::Messages => rsx! {
+                                            button {
+                                                key: "{\"main-tab-messages\"}",
+                                                style: if *active_main_tab.read() == MainTab::Messages { tab_style_active(&main_tab_accent("messages", "#64748b")) } else { tab_style_inactive.to_string() },
+                                                onclick: {
+                                                    let mut t = active_main_tab;
+                                                    let mut tabs_expanded = tabs_expanded;
+                                                    move |_| {
+                                                        t.set(MainTab::Messages);
+                                                        tabs_expanded.set(false);
+                                                    }
+                                                },
+                                                "{_main_tab_label(&layout, MainTab::Messages)}"
+                                            }
+                                        },
                                         MainTab::Notifications => rsx! {
                                             button {
                                                 key: "{\"main-tab-notifications\"}",
@@ -5938,6 +6232,14 @@ fn TelemetryDashboardInner() -> Element {
                                         theme: theme.clone(),
                                         can_edit: auth::can_edit_calibration(),
                                         capture_sample_count: *calibration_capture_sample_count.read(),
+                                    }
+                                }
+                            },
+                            MainTab::Messages => rsx! {
+                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                    MessagesTab {
+                                        history: message_history,
+                                        theme: theme.clone(),
                                     }
                                 }
                             },
@@ -6708,6 +7010,22 @@ fn merge_notification_history(
     }
 }
 
+fn merge_message_history(
+    history: &mut Vec<PersistentNotification>,
+    incoming: &[PersistentNotification],
+) {
+    let mut seen: HashSet<(u64, i64)> = history.iter().map(|n| (n.id, n.timestamp_ms)).collect();
+    for n in incoming {
+        if seen.insert((n.id, n.timestamp_ms)) {
+            history.push(n.clone());
+        }
+    }
+    history.sort_by_key(|n| -n.timestamp_ms);
+    if history.len() > MAX_NOTIFICATION_HISTORY {
+        history.truncate(MAX_NOTIFICATION_HISTORY);
+    }
+}
+
 fn apply_notifications_snapshot(
     incoming: Vec<PersistentNotification>,
     notifications: Signal<Vec<PersistentNotification>>,
@@ -6825,6 +7143,16 @@ fn apply_notifications_snapshot(
     }
 }
 
+fn apply_messages_snapshot(
+    incoming: Vec<PersistentNotification>,
+    message_history: Signal<Vec<PersistentNotification>>,
+) {
+    let mut message_history = message_history;
+    let mut history = { message_history.read().clone() };
+    merge_message_history(&mut history, &incoming);
+    message_history.set(history);
+}
+
 // ------------------------------
 // Seed telemetry/alerts/gps
 // ------------------------------
@@ -6834,6 +7162,7 @@ async fn seed_from_db(
     errors: &mut Signal<Vec<AlertMsg>>,
     notifications: &mut Signal<Vec<PersistentNotification>>,
     notification_history: &mut Signal<Vec<PersistentNotification>>,
+    message_history: &mut Signal<Vec<PersistentNotification>>,
     dismissed_notifications: &mut Signal<Vec<DismissedNotification>>,
     unread_notification_ids: &mut Signal<Vec<u64>>,
     action_policy: &mut Signal<ActionPolicyMsg>,
@@ -7040,6 +7369,12 @@ async fn seed_from_db(
         );
     }
 
+    if let Ok(list) = http_get_json::<Vec<PersistentNotification>>("/api/messages").await
+        && alive.load(Ordering::Relaxed)
+    {
+        apply_messages_snapshot(list, *message_history);
+    }
+
     if let Ok(policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await
         && alive.load(Ordering::Relaxed)
     {
@@ -7101,6 +7436,7 @@ async fn connect_ws_supervisor(
     errors: Signal<Vec<AlertMsg>>,
     notifications: Signal<Vec<PersistentNotification>>,
     notification_history: Signal<Vec<PersistentNotification>>,
+    message_history: Signal<Vec<PersistentNotification>>,
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
@@ -7117,6 +7453,13 @@ async fn connect_ws_supervisor(
     rocket_gps_altitude_m: Signal<Option<f64>>,
     user_gps: Signal<Option<(f64, f64)>>,
     user_gps_altitude_m: Signal<Option<f64>>,
+    layout_config: Signal<Option<LayoutConfig>>,
+    layout_loading: Signal<bool>,
+    layout_error: Signal<Option<String>>,
+    layout_error_dismissed: Signal<Option<String>>,
+    layout_request_base: Signal<String>,
+    calibration_has_sensors: Signal<Option<bool>>,
+    calibration_request_base: Signal<String>,
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let mut notifications = notifications;
@@ -7146,6 +7489,7 @@ async fn connect_ws_supervisor(
                     errors,
                     notifications,
                     notification_history,
+                    message_history,
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
@@ -7162,6 +7506,13 @@ async fn connect_ws_supervisor(
                     rocket_gps_altitude_m,
                     user_gps,
                     user_gps_altitude_m,
+                    layout_config,
+                    layout_loading,
+                    layout_error,
+                    layout_error_dismissed,
+                    layout_request_base,
+                    calibration_has_sensors,
+                    calibration_request_base,
                     alive.clone(),
                 )
                 .await
@@ -7175,6 +7526,7 @@ async fn connect_ws_supervisor(
                     errors,
                     notifications,
                     notification_history,
+                    message_history,
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
@@ -7191,6 +7543,13 @@ async fn connect_ws_supervisor(
                     rocket_gps_altitude_m,
                     user_gps,
                     user_gps_altitude_m,
+                    layout_config,
+                    layout_loading,
+                    layout_error,
+                    layout_error_dismissed,
+                    layout_request_base,
+                    calibration_has_sensors,
+                    calibration_request_base,
                     alive.clone(),
                 )
                 .await
@@ -7217,11 +7576,13 @@ async fn connect_ws_supervisor(
             log!("[WS] connect error: {e}");
         }
 
+        let reconnect_delay_ms = if dashboard_page_visible() { 800 } else { 5_000 };
+
         #[cfg(target_arch = "wasm32")]
-        gloo_timers::future::TimeoutFuture::new(800).await;
+        gloo_timers::future::TimeoutFuture::new(reconnect_delay_ms).await;
 
         #[cfg(not(target_arch = "wasm32"))]
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(reconnect_delay_ms as u64)).await;
     }
 
     Ok(())
@@ -7235,6 +7596,7 @@ async fn connect_ws_once_wasm(
     errors: Signal<Vec<AlertMsg>>,
     notifications: Signal<Vec<PersistentNotification>>,
     notification_history: Signal<Vec<PersistentNotification>>,
+    message_history: Signal<Vec<PersistentNotification>>,
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
@@ -7251,6 +7613,13 @@ async fn connect_ws_once_wasm(
     rocket_gps_altitude_m: Signal<Option<f64>>,
     user_gps: Signal<Option<(f64, f64)>>,
     user_gps_altitude_m: Signal<Option<f64>>,
+    layout_config: Signal<Option<LayoutConfig>>,
+    layout_loading: Signal<bool>,
+    layout_error: Signal<Option<String>>,
+    layout_error_dismissed: Signal<Option<String>>,
+    layout_request_base: Signal<String>,
+    calibration_has_sensors: Signal<Option<bool>>,
+    calibration_request_base: Signal<String>,
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use futures_channel::oneshot;
@@ -7283,6 +7652,13 @@ async fn connect_ws_once_wasm(
         let mut notifications_for_open = notifications;
         let mut notification_history_for_open = notification_history;
         let mut unread_notification_ids_for_open = unread_notification_ids;
+        let layout_config_for_open = layout_config;
+        let layout_loading_for_open = layout_loading;
+        let layout_error_for_open = layout_error;
+        let layout_error_dismissed_for_open = layout_error_dismissed;
+        let layout_request_base_for_open = layout_request_base;
+        let calibration_has_sensors_for_open = calibration_has_sensors;
+        let calibration_request_base_for_open = calibration_request_base;
         let onopen: Closure<dyn FnMut(Event)> = Closure::new(move |_e: Event| {
             log!("[WS] open");
             note_ws_connected_and_restore_data_flow(
@@ -7291,6 +7667,15 @@ async fn connect_ws_once_wasm(
                 &mut notifications_for_open,
                 &mut notification_history_for_open,
                 &mut unread_notification_ids_for_open,
+            );
+            refresh_layout_after_ws_reconnect(
+                layout_config_for_open,
+                layout_loading_for_open,
+                layout_error_for_open,
+                layout_error_dismissed_for_open,
+                layout_request_base_for_open,
+                calibration_has_sensors_for_open,
+                calibration_request_base_for_open,
             );
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
@@ -7310,6 +7695,7 @@ async fn connect_ws_once_wasm(
                     errors,
                     notifications,
                     notification_history,
+                    message_history,
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
@@ -7382,11 +7768,10 @@ async fn connect_ws_once_wasm(
             break;
         }
 
-        let done = futures_util::future::select(
-            &mut closed_rx,
-            gloo_timers::future::TimeoutFuture::new(150),
-        )
-        .await;
+        let ws_poll_ms = if dashboard_page_visible() { 5_000 } else { 30_000 };
+        let done =
+            futures_util::future::select(&mut closed_rx, gloo_timers::future::TimeoutFuture::new(ws_poll_ms))
+                .await;
 
         match done {
             futures_util::future::Either::Left((_closed, _timeout)) => break,
@@ -7502,6 +7887,7 @@ async fn connect_ws_once_native(
     errors: Signal<Vec<AlertMsg>>,
     mut notifications: Signal<Vec<PersistentNotification>>,
     mut notification_history: Signal<Vec<PersistentNotification>>,
+    message_history: Signal<Vec<PersistentNotification>>,
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     mut unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
@@ -7518,6 +7904,13 @@ async fn connect_ws_once_native(
     rocket_gps_altitude_m: Signal<Option<f64>>,
     user_gps: Signal<Option<(f64, f64)>>,
     user_gps_altitude_m: Signal<Option<f64>>,
+    layout_config: Signal<Option<LayoutConfig>>,
+    layout_loading: Signal<bool>,
+    layout_error: Signal<Option<String>>,
+    layout_error_dismissed: Signal<Option<String>>,
+    layout_request_base: Signal<String>,
+    calibration_has_sensors: Signal<Option<bool>>,
+    calibration_request_base: Signal<String>,
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use futures_util::{SinkExt, StreamExt};
@@ -7582,6 +7975,15 @@ async fn connect_ws_once_native(
         &mut notification_history,
         &mut unread_notification_ids,
     );
+    refresh_layout_after_ws_reconnect(
+        layout_config,
+        layout_loading,
+        layout_error,
+        layout_error_dismissed,
+        layout_request_base,
+        calibration_has_sensors,
+        calibration_request_base,
+    );
 
     let writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -7609,6 +8011,7 @@ async fn connect_ws_once_native(
                 errors,
                 notifications,
                 notification_history,
+                message_history,
                 dismissed_notifications,
                 unread_notification_ids,
                 action_policy,
@@ -7647,6 +8050,7 @@ fn handle_ws_message(
     errors: Signal<Vec<AlertMsg>>,
     notifications: Signal<Vec<PersistentNotification>>,
     notification_history: Signal<Vec<PersistentNotification>>,
+    message_history: Signal<Vec<PersistentNotification>>,
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
@@ -7670,6 +8074,7 @@ fn handle_ws_message(
     let mut error_event_counter = error_event_counter;
     let notifications = notifications;
     let notification_history = notification_history;
+    let message_history = message_history;
     let dismissed_notifications = dismissed_notifications;
     let unread_notification_ids = unread_notification_ids;
     let mut action_policy = action_policy;
@@ -7680,33 +8085,23 @@ fn handle_ws_message(
     let mut network_topology = network_topology;
     let mut flight_state = flight_state;
     let mut board_status = board_status;
-    let mut rocket_gps = rocket_gps;
-    let mut rocket_gps_altitude_m = rocket_gps_altitude_m;
+    let _rocket_gps = rocket_gps;
+    let _rocket_gps_altitude_m = rocket_gps_altitude_m;
     let _user_gps = user_gps;
 
     let Ok(msg) = serde_json::from_str::<WsInMsg>(s) else {
         return;
     };
     note_incoming_ws_message(s.len());
+    let page_visible = dashboard_page_visible();
 
     match msg {
         WsInMsg::Telemetry(row) => {
             note_incoming_telemetry_rows(1, 0);
-            charts_cache_ingest_row(&row);
-            update_latest_telemetry(&row);
-            mark_telemetry_render_dirty();
-            mark_chart_render_dirty();
             if RESEED_IN_PROGRESS.load(Ordering::Relaxed)
                 && let Ok(mut v) = RESEED_LIVE_BUFFER.lock()
             {
                 v.push(row.clone());
-            }
-
-            if let Some((lat, lon)) = row_to_gps(&row) {
-                set_signal_if_changed(&mut rocket_gps, Some((lat, lon)));
-            }
-            if let Some(altitude_m) = row_to_gps_altitude_m(&row) {
-                set_signal_if_changed(&mut rocket_gps_altitude_m, Some(altitude_m));
             }
 
             // Queue telemetry for UI batch flush
@@ -7718,6 +8113,11 @@ fn handle_ws_message(
                     q.pop_front();
                 }
             }
+
+            if page_visible {
+                mark_telemetry_render_dirty();
+                mark_chart_render_dirty();
+            }
         }
 
         WsInMsg::TelemetryBatch(batch) => {
@@ -7725,29 +8125,17 @@ fn handle_ws_message(
                 return;
             }
             note_incoming_telemetry_rows(batch.len(), 1);
-            update_latest_telemetry_batch(&batch);
-            mark_telemetry_render_dirty();
-            mark_chart_render_dirty();
             let reseed_active = RESEED_IN_PROGRESS.load(Ordering::Relaxed);
             let mut reseed_live = if reseed_active {
                 RESEED_LIVE_BUFFER.lock().ok()
             } else {
                 None
             };
-            let mut latest_gps = None;
-            let mut latest_gps_altitude_m = None;
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
                 q.reserve(batch.len());
                 for row in batch {
-                    charts_cache_ingest_row(&row);
                     if let Some(v) = reseed_live.as_mut() {
                         v.push(row.clone());
-                    }
-                    if let Some((lat, lon)) = row_to_gps(&row) {
-                        latest_gps = Some((lat, lon));
-                    }
-                    if let Some(altitude_m) = row_to_gps_altitude_m(&row) {
-                        latest_gps_altitude_m = Some(altitude_m);
                     }
                     q.push_back(row);
                 }
@@ -7756,20 +8144,27 @@ fn handle_ws_message(
                     q.pop_front();
                 }
             }
-            if latest_gps.is_some() {
-                set_signal_if_changed(&mut rocket_gps, latest_gps);
-            }
-            if latest_gps_altitude_m.is_some() {
-                set_signal_if_changed(&mut rocket_gps_altitude_m, latest_gps_altitude_m);
+
+            if page_visible {
+                mark_telemetry_render_dirty();
+                mark_chart_render_dirty();
             }
         }
 
         WsInMsg::FlightState(st) => {
-            set_signal_if_changed(&mut flight_state, st.state);
+            if page_visible {
+                set_signal_if_changed(&mut flight_state, st.state);
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.flight_state = Some(st.state);
+            }
         }
 
         WsInMsg::LaunchClock(clock) => {
-            set_signal_if_changed(&mut launch_clock, Some(clock));
+            if page_visible {
+                set_signal_if_changed(&mut launch_clock, Some(clock));
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.launch_clock = Some(clock);
+            }
         }
 
         WsInMsg::Warning(w) => {
@@ -7801,46 +8196,82 @@ fn handle_ws_message(
         }
 
         WsInMsg::BoardStatus(status) => {
-            set_signal_if_changed(&mut board_status, status.boards);
+            if page_visible {
+                set_signal_if_changed(&mut board_status, status.boards);
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.board_status = Some(status.boards);
+            }
         }
 
         WsInMsg::NetworkTopology(topology) => {
-            set_signal_if_changed(&mut network_topology, topology);
+            if page_visible {
+                set_signal_if_changed(&mut network_topology, topology);
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.network_topology = Some(topology);
+            }
         }
 
         WsInMsg::Notifications(list) => {
-            apply_notifications_snapshot(
-                list,
-                notifications,
-                notification_history,
-                dismissed_notifications,
-                unread_notification_ids,
-            );
+            if page_visible {
+                apply_notifications_snapshot(
+                    list,
+                    notifications,
+                    notification_history,
+                    dismissed_notifications,
+                    unread_notification_ids,
+                );
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.notifications = Some(list);
+            }
+        }
+
+        WsInMsg::Messages(list) => {
+            if page_visible {
+                apply_messages_snapshot(list, message_history);
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.messages = Some(list);
+            }
         }
 
         WsInMsg::ActionPolicy(policy) => {
-            set_signal_if_changed(&mut action_policy, policy);
+            if page_visible {
+                set_signal_if_changed(&mut action_policy, policy);
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.action_policy = Some(policy);
+            }
         }
 
         WsInMsg::FillTargets(targets) => {
-            set_signal_if_changed(&mut fill_targets, Some(targets));
+            if page_visible {
+                set_signal_if_changed(&mut fill_targets, Some(targets));
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.fill_targets = Some(targets);
+            }
         }
 
         WsInMsg::RecordingStatus(status) => {
-            set_signal_if_changed(&mut recording_status, status);
+            if page_visible {
+                set_signal_if_changed(&mut recording_status, status);
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.recording_status = Some(status);
+            }
         }
 
         WsInMsg::NetworkTime(t) => {
-            let next = NetworkTimeSync {
-                network_ms: t.timestamp_ms,
-                received_mono_ms: monotonic_now_ms(),
-            };
-            let changed = network_time
-                .read()
-                .as_ref()
-                .is_none_or(|current| current.network_ms != next.network_ms);
-            if changed {
-                network_time.set(Some(next));
+            if page_visible {
+                let next = NetworkTimeSync {
+                    network_ms: t.timestamp_ms,
+                    received_mono_ms: monotonic_now_ms(),
+                };
+                let changed = network_time
+                    .read()
+                    .as_ref()
+                    .is_none_or(|current| current.network_ms != next.network_ms);
+                if changed {
+                    network_time.set(Some(next));
+                }
+            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+                pending.network_time = Some(t);
             }
         }
     }

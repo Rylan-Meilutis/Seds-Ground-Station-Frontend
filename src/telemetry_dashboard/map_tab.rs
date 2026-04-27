@@ -392,14 +392,21 @@ pub fn MapTab(
         let mut browser_user_gps = browser_user_gps;
         use_future(move || async move {
             loop {
-                if let Some((lat, lon)) = js_read_user_latlon_from_window() {
-                    let current_browser_gps = *browser_user_gps.read();
-                    if current_browser_gps != Some((lat, lon)) {
-                        browser_user_gps.set(Some((lat, lon)));
+                if crate::telemetry_dashboard::dashboard_page_visible() {
+                    if let Some((lat, lon)) = js_read_user_latlon_from_window() {
+                        let current_browser_gps = *browser_user_gps.read();
+                        if current_browser_gps != Some((lat, lon)) {
+                            browser_user_gps.set(Some((lat, lon)));
+                        }
                     }
                 }
 
-                gloo_timers::future::TimeoutFuture::new(WEB_GEO_SYNC_INTERVAL_MS).await;
+                let sleep_ms = if crate::telemetry_dashboard::dashboard_page_visible() {
+                    WEB_GEO_SYNC_INTERVAL_MS
+                } else {
+                    2_000
+                };
+                gloo_timers::future::TimeoutFuture::new(sleep_ms).await;
             }
         });
     }
@@ -419,10 +426,13 @@ pub fn MapTab(
             let mut last_location_poll_ms = 0_i64;
             loop {
                 #[cfg(any(target_os = "ios", target_os = "android"))]
+                let page_visible = crate::telemetry_dashboard::dashboard_page_visible();
+                #[cfg(any(target_os = "ios", target_os = "android"))]
                 let now_ms = crate::telemetry_dashboard::current_wallclock_ms();
 
                 #[cfg(target_os = "ios")]
-                if now_ms - last_location_poll_ms >= NATIVE_GEO_SYNC_INTERVAL_MS as i64
+                if page_visible
+                    && now_ms - last_location_poll_ms >= NATIVE_GEO_SYNC_INTERVAL_MS as i64
                     && let Some((lat, lon)) = gps_apple::latest_location()
                 {
                     last_location_poll_ms = now_ms;
@@ -438,7 +448,8 @@ pub fn MapTab(
                 }
 
                 #[cfg(target_os = "android")]
-                if now_ms - last_location_poll_ms >= NATIVE_GEO_SYNC_INTERVAL_MS as i64
+                if page_visible
+                    && now_ms - last_location_poll_ms >= NATIVE_GEO_SYNC_INTERVAL_MS as i64
                     && let Some((lat, lon)) = gps_android::latest_location()
                 {
                     last_location_poll_ms = now_ms;
@@ -454,7 +465,7 @@ pub fn MapTab(
                 }
 
                 #[cfg(target_os = "ios")]
-                if let Some(deg) = gps_apple::latest_heading_deg() {
+                if page_visible && let Some(deg) = gps_apple::latest_heading_deg() {
                     let changed = last_heading
                         .map(|prev| heading_delta_degrees(prev, deg) >= 1.0)
                         .unwrap_or(true);
@@ -466,7 +477,7 @@ pub fn MapTab(
                 }
 
                 #[cfg(target_os = "android")]
-                if let Some(deg) = gps_android::latest_heading_deg() {
+                if page_visible && let Some(deg) = gps_android::latest_heading_deg() {
                     let changed = last_heading
                         .map(|prev| heading_delta_degrees(prev, deg) >= 1.0)
                         .unwrap_or(true);
@@ -479,7 +490,9 @@ pub fn MapTab(
 
                 #[cfg(any(target_os = "ios", target_os = "android"))]
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    if last_heading.is_some()
+                    if !page_visible {
+                        2_000
+                    } else if last_heading.is_some()
                         && now_ms - last_heading_change_ms <= NATIVE_HEADING_ACTIVE_GRACE_MS
                     {
                         NATIVE_HEADING_SYNC_INTERVAL_ACTIVE_MS

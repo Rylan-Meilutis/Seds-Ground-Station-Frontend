@@ -393,6 +393,7 @@ function logMapRuntimeBoundary(_label, _extra = {}) {
 }
 
 function startMapMainThreadWatchdog(source) {
+    if (!mapDebugLoggingEnabled()) return;
     if (mapMainThreadWatchdogTimer != null) return;
     mapMainThreadWatchdogLastTickAt = Date.now();
     pushMapTrace("watchdog-start", {source});
@@ -3763,6 +3764,7 @@ function setGroundMapRuntimeActive(active) {
         cancelUserMarkerAnimation();
         cancelFollowZoomAnimation();
         cancelHeadingAnimation();
+        stopTrackingTilePrefetch();
         if (overlaySourceSyncFrame != null) {
             try {
                 cancelAnimationFrame(overlaySourceSyncFrame);

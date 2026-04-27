@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutConfig {
     pub version: u32,
     #[serde(default)]
@@ -646,6 +646,7 @@ impl LayoutConfig {
                     | "map"
                     | "actions"
                     | "calibration"
+                    | "messages"
                     | "notifications"
                     | "warnings"
                     | "errors"

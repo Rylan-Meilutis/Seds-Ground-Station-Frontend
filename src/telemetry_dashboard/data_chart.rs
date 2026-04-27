@@ -39,6 +39,8 @@ use std::sync::{Mutex, OnceLock};
 use super::HISTORY_MS;
 
 static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static CHART_VISIBILITY_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+static CHART_VISIBILITY_POLLER_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub fn configure_sender_split_data_types(data_types: &[String]) {
     let configured = SENDER_SPLIT_DATA_TYPES.get_or_init(|| Mutex::new(HashSet::new()));
@@ -2527,13 +2529,21 @@ fn chart_visibility_observer_bootstrap() -> &'static str {
               if (window.__gs26ChartVisibilityObserverInstalled) return;
               window.__gs26ChartVisibilityObserverInstalled = true;
               const state = window.__gs26ChartVisibility || (window.__gs26ChartVisibility = Object.create(null));
+              window.__gs26ChartVisibilityVersion = Number(window.__gs26ChartVisibilityVersion || 0);
+              const markChanged = () => {
+                window.__gs26ChartVisibilityVersion = Number(window.__gs26ChartVisibilityVersion || 0) + 1;
+              };
               const observer = typeof IntersectionObserver === "function"
                 ? new IntersectionObserver((entries) => {
                     for (const entry of entries) {
                       const el = entry && entry.target;
                       const id = el && el.id;
                       if (!id) continue;
-                      state[id] = !!(entry.isIntersecting && entry.intersectionRatio > 0);
+                      const nextVisible = !!(entry.isIntersecting && entry.intersectionRatio > 0);
+                      if (state[id] !== nextVisible) {
+                        state[id] = nextVisible;
+                        markChanged();
+                      }
                     }
                   }, { root: null, threshold: 0.01 })
                 : null;
@@ -2544,9 +2554,13 @@ fn chart_visibility_observer_bootstrap() -> &'static str {
                   const el = document.getElementById(id);
                   if (!el) return;
                   const rect = el.getBoundingClientRect();
-                  state[id] = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
+                  const nextVisible = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
                     && rect.top < (window.innerHeight || document.documentElement?.clientHeight || 0)
                     && rect.left < (window.innerWidth || document.documentElement?.clientWidth || 0);
+                  if (state[id] !== nextVisible) {
+                    state[id] = nextVisible;
+                    markChanged();
+                  }
                   if (observer) observer.observe(el);
                 } catch (e) {}
               };
@@ -2556,7 +2570,10 @@ fn chart_visibility_observer_bootstrap() -> &'static str {
                   if (!id) return;
                   const el = document.getElementById(id);
                   if (el && observer) observer.unobserve(el);
-                  delete state[id];
+                  if (Object.prototype.hasOwnProperty.call(state, id)) {
+                    delete state[id];
+                    markChanged();
+                  }
                 } catch (e) {}
               };
             })();
@@ -2575,11 +2592,17 @@ fn ensure_chart_visibility_observer_installed() {
 }
 
 async fn chart_visibility_poll_delay() {
+    let delay_ms = if super::dashboard_page_visible() {
+        250
+    } else {
+        2_000
+    };
+
     #[cfg(target_arch = "wasm32")]
-    gloo_timers::future::TimeoutFuture::new(350).await;
+    gloo_timers::future::TimeoutFuture::new(delay_ms).await;
 
     #[cfg(not(target_arch = "wasm32"))]
-    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
@@ -2613,8 +2636,33 @@ fn chart_visibility_window_value(_key: &str) -> Option<String> {
     None
 }
 
+fn ensure_chart_visibility_poller_started() {
+    if CHART_VISIBILITY_POLLER_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    spawn(async move {
+        let mut last_version = u64::MAX;
+        loop {
+            let next_version = chart_visibility_window_value("__gs26ChartVisibilityVersion")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            if next_version != last_version {
+                last_version = next_version;
+                let mut epoch = CHART_VISIBILITY_EPOCH.write();
+                *epoch = (*epoch).wrapping_add(1);
+            }
+            chart_visibility_poll_delay().await;
+        }
+    });
+}
+
 pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
     ensure_chart_visibility_observer_installed();
+    ensure_chart_visibility_poller_started();
 
     let panel_id = use_hook(|| {
         format!(
@@ -2647,41 +2695,37 @@ pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
         }
     });
 
-    use_future({
+    if enabled {
+        let _ = *CHART_VISIBILITY_EPOCH.read();
+    }
+
+    use_effect({
         let panel_id = panel_id.clone();
-        let alive = alive.clone();
         move || {
-            let panel_id = panel_id.clone();
-            let alive = alive.clone();
-            async move {
-                while alive.get() {
-                    if enabled {
-                        let key = format!("__gs26_chart_visibility_tmp_{}", panel_id);
-                        super::js_eval(&format!(
-                            r#"
-                            (function() {{
-                              try {{
-                                const vis = window.__gs26ChartVisibility || {{}};
-                                window[{key_json}] = vis[{id_json}] === false ? "false" : "true";
-                              }} catch (e) {{
-                                window[{key_json}] = "true";
-                              }}
-                            }})();
-                            "#,
-                            key_json = serde_json::to_string(&key).unwrap_or_else(|_| "\"\"".to_string()),
-                            id_json = serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string()),
-                        ));
-                        let next_visible = chart_visibility_window_value(&key)
-                            .map(|value| value.eq_ignore_ascii_case("true"))
-                            .unwrap_or(true);
-                        if *is_visible.read() != next_visible {
-                            is_visible.set(next_visible);
-                        }
-                    } else if *is_visible.read() {
-                        is_visible.set(false);
-                    }
-                    chart_visibility_poll_delay().await;
+            if enabled {
+                let key = format!("__gs26_chart_visibility_tmp_{}", panel_id);
+                super::js_eval(&format!(
+                    r#"
+                    (function() {{
+                      try {{
+                        const vis = window.__gs26ChartVisibility || {{}};
+                        window[{key_json}] = vis[{id_json}] === false ? "false" : "true";
+                      }} catch (e) {{
+                        window[{key_json}] = "true";
+                      }}
+                    }})();
+                    "#,
+                    key_json = serde_json::to_string(&key).unwrap_or_else(|_| "\"\"".to_string()),
+                    id_json = serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string()),
+                ));
+                let next_visible = chart_visibility_window_value(&key)
+                    .map(|value| value.eq_ignore_ascii_case("true"))
+                    .unwrap_or(true);
+                if *is_visible.read() != next_visible {
+                    is_visible.set(next_visible);
                 }
+            } else if *is_visible.read() {
+                is_visible.set(false);
             }
         }
     });

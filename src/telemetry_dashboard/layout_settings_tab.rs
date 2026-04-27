@@ -526,7 +526,7 @@ pub fn SettingsPage(
                   if (warningText.style.display !== nextDisplay) warningText.style.display = nextDisplay;
                 }
               };
-              window.__gs26_cache_budget_settings_timer = window.setInterval(update, 500);
+              window.__gs26_cache_budget_settings_timer = window.setInterval(update, 2000);
               update();
             })();
             "#,
