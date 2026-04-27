@@ -28,7 +28,7 @@ use super::{
 
 use crate::telemetry_dashboard::data_chart::{
     charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    sender_scoped_chart_key, series_color, ChartCanvas, ChartRenderChunk,
+    sender_scoped_chart_key, series_color, use_chart_panel_visibility, ChartCanvas, ChartRenderChunk,
     SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
     CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET,
     CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
@@ -119,8 +119,6 @@ pub fn StateTab(
     theme: ThemeConfig,
     use_layout_theme_overrides: bool,
 ) -> Element {
-    let _ = *TELEMETRY_RENDER_EPOCH.read();
-
     let state = flight_state.read().clone();
     let boards_snapshot = board_status.read();
     let actions_snapshot = actions.actions.clone();
@@ -442,15 +440,17 @@ fn render_state_widget(
             if dt.is_empty() && !has_fill_target_item {
                 rsx! { div { style: "color:#94a3b8; font-size:12px;", "{translate_text(\"Missing summary data_type\")}" } }
             } else {
-                rsx! { {summary_row(
-                    (!dt.is_empty()).then_some(dt),
-                    items,
-                    fill_targets.read().as_ref(),
-                    widget.summary_style.as_ref(),
-                    theme,
-                    use_layout_theme_overrides,
-                    horizontal_values,
-                )} }
+                rsx! {
+                    StateSummaryWidget {
+                        dt: (!dt.is_empty()).then_some(dt.to_string()),
+                        items: items.to_vec(),
+                        fill_targets: fill_targets,
+                        style: widget.summary_style.clone(),
+                        theme: theme.clone(),
+                        use_layout_theme_overrides: use_layout_theme_overrides,
+                        horizontal_values: horizontal_values,
+                    }
+                }
             }
         }
         StateWidgetKind::Chart => {
@@ -468,16 +468,18 @@ fn render_state_widget(
             }
         }
         StateWidgetKind::ValveState => {
-            let labels = widget.boolean_labels.as_ref().or(default_valve_labels);
-            rsx! { {valve_state_grid(
-                widget.data_type.as_deref(),
-                widget.valves.as_deref(),
-                widget.valve_colors.as_ref(),
-                labels,
-                widget.valve_labels.as_deref(),
-                theme,
-                use_layout_theme_overrides,
-            )} }
+            let labels = widget.boolean_labels.as_ref().cloned().or(default_valve_labels.cloned());
+            rsx! {
+                StateValveStateWidget {
+                    data_type: widget.data_type.clone(),
+                    valves: widget.valves.clone().unwrap_or_default(),
+                    colors: widget.valve_colors.clone(),
+                    labels: labels,
+                    valve_labels: widget.valve_labels.clone(),
+                    theme: theme.clone(),
+                    use_layout_theme_overrides: use_layout_theme_overrides,
+                }
+            }
         }
         StateWidgetKind::Map => rsx! {
             MapTab {
@@ -501,8 +503,11 @@ fn StateChartPanel(
     view_w: f64,
     view_h: f64,
 ) -> Element {
-    let _ = *CHART_RENDER_EPOCH.read();
     let mut is_fullscreen = use_signal(|| false);
+    let (panel_id, panel_visible) = use_chart_panel_visibility(!*is_fullscreen.read());
+    if panel_visible || *is_fullscreen.read() {
+        let _ = *CHART_RENDER_EPOCH.read();
+    }
     let on_toggle_fullscreen = move |_| {
         let next = !*is_fullscreen.read();
         is_fullscreen.set(next);
@@ -576,7 +581,7 @@ fn StateChartPanel(
     };
 
     rsx! {
-        div { style: "display:flex; flex-direction:column; gap:8px;",
+        div { id: "{panel_id}", style: "display:flex; flex-direction:column; gap:8px;",
             div { style: "display:flex; justify-content:flex-end;",
                 button {
                     style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
@@ -1260,6 +1265,51 @@ fn fullscreen_view_height() -> f64 {
         }
     }
     520.0
+}
+
+#[component]
+fn StateSummaryWidget(
+    dt: Option<String>,
+    items: Vec<SummaryItem>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
+    style: Option<SummaryCardStyle>,
+    theme: ThemeConfig,
+    use_layout_theme_overrides: bool,
+    horizontal_values: bool,
+) -> Element {
+    let _ = *TELEMETRY_RENDER_EPOCH.read();
+    let fill_targets_snapshot = fill_targets.read().clone();
+    summary_row(
+        dt.as_deref(),
+        &items,
+        fill_targets_snapshot.as_ref(),
+        style.as_ref(),
+        &theme,
+        use_layout_theme_overrides,
+        horizontal_values,
+    )
+}
+
+#[component]
+fn StateValveStateWidget(
+    data_type: Option<String>,
+    valves: Vec<SummaryItem>,
+    colors: Option<ValveColorSet>,
+    labels: Option<BooleanLabels>,
+    valve_labels: Option<Vec<BooleanLabels>>,
+    theme: ThemeConfig,
+    use_layout_theme_overrides: bool,
+) -> Element {
+    let _ = *TELEMETRY_RENDER_EPOCH.read();
+    valve_state_grid(
+        data_type.as_deref(),
+        Some(&valves),
+        colors.as_ref(),
+        labels.as_ref(),
+        valve_labels.as_deref(),
+        &theme,
+        use_layout_theme_overrides,
+    )
 }
 
 // ============================================================

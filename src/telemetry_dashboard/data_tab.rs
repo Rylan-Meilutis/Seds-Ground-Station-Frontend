@@ -13,7 +13,7 @@ use std::rc::Rc;
 use super::data_chart::{
     charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
     charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color, ChartCanvas,
-    SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD,
+    SeriesSwatch, use_chart_panel_visibility, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD,
     CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
     CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
@@ -865,7 +865,10 @@ fn DataGraphPanel(
     is_fullscreen: Signal<bool>,
     show_chart: Signal<bool>,
 ) -> Element {
-    if *show_chart.read() || *is_fullscreen.read() {
+    let charts_enabled = *show_chart.read();
+    let fullscreen = *is_fullscreen.read();
+    let (panel_id, panel_visible) = use_chart_panel_visibility(charts_enabled && !fullscreen);
+    if (charts_enabled && panel_visible) || fullscreen {
         let _ = *CHART_RENDER_EPOCH.read();
     }
     let chart_groups_grid_style = if chart_groups.len() >= 2 {
@@ -891,7 +894,7 @@ fn DataGraphPanel(
     };
 
     rsx! {
-        div { style: "flex:0; width:100%; margin-top:6px;",
+        div { id: "{panel_id}", style: "flex:0; width:100%; margin-top:6px;",
             div { style: "width:100%;",
                 div { style: "display:flex; justify-content:flex-end; gap:8px; margin-bottom:6px;",
                     button {

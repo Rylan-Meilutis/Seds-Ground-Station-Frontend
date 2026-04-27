@@ -107,6 +107,7 @@ const BROWSER_HEADING_SYNC_INTERVAL_MS = 100;
 let maplibreProtocolInstalled = false;
 let mapRuntimeGuardsInstalled = false;
 let mapReady = false;
+let mapRuntimeActive = true;
 let trackedAssetLabel = "Tracked Asset";
 let mapNavigationControl = null;
 let mapCenterControl = null;
@@ -3390,7 +3391,7 @@ function syncOverlaySourcesNow() {
 }
 
 function scheduleOverlaySourceSync() {
-    if (!groundMap || !mapReady) return;
+    if (!mapRuntimeActive || !groundMap || !mapReady) return;
     if (overlaySourceSyncFrame != null) return;
     overlaySourceSyncFrame = requestAnimationFrame(safeMapCallback("overlay source sync frame", () => {
         overlaySourceSyncFrame = null;
@@ -3588,7 +3589,7 @@ function followCameraDistancePx(latLng) {
 }
 
 function scheduleFollowCameraUpdate(latLng) {
-    if (!groundMap || !Array.isArray(latLng)) return;
+    if (!mapRuntimeActive || !groundMap || !Array.isArray(latLng)) return;
     if (Date.now() < suppressFollowCameraUntilMs) return;
     if (followCameraDistancePx(latLng) <= FOLLOW_CAMERA_LOCK_DISTANCE_PX) {
         snapFollowCameraTo(latLng);
@@ -3600,7 +3601,7 @@ function scheduleFollowCameraUpdate(latLng) {
     followCameraLastFrameAt = performance.now();
     const step = safeMapCallback("follow camera frame", () => {
         const target = pendingFollowCameraLatLng;
-        if (!groundMap || !followUserEnabled || !Array.isArray(target) || Date.now() < suppressFollowCameraUntilMs) {
+        if (!mapRuntimeActive || !groundMap || !followUserEnabled || !Array.isArray(target) || Date.now() < suppressFollowCameraUntilMs) {
             followCameraFrame = null;
             return;
         }
@@ -3695,7 +3696,7 @@ function setUserMarkerVisualLatLng(latLng, options = {}) {
     if (!Array.isArray(latLng)) return;
     userMarkerDisplayedLatLng = [latLng[0], latLng[1]];
     const followTarget = options && Array.isArray(options.followTarget) ? options.followTarget : userMarkerDisplayedLatLng;
-    if (followUserEnabled && groundMap && options.skipFollow !== true) {
+    if (mapRuntimeActive && followUserEnabled && groundMap && options.skipFollow !== true) {
         if (isFollowZoomHolding()) {
             recenterFollowUserDuringZoom();
         } else if (followCameraCenterLocked) {
@@ -3737,6 +3738,57 @@ function cancelUserMarkerAnimation() {
     }
     userMarkerAnimationFrame = null;
     userMarkerAnimation = null;
+}
+
+function cancelHeadingAnimation() {
+    if (headingAnimationFrame != null) {
+        try {
+            cancelAnimationFrame(headingAnimationFrame);
+        } catch (e) {
+        }
+    }
+    headingAnimationFrame = null;
+}
+
+function setGroundMapRuntimeActive(active) {
+    const next = active !== false;
+    if (mapRuntimeActive === next) return;
+    mapRuntimeActive = next;
+    try {
+        window.__gs26_ground_map_runtime_active = next;
+    } catch (e) {
+    }
+
+    if (!next) {
+        cancelUserMarkerAnimation();
+        cancelFollowZoomAnimation();
+        cancelHeadingAnimation();
+        if (overlaySourceSyncFrame != null) {
+            try {
+                cancelAnimationFrame(overlaySourceSyncFrame);
+            } catch (e) {
+            }
+        }
+        overlaySourceSyncFrame = null;
+        if (markerSyncTimer != null) {
+            try {
+                clearTimeout(markerSyncTimer);
+            } catch (e) {
+            }
+        }
+        markerSyncTimer = null;
+        return;
+    }
+
+    if (!groundMap) return;
+    scheduleOverlaySourceSync();
+    if (hasUsableUserHeading()) {
+        scheduleHeadingAnimation();
+    }
+    const anchor = currentUserAnchorLatLng();
+    if (followUserEnabled && Array.isArray(anchor)) {
+        scheduleFollowCameraUpdate(anchor);
+    }
 }
 
 function resetUserMotionSmoothing(latLng) {
@@ -3821,7 +3873,7 @@ function animateUserMarkerTo(targetLatLng) {
 
     const step = safeMapCallback("user marker animation frame", () => {
         const anim = userMarkerAnimation;
-        if (!anim) {
+        if (!mapRuntimeActive || !anim) {
             userMarkerAnimationFrame = null;
             return;
         }
@@ -3937,9 +3989,14 @@ function applyKnownUserUpBearingNow() {
 }
 
 function scheduleHeadingAnimation() {
+    if (!mapRuntimeActive) return;
     if (headingAnimationFrame != null) return;
     headingAnimationLastFrameAt = performance.now();
     const step = safeMapCallback("heading animation frame", () => {
+        if (!mapRuntimeActive) {
+            headingAnimationFrame = null;
+            return;
+        }
         headingAnimationFrame = null;
         const now = performance.now();
         const dtMs = Math.max(1.0, Math.min(80.0, now - (headingAnimationLastFrameAt || now)));
@@ -5633,10 +5690,12 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     api.rememberMapView = safeMapCallback("api rememberMapView", rememberMapView);
     api.updateUserMarkerRotation = safeMapCallback("api updateUserMarkerRotation", updateUserMarkerRotation);
     api.setGroundMapUserHeading = safeMapCallback("api setGroundMapUserHeading", setGroundMapUserHeading);
+    api.setGroundMapRuntimeActive = safeMapCallback("api setGroundMapRuntimeActive", setGroundMapRuntimeActive);
     api.applyMapOrientation = safeMapCallback("api applyMapOrientation", applyMapOrientation);
     api.syncRocketGuideLine = safeMapCallback("api syncRocketGuideLine", syncRocketGuideLine);
     api.reloadPersistedMapState = safeMapCallback("api reloadPersistedMapState", loadPersistedMapState);
     window.__gs26_reload_persisted_map_state = api.reloadPersistedMapState;
+    window.setGroundMapRuntimeActive = api.setGroundMapRuntimeActive;
 
     api.state = api.state || {};
     Object.assign(api.state, {
@@ -5652,6 +5711,8 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
             return orientationMode;
         }, get mapBearingDeg() {
             return mapBearingDeg;
+        }, get mapRuntimeActive() {
+            return mapRuntimeActive;
         }, get lastMapView() {
             return lastMapView;
         }, get userHeadingDegRaw() {

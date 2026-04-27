@@ -261,6 +261,13 @@ pub fn MapTab(
     let did_install_map_js = use_signal(|| false);
     let map_config_ready = use_signal(|| load_cached_map_config().is_some());
 
+    use_effect(move || {
+        js_set_ground_map_runtime_active(true);
+    });
+    use_drop(|| {
+        js_set_ground_map_runtime_active(false);
+    });
+
     {
         let mut map_config = map_config;
         let mut map_config_ready = map_config_ready;
@@ -1412,6 +1419,25 @@ pub(crate) fn js_update_markers(r_lat: f64, r_lon: f64, u_lat: f64, u_lon: f64) 
         })();
         "#,
     );
+}
+
+fn js_set_ground_map_runtime_active(active: bool) {
+    let active_js = if active { "true" } else { "false" };
+    js_eval(&format!(
+        r#"
+        (function() {{
+          try {{
+            if (typeof window.setGroundMapRuntimeActive === "function") {{
+              window.setGroundMapRuntimeActive({active_js});
+            }} else {{
+              window.__gs26_ground_map_runtime_active = {active_js};
+            }}
+          }} catch (e) {{
+            console.warn("setGroundMapRuntimeActive threw:", e);
+          }}
+        }})();
+        "#,
+    ));
 }
 
 #[cfg(any(target_os = "ios", target_os = "android"))]
