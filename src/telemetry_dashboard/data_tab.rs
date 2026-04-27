@@ -687,7 +687,7 @@ fn summary_item_value(item: &DataSummaryItem) -> String {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct DataSource {
     data_type: String,
     sender_id: Option<String>,
@@ -704,7 +704,6 @@ fn DataLivePanel(
     is_fullscreen: Signal<bool>,
     show_chart: Signal<bool>,
 ) -> Element {
-    let _ = *TELEMETRY_RENDER_EPOCH.read();
     let current_tab_ref = current_tab.as_ref();
     let selected_subtab_ref = selected_subtab.as_ref();
     let effective_source = effective_source(current_tab_ref, selected_subtab_ref);
@@ -718,9 +717,6 @@ fn DataLivePanel(
         .and_then(|subtab| subtab.chart.as_ref().map(|c| c.enabled))
         .or_else(|| current_tab_ref.and_then(|tab| tab.chart.as_ref().map(|c| c.enabled)))
         .unwrap_or(true);
-    let latest_row = effective_source
-        .as_ref()
-        .and_then(|source| latest_telemetry_row(&source.data_type, source.sender_id.as_deref()));
     let summary_items = selected_subtab_ref
         .and_then(|subtab| subtab.summary_items.as_ref())
         .cloned()
@@ -735,11 +731,7 @@ fn DataLivePanel(
     let has_chart_source = effective_source.is_some()
         || !summary_items.is_empty()
         || chart_groups_have_graph_source(&chart_groups, &summary_items, &labels);
-    let has_telemetry = if !summary_items.is_empty() {
-        summary_items.iter().any(summary_item_has_value)
-    } else {
-        latest_row.is_some()
-    };
+    let has_telemetry = data_live_panel_has_telemetry(effective_source.as_ref(), &summary_items);
     let show_reseed_banner = reseed_status_note().is_some();
     let is_graph_allowed = chart_enabled && has_chart_source && (has_telemetry || show_reseed_banner);
 
@@ -757,69 +749,20 @@ fn DataLivePanel(
         .as_ref()
         .map(chart_key_for_source)
         .unwrap_or_else(|| current_tab_id.clone());
-    let (chan_min, chan_max) = if is_graph_allowed {
-        charts_cache_get_channel_minmax(&chart_key, view_w as f32, view_h as f32)
-    } else {
-        (Vec::new(), Vec::new())
-    };
-
-    let summary_content = if !summary_items.is_empty() {
-        let grid_style = summary_grid_style(summary_items.len());
-        rsx! {
-            div {
-                style: "{grid_style}",
-                for (i, item) in summary_items.iter().enumerate() {
-                    SummaryCard {
-                        label: translate_text(&item.label),
-                        min: None,
-                        max: None,
-                        value: summary_item_value(item),
-                        color: summary_color(i),
-                        theme: theme.clone(),
-                    }
-                }
-            }
-        }
-    } else {
-        match latest_row {
-            None => rsx! {
-                div { style: "color:{theme.text_muted}; padding:2px 2px;", "{translate_text(\"Waiting for telemetry…\")}" }
-            },
-            Some(row) => {
-                let vals = &row.values;
-                let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
-                let grid_style = summary_grid_style(visible_label_count);
-                rsx! {
-                    div {
-                        style: "{grid_style}",
-                        for (i, label) in labels.iter().enumerate() {
-                            if !label.is_empty() {
-                                SummaryCard {
-                                    label: label.clone(),
-                                    min: if is_graph_allowed { chan_min.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.and_then(|list| list.get(i)))) } else { None },
-                                    max: if is_graph_allowed { chan_max.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.and_then(|list| list.get(i)))) } else { None },
-                                    value: if let Some(lbls) = channel_boolean_labels
-                                        .and_then(|list| list.get(i))
-                                    {
-                                        boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
-                                    } else if boolean_labels.is_some() {
-                                        boolean_value_text(vals.get(i).copied().flatten(), boolean_labels)
-                                    } else {
-                                        format_value(vals.get(i).copied().flatten(), channel_formatters.and_then(|list| list.get(i)))
-                                    },
-                                    color: summary_color(i),
-                                    theme: theme.clone(),
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    };
-
     rsx! {
-        {summary_content}
+        DataSummarySection {
+            theme: theme.clone(),
+            summary_items: summary_items.clone(),
+            effective_source: effective_source.clone(),
+            labels: labels.clone(),
+            channel_formatters: channel_formatters.cloned(),
+            boolean_labels: boolean_labels.cloned(),
+            channel_boolean_labels: channel_boolean_labels.cloned(),
+            is_graph_allowed: is_graph_allowed,
+            chart_key: chart_key.clone(),
+            view_w: view_w,
+            view_h: view_h,
+        }
         if is_graph_allowed {
             DataGraphPanel {
                 theme: theme.clone(),
@@ -839,6 +782,104 @@ fn DataLivePanel(
                 inner_h_full: inner_h_full,
                 is_fullscreen: is_fullscreen,
                 show_chart: show_chart,
+            }
+        }
+    }
+}
+
+fn data_live_panel_has_telemetry(
+    effective_source: Option<&DataSource>,
+    summary_items: &[DataSummaryItem],
+) -> bool {
+    if !summary_items.is_empty() {
+        summary_items.iter().any(summary_item_has_value)
+    } else {
+        effective_source
+            .and_then(|source| latest_telemetry_row(&source.data_type, source.sender_id.as_deref()))
+            .is_some()
+    }
+}
+
+#[component]
+#[allow(clippy::too_many_arguments)]
+fn DataSummarySection(
+    theme: ThemeConfig,
+    summary_items: Vec<DataSummaryItem>,
+    effective_source: Option<DataSource>,
+    labels: Vec<String>,
+    channel_formatters: Option<Vec<ValueFormatter>>,
+    boolean_labels: Option<BooleanLabels>,
+    channel_boolean_labels: Option<Vec<BooleanLabels>>,
+    is_graph_allowed: bool,
+    chart_key: String,
+    view_w: f64,
+    view_h: f64,
+) -> Element {
+    let _ = *TELEMETRY_RENDER_EPOCH.read();
+    if is_graph_allowed {
+        let _ = *CHART_RENDER_EPOCH.read();
+    }
+
+    let latest_row = effective_source
+        .as_ref()
+        .and_then(|source| latest_telemetry_row(&source.data_type, source.sender_id.as_deref()));
+    let (chan_min, chan_max) = if is_graph_allowed {
+        charts_cache_get_channel_minmax(&chart_key, view_w as f32, view_h as f32)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    if !summary_items.is_empty() {
+        let grid_style = summary_grid_style(summary_items.len());
+        return rsx! {
+            div {
+                style: "{grid_style}",
+                for (i, item) in summary_items.iter().enumerate() {
+                    SummaryCard {
+                        label: translate_text(&item.label),
+                        min: None,
+                        max: None,
+                        value: summary_item_value(item),
+                        color: summary_color(i),
+                        theme: theme.clone(),
+                    }
+                }
+            }
+        };
+    }
+
+    let Some(row) = latest_row else {
+        return rsx! {
+            div { style: "color:{theme.text_muted}; padding:2px 2px;", "{translate_text(\"Waiting for telemetry…\")}" }
+        };
+    };
+
+    let vals = &row.values;
+    let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
+    let grid_style = summary_grid_style(visible_label_count);
+    rsx! {
+        div {
+            style: "{grid_style}",
+            for (i, label) in labels.iter().enumerate() {
+                if !label.is_empty() {
+                    SummaryCard {
+                        label: label.clone(),
+                        min: if is_graph_allowed { chan_min.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.as_ref().and_then(|list| list.get(i)))) } else { None },
+                        max: if is_graph_allowed { chan_max.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.as_ref().and_then(|list| list.get(i)))) } else { None },
+                        value: if let Some(lbls) = channel_boolean_labels
+                            .as_ref()
+                            .and_then(|list| list.get(i))
+                        {
+                            boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
+                        } else if boolean_labels.is_some() {
+                            boolean_value_text(vals.get(i).copied().flatten(), boolean_labels.as_ref())
+                        } else {
+                            format_value(vals.get(i).copied().flatten(), channel_formatters.as_ref().and_then(|list| list.get(i)))
+                        },
+                        color: summary_color(i),
+                        theme: theme.clone(),
+                    }
+                }
             }
         }
     }

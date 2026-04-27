@@ -8,9 +8,8 @@ use super::{current_wallclock_ms, reseed_note_banner, reseed_status_note, transl
 
 const LATENCY_WINDOW_MS: i64 = 20 * 60_000;
 const LATENCY_MAX_POINTS: usize = 1200;
-const LATENCY_SAMPLE_MS: u64 = 200;
-
-const SCROLL_TRIGGER_THRESHOLD_MS: i64 = 200;
+const LATENCY_SMOOTHING_ALPHA: f64 = 0.25;
+const SCROLL_TRIGGER_THRESHOLD_MS: i64 = 1_500;
 const LATENCY_CHART_HEIGHT_PX: u32 = 220;
 const LATENCY_FULLSCREEN_CHART_HEIGHT_PX: u32 = 240;
 const LATENCY_PLOT_LEFT_PX: f64 = 74.0;
@@ -31,61 +30,61 @@ pub fn ConnectionStatusTab(
     let mut show_latency = use_signal(|| true);
     let mut latency_fullscreen = use_signal(|| false);
     let history = use_signal(HashMap::<String, Vec<(i64, f64)>>::new);
+    let previous_last_seen = use_signal(HashMap::<String, u64>::new);
+    let smoothed_intervals = use_signal(HashMap::<String, f64>::new);
     let merged_boards = merged_connection_boards(&boards.read(), &expected_boards);
 
     {
-        let boards = boards;
         let expected_boards = expected_boards.clone();
         let mut history = history;
-        let show_latency = show_latency;
-        let latency_fullscreen = latency_fullscreen;
+        let mut previous_last_seen = previous_last_seen;
+        let mut smoothed_intervals = smoothed_intervals;
         use_effect(move || {
-            let expected_boards = expected_boards.clone();
-            spawn(async move {
-                loop {
-                    if !*show_latency.read() && !*latency_fullscreen.read() {
-                        #[cfg(target_arch = "wasm32")]
-                        gloo_timers::future::TimeoutFuture::new(LATENCY_SAMPLE_MS as u32).await;
+            let merged = merged_connection_boards(&boards.read(), &expected_boards);
+            let sample_now_ms = current_wallclock_ms();
 
-                        #[cfg(not(target_arch = "wasm32"))]
-                        tokio::time::sleep(std::time::Duration::from_millis(LATENCY_SAMPLE_MS))
-                            .await;
-                        continue;
-                    }
+            let mut previous_map = previous_last_seen.write();
+            let mut smoothing_map = smoothed_intervals.write();
+            let mut history_map = history.write();
 
-                    let now_ms = current_wallclock_ms();
-                    let merged = merged_connection_boards(&boards.read(), &expected_boards);
+            for entry in &merged {
+                let sender_id = entry.sender_id.clone();
+                let Some(last_seen_ms) = entry.last_seen_ms else {
+                    continue;
+                };
 
-                    {
-                        let mut map = history.write();
-                        for entry in merged.iter() {
-                            let Some(age_ms) = current_board_age_ms(entry, now_ms) else {
-                                continue;
-                            };
-                            let key = entry.sender_id.clone();
-                            let list = map.entry(key).or_default();
-                            list.push((now_ms, age_ms as f64));
-                            if let Some(&(newest, _)) = list.last() {
-                                let cutoff = newest.saturating_sub(LATENCY_WINDOW_MS);
-                                let split = list.partition_point(|(t, _)| *t < cutoff);
-                                if split > 0 {
-                                    list.drain(0..split);
-                                }
-                            }
-                            if list.len() > LATENCY_MAX_POINTS {
-                                let drain = list.len() - LATENCY_MAX_POINTS;
-                                list.drain(0..drain);
-                            }
+                let sample_ts = i64::try_from(last_seen_ms).unwrap_or(sample_now_ms);
+                let maybe_gap = previous_map
+                    .get(&sender_id)
+                    .copied()
+                    .and_then(|prev| last_seen_ms.checked_sub(prev))
+                    .filter(|gap| *gap > 0);
+
+                if let Some(gap_ms) = maybe_gap {
+                    let next_value = if let Some(prev_smoothed) = smoothing_map.get(&sender_id).copied() {
+                        prev_smoothed + (gap_ms as f64 - prev_smoothed) * LATENCY_SMOOTHING_ALPHA
+                    } else {
+                        gap_ms as f64
+                    };
+                    smoothing_map.insert(sender_id.clone(), next_value);
+
+                    let list = history_map.entry(sender_id.clone()).or_default();
+                    list.push((sample_ts, next_value));
+                    if let Some(&(newest, _)) = list.last() {
+                        let cutoff = newest.saturating_sub(LATENCY_WINDOW_MS);
+                        let split = list.partition_point(|(t, _)| *t < cutoff);
+                        if split > 0 {
+                            list.drain(0..split);
                         }
                     }
-
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(LATENCY_SAMPLE_MS as u32).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(LATENCY_SAMPLE_MS)).await;
+                    if list.len() > LATENCY_MAX_POINTS {
+                        let drain = list.len() - LATENCY_MAX_POINTS;
+                        list.drain(0..drain);
+                    }
                 }
-            });
+
+                previous_map.insert(sender_id, last_seen_ms);
+            }
         });
     }
 
@@ -152,7 +151,7 @@ pub fn ConnectionStatusTab(
                                 )
                             },
                             div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
-                                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Packet Age (ms)\".to_string()))}" }
+                                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Packet Interval (ms)\".to_string()))}" }
                                 div { style: "display:flex; gap:8px; flex-wrap:wrap;",
                                     button {
                                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
@@ -206,7 +205,7 @@ pub fn ConnectionStatusTab(
         if *latency_fullscreen.read() {
             div { style: "position:fixed; inset:0; z-index:9998; padding:16px; background:{theme.app_background}; display:flex; flex-direction:column; gap:12px; overflow:auto;",
                 div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px;",
-                    h2 { style: "margin:0; color:{theme.text_secondary};", "{translate_text(\"Packet Age (ms)\")}" }
+                    h2 { style: "margin:0; color:{theme.text_secondary};", "{translate_text(\"Packet Interval (ms)\")}" }
                     button {
                         style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
                         onclick: toggle_latency_fullscreen,
@@ -374,13 +373,13 @@ fn render_latency_chart(
                     svg { width:"26", height:"8", view_box:"0 0 26 8",
                         line { x1:"1", y1:"4", x2:"25", y2:"4", stroke:"#22d3ee", stroke_width:"2", stroke_linecap:"round" }
                     }
-                    "Actual"
+                    "Smoothed interval"
                 }
                 div { style: "display:flex; align-items:center; gap:6px;",
                     svg { width:"26", height:"8", view_box:"0 0 26 8",
                         line { x1:"1", y1:"4", x2:"25", y2:"4", stroke:"#fbbf24", stroke_width:"2", stroke_dasharray:"4 4", stroke_linecap:"round" }
                     }
-                    "Interpolated"
+                    "Gap bridge"
                 }
             }
         }

@@ -1942,8 +1942,8 @@ function createHeadingArrowImage() {
         ctx.lineWidth = 3;
         // Keep the arrow visually above the user anchor while leaving the symbol
         // itself centered on the shared animation/follow point.
-        ctx.strokeText("▲", size * 0.5, size * 0.16);
-        ctx.fillText("▲", size * 0.5, size * 0.16);
+        ctx.strokeText("▲", size * 0.5, size * 0.12);
+        ctx.fillText("▲", size * 0.5, size * 0.12);
     });
 }
 
