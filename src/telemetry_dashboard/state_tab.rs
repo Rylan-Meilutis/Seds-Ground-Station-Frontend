@@ -4,10 +4,14 @@
 
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use crate::auth;
 
-use super::blink::{action_opacity, blink_epoch_ms};
+use super::blink::{action_animation_style, ACTION_BLINK_CSS};
 use super::layout::{
     ActionSpec, ActionsTabLayout, BooleanLabels, ChartSeriesSpec, DataTabLayout, FillTargetFluid,
     FillTargetValueKind, StateSection, StateSectionStyle, StateSectionValueLayout, StateTabLayout,
@@ -16,8 +20,9 @@ use super::layout::{
 };
 use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
-    http_get_json, latest_telemetry_row, latest_telemetry_value, reseed_note_banner, reseed_status_note,
-    translate_text, ActionPolicyMsg, BlinkMode, FillTargetsConfig,
+    command_feedback_active, http_get_json, latest_telemetry_row, latest_telemetry_value,
+    reseed_note_banner, reseed_status_note, translate_text, ActionPolicyMsg, BlinkMode,
+    FillTargetsConfig,
     CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
 };
 
@@ -52,14 +57,27 @@ struct ScaleLabelPlacement {
 }
 
 type CombinedChartPayload = (
-    Vec<ChartRenderChunk>,
+    Rc<Vec<ChartRenderChunk>>,
     f32,
     f32,
     f32,
     Vec<String>,
     bool,
-    Vec<Option<(f32, f32)>>,
+    Rc<Vec<Option<(f32, f32)>>>,
 );
+
+#[derive(Clone)]
+struct SimpleChartPayload {
+    chunks: Rc<Vec<ChartRenderChunk>>,
+    y_min: f32,
+    y_max: f32,
+    span_min: f32,
+}
+
+thread_local! {
+    static STATE_SIMPLE_CHART_CACHE: RefCell<HashMap<u64, SimpleChartPayload>> = RefCell::new(HashMap::new());
+    static STATE_COMBINED_CHART_CACHE: RefCell<HashMap<u64, CombinedChartPayload>> = RefCell::new(HashMap::new());
+}
 
 fn min_max_summary_text(min: Option<&str>, max: Option<&str>) -> Option<String> {
     match (min, max) {
@@ -623,10 +641,12 @@ fn data_style_chart_cached(
     labels: &[String],
     theme: &ThemeConfig,
 ) -> Element {
-    let w = view_w as f32;
-    let h = view_h as f32;
-
-    let (chunks, y_min, y_max, span_min) = charts_cache_get(dt, w, h);
+    let SimpleChartPayload {
+        chunks,
+        y_min,
+        y_max,
+        span_min,
+    } = simple_chart_payload_cached(dt, view_w, view_h);
     let reseed_note = reseed_status_note();
 
     let left = CHART_GRID_LEFT;
@@ -719,6 +739,60 @@ fn chart_key_for_series_spec(spec: &ChartSeriesSpec) -> String {
         .unwrap_or_else(|| spec.data_type.clone())
 }
 
+fn current_chart_epoch() -> u64 {
+    *CHART_RENDER_EPOCH.read()
+}
+
+fn cache_key_seed() -> std::collections::hash_map::DefaultHasher {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    current_chart_epoch().hash(&mut hasher);
+    hasher
+}
+
+fn retain_recent_chart_cache_entries<T>(cache: &mut HashMap<u64, T>) {
+    if cache.len() > 128 {
+        cache.clear();
+    }
+}
+
+fn simple_chart_payload_cached(dt: &str, view_w: f64, view_h: f64) -> SimpleChartPayload {
+    let mut hasher = cache_key_seed();
+    dt.hash(&mut hasher);
+    view_w.to_bits().hash(&mut hasher);
+    view_h.to_bits().hash(&mut hasher);
+    let key = hasher.finish();
+
+    if let Some(payload) = STATE_SIMPLE_CHART_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+        return payload;
+    }
+
+    let (chunks, y_min, y_max, span_min) = charts_cache_get(dt, view_w as f32, view_h as f32);
+    let payload = SimpleChartPayload {
+        chunks,
+        y_min,
+        y_max,
+        span_min,
+    };
+    STATE_SIMPLE_CHART_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        retain_recent_chart_cache_entries(&mut cache);
+        cache.insert(key, payload.clone());
+    });
+    payload
+}
+
+fn hash_series_specs(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    specs: &[ChartSeriesSpec],
+) {
+    for spec in specs {
+        spec.data_type.hash(hasher);
+        spec.index.hash(hasher);
+        spec.sender_id.hash(hasher);
+        spec.label.hash(hasher);
+    }
+}
+
 fn combined_chart_payload(
     specs: &[ChartSeriesSpec],
     data_layout: &DataTabLayout,
@@ -731,6 +805,20 @@ fn combined_chart_payload(
         .map(|spec| default_series_label(data_layout, spec))
         .collect::<Vec<_>>();
 
+    let mut hasher = cache_key_seed();
+    view_w.to_bits().hash(&mut hasher);
+    view_h.to_bits().hash(&mut hasher);
+    _grid_left.to_bits().hash(&mut hasher);
+    labels.hash(&mut hasher);
+    hash_series_specs(&mut hasher, specs);
+    let cache_key = hasher.finish();
+
+    if let Some(payload) =
+        STATE_COMBINED_CHART_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned())
+    {
+        return Some(payload);
+    }
+
     if specs.len() <= 1 {
         let first = specs.first()?;
         let data_type = chart_key_for_series_spec(first);
@@ -740,15 +828,21 @@ fn combined_chart_payload(
         if chunks.is_empty() {
             return None;
         }
-        return Some((
-            chunks.as_ref().clone(),
+        let payload = (
+            chunks,
             y_min,
             y_max,
             span_min,
             labels,
             false,
-            vec![None; specs.len()],
-        ));
+            Rc::new(vec![None; specs.len()]),
+        );
+        STATE_COMBINED_CHART_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            retain_recent_chart_cache_entries(&mut cache);
+            cache.insert(cache_key, payload.clone());
+        });
+        return Some(payload);
     }
 
     let cache_series = specs
@@ -768,15 +862,21 @@ fn combined_chart_payload(
         return None;
     }
 
-    Some((
-        chunks.as_ref().clone(),
+    let payload = (
+        chunks,
         0.0,
         1.0,
         span_min,
         labels,
         true,
-        series_scales.as_ref().clone(),
-    ))
+        series_scales,
+    );
+    STATE_COMBINED_CHART_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        retain_recent_chart_cache_entries(&mut cache);
+        cache.insert(cache_key, payload.clone());
+    });
+    Some(payload)
 }
 
 #[cfg(test)]
@@ -1327,14 +1427,15 @@ fn action_section(
     selection: Option<&[String]>,
     abort_only_mode: bool,
 ) -> Element {
-    let blink_now_ms = blink_epoch_ms();
     let filtered = filter_actions(actions, selection);
     if filtered.is_empty() {
         return rsx! { div {} };
     }
 
     rsx! {
-        div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap:10px; align-items:stretch; width:100%; max-width:none; box-sizing:border-box; min-width:0;",
+        div {
+            style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap:10px; align-items:stretch; width:100%; max-width:none; box-sizing:border-box; min-width:0;",
+            style { "{ACTION_BLINK_CSS}" }
             for action in filtered.iter() {
                 {
                     let control = action_policy.controls.iter().find(|c| c.cmd == action.cmd);
@@ -1343,10 +1444,15 @@ fn action_section(
                         && (!abort_only_mode || action.cmd == "Abort")
                         && control.map(|c| c.enabled).unwrap_or(action.cmd == "Abort");
                     let blink = control.map(|c| c.blink).unwrap_or(BlinkMode::None);
-                    let actuated = control.and_then(|c| c.actuated);
+                    let local_active = command_feedback_active(action.cmd.as_str());
+                    let actuated = match (control.and_then(|c| c.actuated), local_active) {
+                        (_, true) => Some(true),
+                        (Some(active), false) => Some(active),
+                        (None, false) => None,
+                    };
                     rsx! {
                         button {
-                            style: "{action_style(&action.border, &action.bg, &action.fg, blink_now_ms, enabled, blink, actuated)} min-width:0;",
+                            style: "{action_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated)} min-width:0;",
                             disabled: !enabled,
                             onmousedown: {
                                 let cmd = action.cmd.clone();
@@ -1427,14 +1533,19 @@ fn action_style(
     border: &str,
     bg: &str,
     fg: &str,
-    blink_now_ms: u64,
     enabled: bool,
     blink: BlinkMode,
     actuated: Option<bool>,
 ) -> String {
     let cursor = if enabled { "pointer" } else { "not-allowed" };
     let recommended = enabled && blink != BlinkMode::None;
-    let opacity = action_opacity(blink_now_ms, enabled, recommended, blink, actuated);
+    let opacity = if !enabled {
+        "0.45"
+    } else if recommended || actuated.unwrap_or(false) {
+        "1.0"
+    } else {
+        "0.62"
+    };
     let filter = if !enabled {
         "grayscale(0.25) brightness(0.9)"
     } else if actuated.unwrap_or(false) || recommended {
@@ -1447,10 +1558,11 @@ fn action_style(
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
     };
+    let animation = action_animation_style(enabled, blink, actuated);
     format!(
         "padding:0.6rem 0.9rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
          text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
-         font-weight:700; box-shadow:{box_shadow}; touch-action:manipulation;"
+         font-weight:700; box-shadow:{box_shadow}; touch-action:manipulation; {animation}"
     )
 }
 

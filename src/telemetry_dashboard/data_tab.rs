@@ -5,7 +5,9 @@ use super::layout::{
 // frontend/src/telemetry_dashboard/data_tab.rs
 use dioxus::prelude::*;
 use dioxus_signals::{Signal, WritableExt};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use super::data_chart::{
@@ -105,8 +107,41 @@ struct ScaleLabelPlacement {
     text: String,
 }
 
+#[derive(Clone)]
+struct DataChartRenderPayload {
+    filtered_chunks: Rc<Vec<super::data_chart::ChartRenderChunk>>,
+    y_min: f32,
+    y_max: f32,
+    span_min: f32,
+    legend_labels: Vec<String>,
+    per_series_scales: Rc<Vec<Option<(f32, f32)>>>,
+    scale_label_placements: Vec<ScaleLabelPlacement>,
+}
+
+thread_local! {
+    static DATA_CHART_RENDER_CACHE: RefCell<HashMap<u64, DataChartRenderPayload>> = RefCell::new(HashMap::new());
+}
+
 fn subtab_storage_key(tab_id: &str) -> String {
     format!("{_ACTIVE_SUBTAB_STORAGE_KEY_PREFIX}{tab_id}")
+}
+
+fn retain_recent_chart_cache_entries<T>(cache: &mut HashMap<u64, T>) {
+    if cache.len() > 256 {
+        cache.clear();
+    }
+}
+
+fn hash_chart_series_specs(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    specs: &[ChartSeriesSpec],
+) {
+    for spec in specs {
+        spec.data_type.hash(hasher);
+        spec.index.hash(hasher);
+        spec.sender_id.hash(hasher);
+        spec.label.hash(hasher);
+    }
 }
 
 #[component]
@@ -116,7 +151,6 @@ pub fn DataTab(
     #[props(default = false)] state_chart_labels_vertical: bool,
     theme: ThemeConfig,
 ) -> Element {
-    let _ = *TELEMETRY_RENDER_EPOCH.read();
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
     let active_subtabs = use_signal(HashMap::<String, String>::new);
@@ -239,59 +273,6 @@ pub fn DataTab(
         }
     });
 
-    let effective_source = effective_source(current_tab, selected_subtab.as_ref());
-    let labels = effective_labels(current_tab, selected_subtab.as_ref());
-    let channel_formatters = effective_channel_formatters(current_tab, selected_subtab.as_ref());
-    let boolean_labels = effective_boolean_labels(current_tab, selected_subtab.as_ref());
-    let channel_boolean_labels =
-        effective_channel_boolean_labels(current_tab, selected_subtab.as_ref());
-
-    let chart_enabled = selected_subtab
-        .as_ref()
-        .and_then(|subtab| subtab.chart.as_ref().map(|c| c.enabled))
-        .or_else(|| current_tab.and_then(|tab| tab.chart.as_ref().map(|c| c.enabled)))
-        .unwrap_or(true);
-    let latest_row = effective_source
-        .as_ref()
-        .and_then(|source| latest_telemetry_row(&source.data_type, source.sender_id.as_deref()));
-    let summary_items = selected_subtab
-        .as_ref()
-        .and_then(|subtab| subtab.summary_items.as_ref())
-        .cloned()
-        .unwrap_or_default();
-
-    let has_telemetry = if !summary_items.is_empty() {
-        summary_items.iter().any(summary_item_has_value)
-    } else {
-        latest_row.is_some()
-    };
-    let show_reseed_banner = reseed_status_note().is_some();
-    let is_graph_allowed =
-        chart_enabled && effective_source.is_some() && (has_telemetry || show_reseed_banner);
-
-    // Viewport constants
-    let view_w = 1200.0_f64;
-    let view_h = 360.0_f64;
-    let view_h_full = fullscreen_view_height().max(260.0);
-
-    let left = CHART_GRID_LEFT;
-    let right = view_w - CHART_GRID_RIGHT_PAD;
-    let pad_top = CHART_GRID_TOP;
-    let pad_bottom = CHART_GRID_BOTTOM_PAD;
-
-    let inner_h = view_h - pad_top - pad_bottom;
-    let inner_h_full = view_h_full - pad_top - pad_bottom;
-
-    let chart_key = effective_source
-        .as_ref()
-        .map(chart_key_for_source)
-        .unwrap_or_else(|| current.clone());
-    let chart_groups = effective_chart_groups(current_tab, selected_subtab.as_ref(), labels.len());
-    let (chan_min, chan_max) = if is_graph_allowed {
-        charts_cache_get_channel_minmax(&chart_key, view_w as f32, view_h as f32)
-    } else {
-        (Vec::new(), Vec::new())
-    };
     let data_tabs_toggle_label = if *tabs_expanded.read() {
         "Hide data tabs".to_string()
     } else {
@@ -309,60 +290,8 @@ pub fn DataTab(
             .unwrap_or_else(|| translate_text("Subtabs"));
         format!("Show subtabs ({label})")
     };
-    let summary_content = if !summary_items.is_empty() {
-        let grid_style = summary_grid_style(summary_items.len());
-        rsx! {
-            div {
-                style: "{grid_style}",
-                for (i, item) in summary_items.iter().enumerate() {
-                    SummaryCard {
-                        label: translate_text(&item.label),
-                        min: None,
-                        max: None,
-                        value: summary_item_value(item),
-                        color: summary_color(i),
-                        theme: theme.clone(),
-                    }
-                }
-            }
-        }
-    } else {
-        match latest_row {
-            None => rsx! {
-                div { style: "color:{theme.text_muted}; padding:2px 2px;", "{translate_text(\"Waiting for telemetry…\")}" }
-            },
-            Some(row) => {
-                let vals = &row.values;
-                let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
-                let grid_style = summary_grid_style(visible_label_count);
-                rsx! {
-                    div {
-                        style: "{grid_style}",
-                        for (i, label) in labels.iter().enumerate() {
-                            if !label.is_empty() {
-                                SummaryCard {
-                                    label: label.clone(),
-                                    min: if is_graph_allowed { chan_min.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.and_then(|list| list.get(i)))) } else { None },
-                                    max: if is_graph_allowed { chan_max.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.and_then(|list| list.get(i)))) } else { None },
-                                    value: if let Some(lbls) = channel_boolean_labels
-                                        .and_then(|list| list.get(i))
-                                    {
-                                        boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
-                                    } else if boolean_labels.is_some() {
-                                        boolean_value_text(vals.get(i).copied().flatten(), boolean_labels)
-                                    } else {
-                                        format_value(vals.get(i).copied().flatten(), channel_formatters.and_then(|list| list.get(i)))
-                                    },
-                                    color: summary_color(i),
-                                    theme: theme.clone(),
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    };
+    let current_tab_snapshot = current_tab.cloned();
+    let selected_subtab_snapshot = selected_subtab.clone();
 
     rsx! {
         style {
@@ -500,26 +429,12 @@ pub fn DataTab(
                     }
                 }
 
-                {summary_content}
-            }
-
-            if is_graph_allowed {
-                DataGraphPanel {
-                    theme: theme.clone(),
-                    chart_groups: chart_groups.clone(),
-                    chart_key: chart_key.clone(),
-                    labels: labels.clone(),
-                    summary_items: summary_items.clone(),
+                DataLivePanel {
+                    current_tab: current_tab_snapshot,
+                    selected_subtab: selected_subtab_snapshot,
+                    current_tab_id: current.clone(),
                     state_chart_labels_vertical: state_chart_labels_vertical,
-                    view_w: view_w,
-                    view_h: view_h,
-                    view_h_full: view_h_full,
-                    left: left,
-                    right: right,
-                    pad_top: pad_top,
-                    pad_bottom: pad_bottom,
-                    inner_h: inner_h,
-                    inner_h_full: inner_h_full,
+                    theme: theme.clone(),
                     is_fullscreen: is_fullscreen,
                     show_chart: show_chart,
                 }
@@ -727,6 +642,151 @@ struct DataSource {
 
 #[component]
 #[allow(clippy::too_many_arguments)]
+fn DataLivePanel(
+    current_tab: Option<DataTabSpec>,
+    selected_subtab: Option<DataSubtabSpec>,
+    current_tab_id: String,
+    state_chart_labels_vertical: bool,
+    theme: ThemeConfig,
+    is_fullscreen: Signal<bool>,
+    show_chart: Signal<bool>,
+) -> Element {
+    let _ = *TELEMETRY_RENDER_EPOCH.read();
+    let current_tab_ref = current_tab.as_ref();
+    let selected_subtab_ref = selected_subtab.as_ref();
+    let effective_source = effective_source(current_tab_ref, selected_subtab_ref);
+    let labels = effective_labels(current_tab_ref, selected_subtab_ref);
+    let channel_formatters = effective_channel_formatters(current_tab_ref, selected_subtab_ref);
+    let boolean_labels = effective_boolean_labels(current_tab_ref, selected_subtab_ref);
+    let channel_boolean_labels =
+        effective_channel_boolean_labels(current_tab_ref, selected_subtab_ref);
+
+    let chart_enabled = selected_subtab_ref
+        .and_then(|subtab| subtab.chart.as_ref().map(|c| c.enabled))
+        .or_else(|| current_tab_ref.and_then(|tab| tab.chart.as_ref().map(|c| c.enabled)))
+        .unwrap_or(true);
+    let latest_row = effective_source
+        .as_ref()
+        .and_then(|source| latest_telemetry_row(&source.data_type, source.sender_id.as_deref()));
+    let summary_items = selected_subtab_ref
+        .and_then(|subtab| subtab.summary_items.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    let has_telemetry = if !summary_items.is_empty() {
+        summary_items.iter().any(summary_item_has_value)
+    } else {
+        latest_row.is_some()
+    };
+    let show_reseed_banner = reseed_status_note().is_some();
+    let is_graph_allowed =
+        chart_enabled && effective_source.is_some() && (has_telemetry || show_reseed_banner);
+
+    let view_w = 1200.0_f64;
+    let view_h = 360.0_f64;
+    let view_h_full = fullscreen_view_height().max(260.0);
+    let left = CHART_GRID_LEFT;
+    let right = view_w - CHART_GRID_RIGHT_PAD;
+    let pad_top = CHART_GRID_TOP;
+    let pad_bottom = CHART_GRID_BOTTOM_PAD;
+    let inner_h = view_h - pad_top - pad_bottom;
+    let inner_h_full = view_h_full - pad_top - pad_bottom;
+
+    let chart_key = effective_source
+        .as_ref()
+        .map(chart_key_for_source)
+        .unwrap_or_else(|| current_tab_id.clone());
+    let chart_groups =
+        effective_chart_groups(current_tab_ref, selected_subtab_ref, labels.len());
+    let (chan_min, chan_max) = if is_graph_allowed {
+        charts_cache_get_channel_minmax(&chart_key, view_w as f32, view_h as f32)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let summary_content = if !summary_items.is_empty() {
+        let grid_style = summary_grid_style(summary_items.len());
+        rsx! {
+            div {
+                style: "{grid_style}",
+                for (i, item) in summary_items.iter().enumerate() {
+                    SummaryCard {
+                        label: translate_text(&item.label),
+                        min: None,
+                        max: None,
+                        value: summary_item_value(item),
+                        color: summary_color(i),
+                        theme: theme.clone(),
+                    }
+                }
+            }
+        }
+    } else {
+        match latest_row {
+            None => rsx! {
+                div { style: "color:{theme.text_muted}; padding:2px 2px;", "{translate_text(\"Waiting for telemetry…\")}" }
+            },
+            Some(row) => {
+                let vals = &row.values;
+                let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
+                let grid_style = summary_grid_style(visible_label_count);
+                rsx! {
+                    div {
+                        style: "{grid_style}",
+                        for (i, label) in labels.iter().enumerate() {
+                            if !label.is_empty() {
+                                SummaryCard {
+                                    label: label.clone(),
+                                    min: if is_graph_allowed { chan_min.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.and_then(|list| list.get(i)))) } else { None },
+                                    max: if is_graph_allowed { chan_max.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.and_then(|list| list.get(i)))) } else { None },
+                                    value: if let Some(lbls) = channel_boolean_labels
+                                        .and_then(|list| list.get(i))
+                                    {
+                                        boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
+                                    } else if boolean_labels.is_some() {
+                                        boolean_value_text(vals.get(i).copied().flatten(), boolean_labels)
+                                    } else {
+                                        format_value(vals.get(i).copied().flatten(), channel_formatters.and_then(|list| list.get(i)))
+                                    },
+                                    color: summary_color(i),
+                                    theme: theme.clone(),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    rsx! {
+        {summary_content}
+        if is_graph_allowed {
+            DataGraphPanel {
+                theme: theme.clone(),
+                chart_groups: chart_groups.clone(),
+                chart_key: chart_key.clone(),
+                labels: labels.clone(),
+                summary_items: summary_items.clone(),
+                state_chart_labels_vertical: state_chart_labels_vertical,
+                view_w: view_w,
+                view_h: view_h,
+                view_h_full: view_h_full,
+                left: left,
+                right: right,
+                pad_top: pad_top,
+                pad_bottom: pad_bottom,
+                inner_h: inner_h,
+                inner_h_full: inner_h_full,
+                is_fullscreen: is_fullscreen,
+                show_chart: show_chart,
+            }
+        }
+    }
+}
+
+#[component]
+#[allow(clippy::too_many_arguments)]
 fn DataGraphPanel(
     theme: ThemeConfig,
     chart_groups: Vec<DataChartGroup>,
@@ -899,94 +959,28 @@ fn render_chart_group(
     } else {
         right
     };
-    let (filtered_chunks, y_min, y_max, span_min, per_series_scales) =
-        if let Some(series) = multi_series.as_ref() {
-            let cache_series = series
-                .iter()
-                .map(|spec| {
-                    let chart_key = spec
-                        .sender_id
-                        .as_deref()
-                        .map(|sender_id| sender_scoped_chart_key(&spec.data_type, sender_id))
-                        .unwrap_or_else(|| spec.data_type.clone());
-                    (chart_key, spec.index)
-                })
-                .collect::<Vec<_>>();
-            let (chunks, scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
-                &cache_series,
-                view_w as f32,
-                view_h as f32,
-                chart_left as f32,
-                (view_w - chart_right) as f32,
-                pad_top as f32,
-                pad_bottom as f32,
-            );
-            let overall_min = scales
-                .iter()
-                .flatten()
-                .map(|(min, _)| *min)
-                .fold(f32::INFINITY, f32::min);
-            let overall_max = scales
-                .iter()
-                .flatten()
-                .map(|(_, max)| *max)
-                .fold(f32::NEG_INFINITY, f32::max);
-            (
-                chunks,
-                if overall_min.is_finite() {
-                    overall_min
-                } else {
-                    0.0
-                },
-                if overall_max.is_finite() {
-                    overall_max
-                } else {
-                    1.0
-                },
-                span_min,
-                scales,
-            )
-        } else if use_per_series_scale {
-            let (chunks, scales, span_min) = charts_cache_get_subset_per_series_with_grid(
-                &chart_key,
-                &group.channels,
-                view_w as f32,
-                view_h as f32,
-                chart_left as f32,
-                (view_w - chart_right) as f32,
-                pad_top as f32,
-                pad_bottom as f32,
-            );
-            let overall_min = scales
-                .iter()
-                .flatten()
-                .map(|(min, _)| *min)
-                .fold(f32::INFINITY, f32::min);
-            let overall_max = scales
-                .iter()
-                .flatten()
-                .map(|(_, max)| *max)
-                .fold(f32::NEG_INFINITY, f32::max);
-            (
-                chunks,
-                if overall_min.is_finite() {
-                    overall_min
-                } else {
-                    0.0
-                },
-                if overall_max.is_finite() {
-                    overall_max
-                } else {
-                    1.0
-                },
-                span_min,
-                scales,
-            )
-        } else {
-            let (chunks, y_min, y_max, span_min) =
-                charts_cache_get_subset(&chart_key, &group.channels, view_w as f32, view_h as f32);
-            (chunks, y_min, y_max, span_min, Rc::new(Vec::new()))
-        };
+    let DataChartRenderPayload {
+        filtered_chunks,
+        y_min,
+        y_max,
+        span_min,
+        legend_labels,
+        per_series_scales,
+        scale_label_placements,
+    } = chart_group_render_payload_cached(
+        group,
+        &chart_key,
+        fallback_labels,
+        multi_series.as_deref(),
+        view_w,
+        view_h,
+        chart_left,
+        chart_right,
+        pad_top,
+        pad_bottom,
+        inner_h,
+        state_chart_labels_vertical,
+    );
     let reseed_note = reseed_status_note();
     if filtered_chunks.is_empty() {
         return rsx! {
@@ -1008,29 +1002,6 @@ fn render_chart_group(
     let y_mid_s = format!("{:.2}", y_mid);
     let y_min_s = format!("{:.2}", y_min);
     let x_label_top = view_h - pad_bottom + CHART_X_LABEL_BOTTOM;
-    let legend_labels = if let Some(series) = multi_series.as_ref() {
-        series
-            .iter()
-            .map(|spec| {
-                spec.label
-                    .clone()
-                    .unwrap_or_else(|| format!("{}[{}]", spec.data_type, spec.index))
-            })
-            .collect::<Vec<_>>()
-    } else {
-        let legend_source = group.labels.as_deref().unwrap_or(fallback_labels);
-        group
-            .channels
-            .iter()
-            .enumerate()
-            .filter_map(|(group_idx, idx)| {
-                legend_source
-                    .get(*idx)
-                    .or_else(|| legend_source.get(group_idx))
-                    .cloned()
-            })
-            .collect::<Vec<_>>()
-    };
     let legend_rows: Vec<(usize, &str)> = legend_labels
         .iter()
         .enumerate()
@@ -1052,11 +1023,6 @@ fn render_chart_group(
             })
             .flatten()
             .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let scale_label_placements = if use_per_series_scale && state_chart_labels_vertical {
-        stacked_scale_label_placements(&per_series_scales, pad_top, inner_h, view_h)
     } else {
         Vec::new()
     };
@@ -1183,6 +1149,185 @@ fn render_chart_group(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chart_group_render_payload_cached(
+    group: &DataChartGroup,
+    chart_key: &str,
+    fallback_labels: &[String],
+    multi_series: Option<&[ChartSeriesSpec]>,
+    view_w: f64,
+    view_h: f64,
+    chart_left: f64,
+    chart_right: f64,
+    pad_top: f64,
+    pad_bottom: f64,
+    inner_h: f64,
+    state_chart_labels_vertical: bool,
+) -> DataChartRenderPayload {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (*CHART_RENDER_EPOCH.read()).hash(&mut hasher);
+    chart_key.hash(&mut hasher);
+    group.title.hash(&mut hasher);
+    group.data_type.hash(&mut hasher);
+    group.sender_id.hash(&mut hasher);
+    group.labels.hash(&mut hasher);
+    group.channels.hash(&mut hasher);
+    group.scale_mode.hash(&mut hasher);
+    fallback_labels.hash(&mut hasher);
+    view_w.to_bits().hash(&mut hasher);
+    view_h.to_bits().hash(&mut hasher);
+    chart_left.to_bits().hash(&mut hasher);
+    chart_right.to_bits().hash(&mut hasher);
+    pad_top.to_bits().hash(&mut hasher);
+    pad_bottom.to_bits().hash(&mut hasher);
+    inner_h.to_bits().hash(&mut hasher);
+    state_chart_labels_vertical.hash(&mut hasher);
+    if let Some(series) = multi_series {
+        hash_chart_series_specs(&mut hasher, series);
+    }
+    let key = hasher.finish();
+
+    if let Some(payload) = DATA_CHART_RENDER_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+        return payload;
+    }
+
+    let legend_labels = if let Some(series) = multi_series {
+        series
+            .iter()
+            .map(|spec| {
+                spec.label
+                    .clone()
+                    .unwrap_or_else(|| format!("{}[{}]", spec.data_type, spec.index))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let legend_source = group.labels.as_deref().unwrap_or(fallback_labels);
+        group
+            .channels
+            .iter()
+            .enumerate()
+            .filter_map(|(group_idx, idx)| {
+                legend_source
+                    .get(*idx)
+                    .or_else(|| legend_source.get(group_idx))
+                    .cloned()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let use_per_series_scale = matches!(group.scale_mode, Some(DataChartScaleMode::PerSeries))
+        || multi_series.is_some_and(|series| series.len() > 1);
+    let (filtered_chunks, y_min, y_max, span_min, per_series_scales) =
+        if let Some(series) = multi_series {
+            let cache_series = series
+                .iter()
+                .map(|spec| {
+                    let chart_key = spec
+                        .sender_id
+                        .as_deref()
+                        .map(|sender_id| sender_scoped_chart_key(&spec.data_type, sender_id))
+                        .unwrap_or_else(|| spec.data_type.clone());
+                    (chart_key, spec.index)
+                })
+                .collect::<Vec<_>>();
+            let (chunks, scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
+                &cache_series,
+                view_w as f32,
+                view_h as f32,
+                chart_left as f32,
+                (view_w - chart_right) as f32,
+                pad_top as f32,
+                pad_bottom as f32,
+            );
+            let overall_min = scales
+                .iter()
+                .flatten()
+                .map(|(min, _)| *min)
+                .fold(f32::INFINITY, f32::min);
+            let overall_max = scales
+                .iter()
+                .flatten()
+                .map(|(_, max)| *max)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (
+                chunks,
+                if overall_min.is_finite() {
+                    overall_min
+                } else {
+                    0.0
+                },
+                if overall_max.is_finite() {
+                    overall_max
+                } else {
+                    1.0
+                },
+                span_min,
+                scales,
+            )
+        } else if use_per_series_scale {
+            let (chunks, scales, span_min) = charts_cache_get_subset_per_series_with_grid(
+                chart_key,
+                &group.channels,
+                view_w as f32,
+                view_h as f32,
+                chart_left as f32,
+                (view_w - chart_right) as f32,
+                pad_top as f32,
+                pad_bottom as f32,
+            );
+            let overall_min = scales
+                .iter()
+                .flatten()
+                .map(|(min, _)| *min)
+                .fold(f32::INFINITY, f32::min);
+            let overall_max = scales
+                .iter()
+                .flatten()
+                .map(|(_, max)| *max)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (
+                chunks,
+                if overall_min.is_finite() {
+                    overall_min
+                } else {
+                    0.0
+                },
+                if overall_max.is_finite() {
+                    overall_max
+                } else {
+                    1.0
+                },
+                span_min,
+                scales,
+            )
+        } else {
+            let (chunks, y_min, y_max, span_min) =
+                charts_cache_get_subset(chart_key, &group.channels, view_w as f32, view_h as f32);
+            (chunks, y_min, y_max, span_min, Rc::new(Vec::new()))
+        };
+    let scale_label_placements = if use_per_series_scale && state_chart_labels_vertical {
+        stacked_scale_label_placements(&per_series_scales, pad_top, inner_h, view_h)
+    } else {
+        Vec::new()
+    };
+
+    let payload = DataChartRenderPayload {
+        filtered_chunks,
+        y_min,
+        y_max,
+        span_min,
+        legend_labels,
+        per_series_scales,
+        scale_label_placements,
+    };
+    DATA_CHART_RENDER_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        retain_recent_chart_cache_entries(&mut cache);
+        cache.insert(key, payload.clone());
+    });
+    payload
 }
 
 fn stacked_scale_label_placements(

@@ -96,6 +96,7 @@ static PENDING_COMMAND_PRESS: Lazy<Mutex<Option<(String, f64)>>> = Lazy::new(|| 
 
 const COMMAND_ACTIVATION_DEDUP_MS: f64 = 450.0;
 const COMMAND_MAX_PRESS_RELEASE_MS: f64 = 650.0;
+const COMMAND_VISUAL_FEEDBACK_MS: f64 = 700.0;
 
 // ============================================================================
 // Dashboard lifetime: STATIC + ALWAYS PRESENT (never Option)
@@ -165,7 +166,6 @@ include!("dashboard_messages.rs");
 
 const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
-const DASHBOARD_CLOCK_REFRESH_MS: u32 = 1_000;
 const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 250;
 
 pub(crate) use network_metrics::FrontendNetworkMetrics;
@@ -453,11 +453,29 @@ fn note_sender_packet_count_batch(rows: &[TelemetryRow]) {
     }
 }
 
-pub(crate) fn telemetry_packet_counts_by_sender() -> HashMap<String, u64> {
-    TELEMETRY_PACKET_COUNTS_BY_SENDER
+pub(crate) fn with_telemetry_packet_counts_by_sender<R>(
+    f: impl FnOnce(&HashMap<String, u64>) -> R,
+) -> R {
+    if let Ok(counts) = TELEMETRY_PACKET_COUNTS_BY_SENDER.lock() {
+        f(&counts)
+    } else {
+        let empty = HashMap::new();
+        f(&empty)
+    }
+}
+
+pub(crate) fn latest_rocket_gps_from_store() -> Option<(f64, f64)> {
+    UI_TELEMETRY_STORE
         .lock()
-        .map(|counts| counts.clone())
-        .unwrap_or_default()
+        .ok()
+        .and_then(|store| store.latest_rocket_gps())
+}
+
+pub(crate) fn latest_rocket_gps_altitude_m_from_store() -> Option<f64> {
+    UI_TELEMETRY_STORE
+        .lock()
+        .ok()
+        .and_then(|store| store.latest_rocket_gps_altitude_m())
 }
 
 /// Applies latest-row replacement rules while both latest-row maps are already locked.
@@ -1153,8 +1171,13 @@ fn reset_local_app_data() {
 static WS_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+static HEADER_CLOCK_TICK: GlobalSignal<u64> = Signal::global(|| 0);
 static TELEMETRY_RENDER_DIRTY: AtomicBool = AtomicBool::new(false);
 static CHART_RENDER_DIRTY: AtomicBool = AtomicBool::new(false);
+static DASHBOARD_RUNTIME_PUMP_SCHEDULED: AtomicBool = AtomicBool::new(false);
+static DASHBOARD_RUNTIME_TX: Lazy<
+    Mutex<Option<futures_channel::mpsc::UnboundedSender<DashboardRuntimeEvent>>>,
+> = Lazy::new(|| Mutex::new(None));
 static PREFERRED_LANGUAGE: GlobalSignal<String> = Signal::global(|| "en".to_string());
 static TRANSLATION_CATALOG: GlobalSignal<HashMap<String, String>> = Signal::global(HashMap::new);
 pub(crate) static APP_THEME_CONFIG: GlobalSignal<layout::ThemeConfig> = Signal::global(|| {
@@ -1181,6 +1204,11 @@ static SEED_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static LAUNCH_TMINUS_DISPLAY_MIN_MS: AtomicI64 = AtomicI64::new(i64::MAX);
 static LAUNCH_TMINUS_ZERO_LATCHED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy)]
+enum DashboardRuntimeEvent {
+    Pump,
+}
+
 fn bump_telemetry_render_epoch() {
     let mut render_epoch = TELEMETRY_RENDER_EPOCH.write();
     *render_epoch = render_epoch.wrapping_add(1);
@@ -1188,51 +1216,20 @@ fn bump_telemetry_render_epoch() {
 
 fn mark_telemetry_render_dirty() {
     TELEMETRY_RENDER_DIRTY.store(true, Ordering::Release);
+    schedule_dashboard_runtime_pump();
 }
 
 fn mark_chart_render_dirty() {
     CHART_RENDER_DIRTY.store(true, Ordering::Release);
+    schedule_dashboard_runtime_pump();
 }
 
-fn default_live_tick_ms() -> u32 {
-    if cfg!(target_os = "ios") { 66 } else { 50 }
-}
-
-fn default_chart_tick_ms() -> u32 {
-    if cfg!(target_os = "ios") { 125 } else { 100 }
-}
-
-fn effective_live_tick_ms_for_tab(base_ms: u32, tab: MainTab) -> u32 {
-    match tab {
-        MainTab::State => base_ms,
-        MainTab::Data | MainTab::Actions | MainTab::Calibration => base_ms.max(100),
-        MainTab::Map | MainTab::NetworkTopology => base_ms.max(125),
-        MainTab::ConnectionStatus
-        | MainTab::Detailed
-        | MainTab::Notifications
-        | MainTab::Warnings
-        | MainTab::Errors => base_ms.max(200),
-    }
-}
-
-fn effective_chart_tick_ms_for_tab(base_ms: u32, tab: MainTab) -> u32 {
-    match tab {
-        MainTab::State => base_ms,
-        MainTab::Data => base_ms.max(150),
-        _ => base_ms.max(500),
-    }
-}
-
-fn effective_ui_flush_tick_ms_for_tab(base_ms: u32, tab: MainTab) -> u32 {
-    match tab {
-        MainTab::State => base_ms,
-        MainTab::Data | MainTab::Actions | MainTab::Calibration => base_ms.max(125),
-        MainTab::Map | MainTab::NetworkTopology => base_ms.max(150),
-        MainTab::ConnectionStatus
-        | MainTab::Detailed
-        | MainTab::Notifications
-        | MainTab::Warnings
-        | MainTab::Errors => base_ms.max(200),
+fn set_signal_if_changed<T>(signal: &mut Signal<T>, next: T)
+where
+    T: PartialEq + 'static,
+{
+    if *signal.read() != next {
+        signal.set(next);
     }
 }
 
@@ -1244,6 +1241,29 @@ fn bump_chart_render_epoch() {
 fn bump_render_epoch() {
     bump_telemetry_render_epoch();
     bump_chart_render_epoch();
+}
+
+fn schedule_dashboard_runtime_pump() {
+    if DASHBOARD_RUNTIME_PUMP_SCHEDULED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let sent = DASHBOARD_RUNTIME_TX
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned())
+        .is_some_and(|sender| {
+            sender
+                .unbounded_send(DashboardRuntimeEvent::Pump)
+                .is_ok()
+        });
+
+    if !sent {
+        DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
+    }
 }
 
 fn set_reseed_status(status: u8, detail: Option<String>) {
@@ -2341,35 +2361,7 @@ pub(crate) fn apply_window_theme(theme: &layout::ThemeConfig) {
 
 #[component]
 fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: String) -> Element {
-    let tick = use_signal(|| 0u64);
-    {
-        let mut tick = tick;
-        use_effect(move || {
-            spawn(async move {
-                loop {
-                    let effective_tick_ms = if dashboard_page_visible() {
-                        NETWORK_TIME_BADGE_REFRESH_MS
-                    } else {
-                        1_000
-                    };
-
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms as u64))
-                        .await;
-
-                    let next_tick = {
-                        let current_tick = *tick.read();
-                        current_tick.wrapping_add(1)
-                    };
-                    tick.set(next_tick);
-                }
-            });
-        });
-    }
-    let _tick_snapshot = *tick.read();
+    let _tick_snapshot = *HEADER_CLOCK_TICK.read();
     let Some(ts) = network_time
         .read()
         .as_ref()
@@ -2604,37 +2596,13 @@ fn LaunchClockBadge(
     launch_clock: Signal<Option<LaunchClockMsg>>,
     network_time: Signal<Option<NetworkTimeSync>>,
 ) -> Element {
-    let tick = use_signal(|| 0u64);
     let fallback_tplus_anchor_ms = use_signal(|| None::<i64>);
-    {
-        let mut tick = tick;
-        use_effect(move || {
-            spawn(async move {
-                loop {
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(DASHBOARD_CLOCK_REFRESH_MS).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        DASHBOARD_CLOCK_REFRESH_MS as u64,
-                    ))
-                    .await;
-
-                    let next = {
-                        let current = *tick.read();
-                        current.wrapping_add(1)
-                    };
-                    tick.set(next);
-                }
-            });
-        });
-    }
     {
         let launch_clock = launch_clock;
         let network_time = network_time;
         let mut fallback_tplus_anchor_ms = fallback_tplus_anchor_ms;
         use_effect(move || {
-            let _tick_snapshot = *tick.read();
+            let _tick_snapshot = *HEADER_CLOCK_TICK.read();
             let clock = launch_clock.read().clone();
             let now_ms = network_time
                 .read()
@@ -2674,7 +2642,7 @@ fn LaunchClockBadge(
             }
         });
     }
-    let _tick_snapshot = *tick.read();
+    let _tick_snapshot = *HEADER_CLOCK_TICK.read();
     let clock = launch_clock.read().clone();
     let now_ms = network_time
         .read()
@@ -3298,6 +3266,10 @@ fn TelemetryDashboardInner() -> Element {
     let dismissed_notifications = use_signal(load_dismissed_notifications);
     let unread_notification_ids = use_signal(Vec::<u64>::new);
     let action_policy = use_signal(ActionPolicyMsg::default_locked);
+    let recording_status = use_signal(|| RecordingStatusMsg {
+        mode: "idle".to_string(),
+        db_path: None,
+    });
     let fill_targets = use_signal(|| None::<FillTargetsConfig>);
     let network_time = use_signal(|| None::<NetworkTimeSync>);
     let launch_clock = use_signal(|| None::<LaunchClockMsg>);
@@ -3447,18 +3419,8 @@ fn TelemetryDashboardInner() -> Element {
     let ack_error_count = use_signal(|| 0u64);
 
     let flash_on = use_signal(|| false);
-    let rocket_gps = use_signal(|| {
-        ui_telemetry_rows_snapshot()
-            .iter()
-            .rev()
-            .find_map(row_to_gps)
-    });
-    let rocket_gps_altitude_m = use_signal(|| {
-        ui_telemetry_rows_snapshot()
-            .iter()
-            .rev()
-            .find_map(row_to_gps_altitude_m)
-    });
+    let rocket_gps = use_signal(latest_rocket_gps_from_store);
+    let rocket_gps_altitude_m = use_signal(latest_rocket_gps_altitude_m_from_store);
     let user_gps = use_signal(|| None::<(f64, f64)>);
     let user_gps_altitude_m = use_signal(|| None::<f64>);
 
@@ -3564,9 +3526,8 @@ fn TelemetryDashboardInner() -> Element {
                 && let Ok(()) = layout.validate()
             {
                 configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
-                if RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.swap(false, Ordering::Relaxed) {
-                    rebuild_chart_cache_from_visible_rows();
-                }
+                rebuild_chart_cache_from_visible_rows();
+                RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.store(false, Ordering::Relaxed);
                 layout_config.set(Some(layout));
                 layout_loading.set(false);
             }
@@ -3586,11 +3547,9 @@ fn TelemetryDashboardInner() -> Element {
                             return;
                         }
                         configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
-                        if RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD
-                            .swap(false, Ordering::Relaxed)
-                        {
-                            rebuild_chart_cache_from_visible_rows();
-                        }
+                        rebuild_chart_cache_from_visible_rows();
+                        RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD
+                            .store(false, Ordering::Relaxed);
                         layout_config.set(Some(layout.clone()));
                         layout_loading.set(false);
                         layout_error.set(None);
@@ -3997,29 +3956,90 @@ fn TelemetryDashboardInner() -> Element {
     }
 
     // ------------------------------------------------------------------------
-    // Live telemetry render loop: latest values are updated by the websocket
-    // handler immediately, so this only coalesces repaint wakeups.
+    // Event-driven runtime pump: coalesces telemetry flushes and render wakeups
+    // only when data actually changes.
     // ------------------------------------------------------------------------
     {
         let alive = alive.clone();
         let active_main_tab = active_main_tab;
+        let rocket_gps_flush = rocket_gps;
 
         use_effect(move || {
             let alive = alive.clone();
             let active_main_tab = active_main_tab;
+            let mut rocket_gps_flush = rocket_gps_flush;
+            let mut rocket_gps_altitude_flush = rocket_gps_altitude_m;
+            let epoch = *WS_EPOCH.read();
+            let (tx, mut rx) = futures_channel::mpsc::unbounded::<DashboardRuntimeEvent>();
+            if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock() {
+                *slot = Some(tx);
+            }
+
+            spawn(async move {
+                use futures_util::StreamExt;
+
+                while let Some(DashboardRuntimeEvent::Pump) = rx.next().await {
+                    DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
+
+                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
+                        break;
+                    }
+
+                    let drained: Vec<TelemetryRow> = if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                        std::mem::take(&mut *q).into_iter().collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                    if !drained.is_empty() {
+                        if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+                            store.apply_rows(drained);
+                            if let Some(gps) = store.latest_rocket_gps() {
+                                set_signal_if_changed(&mut rocket_gps_flush, Some(gps));
+                            }
+                            if let Some(altitude_m) = store.latest_rocket_gps_altitude_m() {
+                                set_signal_if_changed(
+                                    &mut rocket_gps_altitude_flush,
+                                    Some(altitude_m),
+                                );
+                            }
+                        }
+                        persist_cached_telemetry_snapshot_if_due(false);
+                    }
+
+                    if TELEMETRY_RENDER_DIRTY.swap(false, Ordering::AcqRel) {
+                        bump_telemetry_render_epoch();
+                    }
+
+                    if CHART_RENDER_DIRTY.swap(false, Ordering::AcqRel)
+                        && matches!(*active_main_tab.read(), MainTab::Data | MainTab::State)
+                    {
+                        bump_chart_render_epoch();
+                    }
+                }
+
+                DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
+                if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock() {
+                    slot.take();
+                }
+            });
+        });
+    }
+
+    // ------------------------------------------------------------------------
+    // Shared header clock: replaces per-badge timer loops.
+    // ------------------------------------------------------------------------
+    {
+        let alive = alive.clone();
+
+        use_effect(move || {
+            let alive = alive.clone();
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
-                let live_tick_ms: u32 = std::env::var("GS_LIVE_TICK_MS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(default_live_tick_ms)
-                    .clamp(33, 250);
-
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                    let page_visible = dashboard_page_visible();
-                    let effective_tick_ms = if page_visible {
-                        effective_live_tick_ms_for_tab(live_tick_ms, *active_main_tab.read())
+                    let effective_tick_ms = if dashboard_page_visible() {
+                        NETWORK_TIME_BADGE_REFRESH_MS
                     } else {
                         1_000
                     };
@@ -4035,141 +4055,8 @@ fn TelemetryDashboardInner() -> Element {
                         break;
                     }
 
-                    if !page_visible {
-                        continue;
-                    }
-
-                    if TELEMETRY_RENDER_DIRTY.swap(false, Ordering::AcqRel) {
-                        bump_telemetry_render_epoch();
-                    }
-                }
-            });
-        });
-    }
-
-    // ------------------------------------------------------------------------
-    // Visible chart render loop: chart cache ingestion is interest-based, so this
-    // can run faster without waking hidden tabs or non-chart screens.
-    // ------------------------------------------------------------------------
-    {
-        let alive = alive.clone();
-        let active_main_tab = active_main_tab;
-
-        use_effect(move || {
-            let alive = alive.clone();
-            let active_main_tab = active_main_tab;
-            let epoch = *WS_EPOCH.read();
-
-            spawn(async move {
-                let chart_tick_ms: u32 = std::env::var("GS_CHART_TICK_MS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(default_chart_tick_ms)
-                    .clamp(75, 2_000);
-
-                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                    let page_visible = dashboard_page_visible();
-                    let active_tab = *active_main_tab.read();
-                    let effective_tick_ms = if page_visible {
-                        effective_chart_tick_ms_for_tab(chart_tick_ms, active_tab)
-                    } else {
-                        chart_tick_ms.max(1_000)
-                    };
-
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms as u64))
-                        .await;
-
-                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
-                        break;
-                    }
-
-                    let chart_tab_visible =
-                        page_visible && matches!(active_tab, MainTab::Data | MainTab::State);
-                    if !chart_tab_visible {
-                        CHART_RENDER_DIRTY.store(false, Ordering::Release);
-                        continue;
-                    }
-
-                    if CHART_RENDER_DIRTY.swap(false, Ordering::AcqRel) {
-                        bump_chart_render_epoch();
-                    }
-                }
-            });
-        });
-    }
-
-    // ------------------------------------------------------------------------
-    // UI flush loop: drain telemetry queue into `rows` at a fixed cadence
-    // ------------------------------------------------------------------------
-    {
-        let alive = alive.clone();
-        let active_main_tab = active_main_tab;
-        let rocket_gps_flush = rocket_gps;
-
-        use_effect(move || {
-            let alive = alive.clone();
-            let active_main_tab = active_main_tab;
-            let mut rocket_gps_flush = rocket_gps_flush;
-            let mut rocket_gps_altitude_flush = rocket_gps_altitude_m;
-            let epoch = *WS_EPOCH.read();
-
-            spawn(async move {
-                // Keep compacted telemetry history responsive by default; operators can still
-                // override cadence through env vars on slower devices.
-                let tick_ms: u32 = std::env::var("GS_UI_TICK_MS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(100)
-                    .clamp(16, 500);
-
-                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                    let page_visible = dashboard_page_visible();
-                    let queue_len = TELEMETRY_QUEUE.lock().map(|q| q.len()).unwrap_or(0);
-                    let active_tab = *active_main_tab.read();
-                    let effective_tick_ms = if !page_visible {
-                        tick_ms.max(500)
-                    } else if queue_len == 0 {
-                        tick_ms.max(250)
-                    } else {
-                        effective_ui_flush_tick_ms_for_tab(tick_ms, active_tab)
-                    };
-
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(effective_tick_ms).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(effective_tick_ms as u64))
-                        .await;
-
-                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
-                        break;
-                    }
-
-                    // Drain queued telemetry in one move to minimize lock hold time and copies.
-                    let drained: Vec<TelemetryRow> = if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
-                        std::mem::take(&mut *q).into_iter().collect()
-                    } else {
-                        Vec::new()
-                    };
-
-                    if drained.is_empty() {
-                        continue;
-                    }
-
-                    if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-                        store.apply_rows(drained);
-                        if let Some(gps) = store.latest_rocket_gps() {
-                            rocket_gps_flush.set(Some(gps));
-                        }
-                        if let Some(altitude_m) = store.latest_rocket_gps_altitude_m() {
-                            rocket_gps_altitude_flush.set(Some(altitude_m));
-                        }
-                    }
-                    persist_cached_telemetry_snapshot_if_due(false);
+                    let mut tick = HEADER_CLOCK_TICK.write();
+                    *tick = tick.wrapping_add(1);
                 }
             });
         });
@@ -4512,6 +4399,7 @@ fn TelemetryDashboardInner() -> Element {
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
+                    recording_status,
                     fill_targets,
                     network_time,
                     launch_clock,
@@ -4814,9 +4702,8 @@ fn TelemetryDashboardInner() -> Element {
                         return;
                     }
                     configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
-                    if RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.swap(false, Ordering::Relaxed) {
-                        rebuild_chart_cache_from_visible_rows();
-                    }
+                    rebuild_chart_cache_from_visible_rows();
+                    RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.store(false, Ordering::Relaxed);
                     layout_request_base.set(base.clone());
                     layout_config.set(Some(layout.clone()));
                     layout_loading.set(false);
@@ -5551,10 +5438,34 @@ fn TelemetryDashboardInner() -> Element {
                             {
                                 let software_buttons_enabled =
                                     action_policy.read().software_buttons_enabled;
+                                let abort_control = action_policy
+                                    .read()
+                                    .controls
+                                    .iter()
+                                    .find(|c| c.cmd == "Abort")
+                                    .cloned();
                                 let abort_visible = auth::can_send_command("Abort");
                                 let abort_allowed = software_buttons_enabled && abort_visible;
+                                let abort_active = abort_control
+                                    .as_ref()
+                                    .and_then(|c| c.actuated)
+                                    .unwrap_or(false)
+                                    || command_feedback_active("Abort");
                                 let abort_style = if abort_allowed {
-                                    "
+                                    if abort_active {
+                                        "
+                                margin-left:clamp(20px, 6vw, 96px);
+                                padding:0.45rem 0.85rem;
+                                border-radius:0.75rem;
+                                border:1px solid #fca5a5;
+                                background:#7f1d1d;
+                                color:#fee2e2;
+                                box-shadow:0 0 0 1px rgba(252,165,165,0.3), 0 10px 28px rgba(127,29,29,0.5);
+                                font-weight:900;
+                                cursor:pointer;
+                            "
+                                    } else {
+                                        "
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
@@ -5565,6 +5476,7 @@ fn TelemetryDashboardInner() -> Element {
                                 font-weight:900;
                                 cursor:pointer;
                             "
+                                    }
                                 } else {
                                     "
                                 margin-left:clamp(20px, 6vw, 96px);
@@ -6013,6 +5925,7 @@ fn TelemetryDashboardInner() -> Element {
                                 ActionsTab {
                                     layout: layout.actions_tab.clone(),
                                     action_policy: action_policy,
+                                    recording_status: recording_status,
                                     backend_fill_targets: fill_targets,
                                     abort_only_mode: *abort_only_mode.read(),
                                     theme: theme.clone(),
@@ -6054,6 +5967,7 @@ fn TelemetryDashboardInner() -> Element {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     WarningsTab {
                                         warnings: warnings,
+                                        ack_timestamp_ms: *ack_warning_ts.read(),
                                         theme: theme.clone(),
                                         on_ack: {
                                             let mut ack_warning_ts = ack_warning_ts;
@@ -6070,6 +5984,7 @@ fn TelemetryDashboardInner() -> Element {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     ErrorsTab {
                                         errors: errors,
+                                        ack_timestamp_ms: *ack_error_ts.read(),
                                         theme: theme.clone(),
                                         on_ack: {
                                             let mut ack_error_ts = ack_error_ts;
@@ -6200,6 +6115,25 @@ pub(crate) fn send_cmd_from_press(cmd: &str) {
         return;
     };
     *pending = Some((cmd.to_string(), monotonic_now_ms()));
+}
+
+pub(crate) fn command_feedback_active(cmd: &str) -> bool {
+    let now = monotonic_now_ms();
+    let pending_active = PENDING_COMMAND_PRESS.lock().ok().and_then(|pending| pending.clone()).is_some_and(
+        |(pending_cmd, started_ms)| {
+            pending_cmd == cmd && now - started_ms <= COMMAND_MAX_PRESS_RELEASE_MS
+        },
+    );
+    if pending_active {
+        return true;
+    }
+    LAST_COMMAND_ACTIVATION
+        .lock()
+        .ok()
+        .and_then(|last| last.clone())
+        .is_some_and(|(last_cmd, last_ts)| {
+            last_cmd == cmd && now - last_ts <= COMMAND_VISUAL_FEEDBACK_MS
+        })
 }
 
 fn should_send_command_release(cmd: &str) -> bool {
@@ -7170,6 +7104,7 @@ async fn connect_ws_supervisor(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
+    recording_status: Signal<RecordingStatusMsg>,
     fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
     launch_clock: Signal<Option<LaunchClockMsg>>,
@@ -7214,6 +7149,7 @@ async fn connect_ws_supervisor(
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
+                    recording_status,
                     fill_targets,
                     network_time,
                     launch_clock,
@@ -7242,6 +7178,7 @@ async fn connect_ws_supervisor(
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
+                    recording_status,
                     fill_targets,
                     network_time,
                     launch_clock,
@@ -7301,6 +7238,7 @@ async fn connect_ws_once_wasm(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
+    recording_status: Signal<RecordingStatusMsg>,
     fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
     launch_clock: Signal<Option<LaunchClockMsg>>,
@@ -7375,6 +7313,7 @@ async fn connect_ws_once_wasm(
                     dismissed_notifications,
                     unread_notification_ids,
                     action_policy,
+                    recording_status,
                     fill_targets,
                     network_time,
                     launch_clock,
@@ -7566,6 +7505,7 @@ async fn connect_ws_once_native(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     mut unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
+    recording_status: Signal<RecordingStatusMsg>,
     fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
     launch_clock: Signal<Option<LaunchClockMsg>>,
@@ -7672,6 +7612,7 @@ async fn connect_ws_once_native(
                 dismissed_notifications,
                 unread_notification_ids,
                 action_policy,
+                recording_status,
                 fill_targets,
                 network_time,
                 launch_clock,
@@ -7709,6 +7650,7 @@ fn handle_ws_message(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
     action_policy: Signal<ActionPolicyMsg>,
+    recording_status: Signal<RecordingStatusMsg>,
     fill_targets: Signal<Option<FillTargetsConfig>>,
     network_time: Signal<Option<NetworkTimeSync>>,
     launch_clock: Signal<Option<LaunchClockMsg>>,
@@ -7731,6 +7673,7 @@ fn handle_ws_message(
     let dismissed_notifications = dismissed_notifications;
     let unread_notification_ids = unread_notification_ids;
     let mut action_policy = action_policy;
+    let mut recording_status = recording_status;
     let mut fill_targets = fill_targets;
     let mut network_time = network_time;
     let mut launch_clock = launch_clock;
@@ -7760,10 +7703,10 @@ fn handle_ws_message(
             }
 
             if let Some((lat, lon)) = row_to_gps(&row) {
-                rocket_gps.set(Some((lat, lon)));
+                set_signal_if_changed(&mut rocket_gps, Some((lat, lon)));
             }
             if let Some(altitude_m) = row_to_gps_altitude_m(&row) {
-                rocket_gps_altitude_m.set(Some(altitude_m));
+                set_signal_if_changed(&mut rocket_gps_altitude_m, Some(altitude_m));
             }
 
             // Queue telemetry for UI batch flush
@@ -7814,19 +7757,19 @@ fn handle_ws_message(
                 }
             }
             if latest_gps.is_some() {
-                rocket_gps.set(latest_gps);
+                set_signal_if_changed(&mut rocket_gps, latest_gps);
             }
             if latest_gps_altitude_m.is_some() {
-                rocket_gps_altitude_m.set(latest_gps_altitude_m);
+                set_signal_if_changed(&mut rocket_gps_altitude_m, latest_gps_altitude_m);
             }
         }
 
         WsInMsg::FlightState(st) => {
-            flight_state.set(st.state);
+            set_signal_if_changed(&mut flight_state, st.state);
         }
 
         WsInMsg::LaunchClock(clock) => {
-            launch_clock.set(Some(clock));
+            set_signal_if_changed(&mut launch_clock, Some(clock));
         }
 
         WsInMsg::Warning(w) => {
@@ -7858,11 +7801,11 @@ fn handle_ws_message(
         }
 
         WsInMsg::BoardStatus(status) => {
-            board_status.set(status.boards);
+            set_signal_if_changed(&mut board_status, status.boards);
         }
 
         WsInMsg::NetworkTopology(topology) => {
-            network_topology.set(topology);
+            set_signal_if_changed(&mut network_topology, topology);
         }
 
         WsInMsg::Notifications(list) => {
@@ -7876,20 +7819,29 @@ fn handle_ws_message(
         }
 
         WsInMsg::ActionPolicy(policy) => {
-            action_policy.set(policy);
+            set_signal_if_changed(&mut action_policy, policy);
         }
 
         WsInMsg::FillTargets(targets) => {
-            fill_targets.set(Some(targets));
+            set_signal_if_changed(&mut fill_targets, Some(targets));
         }
 
-        WsInMsg::RecordingStatus(_status) => {}
+        WsInMsg::RecordingStatus(status) => {
+            set_signal_if_changed(&mut recording_status, status);
+        }
 
         WsInMsg::NetworkTime(t) => {
-            network_time.set(Some(NetworkTimeSync {
+            let next = NetworkTimeSync {
                 network_ms: t.timestamp_ms,
                 received_mono_ms: monotonic_now_ms(),
-            }));
+            };
+            let changed = network_time
+                .read()
+                .as_ref()
+                .is_none_or(|current| current.network_ms != next.network_ms);
+            if changed {
+                network_time.set(Some(next));
+            }
         }
     }
 }

@@ -5,48 +5,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth;
 
-use super::blink::{action_opacity, blink_epoch_ms};
+use super::blink::{action_animation_style, ACTION_BLINK_CSS};
 use super::layout::{ActionSpec, ActionsTabLayout, ThemeConfig};
-use super::{translate_text, ActionPolicyMsg, BlinkMode, FillTargetsConfig, FluidFillTarget};
-
-#[cfg(not(target_arch = "wasm32"))]
-fn target_frame_duration() -> std::time::Duration {
-    let fps: u64 = std::env::var("GS_UI_FPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(15);
-    let fps = fps.clamp(1, 60);
-    std::time::Duration::from_micros(1_000_000 / fps)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn target_frame_duration() -> std::time::Duration {
-    std::time::Duration::from_millis(67)
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn sleep_for_frame(duration: std::time::Duration) {
-    let millis = duration.as_millis().clamp(0, u32::MAX as u128) as u32;
-    gloo_timers::future::sleep(std::time::Duration::from_millis(millis as u64)).await;
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn sleep_for_frame(duration: std::time::Duration) {
-    tokio::time::sleep(duration).await;
-}
+use super::{
+    command_feedback_active, translate_text, ActionPolicyMsg, BlinkMode, FillTargetsConfig,
+    FluidFillTarget, RecordingStatusMsg,
+};
 
 fn btn_style(
     border: &str,
     bg: &str,
     fg: &str,
-    blink_now_ms: u64,
     enabled: bool,
     blink: BlinkMode,
     actuated: Option<bool>,
 ) -> String {
     let cursor = if enabled { "pointer" } else { "not-allowed" };
     let recommended = enabled && blink != BlinkMode::None;
-    let opacity = action_opacity(blink_now_ms, enabled, recommended, blink, actuated);
+    let opacity = if !enabled {
+        "0.45"
+    } else if recommended || actuated.unwrap_or(false) {
+        "1.0"
+    } else {
+        "0.62"
+    };
     let filter = if !enabled {
         "grayscale(0.25) brightness(0.9)"
     } else if actuated.unwrap_or(false) || recommended {
@@ -59,11 +41,35 @@ fn btn_style(
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
     };
+    let animation = action_animation_style(enabled, blink, actuated);
     format!(
         "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
          text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
-         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation;"
+         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; {animation}"
     )
+}
+
+fn recording_command_active(cmd: &str, status: &RecordingStatusMsg) -> Option<bool> {
+    match cmd {
+        "StartWritingNow" | "StartWritingLastTwoMinutes" => Some(status.mode == "recording"),
+        "PauseWritingDb" => Some(status.mode == "paused"),
+        "StopWritingDb" => Some(status.mode == "idle"),
+        _ => None,
+    }
+}
+
+fn merged_actuated(
+    cmd: &str,
+    control_actuated: Option<bool>,
+    recording_status: &RecordingStatusMsg,
+) -> Option<bool> {
+    let local_active = command_feedback_active(cmd);
+    let base = control_actuated.or_else(|| recording_command_active(cmd, recording_status));
+    match (base, local_active) {
+        (_, true) => Some(true),
+        (Some(active), false) => Some(active),
+        (None, false) => None,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -186,29 +192,17 @@ fn apply_button_style(theme: &ThemeConfig, enabled: bool) -> String {
 pub fn ActionsTab(
     layout: ActionsTabLayout,
     action_policy: Signal<ActionPolicyMsg>,
+    recording_status: Signal<RecordingStatusMsg>,
     backend_fill_targets: Signal<Option<FillTargetsConfig>>,
     abort_only_mode: bool,
     theme: ThemeConfig,
 ) -> Element {
-    let mut redraw_tick = use_signal(|| 0u64);
     let mut flight_setup = use_signal(|| None::<FlightSetupConfig>);
     let mut flight_setup_status = use_signal(String::new);
     let mut flight_setup_busy = use_signal(|| false);
     let mut fill_targets = use_signal(|| None::<FillTargetsConfig>);
     let mut fill_targets_status = use_signal(String::new);
     let mut fill_targets_busy = use_signal(|| false);
-    use_effect(move || {
-        spawn(async move {
-            loop {
-                sleep_for_frame(target_frame_duration()).await;
-                let next = {
-                    let current = *redraw_tick.read();
-                    current.wrapping_add(1)
-                };
-                redraw_tick.set(next);
-            }
-        });
-    });
     use_effect(move || {
         spawn(async move {
             match crate::telemetry_dashboard::http_get_json::<FlightSetupConfig>(
@@ -246,8 +240,6 @@ pub fn ActionsTab(
             fill_targets.set(Some(cfg));
         }
     });
-    let _blink_tick = *redraw_tick.read();
-    let blink_now_ms = blink_epoch_ms();
     let visible_actions = if auth::can_view_actions() {
         layout.actions.iter().collect::<Vec<_>>()
     } else {
@@ -272,6 +264,7 @@ pub fn ActionsTab(
                 box-sizing:border-box;
                 align-self:stretch;
             ",
+            style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "All available actions are available all the time, use with caution as improper use \
@@ -340,10 +333,14 @@ pub fn ActionsTab(
                                                         .map(|c| c.enabled)
                                                         .unwrap_or(action.cmd == "Abort");
                                                 let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
-                                                let actuated = control.as_ref().and_then(|c| c.actuated);
+                                                let actuated = merged_actuated(
+                                                    action.cmd.as_str(),
+                                                    control.as_ref().and_then(|c| c.actuated),
+                                                    &recording_status.read(),
+                                                );
                                                 rsx! {
                                                     button {
-                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, blink_now_ms, enabled, blink, actuated)}",
+                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated)}",
                                                         disabled: !enabled,
                                                         onmousedown: {
                                                             let cmd = action.cmd.clone();

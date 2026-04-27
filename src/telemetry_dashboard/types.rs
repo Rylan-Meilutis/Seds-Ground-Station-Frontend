@@ -34,7 +34,7 @@ pub fn display_flight_state(state: &str) -> String {
     out.trim().to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BoardStatusEntry {
     pub board: String,
     #[serde(default)]
@@ -75,7 +75,7 @@ pub struct BoardStatusMsg {
     pub boards: Vec<BoardStatusEntry>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkTopologyNodeKind {
     Router,
@@ -84,7 +84,7 @@ pub enum NetworkTopologyNodeKind {
     Board,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkTopologyStatus {
     Online,
@@ -104,7 +104,7 @@ impl NetworkTopologyStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct NetworkTopologyNode {
     pub id: String,
     pub label: String,
@@ -119,7 +119,7 @@ pub struct NetworkTopologyNode {
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct NetworkTopologyLink {
     pub source: String,
     pub target: String,
@@ -127,7 +127,7 @@ pub struct NetworkTopologyLink {
     pub status: NetworkTopologyStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
 pub struct NetworkTopologyMsg {
     pub generated_ms: u64,
     #[serde(default)]

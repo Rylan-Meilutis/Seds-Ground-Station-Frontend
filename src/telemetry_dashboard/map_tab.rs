@@ -111,7 +111,11 @@ const NATIVE_GEO_SYNC_INTERVAL_MS: u64 = 500;
 #[cfg(any(target_os = "ios", target_os = "android"))]
 const NATIVE_HEADING_SYNC_INTERVAL_ACTIVE_MS: u64 = 100;
 #[cfg(any(target_os = "ios", target_os = "android"))]
+const NATIVE_HEADING_SYNC_INTERVAL_SETTLED_MS: u64 = 250;
+#[cfg(any(target_os = "ios", target_os = "android"))]
 const NATIVE_HEADING_SYNC_IDLE_MS: u64 = 500;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const NATIVE_HEADING_ACTIVE_GRACE_MS: i64 = 2_000;
 
 fn tiles_url() -> String {
     map_tiles_url()
@@ -403,6 +407,8 @@ pub fn MapTab(
             #[cfg(any(target_os = "ios", target_os = "android"))]
             let mut last_heading = None::<f64>;
             #[cfg(any(target_os = "ios", target_os = "android"))]
+            let mut last_heading_change_ms = 0_i64;
+            #[cfg(any(target_os = "ios", target_os = "android"))]
             let mut last_location_poll_ms = 0_i64;
             loop {
                 #[cfg(any(target_os = "ios", target_os = "android"))]
@@ -447,6 +453,7 @@ pub fn MapTab(
                         .unwrap_or(true);
                     if changed {
                         last_heading = Some(deg);
+                        last_heading_change_ms = now_ms;
                         js_set_user_heading(deg);
                     }
                 }
@@ -458,14 +465,19 @@ pub fn MapTab(
                         .unwrap_or(true);
                     if changed {
                         last_heading = Some(deg);
+                        last_heading_change_ms = now_ms;
                         js_set_user_heading(deg);
                     }
                 }
 
                 #[cfg(any(target_os = "ios", target_os = "android"))]
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    if last_heading.is_some() {
+                    if last_heading.is_some()
+                        && now_ms - last_heading_change_ms <= NATIVE_HEADING_ACTIVE_GRACE_MS
+                    {
                         NATIVE_HEADING_SYNC_INTERVAL_ACTIVE_MS
+                    } else if last_heading.is_some() {
+                        NATIVE_HEADING_SYNC_INTERVAL_SETTLED_MS
                     } else {
                         NATIVE_HEADING_SYNC_IDLE_MS
                     },

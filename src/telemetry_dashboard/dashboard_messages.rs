@@ -127,7 +127,7 @@ struct LaunchClockMsg {
 const DEFAULT_LAUNCH_COUNTDOWN_DURATION_MS: i64 = 10_000;
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-struct RecordingStatusMsg {
+pub(crate) struct RecordingStatusMsg {
     mode: String,
     db_path: Option<String>,
 }

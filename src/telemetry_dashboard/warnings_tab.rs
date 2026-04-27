@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 #[component]
 pub fn WarningsTab(
     warnings: Signal<Vec<AlertMsg>>,
+    ack_timestamp_ms: i64,
     theme: ThemeConfig,
     on_ack: EventHandler<()>,
 ) -> Element {
@@ -33,10 +34,26 @@ pub fn WarningsTab(
 
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 for w in warnings.read().iter() {
-                    div {
-                        style: "border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; padding:8px 10px 10px 10px; border-radius:10px;",
-                        div { style: "font-size:12px; opacity:0.85; line-height:1.25;", "{format_timestamp_ms_clock(w.timestamp_ms)}" }
-                        div { style: "font-size:14px; line-height:1.3; padding-bottom:1px;", "{translate_text(&w.message)}" }
+                    {
+                        let acknowledged = w.timestamp_ms <= ack_timestamp_ms;
+                        let row_style = if acknowledged {
+                            format!(
+                                "border:1px solid {}; background:{}; color:{}; padding:8px 10px 10px 10px; border-radius:10px;",
+                                theme.border, theme.panel_background, theme.text_secondary
+                            )
+                        } else {
+                            format!(
+                                "border:1px solid {}; background:{}; color:{}; padding:8px 10px 10px 10px; border-radius:10px;",
+                                theme.warning_border, theme.warning_background, theme.warning_text
+                            )
+                        };
+                        rsx! {
+                            div {
+                                style: "{row_style}",
+                                div { style: "font-size:12px; opacity:0.85; line-height:1.25;", "{format_timestamp_ms_clock(w.timestamp_ms)}" }
+                                div { style: "font-size:14px; line-height:1.3; padding-bottom:1px;", "{translate_text(&w.message)}" }
+                            }
+                        }
                     }
                 }
                 if warnings.read().is_empty() {

@@ -362,7 +362,6 @@ fn fit_details_text_parts((linear, fit): (&ChannelLinear, Option<&FitMeta>)) -> 
 
 #[component]
 pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: usize) -> Element {
-    let _ = *TELEMETRY_RENDER_EPOCH.read();
     let layout_cfg = use_signal(|| None::<CalibrationTabLayout>);
     let sensors = layout_cfg
         .read()
@@ -618,21 +617,12 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
         });
     }
-    let raw_live = selected_sensor
-        .as_ref()
-        .and_then(|s| latest_raw(s.data_type.as_str()));
     let sequence_started = cfg.read().as_ref().is_some_and(|c| {
         c.channels
             .get(&channel_key)
             .and_then(|channel| channel.zero_raw)
             .is_some()
     });
-    let calibrated_live = cfg
-        .read()
-        .as_ref()
-        .and_then(|c| raw_live.and_then(|raw| eval_fit_key(c, &channel_key, raw)));
-    let raw_live_s = fmt_fixed(raw_live, 12, 6);
-    let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
     let fit_type_s = cfg
         .read()
         .as_ref()
@@ -902,8 +892,12 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
 
             div { style: "display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
-                {metric_card(&theme, "Live Raw", raw_live_s.clone())}
-                {metric_card(&theme, "Calibrated Value", calibrated_live_s.clone())}
+                CalibrationLiveMetrics {
+                    theme: theme.clone(),
+                    selected_sensor: selected_sensor.clone(),
+                    calibration: cfg.read().clone(),
+                    channel_key: channel_key.clone(),
+                }
                 {metric_card(&theme, "Active Fit", fit_type_s.clone())}
             }
             }
@@ -1573,6 +1567,29 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
             }
         }
+    }
+}
+
+#[component]
+fn CalibrationLiveMetrics(
+    theme: ThemeConfig,
+    selected_sensor: Option<CalibrationSensorSpec>,
+    calibration: Option<CalibrationFile>,
+    channel_key: String,
+) -> Element {
+    let _ = *TELEMETRY_RENDER_EPOCH.read();
+    let raw_live = selected_sensor
+        .as_ref()
+        .and_then(|sensor| latest_raw(sensor.data_type.as_str()));
+    let calibrated_live = calibration
+        .as_ref()
+        .and_then(|cfg| raw_live.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
+    let raw_live_s = fmt_fixed(raw_live, 12, 6);
+    let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
+
+    rsx! {
+        {metric_card(&theme, "Live Raw", raw_live_s)}
+        {metric_card(&theme, "Calibrated Value", calibrated_live_s)}
     }
 }
 

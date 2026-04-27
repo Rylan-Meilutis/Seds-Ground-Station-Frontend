@@ -227,19 +227,22 @@ const STARTUP_TILE_CACHE_LOOKUP_BUDGET_MS = 45;
 const STARTUP_CACHE_BYPASS_MS = 10000;
 const tileCacheHandles = new Map();
 const tileMemoryCache = new Map();
-const USER_MARKER_SMOOTH_MIN_MS = 180;
-const USER_MARKER_SMOOTH_MAX_MS = 900;
+const USER_MARKER_SMOOTH_MIN_MS = 260;
+const USER_MARKER_SMOOTH_MAX_MS = 1400;
 const USER_MARKER_SMOOTH_SKIP_M = 0.04;
-const USER_MARKER_PREDICTION_MAX_MS = 900;
-const USER_MARKER_PREDICTION_RATIO = 0.55;
-const USER_MARKER_PREDICTION_STALE_RATIO = 1.4;
-const USER_MARKER_RATE_MIN_CATCHUP_MS = 220;
-const USER_MARKER_RATE_MAX_CATCHUP_MS = 900;
+const USER_MARKER_PREDICTION_MIN_MS = 180;
+const USER_MARKER_PREDICTION_MAX_MS = 1600;
+const USER_MARKER_PREDICTION_RATIO = 1.05;
+const USER_MARKER_PREDICTION_STALE_RATIO = 2.6;
+const USER_MARKER_RATE_MIN_CATCHUP_MS = 420;
+const USER_MARKER_RATE_MAX_CATCHUP_MS = 1800;
+const USER_MARKER_RATE_INTERVAL_RATIO = 1.18;
 const USER_MARKER_VISUAL_MIN_SPEED_MPS = 0.2;
 const USER_MARKER_VISUAL_MAX_SPEED_MPS = 90;
-const USER_MARKER_VISUAL_SPEED_GAIN = 1.12;
-const USER_MARKER_VISUAL_CATCHUP_MS = 520;
+const USER_MARKER_VISUAL_SPEED_GAIN = 1.08;
+const USER_MARKER_VISUAL_CATCHUP_MS = 980;
 const USER_MARKER_FRAME_STALL_SNAP_MS = 220;
+const USER_MARKER_TARGET_SETTLE_DISTANCE_M = 0.45;
 const USER_GPS_SNAP_DISTANCE_M = 120;
 const USER_GPS_SNAP_SPEED_MPS = 45;
 const USER_ORIENTATION_DEADZONE_DEG = 2.2;
@@ -1918,16 +1921,18 @@ function createRocketIconImage() {
 }
 
 function createHeadingArrowImage() {
-    return createMarkerCanvas(32, (ctx, size) => {
+    return createMarkerCanvas(64, (ctx, size) => {
         ctx.clearRect(0, 0, size, size);
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.font = "18px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
         ctx.fillStyle = "#f8fafc";
-        ctx.strokeStyle = "#111827";
-        ctx.lineWidth = 2;
-        ctx.strokeText("▲", size * 0.5, size * 0.53);
-        ctx.fillText("▲", size * 0.5, size * 0.53);
+        ctx.strokeStyle = "#000000";
+        ctx.lineWidth = 3;
+        // Keep the arrow visually above the user anchor while leaving the symbol
+        // itself centered on the shared animation/follow point.
+        ctx.strokeText("▲", size * 0.5, size * 0.2);
+        ctx.fillText("▲", size * 0.5, size * 0.2);
     });
 }
 
@@ -2471,13 +2476,7 @@ function currentUserVisualOrLastLatLng() {
 }
 
 function currentUserAnchorLatLng() {
-    if (Array.isArray(userMarkerDisplayedLatLng)) {
-        return userMarkerDisplayedLatLng;
-    }
-    if (Array.isArray(lastUserLatLng)) {
-        return lastUserLatLng;
-    }
-    return null;
+    return currentUserMarkerVisualLatLng() || userMarkerDisplayedLatLng || lastUserLatLng || null;
 }
 
 function headingDataKey(latLng, bearingDeg) {
@@ -3821,12 +3820,35 @@ function animateUserMarkerTo(targetLatLng) {
             userMarkerAnimationFrame = null;
             return;
         }
-        const predictiveLeadMs = fixAgeMs <= staleAtMs && (Number(anim.fixSpeedMps) || 0.0) >= 0.05 ? Math.max(0.0, Math.min(USER_MARKER_PREDICTION_MAX_MS, Math.max(fixAgeMs, anim.smoothedIntervalMs * USER_MARKER_PREDICTION_RATIO))) : 0.0;
+        const predictiveLeadMs = fixAgeMs <= staleAtMs && (Number(anim.fixSpeedMps) || 0.0) >= 0.05
+            ? Math.max(
+                USER_MARKER_PREDICTION_MIN_MS,
+                Math.min(
+                    USER_MARKER_PREDICTION_MAX_MS,
+                    Math.max(fixAgeMs, anim.smoothedIntervalMs * USER_MARKER_PREDICTION_RATIO),
+                ),
+            )
+            : 0.0;
         const predictedTarget = [clampLat(anim.target[0] + anim.velocityLatPerMs * predictiveLeadMs), clampLon(anim.target[1] + anim.velocityLonPerMs * predictiveLeadMs),];
-        const durationMs = Math.max(USER_MARKER_RATE_MIN_CATCHUP_MS, Math.min(USER_MARKER_RATE_MAX_CATCHUP_MS, anim.smoothedIntervalMs));
+        const durationMs = Math.max(
+            USER_MARKER_RATE_MIN_CATCHUP_MS,
+            Math.min(
+                USER_MARKER_RATE_MAX_CATCHUP_MS,
+                Math.max(anim.smoothedIntervalMs * USER_MARKER_RATE_INTERVAL_RATIO, USER_MARKER_VISUAL_CATCHUP_MS),
+            ),
+        );
         const alpha = 1.0 - Math.exp(-dtMs / durationMs);
         const remainingToPredictionM = distanceMetersBetween(current, predictedTarget);
-        const dynamicSpeedMps = Math.max(USER_MARKER_VISUAL_MIN_SPEED_MPS, Math.min(USER_MARKER_VISUAL_MAX_SPEED_MPS, Math.max((Number(anim.fixSpeedMps) || 0.0) * USER_MARKER_VISUAL_SPEED_GAIN, Number.isFinite(remainingToPredictionM) ? remainingToPredictionM / (USER_MARKER_VISUAL_CATCHUP_MS / 1000.0) : 0.0)));
+        const dynamicSpeedMps = Math.max(
+            USER_MARKER_VISUAL_MIN_SPEED_MPS,
+            Math.min(
+                USER_MARKER_VISUAL_MAX_SPEED_MPS,
+                Math.max(
+                    (Number(anim.fixSpeedMps) || 0.0) * USER_MARKER_VISUAL_SPEED_GAIN,
+                    Number.isFinite(remainingToPredictionM) ? remainingToPredictionM / (durationMs / 1000.0) : 0.0,
+                ),
+            ),
+        );
         const maxStepM = dynamicSpeedMps * (dtMs / 1000.0);
         const easedTarget = blendLatLngToward(current, predictedTarget, alpha);
         const next = speedLimitedLatLngToward(current, easedTarget, maxStepM);
@@ -3837,7 +3859,7 @@ function animateUserMarkerTo(targetLatLng) {
             userMarkerAnimationFrame = null;
             return;
         }
-        if (fixAgeMs > staleAtMs && remainingDistanceM <= USER_MARKER_SMOOTH_SKIP_M) {
+        if (fixAgeMs > staleAtMs && remainingDistanceM <= USER_MARKER_TARGET_SETTLE_DISTANCE_M) {
             setUserMarkerVisualLatLng(anim.target);
             userMarkerAnimation = null;
             userMarkerAnimationFrame = null;
@@ -4174,9 +4196,10 @@ function applyPendingCenterIfPossible() {
 }
 
 function applyFollowUserIfPossible() {
-    if (!groundMap || !followUserEnabled || !lastUserLatLng) return;
+    if (!groundMap || !followUserEnabled) return;
     if (Date.now() < suppressFollowCameraUntilMs) return;
-    const visualTarget = currentUserMarkerVisualLatLng() || lastUserLatLng;
+    const visualTarget = currentUserAnchorLatLng();
+    if (!Array.isArray(visualTarget)) return;
     scheduleFollowCameraUpdate(visualTarget);
 }
 
@@ -4449,8 +4472,10 @@ function setGroundMapFollowUser(enabled) {
 }
 
 function centerOnUserNow() {
-    if (!groundMap || !lastUserLatLng) return false;
-    snapFollowCameraTo(currentUserMarkerVisualLatLng() || lastUserLatLng);
+    if (!groundMap) return false;
+    const visualTarget = currentUserAnchorLatLng();
+    if (!Array.isArray(visualTarget)) return false;
+    snapFollowCameraTo(visualTarget);
     return true;
 }
 
@@ -4609,7 +4634,6 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
             layout: {
                 "icon-image": USER_HEADING_IMAGE_ID,
                 "icon-size": 0.9,
-                "icon-offset": [0, -30],
                 "icon-allow-overlap": true,
                 "icon-ignore-placement": true,
                 "icon-rotation-alignment": "map",
