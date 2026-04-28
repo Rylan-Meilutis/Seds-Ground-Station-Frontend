@@ -43,13 +43,11 @@ fn btn_style(
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
     };
-    let border_style = if enabled { "solid" } else { "dashed" };
     let animation = action_animation_style(enabled, blink, actuated);
     format!(
         "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
-         text-align:left; border:1px {border_style} {border}; background:{bg}; color:{fg}; \
-         font-weight:800; box-shadow:{box_shadow}; letter-spacing:{}; touch-action:manipulation; {animation}",
-        if enabled { "normal" } else { "0.04em" }
+         display:flex; align-items:center; justify-content:space-between; gap:0.75rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
+         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; {animation}"
     )
 }
 
@@ -370,7 +368,13 @@ pub fn ActionsTab(
                                                                 }
                                                             }
                                                         },
-                                                        "{action.label}"
+                                                        span { style: "min-width:0; flex:1 1 auto;", "{action.label}" }
+                                                        if !enabled {
+                                                            span {
+                                                                style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
+                                                                "{translate_text(\"Disabled\")}"
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
