@@ -7637,34 +7637,34 @@ async fn connect_ws_supervisor(
 #[allow(clippy::too_many_arguments)]
 async fn connect_ws_once_wasm(
     epoch: u64,
-    warnings: Signal<Vec<AlertMsg>>,
-    errors: Signal<Vec<AlertMsg>>,
-    notifications: Signal<Vec<PersistentNotification>>,
-    notification_history: Signal<Vec<PersistentNotification>>,
-    message_history: Signal<Vec<PersistentNotification>>,
-    dismissed_notifications: Signal<Vec<DismissedNotification>>,
-    unread_notification_ids: Signal<Vec<u64>>,
-    action_policy: Signal<ActionPolicyMsg>,
-    recording_status: Signal<RecordingStatusMsg>,
-    fill_targets: Signal<Option<FillTargetsConfig>>,
-    network_time: Signal<Option<NetworkTimeSync>>,
-    launch_clock: Signal<Option<LaunchClockMsg>>,
-    network_topology: Signal<NetworkTopologyMsg>,
-    warning_event_counter: Signal<u64>,
-    error_event_counter: Signal<u64>,
-    flight_state: Signal<FlightState>,
-    board_status: Signal<Vec<BoardStatusEntry>>,
-    rocket_gps: Signal<Option<(f64, f64)>>,
-    rocket_gps_altitude_m: Signal<Option<f64>>,
-    user_gps: Signal<Option<(f64, f64)>>,
-    user_gps_altitude_m: Signal<Option<f64>>,
-    layout_config: Signal<Option<LayoutConfig>>,
-    layout_loading: Signal<bool>,
-    layout_error: Signal<Option<String>>,
-    layout_error_dismissed: Signal<Option<String>>,
-    layout_request_base: Signal<String>,
-    calibration_has_sensors: Signal<Option<bool>>,
-    calibration_request_base: Signal<String>,
+    _warnings: Signal<Vec<AlertMsg>>,
+    _errors: Signal<Vec<AlertMsg>>,
+    _notifications: Signal<Vec<PersistentNotification>>,
+    _notification_history: Signal<Vec<PersistentNotification>>,
+    _message_history: Signal<Vec<PersistentNotification>>,
+    _dismissed_notifications: Signal<Vec<DismissedNotification>>,
+    _unread_notification_ids: Signal<Vec<u64>>,
+    _action_policy: Signal<ActionPolicyMsg>,
+    _recording_status: Signal<RecordingStatusMsg>,
+    _fill_targets: Signal<Option<FillTargetsConfig>>,
+    _network_time: Signal<Option<NetworkTimeSync>>,
+    _launch_clock: Signal<Option<LaunchClockMsg>>,
+    _network_topology: Signal<NetworkTopologyMsg>,
+    _warning_event_counter: Signal<u64>,
+    _error_event_counter: Signal<u64>,
+    _flight_state: Signal<FlightState>,
+    _board_status: Signal<Vec<BoardStatusEntry>>,
+    _rocket_gps: Signal<Option<(f64, f64)>>,
+    _rocket_gps_altitude_m: Signal<Option<f64>>,
+    _user_gps: Signal<Option<(f64, f64)>>,
+    _user_gps_altitude_m: Signal<Option<f64>>,
+    _layout_config: Signal<Option<LayoutConfig>>,
+    _layout_loading: Signal<bool>,
+    _layout_error: Signal<Option<String>>,
+    _layout_error_dismissed: Signal<Option<String>>,
+    _layout_request_base: Signal<String>,
+    _calibration_has_sensors: Signal<Option<bool>>,
+    _calibration_request_base: Signal<String>,
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use futures_channel::oneshot;
@@ -7693,9 +7693,10 @@ async fn connect_ws_once_wasm(
     let closed_tx = std::rc::Rc::new(std::cell::RefCell::new(Some(closed_tx)));
 
     {
+        let ws_url_for_open = ws_url.clone();
         let onopen: Closure<dyn FnMut(Event)> = Closure::new(move |_e: Event| {
             log!("[WS] open");
-            queue_ws_open_event(epoch, ws_url.clone());
+            queue_ws_open_event(epoch, ws_url_for_open.clone());
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
         onopen.forget();
