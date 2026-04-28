@@ -42,7 +42,21 @@ pub fn ConnectionStatusTab(
     let history = use_signal(HashMap::<String, Vec<LatencyPoint>>::new);
     let previous_last_seen = use_signal(HashMap::<String, u64>::new);
     let smoothed_intervals = use_signal(HashMap::<String, f64>::new);
+    let board_age_now_ms = use_signal(current_wallclock_ms);
     let merged_boards = merged_connection_boards(&boards.read(), &expected_boards);
+
+    {
+        let mut board_age_now_ms = board_age_now_ms;
+        use_future(move || async move {
+            loop {
+                #[cfg(target_arch = "wasm32")]
+                gloo_timers::future::TimeoutFuture::new(250).await;
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                board_age_now_ms.set(current_wallclock_ms());
+            }
+        });
+    }
 
     {
         use_effect(move || {
@@ -162,7 +176,7 @@ pub fn ConnectionStatusTab(
                                 }
                             }
                             if *show_board.read() {
-                                {render_board_table(&merged_boards, &theme)}
+                                {render_board_table(&merged_boards, *board_age_now_ms.read(), &theme)}
                             }
                         }
                     },
@@ -224,7 +238,7 @@ pub fn ConnectionStatusTab(
                         "{translate_text(\"Exit Fullscreen\")}"
                     }
                 }
-                {render_board_table(&merged_boards, &theme)}
+                {render_board_table(&merged_boards, *board_age_now_ms.read(), &theme)}
             }
         }
 
@@ -597,14 +611,13 @@ async fn recent_scroll_pause_likely() -> bool {
     eval.join::<String>().await.ok().as_deref() == Some("1")
 }
 
-fn render_board_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Element {
+fn render_board_table(boards: &[BoardStatusEntry], now_ms: i64, theme: &ThemeConfig) -> Element {
     if boards.is_empty() {
         return rsx! {
             div { style: "color:{theme.text_muted};", "No board status yet." }
         };
     }
 
-    let now_ms = current_wallclock_ms();
     let header_cell_style = format!(
         "font-weight:600; color:{}; padding:8px; border-bottom:1px solid {}; background:{}; min-width:0; white-space:normal; overflow-wrap:anywhere; word-break:break-word; line-height:1.2;",
         theme.text_primary, theme.border_soft, theme.app_background
@@ -620,8 +633,8 @@ fn render_board_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Eleme
     let border_right = format!("border-right:1px solid {};", theme.border_soft);
 
     rsx! {
-        div { style: "border:1px solid {theme.border_soft}; border-radius:10px; overflow:hidden;",
-            div { style: "display:grid; grid-template-columns:minmax(120px, 1.15fr) minmax(120px, 1.15fr) minmax(64px, 0.7fr) minmax(140px, 1fr) minmax(92px, 0.8fr); font-size:13px; color:{theme.text_secondary}; background:{theme.app_background};",
+        div { style: "border:1px solid {theme.border_soft}; border-radius:10px; overflow-x:auto; overflow-y:hidden;",
+            div { style: "display:grid; grid-template-columns:minmax(120px, 1.15fr) minmax(120px, 1.15fr) minmax(64px, 0.7fr) minmax(140px, 1fr) minmax(92px, 0.8fr); min-width:560px; font-size:13px; color:{theme.text_secondary}; background:{theme.app_background};",
                 div { style: "{header_cell_style}{border_right}", "Board" }
                 div { style: "{header_cell_style}{border_right}", "Sender ID" }
                 div { style: "{header_cell_style}{border_right}", "Seen" }
@@ -645,12 +658,18 @@ fn render_board_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Eleme
 }
 
 fn current_board_age_ms(entry: &BoardStatusEntry, now_ms: i64) -> Option<u64> {
-    if let Some(last_seen_ms) = entry.last_seen_ms {
+    if let Some(age_ms) = entry.age_ms {
+        return Some(age_ms);
+    }
+
+    if let Some(last_seen_ms) = entry.last_seen_ms
+        && last_seen_ms >= 1_500_000_000_000
+    {
         let now_ms = u64::try_from(now_ms.max(0)).unwrap_or(0);
         return Some(now_ms.saturating_sub(last_seen_ms));
     }
 
-    entry.age_ms
+    None
 }
 
 fn format_last_seen(last_seen_ms: Option<u64>) -> String {
