@@ -1335,7 +1335,11 @@ fn set_signal_if_changed<T>(signal: &mut Signal<T>, next: T)
 where
     T: PartialEq + 'static,
 {
-    if *signal.read() != next {
+    let changed = {
+        let current = signal.read();
+        *current != next
+    };
+    if changed {
         signal.set(next);
     }
 }
@@ -1699,6 +1703,7 @@ fn refresh_layout_after_ws_reconnect(
     layout_request_base: Signal<String>,
     calibration_has_sensors: Signal<Option<bool>>,
     calibration_request_base: Signal<String>,
+    action_policy: Signal<ActionPolicyMsg>,
 ) {
     let base = UrlConfig::base_http();
     let cache_key = layout_cache_key_for_base(&base);
@@ -1710,6 +1715,7 @@ fn refresh_layout_after_ws_reconnect(
     let mut layout_request_base = layout_request_base;
     let mut calibration_has_sensors = calibration_has_sensors;
     let mut calibration_request_base = calibration_request_base;
+    let mut action_policy = action_policy;
 
     layout_error.set(None);
     layout_error_dismissed.set(None);
@@ -1734,6 +1740,10 @@ fn refresh_layout_after_ws_reconnect(
                 layout_request_base.set(base.clone());
                 layout_error.set(None);
                 layout_error_dismissed.set(None);
+
+                if let Ok(policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await {
+                    set_signal_if_changed(&mut action_policy, policy);
+                }
 
                 if !changed {
                     return;
@@ -7620,6 +7630,7 @@ async fn connect_ws_once_wasm(
                 layout_request_base_for_open,
                 calibration_has_sensors_for_open,
                 calibration_request_base_for_open,
+                action_policy,
             );
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
@@ -7927,6 +7938,7 @@ async fn connect_ws_once_native(
         layout_request_base,
         calibration_has_sensors,
         calibration_request_base,
+        action_policy,
     );
 
     let writer = tokio::spawn(async move {
