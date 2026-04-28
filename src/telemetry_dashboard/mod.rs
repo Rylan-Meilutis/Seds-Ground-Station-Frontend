@@ -3647,8 +3647,6 @@ fn TelemetryDashboardInner() -> Element {
     let ack_error_ts = use_signal(|| parse_i64(st_err_ack.read().as_str()));
     let warning_event_counter = use_signal(|| 0u64);
     let error_event_counter = use_signal(|| 0u64);
-    let ack_warning_count = use_signal(|| 0u64);
-    let ack_error_count = use_signal(|| 0u64);
 
     let rocket_gps = use_signal(latest_rocket_gps_from_store);
     let rocket_gps_altitude_m = use_signal(latest_rocket_gps_altitude_m_from_store);
@@ -4591,27 +4589,35 @@ fn TelemetryDashboardInner() -> Element {
     let has_errors = err_count > 0;
     let has_unread_notifications = !unread_notification_ids.read().is_empty();
 
-    let has_unacked_warnings = latest_warning_ts > 0
-        && (latest_warning_ts > *ack_warning_ts.read()
-            || *warning_event_counter.read() > *ack_warning_count.read());
-    let has_unacked_errors = latest_error_ts > 0
-        && (latest_error_ts > *ack_error_ts.read()
-            || *error_event_counter.read() > *ack_error_count.read());
+    let has_unacked_warnings = latest_warning_ts > *ack_warning_ts.read();
+    let has_unacked_errors = latest_error_ts > *ack_error_ts.read();
 
     let border_style = "1px solid transparent";
+    let app_alert_effect = if has_unacked_errors && has_errors {
+        "inset 0 0 0 2px #ef4444"
+    } else if has_unacked_warnings && has_warnings {
+        "inset 0 0 0 2px #facc15"
+    } else {
+        "none"
+    };
+    let app_alert_animation = if has_unacked_errors || has_unacked_warnings {
+        "animation:gs26-alert-shell-pulse 1.15s ease-in-out infinite;"
+    } else {
+        ""
+    };
     let warnings_tab_icon_style = if has_unacked_warnings {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:1; animation:gs26-alert-icon-pulse 1.15s ease-in-out infinite;".to_string()
     } else if has_warnings {
-        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1;".to_string()
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1; animation:none;".to_string()
     } else {
-        "display:none;".to_string()
+        "display:none; animation:none;".to_string()
     };
     let errors_tab_icon_style = if has_unacked_errors {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:1; animation:gs26-alert-icon-pulse 1.15s ease-in-out infinite;".to_string()
     } else if has_errors {
-        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1;".to_string()
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1; animation:none;".to_string()
     } else {
-        "display:none;".to_string()
+        "display:none; animation:none;".to_string()
     };
     let notifications_tab_icon_style = if has_unread_notifications {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#bfdbfe; opacity:1;".to_string()
@@ -4995,20 +5001,17 @@ fn TelemetryDashboardInner() -> Element {
     let mut layout_error = layout_error;
     let mut layout_error_dismissed = layout_error_dismissed;
     let mut layout_request_base = layout_request_base;
-    let mut calibration_has_sensors = calibration_has_sensors;
+    let calibration_has_sensors = calibration_has_sensors;
     let mut calibration_request_base = calibration_request_base;
     let mut _refresh_layout = move || {
         let base = UrlConfig::base_http();
         let cache_key = layout_cache_key_for_base(&base);
-        let calibration_cache_key = calibration_visibility_cache_key_for_base(&base);
         layout_request_base.set(String::new());
         calibration_request_base.set(String::new());
-        calibration_has_sensors.set(None);
         layout_loading.set(true);
         layout_error.set(None);
         layout_error_dismissed.set(None);
         persist::_remove(&cache_key);
-        persist::_remove(&calibration_cache_key);
         let mut layout_config = layout_config;
         let mut layout_loading = layout_loading;
         let mut layout_error = layout_error;
@@ -5338,7 +5341,7 @@ fn TelemetryDashboardInner() -> Element {
              @keyframes gs26-blink-slow-on  {{ 0%, 100% {{ opacity: 1.0; }} 82% {{ opacity: 0.25; }} }}
              @keyframes gs26-blink-fast-off {{ 0%, 100% {{ opacity: 0.15; }} 45% {{ opacity: 1.0; }} }}
              @keyframes gs26-blink-fast-on  {{ 0%, 100% {{ opacity: 1.0; }} 55% {{ opacity: 0.2; }} }}
-             @keyframes gs26-alert-shell-pulse {{ 0%, 100% {{ opacity: 1.0; }} 50% {{ opacity: 0.76; }} }}
+             @keyframes gs26-alert-shell-pulse {{ 0%, 100% {{ box-shadow: var(--gs26-alert-frame-shadow); }} 50% {{ box-shadow: none; }} }}
              @keyframes gs26-alert-icon-pulse {{ 0%, 100% {{ opacity: 1.0; }} 50% {{ opacity: 0.36; }} }}
              .gs26-tab-shell {{ min-width:260px; }}
              .gs26-tab-toggle {{ display:none; }}
@@ -5618,6 +5621,7 @@ fn TelemetryDashboardInner() -> Element {
                     align-items:center;
                     justify-content:center;
                     border:{border_style};
+                    --gs26-alert-frame-shadow:none;
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:10px; align-items:center;",
@@ -5641,6 +5645,7 @@ fn TelemetryDashboardInner() -> Element {
                     align-items:center;
                     justify-content:center;
                     border:{border_style};
+                    --gs26-alert-frame-shadow:none;
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
@@ -5669,6 +5674,9 @@ fn TelemetryDashboardInner() -> Element {
                 width:100%;
                 max-width:100%;
                 border:{border_style};
+                --gs26-alert-frame-shadow:{app_alert_effect};
+                box-shadow:{app_alert_effect};
+                {app_alert_animation}
                 box-sizing:border-box;
                 overflow:hidden;
             ",
@@ -6035,7 +6043,7 @@ fn TelemetryDashboardInner() -> Element {
                                         MainTab::Messages => rsx! {
                                             button {
                                                 key: "{\"main-tab-messages\"}",
-                                                style: if *active_main_tab.read() == MainTab::Messages { tab_style_active(&main_tab_accent("messages", "#64748b")) } else { tab_style_inactive.to_string() },
+                                                style: if *active_main_tab.read() == MainTab::Messages { tab_style_active(&main_tab_accent("messages", "#2563eb")) } else { tab_style_inactive.to_string() },
                                                 onclick: {
                                                     let mut t = active_main_tab;
                                                     let mut tabs_expanded = tabs_expanded;
@@ -6320,10 +6328,8 @@ fn TelemetryDashboardInner() -> Element {
                                         theme: theme.clone(),
                                         on_ack: {
                                             let mut ack_warning_ts = ack_warning_ts;
-                                            let mut ack_warning_count = ack_warning_count;
                                             move |_| {
                                                 ack_warning_ts.set(latest_warning_ts);
-                                                ack_warning_count.set(*warning_event_counter.read());
                                             }
                                         }
                                     }
@@ -6337,10 +6343,8 @@ fn TelemetryDashboardInner() -> Element {
                                         theme: theme.clone(),
                                         on_ack: {
                                             let mut ack_error_ts = ack_error_ts;
-                                            let mut ack_error_count = ack_error_count;
                                             move |_| {
                                                 ack_error_ts.set(latest_error_ts);
-                                                ack_error_count.set(*error_event_counter.read());
                                             }
                                         }
                                     }
