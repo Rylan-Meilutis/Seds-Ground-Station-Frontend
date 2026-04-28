@@ -23,29 +23,33 @@ fn btn_style(
     let cursor = if enabled { "pointer" } else { "not-allowed" };
     let recommended = enabled && blink != BlinkMode::None;
     let opacity = if !enabled {
-        "0.45"
+        "0.72"
     } else if recommended || actuated.unwrap_or(false) {
         "1.0"
     } else {
         "0.62"
     };
     let filter = if !enabled {
-        "grayscale(0.25) brightness(0.9)"
+        "grayscale(0.72) brightness(0.78)"
     } else if actuated.unwrap_or(false) || recommended {
         "none"
     } else {
         "saturate(0.58) brightness(0.82)"
     };
-    let box_shadow = if recommended || actuated.unwrap_or(false) {
+    let box_shadow = if !enabled {
+        "none"
+    } else if recommended || actuated.unwrap_or(false) {
         "0 10px 25px rgba(0,0,0,0.25)"
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
     };
+    let border_style = if enabled { "solid" } else { "dashed" };
     let animation = action_animation_style(enabled, blink, actuated);
     format!(
         "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
-         text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
-         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; {animation}"
+         text-align:left; border:1px {border_style} {border}; background:{bg}; color:{fg}; \
+         font-weight:800; box-shadow:{box_shadow}; letter-spacing:{}; touch-action:manipulation; {animation}",
+        if enabled { "normal" } else { "0.04em" }
     )
 }
 
