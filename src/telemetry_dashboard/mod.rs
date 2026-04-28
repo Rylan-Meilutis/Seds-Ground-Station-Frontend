@@ -1163,6 +1163,10 @@ static DASHBOARD_RUNTIME_PUMP_SCHEDULED: AtomicBool = AtomicBool::new(false);
 static DASHBOARD_RUNTIME_TX: Lazy<
     Mutex<Option<futures_channel::mpsc::UnboundedSender<DashboardRuntimeEvent>>>,
 > = Lazy::new(|| Mutex::new(None));
+static PENDING_WS_OPEN_EVENTS: Lazy<Mutex<VecDeque<(u64, String)>>> =
+    Lazy::new(|| Mutex::new(VecDeque::new()));
+static PENDING_WS_MESSAGE_EVENTS: Lazy<Mutex<VecDeque<(u64, String)>>> =
+    Lazy::new(|| Mutex::new(VecDeque::new()));
 static SEED_WATCHER_TX: Lazy<Mutex<Option<futures_channel::mpsc::UnboundedSender<()>>>> =
     Lazy::new(|| Mutex::new(None));
 static PREFERRED_LANGUAGE: GlobalSignal<String> = Signal::global(|| "en".to_string());
@@ -1321,10 +1325,12 @@ fn flush_hidden_pending_ws_state(
             network_ms: next.timestamp_ms,
             received_mono_ms: monotonic_now_ms(),
         };
-        let changed = network_time
-            .read()
-            .as_ref()
-            .is_none_or(|current| current.network_ms != next_sync.network_ms);
+        let changed = {
+            let current = network_time.read();
+            current
+                .as_ref()
+                .is_none_or(|value| value.network_ms != next_sync.network_ms)
+        };
         if changed {
             network_time.set(Some(next_sync));
         }
@@ -1375,6 +1381,26 @@ fn schedule_dashboard_runtime_pump() {
     if !sent {
         DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
     }
+}
+
+fn queue_ws_open_event(epoch: u64, ws_url: String) {
+    if let Ok(mut q) = PENDING_WS_OPEN_EVENTS.lock() {
+        q.push_back((epoch, ws_url));
+        while q.len() > 8 {
+            q.pop_front();
+        }
+    }
+    schedule_dashboard_runtime_pump();
+}
+
+fn queue_ws_message_event(epoch: u64, payload: String) {
+    if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
+        q.push_back((epoch, payload));
+        while q.len() > 512 {
+            q.pop_front();
+        }
+    }
+    schedule_dashboard_runtime_pump();
 }
 
 fn schedule_seed_watcher() {
@@ -4197,11 +4223,11 @@ fn TelemetryDashboardInner() -> Element {
             let active_main_tab = active_main_tab;
             let mut rocket_gps_flush = rocket_gps_flush;
             let mut rocket_gps_altitude_flush = rocket_gps_altitude_m;
-            let notifications_flush = notifications_flush;
-            let notification_history_flush = notification_history_flush;
+            let mut notifications_flush = notifications_flush;
+            let mut notification_history_flush = notification_history_flush;
             let message_history_flush = message_history_flush;
             let dismissed_notifications_flush = dismissed_notifications_flush;
-            let unread_notification_ids_flush = unread_notification_ids_flush;
+            let mut unread_notification_ids_flush = unread_notification_ids_flush;
             let mut flight_state_flush = flight_state_flush;
             let mut board_status_flush = board_status_flush;
             let mut network_topology_flush = network_topology_flush;
@@ -4226,6 +4252,71 @@ fn TelemetryDashboardInner() -> Element {
                         break;
                     }
                     let now_ms = current_wallclock_ms();
+
+                    let ws_open_events: Vec<(u64, String)> =
+                        if let Ok(mut q) = PENDING_WS_OPEN_EVENTS.lock() {
+                            std::mem::take(&mut *q).into_iter().collect()
+                        } else {
+                            Vec::new()
+                        };
+                    for (event_epoch, ws_url) in ws_open_events {
+                        if event_epoch != epoch {
+                            continue;
+                        }
+                        note_ws_connected_and_restore_data_flow(
+                            ws_url,
+                            epoch,
+                            &mut notifications_flush,
+                            &mut notification_history_flush,
+                            &mut unread_notification_ids_flush,
+                        );
+                        refresh_layout_after_ws_reconnect(
+                            layout_config,
+                            layout_loading,
+                            layout_error,
+                            layout_error_dismissed,
+                            layout_request_base,
+                            calibration_has_sensors,
+                            calibration_request_base,
+                            action_policy_flush,
+                        );
+                    }
+
+                    let ws_messages: Vec<(u64, String)> =
+                        if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
+                            std::mem::take(&mut *q).into_iter().collect()
+                        } else {
+                            Vec::new()
+                        };
+                    for (event_epoch, payload) in ws_messages {
+                        if event_epoch != epoch {
+                            continue;
+                        }
+                        handle_ws_message(
+                            &payload,
+                            warnings,
+                            errors,
+                            notifications_flush,
+                            notification_history_flush,
+                            message_history_flush,
+                            dismissed_notifications_flush,
+                            unread_notification_ids_flush,
+                            action_policy_flush,
+                            recording_status_flush,
+                            fill_targets_flush,
+                            network_time_flush,
+                            launch_clock_flush,
+                            network_topology_flush,
+                            warning_event_counter,
+                            error_event_counter,
+                            flight_state_flush,
+                            board_status_flush,
+                            rocket_gps_flush,
+                            rocket_gps_altitude_flush,
+                            user_gps,
+                            user_gps_altitude_m,
+                        );
+                    }
 
                     flush_hidden_pending_ws_state(
                         &mut flight_state_flush,
@@ -7602,36 +7693,9 @@ async fn connect_ws_once_wasm(
     let closed_tx = std::rc::Rc::new(std::cell::RefCell::new(Some(closed_tx)));
 
     {
-        let ws_url_for_open = ws_url.clone();
-        let mut notifications_for_open = notifications;
-        let mut notification_history_for_open = notification_history;
-        let mut unread_notification_ids_for_open = unread_notification_ids;
-        let layout_config_for_open = layout_config;
-        let layout_loading_for_open = layout_loading;
-        let layout_error_for_open = layout_error;
-        let layout_error_dismissed_for_open = layout_error_dismissed;
-        let layout_request_base_for_open = layout_request_base;
-        let calibration_has_sensors_for_open = calibration_has_sensors;
-        let calibration_request_base_for_open = calibration_request_base;
         let onopen: Closure<dyn FnMut(Event)> = Closure::new(move |_e: Event| {
             log!("[WS] open");
-            note_ws_connected_and_restore_data_flow(
-                ws_url_for_open.clone(),
-                epoch,
-                &mut notifications_for_open,
-                &mut notification_history_for_open,
-                &mut unread_notification_ids_for_open,
-            );
-            refresh_layout_after_ws_reconnect(
-                layout_config_for_open,
-                layout_loading_for_open,
-                layout_error_for_open,
-                layout_error_dismissed_for_open,
-                layout_request_base_for_open,
-                calibration_has_sensors_for_open,
-                calibration_request_base_for_open,
-                action_policy,
-            );
+            queue_ws_open_event(epoch, ws_url.clone());
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
         onopen.forget();
@@ -7644,30 +7708,7 @@ async fn connect_ws_once_wasm(
                 return;
             }
             if let Some(s) = e.data().as_string() {
-                handle_ws_message(
-                    &s,
-                    warnings,
-                    errors,
-                    notifications,
-                    notification_history,
-                    message_history,
-                    dismissed_notifications,
-                    unread_notification_ids,
-                    action_policy,
-                    recording_status,
-                    fill_targets,
-                    network_time,
-                    launch_clock,
-                    network_topology,
-                    warning_event_counter,
-                    error_event_counter,
-                    flight_state,
-                    board_status,
-                    rocket_gps,
-                    rocket_gps_altitude_m,
-                    user_gps,
-                    user_gps_altitude_m,
-                );
+                queue_ws_message_event(epoch, s);
             }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
@@ -8124,7 +8165,7 @@ fn handle_ws_message(
         }
 
         WsInMsg::Warning(w) => {
-            let mut v = warnings.read().clone();
+            let mut v = { warnings.read().clone() };
             v.insert(0, w.clone());
             if v.len() > 500 {
                 v.truncate(500);
@@ -8138,7 +8179,7 @@ fn handle_ws_message(
         }
 
         WsInMsg::Error(e) => {
-            let mut v = errors.read().clone();
+            let mut v = { errors.read().clone() };
             v.insert(0, e.clone());
             if v.len() > 500 {
                 v.truncate(500);
@@ -8219,10 +8260,12 @@ fn handle_ws_message(
                     network_ms: t.timestamp_ms,
                     received_mono_ms: monotonic_now_ms(),
                 };
-                let changed = network_time
-                    .read()
-                    .as_ref()
-                    .is_none_or(|current| current.network_ms != next.network_ms);
+                let changed = {
+                    let current = network_time.read();
+                    current
+                        .as_ref()
+                        .is_none_or(|value| value.network_ms != next.network_ms)
+                };
                 if changed {
                     network_time.set(Some(next));
                 }
