@@ -5011,7 +5011,6 @@ fn TelemetryDashboardInner() -> Element {
         layout_loading.set(true);
         layout_error.set(None);
         layout_error_dismissed.set(None);
-        persist::_remove(&cache_key);
         let mut layout_config = layout_config;
         let mut layout_loading = layout_loading;
         let mut layout_error = layout_error;

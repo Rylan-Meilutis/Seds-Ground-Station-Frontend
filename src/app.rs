@@ -372,6 +372,11 @@ mod persist {
     pub fn write_connect_shown(v: bool) -> Result<(), io::Error> {
         write_key(_CONNECT_SHOWN_KEY, if v { "true" } else { "false" })
     }
+
+    /// Reads whether the user has already completed the native connect flow before.
+    pub fn read_connect_shown() -> bool {
+        matches!(_read_key(_CONNECT_SHOWN_KEY).as_deref(), Some("true"))
+    }
 }
 
 // -------------------------
@@ -1912,10 +1917,13 @@ pub fn Dashboard() -> Element {
     let has_cached_layout_for_base =
         telemetry_dashboard::dashboard_has_cached_layout_for_base(&base);
     #[cfg(not(target_arch = "wasm32"))]
+    let has_completed_connect_flow = persist::read_connect_shown();
+    #[cfg(not(target_arch = "wasm32"))]
     let can_render_dashboard_while_auth_check_runs = auth::current_session().is_some()
         || auth::current_status().permissions.view_data
         || telemetry_dashboard::dashboard_has_prior_backend_connection()
-        || has_cached_layout_for_base;
+        || has_cached_layout_for_base
+        || has_completed_connect_flow;
     use_effect(move || {
         let base = UrlConfig::base_http();
         let current_auth_state_base = auth_state_base.read().clone();
@@ -1993,7 +2001,7 @@ pub fn Dashboard() -> Element {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        Some(Err(_err)) if has_cached_layout_for_base => {
+        Some(Err(_err)) if has_cached_layout_for_base || has_completed_connect_flow => {
             rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
         }
         Some(Err(err)) => rsx! {
