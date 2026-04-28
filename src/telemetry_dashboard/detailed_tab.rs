@@ -11,7 +11,7 @@ use super::{
     compensated_network_time_ms, current_language, current_wallclock_ms, format_network_time,
     format_timestamp_ms_clock, js_eval, layout::ThemeConfig, localized_copy,
     monotonic_now_ms, translate_text, AlertMsg, FrontendNetworkMetrics, NetworkTimeSync,
-    PersistentNotification,
+    PersistentNotification, device_timezone_label,
 };
 use crate::telemetry_dashboard::map_tab::{format_elevation, format_precise_distance};
 
@@ -167,6 +167,7 @@ pub fn DetailedTab(
     let network_time_display = network_time_snapshot
         .map(compensated_network_time_ms)
         .map(format_network_time);
+    let device_timezone = device_timezone_label();
     let network_clock_delta_ms = network_time_snapshot
         .map(compensated_network_time_ms)
         .map(|ms| current_wallclock_ms().saturating_sub(ms));
@@ -250,6 +251,7 @@ pub fn DetailedTab(
                         vec![
                             ("Flight state", translate_text(&display_flight_state(&flight_state.read()))),
                             ("Rocket time", network_time_display.unwrap_or_else(|| translate_text("Unavailable"))),
+                            ("Device timezone", device_timezone),
                             ("Clock delta", opt_signed_ms(network_clock_delta_ms)),
                             ("Server time age", opt_i64_ms(network_time_age_ms)),
                             ("Warnings", warnings_count.to_string()),

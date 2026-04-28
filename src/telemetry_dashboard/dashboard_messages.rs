@@ -186,16 +186,20 @@ fn compensated_network_time_ms(sync: NetworkTimeSync) -> i64 {
 pub(crate) fn format_timestamp_ms_clock(ms_epoch: i64) -> String {
     let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms_epoch as f64));
     let h24 = d.get_hours();
-    let (h, am_pm) = match h24 {
-        0 => (12, "AM"),
-        1..=11 => (h24, "AM"),
-        12 => (12, "PM"),
-        _ => (h24 - 12, "PM"),
-    };
     let m = d.get_minutes();
     let s = d.get_seconds();
     let cs = (d.get_milliseconds() / 10).clamp(0, 99);
-    format!("{h:02}:{m:02}:{s:02}:{cs:02} {am_pm}")
+    if *PREFERRED_CLOCK_24H.read() {
+        format!("{h24:02}:{m:02}:{s:02}:{cs:02}")
+    } else {
+        let (h, am_pm) = match h24 {
+            0 => (12, "AM"),
+            1..=11 => (h24, "AM"),
+            12 => (12, "PM"),
+            _ => (h24 - 12, "PM"),
+        };
+        format!("{h:02}:{m:02}:{s:02}:{cs:02} {am_pm}")
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -205,12 +209,63 @@ pub(crate) fn format_timestamp_ms_clock(ms_epoch: i64) -> String {
         return "--:--:--:--".to_string();
     };
     let cs = dt.timestamp_subsec_millis() / 10;
-    format!("{}:{cs:02} {}", dt.format("%I:%M:%S"), dt.format("%p"))
+    if *PREFERRED_CLOCK_24H.read() {
+        format!("{}:{cs:02}", dt.format("%H:%M:%S"))
+    } else {
+        format!("{}:{cs:02} {}", dt.format("%I:%M:%S"), dt.format("%p"))
+    }
 }
 
 /// Formats the network-synchronized wall clock for dashboard display.
 fn format_network_time(ms_epoch: i64) -> String {
     format_timestamp_ms_clock(ms_epoch)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn format_timestamp_ms_local_datetime(ms_epoch: i64) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms_epoch as f64));
+    let year = d.get_full_year();
+    let month = d.get_month() + 1;
+    let day = d.get_date();
+    format!("{year:04}-{month:02}-{day:02} {}", format_timestamp_ms_clock(ms_epoch))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn format_timestamp_ms_local_datetime(ms_epoch: i64) -> String {
+    use chrono::{Local, TimeZone};
+    let Some(dt) = Local.timestamp_millis_opt(ms_epoch).single() else {
+        return "--".to_string();
+    };
+    format!("{} {}", dt.format("%Y-%m-%d"), format_timestamp_ms_clock(ms_epoch))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn device_timezone_label() -> String {
+    js_eval(
+        r#"
+        (function() {
+          try {
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+            const mins = -new Date().getTimezoneOffset();
+            const sign = mins >= 0 ? "+" : "-";
+            const abs = Math.abs(mins);
+            const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+            const mm = String(abs % 60).padStart(2, "0");
+            window.__gs26_tmp_timezone = tz ? `${tz} (UTC${sign}${hh}:${mm})` : `UTC${sign}${hh}:${mm}`;
+          } catch (_) {
+            window.__gs26_tmp_timezone = "Local device time";
+          }
+        })();
+        "#,
+    );
+    js_read_window_string("__gs26_tmp_timezone")
+        .unwrap_or_else(|| "Local device time".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn device_timezone_label() -> String {
+    use chrono::Local;
+    Local::now().format("%Z (UTC%:z)").to_string()
 }
 
 // --------------------------

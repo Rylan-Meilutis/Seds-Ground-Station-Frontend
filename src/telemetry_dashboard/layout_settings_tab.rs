@@ -11,6 +11,7 @@ pub fn SettingsPage(
     map_header_altitude_visible: Signal<bool>,
     theme_preset: Signal<String>,
     language_code: Signal<String>,
+    clock_24h: Signal<bool>,
     network_flow_animation_enabled: Signal<bool>,
     network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
@@ -43,6 +44,7 @@ pub fn SettingsPage(
     let map_header_altitude_visible_value = *map_header_altitude_visible.read();
     let selected_theme = theme_preset.read().clone();
     let selected_language = language_code.read().clone();
+    let clock_24h_enabled = *clock_24h.read();
     let flow_animation_enabled = *network_flow_animation_enabled.read();
     let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
@@ -254,6 +256,16 @@ pub fn SettingsPage(
         "Unidades de distancia",
         "Unites de distance",
     );
+    let time_format_title =
+        localized_copy(&language, "Time Format", "Formato de hora", "Format d'heure");
+    let time_format_desc = localized_copy(
+        &language,
+        "Shows network epoch time in your device's local timezone using either 12-hour or 24-hour clock formatting.",
+        "Muestra la hora de red en la zona horaria local del dispositivo usando formato de 12 o 24 horas.",
+        "Affiche l'heure reseau dans le fuseau local de l'appareil avec un format 12 heures ou 24 heures.",
+    );
+    let time_format_12h = localized_copy(&language, "12 Hour", "12 horas", "12 heures");
+    let time_format_24h = localized_copy(&language, "24 Hour", "24 horas", "24 heures");
     let units_desc = localized_copy(
         &language,
         "Controls the rocket distance label and the live guide line readout on the map.",
@@ -569,6 +581,20 @@ pub fn SettingsPage(
                                 set_preferred_language(&code);
                             },
                             "{french_label}"
+                        }
+                    }
+                    div { style: "font-size:13px; color:{theme.text_muted}; margin-top:10px;", "{time_format_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{time_format_desc}" }
+                    div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                        button {
+                            style: if !clock_24h_enabled { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| clock_24h.set(false),
+                            "{time_format_12h}"
+                        }
+                        button {
+                            style: if clock_24h_enabled { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| clock_24h.set(true),
+                            "{time_format_24h}"
                         }
                     }
                 }

@@ -760,6 +760,7 @@ const MAP_HEADER_DISTANCE_VISIBLE_STORAGE_KEY: &str = "gs_map_header_distance_vi
 const MAP_HEADER_ALTITUDE_VISIBLE_STORAGE_KEY: &str = "gs_map_header_altitude_visible";
 const THEME_PRESET_STORAGE_KEY: &str = "gs_theme_preset";
 const LANGUAGE_STORAGE_KEY: &str = "gs_language";
+const CLOCK_24H_STORAGE_KEY: &str = "gs_clock_24h";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
 const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertical";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
@@ -1170,6 +1171,7 @@ static PENDING_WS_MESSAGE_EVENTS: Lazy<Mutex<VecDeque<(u64, String)>>> =
 static SEED_WATCHER_TX: Lazy<Mutex<Option<futures_channel::mpsc::UnboundedSender<()>>>> =
     Lazy::new(|| Mutex::new(None));
 static PREFERRED_LANGUAGE: GlobalSignal<String> = Signal::global(|| "en".to_string());
+static PREFERRED_CLOCK_24H: GlobalSignal<bool> = Signal::global(|| false);
 static TRANSLATION_CATALOG: GlobalSignal<HashMap<String, String>> = Signal::global(HashMap::new);
 pub(crate) static APP_THEME_CONFIG: GlobalSignal<layout::ThemeConfig> = Signal::global(|| {
     let stored = persist::get_or(THEME_PRESET_STORAGE_KEY, "default");
@@ -2032,6 +2034,7 @@ pub fn NativeSettingsPage() -> Element {
         }
     });
     let language_code = use_signal(|| persist::get_or(LANGUAGE_STORAGE_KEY, "en"));
+    let clock_24h = use_signal(|| persist::get_or(CLOCK_24H_STORAGE_KEY, "off") == "on");
     let network_flow_animation_enabled =
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
     let network_topology_vertical =
@@ -2114,6 +2117,14 @@ pub fn NativeSettingsPage() -> Element {
             let value = language_code.read().clone();
             *PREFERRED_LANGUAGE.write() = value.clone();
             persist::set_string(LANGUAGE_STORAGE_KEY, &value);
+        });
+    }
+    {
+        let clock_24h = clock_24h;
+        use_effect(move || {
+            let enabled = *clock_24h.read();
+            *PREFERRED_CLOCK_24H.write() = enabled;
+            persist::set_string(CLOCK_24H_STORAGE_KEY, if enabled { "on" } else { "off" });
         });
     }
     {
@@ -2321,6 +2332,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut map_header_altitude_visible = map_header_altitude_visible;
         let mut theme_preset = theme_preset;
         let mut language_code = language_code;
+        let mut clock_24h = clock_24h;
         let mut network_flow_animation_enabled = network_flow_animation_enabled;
         let mut network_topology_vertical = network_topology_vertical;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
@@ -2339,6 +2351,7 @@ pub fn NativeSettingsPage() -> Element {
             map_header_altitude_visible.set(false);
             theme_preset.set("default".to_string());
             language_code.set("en".to_string());
+            clock_24h.set(false);
             network_flow_animation_enabled.set(true);
             network_topology_vertical.set(false);
             state_chart_labels_vertical.set(false);
@@ -2360,6 +2373,7 @@ pub fn NativeSettingsPage() -> Element {
             map_header_altitude_visible,
             theme_preset,
             language_code,
+            clock_24h,
             network_flow_animation_enabled,
             network_topology_vertical,
             state_chart_labels_vertical,
@@ -3416,6 +3430,7 @@ fn TelemetryDashboardInner() -> Element {
         }
     });
     let language_code = use_signal(|| persist::get_or(LANGUAGE_STORAGE_KEY, "en"));
+    let clock_24h = use_signal(|| persist::get_or(CLOCK_24H_STORAGE_KEY, "off") == "on");
     let network_flow_animation_enabled =
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
     let network_topology_vertical =
@@ -3928,6 +3943,14 @@ fn TelemetryDashboardInner() -> Element {
             let value = language_code.read().clone();
             *PREFERRED_LANGUAGE.write() = value.clone();
             persist::set_string(LANGUAGE_STORAGE_KEY, &value);
+        });
+    }
+    {
+        let clock_24h = clock_24h;
+        use_effect(move || {
+            let enabled = *clock_24h.read();
+            *PREFERRED_CLOCK_24H.write() = enabled;
+            persist::set_string(CLOCK_24H_STORAGE_KEY, if enabled { "on" } else { "off" });
         });
     }
     {
@@ -5244,6 +5267,7 @@ fn TelemetryDashboardInner() -> Element {
                             map_header_altitude_visible: map_header_altitude_visible,
                             theme_preset: theme_preset,
                             language_code: language_code,
+                            clock_24h: clock_24h,
                             network_flow_animation_enabled: network_flow_animation_enabled,
                             network_topology_vertical: network_topology_vertical,
                             state_chart_labels_vertical: state_chart_labels_vertical,
@@ -5281,6 +5305,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut map_header_altitude_visible = map_header_altitude_visible;
                                 let mut theme_preset = theme_preset;
                                 let mut language_code = language_code;
+                                let mut clock_24h = clock_24h;
                                 let mut network_flow_animation_enabled = network_flow_animation_enabled;
                                 let mut network_topology_vertical = network_topology_vertical;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
@@ -5304,6 +5329,7 @@ fn TelemetryDashboardInner() -> Element {
                                     map_header_altitude_visible.set(false);
                                     theme_preset.set("default".to_string());
                                     language_code.set("en".to_string());
+                                    clock_24h.set(false);
                                     network_flow_animation_enabled.set(true);
                                     network_topology_vertical.set(false);
                                     state_chart_labels_vertical.set(false);

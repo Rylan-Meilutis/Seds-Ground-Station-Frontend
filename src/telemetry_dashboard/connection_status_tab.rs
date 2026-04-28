@@ -679,18 +679,7 @@ fn format_last_seen(last_seen_ms: Option<u64>) -> String {
 
     // Heuristic: if it's Unix-epoch ms (>= ~2017-07-14), render human time.
     if ts >= 1_500_000_000_000 {
-        #[cfg(target_arch = "wasm32")]
-        {
-            let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ts as f64));
-            return d.to_string().into();
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use std::time::{Duration, UNIX_EPOCH};
-            let t = UNIX_EPOCH + Duration::from_millis(ts);
-            let dt: chrono::DateTime<chrono::Local> = t.into();
-            return dt.format("%Y-%m-%d %H:%M:%S").to_string();
-        }
+        return super::format_timestamp_ms_local_datetime(ts as i64);
     }
 
     format!("{ts} ms")
