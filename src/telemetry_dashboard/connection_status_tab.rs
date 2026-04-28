@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use super::layout::{ConnectionSectionKind, ConnectionTabLayout, ThemeConfig};
 use super::types::BoardStatusEntry;
-use super::{current_wallclock_ms, reseed_note_banner, reseed_status_note, translate_text};
+use super::{
+    current_wallclock_ms, js_eval, reseed_note_banner, reseed_status_note, translate_text,
+};
 
 const LATENCY_WINDOW_MS: i64 = 20 * 60_000;
 const LATENCY_MAX_POINTS: usize = 1200;
@@ -16,6 +18,14 @@ const LATENCY_PLOT_LEFT_PX: f64 = 74.0;
 const LATENCY_PLOT_RIGHT_PX: f64 = 20.0;
 const LATENCY_PLOT_TOP_PX: f64 = 20.0;
 const LATENCY_PLOT_BOTTOM_PX: f64 = 34.0;
+const SCROLL_SUPPRESSION_GRACE_MS: i64 = 2_500;
+
+#[derive(Clone, Copy)]
+struct LatencyPoint {
+    timestamp_ms: i64,
+    value_ms: f64,
+    scroll_suppressed: bool,
+}
 
 #[component]
 pub fn ConnectionStatusTab(
@@ -29,10 +39,16 @@ pub fn ConnectionStatusTab(
     let mut board_fullscreen = use_signal(|| false);
     let mut show_latency = use_signal(|| true);
     let mut latency_fullscreen = use_signal(|| false);
-    let history = use_signal(HashMap::<String, Vec<(i64, f64)>>::new);
+    let history = use_signal(HashMap::<String, Vec<LatencyPoint>>::new);
     let previous_last_seen = use_signal(HashMap::<String, u64>::new);
     let smoothed_intervals = use_signal(HashMap::<String, f64>::new);
     let merged_boards = merged_connection_boards(&boards.read(), &expected_boards);
+
+    {
+        use_effect(move || {
+            install_connection_scroll_pause_marker();
+        });
+    }
 
     {
         let expected_boards = expected_boards.clone();
@@ -42,51 +58,59 @@ pub fn ConnectionStatusTab(
         use_effect(move || {
             let merged = merged_connection_boards(&boards.read(), &expected_boards);
             let sample_now_ms = current_wallclock_ms();
+            spawn(async move {
+                let scroll_suppressed = recent_scroll_pause_likely().await;
+                let mut previous_map = previous_last_seen.write();
+                let mut smoothing_map = smoothed_intervals.write();
+                let mut history_map = history.write();
 
-            let mut previous_map = previous_last_seen.write();
-            let mut smoothing_map = smoothed_intervals.write();
-            let mut history_map = history.write();
-
-            for entry in &merged {
-                let sender_id = entry.sender_id.clone();
-                let Some(last_seen_ms) = entry.last_seen_ms else {
-                    continue;
-                };
-
-                let sample_ts = i64::try_from(last_seen_ms).unwrap_or(sample_now_ms);
-                let maybe_gap = previous_map
-                    .get(&sender_id)
-                    .copied()
-                    .and_then(|prev| last_seen_ms.checked_sub(prev))
-                    .filter(|gap| *gap > 0);
-
-                if let Some(gap_ms) = maybe_gap {
-                    let next_value = if let Some(prev_smoothed) =
-                        smoothing_map.get(&sender_id).copied()
-                    {
-                        prev_smoothed + (gap_ms as f64 - prev_smoothed) * LATENCY_SMOOTHING_ALPHA
-                    } else {
-                        gap_ms as f64
+                for entry in &merged {
+                    let sender_id = entry.sender_id.clone();
+                    let Some(last_seen_ms) = entry.last_seen_ms else {
+                        continue;
                     };
-                    smoothing_map.insert(sender_id.clone(), next_value);
 
-                    let list = history_map.entry(sender_id.clone()).or_default();
-                    list.push((sample_ts, next_value));
-                    if let Some(&(newest, _)) = list.last() {
-                        let cutoff = newest.saturating_sub(LATENCY_WINDOW_MS);
-                        let split = list.partition_point(|(t, _)| *t < cutoff);
-                        if split > 0 {
-                            list.drain(0..split);
+                    let sample_ts = i64::try_from(last_seen_ms).unwrap_or(sample_now_ms);
+                    let maybe_gap = previous_map
+                        .get(&sender_id)
+                        .copied()
+                        .and_then(|prev| last_seen_ms.checked_sub(prev))
+                        .filter(|gap| *gap > 0);
+
+                    if let Some(gap_ms) = maybe_gap {
+                        let next_value = if let Some(prev_smoothed) =
+                            smoothing_map.get(&sender_id).copied()
+                        {
+                            prev_smoothed
+                                + (gap_ms as f64 - prev_smoothed) * LATENCY_SMOOTHING_ALPHA
+                        } else {
+                            gap_ms as f64
+                        };
+                        smoothing_map.insert(sender_id.clone(), next_value);
+
+                        let list = history_map.entry(sender_id.clone()).or_default();
+                        list.push(LatencyPoint {
+                            timestamp_ms: sample_ts,
+                            value_ms: next_value,
+                            scroll_suppressed,
+                        });
+                        if let Some(newest) = list.last().map(|point| point.timestamp_ms) {
+                            let cutoff = newest.saturating_sub(LATENCY_WINDOW_MS);
+                            let split =
+                                list.partition_point(|point| point.timestamp_ms < cutoff);
+                            if split > 0 {
+                                list.drain(0..split);
+                            }
+                        }
+                        if list.len() > LATENCY_MAX_POINTS {
+                            let drain = list.len() - LATENCY_MAX_POINTS;
+                            list.drain(0..drain);
                         }
                     }
-                    if list.len() > LATENCY_MAX_POINTS {
-                        let drain = list.len() - LATENCY_MAX_POINTS;
-                        list.drain(0..drain);
-                    }
-                }
 
-                previous_map.insert(sender_id, last_seen_ms);
-            }
+                    previous_map.insert(sender_id, last_seen_ms);
+                }
+            });
         });
     }
 
@@ -259,7 +283,7 @@ fn merged_connection_boards(
 }
 
 fn render_latency_chart(
-    points: Option<&Vec<(i64, f64)>>,
+    points: Option<&Vec<LatencyPoint>>,
     height: f64,
     theme: &ThemeConfig,
 ) -> Element {
@@ -415,7 +439,7 @@ fn latency_card_style(theme: &ThemeConfig) -> String {
 }
 
 fn build_latency_polylines(
-    points: &[(i64, f64)],
+    points: &[LatencyPoint],
     width: f64,
     height: f64,
     window_ms: Option<i64>,
@@ -424,14 +448,14 @@ fn build_latency_polylines(
         return (Vec::new(), Vec::new(), 0.0, 0.0, 0.0);
     }
 
-    let mut pts: Vec<(i64, f64)> = points.to_vec();
-    pts.sort_by_key(|(t, _)| *t);
+    let mut pts: Vec<LatencyPoint> = points.to_vec();
+    pts.sort_by_key(|point| point.timestamp_ms);
 
     if let Some(win) = window_ms
-        && let Some(&(newest, _)) = pts.last()
+        && let Some(newest) = pts.last().map(|point| point.timestamp_ms)
     {
         let start = newest.saturating_sub(win);
-        let first_in = pts.partition_point(|(t, _)| *t < start);
+        let first_in = pts.partition_point(|point| point.timestamp_ms < start);
         if first_in > 0 {
             pts.drain(0..first_in);
         }
@@ -441,13 +465,13 @@ fn build_latency_polylines(
         return (Vec::new(), Vec::new(), 0.0, 0.0, 0.0);
     }
 
-    let (t_min, t_max) = pts.iter().fold((i64::MAX, i64::MIN), |(mn, mx), (t, _)| {
-        (mn.min(*t), mx.max(*t))
+    let (t_min, t_max) = pts.iter().fold((i64::MAX, i64::MIN), |(mn, mx), point| {
+        (mn.min(point.timestamp_ms), mx.max(point.timestamp_ms))
     });
     let (y_min, y_max) = pts
         .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), (_, y)| {
-            (mn.min(*y), mx.max(*y))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), point| {
+            (mn.min(point.value_ms), mx.max(point.value_ms))
         });
 
     let t_span = (t_max - t_min).max(1) as f64;
@@ -470,8 +494,10 @@ fn build_latency_polylines(
         (x, y_px)
     };
 
-    // Detect large gaps (scroll pauses) and only interpolate those.
-    let mut deltas: Vec<i64> = pts.windows(2).map(|w| (w[1].0 - w[0].0).max(0)).collect();
+    let mut deltas: Vec<i64> = pts
+        .windows(2)
+        .map(|w| (w[1].timestamp_ms - w[0].timestamp_ms).max(0))
+        .collect();
     deltas.sort_unstable();
     let median_dt = if deltas.is_empty() {
         0
@@ -484,17 +510,21 @@ fn build_latency_polylines(
     let mut dotted: Vec<String> = Vec::new();
     let mut cur_solid = String::new();
 
-    for (idx, (t, y)) in pts.iter().enumerate() {
-        let (x, yy) = to_xy(*t, *y);
+    for (idx, point) in pts.iter().enumerate() {
+        let (x, yy) = to_xy(point.timestamp_ms, point.value_ms);
         if idx > 0 {
-            let (pt, py) = pts[idx - 1];
-            let dt = (*t - pt).max(0);
+            let prev = pts[idx - 1];
+            let dt = (point.timestamp_ms - prev.timestamp_ms).max(0);
             if dt > gap_threshold_ms {
                 if !cur_solid.is_empty() {
                     solid.push(std::mem::take(&mut cur_solid));
                 }
-                let (x0, y0) = to_xy(pt, py);
-                dotted.push(format!("{x0:.2},{y0:.2} {x:.2},{yy:.2}"));
+                if point.scroll_suppressed
+                    && dt <= gap_threshold_ms.saturating_add(SCROLL_SUPPRESSION_GRACE_MS)
+                {
+                    let (x0, y0) = to_xy(prev.timestamp_ms, prev.value_ms);
+                    dotted.push(format!("{x0:.2},{y0:.2} {x:.2},{yy:.2}"));
+                }
             }
         }
 
@@ -510,6 +540,61 @@ fn build_latency_polylines(
 
     let span_min = t_span / 60_000.0;
     (solid, dotted, y_min, y_max, span_min)
+}
+
+fn install_connection_scroll_pause_marker() {
+    js_eval(
+        r#"
+        (function() {
+          if (window.__gs26_connection_scroll_pause_marker_installed) return;
+          window.__gs26_connection_scroll_pause_marker_installed = true;
+          const isIos = (() => {
+            try {
+              const ua = navigator.userAgent || "";
+              const platform = navigator.platform || "";
+              return /iPad|iPhone|iPod/i.test(ua)
+                || /iPad|iPhone|iPod/i.test(platform)
+                || (platform === "MacIntel" && navigator.maxTouchPoints > 1);
+            } catch (e) {
+              return false;
+            }
+          })();
+          window.__gs26_connection_scroll_pause_supported = isIos ? "1" : "0";
+          window.__gs26_connection_scroll_pause_until = 0;
+          const mark = () => {
+            if (!isIos) return;
+            window.__gs26_connection_scroll_pause_until = Date.now() + 2500;
+          };
+          window.addEventListener("scroll", mark, { passive: true, capture: true });
+          window.addEventListener("touchstart", mark, { passive: true, capture: true });
+          window.addEventListener("touchmove", mark, { passive: true, capture: true });
+          try {
+            if (window.visualViewport) {
+              window.visualViewport.addEventListener("scroll", mark, { passive: true });
+            }
+          } catch (e) {}
+        })();
+        "#,
+    );
+}
+
+async fn recent_scroll_pause_likely() -> bool {
+    let eval = document::eval(
+        r#"
+        (function() {
+          try {
+            if (String(window.__gs26_connection_scroll_pause_supported || "0") !== "1") {
+              return "0";
+            }
+            const until = Number(window.__gs26_connection_scroll_pause_until || 0);
+            return until > Date.now() ? "1" : "0";
+          } catch (e) {
+            return "0";
+          }
+        })()
+        "#,
+    );
+    eval.join::<String>().await.ok().as_deref() == Some("1")
 }
 
 fn render_board_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Element {

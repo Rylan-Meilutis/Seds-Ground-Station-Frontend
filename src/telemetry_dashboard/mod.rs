@@ -4496,18 +4496,6 @@ fn TelemetryDashboardInner() -> Element {
             || *error_event_counter.read() > *ack_error_count.read());
 
     let border_style = "1px solid transparent";
-    let shell_alert_effect = if has_unacked_errors && has_errors {
-        "inset 0 0 0 1px #ef4444"
-    } else if has_unacked_warnings && has_warnings {
-        "inset 0 0 0 1px #facc15"
-    } else {
-        "none"
-    };
-    let shell_alert_animation = if has_unacked_errors || has_unacked_warnings {
-        "animation:gs26-alert-shell-pulse 1.15s ease-in-out infinite;"
-    } else {
-        ""
-    };
     let warnings_tab_icon_style = if has_unacked_warnings {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:1; animation:gs26-alert-icon-pulse 1.15s ease-in-out infinite;".to_string()
     } else if has_warnings {
@@ -5527,8 +5515,6 @@ fn TelemetryDashboardInner() -> Element {
                     align-items:center;
                     justify-content:center;
                     border:{border_style};
-                    box-shadow:{shell_alert_effect};
-                    {shell_alert_animation}
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:10px; align-items:center;",
@@ -5552,8 +5538,6 @@ fn TelemetryDashboardInner() -> Element {
                     align-items:center;
                     justify-content:center;
                     border:{border_style};
-                    box-shadow:{shell_alert_effect};
-                    {shell_alert_animation}
                     box-sizing:border-box;
                 ",
                         div { style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
@@ -5582,8 +5566,6 @@ fn TelemetryDashboardInner() -> Element {
                 width:100%;
                 max-width:100%;
                 border:{border_style};
-                box-shadow:{shell_alert_effect};
-                {shell_alert_animation}
                 box-sizing:border-box;
                 overflow:hidden;
             ",

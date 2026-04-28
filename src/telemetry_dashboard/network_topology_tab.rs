@@ -592,6 +592,23 @@ fn install_drag_handlers(
             state.viewport.scrollLeft = clamp(left, 0, maxLeft);
             state.viewport.scrollTop = clamp(top, 0, maxTop);
           }};
+          const captureViewportAnchor = () => {{
+            const localX = state.viewport.clientWidth / 2;
+            const localY = state.viewport.clientHeight / 2;
+            return {{
+              contentX: (state.viewport.scrollLeft + localX - state.canvasLeft) / state.scale,
+              contentY: (state.viewport.scrollTop + localY - state.canvasTop) / state.scale,
+              localX,
+              localY,
+            }};
+          }};
+          const restoreViewportAnchor = (anchor) => {{
+            if (!anchor) return;
+            setViewportScroll(
+              anchor.contentX * state.scale + state.canvasLeft - anchor.localX,
+              anchor.contentY * state.scale + state.canvasTop - anchor.localY,
+            );
+          }};
           const flushPendingPan = () => {{
             if (state.panFrame != null) {{
               window.cancelAnimationFrame(state.panFrame);
@@ -657,8 +674,9 @@ fn install_drag_handlers(
           }};
 
           window.__gs26NetworkGraphRefresh = () => {{
+            const anchor = captureViewportAnchor();
             refreshSurfaceFrame();
-            centerGraph();
+            restoreViewportAnchor(anchor);
           }};
           const fitAndCenterGraph = () => {{
             state.viewport.scrollLeft = 0;
