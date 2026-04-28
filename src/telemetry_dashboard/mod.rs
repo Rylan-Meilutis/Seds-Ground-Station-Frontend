@@ -1383,6 +1383,7 @@ fn schedule_dashboard_runtime_pump() {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 fn queue_ws_open_event(epoch: u64, ws_url: String) {
     if let Ok(mut q) = PENDING_WS_OPEN_EVENTS.lock() {
         q.push_back((epoch, ws_url));
@@ -1393,6 +1394,7 @@ fn queue_ws_open_event(epoch: u64, ws_url: String) {
     schedule_dashboard_runtime_pump();
 }
 
+#[cfg(target_arch = "wasm32")]
 fn queue_ws_message_event(epoch: u64, payload: String) {
     if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
         q.push_back((epoch, payload));
