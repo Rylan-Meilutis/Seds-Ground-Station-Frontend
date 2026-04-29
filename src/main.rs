@@ -196,10 +196,8 @@ fn main() {
             _handle_gs26_protocol_async(request, responder);
         });
     }
-    #[cfg(target_os = "android")]
-    {
-        cfg = cfg.with_custom_head(android_custom_head());
-    }
+    cfg = cfg.with_custom_head(startup_custom_head());
+    cfg = cfg.with_background_color((0x02, 0x06, 0x17, 0xff));
     cfg = cfg.with_window(WindowBuilder::new().with_title(app::APP_DISPLAY_NAME));
     if let Some(icon) = load_desktop_window_icon() {
         cfg = cfg.with_icon(icon);
@@ -234,9 +232,38 @@ fn load_desktop_window_icon() -> Option<dioxus_desktop::tao::window::Icon> {
     dioxus_desktop::tao::window::Icon::from_rgba(image.into_raw(), width, height).ok()
 }
 
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+fn startup_custom_head() -> String {
+    String::from(
+        r##"
+<meta name="theme-color" content="#020617">
+<style>
+html {
+    background: #020617;
+    color-scheme: dark;
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    background: #020617;
+    color: #e5e7eb;
+}
+
+body, #main {
+    background: #020617;
+}
+</style>
+"##,
+    )
+}
+
 #[cfg(target_os = "android")]
-fn android_custom_head() -> String {
-    r#"
+fn startup_custom_head() -> String {
+    format!(
+        "{}{}",
+        startup_custom_head_base(),
+        r#"
 <script>
 (() => {
     const normalizeInternalUrl = (value) => {
@@ -255,7 +282,31 @@ fn android_custom_head() -> String {
 })();
 </script>
 "#
-    .to_string()
+    )
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
+fn startup_custom_head_base() -> &'static str {
+    r##"
+<meta name="theme-color" content="#020617">
+<style>
+html {
+    background: #020617;
+    color-scheme: dark;
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    background: #020617;
+    color: #e5e7eb;
+}
+
+body, #main {
+    background: #020617;
+}
+</style>
+"##
 }
 
 #[cfg(not(target_arch = "wasm32"))]
