@@ -108,6 +108,10 @@ pub fn SettingsPage(
         "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:600; cursor:pointer;",
         theme.button_border, theme.button_background, theme.button_text
     );
+    let chip_disabled = format!(
+        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:600; cursor:not-allowed; opacity:0.5; filter:saturate(0.7);",
+        theme.button_border, theme.button_background, theme.button_text
+    );
 
     let section_general = localized_copy(&language, "General", "General", "General");
     let section_appearance = localized_copy(&language, "Appearance", "Apariencia", "Apparence");
@@ -406,12 +410,6 @@ pub fn SettingsPage(
         "Precargar mosaicos",
         "Precharger les tuiles",
     );
-    let prefetch_now_desc = localized_copy(
-        &language,
-        "Manually queues map tile prefetch for the current map area, user, and rocket context.",
-        "Pone en cola la precarga de mosaicos para el mapa actual, usuario y cohete.",
-        "Lance manuellement le prechargement des tuiles autour de la carte, utilisateur et fusee.",
-    );
     let prefetch_started_label = localized_copy(
         &language,
         "Map tile prefetch queued.",
@@ -463,6 +461,12 @@ pub fn SettingsPage(
         "Datos borrados.",
         "Donnees effacees.",
     );
+    let prefetch_disabled_label = localized_copy(
+        &language,
+        "Enable Map Tile Cache and Map Tile Prefetch to run a manual prefetch.",
+        "Activa Cache de mosaicos y Precarga del mapa para ejecutar una precarga manual.",
+        "Activez le cache des tuiles et le prechargement carte pour lancer un prechargement manuel.",
+    );
     let confirm_action_label =
         localized_copy(&language, "Clear Everything", "Borrar todo", "Tout effacer");
     let english_label = "English".to_string();
@@ -475,6 +479,7 @@ pub fn SettingsPage(
         "Theme de la Station au sol",
     );
     let theme_presets = builtin_theme_presets();
+    let can_manual_prefetch = map_tile_cache_enabled_value && map_prefetch_enabled_value;
 
     use_effect(move || {
         js_eval(
@@ -787,9 +792,13 @@ pub fn SettingsPage(
                         id: "gs26-prefetch-estimate-warning",
                         style: "display:none; font-size:13px; color:{theme.warning_text};",
                     }
+                    if !can_manual_prefetch {
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_disabled_label}" }
+                    }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;",
                         button {
-                            style: chip_idle.clone(),
+                            disabled: !can_manual_prefetch,
+                            style: if can_manual_prefetch { chip_idle.clone() } else { chip_disabled.clone() },
                             onclick: {
                                 let prefetch_started_label = prefetch_started_label.clone();
                                 move |_| {
@@ -1036,21 +1045,6 @@ pub fn SettingsPage(
                                     }
                                 },
                                 "{clear_all_caches_title}"
-                            }
-                        }
-                    }
-                    div { style: "display:flex; flex-direction:column; gap:6px;",
-                        div { style: "font-size:13px; color:{theme.text_muted};", "{prefetch_now_title}" }
-                        div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_now_desc}" }
-                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
-                            button {
-                                style: chip_idle.clone(),
-                                onclick: move |_| {
-                                    on_prefetch_map_tiles.call(());
-                                    maintenance_status.set(prefetch_started_label.clone());
-                                    confirm_reset.set(false);
-                                },
-                                "{prefetch_now_title}"
                             }
                         }
                     }

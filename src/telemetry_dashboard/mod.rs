@@ -4887,39 +4887,31 @@ fn TelemetryDashboardInner() -> Element {
     };
 
     let version_button: Element = {
-        #[cfg(target_arch = "wasm32")]
-        {
-            rsx! { div {} }
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let show_version_overlay = show_version_overlay;
-            rsx! {
-                button {
-                    style: format!("
-                        padding:0.45rem 0.85rem;
-                        border-radius:0.75rem;
-                        border:1px solid {};
-                        background:{};
-                        color:{};
-                        font-weight:800;
-                        cursor:pointer;
-                    ", theme.button_border, theme.button_background, theme.button_text),
-                    onclick: {
-                        let mut show_version_overlay = show_version_overlay;
-                        move |_| {
-                            show_version_overlay.set(true);
-                        }
-                    },
-                    ontouchend: {
-                        let mut show_version_overlay = show_version_overlay;
-                        move |_| {
-                            show_version_overlay.set(true);
-                        }
-                    },
-                    {translate_text("VERSION")}
-                }
+        let show_version_overlay = show_version_overlay;
+        rsx! {
+            button {
+                style: format!("
+                    padding:0.45rem 0.85rem;
+                    border-radius:0.75rem;
+                    border:1px solid {};
+                    background:{};
+                    color:{};
+                    font-weight:800;
+                    cursor:pointer;
+                ", theme.button_border, theme.button_background, theme.button_text),
+                onclick: {
+                    let mut show_version_overlay = show_version_overlay;
+                    move |_| {
+                        show_version_overlay.set(true);
+                    }
+                },
+                ontouchend: {
+                    let mut show_version_overlay = show_version_overlay;
+                    move |_| {
+                        show_version_overlay.set(true);
+                    }
+                },
+                {translate_text("VERSION")}
             }
         }
     };
@@ -5118,84 +5110,75 @@ fn TelemetryDashboardInner() -> Element {
         }
     });
     let layout_loading_snapshot = *layout_loading.read();
-    #[cfg(not(target_arch = "wasm32"))]
     let version_overlay_open = *show_version_overlay.read();
     let version_overlay: Element = {
-        #[cfg(target_arch = "wasm32")]
-        {
-            rsx! { div {} }
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if version_overlay_open {
-                rsx! {
+        if version_overlay_open {
+            rsx! {
+                div {
+                    style: "
+                        position:fixed;
+                        inset:0;
+                        z-index:3000;
+                        display:flex;
+                        align-items:flex-start;
+                        justify-content:center;
+                        padding:24px 16px;
+                        overflow-y:auto;
+                        overflow-x:hidden;
+                        background:{theme.app_background};
+                        font-family:{dashboard_font_stack};
+                        backdrop-filter:blur(6px);
+                        overscroll-behavior:contain;
+                        -webkit-overflow-scrolling:touch;
+                    ",
+                    onclick: {
+                        let mut show_version_overlay = show_version_overlay;
+                        move |_| show_version_overlay.set(false)
+                    },
                     div {
                         style: "
-                            position:fixed;
-                            inset:0;
-                            z-index:3000;
-                            display:flex;
-                            align-items:flex-start;
-                            justify-content:center;
-                            padding:24px 16px;
-                            overflow-y:auto;
-                            overflow-x:hidden;
-                            background:{theme.app_background};
+                            width:min(900px, 100%);
+                            padding:24px;
+                            color:{theme.text_primary};
+                            border:1px solid {theme.tab_shell_border};
+                            border-radius:16px;
+                            background:{theme.tab_shell_background};
                             font-family:{dashboard_font_stack};
-                            backdrop-filter:blur(6px);
-                            overscroll-behavior:contain;
-                            -webkit-overflow-scrolling:touch;
+                            box-shadow:0 12px 30px rgba(0,0,0,0.5);
                         ",
-                        onclick: {
-                            let mut show_version_overlay = show_version_overlay;
-                            move |_| show_version_overlay.set(false)
-                        },
+                        onclick: move |evt| evt.stop_propagation(),
+                        ontouchend: move |evt| evt.stop_propagation(),
                         div {
-                            style: "
-                                width:min(900px, 100%);
-                                padding:24px;
-                                color:{theme.text_primary};
-                                border:1px solid {theme.tab_shell_border};
-                                border-radius:16px;
-                                background:{theme.tab_shell_background};
-                                font-family:{dashboard_font_stack};
-                                box-shadow:0 12px 30px rgba(0,0,0,0.5);
-                            ",
-                            onclick: move |evt| evt.stop_propagation(),
-                            ontouchend: move |evt| evt.stop_propagation(),
-                            div {
-                                style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;",
-                                h1 { style: "margin:0; font-size:20px;", "{_version_title}" }
-                                button {
-                                    style: "
-                                        padding:10px 14px;
-                                        border-radius:12px;
-                                        border:1px solid {theme.button_border};
-                                        background:{theme.button_background};
-                                        color:{theme.button_text};
-                                        font-family:{dashboard_font_stack};
-                                        font-weight:700;
-                                        cursor:pointer;
-                                    ",
-                                    onclick: {
-                                        let mut show_version_overlay = show_version_overlay;
-                                        move |_| show_version_overlay.set(false)
-                                    },
-                                    ontouchend: {
-                                        let mut show_version_overlay = show_version_overlay;
-                                        move |_| show_version_overlay.set(false)
-                                    },
-                                    "{close_button_label}"
-                                }
+                            style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;",
+                            h1 { style: "margin:0; font-size:20px;", "{_version_title}" }
+                            button {
+                                style: "
+                                    padding:10px 14px;
+                                    border-radius:12px;
+                                    border:1px solid {theme.button_border};
+                                    background:{theme.button_background};
+                                    color:{theme.button_text};
+                                    font-family:{dashboard_font_stack};
+                                    font-weight:700;
+                                    cursor:pointer;
+                                ",
+                                onclick: {
+                                    let mut show_version_overlay = show_version_overlay;
+                                    move |_| show_version_overlay.set(false)
+                                },
+                                ontouchend: {
+                                    let mut show_version_overlay = show_version_overlay;
+                                    move |_| show_version_overlay.set(false)
+                                },
+                                "{close_button_label}"
                             }
-                            VersionTab { theme: theme.clone() }
                         }
+                        VersionTab { theme: theme.clone() }
                     }
                 }
-            } else {
-                rsx! { div {} }
             }
+        } else {
+            rsx! { div {} }
         }
     };
     let settings_overlay_open = *show_settings_overlay.read();

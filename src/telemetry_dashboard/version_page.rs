@@ -77,16 +77,28 @@ fn parse_lock_version(package_name: &str) -> Option<String> {
 }
 
 fn critical_packages() -> Vec<(&'static str, String)> {
-    [
-        ("dioxus", "Dioxus UI"),
-        ("dioxus-desktop", "Dioxus Desktop"),
-        ("tokio", "Tokio"),
-        ("reqwest", "Reqwest"),
-        ("tokio-tungstenite", "Tokio Tungstenite"),
-        ("native-tls", "native-tls"),
-        ("wry", "Wry"),
-        ("axum", "Axum"),
-    ]
+    let mut packages = vec![("dioxus", "Dioxus UI")];
+    #[cfg(target_arch = "wasm32")]
+    {
+        packages.extend([
+            ("gloo-net", "gloo-net"),
+            ("web-sys", "web-sys"),
+            ("wasm-bindgen", "wasm-bindgen"),
+        ]);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        packages.extend([
+            ("dioxus-desktop", "Dioxus Desktop"),
+            ("tokio", "Tokio"),
+            ("reqwest", "Reqwest"),
+            ("tokio-tungstenite", "Tokio Tungstenite"),
+            ("native-tls", "native-tls"),
+            ("wry", "Wry"),
+            ("axum", "Axum"),
+        ]);
+    }
+    packages
     .into_iter()
     .filter_map(|(crate_name, label)| parse_lock_version(crate_name).map(|v| (label, v)))
     .collect()
@@ -95,6 +107,30 @@ fn critical_packages() -> Vec<(&'static str, String)> {
 #[component]
 pub fn VersionTab(theme: ThemeConfig) -> Element {
     let info = &*VERSION_INFO;
+    let mut build_rows = vec![
+        ("App", info.app_name.clone()),
+        ("Title", info.app_title.clone()),
+        ("Version", info.app_version.clone()),
+    ];
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        build_rows.push(("Build", info.build_number.clone()));
+        build_rows.push(("Platform", format!("{} / {}", info.target_os, info.target_arch)));
+    }
+
+    let mut runtime_rows = vec![
+        ("App", info.app_title.clone()),
+        ("Runtime", "Rust + Dioxus".to_string()),
+        ("Map Engine", "MapLibre GL JS".to_string()),
+    ];
+    #[cfg(target_arch = "wasm32")]
+    {
+        runtime_rows.push(("Packaging", "Web".to_string()));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        runtime_rows.push(("Packaging", "Dioxus".to_string()));
+    }
 
     rsx! {
         div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
@@ -104,23 +140,12 @@ pub fn VersionTab(theme: ThemeConfig) -> Element {
                 SectionCard {
                     theme: theme.clone(),
                     title: "Build",
-                    rows: vec![
-                        ("App", info.app_name.clone()),
-                        ("Title", info.app_title.clone()),
-                        ("Version", info.app_version.clone()),
-                        ("Build", info.build_number.clone()),
-                        ("Platform", format!("{} / {}", info.target_os, info.target_arch)),
-                    ],
+                    rows: build_rows,
                 }
                 SectionCard {
                     theme: theme.clone(),
                     title: "Runtime",
-                    rows: vec![
-                        ("App", info.app_title.clone()),
-                        ("Runtime", "Rust + Dioxus".to_string()),
-                        ("Map Engine", "MapLibre GL JS".to_string()),
-                        ("Packaging", "Dioxus".to_string()),
-                    ],
+                    rows: runtime_rows,
                 }
             }
 

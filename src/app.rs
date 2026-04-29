@@ -252,7 +252,6 @@ pub enum Route {
     #[route("/connect")]
     Connect {},
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[route("/version")]
     Version {},
 
@@ -1839,7 +1838,6 @@ pub fn Settings() -> Element {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[component]
 pub fn Version() -> Element {
     let theme = shell_theme();

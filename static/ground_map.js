@@ -170,7 +170,6 @@ const HIGH_RES_PREFETCH_STARTUP_DELAY_MS = 500;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS = 2500;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS_WEB = 12000;
 const HIGH_RES_PREFETCH_IDLE_DELAY_MS_NATIVE_DESKTOP = 20000;
-const MAP_VISIBLE_PREFETCH_SUSPEND_DETAIL = "Auto-prefetch is paused while the live map is visible.";
 const TRACKING_PREFETCH_TILE_RADIUS = 14;
 const TRACKING_PREFETCH_ZOOM_DELTA = 3;
 const TRACKING_PREFETCH_ZOOM_OUT_VIEWPORT_LEVELS = 3;
@@ -186,6 +185,7 @@ const TRACKING_PREFETCH_CONCURRENCY_WEB = 1;
 const HIGH_RES_PREFETCH_CONCURRENCY_WEB = 1;
 const HIGH_RES_PREFETCH_CONCURRENCY_NATIVE_DESKTOP = 1;
 const NATIVE_DESKTOP_PREFETCH_YIELD_MS = 32;
+const BROWSER_VISIBLE_PREFETCH_YIELD_MS = 16;
 
 function configuredPrefetchRadiusM(kind) {
     const key = kind === "rocket" ? "__gs26_prefetch_rocket_radius_m" : "__gs26_prefetch_user_radius_m";
@@ -471,7 +471,7 @@ function shouldSerializeBrowserTileCacheOps() {
 
 async function yieldBrowserTileWork() {
     if (isBrowserHostedMapRuntime()) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, isGroundMapVisibleForPrefetch() ? BROWSER_VISIBLE_PREFETCH_YIELD_MS : 0));
         return;
     }
     if (isDesktopNativeMapRuntime()) {
@@ -2912,8 +2912,8 @@ function scheduleHighResTilePrefetch(options = {}) {
         refreshTilePrefetchEstimate();
         setTilePrefetchState({
             key: "",
-            state: (isBrowserHostedMapRuntime() || isIosPlatform() || isAndroidPlatform()) && isGroundMapVisibleForPrefetch() ? "suspended-visible-map" : "idle",
-            detail: (isBrowserHostedMapRuntime() || isIosPlatform() || isAndroidPlatform()) && isGroundMapVisibleForPrefetch() ? MAP_VISIBLE_PREFETCH_SUSPEND_DETAIL : "",
+            state: "idle",
+            detail: "",
             pending: 0,
             completed: 0,
             failed: 0,
@@ -4595,9 +4595,6 @@ function shouldRunBrowserMapPrefetch() {
 }
 
 function shouldRunHighResBrowserMapPrefetch() {
-    if (isGroundMapVisibleForPrefetch() && (isBrowserHostedMapRuntime() || isIosPlatform() || isAndroidPlatform())) {
-        return false;
-    }
     return true;
 }
 
