@@ -521,6 +521,11 @@ fn install_drag_handlers(
             padTop: 0,
             padBottom: 0,
             autoFitted: false,
+            userInteracted: false,
+            resizeObserver: null,
+            resizeObserverTarget: null,
+            viewportWidth: 0,
+            viewportHeight: 0,
             listenersInstalled: false,
           }};
           state.viewport = viewport;
@@ -645,6 +650,7 @@ fn install_drag_handlers(
             const contentX = (state.viewport.scrollLeft + localX - state.canvasLeft) / state.scale;
             const contentY = (state.viewport.scrollTop + localY - state.canvasTop) / state.scale;
             state.scale = scale;
+            state.userInteracted = true;
             state.canvas.style.transform = `scale(${{scale}})`;
             refreshSurfaceFrame();
             setViewportScroll(
@@ -668,6 +674,8 @@ fn install_drag_handlers(
 
           window.__gs26NetworkGraphZoomReset = () => {{
             state.scale = fitScale();
+            state.autoFitted = true;
+            state.userInteracted = false;
             state.canvas.style.transform = `scale(${{state.scale}})`;
             refreshSurfaceFrame();
             centerGraph();
@@ -682,6 +690,7 @@ fn install_drag_handlers(
             state.viewport.scrollLeft = 0;
             state.viewport.scrollTop = 0;
             state.scale = fitScale();
+            state.autoFitted = true;
             state.canvas.style.transform = `scale(${{state.scale}})`;
             refreshSurfaceFrame();
             centerGraph();
@@ -694,6 +703,37 @@ fn install_drag_handlers(
               }});
             }});
           }};
+
+          const handleViewportResize = () => {{
+            const nextWidth = Math.max(0, state.viewport.clientWidth || 0);
+            const nextHeight = Math.max(0, state.viewport.clientHeight || 0);
+            const changed = nextWidth !== state.viewportWidth || nextHeight !== state.viewportHeight;
+            state.viewportWidth = nextWidth;
+            state.viewportHeight = nextHeight;
+            if (!changed || nextWidth <= 0 || nextHeight <= 0) return;
+            if (!state.userInteracted || !state.autoFitted) {{
+              fitAndCenterGraph();
+            }} else if (typeof window.__gs26NetworkGraphRefresh === "function") {{
+              window.__gs26NetworkGraphRefresh();
+            }}
+          }};
+
+          if (typeof window.ResizeObserver === "function") {{
+            if (!state.resizeObserver) {{
+              state.resizeObserver = new window.ResizeObserver(() => {{
+                handleViewportResize();
+              }});
+            }}
+            if (state.resizeObserverTarget !== state.viewport) {{
+              if (state.resizeObserverTarget) {{
+                try {{
+                  state.resizeObserver.unobserve(state.resizeObserverTarget);
+                }} catch (_err) {{}}
+              }}
+              state.resizeObserver.observe(state.viewport);
+              state.resizeObserverTarget = state.viewport;
+            }}
+          }}
 
           if ({force_fit}) {{
             fitAndCenterGraph();
@@ -743,6 +783,7 @@ fn install_drag_handlers(
               state.drag = null;
               state.pinchDistance = distance(a, b);
               state.pinchScale = state.scale;
+              state.userInteracted = true;
             }}
             try {{
               state.surface.setPointerCapture(evt.pointerId);
@@ -775,6 +816,7 @@ fn install_drag_handlers(
             const dy = state.drag.y - evt.clientY;
             const friction = Number.isFinite(state.drag.friction) ? state.drag.friction : pointerDragFriction(evt);
             schedulePan(dx * friction, dy * friction);
+            state.userInteracted = true;
             state.drag = {{
               x: evt.clientX,
               y: evt.clientY,
