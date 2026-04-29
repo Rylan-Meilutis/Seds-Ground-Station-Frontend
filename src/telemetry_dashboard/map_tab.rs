@@ -224,6 +224,8 @@ pub(crate) fn sanitize_altitude_m(meters: Option<f64>) -> Option<f64> {
 pub fn MapTab(
     rocket_gps: Signal<Option<(f64, f64)>>,
     user_gps: Signal<Option<(f64, f64)>>,
+    #[props(default = false)] user_location_manual: bool,
+    #[props(default = false)] user_heading_manual: bool,
     #[props(default)] rocket_altitude_m: Option<Signal<Option<f64>>>,
     #[props(default)] user_altitude_m: Option<Signal<Option<f64>>>,
     #[props(default = true)] show_header_distance: bool,
@@ -260,6 +262,9 @@ pub fn MapTab(
     };
     let did_install_map_js = use_signal(|| false);
     let map_config_ready = use_signal(|| load_cached_map_config().is_some());
+    let map_runtime_error = use_signal(|| None::<String>);
+    let map_runtime_error_token = use_signal(String::new);
+    let dismissed_map_runtime_error_token = use_signal(String::new);
 
     use_effect(move || {
         js_set_ground_map_runtime_active(true);
@@ -465,7 +470,7 @@ pub fn MapTab(
                 }
 
                 #[cfg(target_os = "ios")]
-                if page_visible && let Some(deg) = gps_apple::latest_heading_deg() {
+                if !user_heading_manual && page_visible && let Some(deg) = gps_apple::latest_heading_deg() {
                     let changed = last_heading
                         .map(|prev| heading_delta_degrees(prev, deg) >= 1.0)
                         .unwrap_or(true);
@@ -477,7 +482,7 @@ pub fn MapTab(
                 }
 
                 #[cfg(target_os = "android")]
-                if page_visible && let Some(deg) = gps_android::latest_heading_deg() {
+                if !user_heading_manual && page_visible && let Some(deg) = gps_android::latest_heading_deg() {
                     let changed = last_heading
                         .map(|prev| heading_delta_degrees(prev, deg) >= 1.0)
                         .unwrap_or(true);
@@ -510,6 +515,53 @@ pub fn MapTab(
         });
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut map_runtime_error = map_runtime_error;
+        let mut map_runtime_error_token = map_runtime_error_token;
+        use_future(move || async move {
+            loop {
+                let token = js_read_window_string("__gs26_map_runtime_error_token").unwrap_or_default();
+                let message = js_read_window_string("__gs26_map_runtime_error")
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                map_runtime_error_token.set(token);
+                map_runtime_error.set(message);
+                gloo_timers::future::TimeoutFuture::new(500).await;
+            }
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut map_runtime_error = map_runtime_error;
+        let mut map_runtime_error_token = map_runtime_error_token;
+        use_future(move || async move {
+            loop {
+                let token = read_window_string_native("__gs26_map_runtime_error_token")
+                    .await
+                    .unwrap_or_default();
+                let message = read_window_string_native("__gs26_map_runtime_error")
+                    .await
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                map_runtime_error_token.set(token);
+                map_runtime_error.set(message);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
+    }
+
+    let visible_map_runtime_error = {
+        let token = map_runtime_error_token.read().clone();
+        let dismissed_token = dismissed_map_runtime_error_token.read().clone();
+        if token.is_empty() || token == dismissed_token {
+            None
+        } else {
+            map_runtime_error.read().clone()
+        }
+    };
+
     // Effective user GPS:
     // native prefers the parent/native GPS signal, web prefers browser geolocation.
     #[cfg(not(target_arch = "wasm32"))]
@@ -525,7 +577,7 @@ pub fn MapTab(
     let rocket_elevation_text = format_elevation(rocket_altitude_value, distance_units_metric);
     let user_elevation_text = format_elevation(user_altitude_value, distance_units_metric);
     #[cfg(any(target_os = "ios", target_os = "macos", target_os = "android"))]
-    let native_location_warning = if (*user_gps.read()).is_none() {
+    let native_location_warning = if !user_location_manual && (*user_gps.read()).is_none() {
         Some(translate_text(
             "User location unavailable. Native GPS has not provided coordinates yet.",
         ))
@@ -536,7 +588,7 @@ pub fn MapTab(
     let native_location_warning = None::<String>;
     #[cfg(target_os = "ios")]
     let native_compass_warning =
-        if gps_apple::latest_heading_deg().is_none() && *show_enable_compass.read() {
+        if !user_heading_manual && gps_apple::latest_heading_deg().is_none() && *show_enable_compass.read() {
             Some(translate_text(
                 "Compass unavailable. Orientation permission was denied or has not initialized.",
             ))
@@ -619,6 +671,20 @@ pub fn MapTab(
                         "{warning_text}"
                     }
                 }
+                if let Some(map_error_text) = visible_map_runtime_error.clone() {
+                    div { style: "display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:10px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:0.82rem; font-weight:700; line-height:1.2;",
+                        span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{map_error_text}" }
+                        button {
+                            style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer; flex:0 0 auto;",
+                            onclick: {
+                                let mut dismissed_map_runtime_error_token = dismissed_map_runtime_error_token;
+                                let token = map_runtime_error_token.read().clone();
+                                move |_| dismissed_map_runtime_error_token.set(token.clone())
+                            },
+                            "{translate_text(\"Dismiss\")}"
+                        }
+                    }
+                }
                 div { style: "flex:1; min-height:0; width:100%;",
                     {map_canvas(&theme)}
                 }
@@ -647,6 +713,20 @@ pub fn MapTab(
                 if let Some(warning_text) = diagnostics_warning {
                     div { style: "margin:0 8px; padding:6px 8px; border-radius:10px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:0.82rem; font-weight:700; line-height:1.15;",
                         "{warning_text}"
+                    }
+                }
+                if let Some(map_error_text) = visible_map_runtime_error {
+                    div { style: "margin:0 8px; display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:10px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:0.82rem; font-weight:700; line-height:1.2;",
+                        span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{map_error_text}" }
+                        button {
+                            style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer; flex:0 0 auto;",
+                            onclick: {
+                                let mut dismissed_map_runtime_error_token = dismissed_map_runtime_error_token;
+                                let token = map_runtime_error_token.read().clone();
+                                move |_| dismissed_map_runtime_error_token.set(token.clone())
+                            },
+                            "{translate_text(\"Dismiss\")}"
+                        }
                     }
                 }
 
@@ -1476,6 +1556,26 @@ fn js_read_user_latlon_from_window() -> Option<(f64, f64)> {
     let lat = js_read_window_f64("__gs26_user_lat")?;
     let lon = js_read_window_f64("__gs26_user_lon")?;
     Some((lat, lon))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn read_window_string_native(key: &str) -> Option<String> {
+    let eval = document::eval(&format!(
+        r#"
+        (function() {{
+          try {{
+            return String(window[{key:?}] ?? "");
+          }} catch (e) {{
+            return "";
+          }}
+        }})()
+        "#,
+        key = key
+    ));
+    eval.join::<String>()
+        .await
+        .ok()
+        .filter(|value| !value.is_empty())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

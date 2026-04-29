@@ -9,6 +9,11 @@ pub fn SettingsPage(
     distance_units_metric: Signal<bool>,
     map_header_distance_visible: Signal<bool>,
     map_header_altitude_visible: Signal<bool>,
+    user_location_manual: Signal<bool>,
+    manual_user_lat: Signal<String>,
+    manual_user_lon: Signal<String>,
+    user_heading_manual: Signal<bool>,
+    manual_user_heading: Signal<String>,
     theme_preset: Signal<String>,
     language_code: Signal<String>,
     clock_24h: Signal<bool>,
@@ -42,6 +47,11 @@ pub fn SettingsPage(
     let metric_enabled = *distance_units_metric.read();
     let map_header_distance_visible_value = *map_header_distance_visible.read();
     let map_header_altitude_visible_value = *map_header_altitude_visible.read();
+    let user_location_manual_value = *user_location_manual.read();
+    let manual_user_lat_value = manual_user_lat.read().clone();
+    let manual_user_lon_value = manual_user_lon.read().clone();
+    let user_heading_manual_value = *user_heading_manual.read();
+    let manual_user_heading_value = manual_user_heading.read().clone();
     let selected_theme = theme_preset.read().clone();
     let selected_language = language_code.read().clone();
     let clock_24h_enabled = *clock_24h.read();
@@ -316,6 +326,59 @@ pub fn SettingsPage(
     );
     let map_header_on = localized_copy(&language, "Show", "Mostrar", "Afficher");
     let map_header_off = localized_copy(&language, "Hide", "Ocultar", "Masquer");
+    let user_location_title =
+        localized_copy(&language, "User Location Source", "Origen de ubicacion", "Source de position");
+    let user_location_desc = localized_copy(
+        &language,
+        "Use live sensor location when available, or disable tracking and enter coordinates manually.",
+        "Usa la ubicacion del sensor cuando este disponible, o desactiva el seguimiento e ingresa coordenadas manualmente.",
+        "Utilise la position du capteur si disponible, ou desactivez le suivi et saisissez les coordonnees manuellement.",
+    );
+    let user_location_sensor_label =
+        localized_copy(&language, "Sensor", "Sensor", "Capteur");
+    let user_location_manual_label =
+        localized_copy(&language, "Manual", "Manual", "Manuel");
+    let manual_lat_title = localized_copy(&language, "Manual Latitude", "Latitud manual", "Latitude manuelle");
+    let manual_lon_title =
+        localized_copy(&language, "Manual Longitude", "Longitud manual", "Longitude manuelle");
+    let manual_location_desc = localized_copy(
+        &language,
+        "Used when manual location mode is selected. Latitude must be between -90 and 90, longitude between -180 and 180.",
+        "Se usa cuando el modo manual esta seleccionado. La latitud debe estar entre -90 y 90 y la longitud entre -180 y 180.",
+        "Utilise lorsque le mode manuel est selectionne. La latitude doit etre comprise entre -90 et 90 et la longitude entre -180 et 180.",
+    );
+    let manual_location_invalid = localized_copy(
+        &language,
+        "Enter a valid latitude and longitude to use manual location.",
+        "Ingresa una latitud y longitud validas para usar ubicacion manual.",
+        "Saisissez une latitude et une longitude valides pour utiliser la position manuelle.",
+    );
+    let user_heading_title =
+        localized_copy(&language, "User Heading Source", "Origen de orientacion", "Source de cap");
+    let user_heading_desc = localized_copy(
+        &language,
+        "Use live orientation sensors when available, or disable heading tracking and enter a manual heading.",
+        "Usa sensores de orientacion cuando esten disponibles, o desactiva el seguimiento e ingresa un rumbo manual.",
+        "Utilise les capteurs d'orientation si disponibles, ou desactivez le suivi et saisissez un cap manuel.",
+    );
+    let user_heading_sensor_label =
+        localized_copy(&language, "Sensor", "Sensor", "Capteur");
+    let user_heading_manual_label =
+        localized_copy(&language, "Manual", "Manual", "Manuel");
+    let manual_heading_title =
+        localized_copy(&language, "Manual Heading", "Rumbo manual", "Cap manuel");
+    let manual_heading_desc = localized_copy(
+        &language,
+        "Used when manual heading mode is selected. Enter degrees from 0 to 360.",
+        "Se usa cuando el modo manual de rumbo esta seleccionado. Ingresa grados de 0 a 360.",
+        "Utilise lorsque le mode manuel du cap est selectionne. Saisissez des degres de 0 a 360.",
+    );
+    let manual_heading_invalid = localized_copy(
+        &language,
+        "Enter a valid heading to use manual orientation.",
+        "Ingresa un rumbo valido para usar orientacion manual.",
+        "Saisissez un cap valide pour utiliser l'orientation manuelle.",
+    );
     let network_anim_title = localized_copy(
         &language,
         "Flow Animations",
@@ -480,6 +543,11 @@ pub fn SettingsPage(
     );
     let theme_presets = builtin_theme_presets();
     let can_manual_prefetch = map_tile_cache_enabled_value && map_prefetch_enabled_value;
+    let manual_location_valid =
+        super::parse_manual_user_coords_strings(&manual_user_lat_value, &manual_user_lon_value)
+            .is_some();
+    let manual_heading_valid =
+        super::parse_manual_heading_string(&manual_user_heading_value).is_some();
 
     use_effect(move || {
         js_eval(
@@ -678,6 +746,84 @@ pub fn SettingsPage(
                             onclick: move |_| map_header_altitude_visible.set(false),
                             "{map_header_off}"
                         }
+                    }
+                }
+                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{user_location_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{user_location_desc}" }
+                    div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                        button {
+                            style: if !user_location_manual_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| user_location_manual.set(false),
+                            "{user_location_sensor_label}"
+                        }
+                        button {
+                            style: if user_location_manual_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| user_location_manual.set(true),
+                            "{user_location_manual_label}"
+                        }
+                    }
+                    div { style: "font-size:12px; color:{theme.text_soft};", "{manual_location_desc}" }
+                    div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px;" ,
+                        div { style: "display:flex; flex-direction:column; gap:6px;",
+                            div { style: "font-size:13px; color:{theme.text_muted};", "{manual_lat_title}" }
+                            input {
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                                value: "{manual_user_lat_value}",
+                                placeholder: "31.000000",
+                                oninput: {
+                                    let mut manual_user_lat = manual_user_lat;
+                                    move |e| manual_user_lat.set(e.value())
+                                }
+                            }
+                        }
+                        div { style: "display:flex; flex-direction:column; gap:6px;",
+                            div { style: "font-size:13px; color:{theme.text_muted};", "{manual_lon_title}" }
+                            input {
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                                value: "{manual_user_lon_value}",
+                                placeholder: "-99.000000",
+                                oninput: {
+                                    let mut manual_user_lon = manual_user_lon;
+                                    move |e| manual_user_lon.set(e.value())
+                                }
+                            }
+                        }
+                    }
+                    if user_location_manual_value && !manual_location_valid {
+                        div { style: "font-size:13px; color:{theme.warning_text};", "{manual_location_invalid}" }
+                    }
+                }
+                div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{user_heading_title}" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{user_heading_desc}" }
+                    div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                        button {
+                            style: if !user_heading_manual_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| user_heading_manual.set(false),
+                            "{user_heading_sensor_label}"
+                        }
+                        button {
+                            style: if user_heading_manual_value { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: move |_| user_heading_manual.set(true),
+                            "{user_heading_manual_label}"
+                        }
+                    }
+                    div { style: "font-size:12px; color:{theme.text_soft};", "{manual_heading_desc}" }
+                    div { style: "display:flex; flex-direction:column; gap:6px; max-width:260px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{manual_heading_title}" }
+                        input {
+                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                            value: "{manual_user_heading_value}",
+                            placeholder: "0.0",
+                            oninput: {
+                                let mut manual_user_heading = manual_user_heading;
+                                move |e| manual_user_heading.set(e.value())
+                            }
+                        }
+                    }
+                    if user_heading_manual_value && !manual_heading_valid {
+                        div { style: "font-size:13px; color:{theme.warning_text};", "{manual_heading_invalid}" }
                     }
                 }
                 div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",

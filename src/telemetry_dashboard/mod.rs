@@ -771,6 +771,11 @@ const CACHE_BUDGET_MB_STORAGE_KEY: &str = "gs_cache_budget_mb";
 const MAP_PREFETCH_ENABLED_STORAGE_KEY: &str = "gs_map_prefetch_enabled";
 const MAP_PREFETCH_USER_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_user_radius_m";
 const MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY: &str = "gs_map_prefetch_rocket_radius_m";
+const USER_LOCATION_SOURCE_STORAGE_KEY: &str = "gs_user_location_source";
+const USER_MANUAL_LAT_STORAGE_KEY: &str = "gs_user_manual_lat";
+const USER_MANUAL_LON_STORAGE_KEY: &str = "gs_user_manual_lon";
+const USER_HEADING_SOURCE_STORAGE_KEY: &str = "gs_user_heading_source";
+const USER_MANUAL_HEADING_STORAGE_KEY: &str = "gs_user_manual_heading";
 const CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY: &str = "gs_calibration_capture_sample_count";
 const LAYOUT_CACHE_KEY_PREFIX: &str = "gs_layout_cache_v10_";
 const CALIBRATION_VISIBILITY_CACHE_KEY_PREFIX: &str = "gs_calibration_visibility_v1_";
@@ -828,6 +833,26 @@ fn stored_prefetch_radius_m(key: &str) -> u32 {
         .unwrap_or(DEFAULT_PREFETCH_RADIUS_M)
 }
 
+fn parse_manual_user_coords_strings(lat: &str, lon: &str) -> Option<(f64, f64)> {
+    let lat = lat.trim().parse::<f64>().ok()?;
+    let lon = lon.trim().parse::<f64>().ok()?;
+    if !lat.is_finite() || !lon.is_finite() {
+        return None;
+    }
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    Some((lat, lon))
+}
+
+fn parse_manual_heading_string(value: &str) -> Option<f64> {
+    let heading = value.trim().parse::<f64>().ok()?;
+    if !heading.is_finite() {
+        return None;
+    }
+    Some(heading.rem_euclid(360.0))
+}
+
 #[cfg(target_arch = "wasm32")]
 fn browser_tile_cache_measured_bytes() -> u64 {
     persist::get_or(MAP_TILE_CACHE_USAGE_BYTES_STORAGE_KEY, "0")
@@ -860,6 +885,11 @@ fn cache_storage_measured_bytes() -> u64 {
         MAP_PREFETCH_ENABLED_STORAGE_KEY,
         MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
         MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY,
+        USER_LOCATION_SOURCE_STORAGE_KEY,
+        USER_MANUAL_LAT_STORAGE_KEY,
+        USER_MANUAL_LON_STORAGE_KEY,
+        USER_HEADING_SOURCE_STORAGE_KEY,
+        USER_MANUAL_HEADING_STORAGE_KEY,
         CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY,
     ]
     .iter()
@@ -904,6 +934,11 @@ fn cache_storage_stats_rows() -> Vec<(String, String)> {
         MAP_PREFETCH_ENABLED_STORAGE_KEY,
         MAP_PREFETCH_USER_RADIUS_STORAGE_KEY,
         MAP_PREFETCH_ROCKET_RADIUS_STORAGE_KEY,
+        USER_LOCATION_SOURCE_STORAGE_KEY,
+        USER_MANUAL_LAT_STORAGE_KEY,
+        USER_MANUAL_LON_STORAGE_KEY,
+        USER_HEADING_SOURCE_STORAGE_KEY,
+        USER_MANUAL_HEADING_STORAGE_KEY,
         CALIBRATION_CAPTURE_SAMPLE_COUNT_STORAGE_KEY,
     ]
     .iter()
@@ -2025,6 +2060,13 @@ pub fn NativeSettingsPage() -> Element {
         use_signal(|| persist::get_or(MAP_HEADER_DISTANCE_VISIBLE_STORAGE_KEY, "on") != "off");
     let map_header_altitude_visible =
         use_signal(|| persist::get_or(MAP_HEADER_ALTITUDE_VISIBLE_STORAGE_KEY, "off") != "off");
+    let user_location_manual =
+        use_signal(|| persist::get_or(USER_LOCATION_SOURCE_STORAGE_KEY, "sensor") == "manual");
+    let manual_user_lat = use_signal(|| persist::get_or(USER_MANUAL_LAT_STORAGE_KEY, ""));
+    let manual_user_lon = use_signal(|| persist::get_or(USER_MANUAL_LON_STORAGE_KEY, ""));
+    let user_heading_manual =
+        use_signal(|| persist::get_or(USER_HEADING_SOURCE_STORAGE_KEY, "sensor") == "manual");
+    let manual_user_heading = use_signal(|| persist::get_or(USER_MANUAL_HEADING_STORAGE_KEY, ""));
     let theme_preset = use_signal(|| {
         let stored = persist::get_or(THEME_PRESET_STORAGE_KEY, "default");
         if stored == "layout" {
@@ -2101,6 +2143,53 @@ pub fn NativeSettingsPage() -> Element {
                 } else {
                     "off"
                 },
+            );
+        });
+    }
+    {
+        let user_location_manual = user_location_manual;
+        use_effect(move || {
+            persist::set_string(
+                USER_LOCATION_SOURCE_STORAGE_KEY,
+                if *user_location_manual.read() {
+                    "manual"
+                } else {
+                    "sensor"
+                },
+            );
+        });
+    }
+    {
+        let manual_user_lat = manual_user_lat;
+        use_effect(move || {
+            persist::set_string(USER_MANUAL_LAT_STORAGE_KEY, manual_user_lat.read().as_str());
+        });
+    }
+    {
+        let manual_user_lon = manual_user_lon;
+        use_effect(move || {
+            persist::set_string(USER_MANUAL_LON_STORAGE_KEY, manual_user_lon.read().as_str());
+        });
+    }
+    {
+        let user_heading_manual = user_heading_manual;
+        use_effect(move || {
+            persist::set_string(
+                USER_HEADING_SOURCE_STORAGE_KEY,
+                if *user_heading_manual.read() {
+                    "manual"
+                } else {
+                    "sensor"
+                },
+            );
+        });
+    }
+    {
+        let manual_user_heading = manual_user_heading;
+        use_effect(move || {
+            persist::set_string(
+                USER_MANUAL_HEADING_STORAGE_KEY,
+                manual_user_heading.read().as_str(),
             );
         });
     }
@@ -2330,6 +2419,11 @@ pub fn NativeSettingsPage() -> Element {
         let mut distance_units_metric = distance_units_metric;
         let mut map_header_distance_visible = map_header_distance_visible;
         let mut map_header_altitude_visible = map_header_altitude_visible;
+        let mut user_location_manual = user_location_manual;
+        let mut manual_user_lat = manual_user_lat;
+        let mut manual_user_lon = manual_user_lon;
+        let mut user_heading_manual = user_heading_manual;
+        let mut manual_user_heading = manual_user_heading;
         let mut theme_preset = theme_preset;
         let mut language_code = language_code;
         let mut clock_24h = clock_24h;
@@ -2349,6 +2443,11 @@ pub fn NativeSettingsPage() -> Element {
             distance_units_metric.set(false);
             map_header_distance_visible.set(true);
             map_header_altitude_visible.set(false);
+            user_location_manual.set(false);
+            manual_user_lat.set(String::new());
+            manual_user_lon.set(String::new());
+            user_heading_manual.set(false);
+            manual_user_heading.set(String::new());
             theme_preset.set("default".to_string());
             language_code.set("en".to_string());
             clock_24h.set(false);
@@ -2371,6 +2470,11 @@ pub fn NativeSettingsPage() -> Element {
             distance_units_metric,
             map_header_distance_visible,
             map_header_altitude_visible,
+            user_location_manual,
+            manual_user_lat,
+            manual_user_lon,
+            user_heading_manual,
+            manual_user_heading,
             theme_preset,
             language_code,
             clock_24h,
@@ -3421,6 +3525,13 @@ fn TelemetryDashboardInner() -> Element {
         use_signal(|| persist::get_or(MAP_HEADER_DISTANCE_VISIBLE_STORAGE_KEY, "on") != "off");
     let map_header_altitude_visible =
         use_signal(|| persist::get_or(MAP_HEADER_ALTITUDE_VISIBLE_STORAGE_KEY, "off") != "off");
+    let user_location_manual =
+        use_signal(|| persist::get_or(USER_LOCATION_SOURCE_STORAGE_KEY, "sensor") == "manual");
+    let manual_user_lat = use_signal(|| persist::get_or(USER_MANUAL_LAT_STORAGE_KEY, ""));
+    let manual_user_lon = use_signal(|| persist::get_or(USER_MANUAL_LON_STORAGE_KEY, ""));
+    let user_heading_manual =
+        use_signal(|| persist::get_or(USER_HEADING_SOURCE_STORAGE_KEY, "sensor") == "manual");
+    let manual_user_heading = use_signal(|| persist::get_or(USER_MANUAL_HEADING_STORAGE_KEY, ""));
     let theme_preset = use_signal(|| {
         let stored = persist::get_or(THEME_PRESET_STORAGE_KEY, "default");
         if stored == "layout" {
@@ -3667,6 +3778,61 @@ fn TelemetryDashboardInner() -> Element {
     let rocket_gps_altitude_m = use_signal(latest_rocket_gps_altitude_m_from_store);
     let user_gps = use_signal(|| None::<(f64, f64)>);
     let user_gps_altitude_m = use_signal(|| None::<f64>);
+
+    {
+        let user_location_manual = user_location_manual;
+        let manual_user_lat = manual_user_lat;
+        let manual_user_lon = manual_user_lon;
+        let mut user_gps = user_gps;
+        let mut user_gps_altitude_m = user_gps_altitude_m;
+        use_effect(move || {
+            if *user_location_manual.read() {
+                let next = parse_manual_user_coords_strings(
+                    manual_user_lat.read().as_str(),
+                    manual_user_lon.read().as_str(),
+                );
+                user_gps.set(next);
+                user_gps_altitude_m.set(None);
+            } else if user_gps.read().is_none() {
+                user_gps_altitude_m.set(None);
+            }
+        });
+    }
+    {
+        let user_heading_manual = user_heading_manual;
+        let manual_user_heading = manual_user_heading;
+        use_effect(move || {
+            let heading = if *user_heading_manual.read() {
+                parse_manual_heading_string(manual_user_heading.read().as_str())
+            } else {
+                None
+            };
+            let heading_js = heading
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string());
+            js_eval(&format!(
+                r#"
+                (function() {{
+                  try {{
+                    window.__gs26_manual_user_heading = {heading_js};
+                    window.__gs26_manual_heading_enabled = {enabled};
+                    if ({enabled} && Number.isFinite(window.__gs26_manual_user_heading) && typeof window.setGroundMapUserHeading === "function") {{
+                      window.setGroundMapUserHeading(window.__gs26_manual_user_heading);
+                    }}
+                  }} catch (e) {{
+                    console.warn("GS26 manual heading sync failed:", e);
+                  }}
+                }})();
+                "#,
+                heading_js = heading_js,
+                enabled = if *user_heading_manual.read() {
+                    "true"
+                } else {
+                    "false"
+                },
+            ));
+        });
+    }
 
     {
         let rocket_gps = rocket_gps;
@@ -3927,6 +4093,53 @@ fn TelemetryDashboardInner() -> Element {
                 } else {
                     "off"
                 },
+            );
+        });
+    }
+    {
+        let user_location_manual = user_location_manual;
+        use_effect(move || {
+            persist::set_string(
+                USER_LOCATION_SOURCE_STORAGE_KEY,
+                if *user_location_manual.read() {
+                    "manual"
+                } else {
+                    "sensor"
+                },
+            );
+        });
+    }
+    {
+        let manual_user_lat = manual_user_lat;
+        use_effect(move || {
+            persist::set_string(USER_MANUAL_LAT_STORAGE_KEY, manual_user_lat.read().as_str());
+        });
+    }
+    {
+        let manual_user_lon = manual_user_lon;
+        use_effect(move || {
+            persist::set_string(USER_MANUAL_LON_STORAGE_KEY, manual_user_lon.read().as_str());
+        });
+    }
+    {
+        let user_heading_manual = user_heading_manual;
+        use_effect(move || {
+            persist::set_string(
+                USER_HEADING_SOURCE_STORAGE_KEY,
+                if *user_heading_manual.read() {
+                    "manual"
+                } else {
+                    "sensor"
+                },
+            );
+        });
+    }
+    {
+        let manual_user_heading = manual_user_heading;
+        use_effect(move || {
+            persist::set_string(
+                USER_MANUAL_HEADING_STORAGE_KEY,
+                manual_user_heading.read().as_str(),
             );
         });
     }
@@ -5248,6 +5461,11 @@ fn TelemetryDashboardInner() -> Element {
                             distance_units_metric: distance_units_metric,
                             map_header_distance_visible: map_header_distance_visible,
                             map_header_altitude_visible: map_header_altitude_visible,
+                            user_location_manual: user_location_manual,
+                            manual_user_lat: manual_user_lat,
+                            manual_user_lon: manual_user_lon,
+                            user_heading_manual: user_heading_manual,
+                            manual_user_heading: manual_user_heading,
                             theme_preset: theme_preset,
                             language_code: language_code,
                             clock_24h: clock_24h,
@@ -5286,6 +5504,11 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut distance_units_metric = distance_units_metric;
                                 let mut map_header_distance_visible = map_header_distance_visible;
                                 let mut map_header_altitude_visible = map_header_altitude_visible;
+                                let mut user_location_manual = user_location_manual;
+                                let mut manual_user_lat = manual_user_lat;
+                                let mut manual_user_lon = manual_user_lon;
+                                let mut user_heading_manual = user_heading_manual;
+                                let mut manual_user_heading = manual_user_heading;
                                 let mut theme_preset = theme_preset;
                                 let mut language_code = language_code;
                                 let mut clock_24h = clock_24h;
@@ -5310,6 +5533,11 @@ fn TelemetryDashboardInner() -> Element {
                                     distance_units_metric.set(false);
                                     map_header_distance_visible.set(true);
                                     map_header_altitude_visible.set(false);
+                                    user_location_manual.set(false);
+                                    manual_user_lat.set(String::new());
+                                    manual_user_lon.set(String::new());
+                                    user_heading_manual.set(false);
+                                    manual_user_heading.set(String::new());
                                     theme_preset.set("default".to_string());
                                     language_code.set("en".to_string());
                                     clock_24h.set(false);
@@ -6268,6 +6496,8 @@ fn TelemetryDashboardInner() -> Element {
                                 MapTab {
                                     rocket_gps: rocket_gps,
                                     user_gps: user_gps,
+                                    user_location_manual: *user_location_manual.read(),
+                                    user_heading_manual: *user_heading_manual.read(),
                                     rocket_altitude_m: Some(rocket_gps_altitude_m),
                                     user_altitude_m: Some(user_gps_altitude_m),
                                     show_header_distance: *map_header_distance_visible.read(),

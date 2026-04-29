@@ -112,6 +112,11 @@ let trackedAssetLabel = "Tracked Asset";
 let mapNavigationControl = null;
 let mapCenterControl = null;
 let mapNorthControl = null;
+let rasterFallbackActive = false;
+let rasterFallbackReason = "";
+let rasterFallbackCenterLat = null;
+let rasterFallbackCenterLon = null;
+let rasterFallbackZoom = null;
 const TILE_PROTOCOL = "gs26map";
 const SOURCE_EMPTY_KEY = "__empty__";
 
@@ -186,6 +191,7 @@ const HIGH_RES_PREFETCH_CONCURRENCY_WEB = 1;
 const HIGH_RES_PREFETCH_CONCURRENCY_NATIVE_DESKTOP = 1;
 const NATIVE_DESKTOP_PREFETCH_YIELD_MS = 32;
 const BROWSER_VISIBLE_PREFETCH_YIELD_MS = 16;
+const RASTER_FALLBACK_BADGE_TEXT = "Raster fallback";
 
 function configuredPrefetchRadiusM(kind) {
     const key = kind === "rocket" ? "__gs26_prefetch_rocket_radius_m" : "__gs26_prefetch_user_radius_m";
@@ -332,6 +338,10 @@ function normalizeAngle(deg) {
 function reportMapRuntimeError(label, error) {
     try {
         if (isExpectedTileFallbackError(error)) return;
+        const message = String(error && (error.message || error) || "");
+        const next = label ? `${label}: ${message}` : message;
+        window.__gs26_map_runtime_error = next;
+        window.__gs26_map_runtime_error_token = String(Date.now());
         console.warn("[GS26 map]", label, error);
     } catch (e) {
     }
@@ -2458,6 +2468,10 @@ function persistMapStateSoon() {
 loadPersistedMapState();
 
 function rememberMapView() {
+    if (usingRasterFallback()) {
+        rememberRasterFallbackView();
+        return;
+    }
     if (!groundMap) return;
     const center = groundMap.getCenter();
     const zoom = groundMap.getZoom();
@@ -4717,6 +4731,145 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
     };
 }
 
+function usingRasterFallback() {
+    return rasterFallbackActive === true;
+}
+
+function rememberRasterFallbackView() {
+    if (!usingRasterFallback()) return;
+    if (!Number.isFinite(rasterFallbackCenterLat) || !Number.isFinite(rasterFallbackCenterLon) || !Number.isFinite(rasterFallbackZoom)) {
+        return;
+    }
+    lastMapZoom = rasterFallbackZoom;
+    lastMapView = {
+        lat: rasterFallbackCenterLat, lon: rasterFallbackCenterLon, zoom: rasterFallbackZoom,
+    };
+    syncWindowMapControlState();
+}
+
+function createRasterFallbackMarker(parent, label, color, left, top) {
+    const marker = document.createElement("div");
+    marker.textContent = label;
+    marker.style.position = "absolute";
+    marker.style.left = `${Math.round(left)}px`;
+    marker.style.top = `${Math.round(top)}px`;
+    marker.style.transform = "translate(-50%, -50%)";
+    marker.style.fontSize = "26px";
+    marker.style.lineHeight = "1";
+    marker.style.textShadow = "0 0 2px #000, 0 0 5px #000, 0 2px 8px rgba(0,0,0,0.35)";
+    marker.style.filter = `drop-shadow(0 0 0 ${color})`;
+    marker.style.pointerEvents = "none";
+    parent.appendChild(marker);
+}
+
+function renderRasterFallbackMap() {
+    if (!usingRasterFallback()) return;
+    const container = document.getElementById("ground-map");
+    if (!container) return;
+    const width = Math.max(256, Math.round(container.clientWidth || 0));
+    const height = Math.max(256, Math.round(container.clientHeight || 0));
+    const zoom = Math.max(effectiveMinZoom(), Math.min(currentMaxZoom || DEFAULT_MAX_NATIVE_ZOOM, Math.floor(Number(rasterFallbackZoom) || DEFAULT_MAP_ZOOM)));
+    const centerLat = Number.isFinite(rasterFallbackCenterLat)
+        ? rasterFallbackCenterLat
+        : (lastMapView && Number.isFinite(lastMapView.lat) ? lastMapView.lat : DEFAULT_MAP_CENTER_LAT);
+    const centerLon = Number.isFinite(rasterFallbackCenterLon)
+        ? rasterFallbackCenterLon
+        : (lastMapView && Number.isFinite(lastMapView.lon) ? lastMapView.lon : DEFAULT_MAP_CENTER_LON);
+    rasterFallbackCenterLat = clampLat(centerLat);
+    rasterFallbackCenterLon = clampLon(centerLon);
+    rasterFallbackZoom = zoom;
+    rememberRasterFallbackView();
+
+    container.innerHTML = "";
+    container.style.position = "relative";
+    container.style.overflow = "hidden";
+    container.style.background = "#0b1220";
+
+    const tileLayer = document.createElement("div");
+    tileLayer.style.position = "absolute";
+    tileLayer.style.inset = "0";
+    tileLayer.style.overflow = "hidden";
+    container.appendChild(tileLayer);
+
+    const overlay = document.createElement("div");
+    overlay.style.position = "absolute";
+    overlay.style.inset = "0";
+    overlay.style.pointerEvents = "none";
+    container.appendChild(overlay);
+
+    const badge = document.createElement("div");
+    badge.textContent = RASTER_FALLBACK_BADGE_TEXT;
+    badge.style.position = "absolute";
+    badge.style.left = "10px";
+    badge.style.top = "10px";
+    badge.style.padding = "4px 8px";
+    badge.style.borderRadius = "999px";
+    badge.style.border = "1px solid rgba(191, 219, 254, 0.75)";
+    badge.style.background = "rgba(15, 23, 42, 0.72)";
+    badge.style.color = "#dbeafe";
+    badge.style.fontSize = "11px";
+    badge.style.fontWeight = "800";
+    badge.style.letterSpacing = "0.04em";
+    overlay.appendChild(badge);
+
+    const centerWorld = latLonToWorldPointAtZoom(rasterFallbackCenterLat, rasterFallbackCenterLon, zoom);
+    const topLeftX = centerWorld.x - (width / 2);
+    const topLeftY = centerWorld.y - (height / 2);
+    const scale = Math.pow(2, zoom);
+    const startTileX = Math.floor(topLeftX / 256);
+    const endTileX = Math.floor((topLeftX + width) / 256);
+    const startTileY = Math.floor(topLeftY / 256);
+    const endTileY = Math.floor((topLeftY + height) / 256);
+
+    for (let tileX = startTileX; tileX <= endTileX; tileX += 1) {
+        for (let tileY = startTileY; tileY <= endTileY; tileY += 1) {
+            if (tileY < 0 || tileY >= scale) continue;
+            const wrappedTileX = ((tileX % scale) + scale) % scale;
+            const url = resolveTileUrl(zoom, wrappedTileX, tileY);
+            if (!url) continue;
+            const img = document.createElement("img");
+            img.src = url;
+            img.alt = "";
+            img.draggable = false;
+            img.loading = "eager";
+            img.decoding = "async";
+            img.style.position = "absolute";
+            img.style.left = `${Math.round((tileX * 256) - topLeftX)}px`;
+            img.style.top = `${Math.round((tileY * 256) - topLeftY)}px`;
+            img.style.width = "256px";
+            img.style.height = "256px";
+            img.style.objectFit = "cover";
+            img.style.userSelect = "none";
+            tileLayer.appendChild(img);
+        }
+    }
+
+    const addMarkerIfVisible = (latLng, label, color) => {
+        if (!Array.isArray(latLng)) return;
+        const point = latLonToWorldPointAtZoom(latLng[0], latLng[1], zoom);
+        const left = point.x - topLeftX;
+        const top = point.y - topLeftY;
+        if (left < -24 || left > width + 24 || top < -24 || top > height + 24) return;
+        createRasterFallbackMarker(overlay, label, color, left, top);
+    };
+
+    addMarkerIfVisible(lastRocketLatLng, "🚀", "#fca5a5");
+    addMarkerIfVisible(currentUserAnchorLatLng(), "🧍", "#93c5fd");
+}
+
+function activateRasterFallback(reason, centerLat, centerLon, zoom) {
+    rasterFallbackActive = true;
+    rasterFallbackReason = String(reason || "Map renderer fallback active.");
+    rasterFallbackCenterLat = Number.isFinite(centerLat) ? centerLat : rasterFallbackCenterLat;
+    rasterFallbackCenterLon = Number.isFinite(centerLon) ? centerLon : rasterFallbackCenterLon;
+    rasterFallbackZoom = Number.isFinite(zoom) ? zoom : rasterFallbackZoom;
+    try {
+        window.__gs26_map_fallback_mode = "raster";
+    } catch (e) {
+    }
+    renderRasterFallbackMap();
+}
+
 function addOverlayControls() {
     if (!groundMap || mapNavigationControl) return;
     const maplibre = getMapLibre();
@@ -5321,6 +5474,12 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         desiredZoom, clampedZoom, usingNativeTiles: shouldUseNativeTileTemplate(currentTilesUrl),
     });
 
+    if (usingRasterFallback()) {
+        activateRasterFallback(rasterFallbackReason, startCenter[1], startCenter[0], clampedZoom);
+        finishMapFirstPaintGate("raster-fallback-active");
+        return;
+    }
+
     const needsFullRecreate = !!groundMap && (previousTilesUrl !== tilesUrl);
     persistMaxNativeZoom(tilesUrl, currentMaxNativeZoom);
 
@@ -5411,6 +5570,12 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
         finishMapFirstPaintGate("map-construction-error");
         groundMap = null;
         window.__gs26_ground_map = null;
+        activateRasterFallback(
+            "MapLibre GL failed to initialize. Switched to raster fallback mode.",
+            startCenter[1],
+            startCenter[0],
+            clampedZoom,
+        );
         return;
     }
     groundMap.invalidateSize = () => {
@@ -5504,6 +5669,9 @@ function applyGroundMapMarkers(rLat, rLon, uLat, uLon) {
         prefetchUserLatLng = null;
     }
     publishTilePrefetchContextState();
+    if (usingRasterFallback()) {
+        renderRasterFallbackMap();
+    }
     if (!groundMap) {
         if (hasRocket || hasUser) {
             scheduleTrackingTilePrefetch();
@@ -5573,6 +5741,12 @@ function updateGroundMapMarkers(rLat, rLon, uLat, uLon) {
 }
 
 function centerGroundMapOn(lat, lon) {
+    if (usingRasterFallback()) {
+        rasterFallbackCenterLat = clampLat(Number(lat));
+        rasterFallbackCenterLon = clampLon(Number(lon));
+        renderRasterFallbackMap();
+        return;
+    }
     if (!groundMap) return;
     markInternalCameraUpdate(250);
     groundMap.jumpTo({
@@ -5625,6 +5799,9 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
         if (shouldRunAutomaticHighResPrefetch()) {
             scheduleHighResTilePrefetch();
         }
+    }
+    if (usingRasterFallback()) {
+        renderRasterFallbackMap();
     }
 }
 
