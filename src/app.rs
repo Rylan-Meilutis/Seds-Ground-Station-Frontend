@@ -509,6 +509,10 @@ const ROUTE_PROBE_SPECS: &[RouteProbeSpec] = &[
         method: "GET",
     },
     RouteProbeSpec {
+        path: "/api/auth/challenge",
+        method: "POST",
+    },
+    RouteProbeSpec {
         path: "/api/auth/login",
         method: "POST",
     },
@@ -589,6 +593,12 @@ struct ConnectionTestReport {
 fn status_ok_for_path(method: &str, path: &str, status: u16) -> (bool, &'static str) {
     match (method, path) {
         ("GET", "/api/auth/session") => (status == 200, "expected 200"),
+        ("POST", "/api/auth/challenge") => match status {
+            200 | 400 | 401 | 403 | 415 => {
+                (true, "reachable (auth challenge endpoint responded)")
+            }
+            _ => (false, "unexpected status for auth challenge"),
+        },
         ("POST", "/api/auth/login") => match status {
             200 | 400 | 401 | 403 | 415 => (true, "reachable (auth login endpoint responded)"),
             _ => (false, "unexpected status for auth login"),

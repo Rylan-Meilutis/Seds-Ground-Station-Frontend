@@ -4,6 +4,10 @@ use std::sync::Mutex;
 
 #[cfg(not(target_arch = "wasm32"))]
 const AUTH_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+#[cfg(not(target_arch = "wasm32"))]
+use base64::Engine;
+#[cfg(not(target_arch = "wasm32"))]
+use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
 
 static CURRENT_SESSION: Lazy<Mutex<Option<StoredAuthSession>>> = Lazy::new(|| Mutex::new(None));
 static CURRENT_STATUS: Lazy<Mutex<SessionStatus>> =
@@ -68,10 +72,43 @@ struct StoredAuthSessionStore {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct LoginChallengeRequest<'a> {
+    username: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LoginChallengeResponse {
+    challenge_id: String,
+    algorithm: String,
+    iterations: u32,
+    salt_b64: String,
+    server_nonce_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct LoginRequest<'a> {
     username: &'a str,
-    password: &'a str,
+    challenge_id: &'a str,
+    client_nonce_b64: &'a str,
+    proof_b64: &'a str,
     remember_me: bool,
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Debug, Clone, Serialize)]
+struct AuthProofPayload<'a> {
+    username: &'a str,
+    challenge_id: &'a str,
+    server_nonce_b64: &'a str,
+    client_nonce_b64: &'a str,
+    remember_me: bool,
+}
+
+#[derive(Debug, Clone)]
+struct LoginRequestOwned {
+    challenge_id: String,
+    client_nonce_b64: String,
+    proof_b64: String,
 }
 
 pub fn init_from_storage(base: &str) {
@@ -334,10 +371,22 @@ pub async fn login(
     password: &str,
     remember_me: bool,
 ) -> Result<StoredAuthSession, String> {
+    let challenge_url = build_url(base, "/api/auth/challenge")?;
+    let challenge_body = serde_json::to_string(&LoginChallengeRequest { username })
+        .map_err(|e| e.to_string())?;
+    let challenge_text = auth_request_post_json(&challenge_url, &challenge_body, skip_tls_verify).await?;
+    let challenge = serde_json::from_str::<LoginChallengeResponse>(&challenge_text)
+        .map_err(|e| format!("invalid auth challenge JSON: {e}"))?;
+
+    let proof_request =
+        build_login_request(&challenge, username, password, remember_me).await?;
+
     let url = build_url(base, "/api/auth/login")?;
     let body = serde_json::to_string(&LoginRequest {
         username,
-        password,
+        challenge_id: &proof_request.challenge_id,
+        client_nonce_b64: &proof_request.client_nonce_b64,
+        proof_b64: &proof_request.proof_b64,
         remember_me,
     })
     .map_err(|e| e.to_string())?;
@@ -354,6 +403,225 @@ pub async fn login(
     };
     set_current_session(stored.clone());
     Ok(stored)
+}
+
+fn normalize_username(username: &str) -> String {
+    username.trim().to_ascii_lowercase()
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn auth_proof_message(
+    username_normalized: &str,
+    challenge_id: &str,
+    server_nonce_b64: &str,
+    client_nonce_b64: &str,
+    remember_me: bool,
+) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&AuthProofPayload {
+        username: username_normalized,
+        challenge_id,
+        server_nonce_b64,
+        client_nonce_b64,
+        remember_me,
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn build_login_request(
+    challenge: &LoginChallengeResponse,
+    username: &str,
+    password: &str,
+    remember_me: bool,
+) -> Result<LoginRequestOwned, String> {
+    use ring::{hmac, pbkdf2};
+    use std::num::NonZeroU32;
+
+    if challenge.algorithm != "pbkdf2_sha256" {
+        return Err("unsupported password hash algorithm".to_string());
+    }
+
+    let salt = B64
+        .decode(challenge.salt_b64.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let iterations = NonZeroU32::new(challenge.iterations.max(1))
+        .ok_or_else(|| "invalid PBKDF2 iteration count".to_string())?;
+    let mut verifier = [0u8; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        iterations,
+        &salt,
+        password.as_bytes(),
+        &mut verifier,
+    );
+
+    let mut client_nonce = [0u8; 32];
+    let rng = ring::rand::SystemRandom::new();
+    ring::rand::SecureRandom::fill(&rng, &mut client_nonce)
+        .map_err(|_| "secure random generation failed".to_string())?;
+    let client_nonce_b64 = URL_SAFE_NO_PAD.encode(client_nonce);
+    let username_normalized = normalize_username(username);
+    let message = auth_proof_message(
+        &username_normalized,
+        &challenge.challenge_id,
+        &challenge.server_nonce_b64,
+        &client_nonce_b64,
+        remember_me,
+    )?;
+    let key = hmac::Key::new(hmac::HMAC_SHA256, &verifier);
+    let proof_b64 = URL_SAFE_NO_PAD.encode(hmac::sign(&key, &message).as_ref());
+
+    Ok(LoginRequestOwned {
+        challenge_id: challenge.challenge_id.clone(),
+        client_nonce_b64,
+        proof_b64,
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn build_login_request(
+    challenge: &LoginChallengeResponse,
+    username: &str,
+    password: &str,
+    remember_me: bool,
+) -> Result<LoginRequestOwned, String> {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let normalize = normalize_username(username);
+    let input = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &input,
+        &JsValue::from_str("challenge_id"),
+        &JsValue::from_str(&challenge.challenge_id),
+    )
+    .map_err(|_| "failed to set challenge_id".to_string())?;
+    js_sys::Reflect::set(
+        &input,
+        &JsValue::from_str("salt_b64"),
+        &JsValue::from_str(&challenge.salt_b64),
+    )
+    .map_err(|_| "failed to set salt_b64".to_string())?;
+    js_sys::Reflect::set(
+        &input,
+        &JsValue::from_str("server_nonce_b64"),
+        &JsValue::from_str(&challenge.server_nonce_b64),
+    )
+    .map_err(|_| "failed to set server_nonce_b64".to_string())?;
+    js_sys::Reflect::set(
+        &input,
+        &JsValue::from_str("algorithm"),
+        &JsValue::from_str(&challenge.algorithm),
+    )
+    .map_err(|_| "failed to set algorithm".to_string())?;
+    js_sys::Reflect::set(
+        &input,
+        &JsValue::from_str("iterations"),
+        &JsValue::from_f64(challenge.iterations as f64),
+    )
+    .map_err(|_| "failed to set iterations".to_string())?;
+    js_sys::Reflect::set(
+        &input,
+        &JsValue::from_str("password"),
+        &JsValue::from_str(password),
+    )
+    .map_err(|_| "failed to set password".to_string())?;
+    js_sys::Reflect::set(
+        &input,
+        &JsValue::from_str("username_normalized"),
+        &JsValue::from_str(&normalize),
+    )
+    .map_err(|_| "failed to set username".to_string())?;
+    js_sys::Reflect::set(
+        &input,
+        &JsValue::from_str("remember_me"),
+        &JsValue::from_bool(remember_me),
+    )
+    .map_err(|_| "failed to set remember_me".to_string())?;
+
+    let f = js_sys::Function::new_no_args(
+        r#"
+        return (async function(input) {
+          if (input.algorithm !== "pbkdf2_sha256") {
+            throw new Error("unsupported password hash algorithm");
+          }
+          const cryptoObj = globalThis.crypto || globalThis.msCrypto;
+          if (!cryptoObj || !cryptoObj.subtle) {
+            throw new Error("Web Crypto is not available");
+          }
+          const subtle = cryptoObj.subtle;
+          const enc = new TextEncoder();
+          const decodeBase64 = (value) => Uint8Array.from(atob(value), (ch) => ch.charCodeAt(0));
+          const encodeBase64Url = (bytes) => {
+            let binary = "";
+            for (const b of bytes) binary += String.fromCharCode(b);
+            return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+          };
+          const passwordKey = await subtle.importKey(
+            "raw",
+            enc.encode(input.password),
+            "PBKDF2",
+            false,
+            ["deriveBits"]
+          );
+          const verifierBits = await subtle.deriveBits(
+            {
+              name: "PBKDF2",
+              hash: "SHA-256",
+              salt: decodeBase64(input.salt_b64),
+              iterations: Number(input.iterations) || 1,
+            },
+            passwordKey,
+            256
+          );
+          const verifier = new Uint8Array(verifierBits);
+          const clientNonceBytes = new Uint8Array(32);
+          cryptoObj.getRandomValues(clientNonceBytes);
+          const clientNonceB64 = encodeBase64Url(clientNonceBytes);
+          const payload = JSON.stringify({
+            username: String(input.username_normalized || ""),
+            challenge_id: String(input.challenge_id || ""),
+            server_nonce_b64: String(input.server_nonce_b64 || ""),
+            client_nonce_b64: clientNonceB64,
+            remember_me: !!input.remember_me,
+          });
+          const hmacKey = await subtle.importKey(
+            "raw",
+            verifier,
+            { name: "HMAC", hash: "SHA-256" },
+            false,
+            ["sign"]
+          );
+          const proof = new Uint8Array(await subtle.sign("HMAC", hmacKey, enc.encode(payload)));
+          return {
+            client_nonce_b64: clientNonceB64,
+            proof_b64: encodeBase64Url(proof),
+          };
+        })(arguments[0]);
+        "#,
+    );
+    let promise = f
+        .call1(&JsValue::NULL, &input)
+        .map_err(|_| "failed to start web auth proof generation".to_string())?
+        .dyn_into::<js_sys::Promise>()
+        .map_err(|_| "web auth proof did not return a promise".to_string())?;
+    let result = JsFuture::from(promise)
+        .await
+        .map_err(|err| err.as_string().unwrap_or_else(|| "failed to build login proof".to_string()))?;
+    let client_nonce_b64 = js_sys::Reflect::get(&result, &JsValue::from_str("client_nonce_b64"))
+        .map_err(|_| "missing client nonce".to_string())?
+        .as_string()
+        .ok_or_else(|| "missing client nonce".to_string())?;
+    let proof_b64 = js_sys::Reflect::get(&result, &JsValue::from_str("proof_b64"))
+        .map_err(|_| "missing login proof".to_string())?
+        .as_string()
+        .ok_or_else(|| "missing login proof".to_string())?;
+
+    Ok(LoginRequestOwned {
+        challenge_id: challenge.challenge_id.clone(),
+        client_nonce_b64,
+        proof_b64,
+    })
 }
 
 pub async fn logout(base: &str, skip_tls_verify: bool) -> Result<(), String> {
