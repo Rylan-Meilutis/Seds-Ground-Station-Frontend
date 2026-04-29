@@ -81,51 +81,6 @@ pub fn DetailedTab(
             "#,
         );
     });
-    use_effect(move || {
-        js_eval(
-            r#"
-            (function() {
-              const GRID_ID = "gs26-detailed-summary-grid";
-              const ITEM_SELECTOR = ".gs26-detailed-summary-item";
-              const ROW_SIZE = 10;
-              const GAP = 14;
-              if (!window.__gs26_detailed_summary_layout) {
-                window.__gs26_detailed_summary_layout = () => {
-                  const grid = document.getElementById(GRID_ID);
-                  if (!grid) return;
-                  const items = Array.from(grid.querySelectorAll(ITEM_SELECTOR));
-                  for (const item of items) {
-                    const inner = item.firstElementChild || item;
-                    const height = Math.ceil(inner.getBoundingClientRect().height);
-                    const span = Math.max(1, Math.ceil((height + GAP) / ROW_SIZE));
-                    item.style.gridRowEnd = `span ${span}`;
-                  }
-                };
-              }
-              const layout = window.__gs26_detailed_summary_layout;
-              const grid = document.getElementById(GRID_ID);
-              if (!grid) return;
-              if (!window.__gs26_detailed_summary_resize_observer && typeof ResizeObserver === "function") {
-                window.__gs26_detailed_summary_resize_observer = new ResizeObserver(() => {
-                  layout();
-                });
-              }
-              const observer = window.__gs26_detailed_summary_resize_observer;
-              if (observer) {
-                observer.disconnect();
-                observer.observe(grid);
-                for (const item of grid.querySelectorAll(ITEM_SELECTOR)) {
-                  observer.observe(item);
-                }
-              }
-              window.requestAnimationFrame(() => {
-                layout();
-                window.requestAnimationFrame(layout);
-              });
-            })();
-            "#,
-        );
-    });
     let metrics_snapshot = metrics.read().clone();
     let boards = board_status.read().clone();
     let seen_boards = boards
@@ -244,24 +199,8 @@ pub fn DetailedTab(
 
     rsx! {
         div { style: "padding:18px; height:100%; overflow-y:auto; overflow-x:hidden; color:{theme.text_primary}; background:{theme.app_background};",
-            style {
-                r#"
-                #gs26-detailed-summary-grid {{
-                    display:grid;
-                    grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-                    grid-auto-rows:10px;
-                    grid-auto-flow:dense;
-                    gap:14px;
-                    align-items:start;
-                    margin-bottom:14px;
-                }}
-                .gs26-detailed-summary-item {{
-                    min-width:0;
-                }}
-                "#
-            }
-            div { id: "gs26-detailed-summary-grid",
-                div { class: "gs26-detailed-summary-item",
+            div { style: "column-width:320px; column-gap:14px; column-fill:balance; margin-bottom:14px;",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
                         &theme,
                         &app_ground_station_title,
@@ -274,7 +213,7 @@ pub fn DetailedTab(
                         ],
                     )}
                 }
-                div { class: "gs26-detailed-summary-item",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
                         &theme,
                         "Traffic",
@@ -290,7 +229,7 @@ pub fn DetailedTab(
                         ],
                     )}
                 }
-                div { class: "gs26-detailed-summary-item",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
                         &theme,
                         "Session",
@@ -305,7 +244,7 @@ pub fn DetailedTab(
                         ],
                     )}
                 }
-                div { class: "gs26-detailed-summary-item",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
                         &theme,
                         "Mission State",
@@ -321,7 +260,7 @@ pub fn DetailedTab(
                         ],
                     )}
                 }
-                div { class: "gs26-detailed-summary-item",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
                         &theme,
                         "Board Timing",
@@ -331,7 +270,7 @@ pub fn DetailedTab(
                         ],
                     )}
                 }
-                div { class: "gs26-detailed-summary-item",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card_owned(
                         &theme,
                         "Positioning",
@@ -354,7 +293,7 @@ pub fn DetailedTab(
                         ],
                     )}
                 }
-                div { class: "gs26-detailed-summary-item",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
                         &theme,
                         "Topology",
@@ -374,10 +313,10 @@ pub fn DetailedTab(
                         ],
                     )}
                 }
-                div { class: "gs26-detailed-summary-item",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card_owned(&theme, "Cache Storage", cache_stats.clone())}
                 }
-                div { class: "gs26-detailed-summary-item",
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {prefetch_status_card(&theme)}
                 }
             }
