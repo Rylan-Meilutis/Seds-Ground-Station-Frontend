@@ -633,7 +633,9 @@ function refreshTilePrefetchEstimate(options = {}) {
         }
     } else if (canRunNow && !shouldRunAutomaticHighResPrefetch()) {
         estimate.summaryStatus = "tracking";
-        estimate.summaryMessage = context.userAvailable && !context.rocketAvailable ? "Tracking prefetch only. Rocket tiles are deferred until telemetry appears." : "Tracking prefetch only.";
+        estimate.summaryMessage = context.userAvailable && !context.rocketAvailable
+            ? "Map prefetch is active. Rocket tiles are deferred until telemetry appears."
+            : "Map prefetch is active.";
         try {
             window.__gs26_ground_map_prefetch_estimate = {...estimate};
         } catch (e) {
