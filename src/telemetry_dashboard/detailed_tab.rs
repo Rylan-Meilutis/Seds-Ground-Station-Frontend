@@ -216,6 +216,16 @@ pub fn DetailedTab(
                 div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
                         &theme,
+                        "Board Timing",
+                        vec![
+                            ("Fastest board", opt_u64_ms(min_board_age_ms)),
+                            ("Slowest board", opt_u64_ms(max_board_age_ms)),
+                        ],
+                    )}
+                }
+                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                    {metric_card(
+                        &theme,
                         "Traffic",
                         vec![
                             ("Inbound messages", metrics_snapshot.ws_messages_total.to_string()),
@@ -257,16 +267,6 @@ pub fn DetailedTab(
                             ("Warnings", warnings_count.to_string()),
                             ("Errors", errors_count.to_string()),
                             ("Notifications", notifications_count.to_string()),
-                        ],
-                    )}
-                }
-                div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
-                    {metric_card(
-                        &theme,
-                        "Board Timing",
-                        vec![
-                            ("Fastest board", opt_u64_ms(min_board_age_ms)),
-                            ("Slowest board", opt_u64_ms(max_board_age_ms)),
                         ],
                     )}
                 }
