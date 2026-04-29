@@ -22,7 +22,6 @@ mod messages_tab;
 mod network_topology_tab;
 mod notifications_tab;
 pub mod types;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod version_page;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -61,7 +60,6 @@ use types::{
     display_flight_state, BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg,
     TelemetryRow,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use version_page::VersionTab;
 use warnings_tab::WarningsTab;
 
@@ -3640,7 +3638,6 @@ fn TelemetryDashboardInner() -> Element {
     let header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
     let show_settings_overlay = use_signal(|| false);
-    #[cfg(not(target_arch = "wasm32"))]
     let show_version_overlay = use_signal(|| false);
 
     let active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));

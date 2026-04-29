@@ -3,7 +3,6 @@
 const _CONNECTION_TIMEOUT_MS: u64 = 8000;
 const _BODY_TRANSFER_TIMEOUT_MS: u64 = 10000;
 const _WS_TIMEOUT_MS: u64 = 4500;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const APP_DISPLAY_NAME: &str = "UBSEDS GS";
 
 use crate::auth::{self, SessionStatus as AuthSessionStatus};
@@ -1064,6 +1063,11 @@ fn route_for_configured_connection() -> Route {
     } else {
         connect_route()
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn route_for_configured_connection() -> Route {
+    Route::Root {}
 }
 
 #[component]

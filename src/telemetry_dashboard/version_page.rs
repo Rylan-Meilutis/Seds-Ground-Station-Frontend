@@ -10,10 +10,13 @@ static VERSION_INFO: Lazy<VersionInfo> = Lazy::new(VersionInfo::load);
 
 struct VersionInfo {
     app_version: String,
+    #[cfg(not(target_arch = "wasm32"))]
     build_number: String,
     app_name: String,
     app_title: String,
+    #[cfg(not(target_arch = "wasm32"))]
     target_os: &'static str,
+    #[cfg(not(target_arch = "wasm32"))]
     target_arch: &'static str,
     critical_packages: Vec<(&'static str, String)>,
 }
@@ -23,13 +26,16 @@ impl VersionInfo {
         Self {
             app_version: parse_toml_value(FRONTEND_CARGO_TOML, "package", "version")
                 .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+            #[cfg(not(target_arch = "wasm32"))]
             build_number: parse_toml_value(DIOXUS_TOML, "application", "build")
                 .unwrap_or_else(|| "unknown".to_string()),
             app_name: parse_toml_value(DIOXUS_TOML, "application", "name")
                 .unwrap_or_else(|| "Telemetry Client".to_string()),
             app_title: parse_toml_value(DIOXUS_TOML, "application", "title")
                 .unwrap_or_else(|| "Telemetry Dashboard".to_string()),
+            #[cfg(not(target_arch = "wasm32"))]
             target_os: std::env::consts::OS,
+            #[cfg(not(target_arch = "wasm32"))]
             target_arch: std::env::consts::ARCH,
             critical_packages: critical_packages(),
         }
@@ -107,17 +113,18 @@ fn critical_packages() -> Vec<(&'static str, String)> {
 #[component]
 pub fn VersionTab(theme: ThemeConfig) -> Element {
     let info = &*VERSION_INFO;
-    let mut build_rows = vec![
+    let build_rows = vec![
         ("App", info.app_name.clone()),
         ("Title", info.app_title.clone()),
         ("Version", info.app_version.clone()),
     ];
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        build_rows.push(("Build", info.build_number.clone()));
-        build_rows.push(("Platform", format!("{} / {}", info.target_os, info.target_arch)));
-    }
-
+    let build_rows = {
+        let mut rows = build_rows;
+        rows.push(("Build", info.build_number.clone()));
+        rows.push(("Platform", format!("{} / {}", info.target_os, info.target_arch)));
+        rows
+    };
     let mut runtime_rows = vec![
         ("App", info.app_title.clone()),
         ("Runtime", "Rust + Dioxus".to_string()),
