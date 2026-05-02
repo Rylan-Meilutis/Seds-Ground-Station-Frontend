@@ -77,8 +77,9 @@ static NODE_PACKET_PULSES: Lazy<Mutex<HashMap<String, NodePacketPulse>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static TOPOLOGY_DERIVED_CACHE: Lazy<Mutex<Option<(u64, TopologyDerived)>>> =
     Lazy::new(|| Mutex::new(None));
-static TOPOLOGY_PACKET_STATS_CACHE: Lazy<Mutex<Option<(u64, u64, HashMap<String, NodePacketStats>)>>> =
-    Lazy::new(|| Mutex::new(None));
+static TOPOLOGY_PACKET_STATS_CACHE: Lazy<
+    Mutex<Option<(u64, u64, HashMap<String, NodePacketStats>)>>,
+> = Lazy::new(|| Mutex::new(None));
 
 const GRAPH_MIN_WIDTH: i32 = 1080;
 const GRAPH_MIN_HEIGHT: i32 = 720;
@@ -469,21 +470,22 @@ fn graph_view_setup_signature(
     canvas_id.hash(&mut hasher);
     render_width.hash(&mut hasher);
     render_height.hash(&mut hasher);
-    viewport_focus.map(|focus| {
-        (
-            focus.center_x,
-            focus.center_y,
-            focus.min_x,
-            focus.max_x,
-            focus.min_y,
-            focus.max_y,
-            focus.left_extent,
-            focus.right_extent,
-            focus.top_extent,
-            focus.bottom_extent,
-        )
-    })
-    .hash(&mut hasher);
+    viewport_focus
+        .map(|focus| {
+            (
+                focus.center_x,
+                focus.center_y,
+                focus.min_x,
+                focus.max_x,
+                focus.min_y,
+                focus.max_y,
+                focus.left_extent,
+                focus.right_extent,
+                focus.top_extent,
+                focus.bottom_extent,
+            )
+        })
+        .hash(&mut hasher);
     hasher.finish()
 }
 

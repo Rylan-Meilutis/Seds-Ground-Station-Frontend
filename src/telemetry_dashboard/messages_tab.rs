@@ -19,7 +19,7 @@ pub fn MessagesTab(history: Signal<Vec<PersistentNotification>>, theme: ThemeCon
                     div {
                         style: "border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_primary}; padding:8px 10px 10px 10px; border-radius:10px; font-family:{font_stack};",
                         div { style: "font-size:12px; opacity:0.85; line-height:1.25; color:{theme.text_muted};", "{format_timestamp_ms_clock(n.timestamp_ms)}" }
-                        div { style: "font-size:14px; line-height:1.3; padding-bottom:1px;", "{translate_text(&n.message)}" }
+                        div { style: "font-size:14px; line-height:1.3; padding-bottom:1px; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word;", "{n.message}" }
                     }
                 }
                 if entries.is_empty() {

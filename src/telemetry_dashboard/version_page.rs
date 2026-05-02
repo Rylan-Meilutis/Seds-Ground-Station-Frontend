@@ -105,9 +105,9 @@ fn critical_packages() -> Vec<(&'static str, String)> {
         ]);
     }
     packages
-    .into_iter()
-    .filter_map(|(crate_name, label)| parse_lock_version(crate_name).map(|v| (label, v)))
-    .collect()
+        .into_iter()
+        .filter_map(|(crate_name, label)| parse_lock_version(crate_name).map(|v| (label, v)))
+        .collect()
 }
 
 #[component]
@@ -122,7 +122,10 @@ pub fn VersionTab(theme: ThemeConfig) -> Element {
     let build_rows = {
         let mut rows = build_rows;
         rows.push(("Build", info.build_number.clone()));
-        rows.push(("Platform", format!("{} / {}", info.target_os, info.target_arch)));
+        rows.push((
+            "Platform",
+            format!("{} / {}", info.target_os, info.target_arch),
+        ));
         rows
     };
     let mut runtime_rows = vec![

@@ -34,12 +34,8 @@ pub(crate) fn action_animation_style(
     match (blink, actuated.unwrap_or(false)) {
         (BlinkMode::None, _) => "",
         (BlinkMode::Slow, false) => "animation:gs26-blink-slow 1800ms ease-in-out infinite;",
-        (BlinkMode::Slow, true) => {
-            "animation:gs26-blink-slow-invert 1800ms ease-in-out infinite;"
-        }
+        (BlinkMode::Slow, true) => "animation:gs26-blink-slow-invert 1800ms ease-in-out infinite;",
         (BlinkMode::Fast, false) => "animation:gs26-blink-fast 600ms ease-in-out infinite;",
-        (BlinkMode::Fast, true) => {
-            "animation:gs26-blink-fast-invert 600ms ease-in-out infinite;"
-        }
+        (BlinkMode::Fast, true) => "animation:gs26-blink-fast-invert 600ms ease-in-out infinite;",
     }
 }

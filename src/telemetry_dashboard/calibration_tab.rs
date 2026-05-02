@@ -274,7 +274,15 @@ fn linear_for_channel_key<'a>(
 
 fn eval_fit_key(cfg: &CalibrationFile, channel: &str, raw: f32) -> Option<f32> {
     let (linear, fit) = linear_for_channel_key(cfg, channel);
-    eval_fit_parts(linear, fit, raw)
+    let value = eval_fit_parts(linear, fit, raw)?;
+    let zero_raw = cfg
+        .channels
+        .get(channel)
+        .and_then(|channel| channel.zero_raw);
+    let zero_offset = zero_raw
+        .and_then(|baseline_raw| eval_fit_parts(linear, fit, baseline_raw))
+        .unwrap_or(0.0);
+    Some(value - zero_offset)
 }
 
 fn eval_fit_parts(linear: &ChannelLinear, fit: Option<&FitMeta>, raw: f32) -> Option<f32> {
@@ -357,6 +365,35 @@ fn fit_details_text_parts((linear, fit): (&ChannelLinear, Option<&FitMeta>)) -> 
                 fmt_fixed(fit.and_then(|f| f.x0), 10, 4)
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod calibration_eval_tests {
+    use super::{eval_fit_key, CalibrationFile, ChannelLinear, GenericCalibrationChannel};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn zero_raw_offsets_linear_calibrated_value() {
+        let mut channels = BTreeMap::new();
+        channels.insert(
+            "LOADCELL".to_string(),
+            GenericCalibrationChannel {
+                linear: ChannelLinear {
+                    m: Some(2.0),
+                    b: Some(1.0),
+                },
+                zero_raw: Some(3.0),
+                ..Default::default()
+            },
+        );
+        let cfg = CalibrationFile {
+            channels,
+            ..Default::default()
+        };
+
+        assert_eq!(eval_fit_key(&cfg, "LOADCELL", 3.0), Some(0.0));
+        assert_eq!(eval_fit_key(&cfg, "LOADCELL", 4.5), Some(3.0));
     }
 }
 

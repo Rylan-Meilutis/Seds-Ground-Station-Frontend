@@ -8,10 +8,10 @@ use super::types::{
     NetworkTopologyNodeKind, NetworkTopologyStatus,
 };
 use super::{
-    compensated_network_time_ms, current_language, current_wallclock_ms, format_network_time,
-    format_timestamp_ms_clock, js_eval, layout::ThemeConfig, localized_copy,
-    monotonic_now_ms, translate_text, AlertMsg, FrontendNetworkMetrics, NetworkTimeSync,
-    PersistentNotification, device_timezone_label,
+    compensated_network_time_ms, current_language, current_wallclock_ms, device_timezone_label,
+    format_network_time, format_timestamp_ms_clock, js_eval, layout::ThemeConfig,
+    localized_copy, monotonic_now_ms, translate_text, AlertMsg, FrontendNetworkMetrics,
+    NetworkTimeSync, PersistentNotification,
 };
 use crate::telemetry_dashboard::map_tab::{format_elevation, format_precise_distance};
 

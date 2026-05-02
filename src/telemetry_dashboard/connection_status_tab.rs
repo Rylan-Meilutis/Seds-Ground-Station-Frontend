@@ -92,14 +92,13 @@ pub fn ConnectionStatusTab(
                         .filter(|gap| *gap > 0);
 
                     if let Some(gap_ms) = maybe_gap {
-                        let next_value = if let Some(prev_smoothed) =
-                            smoothing_map.get(&sender_id).copied()
-                        {
-                            prev_smoothed
-                                + (gap_ms as f64 - prev_smoothed) * LATENCY_SMOOTHING_ALPHA
-                        } else {
-                            gap_ms as f64
-                        };
+                        let next_value =
+                            if let Some(prev_smoothed) = smoothing_map.get(&sender_id).copied() {
+                                prev_smoothed
+                                    + (gap_ms as f64 - prev_smoothed) * LATENCY_SMOOTHING_ALPHA
+                            } else {
+                                gap_ms as f64
+                            };
                         smoothing_map.insert(sender_id.clone(), next_value);
 
                         let list = history_map.entry(sender_id.clone()).or_default();
@@ -110,8 +109,7 @@ pub fn ConnectionStatusTab(
                         });
                         if let Some(newest) = list.last().map(|point| point.timestamp_ms) {
                             let cutoff = newest.saturating_sub(LATENCY_WINDOW_MS);
-                            let split =
-                                list.partition_point(|point| point.timestamp_ms < cutoff);
+                            let split = list.partition_point(|point| point.timestamp_ms < cutoff);
                             if split > 0 {
                                 list.drain(0..split);
                             }

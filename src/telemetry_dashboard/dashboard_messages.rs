@@ -227,7 +227,10 @@ pub(crate) fn format_timestamp_ms_local_datetime(ms_epoch: i64) -> String {
     let year = d.get_full_year();
     let month = d.get_month() + 1;
     let day = d.get_date();
-    format!("{year:04}-{month:02}-{day:02} {}", format_timestamp_ms_clock(ms_epoch))
+    format!(
+        "{year:04}-{month:02}-{day:02} {}",
+        format_timestamp_ms_clock(ms_epoch)
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -236,7 +239,11 @@ pub(crate) fn format_timestamp_ms_local_datetime(ms_epoch: i64) -> String {
     let Some(dt) = Local.timestamp_millis_opt(ms_epoch).single() else {
         return "--".to_string();
     };
-    format!("{} {}", dt.format("%Y-%m-%d"), format_timestamp_ms_clock(ms_epoch))
+    format!(
+        "{} {}",
+        dt.format("%Y-%m-%d"),
+        format_timestamp_ms_clock(ms_epoch)
+    )
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -258,8 +265,7 @@ pub(crate) fn device_timezone_label() -> String {
         })();
         "#,
     );
-    js_read_window_string("__gs26_tmp_timezone")
-        .unwrap_or_else(|| "Local device time".to_string())
+    js_read_window_string("__gs26_tmp_timezone").unwrap_or_else(|| "Local device time".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

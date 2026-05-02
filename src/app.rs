@@ -594,9 +594,7 @@ fn status_ok_for_path(method: &str, path: &str, status: u16) -> (bool, &'static 
     match (method, path) {
         ("GET", "/api/auth/session") => (status == 200, "expected 200"),
         ("POST", "/api/auth/challenge") => match status {
-            200 | 400 | 401 | 403 | 415 => {
-                (true, "reachable (auth challenge endpoint responded)")
-            }
+            200 | 400 | 401 | 403 | 415 => (true, "reachable (auth challenge endpoint responded)"),
             _ => (false, "unexpected status for auth challenge"),
         },
         ("POST", "/api/auth/login") => match status {

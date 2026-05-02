@@ -20,18 +20,17 @@ use super::layout::{
 };
 use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
-    command_feedback_active, http_get_json, latest_telemetry_row, latest_telemetry_value,
-    reseed_note_banner, reseed_status_note, translate_text, ActionPolicyMsg, BlinkMode,
-    FillTargetsConfig,
-    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
+    command_feedback_active, http_get_json, latest_telemetry_row, latest_telemetry_value, reseed_note_banner,
+    reseed_status_note, translate_text, ActionPolicyMsg, BlinkMode,
+    FillTargetsConfig, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
 };
 
 use crate::telemetry_dashboard::data_chart::{
     charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    sender_scoped_chart_key, series_color, use_chart_panel_visibility, ChartCanvas, ChartRenderChunk,
-    SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
-    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET,
-    CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    sender_scoped_chart_key, series_color, use_chart_panel_visibility, ChartCanvas,
+    ChartRenderChunk, SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD,
+    CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
+    CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 
@@ -468,7 +467,11 @@ fn render_state_widget(
             }
         }
         StateWidgetKind::ValveState => {
-            let labels = widget.boolean_labels.as_ref().cloned().or(default_valve_labels.cloned());
+            let labels = widget
+                .boolean_labels
+                .as_ref()
+                .cloned()
+                .or(default_valve_labels.cloned());
             rsx! {
                 StateValveStateWidget {
                     data_type: widget.data_type.clone(),
@@ -767,7 +770,8 @@ fn simple_chart_payload_cached(dt: &str, view_w: f64, view_h: f64) -> SimpleChar
     view_h.to_bits().hash(&mut hasher);
     let key = hasher.finish();
 
-    if let Some(payload) = STATE_SIMPLE_CHART_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+    if let Some(payload) = STATE_SIMPLE_CHART_CACHE.with(|cache| cache.borrow().get(&key).cloned())
+    {
         return payload;
     }
 
@@ -867,15 +871,7 @@ fn combined_chart_payload(
         return None;
     }
 
-    let payload = (
-        chunks,
-        0.0,
-        1.0,
-        span_min,
-        labels,
-        true,
-        series_scales,
-    );
+    let payload = (chunks, 0.0, 1.0, span_min, labels, true, series_scales);
     STATE_COMBINED_CHART_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         retain_recent_chart_cache_entries(&mut cache);

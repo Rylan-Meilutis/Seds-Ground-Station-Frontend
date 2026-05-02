@@ -270,8 +270,12 @@ pub fn SettingsPage(
         "Unidades de distancia",
         "Unites de distance",
     );
-    let time_format_title =
-        localized_copy(&language, "Time Format", "Formato de hora", "Format d'heure");
+    let time_format_title = localized_copy(
+        &language,
+        "Time Format",
+        "Formato de hora",
+        "Format d'heure",
+    );
     let time_format_desc = localized_copy(
         &language,
         "Shows network epoch time in your device's local timezone using either 12-hour or 24-hour clock formatting.",
@@ -326,21 +330,32 @@ pub fn SettingsPage(
     );
     let map_header_on = localized_copy(&language, "Show", "Mostrar", "Afficher");
     let map_header_off = localized_copy(&language, "Hide", "Ocultar", "Masquer");
-    let user_location_title =
-        localized_copy(&language, "User Location Source", "Origen de ubicacion", "Source de position");
+    let user_location_title = localized_copy(
+        &language,
+        "User Location Source",
+        "Origen de ubicacion",
+        "Source de position",
+    );
     let user_location_desc = localized_copy(
         &language,
         "Use live sensor location when available, or disable tracking and enter coordinates manually.",
         "Usa la ubicacion del sensor cuando este disponible, o desactiva el seguimiento e ingresa coordenadas manualmente.",
         "Utilise la position du capteur si disponible, ou desactivez le suivi et saisissez les coordonnees manuellement.",
     );
-    let user_location_sensor_label =
-        localized_copy(&language, "Sensor", "Sensor", "Capteur");
-    let user_location_manual_label =
-        localized_copy(&language, "Manual", "Manual", "Manuel");
-    let manual_lat_title = localized_copy(&language, "Manual Latitude", "Latitud manual", "Latitude manuelle");
-    let manual_lon_title =
-        localized_copy(&language, "Manual Longitude", "Longitud manual", "Longitude manuelle");
+    let user_location_sensor_label = localized_copy(&language, "Sensor", "Sensor", "Capteur");
+    let user_location_manual_label = localized_copy(&language, "Manual", "Manual", "Manuel");
+    let manual_lat_title = localized_copy(
+        &language,
+        "Manual Latitude",
+        "Latitud manual",
+        "Latitude manuelle",
+    );
+    let manual_lon_title = localized_copy(
+        &language,
+        "Manual Longitude",
+        "Longitud manual",
+        "Longitude manuelle",
+    );
     let manual_location_desc = localized_copy(
         &language,
         "Used when manual location mode is selected. Latitude must be between -90 and 90, longitude between -180 and 180.",
@@ -353,18 +368,20 @@ pub fn SettingsPage(
         "Ingresa una latitud y longitud validas para usar ubicacion manual.",
         "Saisissez une latitude et une longitude valides pour utiliser la position manuelle.",
     );
-    let user_heading_title =
-        localized_copy(&language, "User Heading Source", "Origen de orientacion", "Source de cap");
+    let user_heading_title = localized_copy(
+        &language,
+        "User Heading Source",
+        "Origen de orientacion",
+        "Source de cap",
+    );
     let user_heading_desc = localized_copy(
         &language,
         "Use live orientation sensors when available, or disable heading tracking and enter a manual heading.",
         "Usa sensores de orientacion cuando esten disponibles, o desactiva el seguimiento e ingresa un rumbo manual.",
         "Utilise les capteurs d'orientation si disponibles, ou desactivez le suivi et saisissez un cap manuel.",
     );
-    let user_heading_sensor_label =
-        localized_copy(&language, "Sensor", "Sensor", "Capteur");
-    let user_heading_manual_label =
-        localized_copy(&language, "Manual", "Manual", "Manuel");
+    let user_heading_sensor_label = localized_copy(&language, "Sensor", "Sensor", "Capteur");
+    let user_heading_manual_label = localized_copy(&language, "Manual", "Manual", "Manuel");
     let manual_heading_title =
         localized_copy(&language, "Manual Heading", "Rumbo manual", "Cap manuel");
     let manual_heading_desc = localized_copy(

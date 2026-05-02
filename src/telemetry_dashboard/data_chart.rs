@@ -508,7 +508,9 @@ impl ChartsCache {
         self.mark_interested(key);
         let source_generation = self.source_generation.get(key).copied().unwrap_or(0);
         let existing_chart = self.charts.get(key);
-        let chart_generation = existing_chart.map(|chart| chart.source_generation).unwrap_or(0);
+        let chart_generation = existing_chart
+            .map(|chart| chart.source_generation)
+            .unwrap_or(0);
         if existing_chart.is_none() {
             self.rebuild_chart_for_key(key, source_generation);
             return;
@@ -798,6 +800,87 @@ mod tests {
         assert!(
             path.contains("L"),
             "single-point segments should emit a visible stroke, not only a move command"
+        );
+    }
+
+    #[test]
+    fn interpolated_gap_reuses_previous_point_when_next_chunk_starts() {
+        let mut paths = vec![String::new()];
+        let mut gap_paths = vec![String::new()];
+        let mut segment_points = vec![Vec::new()];
+
+        super::bridge_or_mark_gap(
+            &mut paths,
+            &mut gap_paths,
+            &mut segment_points,
+            0,
+            100,
+            102,
+            Some((-8.0, 12.0)),
+            (4.0, 16.0),
+            false,
+        );
+
+        assert_eq!(segment_points[0], vec![(-8.0, 12.0)]);
+        assert!(paths[0].is_empty());
+        assert!(gap_paths[0].is_empty());
+    }
+
+    #[test]
+    fn large_gap_keeps_solid_path_continuous_without_marking_gap() {
+        let mut paths = vec![String::new()];
+        let mut gap_paths = vec![String::new()];
+        let mut segment_points = vec![Vec::new()];
+
+        super::bridge_or_mark_gap(
+            &mut paths,
+            &mut gap_paths,
+            &mut segment_points,
+            0,
+            100,
+            1_000,
+            Some((-8.0, 12.0)),
+            (4.0, 16.0),
+            false,
+        );
+
+        assert_eq!(segment_points[0], vec![(-8.0, 12.0)]);
+        assert!(paths[0].is_empty());
+        assert!(gap_paths[0].is_empty());
+    }
+
+    #[test]
+    fn chart_path_stays_continuous_across_render_chunk_boundary() {
+        let mut chart = super::CachedChart::new();
+        let base_ts = 1_700_000_040_000;
+        for i in 0..36 {
+            chart.ingest(&TelemetryRow {
+                timestamp_ms: base_ts + i * 1_000,
+                data_type: "PRESSURE".to_string(),
+                sender_id: "DAQ".to_string(),
+                values: vec![Some(100.0 + i as f32)],
+            });
+        }
+
+        chart.build_if_needed(1200.0, 260.0);
+
+        assert!(
+            chart.chunks.len() >= 2,
+            "expected enough history to span more than one render chunk"
+        );
+        assert!(
+            chart.chunks.iter().skip(1).any(|chunk| chunk
+                .paths
+                .first()
+                .is_some_and(|path| path.contains("M 0."))),
+            "later chunks should seed their path from the chunk edge so rasterized chunk buffers stay continuous"
+        );
+        assert!(
+            chart
+                .chunks
+                .iter()
+                .all(|chunk| chunk.gap_paths.first().is_none_or(String::is_empty)),
+            "1 Hz data should remain interpolated without explicit gap strokes"
         );
     }
 }
@@ -1278,7 +1361,7 @@ impl CachedChart {
         let first_chunk_id = start_view_id.div_euclid(render_chunk_buckets);
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
         let mut carry_last_bucket_id_drawn: Vec<Option<i64>> = vec![None; self.channel_count];
-        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; self.channel_count];
+        let mut carry_last_value_drawn: Vec<Option<f32>> = vec![None; self.channel_count];
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);
@@ -1293,8 +1376,8 @@ impl CachedChart {
             let mut paths = vec![String::new(); self.channel_count];
             let mut gap_paths = vec![String::new(); self.channel_count];
             let mut segment_points: Vec<Vec<(f32, f32)>> = vec![Vec::new(); self.channel_count];
-            let mut last_bucket_id_drawn = carry_last_bucket_id_drawn.clone();
-            let mut last_point_drawn = carry_last_point_drawn.clone();
+            let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; self.channel_count];
+            let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; self.channel_count];
 
             for b in &view_buckets {
                 if b.id < chunk_start_bid || b.id > chunk_end_bid {
@@ -1314,7 +1397,21 @@ impl CachedChart {
                     }
                     let v = b.last[ch];
                     let y = map_y(v);
-                    if let Some(prev_bid) = last_bucket_id_drawn[ch] {
+                    let prev_bid = last_bucket_id_drawn[ch].or(carry_last_bucket_id_drawn[ch]);
+                    if let Some(prev_bid) = prev_bid {
+                        let prev_point = last_point_drawn[ch].or_else(|| {
+                            carry_last_value_drawn[ch].map(|prev_value| {
+                                (
+                                    chunk_local_x(
+                                        prev_bid,
+                                        chunk_start_bid,
+                                        chunk_bucket_count,
+                                        chunk_width,
+                                    ),
+                                    map_y(prev_value),
+                                )
+                            })
+                        });
                         bridge_or_mark_gap(
                             &mut paths,
                             &mut gap_paths,
@@ -1322,7 +1419,7 @@ impl CachedChart {
                             ch,
                             prev_bid,
                             b.id,
-                            last_point_drawn[ch],
+                            prev_point,
                             (x, y),
                             smooth_chunk,
                         );
@@ -1331,6 +1428,7 @@ impl CachedChart {
                     push_segment_point(&mut segment_points[ch], x, y);
                     last_bucket_id_drawn[ch] = Some(b.id);
                     last_point_drawn[ch] = Some((x, y));
+                    carry_last_value_drawn[ch] = Some(v);
                 }
             }
 
@@ -1359,7 +1457,6 @@ impl CachedChart {
             });
 
             carry_last_bucket_id_drawn = last_bucket_id_drawn;
-            carry_last_point_drawn = last_point_drawn;
         }
 
         self.chunks = Rc::new(chunks);
@@ -1437,7 +1534,7 @@ impl CachedChart {
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
         let mut chunks = Vec::new();
         let mut carry_last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
-        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
+        let mut carry_last_value_drawn: Vec<Option<f32>> = vec![None; valid_channels.len()];
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);
@@ -1452,8 +1549,8 @@ impl CachedChart {
             let mut paths = vec![String::new(); valid_channels.len()];
             let mut gap_paths = vec![String::new(); valid_channels.len()];
             let mut segment_points: Vec<Vec<(f32, f32)>> = vec![Vec::new(); valid_channels.len()];
-            let mut last_bucket_id_drawn = carry_last_bucket_id_drawn.clone();
-            let mut last_point_drawn = carry_last_point_drawn.clone();
+            let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
+            let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
 
             for b in &view_buckets {
                 if b.id < chunk_start_bid || b.id > chunk_end_bid {
@@ -1468,7 +1565,22 @@ impl CachedChart {
                     }
                     let v = b.last[ch];
                     let y = map_y(v);
-                    if let Some(prev_bid) = last_bucket_id_drawn[group_idx] {
+                    let prev_bid =
+                        last_bucket_id_drawn[group_idx].or(carry_last_bucket_id_drawn[group_idx]);
+                    if let Some(prev_bid) = prev_bid {
+                        let prev_point = last_point_drawn[group_idx].or_else(|| {
+                            carry_last_value_drawn[group_idx].map(|prev_value| {
+                                (
+                                    chunk_local_x(
+                                        prev_bid,
+                                        chunk_start_bid,
+                                        chunk_bucket_count,
+                                        chunk_width,
+                                    ),
+                                    map_y(prev_value),
+                                )
+                            })
+                        });
                         bridge_or_mark_gap(
                             &mut paths,
                             &mut gap_paths,
@@ -1476,7 +1588,7 @@ impl CachedChart {
                             group_idx,
                             prev_bid,
                             b.id,
-                            last_point_drawn[group_idx],
+                            prev_point,
                             (x, y),
                             smooth_chunk,
                         );
@@ -1485,6 +1597,7 @@ impl CachedChart {
                     push_segment_point(&mut segment_points[group_idx], x, y);
                     last_bucket_id_drawn[group_idx] = Some(b.id);
                     last_point_drawn[group_idx] = Some((x, y));
+                    carry_last_value_drawn[group_idx] = Some(v);
                 }
             }
 
@@ -1518,7 +1631,6 @@ impl CachedChart {
             });
 
             carry_last_bucket_id_drawn = last_bucket_id_drawn;
-            carry_last_point_drawn = last_point_drawn;
         }
 
         let cached = CachedSubset {
@@ -1646,7 +1758,7 @@ impl CachedChart {
         let last_chunk_id = newest_view_id.div_euclid(render_chunk_buckets);
         let mut chunks = Vec::new();
         let mut carry_last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
-        let mut carry_last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
+        let mut carry_last_value_drawn: Vec<Option<f32>> = vec![None; valid_channels.len()];
 
         for chunk_id in first_chunk_id..=last_chunk_id {
             let chunk_start_bid = (chunk_id * render_chunk_buckets).max(start_view_id);
@@ -1661,8 +1773,8 @@ impl CachedChart {
             let mut paths = vec![String::new(); valid_channels.len()];
             let mut gap_paths = vec![String::new(); valid_channels.len()];
             let mut segment_points: Vec<Vec<(f32, f32)>> = vec![Vec::new(); valid_channels.len()];
-            let mut last_bucket_id_drawn = carry_last_bucket_id_drawn.clone();
-            let mut last_point_drawn = carry_last_point_drawn.clone();
+            let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
+            let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
 
             for b in &view_buckets {
                 if b.id < chunk_start_bid || b.id > chunk_end_bid {
@@ -1679,7 +1791,24 @@ impl CachedChart {
                     let (series_min, series_max) =
                         series_scales[group_idx].unwrap_or((global_min, global_max));
                     let y = bottom - (v - series_min) / (series_max - series_min) * ph;
-                    if let Some(prev_bid) = last_bucket_id_drawn[group_idx] {
+                    let prev_bid =
+                        last_bucket_id_drawn[group_idx].or(carry_last_bucket_id_drawn[group_idx]);
+                    if let Some(prev_bid) = prev_bid {
+                        let prev_point = last_point_drawn[group_idx].or_else(|| {
+                            carry_last_value_drawn[group_idx].map(|prev_value| {
+                                (
+                                    chunk_local_x(
+                                        prev_bid,
+                                        chunk_start_bid,
+                                        chunk_bucket_count,
+                                        chunk_width,
+                                    ),
+                                    bottom
+                                        - (prev_value - series_min) / (series_max - series_min)
+                                            * ph,
+                                )
+                            })
+                        });
                         bridge_or_mark_gap(
                             &mut paths,
                             &mut gap_paths,
@@ -1687,7 +1816,7 @@ impl CachedChart {
                             group_idx,
                             prev_bid,
                             b.id,
-                            last_point_drawn[group_idx],
+                            prev_point,
                             (x, y),
                             smooth_chunk,
                         );
@@ -1696,6 +1825,7 @@ impl CachedChart {
                     push_segment_point(&mut segment_points[group_idx], x, y);
                     last_bucket_id_drawn[group_idx] = Some(b.id);
                     last_point_drawn[group_idx] = Some((x, y));
+                    carry_last_value_drawn[group_idx] = Some(v);
                 }
             }
 
@@ -1729,7 +1859,6 @@ impl CachedChart {
             });
 
             carry_last_bucket_id_drawn = last_bucket_id_drawn;
-            carry_last_point_drawn = last_point_drawn;
         }
 
         let cached = CachedSubsetPerSeries {
@@ -1956,10 +2085,10 @@ static CHART_CANVAS_RENDERER_INSTALLED: AtomicBool = AtomicBool::new(false);
 static CHART_CANVAS_RENDERER_BOOTSTRAP: OnceLock<String> = OnceLock::new();
 static CHART_VISIBILITY_OBSERVER_INSTALLED: AtomicBool = AtomicBool::new(false);
 static CHART_VISIBILITY_OBSERVER_BOOTSTRAP: OnceLock<String> = OnceLock::new();
-static INTERPOLATED_GAP_THRESHOLD_MS: AtomicU64 = AtomicU64::new(5_000);
+static INTERPOLATED_GAP_THRESHOLD_MS: AtomicU64 = AtomicU64::new(HISTORY_MS as u64);
 
 pub fn set_interpolated_gap_threshold_ms(value_ms: u64) {
-    INTERPOLATED_GAP_THRESHOLD_MS.store(value_ms.clamp(0, 60_000), Ordering::Relaxed);
+    INTERPOLATED_GAP_THRESHOLD_MS.store(value_ms.clamp(0, HISTORY_MS as u64), Ordering::Relaxed);
 }
 
 fn should_smooth_chunk(chunk_width: f32, chunk_bucket_count: i64) -> bool {
@@ -1974,18 +2103,35 @@ fn push_segment_point(points: &mut Vec<(f32, f32)>, x: f32, y: f32) {
     push_curve_point_with_delta(points, x, y, CURVE_MIN_DELTA_PX);
 }
 
+fn chunk_local_x(
+    bucket_id: i64,
+    chunk_start_bid: i64,
+    chunk_bucket_count: i64,
+    chunk_width: f32,
+) -> f32 {
+    let x =
+        chunk_width * (((bucket_id - chunk_start_bid) as f32 + 0.5) / chunk_bucket_count as f32);
+    x.clamp(0.0, chunk_width)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn bridge_or_mark_gap(
-    paths: &mut [String],
-    gap_paths: &mut [String],
+    _paths: &mut [String],
+    _gap_paths: &mut [String],
     segment_points: &mut [Vec<(f32, f32)>],
     idx: usize,
     prev_bid: i64,
     current_bid: i64,
     prev_point: Option<(f32, f32)>,
-    current_point: (f32, f32),
-    smooth_chunk: bool,
+    _current_point: (f32, f32),
+    _smooth_chunk: bool,
 ) {
+    if segment_points[idx].is_empty()
+        && let Some((prev_x, prev_y)) = prev_point
+    {
+        push_segment_point(&mut segment_points[idx], prev_x, prev_y);
+    }
+
     let gap_buckets = current_bid - prev_bid;
     if gap_buckets <= 1 {
         return;
@@ -1994,16 +2140,6 @@ fn bridge_or_mark_gap(
     if gap_ms <= INTERPOLATED_GAP_THRESHOLD_MS.load(Ordering::Relaxed) {
         return;
     }
-    let Some((prev_x, prev_y)) = prev_point else {
-        return;
-    };
-    let (x, y) = current_point;
-    flush_smoothed_segment(&mut paths[idx], &segment_points[idx], smooth_chunk);
-    segment_points[idx].clear();
-    gap_paths[idx].push_str(&format!(
-        "M {:.2} {:.2} L {:.2} {:.2} ",
-        prev_x, prev_y, x, y
-    ));
 }
 
 #[derive(Clone, PartialEq, Serialize)]
@@ -2309,16 +2445,30 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           if (!path2d) continue;
                           strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 2.0, 1.0);
                         }}
-                        for (const i of seriesDrawOrder) {{
-                          if (i >= chunk.gap_paths.length) continue;
-                          const path2d = buildPath2d(cache.path2dCache, `g:${{chunk.id}}:${{chunk.signature}}:${{i}}`, chunk.gap_paths[i]);
-                          if (!path2d) continue;
-                          targetCtx.save();
-                          targetCtx.setLineDash([7, 6]);
-                          strokeWithContrast(targetCtx, path2d, data.colors[i] || "#9ca3af", 1.7, 0.74);
-                          targetCtx.restore();
-                        }}
                         targetCtx.restore();
+                      }};
+                      const chunkDestRect = (chunks, index, scaleX, alignOffset, widthPx) => {{
+                        const chunk = chunks[index];
+                        const next = index + 1 < chunks.length ? chunks[index + 1] : null;
+                        const prev = index > 0 ? chunks[index - 1] : null;
+                        const baseX = Math.round(chunk.x * scaleX + alignOffset);
+                        const baseRight = next
+                          ? Math.round(next.x * scaleX + alignOffset)
+                          : Math.round(chunk.right * scaleX + alignOffset);
+                        const overlapPx = 2;
+                        const destX = Math.max(
+                          0,
+                          baseX - (prev ? overlapPx : 0)
+                        );
+                        const destRight = Math.min(
+                          widthPx,
+                          Math.max(baseX + 1, baseRight) + (next ? overlapPx : 0)
+                        );
+                        return {{
+                          destX,
+                          destRight,
+                          destW: Math.max(1, destRight - destX),
+                        }};
                       }};
                       const cacheMiss = !cache
                           || cache.signature !== data.signature
@@ -2345,13 +2495,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           : 0;
                         for (let i = 0; i < data.chunks.length; i += 1) {{
                           const chunk = data.chunks[i];
-                          const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
-                          const destX = Math.round(chunk.x * scaleX + alignOffset);
-                          const rawRight = next
-                            ? Math.round(next.x * scaleX + alignOffset)
-                            : Math.round(chunk.right * scaleX + alignOffset);
-                          const destRight = Math.max(destX + 1, rawRight);
-                          const destW = Math.max(1, destRight - destX);
+                          const {{ destX, destW }} = chunkDestRect(data.chunks, i, scaleX, alignOffset, pxW);
                           drawChunkDirect(ctx, chunk, destX, destW);
                         }}
                         return;
@@ -2428,13 +2572,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         data.chunks
                           .filter(chunk => !chunk.live)
                           .map((chunk, i) => {{
-                            const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
-                            const destX = Math.round(chunk.x * scaleX + alignOffset);
-                            const rawRight = next
-                              ? Math.round(next.x * scaleX + alignOffset)
-                              : Math.round(chunk.right * scaleX + alignOffset);
-                            const destRight = Math.max(destX + 1, rawRight);
-                            const destW = Math.max(1, destRight - destX);
+                            const {{ destW }} = chunkDestRect(data.chunks, i, scaleX, alignOffset, pxW);
                             return `${{chunk.id}}:${{chunk.signature}}:${{pxH}}:${{destW}}`;
                           }})
                       );
@@ -2468,13 +2606,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         for (let i = 0; i < data.chunks.length; i += 1) {{
                           const chunk = data.chunks[i];
                           if (chunk.live) continue;
-                          const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
-                          const destX = Math.round(chunk.x * scaleX + alignOffset);
-                          const rawRight = next
-                            ? Math.round(next.x * scaleX + alignOffset)
-                            : Math.round(chunk.right * scaleX + alignOffset);
-                          const destRight = Math.max(destX + 1, rawRight);
-                          const destW = Math.max(1, destRight - destX);
+                          const {{ destX, destW }} = chunkDestRect(data.chunks, i, scaleX, alignOffset, pxW);
                           const chunkBuffer = buildChunkBuffer(chunk, destW, true);
                           if (!chunkBuffer) continue;
                           hctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
@@ -2489,13 +2621,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                       for (let i = 0; i < data.chunks.length; i += 1) {{
                         const chunk = data.chunks[i];
                         if (!chunk.live) continue;
-                        const next = i + 1 < data.chunks.length ? data.chunks[i + 1] : null;
-                        const destX = Math.round(chunk.x * scaleX + alignOffset);
-                        const rawRight = next
-                          ? Math.round(next.x * scaleX + alignOffset)
-                          : Math.round(chunk.right * scaleX + alignOffset);
-                        const destRight = Math.max(destX + 1, rawRight);
-                        const destW = Math.max(1, destRight - destX);
+                        const {{ destX, destW }} = chunkDestRect(data.chunks, i, scaleX, alignOffset, pxW);
                         const chunkBuffer = buildChunkBuffer(chunk, destW, false);
                         if (!chunkBuffer) continue;
                         ctx.imageSmoothingEnabled = false;
@@ -2716,7 +2842,8 @@ pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
                     }})();
                     "#,
                     key_json = serde_json::to_string(&key).unwrap_or_else(|_| "\"\"".to_string()),
-                    id_json = serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string()),
+                    id_json =
+                        serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string()),
                 ));
                 let next_visible = chart_visibility_window_value(&key)
                     .map(|value| value.eq_ignore_ascii_case("true"))

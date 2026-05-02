@@ -12,10 +12,11 @@ use std::rc::Rc;
 
 use super::data_chart::{
     charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color, ChartCanvas,
-    SeriesSwatch, use_chart_panel_visibility, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD,
-    CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
-    CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color, use_chart_panel_visibility,
+    ChartCanvas, SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT,
+    CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT,
+    CHART_Y_LABEL_MAX_WIDTH,
 };
 use super::{
     latest_telemetry_row, latest_telemetry_value, persist, reseed_note_banner,
@@ -610,9 +611,10 @@ fn chart_series_for_group(
 #[cfg(test)]
 mod tests {
     use super::{
-        chart_groups_have_graph_source, chart_series_for_group, effective_chart_groups,
-        DataChartGroup, DataSummaryItem,
+        chart_groups_have_graph_source, chart_series_for_group, data_live_panel_has_telemetry, effective_chart_groups,
+        DataChartGroup, DataSource, DataSummaryItem,
     };
+    use crate::telemetry_dashboard::{reset_latest_telemetry, TelemetryRow};
 
     #[test]
     fn inferred_chart_series_preserves_summary_sender_id() {
@@ -670,7 +672,51 @@ mod tests {
             boolean_labels: None,
         }];
 
-        assert!(chart_groups_have_graph_source(&[group], &summary_items, &[]));
+        assert!(chart_groups_have_graph_source(
+            &[group],
+            &summary_items,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn sender_scoped_chart_group_counts_as_live_telemetry() {
+        reset_latest_telemetry(&[TelemetryRow {
+            timestamp_ms: 1_700_000_050_000,
+            data_type: "BATTERY_VOLTAGE".to_string(),
+            sender_id: "PB".to_string(),
+            values: vec![Some(12.4)],
+        }]);
+
+        let group = DataChartGroup {
+            title: Some("Battery".to_string()),
+            data_type: None,
+            sender_id: None,
+            labels: Some(vec!["Battery".to_string()]),
+            channels: vec![0],
+            chart_series: None,
+            scale_mode: None,
+        };
+        let summary_items = vec![DataSummaryItem {
+            label: "Battery".to_string(),
+            data_type: "BATTERY_VOLTAGE".to_string(),
+            index: 0,
+            sender_id: Some("PB".to_string()),
+            formatter: None,
+            boolean_labels: None,
+        }];
+
+        assert!(data_live_panel_has_telemetry(
+            Some(&DataSource {
+                data_type: "BATTERY_VOLTAGE".to_string(),
+                sender_id: None,
+            }),
+            &summary_items,
+            &[group],
+            &["Battery".to_string()],
+        ));
+
+        reset_latest_telemetry(&[]);
     }
 }
 
@@ -731,9 +777,13 @@ fn DataLivePanel(
     let has_chart_source = effective_source.is_some()
         || !summary_items.is_empty()
         || chart_groups_have_graph_source(&chart_groups, &summary_items, &labels);
-    let has_telemetry = data_live_panel_has_telemetry(effective_source.as_ref(), &summary_items);
-    let show_reseed_banner = reseed_status_note().is_some();
-    let is_graph_allowed = chart_enabled && has_chart_source && (has_telemetry || show_reseed_banner);
+    let _has_telemetry = data_live_panel_has_telemetry(
+        effective_source.as_ref(),
+        &summary_items,
+        &chart_groups,
+        &labels,
+    );
+    let is_graph_allowed = chart_enabled && has_chart_source;
 
     let view_w = 1200.0_f64;
     let view_h = 360.0_f64;
@@ -790,14 +840,37 @@ fn DataLivePanel(
 fn data_live_panel_has_telemetry(
     effective_source: Option<&DataSource>,
     summary_items: &[DataSummaryItem],
+    chart_groups: &[DataChartGroup],
+    fallback_labels: &[String],
 ) -> bool {
     if !summary_items.is_empty() {
-        summary_items.iter().any(summary_item_has_value)
-    } else {
-        effective_source
-            .and_then(|source| latest_telemetry_row(&source.data_type, source.sender_id.as_deref()))
-            .is_some()
+        if summary_items.iter().any(summary_item_has_value) {
+            return true;
+        }
     }
+
+    if effective_source
+        .and_then(|source| latest_telemetry_row(&source.data_type, source.sender_id.as_deref()))
+        .is_some()
+    {
+        return true;
+    }
+
+    chart_groups.iter().any(|group| {
+        if let Some(data_type) = group.data_type.as_deref() {
+            return latest_telemetry_row(data_type, group.sender_id.as_deref()).is_some();
+        }
+
+        chart_series_for_group(group, summary_items, fallback_labels).is_some_and(|series| {
+            series.iter().any(|spec| {
+                latest_telemetry_value(&spec.data_type, spec.sender_id.as_deref(), spec.index)
+                    .is_some()
+            })
+        }) || (!group.channels.is_empty()
+            && effective_source.is_some_and(|source| {
+                latest_telemetry_row(&source.data_type, source.sender_id.as_deref()).is_some()
+            }))
+    })
 }
 
 #[component]
@@ -1378,51 +1451,51 @@ fn chart_group_render_payload_cached(
                     (chunks, y_min, y_max, span_min, Rc::new(Vec::new()))
                 }
             } else {
-            let cache_series = series
-                .iter()
-                .map(|spec| {
-                    let chart_key = spec
-                        .sender_id
-                        .as_deref()
-                        .map(|sender_id| sender_scoped_chart_key(&spec.data_type, sender_id))
-                        .unwrap_or_else(|| spec.data_type.clone());
-                    (chart_key, spec.index)
-                })
-                .collect::<Vec<_>>();
-            let (chunks, scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
-                &cache_series,
-                view_w as f32,
-                view_h as f32,
-                chart_left as f32,
-                (view_w - chart_right) as f32,
-                pad_top as f32,
-                pad_bottom as f32,
-            );
-            let overall_min = scales
-                .iter()
-                .flatten()
-                .map(|(min, _)| *min)
-                .fold(f32::INFINITY, f32::min);
-            let overall_max = scales
-                .iter()
-                .flatten()
-                .map(|(_, max)| *max)
-                .fold(f32::NEG_INFINITY, f32::max);
-            (
-                chunks,
-                if overall_min.is_finite() {
-                    overall_min
-                } else {
-                    0.0
-                },
-                if overall_max.is_finite() {
-                    overall_max
-                } else {
-                    1.0
-                },
-                span_min,
-                scales,
-            )
+                let cache_series = series
+                    .iter()
+                    .map(|spec| {
+                        let chart_key = spec
+                            .sender_id
+                            .as_deref()
+                            .map(|sender_id| sender_scoped_chart_key(&spec.data_type, sender_id))
+                            .unwrap_or_else(|| spec.data_type.clone());
+                        (chart_key, spec.index)
+                    })
+                    .collect::<Vec<_>>();
+                let (chunks, scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
+                    &cache_series,
+                    view_w as f32,
+                    view_h as f32,
+                    chart_left as f32,
+                    (view_w - chart_right) as f32,
+                    pad_top as f32,
+                    pad_bottom as f32,
+                );
+                let overall_min = scales
+                    .iter()
+                    .flatten()
+                    .map(|(min, _)| *min)
+                    .fold(f32::INFINITY, f32::min);
+                let overall_max = scales
+                    .iter()
+                    .flatten()
+                    .map(|(_, max)| *max)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                (
+                    chunks,
+                    if overall_min.is_finite() {
+                        overall_min
+                    } else {
+                        0.0
+                    },
+                    if overall_max.is_finite() {
+                        overall_max
+                    } else {
+                        1.0
+                    },
+                    span_min,
+                    scales,
+                )
             }
         } else if use_per_series_scale {
             let (chunks, scales, span_min) = charts_cache_get_subset_per_series_with_grid(

@@ -1,5 +1,5 @@
-use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use once_cell::sync::Lazy;
 use pbkdf2::pbkdf2_hmac_array;
@@ -373,14 +373,14 @@ pub async fn login(
     remember_me: bool,
 ) -> Result<StoredAuthSession, String> {
     let challenge_url = build_url(base, "/api/auth/challenge")?;
-    let challenge_body = serde_json::to_string(&LoginChallengeRequest { username })
-        .map_err(|e| e.to_string())?;
-    let challenge_text = auth_request_post_json(&challenge_url, &challenge_body, skip_tls_verify).await?;
+    let challenge_body =
+        serde_json::to_string(&LoginChallengeRequest { username }).map_err(|e| e.to_string())?;
+    let challenge_text =
+        auth_request_post_json(&challenge_url, &challenge_body, skip_tls_verify).await?;
     let challenge = serde_json::from_str::<LoginChallengeResponse>(&challenge_text)
         .map_err(|e| format!("invalid auth challenge JSON: {e}"))?;
 
-    let proof_request =
-        build_login_request(&challenge, username, password, remember_me).await?;
+    let proof_request = build_login_request(&challenge, username, password, remember_me).await?;
 
     let url = build_url(base, "/api/auth/login")?;
     let body = serde_json::to_string(&LoginRequest {

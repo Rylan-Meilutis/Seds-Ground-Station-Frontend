@@ -470,7 +470,10 @@ pub fn MapTab(
                 }
 
                 #[cfg(target_os = "ios")]
-                if !user_heading_manual && page_visible && let Some(deg) = gps_apple::latest_heading_deg() {
+                if !user_heading_manual
+                    && page_visible
+                    && let Some(deg) = gps_apple::latest_heading_deg()
+                {
                     let changed = last_heading
                         .map(|prev| heading_delta_degrees(prev, deg) >= 1.0)
                         .unwrap_or(true);
@@ -482,7 +485,10 @@ pub fn MapTab(
                 }
 
                 #[cfg(target_os = "android")]
-                if !user_heading_manual && page_visible && let Some(deg) = gps_android::latest_heading_deg() {
+                if !user_heading_manual
+                    && page_visible
+                    && let Some(deg) = gps_android::latest_heading_deg()
+                {
                     let changed = last_heading
                         .map(|prev| heading_delta_degrees(prev, deg) >= 1.0)
                         .unwrap_or(true);
@@ -494,19 +500,17 @@ pub fn MapTab(
                 }
 
                 #[cfg(any(target_os = "ios", target_os = "android"))]
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    if !page_visible {
-                        2_000
-                    } else if last_heading.is_some()
-                        && now_ms - last_heading_change_ms <= NATIVE_HEADING_ACTIVE_GRACE_MS
-                    {
-                        NATIVE_HEADING_SYNC_INTERVAL_ACTIVE_MS
-                    } else if last_heading.is_some() {
-                        NATIVE_HEADING_SYNC_INTERVAL_SETTLED_MS
-                    } else {
-                        NATIVE_HEADING_SYNC_IDLE_MS
-                    },
-                ))
+                tokio::time::sleep(std::time::Duration::from_millis(if !page_visible {
+                    2_000
+                } else if last_heading.is_some()
+                    && now_ms - last_heading_change_ms <= NATIVE_HEADING_ACTIVE_GRACE_MS
+                {
+                    NATIVE_HEADING_SYNC_INTERVAL_ACTIVE_MS
+                } else if last_heading.is_some() {
+                    NATIVE_HEADING_SYNC_INTERVAL_SETTLED_MS
+                } else {
+                    NATIVE_HEADING_SYNC_IDLE_MS
+                }))
                 .await;
 
                 #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -521,7 +525,8 @@ pub fn MapTab(
         let mut map_runtime_error_token = map_runtime_error_token;
         use_future(move || async move {
             loop {
-                let token = js_read_window_string("__gs26_map_runtime_error_token").unwrap_or_default();
+                let token =
+                    js_read_window_string("__gs26_map_runtime_error_token").unwrap_or_default();
                 let message = js_read_window_string("__gs26_map_runtime_error")
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty());
@@ -587,14 +592,16 @@ pub fn MapTab(
     #[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "android")))]
     let native_location_warning = None::<String>;
     #[cfg(target_os = "ios")]
-    let native_compass_warning =
-        if !user_heading_manual && gps_apple::latest_heading_deg().is_none() && *show_enable_compass.read() {
-            Some(translate_text(
-                "Compass unavailable. Orientation permission was denied or has not initialized.",
-            ))
-        } else {
-            None
-        };
+    let native_compass_warning = if !user_heading_manual
+        && gps_apple::latest_heading_deg().is_none()
+        && *show_enable_compass.read()
+    {
+        Some(translate_text(
+            "Compass unavailable. Orientation permission was denied or has not initialized.",
+        ))
+    } else {
+        None
+    };
     #[cfg(not(target_os = "ios"))]
     let native_compass_warning = None::<String>;
     let diagnostics_warning = native_location_warning
