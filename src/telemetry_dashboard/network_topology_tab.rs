@@ -62,7 +62,6 @@ struct NodePacketStats {
 
 #[derive(Clone)]
 struct TopologyDerived {
-    simulated: bool,
     graph_nodes: Vec<NetworkTopologyNode>,
     graph_links: Vec<NetworkTopologyLink>,
     render_placements: HashMap<String, NodePlacement>,
@@ -148,6 +147,7 @@ fn link_adjacency_map(links: &[NetworkTopologyLink]) -> HashMap<String, Vec<Stri
 pub fn NetworkTopologyTab(
     topology: Signal<NetworkTopologyMsg>,
     board_status: Signal<Vec<BoardStatusEntry>>,
+    ws_connected: bool,
     layout: NetworkTabLayout,
     flow_animation_enabled: bool,
     vertical_layout: bool,
@@ -321,8 +321,8 @@ pub fn NetworkTopologyTab(
                 }
                 p {
                     style: "margin:0; color:{theme.text_muted}; font-size:0.95rem;",
-                    if derived.simulated {
-                        "{translate_text(\"Topology graph is running in testing-mode simulation.\")}"
+                    if !ws_connected {
+                        "{translate_text(\"Disconnected from Ground Station. Topology snapshot is frozen.\")}"
                     } else {
                         "{translate_text(\"Topology graph is built from Ground Station topology and live node/link status.\")}"
                     }
@@ -340,8 +340,8 @@ pub fn NetworkTopologyTab(
                 h2 { style: "margin:0; color:{theme.text_primary};", "{title}" }
                 p {
                     style: "margin:0; color:{theme.text_muted}; font-size:0.95rem;",
-                    if derived.simulated {
-                        "{translate_text(\"Router graph is running in testing-mode simulation.\")}"
+                    if !ws_connected {
+                        "{translate_text(\"Disconnected from Ground Station. Topology snapshot is frozen.\")}"
                     } else {
                         "{translate_text(\"Router graph is built from the Ground Station RAN topology and live board/link status.\")}"
                     }
@@ -1571,7 +1571,6 @@ fn topology_derived_cached(
     };
 
     let derived = TopologyDerived {
-        simulated: snapshot.simulated,
         graph_nodes,
         graph_links,
         render_placements: layout_derived.render_placements,
@@ -1633,7 +1632,7 @@ fn link_style(status: NetworkTopologyStatus) -> (&'static str, &'static str, &'s
     match status {
         NetworkTopologyStatus::Online => ("#38bdf8", "#67e8f9", ""),
         NetworkTopologyStatus::Offline => ("#ef4444", "#fca5a5", "8 8"),
-        NetworkTopologyStatus::Simulated => ("#8b5cf6", "#c4b5fd", "14 10"),
+        NetworkTopologyStatus::Simulated => ("#38bdf8", "#67e8f9", ""),
     }
 }
 
@@ -1677,15 +1676,15 @@ fn node_style(
             "Offline",
         ),
         NetworkTopologyStatus::Simulated => (
-            "#8b5cf6",
+            "#22c55e",
             format!(
-                "radial-gradient(circle at 30% 30%, #312e81 0%, {} 72%)",
+                "radial-gradient(circle at 30% 30%, #14532d 0%, {} 72%)",
                 theme.panel_background
             ),
-            "#ede9fe",
-            "rgba(139, 92, 246, 0.18)".to_string(),
-            "#ddd6fe",
-            "Simulated",
+            "#dcfce7",
+            "rgba(34, 197, 94, 0.18)".to_string(),
+            "#bbf7d0",
+            "Online",
         ),
     }
 }

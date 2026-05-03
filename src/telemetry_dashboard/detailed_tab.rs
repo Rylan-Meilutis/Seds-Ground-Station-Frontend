@@ -119,10 +119,6 @@ pub fn DetailedTab(
         .iter()
         .filter(|node| node.status == NetworkTopologyStatus::Offline)
         .count();
-    let simulated_nodes = visible_topology_nodes
-        .iter()
-        .filter(|node| node.status == NetworkTopologyStatus::Simulated)
-        .count();
     let online_links = visible_topology_links
         .iter()
         .filter(|link| link.status == NetworkTopologyStatus::Online)
@@ -318,11 +314,9 @@ pub fn DetailedTab(
                             ("Boards", board_nodes.to_string()),
                             ("Online nodes", online_nodes.to_string()),
                             ("Offline nodes", offline_nodes.to_string()),
-                            ("Simulated nodes", simulated_nodes.to_string()),
                             ("Online links", online_links.to_string()),
                             ("Offline links", offline_links.to_string()),
                             ("Topology age", opt_i64_ms(topology_age_ms)),
-                            ("Topology simulated", translate_text(&yes_no(topology.simulated))),
                         ],
                     )}
                 }
@@ -747,12 +741,4 @@ fn collect_board_route_rows(
 
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     rows
-}
-
-fn yes_no(value: bool) -> String {
-    if value {
-        "yes".to_string()
-    } else {
-        "no".to_string()
-    }
 }

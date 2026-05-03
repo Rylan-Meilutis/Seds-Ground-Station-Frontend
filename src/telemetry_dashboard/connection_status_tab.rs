@@ -30,6 +30,7 @@ struct LatencyPoint {
 #[component]
 pub fn ConnectionStatusTab(
     boards: Signal<Vec<BoardStatusEntry>>,
+    ws_connected: bool,
     expected_boards: Vec<String>,
     layout: ConnectionTabLayout,
     title: String,
@@ -174,7 +175,7 @@ pub fn ConnectionStatusTab(
                                 }
                             }
                             if *show_board.read() {
-                                {render_board_table(&merged_boards, *board_age_now_ms.read(), &theme)}
+                                {render_board_table(&merged_boards, *board_age_now_ms.read(), ws_connected, &theme)}
                             }
                         }
                     },
@@ -236,7 +237,7 @@ pub fn ConnectionStatusTab(
                         "{translate_text(\"Exit Fullscreen\")}"
                     }
                 }
-                {render_board_table(&merged_boards, *board_age_now_ms.read(), &theme)}
+                {render_board_table(&merged_boards, *board_age_now_ms.read(), ws_connected, &theme)}
             }
         }
 
@@ -609,7 +610,12 @@ async fn recent_scroll_pause_likely() -> bool {
     eval.join::<String>().await.ok().as_deref() == Some("1")
 }
 
-fn render_board_table(boards: &[BoardStatusEntry], now_ms: i64, theme: &ThemeConfig) -> Element {
+fn render_board_table(
+    boards: &[BoardStatusEntry],
+    now_ms: i64,
+    ws_connected: bool,
+    theme: &ThemeConfig,
+) -> Element {
     if boards.is_empty() {
         return rsx! {
             div { style: "color:{theme.text_muted};", "No board status yet." }
@@ -647,7 +653,7 @@ fn render_board_table(boards: &[BoardStatusEntry], now_ms: i64, theme: &ThemeCon
                         "{format_last_seen(entry.last_seen_ms)}"
                     }
                     div { style: "{numeric_cell_style}",
-                        if let Some(age) = current_board_age_ms(entry, now_ms) { "{age}" } else { "—" }
+                        if let Some(age) = current_board_age_ms(entry, now_ms, ws_connected) { "{age}" } else if !ws_connected { "disconnected" } else { "—" }
                     }
                 }
             }
@@ -655,7 +661,10 @@ fn render_board_table(boards: &[BoardStatusEntry], now_ms: i64, theme: &ThemeCon
     }
 }
 
-fn current_board_age_ms(entry: &BoardStatusEntry, now_ms: i64) -> Option<u64> {
+fn current_board_age_ms(entry: &BoardStatusEntry, now_ms: i64, ws_connected: bool) -> Option<u64> {
+    if !ws_connected {
+        return None;
+    }
     if let Some(age_ms) = entry.age_ms {
         return Some(age_ms);
     }

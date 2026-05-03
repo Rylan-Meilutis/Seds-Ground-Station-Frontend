@@ -6866,6 +6866,7 @@ fn TelemetryDashboardInner() -> Element {
                                     key: "connection-status-clear-{frontend_data_clear_epoch}",
                                     ConnectionStatusTab {
                                         boards: board_status,
+                                        ws_connected: frontend_network_metrics.read().ws_connected,
                                         expected_boards: layout.network_tab.expected_boards.clone(),
                                         layout: layout.connection_tab.clone(),
                                         title: _main_tab_label(&layout, MainTab::ConnectionStatus),
@@ -6897,6 +6898,7 @@ fn TelemetryDashboardInner() -> Element {
                                     NetworkTopologyTab {
                                         topology: network_topology,
                                         board_status: board_status,
+                                        ws_connected: frontend_network_metrics.read().ws_connected,
                                         layout: layout.network_tab.clone(),
                                         flow_animation_enabled: *network_flow_animation_enabled.read(),
                                         vertical_layout: *network_topology_vertical.read(),
