@@ -3980,20 +3980,17 @@ fn TelemetryDashboardInner() -> Element {
     {
         let mut frontend_network_metrics = frontend_network_metrics;
         let alive = alive.clone();
-        let active_main_tab = active_main_tab;
         use_effect(move || {
             reset_frontend_network_metrics_state();
             let alive = alive.clone();
             let epoch = *WS_EPOCH.read();
             spawn(async move {
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                    if *active_main_tab.read() == MainTab::Detailed {
-                        frontend_network_metrics.set(frontend_network_metrics_snapshot());
-                    }
+                    frontend_network_metrics.set(frontend_network_metrics_snapshot());
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(1_000).await;
+                    gloo_timers::future::TimeoutFuture::new(250).await;
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 }
             });
         });
@@ -6864,6 +6861,7 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::ConnectionStatus => rsx! {
                                 div {
                                     key: "connection-status-clear-{frontend_data_clear_epoch}",
+                                    style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                                     ConnectionStatusTab {
                                         boards: board_status,
                                         ws_connected: frontend_network_metrics.read().ws_connected,
