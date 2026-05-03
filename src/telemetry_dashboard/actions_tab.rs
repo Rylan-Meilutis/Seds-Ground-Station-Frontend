@@ -68,8 +68,8 @@ fn merged_actuated(
     let local_active = command_feedback_active(cmd);
     let base = control_actuated.or_else(|| recording_command_active(cmd, recording_status));
     match (base, local_active) {
-        (_, true) => Some(true),
-        (Some(active), false) => Some(active),
+        (Some(active), _) => Some(active),
+        (None, true) => Some(true),
         (None, false) => None,
     }
 }

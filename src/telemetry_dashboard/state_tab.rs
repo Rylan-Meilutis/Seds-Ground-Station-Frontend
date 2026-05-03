@@ -683,6 +683,11 @@ fn data_style_chart_cached(
             } else {
                 div { style: "position:relative; width:100%; aspect-ratio:{view_w}/{view_h};",
                     ChartCanvas {
+                        identity_key: format!(
+                            "state-chart::{}::{}",
+                            title.unwrap_or("untitled"),
+                            dt
+                        ),
                         view_w: view_w,
                         view_h: view_h,
                         chunks: chunks,
@@ -1019,6 +1024,12 @@ fn combined_state_chart_cached(
                 }
                 div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%; container-type:inline-size;",
                     ChartCanvas {
+                        identity_key: format!(
+                            "state-multi-chart::{}::{}::{:?}",
+                            title.unwrap_or("untitled"),
+                            view_h,
+                            labels
+                        ),
                         view_w: view_w,
                         view_h: view_h,
                         chunks: chunks.into(),

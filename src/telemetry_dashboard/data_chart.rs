@@ -2980,6 +2980,7 @@ fn ensure_chart_canvas_renderer_installed() {
 
 #[component]
 pub fn ChartCanvas(
+    identity_key: String,
     view_w: f64,
     view_h: f64,
     chunks: Rc<Vec<ChartRenderChunk>>,
@@ -3000,6 +3001,7 @@ pub fn ChartCanvas(
     let last_draw_signature = use_hook(|| Cell::new(0_u64));
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    identity_key.hash(&mut hasher);
     view_w.to_bits().hash(&mut hasher);
     view_h.to_bits().hash(&mut hasher);
     grid_left.map(f64::to_bits).hash(&mut hasher);

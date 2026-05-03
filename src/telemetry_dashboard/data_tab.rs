@@ -430,14 +430,23 @@ pub fn DataTab(
                     }
                 }
 
-                DataLivePanel {
-                    current_tab: current_tab_snapshot,
-                    selected_subtab: selected_subtab_snapshot,
-                    current_tab_id: current.clone(),
-                    state_chart_labels_vertical: state_chart_labels_vertical,
-                    theme: theme.clone(),
-                    is_fullscreen: is_fullscreen,
-                    show_chart: show_chart,
+                div {
+                    key: format!(
+                        "data-live-{current}-{}",
+                        selected_subtab_snapshot
+                            .as_ref()
+                            .map(|subtab| subtab.id.as_str())
+                            .unwrap_or("__none__")
+                    ),
+                    DataLivePanel {
+                        current_tab: current_tab_snapshot,
+                        selected_subtab: selected_subtab_snapshot,
+                        current_tab_id: current.clone(),
+                        state_chart_labels_vertical: state_chart_labels_vertical,
+                        theme: theme.clone(),
+                        is_fullscreen: is_fullscreen,
+                        show_chart: show_chart,
+                    }
                 }
             }
         }
@@ -1282,6 +1291,12 @@ fn render_chart_group(
                 }
                 div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%;",
                     ChartCanvas {
+                        identity_key: format!(
+                            "{}::{}::{:?}",
+                            chart_key,
+                            group.title.as_deref().unwrap_or(""),
+                            group.channels
+                        ),
                         view_w: view_w,
                         view_h: view_h,
                         chunks: filtered_chunks,
