@@ -3,8 +3,8 @@
 
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use std::sync::atomic::{AtomicU64, Ordering};
-use zbus::zvariant::OwnedObjectPath;
 use zbus::Proxy;
+use zbus::zvariant::OwnedObjectPath;
 
 static GPS_RUN_TOKEN: AtomicU64 = AtomicU64::new(0);
 

@@ -14,8 +14,8 @@ const GRAPH_CANVAS_FULLSCREEN_ID: &str = "network-topology-canvas-fullscreen";
 
 use super::layout::{NetworkTabLayout, ThemeConfig};
 use super::types::{
-    NetworkTopologyLink, NetworkTopologyMsg, NetworkTopologyNode, NetworkTopologyNodeKind,
-    NetworkTopologyStatus,
+    BoardStatusEntry, NetworkTopologyLink, NetworkTopologyMsg, NetworkTopologyNode,
+    NetworkTopologyNodeKind, NetworkTopologyStatus,
 };
 use super::{js_eval, translate_text};
 
@@ -73,9 +73,20 @@ struct TopologyDerived {
     viewport_focus: Option<GraphViewportFocus>,
 }
 
+#[derive(Clone)]
+struct TopologyLayoutDerived {
+    visible_node_ids: HashSet<String>,
+    render_placements: HashMap<String, NodePlacement>,
+    node_labels: HashMap<String, String>,
+    neighbor_labels_by_id: HashMap<String, Vec<String>>,
+    render_width: i32,
+    render_height: i32,
+    viewport_focus: Option<GraphViewportFocus>,
+}
+
 static NODE_PACKET_PULSES: Lazy<Mutex<HashMap<String, NodePacketPulse>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-static TOPOLOGY_DERIVED_CACHE: Lazy<Mutex<Option<(u64, TopologyDerived)>>> =
+static TOPOLOGY_DERIVED_CACHE: Lazy<Mutex<Option<(u64, TopologyLayoutDerived)>>> =
     Lazy::new(|| Mutex::new(None));
 static TOPOLOGY_PACKET_STATS_CACHE: Lazy<
     Mutex<Option<(u64, u64, HashMap<String, NodePacketStats>)>>,
@@ -136,12 +147,14 @@ fn link_adjacency_map(links: &[NetworkTopologyLink]) -> HashMap<String, Vec<Stri
 #[component]
 pub fn NetworkTopologyTab(
     topology: Signal<NetworkTopologyMsg>,
+    board_status: Signal<Vec<BoardStatusEntry>>,
     layout: NetworkTabLayout,
     flow_animation_enabled: bool,
     vertical_layout: bool,
     theme: ThemeConfig,
 ) -> Element {
     let snapshot = topology.read();
+    let board_status_snapshot = board_status.read().clone();
     let expanded_node_id = use_signal(|| None::<String>);
     let mut is_fullscreen = use_signal(|| false);
     let title = layout
@@ -149,9 +162,8 @@ pub fn NetworkTopologyTab(
         .unwrap_or_else(|| "Network Topology".to_string());
     let topology_hash = topology_cache_hash(&snapshot, vertical_layout);
     let derived = topology_derived_cached(&snapshot, vertical_layout, topology_hash);
-    let packet_stats = super::with_telemetry_packet_counts_by_sender(|counts| {
-        packet_stats_by_node_cached(&derived.graph_nodes, counts, topology_hash)
-    });
+    let packet_stats =
+        packet_stats_by_node_cached(&derived.graph_nodes, &board_status_snapshot, topology_hash);
     let packet_pulses =
         node_packet_pulse_serials(&derived.graph_nodes, &packet_stats, flow_animation_enabled);
     let viewport_id = if *is_fullscreen.read() {
@@ -331,7 +343,7 @@ pub fn NetworkTopologyTab(
                     if derived.simulated {
                         "{translate_text(\"Router graph is running in testing-mode simulation.\")}"
                     } else {
-                        "{translate_text(\"Router graph is built from the Ground Station SEDSprintf topology and live board/link status.\")}"
+                        "{translate_text(\"Router graph is built from the Ground Station RAN topology and live board/link status.\")}"
                     }
                 }
                 div {
@@ -1287,13 +1299,20 @@ fn placement_for(id: &str, placements: &HashMap<String, NodePlacement>) -> Optio
 
 fn packet_stats_by_node(
     nodes: &[NetworkTopologyNode],
-    counts_by_sender: &HashMap<String, u64>,
+    board_status: &[BoardStatusEntry],
 ) -> HashMap<String, NodePacketStats> {
+    let counts_by_sender = board_status
+        .iter()
+        .map(|entry| (entry.sender_id.as_str(), entry.packet_count))
+        .collect::<HashMap<_, _>>();
     nodes
         .iter()
         .filter_map(|node| {
             let sender_id = node.sender_id.as_ref()?;
-            let total = counts_by_sender.get(sender_id).copied().unwrap_or(0);
+            let total = counts_by_sender
+                .get(sender_id.as_str())
+                .copied()
+                .unwrap_or(0);
             Some((
                 node.id.clone(),
                 NodePacketStats {
@@ -1410,7 +1429,17 @@ fn neighbor_labels_for_node(
 fn topology_cache_hash(snapshot: &NetworkTopologyMsg, vertical_layout: bool) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     vertical_layout.hash(&mut hasher);
-    snapshot.hash(&mut hasher);
+    for node in &snapshot.nodes {
+        node.id.hash(&mut hasher);
+        node.label.hash(&mut hasher);
+        node.kind.hash(&mut hasher);
+        node.sender_id.hash(&mut hasher);
+        node.endpoints.hash(&mut hasher);
+    }
+    for link in &snapshot.links {
+        link.source.hash(&mut hasher);
+        link.target.hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -1419,125 +1448,151 @@ fn topology_derived_cached(
     vertical_layout: bool,
     cache_hash: u64,
 ) -> TopologyDerived {
-    if let Ok(cache) = TOPOLOGY_DERIVED_CACHE.lock()
+    let cached_layout = if let Ok(cache) = TOPOLOGY_DERIVED_CACHE.lock()
         && let Some((cached_hash, derived)) = cache.as_ref()
         && *cached_hash == cache_hash
     {
-        return derived.clone();
-    }
+        Some(derived.clone())
+    } else {
+        None
+    };
 
-    let visible_node_ids = snapshot
-        .nodes
-        .iter()
-        .filter(|node| {
-            !matches!(
-                node.kind,
-                NetworkTopologyNodeKind::Endpoint | NetworkTopologyNodeKind::Side
-            )
-        })
-        .map(|node| node.id.as_str())
-        .collect::<HashSet<_>>();
+    let visible_node_ids = cached_layout
+        .as_ref()
+        .map(|derived| derived.visible_node_ids.clone())
+        .unwrap_or_else(|| {
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| {
+                    !matches!(
+                        node.kind,
+                        NetworkTopologyNodeKind::Endpoint | NetworkTopologyNodeKind::Side
+                    )
+                })
+                .map(|node| node.id.clone())
+                .collect::<HashSet<_>>()
+        });
     let graph_nodes = snapshot
         .nodes
         .iter()
-        .filter(|node| visible_node_ids.contains(node.id.as_str()))
+        .filter(|node| visible_node_ids.contains(&node.id))
         .cloned()
         .collect::<Vec<_>>();
     let graph_links = collapse_visible_links(&snapshot.nodes, &snapshot.links, &visible_node_ids);
-    let graph_layout = compute_graph_layout(&graph_nodes, &graph_links, vertical_layout);
-    let router_placement = graph_nodes
-        .iter()
-        .find(|node| node.kind == NetworkTopologyNodeKind::Router)
-        .and_then(|node| graph_layout.placements.get(&node.id).copied());
-    let graph_bounds = graph_layout
-        .placements
-        .values()
-        .fold(None::<(i32, i32, i32, i32)>, |acc, placement| {
-            let left = placement.x - placement.size / 2;
-            let right = placement.x + placement.size / 2;
-            let top = placement.y - placement.size / 2;
-            let bottom = placement.y + placement.size / 2;
-            match acc {
-                Some((min_x, max_x, min_y, max_y)) => Some((
-                    min_x.min(left),
-                    max_x.max(right),
-                    min_y.min(top),
-                    max_y.max(bottom),
-                )),
-                None => Some((left, right, top, bottom)),
+
+    let layout_derived = if let Some(cached_layout) = cached_layout {
+        cached_layout
+    } else {
+        let graph_layout = compute_graph_layout(&graph_nodes, &graph_links, vertical_layout);
+        let router_placement = graph_nodes
+            .iter()
+            .find(|node| node.kind == NetworkTopologyNodeKind::Router)
+            .and_then(|node| graph_layout.placements.get(&node.id).copied());
+        let graph_bounds = graph_layout
+            .placements
+            .values()
+            .fold(None::<(i32, i32, i32, i32)>, |acc, placement| {
+                let left = placement.x - placement.size / 2;
+                let right = placement.x + placement.size / 2;
+                let top = placement.y - placement.size / 2;
+                let bottom = placement.y + placement.size / 2;
+                match acc {
+                    Some((min_x, max_x, min_y, max_y)) => Some((
+                        min_x.min(left),
+                        max_x.max(right),
+                        min_y.min(top),
+                        max_y.max(bottom),
+                    )),
+                    None => Some((left, right, top, bottom)),
+                }
+            })
+            .unwrap_or((0, graph_layout.width, 0, graph_layout.height));
+        let (bound_min_x, bound_max_x, bound_min_y, bound_max_y) = graph_bounds;
+        let render_width = (bound_max_x - bound_min_x).max(1);
+        let render_height = (bound_max_y - bound_min_y).max(1);
+        let render_placements = graph_layout
+            .placements
+            .iter()
+            .map(|(id, placement)| {
+                (
+                    id.clone(),
+                    NodePlacement {
+                        x: placement.x - bound_min_x,
+                        y: placement.y - bound_min_y,
+                        size: placement.size,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let viewport_focus = router_placement.map(|router| {
+            let router_radius = router.size / 2;
+            GraphViewportFocus {
+                center_x: router.x - bound_min_x,
+                center_y: router.y - bound_min_y,
+                min_x: 0,
+                max_x: bound_max_x - bound_min_x,
+                min_y: 0,
+                max_y: bound_max_y - bound_min_y,
+                left_extent: (router.x - bound_min_x).max(router_radius),
+                right_extent: (bound_max_x - router.x).max(router_radius),
+                top_extent: (router.y - bound_min_y).max(router_radius),
+                bottom_extent: (bound_max_y - router.y).max(router_radius),
             }
-        })
-        .unwrap_or((0, graph_layout.width, 0, graph_layout.height));
-    let (bound_min_x, bound_max_x, bound_min_y, bound_max_y) = graph_bounds;
-    let render_width = (bound_max_x - bound_min_x).max(1);
-    let render_height = (bound_max_y - bound_min_y).max(1);
-    let render_placements = graph_layout
-        .placements
-        .iter()
-        .map(|(id, placement)| {
-            (
-                id.clone(),
-                NodePlacement {
-                    x: placement.x - bound_min_x,
-                    y: placement.y - bound_min_y,
-                    size: placement.size,
-                },
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let viewport_focus = router_placement.map(|router| {
-        let router_radius = router.size / 2;
-        GraphViewportFocus {
-            center_x: router.x - bound_min_x,
-            center_y: router.y - bound_min_y,
-            min_x: 0,
-            max_x: bound_max_x - bound_min_x,
-            min_y: 0,
-            max_y: bound_max_y - bound_min_y,
-            left_extent: (router.x - bound_min_x).max(router_radius),
-            right_extent: (bound_max_x - router.x).max(router_radius),
-            top_extent: (router.y - bound_min_y).max(router_radius),
-            bottom_extent: (bound_max_y - router.y).max(router_radius),
+        });
+        let node_labels = snapshot
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node.label.clone()))
+            .collect::<HashMap<_, _>>();
+        let neighbor_labels_by_id = graph_nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    neighbor_labels_for_node(node, &graph_links, &node_labels),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        let layout_derived = TopologyLayoutDerived {
+            visible_node_ids,
+            render_placements,
+            node_labels,
+            neighbor_labels_by_id,
+            render_width,
+            render_height,
+            viewport_focus,
+        };
+        if let Ok(mut cache) = TOPOLOGY_DERIVED_CACHE.lock() {
+            *cache = Some((cache_hash, layout_derived.clone()));
         }
-    });
-    let node_labels = snapshot
-        .nodes
-        .iter()
-        .map(|node| (node.id.clone(), node.label.clone()))
-        .collect::<HashMap<_, _>>();
-    let neighbor_labels_by_id = graph_nodes
-        .iter()
-        .map(|node| {
-            (
-                node.id.clone(),
-                neighbor_labels_for_node(node, &graph_links, &node_labels),
-            )
-        })
-        .collect::<HashMap<_, _>>();
+        layout_derived
+    };
 
     let derived = TopologyDerived {
         simulated: snapshot.simulated,
         graph_nodes,
         graph_links,
-        render_placements,
-        node_labels,
-        neighbor_labels_by_id,
-        render_width,
-        render_height,
-        viewport_focus,
+        render_placements: layout_derived.render_placements,
+        node_labels: layout_derived.node_labels,
+        neighbor_labels_by_id: layout_derived.neighbor_labels_by_id,
+        render_width: layout_derived.render_width,
+        render_height: layout_derived.render_height,
+        viewport_focus: layout_derived.viewport_focus,
     };
-
-    if let Ok(mut cache) = TOPOLOGY_DERIVED_CACHE.lock() {
-        *cache = Some((cache_hash, derived.clone()));
-    }
 
     derived
 }
 
 fn packet_stats_cache_hash(
     nodes: &[NetworkTopologyNode],
-    counts_by_sender: &HashMap<String, u64>,
+    board_status: &[BoardStatusEntry],
 ) -> u64 {
+    let counts_by_sender = board_status
+        .iter()
+        .map(|entry| (entry.sender_id.as_str(), entry.packet_count))
+        .collect::<HashMap<_, _>>();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for node in nodes {
         node.id.hash(&mut hasher);
@@ -1545,7 +1600,7 @@ fn packet_stats_cache_hash(
         let count = node
             .sender_id
             .as_ref()
-            .and_then(|sender_id| counts_by_sender.get(sender_id))
+            .and_then(|sender_id| counts_by_sender.get(sender_id.as_str()))
             .copied()
             .unwrap_or(0);
         count.hash(&mut hasher);
@@ -1555,10 +1610,10 @@ fn packet_stats_cache_hash(
 
 fn packet_stats_by_node_cached(
     nodes: &[NetworkTopologyNode],
-    counts_by_sender: &HashMap<String, u64>,
+    board_status: &[BoardStatusEntry],
     topology_hash: u64,
 ) -> HashMap<String, NodePacketStats> {
-    let packet_hash = packet_stats_cache_hash(nodes, counts_by_sender);
+    let packet_hash = packet_stats_cache_hash(nodes, board_status);
     if let Ok(cache) = TOPOLOGY_PACKET_STATS_CACHE.lock()
         && let Some((cached_topology_hash, cached_packet_hash, stats)) = cache.as_ref()
         && *cached_topology_hash == topology_hash
@@ -1567,7 +1622,7 @@ fn packet_stats_by_node_cached(
         return stats.clone();
     }
 
-    let stats = packet_stats_by_node(nodes, counts_by_sender);
+    let stats = packet_stats_by_node(nodes, board_status);
     if let Ok(mut cache) = TOPOLOGY_PACKET_STATS_CACHE.lock() {
         *cache = Some((topology_hash, packet_hash, stats.clone()));
     }
@@ -1687,11 +1742,11 @@ fn stack_height(nodes: &[&NetworkTopologyNode], node_gap: i32) -> i32 {
 fn collapse_visible_links(
     nodes: &[NetworkTopologyNode],
     links: &[NetworkTopologyLink],
-    visible_node_ids: &HashSet<&str>,
+    visible_node_ids: &HashSet<String>,
 ) -> Vec<NetworkTopologyLink> {
     let visible_nodes = nodes
         .iter()
-        .filter(|node| visible_node_ids.contains(node.id.as_str()))
+        .filter(|node| visible_node_ids.contains(&node.id))
         .cloned()
         .collect::<Vec<_>>();
     let Some(router) = visible_nodes
@@ -1704,9 +1759,7 @@ fn collapse_visible_links(
     let mut collapsed = BTreeMap::<(String, String), NetworkTopologyStatus>::new();
 
     for link in links {
-        if !visible_node_ids.contains(link.source.as_str())
-            || !visible_node_ids.contains(link.target.as_str())
-        {
+        if !visible_node_ids.contains(&link.source) || !visible_node_ids.contains(&link.target) {
             continue;
         }
         let key = ordered_link_key(link.source.clone(), link.target.clone());

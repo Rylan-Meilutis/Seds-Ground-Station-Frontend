@@ -56,17 +56,18 @@ use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
+use std::cell::Cell;
 use types::{
-    display_flight_state, BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg,
-    TelemetryRow,
+    BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
+    display_flight_state,
 };
 use version_page::VersionTab;
 use warnings_tab::WarningsTab;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering}, Arc,
-    Mutex,
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering},
 };
 
 use once_cell::sync::Lazy;
@@ -169,12 +170,8 @@ const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
 const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 100;
 const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 100;
 const CHART_RENDER_MIN_INTERVAL_MS: i64 = 0;
-const WS_STALE_RECONNECT_VISIBLE_MS: i64 = 8_000;
-const WS_STALE_RECONNECT_HIDDEN_MS: i64 = 20_000;
-const WS_PARTIAL_TELEMETRY_STALE_VISIBLE_MS: i64 = 8_000;
-const WS_PARTIAL_TELEMETRY_STALE_HIDDEN_MS: i64 = 20_000;
-const WS_PARTIAL_TELEMETRY_ACTIVE_RECENT_VISIBLE_MS: i64 = 2_500;
-const WS_PARTIAL_TELEMETRY_ACTIVE_RECENT_HIDDEN_MS: i64 = 8_000;
+const LIVE_TELEMETRY_MAX_AGE_MS: i64 = 20 * 60 * 1000;
+const LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS: i64 = 60_000;
 
 pub(crate) use network_metrics::FrontendNetworkMetrics;
 use network_metrics::{
@@ -197,6 +194,11 @@ pub(crate) fn current_wallclock_ms() -> i64 {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0)
     }
+}
+
+fn live_telemetry_row_is_fresh(row: &TelemetryRow, now_ms: i64) -> bool {
+    let age_ms = now_ms.saturating_sub(row.timestamp_ms);
+    age_ms <= LIVE_TELEMETRY_MAX_AGE_MS && age_ms >= -LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
@@ -358,6 +360,7 @@ static LATEST_TELEMETRY_BY_TYPE: Lazy<Mutex<HashMap<String, LatestTelemetrySampl
 static TELEMETRY_PACKET_COUNTS_BY_SENDER: Lazy<Mutex<HashMap<String, u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct SenderTelemetryActivity {
     last_mono_ms: i64,
     ws_epoch: u64,
@@ -468,6 +471,7 @@ fn note_sender_telemetry_activity_batch(rows: &[TelemetryRow]) {
     }
 }
 
+#[allow(dead_code)]
 fn stale_sender_telemetry_for_epoch(
     activity: &HashMap<String, SenderTelemetryActivity>,
     ws_epoch: u64,
@@ -504,6 +508,7 @@ fn stale_sender_telemetry_for_epoch(
     }
 }
 
+#[allow(dead_code)]
 fn stale_sender_telemetry_for_current_ws_epoch(
     now_ms: i64,
     stale_limit_ms: i64,
@@ -520,17 +525,6 @@ fn stale_sender_telemetry_for_current_ws_epoch(
         stale_limit_ms,
         active_recent_limit_ms,
     )
-}
-
-pub(crate) fn with_telemetry_packet_counts_by_sender<R>(
-    f: impl FnOnce(&HashMap<String, u64>) -> R,
-) -> R {
-    if let Ok(counts) = TELEMETRY_PACKET_COUNTS_BY_SENDER.lock() {
-        f(&counts)
-    } else {
-        let empty = HashMap::new();
-        f(&empty)
-    }
 }
 
 pub(crate) fn latest_rocket_gps_from_store() -> Option<(f64, f64)> {
@@ -583,6 +577,26 @@ fn update_latest_telemetry_locked(
             },
         );
     }
+}
+
+fn normalize_alert_list(alerts: &mut Vec<AlertMsg>) {
+    let mut seen = HashSet::<(i64, String)>::new();
+    alerts.retain(|alert| seen.insert((alert.timestamp_ms, alert.message.clone())));
+    alerts.sort_by_key(|alert| -alert.timestamp_ms);
+    if alerts.len() > 500 {
+        alerts.truncate(500);
+    }
+}
+
+fn push_alert_deduped(alerts: &mut Vec<AlertMsg>, next: AlertMsg) -> bool {
+    if alerts.iter().any(|existing| {
+        existing.timestamp_ms == next.timestamp_ms && existing.message == next.message
+    }) {
+        return false;
+    }
+    alerts.push(next);
+    normalize_alert_list(alerts);
+    true
 }
 
 /// Returns the latest telemetry row for a given data type and optional sender.
@@ -678,8 +692,10 @@ fn fallback_latest_telemetry_value(
 #[cfg(test)]
 mod latest_telemetry_tests {
     use super::{
-        latest_telemetry_value, reset_latest_telemetry, stale_sender_telemetry_for_epoch, SenderTelemetryActivity,
-        TelemetryRow,
+        AlertMsg, LIVE_TELEMETRY_MAX_AGE_MS, LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS,
+        SenderTelemetryActivity, TelemetryRow, latest_telemetry_value, live_telemetry_row_is_fresh,
+        normalize_alert_list, push_alert_deduped, reset_latest_telemetry,
+        stale_sender_telemetry_for_epoch,
     };
     use std::collections::HashMap;
 
@@ -724,6 +740,63 @@ mod latest_telemetry_tests {
 
         let stale = stale_sender_telemetry_for_epoch(&activity, 42, 20_000, 15_000, 4_000);
         assert_eq!(stale, vec!["DAQ".to_string()]);
+    }
+
+    #[test]
+    fn drops_live_rows_that_arrive_too_late() {
+        let now_ms = 1_700_000_100_000;
+        let row = TelemetryRow {
+            timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
+            data_type: "BATTERY_VOLTAGE".to_string(),
+            sender_id: "PB".to_string(),
+            values: vec![Some(12.0)],
+        };
+        assert!(!live_telemetry_row_is_fresh(&row, now_ms));
+    }
+
+    #[test]
+    fn keeps_live_rows_with_small_clock_skew() {
+        let now_ms = 1_700_000_100_000;
+        let row = TelemetryRow {
+            timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
+            data_type: "BATTERY_VOLTAGE".to_string(),
+            sender_id: "PB".to_string(),
+            values: vec![Some(12.0)],
+        };
+        assert!(live_telemetry_row_is_fresh(&row, now_ms));
+    }
+
+    #[test]
+    fn duplicate_warning_is_not_added_twice() {
+        let warning = AlertMsg {
+            timestamp_ms: 1_700_000_100_000,
+            message: "low battery".to_string(),
+        };
+        let mut alerts = vec![warning.clone()];
+        assert!(!push_alert_deduped(&mut alerts, warning));
+        assert_eq!(alerts.len(), 1);
+    }
+
+    #[test]
+    fn normalize_alerts_removes_duplicates_and_keeps_newest_first() {
+        let mut alerts = vec![
+            AlertMsg {
+                timestamp_ms: 20,
+                message: "b".to_string(),
+            },
+            AlertMsg {
+                timestamp_ms: 10,
+                message: "a".to_string(),
+            },
+            AlertMsg {
+                timestamp_ms: 20,
+                message: "b".to_string(),
+            },
+        ];
+        normalize_alert_list(&mut alerts);
+        assert_eq!(alerts.len(), 2);
+        assert_eq!(alerts[0].timestamp_ms, 20);
+        assert_eq!(alerts[1].timestamp_ms, 10);
     }
 }
 
@@ -873,6 +946,7 @@ const THEME_PRESET_STORAGE_KEY: &str = "gs_theme_preset";
 const LANGUAGE_STORAGE_KEY: &str = "gs_language";
 const CLOCK_24H_STORAGE_KEY: &str = "gs_clock_24h";
 const NETWORK_FLOW_ANIMATION_STORAGE_KEY: &str = "gs_network_flow_animation";
+const REMOTE_ALERT_ACKS_ENABLED_STORAGE_KEY: &str = "gs_remote_alert_acks_enabled";
 const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertical";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
 const CHART_INTERPOLATED_GAP_MS_STORAGE_KEY: &str = "gs_chart_interpolated_gap_ms";
@@ -990,6 +1064,7 @@ fn cache_storage_measured_bytes() -> u64 {
         THEME_PRESET_STORAGE_KEY,
         LANGUAGE_STORAGE_KEY,
         NETWORK_FLOW_ANIMATION_STORAGE_KEY,
+        REMOTE_ALERT_ACKS_ENABLED_STORAGE_KEY,
         NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY,
         STATE_CHART_LABELS_VERTICAL_STORAGE_KEY,
         DATA_CACHE_ENABLED_STORAGE_KEY,
@@ -1038,6 +1113,7 @@ fn cache_storage_stats_rows() -> Vec<(String, String)> {
         THEME_PRESET_STORAGE_KEY,
         LANGUAGE_STORAGE_KEY,
         NETWORK_FLOW_ANIMATION_STORAGE_KEY,
+        REMOTE_ALERT_ACKS_ENABLED_STORAGE_KEY,
         NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY,
         STATE_CHART_LABELS_VERTICAL_STORAGE_KEY,
         DATA_CACHE_ENABLED_STORAGE_KEY,
@@ -1216,6 +1292,18 @@ fn clear_frontend_data_caches() {
     charts_cache_clear_active();
     clear_telemetry_runtime_buffers();
     clear_visible_telemetry_history_without_bridge();
+    if let Ok(mut q) = PENDING_WS_OPEN_EVENTS.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
+        q.clear();
+    }
+    if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
+        *pending = HiddenPendingWsState::default();
+    }
+    LAST_WS_ACTIVITY_MONO_MS.store(0, Ordering::Relaxed);
+    LAST_TOPOLOGY_ACTIVITY_MONO_MS.store(0, Ordering::Relaxed);
+    bump_frontend_data_clear_epoch();
     #[cfg(not(target_arch = "wasm32"))]
     {
         reset_frontend_network_metrics_state();
@@ -1342,6 +1430,7 @@ static BUILTIN_THEME_CATALOG: Lazy<layout::ThemePresetCatalog> = Lazy::new(|| {
 static WS_RAW: GlobalSignal<Option<web_sys::WebSocket>> = Signal::global(|| None);
 // Force re-seed of graphs/history from backend.
 static SEED_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+static FRONTEND_DATA_CLEAR_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static LAUNCH_TMINUS_DISPLAY_MIN_MS: AtomicI64 = AtomicI64::new(i64::MAX);
 static LAUNCH_TMINUS_ZERO_LATCHED: AtomicBool = AtomicBool::new(false);
 static LAST_TELEMETRY_RENDER_FLUSH_MS: AtomicI64 = AtomicI64::new(0);
@@ -1371,6 +1460,15 @@ enum DashboardRuntimeEvent {
 fn bump_telemetry_render_epoch() {
     let mut render_epoch = TELEMETRY_RENDER_EPOCH.write();
     *render_epoch = render_epoch.wrapping_add(1);
+}
+
+fn bump_frontend_data_clear_epoch() {
+    let mut epoch = FRONTEND_DATA_CLEAR_EPOCH.write();
+    *epoch = epoch.wrapping_add(1);
+}
+
+pub(crate) fn frontend_data_clear_epoch() -> u64 {
+    *FRONTEND_DATA_CLEAR_EPOCH.read()
 }
 
 fn mark_telemetry_render_dirty() {
@@ -1450,6 +1548,7 @@ fn flush_hidden_pending_ws_state(
         set_signal_if_changed(board_status, next);
     }
     if let Some(next) = pending.network_topology {
+        note_network_topology_received();
         set_signal_if_changed(network_topology, next);
     }
     if let Some(next) = pending.notifications {
@@ -1867,13 +1966,43 @@ fn note_ws_connected_and_restore_data_flow(
     notification_history: &mut Signal<Vec<PersistentNotification>>,
     unread_notification_ids: &mut Signal<Vec<u64>>,
 ) {
+    let was_connected = frontend_network_metrics_snapshot().ws_connected;
     LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
     note_ws_connection_state(true, ws_url, None, epoch);
     clear_ws_connection_notification(notifications, notification_history, unread_notification_ids);
-    set_reseed_status_running();
-    charts_cache_request_refit();
     bump_render_epoch();
-    bump_seed_epoch();
+    if !was_connected {
+        set_reseed_status_running();
+        charts_cache_request_refit();
+        bump_seed_epoch();
+    }
+}
+
+fn note_local_ws_disconnect(reason: impl Into<String>) {
+    if !frontend_network_metrics_snapshot().ws_connected {
+        return;
+    }
+    let reason = reason.into();
+    LAST_WS_ACTIVITY_MONO_MS.store(0, Ordering::Relaxed);
+    LAST_TOPOLOGY_ACTIVITY_MONO_MS.store(0, Ordering::Relaxed);
+    note_ws_connection_state(
+        false,
+        auth_ws_url(&UrlConfig::base_ws()),
+        Some(reason),
+        *WS_EPOCH.read(),
+    );
+}
+
+pub(crate) fn note_network_topology_received() {
+    LAST_TOPOLOGY_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
+}
+
+pub(crate) fn frontend_topology_message_age_ms() -> Option<i64> {
+    let last_mono_ms = LAST_TOPOLOGY_ACTIVITY_MONO_MS.load(Ordering::Relaxed);
+    if last_mono_ms <= 0 {
+        return None;
+    }
+    Some((monotonic_now_ms() as i64).saturating_sub(last_mono_ms))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2196,6 +2325,8 @@ pub fn NativeSettingsPage() -> Element {
     let clock_24h = use_signal(|| persist::get_or(CLOCK_24H_STORAGE_KEY, "off") == "on");
     let network_flow_animation_enabled =
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
+    let remote_alert_acks_enabled =
+        use_signal(|| persist::get_or(REMOTE_ALERT_ACKS_ENABLED_STORAGE_KEY, "on") != "off");
     let network_topology_vertical =
         use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
@@ -2344,6 +2475,17 @@ pub fn NativeSettingsPage() -> Element {
                 "off"
             };
             persist::set_string(NETWORK_FLOW_ANIMATION_STORAGE_KEY, value);
+        });
+    }
+    {
+        let remote_alert_acks_enabled = remote_alert_acks_enabled;
+        use_effect(move || {
+            let value = if *remote_alert_acks_enabled.read() {
+                "on"
+            } else {
+                "off"
+            };
+            persist::set_string(REMOTE_ALERT_ACKS_ENABLED_STORAGE_KEY, value);
         });
     }
     {
@@ -2547,6 +2689,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut language_code = language_code;
         let mut clock_24h = clock_24h;
         let mut network_flow_animation_enabled = network_flow_animation_enabled;
+        let mut remote_alert_acks_enabled = remote_alert_acks_enabled;
         let mut network_topology_vertical = network_topology_vertical;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
         let mut chart_interpolated_gap_ms = chart_interpolated_gap_ms;
@@ -2571,6 +2714,7 @@ pub fn NativeSettingsPage() -> Element {
             language_code.set("en".to_string());
             clock_24h.set(false);
             network_flow_animation_enabled.set(true);
+            remote_alert_acks_enabled.set(true);
             network_topology_vertical.set(false);
             state_chart_labels_vertical.set(false);
             chart_interpolated_gap_ms.set(HISTORY_MS as u64);
@@ -2598,6 +2742,7 @@ pub fn NativeSettingsPage() -> Element {
             language_code,
             clock_24h,
             network_flow_animation_enabled,
+            remote_alert_acks_enabled,
             network_topology_vertical,
             state_chart_labels_vertical,
             chart_interpolated_gap_ms,
@@ -2822,17 +2967,22 @@ pub(crate) fn apply_window_theme(theme: &layout::ThemeConfig) {
 #[component]
 fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: String) -> Element {
     let _tick_snapshot = *HEADER_CLOCK_TICK.read();
-    let Some(ts) = network_time
-        .read()
-        .as_ref()
-        .copied()
-        .map(compensated_network_time_ms)
-        .map(format_network_time)
-    else {
-        return rsx! { div {} };
+    let (label, ts) = if let Some(sync) = network_time.read().as_ref().copied() {
+        (
+            localized_copy(&language, "Network Time", "Hora de red", "Heure reseau"),
+            format_network_time(compensated_network_time_ms(sync)),
+        )
+    } else {
+        (
+            localized_copy(
+                &language,
+                "System Time",
+                "Hora del sistema",
+                "Heure systeme",
+            ),
+            format_network_time(current_wallclock_ms()),
+        )
     };
-
-    let label = localized_copy(&language, "Network Time", "Hora de red", "Heure réseau");
     rsx! {
         span { style: "display:inline-flex; align-items:baseline; flex:0 0 auto; min-width:0; line-height:1; vertical-align:baseline;",
             span { style: "color:#cbd5e1; display:inline-flex; align-items:baseline; white-space:nowrap;",
@@ -2934,8 +3084,8 @@ fn reset_tminus_display_latch() {
 #[cfg(test)]
 mod launch_clock_tests {
     use super::{
-        launch_clock_tminus_remaining_ms, monotonic_tminus_display_ms, reset_tminus_display_latch,
-        LaunchClockKind, LaunchClockMsg,
+        LaunchClockKind, LaunchClockMsg, launch_clock_tminus_remaining_ms,
+        monotonic_tminus_display_ms, reset_tminus_display_latch,
     };
     use std::sync::Mutex;
 
@@ -3452,9 +3602,12 @@ fn _tls_skip_key(base: &str) -> String {
 
 static BASE_URL: GlobalSignal<String> = Signal::global(String::new);
 static LAST_WS_ACTIVITY_MONO_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_TOPOLOGY_ACTIVITY_MONO_MS: AtomicI64 = AtomicI64::new(0);
 
 /// Restarts the WebSocket connection and triggers a fresh telemetry reseed.
 fn reconnect_and_reload_ui() {
+    note_local_ws_disconnect("frontend requested reconnect");
+
     // Always restart websockets/tasks
     bump_ws_epoch();
     bump_seed_epoch();
@@ -3612,6 +3765,7 @@ static WS_SENDER: GlobalSignal<Option<WsSender>> = Signal::global(|| None::<WsSe
 pub fn TelemetryDashboard() -> Element {
     // Create once per real mount
     *DASHBOARD_LIFE.write() = DashboardLife::new_alive();
+    let frontend_data_clear_epoch = frontend_data_clear_epoch();
 
     log!(
         "[UI] TelemetryDashboard mounted (alive=true, gen={})",
@@ -3619,7 +3773,9 @@ pub fn TelemetryDashboard() -> Element {
     );
 
     rsx! {
-        TelemetryDashboardInner {}
+        TelemetryDashboardInner {
+            key: "dashboard-clear-{frontend_data_clear_epoch}"
+        }
     }
 }
 
@@ -3630,6 +3786,7 @@ fn TelemetryDashboardInner() -> Element {
     // Always valid; becomes “real” once outer publishes it.
     let alive = dashboard_alive();
     let _restored_cached_rows = use_signal(restore_cached_telemetry_rows_if_needed);
+    let frontend_data_clear_epoch = frontend_data_clear_epoch();
 
     // ----------------------------
     // Persistent values (strings)
@@ -3667,6 +3824,8 @@ fn TelemetryDashboardInner() -> Element {
     let clock_24h = use_signal(|| persist::get_or(CLOCK_24H_STORAGE_KEY, "off") == "on");
     let network_flow_animation_enabled =
         use_signal(|| persist::get_or(NETWORK_FLOW_ANIMATION_STORAGE_KEY, "on") != "off");
+    let remote_alert_acks_enabled =
+        use_signal(|| persist::get_or(REMOTE_ALERT_ACKS_ENABLED_STORAGE_KEY, "on") != "off");
     let network_topology_vertical =
         use_signal(|| persist::get_or(NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY, "off") == "on");
     let state_chart_labels_vertical =
@@ -3768,6 +3927,38 @@ fn TelemetryDashboardInner() -> Element {
     let show_version_overlay = use_signal(|| false);
 
     let active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
+
+    {
+        let mut warnings = warnings;
+        let mut errors = errors;
+        let mut notifications = notifications;
+        let mut notification_history = notification_history;
+        let mut message_history = message_history;
+        let mut dismissed_notifications = dismissed_notifications;
+        let mut unread_notification_ids = unread_notification_ids;
+        let mut network_time = network_time;
+        let mut launch_clock = launch_clock;
+        let mut flight_state = flight_state;
+        let mut board_status = board_status;
+        let mut network_topology = network_topology;
+        let mut frontend_network_metrics = frontend_network_metrics;
+        use_effect(move || {
+            let _ = frontend_data_clear_epoch;
+            warnings.set(Vec::new());
+            errors.set(Vec::new());
+            notifications.set(Vec::new());
+            notification_history.set(Vec::new());
+            message_history.set(Vec::new());
+            dismissed_notifications.set(Vec::new());
+            unread_notification_ids.set(Vec::new());
+            network_time.set(None);
+            launch_clock.set(None);
+            flight_state.set("Startup".to_string());
+            board_status.set(Vec::new());
+            network_topology.set(NetworkTopologyMsg::default());
+            frontend_network_metrics.set(FrontendNetworkMetrics::default());
+        });
+    }
 
     {
         let mut active_data_tab = active_data_tab;
@@ -3879,7 +4070,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
                     Err(_) => {
                         if persist::get_string(&visibility_cache_key).is_none() {
-                            calibration_has_sensors.set(Some(false));
+                            calibration_has_sensors.set(None);
                         }
                     }
                 }
@@ -4161,91 +4352,6 @@ fn TelemetryDashboardInner() -> Element {
         });
     }
 
-    {
-        let alive = alive.clone();
-        let mut layout_error = layout_error;
-        let mut layout_error_dismissed = layout_error_dismissed;
-        let mut ws_stale_watchdog_started = use_signal(|| false);
-        use_effect(move || {
-            if *ws_stale_watchdog_started.read() {
-                return;
-            }
-            ws_stale_watchdog_started.set(true);
-            let alive = alive.clone();
-            spawn(async move {
-                loop {
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(2_500).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
-
-                    if !alive.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    let sender_present = WS_SENDER.read().is_some();
-                    if !sender_present {
-                        continue;
-                    }
-
-                    let last_activity_ms = LAST_WS_ACTIVITY_MONO_MS.load(Ordering::Relaxed);
-                    if last_activity_ms <= 0 {
-                        continue;
-                    }
-
-                    let now_ms = monotonic_now_ms() as i64;
-                    let page_visible = dashboard_page_visible();
-                    let stale_limit_ms = if page_visible {
-                        WS_STALE_RECONNECT_VISIBLE_MS
-                    } else {
-                        WS_STALE_RECONNECT_HIDDEN_MS
-                    };
-                    let ws_idle_ms = now_ms.saturating_sub(last_activity_ms);
-                    if ws_idle_ms >= stale_limit_ms {
-                        log!(
-                            "[WS] stale activity watchdog forcing reconnect after {} ms idle",
-                            ws_idle_ms
-                        );
-                        layout_error.set(None);
-                        layout_error_dismissed.set(None);
-                        LAST_WS_ACTIVITY_MONO_MS.store(now_ms, Ordering::Relaxed);
-                        reconnect_and_reload_ui();
-                        continue;
-                    }
-
-                    let partial_stale_limit_ms = if page_visible {
-                        WS_PARTIAL_TELEMETRY_STALE_VISIBLE_MS
-                    } else {
-                        WS_PARTIAL_TELEMETRY_STALE_HIDDEN_MS
-                    };
-                    let active_recent_limit_ms = if page_visible {
-                        WS_PARTIAL_TELEMETRY_ACTIVE_RECENT_VISIBLE_MS
-                    } else {
-                        WS_PARTIAL_TELEMETRY_ACTIVE_RECENT_HIDDEN_MS
-                    };
-                    let stale_senders = stale_sender_telemetry_for_current_ws_epoch(
-                        now_ms,
-                        partial_stale_limit_ms,
-                        active_recent_limit_ms,
-                    );
-                    if stale_senders.is_empty() {
-                        continue;
-                    }
-
-                    log!(
-                        "[WS] sender telemetry watchdog forcing reconnect for stale senders: {}",
-                        stale_senders.join(", ")
-                    );
-                    layout_error.set(None);
-                    layout_error_dismissed.set(None);
-                    LAST_WS_ACTIVITY_MONO_MS.store(now_ms, Ordering::Relaxed);
-                    reconnect_and_reload_ui();
-                }
-            });
-        });
-    }
-
     // Persist UI state changes
     {
         let mut st_main_tab = st_main_tab;
@@ -4396,6 +4502,17 @@ fn TelemetryDashboardInner() -> Element {
                 "off"
             };
             persist::set_string(NETWORK_FLOW_ANIMATION_STORAGE_KEY, value);
+        });
+    }
+    {
+        let remote_alert_acks_enabled = remote_alert_acks_enabled;
+        use_effect(move || {
+            let value = if *remote_alert_acks_enabled.read() {
+                "on"
+            } else {
+                "off"
+            };
+            persist::set_string(REMOTE_ALERT_ACKS_ENABLED_STORAGE_KEY, value);
         });
     }
     {
@@ -4753,6 +4870,9 @@ fn TelemetryDashboardInner() -> Element {
                             &payload,
                             warnings,
                             errors,
+                            ack_warning_ts,
+                            ack_error_ts,
+                            remote_alert_acks_enabled,
                             notifications_flush,
                             notification_history_flush,
                             message_history_flush,
@@ -5039,7 +5159,8 @@ fn TelemetryDashboardInner() -> Element {
     };
     let warn_count_label = format_capped_alert_count(warn_count);
     let err_count_label = format_capped_alert_count(err_count);
-    let alert_pulse_phase_delay_ms = -((monotonic_now_ms() as i64).rem_euclid(1_150));
+    let warning_alert_phase_anchor_ms = use_hook(|| Cell::new(None::<i64>));
+    let error_alert_phase_anchor_ms = use_hook(|| Cell::new(None::<i64>));
 
     let latest_warning_ts = warnings
         .read()
@@ -5056,10 +5177,36 @@ fn TelemetryDashboardInner() -> Element {
 
     let has_warnings = warn_count > 0;
     let has_errors = err_count > 0;
+    let has_active_notifications = !notifications.read().is_empty();
     let has_unread_notifications = !unread_notification_ids.read().is_empty();
 
     let has_unacked_warnings = latest_warning_ts > *ack_warning_ts.read();
     let has_unacked_errors = latest_error_ts > *ack_error_ts.read();
+    let now_ms = monotonic_now_ms() as i64;
+    if has_unacked_warnings {
+        if warning_alert_phase_anchor_ms.get().is_none() {
+            warning_alert_phase_anchor_ms.set(Some(now_ms));
+        }
+    } else if warning_alert_phase_anchor_ms.get().is_some() {
+        warning_alert_phase_anchor_ms.set(None);
+    }
+    if has_unacked_errors {
+        if error_alert_phase_anchor_ms.get().is_none() {
+            error_alert_phase_anchor_ms.set(Some(now_ms));
+        }
+    } else if error_alert_phase_anchor_ms.get().is_some() {
+        error_alert_phase_anchor_ms.set(None);
+    }
+    let warning_alert_phase_delay_ms = if warning_alert_phase_anchor_ms.get().is_some() {
+        0
+    } else {
+        -(now_ms.rem_euclid(1_150))
+    };
+    let error_alert_phase_delay_ms = if error_alert_phase_anchor_ms.get().is_some() {
+        0
+    } else {
+        -(now_ms.rem_euclid(1_150))
+    };
 
     let border_style = "1px solid transparent";
     let app_alert_effect = if has_unacked_errors && has_errors {
@@ -5070,10 +5217,15 @@ fn TelemetryDashboardInner() -> Element {
         "none"
     };
     let app_alert_animation = if has_unacked_errors || has_unacked_warnings {
+        let alert_pulse_phase_delay_ms = if has_unacked_errors {
+            error_alert_phase_delay_ms
+        } else {
+            warning_alert_phase_delay_ms
+        };
         format!(
             "--gs26-alert-shadow-high: var(--gs26-alert-frame-shadow); --gs26-alert-shadow-low: none; \
              --gs26-alert-opacity-high: 1; --gs26-alert-opacity-low: 1; \
-             animation:gs26-alert-pulse 1.15s ease-in-out infinite; \
+             animation:gs26-alert-pulse 1.15s steps(1, end) infinite; \
              animation-delay:{alert_pulse_phase_delay_ms}ms;"
         )
     } else {
@@ -5081,11 +5233,11 @@ fn TelemetryDashboardInner() -> Element {
     };
     let warnings_tab_icon_style = if has_unacked_warnings {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:1; \
-         --gs26-alert-shadow-high:none; --gs26-alert-shadow-low:none; --gs26-alert-opacity-high:1; --gs26-alert-opacity-low:0.36; \
-         animation:gs26-alert-pulse 1.15s ease-in-out infinite; \
+         --gs26-alert-shadow-high:none; --gs26-alert-shadow-low:none; --gs26-alert-opacity-high:1; --gs26-alert-opacity-low:0.28; \
+         animation:gs26-alert-pulse 1.15s steps(1, end) infinite; \
          animation-delay:"
             .to_string()
-            + &alert_pulse_phase_delay_ms.to_string()
+            + &warning_alert_phase_delay_ms.to_string()
             + "ms;"
     } else if has_warnings {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1; animation:none;".to_string()
@@ -5094,11 +5246,11 @@ fn TelemetryDashboardInner() -> Element {
     };
     let errors_tab_icon_style = if has_unacked_errors {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:1; \
-         --gs26-alert-shadow-high:none; --gs26-alert-shadow-low:none; --gs26-alert-opacity-high:1; --gs26-alert-opacity-low:0.36; \
-         animation:gs26-alert-pulse 1.15s ease-in-out infinite; \
+         --gs26-alert-shadow-high:none; --gs26-alert-shadow-low:none; --gs26-alert-opacity-high:1; --gs26-alert-opacity-low:0.28; \
+         animation:gs26-alert-pulse 1.15s steps(1, end) infinite; \
          animation-delay:"
             .to_string()
-            + &alert_pulse_phase_delay_ms.to_string()
+            + &error_alert_phase_delay_ms.to_string()
             + "ms;"
     } else if has_errors {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1; animation:none;".to_string()
@@ -5107,6 +5259,8 @@ fn TelemetryDashboardInner() -> Element {
     };
     let notifications_tab_icon_style = if has_unread_notifications {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#bfdbfe; opacity:1;".to_string()
+    } else if has_active_notifications {
+        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1;".to_string()
     } else {
         "display:none;".to_string()
     };
@@ -5128,8 +5282,6 @@ fn TelemetryDashboardInner() -> Element {
         "display:inline-flex; align-items:center; min-width:13ch; color:#fde68a; opacity:{}; flex:0 0 auto;",
         if has_warnings { "1" } else { "0" }
     );
-    let network_time_visible = network_time.read().is_some();
-
     // Initial flightstate (HTTP)
     {
         let mut flight_state = flight_state;
@@ -5205,6 +5357,9 @@ fn TelemetryDashboardInner() -> Element {
                     epoch,
                     warnings,
                     errors,
+                    ack_warning_ts,
+                    ack_error_ts,
+                    remote_alert_acks_enabled,
                     notifications,
                     notification_history,
                     message_history,
@@ -5720,6 +5875,7 @@ fn TelemetryDashboardInner() -> Element {
                             language_code: language_code,
                             clock_24h: clock_24h,
                             network_flow_animation_enabled: network_flow_animation_enabled,
+                            remote_alert_acks_enabled: remote_alert_acks_enabled,
                             network_topology_vertical: network_topology_vertical,
                             state_chart_labels_vertical: state_chart_labels_vertical,
                             chart_interpolated_gap_ms: chart_interpolated_gap_ms,
@@ -5763,6 +5919,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut language_code = language_code;
                                 let mut clock_24h = clock_24h;
                                 let mut network_flow_animation_enabled = network_flow_animation_enabled;
+                                let mut remote_alert_acks_enabled = remote_alert_acks_enabled;
                                 let mut network_topology_vertical = network_topology_vertical;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
                                 let mut chart_interpolated_gap_ms = chart_interpolated_gap_ms;
@@ -5792,6 +5949,7 @@ fn TelemetryDashboardInner() -> Element {
                                     language_code.set("en".to_string());
                                     clock_24h.set(false);
                                     network_flow_animation_enabled.set(true);
+                                    remote_alert_acks_enabled.set(true);
                                     network_topology_vertical.set(false);
                                     state_chart_labels_vertical.set(false);
                                     chart_interpolated_gap_ms.set(HISTORY_MS as u64);
@@ -5828,8 +5986,8 @@ fn TelemetryDashboardInner() -> Element {
              @keyframes gs26-blink-fast-off {{ 0%, 100% {{ opacity: 0.15; }} 45% {{ opacity: 1.0; }} }}
              @keyframes gs26-blink-fast-on  {{ 0%, 100% {{ opacity: 1.0; }} 55% {{ opacity: 0.2; }} }}
              @keyframes gs26-alert-pulse {{
-               0%, 100% {{ box-shadow: var(--gs26-alert-shadow-high, none); opacity: var(--gs26-alert-opacity-high, 1); }}
-               50% {{ box-shadow: var(--gs26-alert-shadow-low, none); opacity: var(--gs26-alert-opacity-low, 1); }}
+               0%, 49.999% {{ box-shadow: var(--gs26-alert-shadow-high, none); opacity: var(--gs26-alert-opacity-high, 1); }}
+               50%, 100% {{ box-shadow: var(--gs26-alert-shadow-low, none); opacity: var(--gs26-alert-opacity-low, 1); }}
              }}
              .gs26-tab-shell {{ min-width:260px; }}
              .gs26-tab-toggle {{ display:none; }}
@@ -6673,9 +6831,7 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
                             div { class: "gs26-status-network",
-                                if network_time_visible {
-                                    NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
-                                }
+                                NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
                             }
                             div { class: "gs26-status-launch",
                                 LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
@@ -6706,12 +6862,15 @@ fn TelemetryDashboardInner() -> Element {
                                     }
                             },
                             MainTab::ConnectionStatus => rsx! {
-                                ConnectionStatusTab {
-                                    boards: board_status,
-                                    expected_boards: layout.network_tab.expected_boards.clone(),
-                                    layout: layout.connection_tab.clone(),
-                                    title: _main_tab_label(&layout, MainTab::ConnectionStatus),
-                                    theme: theme.clone(),
+                                div {
+                                    key: "connection-status-clear-{frontend_data_clear_epoch}",
+                                    ConnectionStatusTab {
+                                        boards: board_status,
+                                        expected_boards: layout.network_tab.expected_boards.clone(),
+                                        layout: layout.connection_tab.clone(),
+                                        title: _main_tab_label(&layout, MainTab::ConnectionStatus),
+                                        theme: theme.clone(),
+                                    }
                                 }
                             },
                             MainTab::Detailed => rsx! {
@@ -6734,9 +6893,10 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             },
                             MainTab::NetworkTopology => rsx! {
-                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
+                                div { key: "network-topology-clear-{frontend_data_clear_epoch}", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                                     NetworkTopologyTab {
                                         topology: network_topology,
+                                        board_status: board_status,
                                         layout: layout.network_tab.clone(),
                                         flow_animation_enabled: *network_flow_animation_enabled.read(),
                                         vertical_layout: *network_topology_vertical.read(),
@@ -6781,7 +6941,7 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             },
                             MainTab::Messages => rsx! {
-                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                div { key: "messages-clear-{frontend_data_clear_epoch}", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     MessagesTab {
                                         history: message_history,
                                         theme: theme.clone(),
@@ -6818,8 +6978,16 @@ fn TelemetryDashboardInner() -> Element {
                                         theme: theme.clone(),
                                         on_ack: {
                                             let mut ack_warning_ts = ack_warning_ts;
+                                            let latest_warning_ts = latest_warning_ts;
                                             move |_| {
                                                 ack_warning_ts.set(latest_warning_ts);
+                                                spawn(async move {
+                                                    let _ = post_remote_alert_ack(
+                                                        "warning",
+                                                        latest_warning_ts,
+                                                    )
+                                                    .await;
+                                                });
                                             }
                                         }
                                     }
@@ -6833,8 +7001,16 @@ fn TelemetryDashboardInner() -> Element {
                                         theme: theme.clone(),
                                         on_ack: {
                                             let mut ack_error_ts = ack_error_ts;
+                                            let latest_error_ts = latest_error_ts;
                                             move |_| {
                                                 ack_error_ts.set(latest_error_ts);
+                                                spawn(async move {
+                                                    let _ = post_remote_alert_ack(
+                                                        "error",
+                                                        latest_error_ts,
+                                                    )
+                                                    .await;
+                                                });
                                             }
                                         }
                                     }
@@ -7321,6 +7497,24 @@ pub(crate) async fn http_post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
     serde_json::from_str::<T>(&body).map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct AlertAckRequest {
+    severity: &'static str,
+    timestamp_ms: i64,
+}
+
+async fn post_remote_alert_ack(severity: &'static str, timestamp_ms: i64) -> Result<(), String> {
+    let _: AlertAckStateMsg = http_post_json(
+        "/api/alerts/ack",
+        &AlertAckRequest {
+            severity,
+            timestamp_ms,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn http_post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
     path: &str,
@@ -7563,22 +7757,6 @@ fn merge_notification_history(
     }
 }
 
-fn merge_message_history(
-    history: &mut Vec<PersistentNotification>,
-    incoming: &[PersistentNotification],
-) {
-    let mut seen: HashSet<(u64, i64)> = history.iter().map(|n| (n.id, n.timestamp_ms)).collect();
-    for n in incoming {
-        if seen.insert((n.id, n.timestamp_ms)) {
-            history.push(n.clone());
-        }
-    }
-    history.sort_by_key(|n| -n.timestamp_ms);
-    if history.len() > MAX_MESSAGE_HISTORY {
-        history.truncate(MAX_MESSAGE_HISTORY);
-    }
-}
-
 fn apply_notifications_snapshot(
     incoming: Vec<PersistentNotification>,
     notifications: Signal<Vec<PersistentNotification>>,
@@ -7701,8 +7879,11 @@ fn apply_messages_snapshot(
     message_history: Signal<Vec<PersistentNotification>>,
 ) {
     let mut message_history = message_history;
-    let mut history = { message_history.read().clone() };
-    merge_message_history(&mut history, &incoming);
+    let mut history = incoming;
+    history.sort_by_key(|n| -n.timestamp_ms);
+    if history.len() > MAX_MESSAGE_HISTORY {
+        history.truncate(MAX_MESSAGE_HISTORY);
+    }
     message_history.set(history);
 }
 
@@ -7907,7 +8088,8 @@ async fn seed_from_db(
                 _ => {}
             }
         }
-
+        normalize_alert_list(&mut w);
+        normalize_alert_list(&mut e);
         warnings.set(w);
         errors.set(e);
     }
@@ -7960,6 +8142,7 @@ async fn seed_from_db(
     if let Ok(topology) = http_get_json::<NetworkTopologyMsg>("/api/network_topology").await
         && alive.load(Ordering::Relaxed)
     {
+        note_network_topology_received();
         network_topology.set(topology);
     }
 
@@ -7989,6 +8172,9 @@ async fn connect_ws_supervisor(
     epoch: u64,
     warnings: Signal<Vec<AlertMsg>>,
     errors: Signal<Vec<AlertMsg>>,
+    ack_warning_ts: Signal<i64>,
+    ack_error_ts: Signal<i64>,
+    remote_alert_acks_enabled: Signal<bool>,
     notifications: Signal<Vec<PersistentNotification>>,
     notification_history: Signal<Vec<PersistentNotification>>,
     message_history: Signal<Vec<PersistentNotification>>,
@@ -8042,6 +8228,9 @@ async fn connect_ws_supervisor(
                     epoch,
                     warnings,
                     errors,
+                    ack_warning_ts,
+                    ack_error_ts,
+                    remote_alert_acks_enabled,
                     notifications,
                     notification_history,
                     message_history,
@@ -8079,6 +8268,9 @@ async fn connect_ws_supervisor(
                     epoch,
                     warnings,
                     errors,
+                    ack_warning_ts,
+                    ack_error_ts,
+                    remote_alert_acks_enabled,
                     notifications,
                     notification_history,
                     message_history,
@@ -8149,6 +8341,9 @@ async fn connect_ws_once_wasm(
     epoch: u64,
     _warnings: Signal<Vec<AlertMsg>>,
     _errors: Signal<Vec<AlertMsg>>,
+    _ack_warning_ts: Signal<i64>,
+    _ack_error_ts: Signal<i64>,
+    _remote_alert_acks_enabled: Signal<bool>,
     _notifications: Signal<Vec<PersistentNotification>>,
     _notification_history: Signal<Vec<PersistentNotification>>,
     _message_history: Signal<Vec<PersistentNotification>>,
@@ -8196,7 +8391,6 @@ async fn connect_ws_once_wasm(
 
     let ws = WebSocket::new(&ws_url).map_err(|_| "failed to create websocket".to_string())?;
     let last_activity_ms = std::rc::Rc::new(std::cell::Cell::new(Date::now()));
-    note_ws_connection_state(false, ws_url.clone(), None, epoch);
 
     *WS_RAW.write() = Some(ws.clone());
     *WS_SENDER.write() = Some(WsSender { ws: ws.clone() });
@@ -8281,14 +8475,9 @@ async fn connect_ws_once_wasm(
             break;
         }
 
-        let ws_poll_ms = if dashboard_page_visible() {
-            2_000
-        } else {
-            10_000
-        };
         let done = futures_util::future::select(
             &mut closed_rx,
-            gloo_timers::future::TimeoutFuture::new(ws_poll_ms),
+            gloo_timers::future::TimeoutFuture::new(2_000),
         )
         .await;
 
@@ -8296,26 +8485,8 @@ async fn connect_ws_once_wasm(
             futures_util::future::Either::Left((_closed, _timeout)) => break,
             futures_util::future::Either::Right((_timeout, _closed)) => {
                 let ready_state = ws.ready_state();
-                let online = web_sys::window()
-                    .map(|window| window.navigator().on_line())
-                    .unwrap_or(true);
-                let stale_limit_ms = if dashboard_page_visible() {
-                    8_000.0
-                } else {
-                    20_000.0
-                };
-                let idle_ms = Date::now() - last_activity_ms.get();
-                if !online
-                    || ready_state == WebSocket::CLOSING
-                    || ready_state == WebSocket::CLOSED
-                    || (ready_state == WebSocket::OPEN && idle_ms >= stale_limit_ms)
-                {
-                    log!(
-                        "[WS] forcing reconnect online={} ready_state={} idle_ms={:.0}",
-                        online,
-                        ready_state,
-                        idle_ms
-                    );
+                if ready_state == WebSocket::CLOSING || ready_state == WebSocket::CLOSED {
+                    log!("[WS] websocket ready_state transitioned to {}", ready_state);
                     let _ = ws.close();
                     break;
                 }
@@ -8429,6 +8600,9 @@ async fn connect_ws_once_native(
     epoch: u64,
     warnings: Signal<Vec<AlertMsg>>,
     errors: Signal<Vec<AlertMsg>>,
+    ack_warning_ts: Signal<i64>,
+    ack_error_ts: Signal<i64>,
+    remote_alert_acks_enabled: Signal<bool>,
     mut notifications: Signal<Vec<PersistentNotification>>,
     mut notification_history: Signal<Vec<PersistentNotification>>,
     message_history: Signal<Vec<PersistentNotification>>,
@@ -8458,7 +8632,7 @@ async fn connect_ws_once_native(
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use futures_util::{SinkExt, StreamExt};
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
     use tokio_tungstenite::tungstenite::Message;
 
     if !alive.load(Ordering::Relaxed) {
@@ -8472,7 +8646,6 @@ async fn connect_ws_once_native(
     let ws_url = auth_ws_url(&base_ws);
 
     log!("[WS] connecting to {ws_url} (epoch={epoch})");
-    note_ws_connection_state(false, ws_url.clone(), None, epoch);
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     *WS_SENDER.write() = Some(WsSender { tx });
@@ -8566,14 +8739,8 @@ async fn connect_ws_once_native(
         Outgoing(Option<String>),
     }
 
-    let mut missed_heartbeats = 0_u8;
     while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-        let heartbeat_interval = if dashboard_page_visible() {
-            Duration::from_secs(4)
-        } else {
-            Duration::from_secs(12)
-        };
-        let event = timeout(heartbeat_interval, async {
+        let event = timeout(Duration::from_millis(250), async {
             tokio::select! {
                 outgoing = rx.recv() => NativeWsEvent::Outgoing(outgoing),
                 incoming = ws_stream.next() => NativeWsEvent::Incoming(incoming),
@@ -8581,27 +8748,8 @@ async fn connect_ws_once_native(
         })
         .await;
 
-        let Some(next_event) = (match event {
-            Ok(next_event) => {
-                missed_heartbeats = 0;
-                Some(next_event)
-            }
-            Err(_) => {
-                missed_heartbeats = missed_heartbeats.saturating_add(1);
-                if missed_heartbeats >= 2 {
-                    log!("[WS] heartbeat missed twice; forcing reconnect");
-                    None
-                } else {
-                    if let Err(e) = ws_stream.send(Message::Ping(Vec::new().into())).await {
-                        log!("[WS] ping send failed: {e}");
-                        None
-                    } else {
-                        continue;
-                    }
-                }
-            }
-        }) else {
-            break;
+        let Ok(next_event) = event else {
+            continue;
         };
 
         match next_event {
@@ -8617,6 +8765,9 @@ async fn connect_ws_once_native(
                     &s,
                     warnings,
                     errors,
+                    ack_warning_ts,
+                    ack_error_ts,
+                    remote_alert_acks_enabled,
                     notifications,
                     notification_history,
                     message_history,
@@ -8669,6 +8820,9 @@ fn handle_ws_message(
     s: &str,
     warnings: Signal<Vec<AlertMsg>>,
     errors: Signal<Vec<AlertMsg>>,
+    ack_warning_ts: Signal<i64>,
+    ack_error_ts: Signal<i64>,
+    remote_alert_acks_enabled: Signal<bool>,
     notifications: Signal<Vec<PersistentNotification>>,
     notification_history: Signal<Vec<PersistentNotification>>,
     message_history: Signal<Vec<PersistentNotification>>,
@@ -8692,8 +8846,11 @@ fn handle_ws_message(
     LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
     let mut warnings = warnings;
     let mut errors = errors;
+    let mut ack_warning_ts = ack_warning_ts;
+    let mut ack_error_ts = ack_error_ts;
     let mut warning_event_counter = warning_event_counter;
     let mut error_event_counter = error_event_counter;
+    let remote_alert_acks_enabled = remote_alert_acks_enabled;
     let notifications = notifications;
     let notification_history = notification_history;
     let message_history = message_history;
@@ -8716,9 +8873,13 @@ fn handle_ws_message(
     };
     note_incoming_ws_message(s.len());
     let page_visible = dashboard_page_visible();
+    let now_ms = current_wallclock_ms();
 
     match msg {
         WsInMsg::Telemetry(row) => {
+            if !live_telemetry_row_is_fresh(&row, now_ms) {
+                return;
+            }
             note_incoming_telemetry_rows(1, 0);
             note_sender_telemetry_activity_batch(std::slice::from_ref(&row));
             if RESEED_IN_PROGRESS.load(Ordering::Relaxed)
@@ -8744,6 +8905,13 @@ fn handle_ws_message(
         }
 
         WsInMsg::TelemetryBatch(batch) => {
+            if batch.is_empty() {
+                return;
+            }
+            let batch: Vec<TelemetryRow> = batch
+                .into_iter()
+                .filter(|row| live_telemetry_row_is_fresh(row, now_ms))
+                .collect();
             if batch.is_empty() {
                 return;
             }
@@ -8793,30 +8961,40 @@ fn handle_ws_message(
 
         WsInMsg::Warning(w) => {
             let mut v = { warnings.read().clone() };
-            v.insert(0, w.clone());
-            if v.len() > 500 {
-                v.truncate(500);
+            if push_alert_deduped(&mut v, w) {
+                warnings.set(v);
+                let next = {
+                    let current = *warning_event_counter.read();
+                    current.saturating_add(1)
+                };
+                warning_event_counter.set(next);
             }
-            warnings.set(v);
-            let next = {
-                let current = *warning_event_counter.read();
-                current.saturating_add(1)
-            };
-            warning_event_counter.set(next);
         }
 
         WsInMsg::Error(e) => {
             let mut v = { errors.read().clone() };
-            v.insert(0, e.clone());
-            if v.len() > 500 {
-                v.truncate(500);
+            if push_alert_deduped(&mut v, e) {
+                errors.set(v);
+                let next = {
+                    let current = *error_event_counter.read();
+                    current.saturating_add(1)
+                };
+                error_event_counter.set(next);
             }
-            errors.set(v);
-            let next = {
-                let current = *error_event_counter.read();
-                current.saturating_add(1)
-            };
-            error_event_counter.set(next);
+        }
+
+        WsInMsg::AlertAckState(ack_state) => {
+            if *remote_alert_acks_enabled.read() {
+                let next_warning_ack =
+                    (*ack_warning_ts.read()).max(ack_state.warning_ack_timestamp_ms);
+                if next_warning_ack != *ack_warning_ts.read() {
+                    ack_warning_ts.set(next_warning_ack);
+                }
+                let next_error_ack = (*ack_error_ts.read()).max(ack_state.error_ack_timestamp_ms);
+                if next_error_ack != *ack_error_ts.read() {
+                    ack_error_ts.set(next_error_ack);
+                }
+            }
         }
 
         WsInMsg::BoardStatus(status) => {
@@ -8828,6 +9006,7 @@ fn handle_ws_message(
         }
 
         WsInMsg::NetworkTopology(topology) => {
+            note_network_topology_received();
             if page_visible {
                 set_signal_if_changed(&mut network_topology, topology);
             } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {

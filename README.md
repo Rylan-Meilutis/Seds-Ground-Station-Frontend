@@ -9,6 +9,11 @@ Current release:
 - Dioxus line: `0.7.6`
 - Targets: web, macOS desktop, Android, iOS
 
+Backend compatibility note:
+
+- The current frontend contract has been checked against `../groundstation26/backend/src/web.rs`, `../groundstation26/backend/src/state.rs`, and `../groundstation26/backend/src/types.rs`.
+- In addition to the older dashboard routes, this frontend now expects backend support for shared alert acknowledgement state, message history, board `packet_count`, and the `ActionPolicy` / `FillTargets` / `RecordingStatus` WebSocket snapshots.
+
 If your goal is to build a backend that works with this frontend, start here:
 
 - Backend contract: [`docs/backend-api.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-api.md)
@@ -90,7 +95,9 @@ For a more complete dashboard, also implement:
 - `GET /api/network_time`
 - `GET /api/network_topology`
 - `GET /api/boards`
+- `GET /api/messages`
 - `GET /api/notifications`
+- `POST /api/alerts/ack`
 - `POST /api/notifications/{id}/dismiss`
 - `GET/POST /api/flight_setup`
 - `POST /api/flight_setup/apply`

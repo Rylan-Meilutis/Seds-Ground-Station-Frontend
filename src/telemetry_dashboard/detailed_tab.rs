@@ -4,14 +4,14 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::network_topology_tab::collect_endpoint_rows;
 use super::types::{
-    display_flight_state, BoardStatusEntry, FlightState, NetworkTopologyMsg,
-    NetworkTopologyNodeKind, NetworkTopologyStatus,
+    BoardStatusEntry, FlightState, NetworkTopologyMsg, NetworkTopologyNodeKind,
+    NetworkTopologyStatus, display_flight_state,
 };
 use super::{
+    AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
     compensated_network_time_ms, current_language, current_wallclock_ms, device_timezone_label,
-    format_network_time, format_timestamp_ms_clock, js_eval, layout::ThemeConfig,
-    localized_copy, monotonic_now_ms, translate_text, AlertMsg, FrontendNetworkMetrics,
-    NetworkTimeSync, PersistentNotification,
+    format_network_time, format_timestamp_ms_clock, frontend_topology_message_age_ms, js_eval,
+    layout::ThemeConfig, localized_copy, monotonic_now_ms, translate_text,
 };
 use crate::telemetry_dashboard::map_tab::{format_elevation, format_precise_distance};
 
@@ -166,18 +166,31 @@ pub fn DetailedTab(
     };
     let network_time_display = network_time_snapshot
         .map(compensated_network_time_ms)
+        .filter(|value_ms| is_plausible_remote_wallclock_ms(*value_ms))
         .map(format_network_time);
     let device_timezone = device_timezone_label();
     let network_clock_delta_ms = network_time_snapshot
         .map(compensated_network_time_ms)
+        .filter(|value_ms| is_plausible_remote_wallclock_ms(*value_ms))
         .map(|ms| current_wallclock_ms().saturating_sub(ms));
-    let network_time_age_ms = network_time_snapshot.map(|sync| {
-        (monotonic_now_ms() - sync.received_mono_ms)
-            .max(0.0)
-            .round() as i64
-    });
-    let topology_age_ms = if topology.generated_ms > 0 {
-        Some(now_ms.saturating_sub(topology.generated_ms as i64))
+    let network_time_age_ms = if metrics_snapshot.ws_connected {
+        network_time_snapshot.and_then(|sync| {
+            if !is_plausible_remote_wallclock_ms(sync.network_ms)
+                || !sync.received_mono_ms.is_finite()
+            {
+                return None;
+            }
+            Some(
+                (monotonic_now_ms() - sync.received_mono_ms)
+                    .max(0.0)
+                    .round() as i64,
+            )
+        })
+    } else {
+        None
+    };
+    let topology_age_ms = if metrics_snapshot.ws_connected {
+        frontend_topology_message_age_ms()
     } else {
         None
     };
@@ -533,6 +546,16 @@ fn opt_timestamp(value: Option<i64>) -> String {
     value
         .map(format_timestamp_ms_clock)
         .unwrap_or_else(|| "--".to_string())
+}
+
+fn is_plausible_remote_wallclock_ms(value_ms: i64) -> bool {
+    if value_ms <= 0 {
+        return false;
+    }
+
+    let now_ms = current_wallclock_ms();
+    let max_future_skew_ms = 24_i64 * 60 * 60 * 1000;
+    value_ms <= now_ms.saturating_add(max_future_skew_ms)
 }
 
 fn human_bytes(bytes: u64) -> String {

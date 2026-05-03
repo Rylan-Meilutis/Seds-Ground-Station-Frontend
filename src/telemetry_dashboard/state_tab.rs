@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use crate::auth;
 
-use super::blink::{action_animation_style, ACTION_BLINK_CSS};
+use super::blink::{ACTION_BLINK_CSS, action_animation_style};
 use super::layout::{
     ActionSpec, ActionsTabLayout, BooleanLabels, ChartSeriesSpec, DataTabLayout, FillTargetFluid,
     FillTargetValueKind, StateSection, StateSectionStyle, StateSectionValueLayout, StateTabLayout,
@@ -20,17 +20,17 @@ use super::layout::{
 };
 use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
-    command_feedback_active, http_get_json, latest_telemetry_row, latest_telemetry_value, reseed_note_banner,
-    reseed_status_note, translate_text, ActionPolicyMsg, BlinkMode,
-    FillTargetsConfig, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
+    ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, FillTargetsConfig, TELEMETRY_RENDER_EPOCH,
+    command_feedback_active, http_get_json, latest_telemetry_row, latest_telemetry_value,
+    reseed_note_banner, reseed_status_note, translate_text,
 };
 
 use crate::telemetry_dashboard::data_chart::{
-    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    sender_scoped_chart_key, series_color, use_chart_panel_visibility, ChartCanvas,
-    ChartRenderChunk, SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD,
-    CHART_GRID_TOP, CHART_X_LABEL_BOTTOM,
-    CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    ChartCanvas, ChartRenderChunk, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
+    charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
+    sender_scoped_chart_key, series_color, use_chart_panel_visibility,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 
@@ -882,7 +882,7 @@ fn combined_chart_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::{chart_key_for_series_spec, ChartSeriesSpec};
+    use super::{ChartSeriesSpec, chart_key_for_series_spec};
 
     #[test]
     fn chart_series_with_sender_uses_sender_scoped_cache_key() {

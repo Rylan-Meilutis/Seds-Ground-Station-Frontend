@@ -18,6 +18,7 @@ pub fn SettingsPage(
     language_code: Signal<String>,
     clock_24h: Signal<bool>,
     network_flow_animation_enabled: Signal<bool>,
+    remote_alert_acks_enabled: Signal<bool>,
     network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
     chart_interpolated_gap_ms: Signal<u64>,
@@ -56,6 +57,7 @@ pub fn SettingsPage(
     let selected_language = language_code.read().clone();
     let clock_24h_enabled = *clock_24h.read();
     let flow_animation_enabled = *network_flow_animation_enabled.read();
+    let remote_alert_acks_enabled_value = *remote_alert_acks_enabled.read();
     let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
     let chart_interpolated_gap_ms_value = (*chart_interpolated_gap_ms.read()).clamp(0, 60_000);
@@ -421,6 +423,18 @@ pub fn SettingsPage(
         "Choose whether the network graph expands across columns or down rows.",
         "Elige si el grafo de red se expande en columnas o en filas.",
         "Choisissez si le graphe reseau s'etend en colonnes ou en lignes.",
+    );
+    let remote_alert_ack_title = localized_copy(
+        &language,
+        "Remote Alert Acknowledgements",
+        "Confirmaciones remotas de alertas",
+        "Accuses d'alerte distants",
+    );
+    let remote_alert_ack_desc = localized_copy(
+        &language,
+        "Applies warning and error acknowledgements broadcast by the backend or hardware panel to this client.",
+        "Aplica en este cliente las confirmaciones de avisos y errores difundidas por el backend o el panel fisico.",
+        "Applique sur ce client les acquittements d'alertes et d'erreurs diffuses par le backend ou le panneau materiel.",
     );
     let topology_columns_label = localized_copy(&language, "Columns", "Columnas", "Colonnes");
     let topology_rows_label = localized_copy(&language, "Rows", "Filas", "Lignes");
@@ -1006,6 +1020,23 @@ pub fn SettingsPage(
                             onclick: move |_| network_topology_vertical.set(true),
                             "{topology_rows_label}"
                         }
+                    }
+                }
+            }
+
+            div { style: "margin-top:12px; {card_style}",
+                div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{remote_alert_ack_title}" }
+                div { style: "font-size:13px; color:{theme.text_soft};", "{remote_alert_ack_desc}" }
+                div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:10px;",
+                    button {
+                        style: if remote_alert_acks_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                        onclick: move |_| remote_alert_acks_enabled.set(true),
+                        "{flow_on_label}"
+                    }
+                    button {
+                        style: if !remote_alert_acks_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
+                        onclick: move |_| remote_alert_acks_enabled.set(false),
+                        "{flow_off_label}"
                     }
                 }
             }

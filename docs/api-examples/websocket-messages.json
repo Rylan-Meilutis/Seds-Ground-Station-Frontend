@@ -52,6 +52,13 @@
     }
   },
   {
+    "ty": "AlertAckState",
+    "data": {
+      "warning_ack_timestamp_ms": 1750000001000,
+      "error_ack_timestamp_ms": 1750000002000
+    }
+  },
+  {
     "ty": "BoardStatus",
     "data": {
       "boards": [
@@ -60,6 +67,7 @@
           "board_label": "Flight Computer",
           "sender_id": "FC",
           "seen": true,
+          "packet_count": 1280,
           "last_seen_ms": 1750000002200,
           "age_ms": 120
         }
@@ -95,6 +103,19 @@
     }
   },
   {
+    "ty": "Messages",
+    "data": [
+      {
+        "id": 201,
+        "timestamp_ms": 1750000002800,
+        "message": "FC: boot complete",
+        "persistent": true,
+        "action_label": null,
+        "action_cmd": null
+      }
+    ]
+  },
+  {
     "ty": "Notifications",
     "data": [
       {
@@ -120,6 +141,27 @@
           "actuated": false
         }
       ]
+    }
+  },
+  {
+    "ty": "FillTargets",
+    "data": {
+      "version": 1,
+      "nitrogen": {
+        "target_mass_kg": 12.5,
+        "target_pressure_psi": 450.0
+      },
+      "nitrous": {
+        "target_mass_kg": 18.0,
+        "target_pressure_psi": 760.0
+      }
+    }
+  },
+  {
+    "ty": "RecordingStatus",
+    "data": {
+      "mode": "idle",
+      "db_path": null
     }
   },
   {

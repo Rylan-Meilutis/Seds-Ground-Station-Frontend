@@ -4,6 +4,12 @@ This document describes the backend contract that the frontend currently expects
 
 Verified against frontend version `0.3.1`, app build `23`, and the current Dioxus `0.7.6` codebase.
 
+It has also been checked against the current `../groundstation26` backend implementation in:
+
+- `backend/src/web.rs`
+- `backend/src/state.rs`
+- `backend/src/types.rs`
+
 It is derived from the frontend source, not from an external OpenAPI spec. If you change the frontend route usage, update this file.
 
 ## Transport Model
@@ -56,10 +62,12 @@ Command uplink:
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/action_policy` | Enables/disables action buttons |
+| `POST` | `/api/alerts/ack` | Shared warning/error acknowledge state |
 | `GET` | `/api/network_time` | Shared network clock |
 | `GET` | `/api/launch_clock` | Current T-minus/T-plus clock snapshot |
 | `GET` | `/api/network_topology` | Topology tab |
 | `GET` | `/api/boards` | Board presence summary |
+| `GET` | `/api/messages` | Messages tab seed |
 | `GET` | `/api/notifications` | Persistent notifications |
 | `POST` | `/api/notifications/{id}/dismiss` | Mark notification dismissed |
 | `GET` | `/api/flight_setup` | Actions tab setup panel |
@@ -322,6 +330,7 @@ Response type:
       "board_label": "Flight Computer",
       "sender_id": "FC",
       "seen": true,
+      "packet_count": 1280,
       "last_seen_ms": 1750000002500,
       "age_ms": 250
     }
@@ -332,6 +341,7 @@ Response type:
 Notes:
 
 - `sender_id` is backend-defined. The frontend no longer assumes a fixed board list or a fixed sender-id enum.
+- `packet_count` is part of the current frontend contract and is used by the topology tab instead of inferred frontend telemetry-row counts.
 
 ### `GET /api/network_topology`
 
@@ -380,6 +390,29 @@ Response type:
 }
 ```
 
+### `GET /api/messages`
+
+Response type:
+
+```json
+[
+  {
+    "id": 201,
+    "timestamp_ms": 1750000003800,
+    "message": "FC: boot complete",
+    "persistent": true,
+    "action_label": null,
+    "action_cmd": null
+  }
+]
+```
+
+Notes:
+
+- the frontend treats this as a snapshot-style payload, not an append delta
+- multiline message bodies are preserved by the UI
+- the current `groundstation26` backend uses the same shape as notifications for message entries
+
 ### `GET /api/notifications`
 
 Response type:
@@ -403,6 +436,27 @@ Notes:
 - `action_label` and `action_cmd` are optional
 - users can clear visible local notification history from the Notifications tab; backend notifications can still return on the next `/api/notifications` or WebSocket `Notifications` payload unless dismissed server-side
 - frontend-generated WebSocket disconnect notifications are local-only, appear at most once during an outage, are not retained in notification history, and are removed automatically when the WebSocket reconnects
+
+### `POST /api/alerts/ack`
+
+Request type:
+
+```json
+{
+  "severity": "warning",
+  "timestamp_ms": 1750000004000
+}
+```
+
+Schema:
+
+- `severity`: `warning` | `error`
+- `timestamp_ms`: `i64`
+
+Notes:
+
+- this is the shared backend acknowledgement path for warnings/errors
+- the frontend also supports remote ack broadcasts from hardware/operator inputs through the same shared state
 
 ### `POST /api/notifications/{id}/dismiss`
 
@@ -806,10 +860,14 @@ Supported `ty` values:
 - `LaunchClock`
 - `Warning`
 - `Error`
+- `AlertAckState`
 - `BoardStatus`
 - `NetworkTopology`
+- `Messages`
 - `Notifications`
 - `ActionPolicy`
+- `FillTargets`
+- `RecordingStatus`
 - `NetworkTime`
 
 Examples are available in:
@@ -823,7 +881,8 @@ Payload notes:
 - `FlightState` payload is `{ "state": "<string>" }`
 - `LaunchClock` payload is the same shape as `GET /api/launch_clock`
 - `Warning` and `Error` payloads are `{ "timestamp_ms": <i64>, "message": "<string>" }`
-- `BoardStatus`, `NetworkTopology`, `Notifications`, `ActionPolicy`, and `NetworkTime` reuse the same shapes as their HTTP endpoints
+- `AlertAckState` payload is `{ "warning_ack_timestamp_ms": <i64>, "error_ack_timestamp_ms": <i64> }`
+- `BoardStatus`, `NetworkTopology`, `Messages`, `Notifications`, `ActionPolicy`, `FillTargets`, `RecordingStatus`, and `NetworkTime` reuse the same shapes as their HTTP endpoints
 
 ## Implementation Advice
 

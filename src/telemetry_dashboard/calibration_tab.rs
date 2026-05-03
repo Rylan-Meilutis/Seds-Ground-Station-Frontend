@@ -1,8 +1,8 @@
 #![allow(clippy::redundant_locals)]
 
 use super::{
-    http_get_json, http_post_json, latest_telemetry_value, layout::ThemeConfig,
-    persist, translate_text, TELEMETRY_RENDER_EPOCH,
+    TELEMETRY_RENDER_EPOCH, http_get_json, http_post_json, latest_telemetry_value,
+    layout::ThemeConfig, persist, translate_text,
 };
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -370,7 +370,7 @@ fn fit_details_text_parts((linear, fit): (&ChannelLinear, Option<&FitMeta>)) -> 
 
 #[cfg(test)]
 mod calibration_eval_tests {
-    use super::{eval_fit_key, CalibrationFile, ChannelLinear, GenericCalibrationChannel};
+    use super::{CalibrationFile, ChannelLinear, GenericCalibrationChannel, eval_fit_key};
     use std::collections::BTreeMap;
 
     #[test]

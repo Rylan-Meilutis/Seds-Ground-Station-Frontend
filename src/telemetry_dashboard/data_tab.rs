@@ -11,16 +11,16 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use super::data_chart::{
-    charts_cache_get, charts_cache_get_channel_minmax, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color, use_chart_panel_visibility,
-    ChartCanvas, SeriesSwatch, CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT,
-    CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
-    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT,
-    CHART_Y_LABEL_MAX_WIDTH,
+    CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
+    CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
+    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
+    charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
+    charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color,
+    use_chart_panel_visibility,
 };
 use super::{
-    latest_telemetry_row, latest_telemetry_value, persist, reseed_note_banner,
-    reseed_status_note, translate_text, CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH,
+    CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value,
+    persist, reseed_note_banner, reseed_status_note, translate_text,
 };
 
 const _ACTIVE_SUBTAB_STORAGE_KEY_PREFIX: &str = "gs26_active_data_subtab::";
@@ -611,10 +611,10 @@ fn chart_series_for_group(
 #[cfg(test)]
 mod tests {
     use super::{
-        chart_groups_have_graph_source, chart_series_for_group, data_live_panel_has_telemetry, effective_chart_groups,
-        DataChartGroup, DataSource, DataSummaryItem,
+        DataChartGroup, DataSource, DataSummaryItem, chart_groups_have_graph_source,
+        chart_series_for_group, data_live_panel_has_telemetry, effective_chart_groups,
     };
-    use crate::telemetry_dashboard::{reset_latest_telemetry, TelemetryRow};
+    use crate::telemetry_dashboard::{TelemetryRow, reset_latest_telemetry};
 
     #[test]
     fn inferred_chart_series_preserves_summary_sender_id() {

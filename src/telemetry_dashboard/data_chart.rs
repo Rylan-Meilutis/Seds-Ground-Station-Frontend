@@ -872,8 +872,9 @@ mod tests {
             chart.chunks.iter().skip(1).any(|chunk| chunk
                 .paths
                 .first()
-                .is_some_and(|path| path.contains("M 0."))),
-            "later chunks should seed their path from the chunk edge so rasterized chunk buffers stay continuous"
+                .and_then(|path| super::first_path_move_x(path))
+                .is_some_and(|x| x <= 0.001)),
+            "later chunks should seed their path from the previous sample position so the combined stroke stays continuous"
         );
         assert!(
             chart
@@ -881,6 +882,40 @@ mod tests {
                 .iter()
                 .all(|chunk| chunk.gap_paths.first().is_none_or(String::is_empty)),
             "1 Hz data should remain interpolated without explicit gap strokes"
+        );
+    }
+
+    #[test]
+    fn combined_canvas_paths_join_chunk_carry_segments_into_one_stroke() {
+        let chunks = vec![
+            super::ChartRenderChunk {
+                id: 0,
+                x: 100.0,
+                width: 20.0,
+                right: 120.0,
+                paths: vec!["M 9.50 5.00 L 19.50 5.00 ".to_string()],
+                gap_paths: vec![String::new()],
+                signature: 1,
+                live: false,
+            },
+            super::ChartRenderChunk {
+                id: 1,
+                x: 120.0,
+                width: 20.0,
+                right: 140.0,
+                paths: vec!["M -0.50 5.00 L 9.50 7.00 ".to_string()],
+                gap_paths: vec![String::new()],
+                signature: 2,
+                live: true,
+            },
+        ];
+
+        let combined = super::build_combined_canvas_paths(&chunks);
+
+        assert_eq!(combined.len(), 1);
+        assert_eq!(
+            combined[0], "M 109.50 5.00 L 119.50 5.00 L 119.50 5.00 L 129.50 7.00 ",
+            "chunk carry-in points should continue the same stroked path instead of starting a new subpath"
         );
     }
 }
@@ -2109,9 +2144,7 @@ fn chunk_local_x(
     chunk_bucket_count: i64,
     chunk_width: f32,
 ) -> f32 {
-    let x =
-        chunk_width * (((bucket_id - chunk_start_bid) as f32 + 0.5) / chunk_bucket_count as f32);
-    x.clamp(0.0, chunk_width)
+    chunk_width * (((bucket_id - chunk_start_bid) as f32 + 0.5) / chunk_bucket_count as f32)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2164,12 +2197,126 @@ struct CanvasChartPayload<'a> {
     view_w: f64,
     view_h: f64,
     chunks: &'a [ChartRenderChunk],
+    combined_paths: Vec<String>,
     colors: Vec<&'static str>,
     grid_left: Option<f64>,
     grid_right: Option<f64>,
     grid_top: Option<f64>,
     grid_bottom: Option<f64>,
     signature: u64,
+}
+
+fn first_path_move_x(path: &str) -> Option<f64> {
+    let mut tokens = path.split_ascii_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "M" {
+            return tokens.next()?.parse::<f64>().ok();
+        }
+    }
+    None
+}
+
+fn append_translated_path(
+    target: &mut String,
+    path: &str,
+    offset_x: f64,
+    continue_from_previous: bool,
+) -> bool {
+    let mut tokens = path.split_ascii_whitespace().peekable();
+    let mut mode = "";
+    let mut first_move = true;
+    let mut wrote_any = false;
+
+    while let Some(token) = tokens.next() {
+        match token {
+            "M" | "L" | "Q" => {
+                mode = token;
+            }
+            _ => match mode {
+                "M" | "L" => {
+                    let Ok(x) = token.parse::<f64>() else {
+                        break;
+                    };
+                    let Some(y_token) = tokens.next() else {
+                        break;
+                    };
+                    let Ok(y) = y_token.parse::<f64>() else {
+                        break;
+                    };
+                    let command = if mode == "M" && first_move && continue_from_previous {
+                        "L"
+                    } else {
+                        mode
+                    };
+                    target.push_str(&format!("{command} {:.2} {:.2} ", x + offset_x, y));
+                    first_move = false;
+                    wrote_any = true;
+                }
+                "Q" => {
+                    let Ok(cpx) = token.parse::<f64>() else {
+                        break;
+                    };
+                    let Some(cpy_token) = tokens.next() else {
+                        break;
+                    };
+                    let Ok(cpy) = cpy_token.parse::<f64>() else {
+                        break;
+                    };
+                    let Some(x_token) = tokens.next() else {
+                        break;
+                    };
+                    let Ok(x) = x_token.parse::<f64>() else {
+                        break;
+                    };
+                    let Some(y_token) = tokens.next() else {
+                        break;
+                    };
+                    let Ok(y) = y_token.parse::<f64>() else {
+                        break;
+                    };
+                    target.push_str(&format!(
+                        "Q {:.2} {:.2} {:.2} {:.2} ",
+                        cpx + offset_x,
+                        cpy,
+                        x + offset_x,
+                        y
+                    ));
+                    wrote_any = true;
+                }
+                _ => break,
+            },
+        }
+    }
+
+    wrote_any
+}
+
+fn build_combined_canvas_paths(chunks: &[ChartRenderChunk]) -> Vec<String> {
+    let series_count = chunks
+        .iter()
+        .map(|chunk| chunk.paths.len())
+        .max()
+        .unwrap_or(0);
+    let mut combined_paths = vec![String::new(); series_count];
+
+    for chunk in chunks {
+        let offset_x = chunk.x;
+        for (series_index, path) in chunk.paths.iter().enumerate() {
+            if path.trim().is_empty() {
+                continue;
+            }
+            let continue_from_previous = !combined_paths[series_index].is_empty()
+                && first_path_move_x(path).is_some_and(|x| x <= 0.001);
+            append_translated_path(
+                &mut combined_paths[series_index],
+                path,
+                offset_x,
+                continue_from_previous,
+            );
+        }
+    }
+
+    combined_paths
 }
 
 fn chart_canvas_renderer_bootstrap() -> &'static str {
@@ -2233,10 +2380,8 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         pxW: 0,
                         pxH: 0,
                         gridBuffer: null,
-                        chunkCache: new Map(),
                         path2dCache: new Map(),
-                        historyBuffer: null,
-                        historyKey: null,
+                        combinedPathCache: new Map(),
                         isVisible: rectVisible,
                         pendingData: null,
                       }};
@@ -2406,38 +2551,38 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           targetCtx.setTransform(1, 0, 0, 1, 0, 0);
                         }}
                       }};
-                      const drawChunkDirect = (targetCtx, chunk, destX, destW) => {{
-                        const strokeWithContrast = (ctx2, path2d, color, width, alpha = 1.0) => {{
-                          ctx2.save();
-                          ctx2.globalAlpha = Math.max(0.12, alpha * 0.42);
-                          ctx2.strokeStyle = "rgba(15, 23, 42, 0.88)";
-                          ctx2.lineWidth = width + 1.8;
-                          ctx2.lineJoin = "round";
-                          ctx2.lineCap = "round";
-                          ctx2.stroke(path2d);
-                          ctx2.restore();
+                      const strokeWithContrast = (ctx2, path2d, color, width, alpha = 1.0) => {{
+                        ctx2.save();
+                        ctx2.globalAlpha = Math.max(0.12, alpha * 0.42);
+                        ctx2.strokeStyle = "rgba(15, 23, 42, 0.88)";
+                        ctx2.lineWidth = width + 1.8;
+                        ctx2.lineJoin = "round";
+                        ctx2.lineCap = "round";
+                        ctx2.stroke(path2d);
+                        ctx2.restore();
 
-                          ctx2.save();
-                          ctx2.globalAlpha = Math.max(0.08, alpha * 0.20);
-                          ctx2.strokeStyle = "rgba(248, 250, 252, 0.68)";
-                          ctx2.lineWidth = width + 0.9;
-                          ctx2.lineJoin = "round";
-                          ctx2.lineCap = "round";
-                          ctx2.stroke(path2d);
-                          ctx2.restore();
+                        ctx2.save();
+                        ctx2.globalAlpha = Math.max(0.08, alpha * 0.20);
+                        ctx2.strokeStyle = "rgba(248, 250, 252, 0.68)";
+                        ctx2.lineWidth = width + 0.9;
+                        ctx2.lineJoin = "round";
+                        ctx2.lineCap = "round";
+                        ctx2.stroke(path2d);
+                        ctx2.restore();
 
-                          ctx2.save();
-                          ctx2.globalAlpha = alpha;
-                          ctx2.strokeStyle = color;
-                          ctx2.lineWidth = width;
-                          ctx2.lineJoin = "round";
-                          ctx2.lineCap = "round";
-                          ctx2.stroke(path2d);
-                          ctx2.restore();
-                        }};
+                        ctx2.save();
+                        ctx2.globalAlpha = alpha;
+                        ctx2.strokeStyle = color;
+                        ctx2.lineWidth = width;
+                        ctx2.lineJoin = "round";
+                        ctx2.lineCap = "round";
+                        ctx2.stroke(path2d);
+                        ctx2.restore();
+                      }};
+                      const drawChunkDirect = (targetCtx, chunk, scaleX, scaleY, alignOffset) => {{
                         targetCtx.save();
-                        targetCtx.translate(destX, 0);
-                        targetCtx.scale(destW / Math.max(1, chunk.width), pxH / data.view_h);
+                        targetCtx.translate(chunk.x * scaleX + alignOffset, 0);
+                        targetCtx.scale(scaleX, scaleY);
                         targetCtx.imageSmoothingEnabled = false;
                         for (const i of seriesDrawOrder) {{
                           if (i >= chunk.paths.length) continue;
@@ -2447,28 +2592,30 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         }}
                         targetCtx.restore();
                       }};
-                      const chunkDestRect = (chunks, index, scaleX, alignOffset, widthPx) => {{
-                        const chunk = chunks[index];
-                        const next = index + 1 < chunks.length ? chunks[index + 1] : null;
-                        const prev = index > 0 ? chunks[index - 1] : null;
-                        const baseX = Math.round(chunk.x * scaleX + alignOffset);
-                        const baseRight = next
-                          ? Math.round(next.x * scaleX + alignOffset)
-                          : Math.round(chunk.right * scaleX + alignOffset);
-                        const overlapPx = 2;
-                        const destX = Math.max(
-                          0,
-                          baseX - (prev ? overlapPx : 0)
+                      const buildCombinedSeriesPath = (seriesIndex) => {{
+                        const key = `c:${{data.signature}}:${{pxW}}:${{pxH}}:${{seriesIndex}}`;
+                        if (cache.combinedPathCache && cache.combinedPathCache.has(key)) {{
+                          return cache.combinedPathCache.get(key);
+                        }}
+                        if (!data.combined_paths || seriesIndex >= data.combined_paths.length) {{
+                          return null;
+                        }}
+                        const path = data.combined_paths[seriesIndex];
+                        if (!path) {{
+                          return null;
+                        }}
+                        const combined = buildPath2d(
+                          cache.path2dCache,
+                          key,
+                          path
                         );
-                        const destRight = Math.min(
-                          widthPx,
-                          Math.max(baseX + 1, baseRight) + (next ? overlapPx : 0)
-                        );
-                        return {{
-                          destX,
-                          destRight,
-                          destW: Math.max(1, destRight - destX),
-                        }};
+                        if (!combined) {{
+                          return null;
+                        }}
+                        if (cache.combinedPathCache) {{
+                          cache.combinedPathCache.set(key, combined);
+                        }}
+                        return combined;
                       }};
                       const cacheMiss = !cache
                           || cache.signature !== data.signature
@@ -2489,14 +2636,26 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         ctx.imageSmoothingEnabled = false;
                         drawGrid(ctx, pxW, pxH);
                         const scaleX = pxW / data.view_w;
+                        const scaleY = pxH / data.view_h;
                         const firstChunk = data.chunks.length ? data.chunks[0] : null;
                         const alignOffset = firstChunk
                           ? Math.round(firstChunk.x * scaleX) - (firstChunk.x * scaleX)
                           : 0;
-                        for (let i = 0; i < data.chunks.length; i += 1) {{
-                          const chunk = data.chunks[i];
-                          const {{ destX, destW }} = chunkDestRect(data.chunks, i, scaleX, alignOffset, pxW);
-                          drawChunkDirect(ctx, chunk, destX, destW);
+                        let drewCombined = false;
+                        for (const i of seriesDrawOrder) {{
+                          const combinedPath = buildCombinedSeriesPath(i);
+                          if (!combinedPath) continue;
+                          ctx.save();
+                          ctx.translate(alignOffset, 0);
+                          ctx.scale(scaleX, scaleY);
+                          strokeWithContrast(ctx, combinedPath, data.colors[i] || "#9ca3af", 2.0, 1.0);
+                          ctx.restore();
+                          drewCombined = true;
+                        }}
+                        if (!drewCombined) {{
+                          for (const chunk of data.chunks) {{
+                            drawChunkDirect(ctx, chunk, scaleX, scaleY, alignOffset);
+                          }}
                         }}
                         return;
                       }}
@@ -2514,41 +2673,12 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           pxW,
                           pxH,
                           gridBuffer,
-                          chunkCache: new Map(),
                           path2dCache: new Map(),
-                          historyBuffer: null,
-                          historyKey: null,
+                          combinedPathCache: new Map(),
                           isVisible: true,
                           pendingData: null,
                         }};
                         chartCanvasCacheRoot.set(canvasId, cache);
-                      }}
-
-                      function buildChunkBuffer(chunk, destW, cacheable = true) {{
-                        const key = `${{chunk.id}}:${{chunk.signature}}:${{pxH}}:${{destW}}`;
-                        if (cacheable) {{
-                          let chunkBuffer = cache.chunkCache.get(key);
-                          if (chunkBuffer) return chunkBuffer;
-                        }}
-
-                        const widthPx = Math.max(1, destW);
-                        const buffer = document.createElement("canvas");
-                        buffer.width = widthPx;
-                        buffer.height = pxH;
-                        const bctx = get2d(buffer);
-                        if (!bctx) return null;
-                        if (typeof bctx.resetTransform === "function") {{
-                          bctx.resetTransform();
-                        }} else {{
-                          bctx.setTransform(1, 0, 0, 1, 0, 0);
-                        }}
-                        bctx.clearRect(0, 0, buffer.width, buffer.height);
-                        drawChunkDirect(bctx, chunk, 0, widthPx);
-
-                        if (cacheable) {{
-                          cache.chunkCache.set(key, buffer);
-                        }}
-                        return buffer;
                       }}
 
                       if (typeof ctx.resetTransform === "function") {{
@@ -2560,27 +2690,11 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                       ctx.imageSmoothingEnabled = false;
                       ctx.drawImage(cache.gridBuffer, 0, 0);
                       const scaleX = pxW / data.view_w;
+                      const scaleY = pxH / data.view_h;
                       const firstChunk = data.chunks.length ? data.chunks[0] : null;
                       const alignOffset = firstChunk
                         ? Math.round(firstChunk.x * scaleX) - (firstChunk.x * scaleX)
                         : 0;
-                      const historyKey = data.chunks
-                        .filter(chunk => !chunk.live)
-                        .map(chunk => `${{chunk.id}}:${{chunk.signature}}`)
-                        .join("|");
-                      const activeChunkKeys = new Set(
-                        data.chunks
-                          .filter(chunk => !chunk.live)
-                          .map((chunk, i) => {{
-                            const {{ destW }} = chunkDestRect(data.chunks, i, scaleX, alignOffset, pxW);
-                            return `${{chunk.id}}:${{chunk.signature}}:${{pxH}}:${{destW}}`;
-                          }})
-                      );
-                      for (const key of cache.chunkCache.keys()) {{
-                        if (!activeChunkKeys.has(key)) {{
-                          cache.chunkCache.delete(key);
-                        }}
-                      }}
                       const activePathKeys = new Set();
                       for (const chunk of data.chunks) {{
                         for (let i = 0; i < chunk.paths.length; i += 1) {{
@@ -2595,37 +2709,32 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           cache.path2dCache.delete(key);
                         }}
                       }}
-                      if (!cache.historyBuffer || cache.historyKey !== historyKey) {{
-                        const historyBuffer = document.createElement("canvas");
-                        historyBuffer.width = pxW;
-                        historyBuffer.height = pxH;
-                        const hctx = historyBuffer.getContext("2d", {{ alpha: true, desynchronized: true }});
-                        if (!hctx) return;
-                        hctx.clearRect(0, 0, historyBuffer.width, historyBuffer.height);
-                        hctx.imageSmoothingEnabled = false;
-                        for (let i = 0; i < data.chunks.length; i += 1) {{
-                          const chunk = data.chunks[i];
-                          if (chunk.live) continue;
-                          const {{ destX, destW }} = chunkDestRect(data.chunks, i, scaleX, alignOffset, pxW);
-                          const chunkBuffer = buildChunkBuffer(chunk, destW, true);
-                          if (!chunkBuffer) continue;
-                          hctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
+                      const activeCombinedKeys = new Set();
+                      for (const i of seriesDrawOrder) {{
+                        activeCombinedKeys.add(`c:${{data.signature}}:${{pxW}}:${{pxH}}:${{i}}`);
+                      }}
+                      if (cache.combinedPathCache) {{
+                        for (const key of cache.combinedPathCache.keys()) {{
+                          if (!activeCombinedKeys.has(key)) {{
+                            cache.combinedPathCache.delete(key);
+                          }}
                         }}
-                        cache.historyBuffer = historyBuffer;
-                        cache.historyKey = historyKey;
                       }}
-                      if (cache.historyBuffer) {{
-                        ctx.imageSmoothingEnabled = false;
-                        ctx.drawImage(cache.historyBuffer, 0, 0);
+                      let drewCombined = false;
+                      for (const i of seriesDrawOrder) {{
+                        const combinedPath = buildCombinedSeriesPath(i);
+                        if (!combinedPath) continue;
+                        ctx.save();
+                        ctx.translate(alignOffset, 0);
+                        ctx.scale(scaleX, scaleY);
+                        strokeWithContrast(ctx, combinedPath, data.colors[i] || "#9ca3af", 2.0, 1.0);
+                        ctx.restore();
+                        drewCombined = true;
                       }}
-                      for (let i = 0; i < data.chunks.length; i += 1) {{
-                        const chunk = data.chunks[i];
-                        if (!chunk.live) continue;
-                        const {{ destX, destW }} = chunkDestRect(data.chunks, i, scaleX, alignOffset, pxW);
-                        const chunkBuffer = buildChunkBuffer(chunk, destW, false);
-                        if (!chunkBuffer) continue;
-                        ctx.imageSmoothingEnabled = false;
-                        ctx.drawImage(chunkBuffer, destX, 0, destW, pxH);
+                      if (!drewCombined) {{
+                        for (const chunk of data.chunks) {{
+                          drawChunkDirect(ctx, chunk, scaleX, scaleY, alignOffset);
+                        }}
                       }}
                       cache.pendingData = null;
                       chartCanvasCacheRoot.set(canvasId, cache);
@@ -2909,6 +3018,7 @@ pub fn ChartCanvas(
     let payload = CanvasChartPayload {
         view_w,
         view_h,
+        combined_paths: build_combined_canvas_paths(chunks.as_slice()),
         colors: (0..8).map(series_color).collect(),
         grid_left,
         grid_right,
@@ -2917,25 +3027,32 @@ pub fn ChartCanvas(
         chunks: chunks.as_slice(),
         signature: render_signature,
     };
-    if last_draw_signature.get() != render_signature {
-        let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
-        let id_json = serde_json::to_string(&canvas_id).unwrap_or_else(|_| "\"\"".to_string());
-        let draw_js = format!(
-            r#"
-                (function() {{
-                  try {{
-                    if (typeof window.__gs26DrawChartCanvas === "function") {{
-                      window.__gs26DrawChartCanvas({id_json}, {payload_json});
-                    }}
-                  }} catch (e) {{
-                    console.warn("chart canvas draw failed", e);
-                  }}
-                }})();
-            "#,
-        );
-        super::js_eval(&draw_js);
-        last_draw_signature.set(render_signature);
-    }
+    let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    let id_json = serde_json::to_string(&canvas_id).unwrap_or_else(|_| "\"\"".to_string());
+    use_effect({
+        let payload_json = payload_json.clone();
+        let id_json = id_json.clone();
+        move || {
+            if last_draw_signature.get() == render_signature {
+                return;
+            }
+            let draw_js = format!(
+                r#"
+                    (function() {{
+                      try {{
+                        if (typeof window.__gs26DrawChartCanvas === "function") {{
+                          window.__gs26DrawChartCanvas({id_json}, {payload_json});
+                        }}
+                      }} catch (e) {{
+                        console.warn("chart canvas draw failed", e);
+                      }}
+                    }})();
+                "#,
+            );
+            super::js_eval(&draw_js);
+            last_draw_signature.set(render_signature);
+        }
+    });
 
     rsx! {
         canvas {

@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth;
 
-use super::blink::{action_animation_style, ACTION_BLINK_CSS};
+use super::blink::{ACTION_BLINK_CSS, action_animation_style};
 use super::layout::{ActionSpec, ActionsTabLayout, ThemeConfig};
 use super::{
-    command_feedback_active, translate_text, ActionPolicyMsg, BlinkMode, FillTargetsConfig,
-    FluidFillTarget, RecordingStatusMsg,
+    ActionPolicyMsg, BlinkMode, FillTargetsConfig, FluidFillTarget, RecordingStatusMsg,
+    command_feedback_active, translate_text,
 };
 
 fn btn_style(

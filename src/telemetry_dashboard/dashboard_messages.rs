@@ -7,6 +7,7 @@ enum WsInMsg {
     LaunchClock(LaunchClockMsg),
     Warning(AlertMsg),
     Error(AlertMsg),
+    AlertAckState(AlertAckStateMsg),
     BoardStatus(BoardStatusMsg),
     NetworkTopology(NetworkTopologyMsg),
     Notifications(Vec<PersistentNotification>),
@@ -26,6 +27,12 @@ struct FlightStateMsg {
 pub struct AlertMsg {
     pub timestamp_ms: i64,
     pub message: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct AlertAckStateMsg {
+    pub warning_ack_timestamp_ms: i64,
+    pub error_ack_timestamp_ms: i64,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

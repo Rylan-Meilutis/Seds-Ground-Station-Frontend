@@ -10,7 +10,7 @@ use crate::telemetry_dashboard::layout::ThemeConfig;
 use dioxus::prelude::*;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 use dioxus_desktop::use_window;
-use dioxus_router::{use_navigator, Routable, Router};
+use dioxus_router::{Routable, Router, use_navigator};
 
 #[allow(unused_imports)]
 use crate::telemetry_dashboard::{self, UrlConfig};
@@ -673,7 +673,7 @@ async fn http_probe_with_client(
     path: &'static str,
     url: String,
 ) -> Result<(u16, String), String> {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     const MAX_BODY_BYTES: usize = 4096;
     const BODY_SNIP_TIMEOUT_MS: u64 = 400;

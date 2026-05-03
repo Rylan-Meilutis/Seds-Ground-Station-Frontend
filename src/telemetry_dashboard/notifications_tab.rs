@@ -1,5 +1,5 @@
 use super::{
-    format_timestamp_ms_clock, layout::ThemeConfig, translate_text, PersistentNotification,
+    PersistentNotification, format_timestamp_ms_clock, layout::ThemeConfig, translate_text,
 };
 use dioxus::prelude::*;
 
