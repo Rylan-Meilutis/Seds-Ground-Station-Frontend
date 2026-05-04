@@ -990,8 +990,8 @@ fn DataGraphPanel(
 ) -> Element {
     let charts_enabled = *show_chart.read();
     let fullscreen = *is_fullscreen.read();
-    let (panel_id, panel_visible) = use_chart_panel_visibility(charts_enabled && !fullscreen);
-    if (charts_enabled && panel_visible) || fullscreen {
+    let (panel_id, _) = use_chart_panel_visibility(charts_enabled && !fullscreen);
+    if charts_enabled || fullscreen {
         let _ = *CHART_RENDER_EPOCH.read();
     }
     let chart_groups_grid_style = if chart_groups.len() >= 2 {
