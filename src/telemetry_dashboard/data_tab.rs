@@ -145,6 +145,29 @@ fn hash_chart_series_specs(
     }
 }
 
+fn chart_canvas_identity_key(
+    chart_key: &str,
+    group: &DataChartGroup,
+    fallback_labels: &[String],
+    legend_labels: &[String],
+    multi_series: Option<&[ChartSeriesSpec]>,
+) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    chart_key.hash(&mut hasher);
+    group.title.hash(&mut hasher);
+    group.data_type.hash(&mut hasher);
+    group.sender_id.hash(&mut hasher);
+    group.labels.hash(&mut hasher);
+    group.channels.hash(&mut hasher);
+    group.scale_mode.hash(&mut hasher);
+    fallback_labels.hash(&mut hasher);
+    legend_labels.hash(&mut hasher);
+    if let Some(series) = multi_series {
+        hash_chart_series_specs(&mut hasher, series);
+    }
+    format!("data-chart::{:016x}", hasher.finish())
+}
+
 #[component]
 pub fn DataTab(
     active_tab: Signal<String>,
@@ -1166,6 +1189,13 @@ fn render_chart_group(
         inner_h,
         state_chart_labels_vertical,
     );
+    let canvas_identity_key = chart_canvas_identity_key(
+        &chart_key,
+        group,
+        fallback_labels,
+        &legend_labels,
+        multi_series.as_deref(),
+    );
     let reseed_note = reseed_status_note();
     if filtered_chunks.is_empty() {
         return rsx! {
@@ -1291,12 +1321,8 @@ fn render_chart_group(
                 }
                 div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%;",
                     ChartCanvas {
-                        identity_key: format!(
-                            "{}::{}::{:?}",
-                            chart_key,
-                            group.title.as_deref().unwrap_or(""),
-                            group.channels
-                        ),
+                        key: canvas_identity_key.clone(),
+                        identity_key: canvas_identity_key.clone(),
                         view_w: view_w,
                         view_h: view_h,
                         chunks: filtered_chunks,

@@ -18,6 +18,7 @@ use crate::telemetry_dashboard::map_tab::{format_elevation, format_precise_dista
 #[component]
 pub fn DetailedTab(
     metrics: Signal<FrontendNetworkMetrics>,
+    ws_connected: bool,
     board_status: Signal<Vec<BoardStatusEntry>>,
     network_topology: Signal<NetworkTopologyMsg>,
     flight_state: Signal<FlightState>,
@@ -153,7 +154,7 @@ pub fn DetailedTab(
     let ws_idle_ms = metrics_snapshot
         .last_ws_message_wall_ms
         .map(|ts| now_ms.saturating_sub(ts));
-    let ws_connected_for_ms = if metrics_snapshot.ws_connected {
+    let ws_connected_for_ms = if ws_connected {
         metrics_snapshot
             .last_connect_wall_ms
             .map(|ts| now_ms.saturating_sub(ts))
@@ -169,7 +170,7 @@ pub fn DetailedTab(
         .map(compensated_network_time_ms)
         .filter(|value_ms| is_plausible_remote_wallclock_ms(*value_ms))
         .map(|ms| current_wallclock_ms().saturating_sub(ms));
-    let network_time_age_ms = if metrics_snapshot.ws_connected {
+    let network_time_age_ms = if ws_connected {
         network_time_snapshot.and_then(|sync| {
             if !is_plausible_remote_wallclock_ms(sync.network_ms)
                 || !sync.received_mono_ms.is_finite()
@@ -185,7 +186,7 @@ pub fn DetailedTab(
     } else {
         None
     };
-    let topology_age_ms = if metrics_snapshot.ws_connected {
+    let topology_age_ms = if ws_connected {
         frontend_topology_message_age_ms()
     } else {
         None
@@ -214,7 +215,7 @@ pub fn DetailedTab(
                         &theme,
                         &app_ground_station_title,
                         vec![
-                            ("Status", if metrics_snapshot.ws_connected { translate_text("Connected") } else { translate_text("Disconnected") }),
+                            ("Status", if ws_connected { translate_text("Connected") } else { translate_text("Disconnected") }),
                             ("Base URL", metrics_snapshot.base_http.clone()),
                             ("WebSocket", metrics_snapshot.ws_url.clone()),
                             ("HTTP RTT", opt_ms(metrics_snapshot.http_rtt_ms)),

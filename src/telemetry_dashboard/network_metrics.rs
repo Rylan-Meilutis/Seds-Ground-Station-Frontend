@@ -69,6 +69,7 @@ pub(super) fn reset_frontend_network_metrics_state() {
             ..FrontendNetworkMetrics::default()
         };
     }
+    *WS_CONNECTED_SIGNAL.write() = false;
 }
 
 /// Returns a snapshot of the frontend network metrics without exposing the mutex guard.
@@ -109,6 +110,7 @@ pub(super) fn note_ws_connection_state(
     reason: Option<String>,
     epoch: u64,
 ) {
+    *WS_CONNECTED_SIGNAL.write() = connected;
     if connected {
         DASHBOARD_HAS_CONNECTED.store(true, Ordering::Relaxed);
         if let Ok(mut slot) = LAST_WS_CONNECT_WARNING.lock() {

@@ -3031,10 +3031,8 @@ pub fn ChartCanvas(
     };
     let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
     let id_json = serde_json::to_string(&canvas_id).unwrap_or_else(|_| "\"\"".to_string());
-    use_effect({
-        let payload_json = payload_json.clone();
-        let id_json = id_json.clone();
-        move || {
+    use_effect(use_reactive!(
+        |(render_signature, payload_json, id_json)| {
             if last_draw_signature.get() == render_signature {
                 return;
             }
@@ -3054,7 +3052,7 @@ pub fn ChartCanvas(
             super::js_eval(&draw_js);
             last_draw_signature.set(render_signature);
         }
-    });
+    ));
 
     rsx! {
         canvas {

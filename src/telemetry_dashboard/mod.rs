@@ -1390,6 +1390,7 @@ fn reset_local_app_data() {
 
 // When this number changes, we tear down and rebuild the websocket connection.
 static WS_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+pub(crate) static WS_CONNECTED_SIGNAL: GlobalSignal<bool> = Signal::global(|| false);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static HEADER_CLOCK_TICK: GlobalSignal<u64> = Signal::global(|| 0);
@@ -6864,7 +6865,7 @@ fn TelemetryDashboardInner() -> Element {
                                     style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                                     ConnectionStatusTab {
                                         boards: board_status,
-                                        ws_connected: frontend_network_metrics.read().ws_connected,
+                                        ws_connected: *WS_CONNECTED_SIGNAL.read(),
                                         expected_boards: layout.network_tab.expected_boards.clone(),
                                         layout: layout.connection_tab.clone(),
                                         title: _main_tab_label(&layout, MainTab::ConnectionStatus),
@@ -6875,6 +6876,7 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::Detailed => rsx! {
                                 DetailedTab {
                                     metrics: frontend_network_metrics,
+                                    ws_connected: *WS_CONNECTED_SIGNAL.read(),
                                     board_status: board_status,
                                     network_topology: network_topology,
                                     flight_state: flight_state,
@@ -6896,7 +6898,7 @@ fn TelemetryDashboardInner() -> Element {
                                     NetworkTopologyTab {
                                         topology: network_topology,
                                         board_status: board_status,
-                                        ws_connected: frontend_network_metrics.read().ws_connected,
+                                        ws_connected: *WS_CONNECTED_SIGNAL.read(),
                                         layout: layout.network_tab.clone(),
                                         flow_animation_enabled: *network_flow_animation_enabled.read(),
                                         vertical_layout: *network_topology_vertical.read(),
