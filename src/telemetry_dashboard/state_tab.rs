@@ -1032,7 +1032,7 @@ fn combined_state_chart_cached(
                         ),
                         view_w: view_w,
                         view_h: view_h,
-                        chunks: chunks.into(),
+                        chunks,
                         grid_left: Some(left),
                         grid_right: Some(right),
                         grid_top: Some(top),

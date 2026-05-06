@@ -875,10 +875,8 @@ fn data_live_panel_has_telemetry(
     chart_groups: &[DataChartGroup],
     fallback_labels: &[String],
 ) -> bool {
-    if !summary_items.is_empty() {
-        if summary_items.iter().any(summary_item_has_value) {
-            return true;
-        }
+    if !summary_items.is_empty() && summary_items.iter().any(summary_item_has_value) {
+        return true;
     }
 
     if effective_source
@@ -1669,6 +1667,7 @@ fn stacked_scale_label_placements(
     entries
 }
 
+#[allow(clippy::too_many_arguments)]
 fn normalized_scale_labels_side<F>(
     labels: &[String],
     series_scales: &[Option<(f32, f32)>],

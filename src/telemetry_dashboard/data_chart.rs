@@ -226,6 +226,7 @@ pub fn charts_cache_get_subset_per_series(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn charts_cache_get_subset_per_series_with_grid(
     data_type: &str,
     channels: &[usize],
@@ -1702,6 +1703,7 @@ impl CachedChart {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_subset_per_series_with_grid(
         &mut self,
         channels: &[usize],
@@ -2170,9 +2172,7 @@ fn bridge_or_mark_gap(
         return;
     }
     let gap_ms = (gap_buckets as u64).saturating_mul(BUCKET_MS as u64);
-    if gap_ms <= INTERPOLATED_GAP_THRESHOLD_MS.load(Ordering::Relaxed) {
-        return;
-    }
+    if gap_ms <= INTERPOLATED_GAP_THRESHOLD_MS.load(Ordering::Relaxed) {}
 }
 
 #[derive(Clone, PartialEq, Serialize)]

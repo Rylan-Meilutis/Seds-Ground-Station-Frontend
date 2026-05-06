@@ -745,6 +745,7 @@ pub fn MapTab(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn map_header_row(
     theme: &ThemeConfig,
     resolved_title: &str,
@@ -844,6 +845,7 @@ fn map_header_row(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn map_meta_row(
     theme: &ThemeConfig,
     distance_text: Option<String>,

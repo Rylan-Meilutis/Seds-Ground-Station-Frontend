@@ -87,9 +87,9 @@ static NODE_PACKET_PULSES: Lazy<Mutex<HashMap<String, NodePacketPulse>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static TOPOLOGY_DERIVED_CACHE: Lazy<Mutex<Option<(u64, TopologyLayoutDerived)>>> =
     Lazy::new(|| Mutex::new(None));
-static TOPOLOGY_PACKET_STATS_CACHE: Lazy<
-    Mutex<Option<(u64, u64, HashMap<String, NodePacketStats>)>>,
-> = Lazy::new(|| Mutex::new(None));
+type TopologyPacketStatsCacheEntry = (u64, u64, HashMap<String, NodePacketStats>);
+static TOPOLOGY_PACKET_STATS_CACHE: Lazy<Mutex<Option<TopologyPacketStatsCacheEntry>>> =
+    Lazy::new(|| Mutex::new(None));
 
 const GRAPH_MIN_WIDTH: i32 = 1080;
 const GRAPH_MIN_HEIGHT: i32 = 720;
@@ -112,7 +112,7 @@ fn graph_viewport_style(
     let size_constraints = if fullscreen {
         "flex:1; min-height:0;".to_string()
     } else {
-        let mut style = format!("flex:1 1 auto; min-height:0; max-height:100%;");
+        let mut style = "flex:1 1 auto; min-height:0; max-height:100%;".to_string();
         if let Some(max_height) = max_height {
             style.push_str(&format!(" max-height:{max_height};"));
         }
@@ -501,6 +501,7 @@ fn graph_view_setup_signature(
     hasher.finish()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_drag_handlers(
     _fullscreen: bool,
     viewport_id: &str,
@@ -992,13 +993,13 @@ fn endpoint_route_owners(
 fn endpoint_owner_label(node: &NetworkTopologyNode, endpoint_name: &str) -> Option<String> {
     match node.kind {
         NetworkTopologyNodeKind::Router | NetworkTopologyNodeKind::Board
-            if node
-                .endpoints
-                .iter()
-                .any(|endpoint| endpoint == endpoint_name) =>
-        {
-            Some(node.label.clone())
-        }
+        if node
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint == endpoint_name) =>
+            {
+                Some(node.label.clone())
+            }
         NetworkTopologyNodeKind::Endpoint | NetworkTopologyNodeKind::Side => None,
         _ => None,
     }
@@ -1154,6 +1155,7 @@ fn render_link(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_node(
     theme: &ThemeConfig,
     node: &NetworkTopologyNode,
@@ -1570,7 +1572,7 @@ fn topology_derived_cached(
         layout_derived
     };
 
-    let derived = TopologyDerived {
+    TopologyDerived {
         graph_nodes,
         graph_links,
         render_placements: layout_derived.render_placements,
@@ -1579,9 +1581,7 @@ fn topology_derived_cached(
         render_width: layout_derived.render_width,
         render_height: layout_derived.render_height,
         viewport_focus: layout_derived.viewport_focus,
-    };
-
-    derived
+    }
 }
 
 fn packet_stats_cache_hash(

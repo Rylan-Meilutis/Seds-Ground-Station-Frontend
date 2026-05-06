@@ -238,15 +238,15 @@ fn matching_point_idx(points: &[(f32, f32)], expected: f32) -> Option<usize> {
 fn now_ms() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        return js_sys::Date::now().max(0.0) as u64;
+        js_sys::Date::now().max(0.0) as u64
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return SystemTime::now()
+        SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0))
-            .as_millis() as u64;
+            .as_millis() as u64
     }
 }
 

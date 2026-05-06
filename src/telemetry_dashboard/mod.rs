@@ -198,7 +198,7 @@ pub(crate) fn current_wallclock_ms() -> i64 {
 
 fn live_telemetry_row_is_fresh(row: &TelemetryRow, now_ms: i64) -> bool {
     let age_ms = now_ms.saturating_sub(row.timestamp_ms);
-    age_ms <= LIVE_TELEMETRY_MAX_AGE_MS && age_ms >= -LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS
+    (-LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS..=LIVE_TELEMETRY_MAX_AGE_MS).contains(&age_ms)
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
@@ -868,10 +868,10 @@ fn restore_cached_telemetry_rows_if_needed() -> usize {
         persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
         return 0;
     }
-    if let Ok(store) = UI_TELEMETRY_STORE.lock() {
-        if !store.is_empty() {
-            return 0;
-        }
+    if let Ok(store) = UI_TELEMETRY_STORE.lock()
+        && !store.is_empty()
+    {
+        return 0;
     }
 
     let Some(raw) = persist::get_string(TELEMETRY_CACHE_STORAGE_KEY) else {
@@ -4990,9 +4990,8 @@ fn TelemetryDashboardInner() -> Element {
                             mark_chart_render_dirty();
                         } else if TELEMETRY_RENDER_DIRTY.load(Ordering::Acquire)
                             || CHART_RENDER_DIRTY.load(Ordering::Acquire)
+                            || hidden_pending_ws_state_exists()
                         {
-                            schedule_dashboard_runtime_pump();
-                        } else if hidden_pending_ws_state_exists() {
                             schedule_dashboard_runtime_pump();
                         }
                     }
