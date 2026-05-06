@@ -59,10 +59,12 @@ static volatile int g_gs26_last_location_error_code = 0;
   }
   g_gs26_auth_status = (int)status;
 
-  BOOL authorized = (status == kCLAuthorizationStatusAuthorizedAlways);
-#if TARGET_OS_IOS
-  authorized =
-      authorized || (status == kCLAuthorizationStatusAuthorizedWhenInUse);
+  BOOL authorized = NO;
+#if TARGET_OS_OSX
+  authorized = (status == kCLAuthorizationStatusAuthorized);
+#else
+  authorized = (status == kCLAuthorizationStatusAuthorizedAlways) ||
+               (status == kCLAuthorizationStatusAuthorizedWhenInUse);
 #endif
 
   if (authorized) {

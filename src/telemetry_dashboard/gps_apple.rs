@@ -67,7 +67,8 @@ pub fn stop() {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+#[allow(dead_code)]
 pub fn latest_location() -> Option<(f64, f64)> {
     let lat = f64::from_bits(LAT_BITS.load(Ordering::Relaxed));
     let lon = f64::from_bits(LON_BITS.load(Ordering::Relaxed));
@@ -84,7 +85,8 @@ pub fn latest_altitude_m() -> Option<f64> {
     if gps.is_finite() { Some(gps) } else { None }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+#[allow(dead_code)]
 pub fn latest_heading_deg() -> Option<f64> {
     let v = f64::from_bits(HEADING_BITS.load(Ordering::Relaxed));
     if v.is_finite() { Some(v) } else { None }
