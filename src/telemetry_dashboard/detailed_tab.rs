@@ -83,6 +83,7 @@ pub fn DetailedTab(
         );
     });
     let metrics_snapshot = metrics.read().clone();
+    let ws_connected = metrics_snapshot.ws_connected || ws_connected;
     let boards = board_status.read().clone();
     let seen_boards = boards
         .iter()
@@ -160,6 +161,15 @@ pub fn DetailedTab(
             .map(|ts| now_ms.saturating_sub(ts))
     } else {
         None
+    };
+    let last_disconnect_display = if ws_connected {
+        translate_text("None")
+    } else {
+        metrics_snapshot
+            .last_disconnect_reason
+            .clone()
+            .map(|value| translate_text(&value))
+            .unwrap_or_else(|| translate_text("None"))
     };
     let network_time_display = network_time_snapshot
         .map(compensated_network_time_ms)
@@ -259,7 +269,7 @@ pub fn DetailedTab(
                             ("Connected for", opt_i64_ms(ws_connected_for_ms)),
                             ("WS idle", opt_i64_ms(ws_idle_ms)),
                             ("Last WS message", opt_timestamp(metrics_snapshot.last_ws_message_wall_ms)),
-                            ("Last disconnect", metrics_snapshot.last_disconnect_reason.clone().map(|v| translate_text(&v)).unwrap_or_else(|| translate_text("None"))),
+                            ("Last disconnect", last_disconnect_display),
                             ("Last connect", opt_timestamp(metrics_snapshot.last_connect_wall_ms)),
                         ],
                     )}
