@@ -201,6 +201,12 @@ fn live_telemetry_row_is_fresh(row: &TelemetryRow, now_ms: i64) -> bool {
     (-LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS..=LIVE_TELEMETRY_MAX_AGE_MS).contains(&age_ms)
 }
 
+fn alert_pulse_high(anchor_ms: Option<i64>, now_ms: i64, period_ms: i64) -> bool {
+    let phase_anchor_ms = anchor_ms.unwrap_or(now_ms);
+    let elapsed_ms = now_ms.saturating_sub(phase_anchor_ms);
+    elapsed_ms.rem_euclid(period_ms) < period_ms / 2
+}
+
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 pub(crate) fn dashboard_page_visible() -> bool {
     js_eval(
@@ -3786,6 +3792,7 @@ pub fn TelemetryDashboard() -> Element {
 fn TelemetryDashboardInner() -> Element {
     // Always valid; becomes “real” once outer publishes it.
     let alive = dashboard_alive();
+    let _header_clock_tick = *HEADER_CLOCK_TICK.read();
     let _restored_cached_rows = use_signal(restore_cached_telemetry_rows_if_needed);
     let frontend_data_clear_epoch = frontend_data_clear_epoch();
 
@@ -5194,61 +5201,46 @@ fn TelemetryDashboardInner() -> Element {
     } else if error_alert_phase_anchor_ms.get().is_some() {
         error_alert_phase_anchor_ms.set(None);
     }
-    let warning_alert_phase_delay_ms = if warning_alert_phase_anchor_ms.get().is_some() {
-        0
-    } else {
-        -(now_ms.rem_euclid(1_150))
-    };
-    let error_alert_phase_delay_ms = if error_alert_phase_anchor_ms.get().is_some() {
-        0
-    } else {
-        -(now_ms.rem_euclid(1_150))
-    };
+    let warning_alert_pulse_high =
+        alert_pulse_high(warning_alert_phase_anchor_ms.get(), now_ms, 1_150);
+    let error_alert_pulse_high = alert_pulse_high(error_alert_phase_anchor_ms.get(), now_ms, 1_150);
 
     let border_style = "1px solid transparent";
-    let app_alert_effect = if has_unacked_errors && has_errors {
+    let app_alert_effect = if has_unacked_errors && has_errors && error_alert_pulse_high {
         "inset 0 0 0 2px #ef4444"
-    } else if has_unacked_warnings && has_warnings {
+    } else if has_unacked_warnings && has_warnings && warning_alert_pulse_high {
         "inset 0 0 0 2px #facc15"
     } else {
         "none"
     };
-    let app_alert_animation = if has_unacked_errors || has_unacked_warnings {
-        let alert_pulse_phase_delay_ms = if has_unacked_errors {
-            error_alert_phase_delay_ms
-        } else {
-            warning_alert_phase_delay_ms
-        };
-        format!(
-            "--gs26-alert-shadow-high: var(--gs26-alert-frame-shadow); --gs26-alert-shadow-low: none; \
-             --gs26-alert-opacity-high: 1; --gs26-alert-opacity-low: 1; \
-             animation:gs26-alert-pulse 1.15s steps(1, end) infinite; \
-             animation-delay:{alert_pulse_phase_delay_ms}ms;"
-        )
+    let app_alert_animation = "";
+    let warnings_tab_icon_opacity = if warning_alert_pulse_high {
+        "1"
+    } else if has_unacked_warnings && has_warnings {
+        "0.28"
     } else {
-        String::new()
+        "1"
+    };
+    let errors_tab_icon_opacity = if error_alert_pulse_high {
+        "1"
+    } else if has_unacked_errors && has_errors {
+        "0.28"
+    } else {
+        "1"
     };
     let warnings_tab_icon_style = if has_unacked_warnings {
-        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:1; \
-         --gs26-alert-shadow-high:none; --gs26-alert-shadow-low:none; --gs26-alert-opacity-high:1; --gs26-alert-opacity-low:0.28; \
-         animation:gs26-alert-pulse 1.15s steps(1, end) infinite; \
-         animation-delay:"
-            .to_string()
-            + &warning_alert_phase_delay_ms.to_string()
-            + "ms;"
+        format!(
+            "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:{warnings_tab_icon_opacity};"
+        )
     } else if has_warnings {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1; animation:none;".to_string()
     } else {
         "display:none; animation:none;".to_string()
     };
     let errors_tab_icon_style = if has_unacked_errors {
-        "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:1; \
-         --gs26-alert-shadow-high:none; --gs26-alert-shadow-low:none; --gs26-alert-opacity-high:1; --gs26-alert-opacity-low:0.28; \
-         animation:gs26-alert-pulse 1.15s steps(1, end) infinite; \
-         animation-delay:"
-            .to_string()
-            + &error_alert_phase_delay_ms.to_string()
-            + "ms;"
+        format!(
+            "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:{errors_tab_icon_opacity};"
+        )
     } else if has_errors {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1; animation:none;".to_string()
     } else {
