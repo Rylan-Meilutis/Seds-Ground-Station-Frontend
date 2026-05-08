@@ -1978,10 +1978,10 @@ fn note_ws_connected_and_restore_data_flow(
     note_ws_connection_state(true, ws_url, None, epoch);
     clear_ws_connection_notification(notifications, notification_history, unread_notification_ids);
     bump_render_epoch();
+    set_reseed_status_running();
+    bump_seed_epoch();
     if !was_connected {
-        set_reseed_status_running();
         charts_cache_request_refit();
-        bump_seed_epoch();
     }
 }
 
