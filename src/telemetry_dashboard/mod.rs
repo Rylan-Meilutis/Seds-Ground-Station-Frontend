@@ -56,7 +56,6 @@ use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
-use std::cell::Cell;
 use types::{
     BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
     display_flight_state,
@@ -199,11 +198,6 @@ pub(crate) fn current_wallclock_ms() -> i64 {
 fn live_telemetry_row_is_fresh(row: &TelemetryRow, now_ms: i64) -> bool {
     let age_ms = now_ms.saturating_sub(row.timestamp_ms);
     (-LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS..=LIVE_TELEMETRY_MAX_AGE_MS).contains(&age_ms)
-}
-
-fn alert_pulse_high(anchor_tick: Option<u64>, tick: u64, period_ticks: u64) -> bool {
-    let phase_anchor_tick = anchor_tick.unwrap_or(tick);
-    tick.wrapping_sub(phase_anchor_tick) % period_ticks < period_ticks / 2
 }
 
 fn action_control<'a>(policy: &'a ActionPolicyMsg, cmd: &str) -> Option<&'a ActionControl> {
@@ -662,6 +656,37 @@ pub(crate) fn latest_telemetry_value(
 ) -> Option<f32> {
     latest_telemetry_value_direct(data_type, sender_id, index)
         .or_else(|| fallback_latest_telemetry_value(data_type, sender_id, index))
+}
+
+pub(crate) fn telemetry_channel_minmax(
+    data_type: &str,
+    sender_id: Option<&str>,
+    index: usize,
+) -> Option<(f32, f32)> {
+    let Ok(store) = UI_TELEMETRY_STORE.lock() else {
+        return None;
+    };
+
+    let mut min_value = None::<f32>;
+    let mut max_value = None::<f32>;
+
+    for row in store.rows.values() {
+        if row.data_type != data_type {
+            continue;
+        }
+        if let Some(sender_id) = sender_id
+            && row.sender_id != sender_id
+        {
+            continue;
+        }
+        let Some(value) = row.values.get(index).copied().flatten() else {
+            continue;
+        };
+        min_value = Some(min_value.map_or(value, |current| current.min(value)));
+        max_value = Some(max_value.map_or(value, |current| current.max(value)));
+    }
+
+    min_value.zip(max_value)
 }
 
 fn latest_telemetry_value_direct(
@@ -5190,8 +5215,7 @@ fn TelemetryDashboardInner() -> Element {
     };
     let warn_count_label = format_capped_alert_count(warn_count);
     let err_count_label = format_capped_alert_count(err_count);
-    let warning_alert_phase_anchor_tick = use_hook(|| Cell::new(None::<u64>));
-    let error_alert_phase_anchor_tick = use_hook(|| Cell::new(None::<u64>));
+    let alert_pulse_high_signal = use_signal(|| true);
 
     let latest_warning_ts = warnings
         .read()
@@ -5213,45 +5237,52 @@ fn TelemetryDashboardInner() -> Element {
 
     let has_unacked_warnings = latest_warning_ts > *ack_warning_ts.read();
     let has_unacked_errors = latest_error_ts > *ack_error_ts.read();
-    let header_clock_tick = *HEADER_CLOCK_TICK.read();
-    if has_unacked_warnings {
-        if warning_alert_phase_anchor_tick.get().is_none() {
-            warning_alert_phase_anchor_tick.set(Some(header_clock_tick));
-        }
-    } else if warning_alert_phase_anchor_tick.get().is_some() {
-        warning_alert_phase_anchor_tick.set(None);
-    }
-    if has_unacked_errors {
-        if error_alert_phase_anchor_tick.get().is_none() {
-            error_alert_phase_anchor_tick.set(Some(header_clock_tick));
-        }
-    } else if error_alert_phase_anchor_tick.get().is_some() {
-        error_alert_phase_anchor_tick.set(None);
-    }
-    let warning_alert_pulse_high =
-        alert_pulse_high(warning_alert_phase_anchor_tick.get(), header_clock_tick, 12);
-    let error_alert_pulse_high =
-        alert_pulse_high(error_alert_phase_anchor_tick.get(), header_clock_tick, 12);
     let active_error_alert = has_unacked_errors && has_errors;
     let active_warning_alert = has_unacked_warnings && has_warnings;
+    let alert_pulse_high = *alert_pulse_high_signal.read();
+
+    {
+        let alive = alive.clone();
+        let mut alert_pulse_high_signal = alert_pulse_high_signal;
+        use_effect(move || {
+            let alive = alive.clone();
+            let epoch = *WS_EPOCH.read();
+            spawn(async move {
+                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_timers::future::TimeoutFuture::new(600).await;
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
+                        break;
+                    }
+
+                    let next = !*alert_pulse_high_signal.read();
+                    alert_pulse_high_signal.set(next);
+                }
+            });
+        });
+    }
 
     let border_style = "1px solid transparent";
-    let app_alert_effect = if active_error_alert && error_alert_pulse_high {
+    let app_alert_effect = if active_error_alert && alert_pulse_high {
         "inset 0 0 0 2px #ef4444"
-    } else if active_warning_alert && !active_error_alert && warning_alert_pulse_high {
+    } else if active_warning_alert && !active_error_alert && alert_pulse_high {
         "inset 0 0 0 2px #facc15"
     } else {
         "none"
     };
     let app_alert_animation = "";
-    let warnings_tab_icon_opacity = if warning_alert_pulse_high {
+    let warnings_tab_icon_opacity = if alert_pulse_high {
         "1"
     } else if has_unacked_warnings && has_warnings {
         "0.28"
     } else {
         "1"
     };
-    let errors_tab_icon_opacity = if error_alert_pulse_high {
+    let errors_tab_icon_opacity = if alert_pulse_high {
         "1"
     } else if has_unacked_errors && has_errors {
         "0.28"
@@ -6497,28 +6528,28 @@ fn TelemetryDashboardInner() -> Element {
                                             onmousedown: {
                                                 let mut header_actions_expanded = header_actions_expanded;
                                                 move |_| {
-                                                    header_actions_expanded.set(false);
                                                     if abort_allowed {
-                                                        send_cmd_from_press("Abort")
+                                                        send_cmd_from_press("Abort");
                                                     }
+                                                    header_actions_expanded.set(false);
                                                 }
                                             },
                                             ontouchstart: {
                                                 let mut header_actions_expanded = header_actions_expanded;
                                                 move |_| {
-                                                    header_actions_expanded.set(false);
                                                     if abort_allowed {
-                                                        send_cmd_from_press("Abort")
+                                                        send_cmd_from_press("Abort");
                                                     }
+                                                    header_actions_expanded.set(false);
                                                 }
                                             },
                                             onclick: {
                                                 let mut header_actions_expanded = header_actions_expanded;
                                                 move |_| {
-                                                    header_actions_expanded.set(false);
                                                     if abort_allowed {
-                                                        send_cmd_from_click("Abort")
+                                                        send_cmd_from_click("Abort");
                                                     }
+                                                    header_actions_expanded.set(false);
                                                 }
                                             },
                                             span { style: "display:inline-flex; align-items:center; gap:8px;",

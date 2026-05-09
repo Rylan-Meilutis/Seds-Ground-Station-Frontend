@@ -13,14 +13,13 @@ use std::rc::Rc;
 use super::data_chart::{
     CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
     CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
-    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
-    charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
+    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
     charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color,
     use_chart_panel_visibility,
 };
 use super::{
     CHART_RENDER_EPOCH, TELEMETRY_RENDER_EPOCH, latest_telemetry_row, latest_telemetry_value,
-    persist, reseed_note_banner, reseed_status_note, translate_text,
+    persist, reseed_note_banner, reseed_status_note, telemetry_channel_minmax, translate_text,
 };
 
 const _ACTIVE_SUBTAB_STORAGE_KEY_PREFIX: &str = "gs26_active_data_subtab::";
@@ -765,6 +764,25 @@ fn summary_item_value(item: &DataSummaryItem) -> String {
     }
 }
 
+fn effective_show_min_max(
+    current_tab: Option<&DataTabSpec>,
+    selected_subtab: Option<&DataSubtabSpec>,
+) -> bool {
+    selected_subtab
+        .and_then(|subtab| subtab.show_min_max)
+        .or_else(|| current_tab.and_then(|tab| tab.show_min_max))
+        .unwrap_or(true)
+}
+
+fn summary_item_show_min_max(
+    item: &DataSummaryItem,
+    current_tab: Option<&DataTabSpec>,
+    selected_subtab: Option<&DataSubtabSpec>,
+) -> bool {
+    item.show_min_max
+        .unwrap_or_else(|| effective_show_min_max(current_tab, selected_subtab))
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct DataSource {
     data_type: String,
@@ -790,6 +808,7 @@ fn DataLivePanel(
     let boolean_labels = effective_boolean_labels(current_tab_ref, selected_subtab_ref);
     let channel_boolean_labels =
         effective_channel_boolean_labels(current_tab_ref, selected_subtab_ref);
+    let show_min_max = effective_show_min_max(current_tab_ref, selected_subtab_ref);
 
     let chart_enabled = selected_subtab_ref
         .and_then(|subtab| subtab.chart.as_ref().map(|c| c.enabled))
@@ -835,15 +854,14 @@ fn DataLivePanel(
         DataSummarySection {
             theme: theme.clone(),
             summary_items: summary_items.clone(),
+            current_tab: current_tab.clone(),
+            selected_subtab: selected_subtab.clone(),
             effective_source: effective_source.clone(),
             labels: labels.clone(),
             channel_formatters: channel_formatters.cloned(),
             boolean_labels: boolean_labels.cloned(),
             channel_boolean_labels: channel_boolean_labels.cloned(),
-            is_graph_allowed: is_graph_allowed,
-            chart_key: chart_key.clone(),
-            view_w: view_w,
-            view_h: view_h,
+            show_min_max: show_min_max,
         }
         if is_graph_allowed {
             DataGraphPanel {
@@ -908,42 +926,60 @@ fn data_live_panel_has_telemetry(
 fn DataSummarySection(
     theme: ThemeConfig,
     summary_items: Vec<DataSummaryItem>,
+    current_tab: Option<DataTabSpec>,
+    selected_subtab: Option<DataSubtabSpec>,
     effective_source: Option<DataSource>,
     labels: Vec<String>,
     channel_formatters: Option<Vec<ValueFormatter>>,
     boolean_labels: Option<BooleanLabels>,
     channel_boolean_labels: Option<Vec<BooleanLabels>>,
-    is_graph_allowed: bool,
-    chart_key: String,
-    view_w: f64,
-    view_h: f64,
+    show_min_max: bool,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
-    if is_graph_allowed {
-        let _ = *CHART_RENDER_EPOCH.read();
-    }
 
     let latest_row = effective_source
         .as_ref()
         .and_then(|source| latest_telemetry_row(&source.data_type, source.sender_id.as_deref()));
-    let (chan_min, chan_max) = if is_graph_allowed {
-        charts_cache_get_channel_minmax(&chart_key, view_w as f32, view_h as f32)
-    } else {
-        (Vec::new(), Vec::new())
-    };
 
     if !summary_items.is_empty() {
         let grid_style = summary_grid_style(summary_items.len());
+        let summary_cards: Vec<(String, Option<String>, Option<String>, String, &'static str)> =
+            summary_items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let min_max = if summary_item_show_min_max(
+                        item,
+                        current_tab.as_ref(),
+                        selected_subtab.as_ref(),
+                    ) {
+                        telemetry_channel_minmax(
+                            &item.data_type,
+                            item.sender_id.as_deref(),
+                            item.index,
+                        )
+                    } else {
+                        None
+                    };
+                    (
+                        translate_text(&item.label),
+                        min_max.map(|(min, _)| format_value(Some(min), item.formatter.as_ref())),
+                        min_max.map(|(_, max)| format_value(Some(max), item.formatter.as_ref())),
+                        summary_item_value(item),
+                        summary_color(i),
+                    )
+                })
+                .collect();
         return rsx! {
             div {
                 style: "{grid_style}",
-                for (i, item) in summary_items.iter().enumerate() {
+                for (label, min, max, value, color) in summary_cards {
                     SummaryCard {
-                        label: translate_text(&item.label),
-                        min: None,
-                        max: None,
-                        value: summary_item_value(item),
-                        color: summary_color(i),
+                        label: label,
+                        min: min,
+                        max: max,
+                        value: value,
+                        color: color,
                         theme: theme.clone(),
                     }
                 }
@@ -960,29 +996,62 @@ fn DataSummarySection(
     let vals = &row.values;
     let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
     let grid_style = summary_grid_style(visible_label_count);
+    let row_cards: Vec<(String, Option<String>, Option<String>, String, &'static str)> = labels
+        .iter()
+        .enumerate()
+        .filter(|(_, label)| !label.is_empty())
+        .map(|(i, label)| {
+            let min_max = if show_min_max {
+                effective_source.as_ref().and_then(|source| {
+                    telemetry_channel_minmax(&source.data_type, source.sender_id.as_deref(), i)
+                })
+            } else {
+                None
+            };
+            let value = if let Some(lbls) = channel_boolean_labels
+                .as_ref()
+                .and_then(|list| list.get(i))
+            {
+                boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
+            } else if boolean_labels.is_some() {
+                boolean_value_text(vals.get(i).copied().flatten(), boolean_labels.as_ref())
+            } else {
+                format_value(
+                    vals.get(i).copied().flatten(),
+                    channel_formatters.as_ref().and_then(|list| list.get(i)),
+                )
+            };
+            (
+                label.clone(),
+                min_max.map(|(min, _)| {
+                    format_value(
+                        Some(min),
+                        channel_formatters.as_ref().and_then(|list| list.get(i)),
+                    )
+                }),
+                min_max.map(|(_, max)| {
+                    format_value(
+                        Some(max),
+                        channel_formatters.as_ref().and_then(|list| list.get(i)),
+                    )
+                }),
+                value,
+                summary_color(i),
+            )
+        })
+        .collect();
     rsx! {
         div {
             style: "{grid_style}",
-            for (i, label) in labels.iter().enumerate() {
-                if !label.is_empty() {
+            for (label, min, max, value, color) in row_cards {
                     SummaryCard {
-                        label: label.clone(),
-                        min: if is_graph_allowed { chan_min.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.as_ref().and_then(|list| list.get(i)))) } else { None },
-                        max: if is_graph_allowed { chan_max.get(i).copied().flatten().map(|v| format_value(Some(v), channel_formatters.as_ref().and_then(|list| list.get(i)))) } else { None },
-                        value: if let Some(lbls) = channel_boolean_labels
-                            .as_ref()
-                            .and_then(|list| list.get(i))
-                        {
-                            boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
-                        } else if boolean_labels.is_some() {
-                            boolean_value_text(vals.get(i).copied().flatten(), boolean_labels.as_ref())
-                        } else {
-                            format_value(vals.get(i).copied().flatten(), channel_formatters.as_ref().and_then(|list| list.get(i)))
-                        },
-                        color: summary_color(i),
+                        label: label,
+                        min: min,
+                        max: max,
+                        value: value,
+                        color: color,
                         theme: theme.clone(),
                     }
-                }
             }
         }
     }

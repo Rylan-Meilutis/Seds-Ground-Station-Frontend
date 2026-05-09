@@ -107,7 +107,7 @@ const X_SHRINK_EPS_MS: i64 = 250;
 // Y-range tuning
 const Y_SHRINK_ALPHA: f32 = 0.10; // used only during refit_pending
 const Y_PAD_FRAC: f32 = 0.06;
-const Y_MIN_PAD_ABS: f32 = 1.0;
+const Y_MIN_PAD_ABS: f32 = 0.001;
 const CHART_INTEREST_TTL_GENERATIONS: u64 = 50_000;
 
 #[allow(dead_code)]
@@ -1146,7 +1146,7 @@ impl CachedChart {
         let range = *max - *min;
         if range.abs() < 1e-6 {
             let center = *min;
-            let pad = (center.abs() * 0.05).max(1.0);
+            let pad = (center.abs() * 0.05).max(Y_MIN_PAD_ABS);
             *min = center - pad;
             *max = center + pad;
         }
