@@ -21,6 +21,7 @@ fn btn_style(
     actuated: Option<bool>,
 ) -> String {
     let cursor = if enabled { "pointer" } else { "not-allowed" };
+    let pointer_events = if enabled { "auto" } else { "none" };
     let actuated_active = actuated.unwrap_or(false);
     let recommended = enabled && blink != BlinkMode::None;
     let opacity = if recommended || actuated_active {
@@ -48,7 +49,7 @@ fn btn_style(
     format!(
         "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
          display:flex; align-items:center; justify-content:space-between; gap:0.75rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
-         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; {animation}"
+         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation}"
     )
 }
 
