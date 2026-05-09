@@ -206,6 +206,63 @@ fn alert_pulse_high(anchor_tick: Option<u64>, tick: u64, period_ticks: u64) -> b
     tick.wrapping_sub(phase_anchor_tick) % period_ticks < period_ticks / 2
 }
 
+fn action_control<'a>(policy: &'a ActionPolicyMsg, cmd: &str) -> Option<&'a ActionControl> {
+    policy.controls.iter().find(|control| control.cmd == cmd)
+}
+
+fn hitl_button_interlock_active(policy: &ActionPolicyMsg) -> bool {
+    action_control(policy, "ToggleButtonInterlock")
+        .and_then(|control| control.actuated)
+        .unwrap_or(false)
+}
+
+fn hitl_launch_interlock_active(policy: &ActionPolicyMsg) -> bool {
+    action_control(policy, "ToggleLaunchInterlock")
+        .and_then(|control| control.actuated)
+        .unwrap_or(false)
+}
+
+fn button_interlock_exempt(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "Abort"
+            | "StartWritingNow"
+            | "StartWritingLastTwoMinutes"
+            | "PauseWritingDb"
+            | "StopWritingDb"
+            | "ToggleButtonInterlock"
+            | "ToggleLaunchInterlock"
+            | "TogglePhysicalLaunchMode"
+            | "ResetLaunchLatch"
+    )
+}
+
+fn launch_interlock_command(cmd: &str) -> bool {
+    matches!(cmd, "Launch" | "GroundStationLaunch" | "LaunchSignal")
+}
+
+pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str) -> bool {
+    if !policy.software_buttons_enabled {
+        return false;
+    }
+
+    let Some(control) = action_control(policy, cmd) else {
+        return cmd == "Abort";
+    };
+
+    if !control.enabled {
+        return false;
+    }
+    if hitl_button_interlock_active(policy) && !button_interlock_exempt(cmd) {
+        return false;
+    }
+    if hitl_launch_interlock_active(policy) && launch_interlock_command(cmd) {
+        return false;
+    }
+
+    true
+}
+
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 pub(crate) fn dashboard_page_visible() -> bool {
     js_eval(
@@ -1397,6 +1454,8 @@ fn reset_local_app_data() {
 static WS_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static WS_CONNECTED_SIGNAL: GlobalSignal<bool> = Signal::global(|| false);
 static SOFTWARE_BUTTONS_ENABLED_SIGNAL: GlobalSignal<bool> = Signal::global(|| false);
+static ACTION_POLICY_SIGNAL: GlobalSignal<ActionPolicyMsg> =
+    Signal::global(ActionPolicyMsg::default_locked);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static HEADER_CLOCK_TICK: GlobalSignal<u64> = Signal::global(|| 0);
@@ -4007,8 +4066,10 @@ fn TelemetryDashboardInner() -> Element {
     {
         let action_policy = action_policy;
         use_effect(move || {
-            let enabled = action_policy.read().software_buttons_enabled;
+            let snapshot = action_policy.read().clone();
+            let enabled = snapshot.software_buttons_enabled;
             *SOFTWARE_BUTTONS_ENABLED_SIGNAL.write() = enabled;
+            *ACTION_POLICY_SIGNAL.write() = snapshot;
         });
     }
 
@@ -6414,8 +6475,6 @@ fn TelemetryDashboardInner() -> Element {
                             {connect_button}
 
                             {
-                                let software_buttons_enabled =
-                                    action_policy.read().software_buttons_enabled;
                                 let abort_control = action_policy
                                     .read()
                                     .controls
@@ -6423,12 +6482,8 @@ fn TelemetryDashboardInner() -> Element {
                                     .find(|c| c.cmd == "Abort")
                                     .cloned();
                                 let abort_visible = auth::can_send_command("Abort");
-                                let abort_interlock_enabled = abort_control
-                                    .as_ref()
-                                    .map(|c| c.enabled)
-                                    .unwrap_or(true);
                                 let abort_allowed =
-                                    software_buttons_enabled && abort_visible && abort_interlock_enabled;
+                                    abort_visible && action_policy_control_enabled(&action_policy.read(), "Abort");
                                 let abort_active = abort_control
                                     .as_ref()
                                     .and_then(|c| c.actuated)
@@ -7120,7 +7175,7 @@ fn TelemetryDashboardInner() -> Element {
 }
 
 fn send_cmd(cmd: &str) {
-    if !*SOFTWARE_BUTTONS_ENABLED_SIGNAL.read() || !auth::can_send_command(cmd) {
+    if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd) || !auth::can_send_command(cmd) {
         return;
     }
     if let Some(sender) = WS_SENDER.read().clone()
@@ -7146,7 +7201,9 @@ fn should_send_command_activation(cmd: &str) -> bool {
 }
 
 pub(crate) fn send_cmd_from_press(cmd: &str) {
-    if !*SOFTWARE_BUTTONS_ENABLED_SIGNAL.read() || !auth::can_send_command(cmd) {
+    if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
+        || !auth::can_send_command(cmd)
+    {
         return;
     }
     let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
@@ -7190,7 +7247,9 @@ fn should_send_command_release(cmd: &str) -> bool {
 }
 
 pub(crate) fn send_cmd_from_click(cmd: &str) {
-    if !*SOFTWARE_BUTTONS_ENABLED_SIGNAL.read() || !auth::can_send_command(cmd) {
+    if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
+        || !auth::can_send_command(cmd)
+    {
         let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
             return;
         };

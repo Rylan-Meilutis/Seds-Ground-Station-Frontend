@@ -9,7 +9,7 @@ use super::blink::{ACTION_BLINK_CSS, action_animation_style};
 use super::layout::{ActionSpec, ActionsTabLayout, ThemeConfig};
 use super::{
     ActionPolicyMsg, BlinkMode, FillTargetsConfig, FluidFillTarget, RecordingStatusMsg,
-    command_feedback_active, translate_text,
+    action_policy_control_enabled, command_feedback_active, translate_text,
 };
 
 fn btn_style(
@@ -322,20 +322,17 @@ pub fn ActionsTab(
                                                 }
                                             },
                                             ActionRowItem::Action(action) => {
-                                                let software_buttons_enabled = action_policy.read().software_buttons_enabled;
+                                                let action_policy_snapshot = action_policy.read().clone();
                                                 let control = action_policy
                                                     .read()
                                                     .controls
                                                     .iter()
                                                     .find(|c| c.cmd == action.cmd)
                                                     .cloned();
-                                                let enabled = software_buttons_enabled
+                                                let enabled = action_policy_control_enabled(&action_policy_snapshot, action.cmd.as_str())
                                                     && auth::can_send_command(action.cmd.as_str())
                                                     && (!abort_only_mode || action.cmd == "Abort")
-                                                    && control
-                                                        .as_ref()
-                                                        .map(|c| c.enabled)
-                                                        .unwrap_or(action.cmd == "Abort");
+                                                ;
                                                 let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
                                                 let actuated = merged_actuated(
                                                     action.cmd.as_str(),

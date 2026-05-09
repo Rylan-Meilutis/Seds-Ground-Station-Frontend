@@ -21,8 +21,8 @@ use super::layout::{
 use super::types::{BoardStatusEntry, FlightState, TelemetryRow};
 use super::{
     ActionPolicyMsg, BlinkMode, CHART_RENDER_EPOCH, FillTargetsConfig, TELEMETRY_RENDER_EPOCH,
-    command_feedback_active, http_get_json, latest_telemetry_row, latest_telemetry_value,
-    reseed_note_banner, reseed_status_note, translate_text,
+    action_policy_control_enabled, command_feedback_active, http_get_json, latest_telemetry_row,
+    latest_telemetry_value, reseed_note_banner, reseed_status_note, translate_text,
 };
 
 use crate::telemetry_dashboard::data_chart::{
@@ -1496,10 +1496,9 @@ fn action_section(
             for action in filtered.iter() {
                 {
                     let control = action_policy.controls.iter().find(|c| c.cmd == action.cmd);
-                    let enabled = action_policy.software_buttons_enabled
+                    let enabled = action_policy_control_enabled(&action_policy, action.cmd.as_str())
                         && auth::can_send_command(action.cmd.as_str())
-                        && (!abort_only_mode || action.cmd == "Abort")
-                        && control.map(|c| c.enabled).unwrap_or(action.cmd == "Abort");
+                        && (!abort_only_mode || action.cmd == "Abort");
                     let blink = control.map(|c| c.blink).unwrap_or(BlinkMode::None);
                     let local_active = command_feedback_active(action.cmd.as_str());
                     let actuated = match (control.and_then(|c| c.actuated), local_active) {
