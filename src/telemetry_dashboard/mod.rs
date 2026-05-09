@@ -210,36 +210,6 @@ fn action_control<'a>(policy: &'a ActionPolicyMsg, cmd: &str) -> Option<&'a Acti
     policy.controls.iter().find(|control| control.cmd == cmd)
 }
 
-fn hitl_button_interlock_active(policy: &ActionPolicyMsg) -> bool {
-    action_control(policy, "ToggleButtonInterlock")
-        .and_then(|control| control.actuated)
-        .unwrap_or(false)
-}
-
-fn button_interlock_exempt(cmd: &str) -> bool {
-    matches!(
-        cmd,
-        "Abort"
-            | "StartWritingNow"
-            | "StartWritingLastTwoMinutes"
-            | "PauseWritingDb"
-            | "StopWritingDb"
-            | "ToggleButtonInterlock"
-            | "ToggleLaunchInterlock"
-            | "TogglePhysicalLaunchMode"
-            | "ResetLaunchLatch"
-    )
-}
-
-fn hitl_button_interlock_blocking(policy: &ActionPolicyMsg) -> bool {
-    hitl_button_interlock_active(policy)
-        && policy.controls.iter().any(|control| {
-            !control.enabled
-                && !control.actuated.unwrap_or(false)
-                && !button_interlock_exempt(control.cmd.as_str())
-        })
-}
-
 pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str) -> bool {
     if !policy.software_buttons_enabled {
         return false;
@@ -249,7 +219,6 @@ pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str)
         return cmd == "Abort";
     };
     control.enabled
-        && !(hitl_button_interlock_blocking(policy) && !button_interlock_exempt(cmd))
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
