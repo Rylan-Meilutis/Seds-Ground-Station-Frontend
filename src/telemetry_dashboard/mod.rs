@@ -241,6 +241,24 @@ fn launch_interlock_command(cmd: &str) -> bool {
     matches!(cmd, "Launch" | "GroundStationLaunch" | "LaunchSignal")
 }
 
+fn hitl_button_interlock_blocking(policy: &ActionPolicyMsg) -> bool {
+    hitl_button_interlock_active(policy)
+        && policy.controls.iter().any(|control| {
+            !control.enabled
+                && !control.actuated.unwrap_or(false)
+                && !button_interlock_exempt(control.cmd.as_str())
+        })
+}
+
+fn hitl_launch_interlock_blocking(policy: &ActionPolicyMsg) -> bool {
+    hitl_launch_interlock_active(policy)
+        && policy.controls.iter().any(|control| {
+            !control.enabled
+                && !control.actuated.unwrap_or(false)
+                && launch_interlock_command(control.cmd.as_str())
+        })
+}
+
 pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str) -> bool {
     if !policy.software_buttons_enabled {
         return false;
@@ -249,18 +267,9 @@ pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str)
     let Some(control) = action_control(policy, cmd) else {
         return cmd == "Abort";
     };
-
-    if !control.enabled {
-        return false;
-    }
-    if hitl_button_interlock_active(policy) && !button_interlock_exempt(cmd) {
-        return false;
-    }
-    if hitl_launch_interlock_active(policy) && launch_interlock_command(cmd) {
-        return false;
-    }
-
-    true
+    control.enabled
+        && !(hitl_button_interlock_blocking(policy) && !button_interlock_exempt(cmd))
+        && !(hitl_launch_interlock_blocking(policy) && launch_interlock_command(cmd))
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]

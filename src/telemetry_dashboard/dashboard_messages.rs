@@ -56,6 +56,10 @@ pub struct ActionPolicyMsg {
     pub key_enabled: bool,
     #[serde(default = "default_software_buttons_enabled")]
     pub software_buttons_enabled: bool,
+    #[serde(default = "default_interlock_satisfied")]
+    pub hitl_button_interlock_satisfied: bool,
+    #[serde(default = "default_interlock_satisfied")]
+    pub hitl_launch_interlock_satisfied: bool,
     pub controls: Vec<ActionControl>,
 }
 
@@ -65,6 +69,8 @@ impl ActionPolicyMsg {
         Self {
             key_enabled: false,
             software_buttons_enabled: true,
+            hitl_button_interlock_satisfied: true,
+            hitl_launch_interlock_satisfied: true,
             controls: Vec::new(),
         }
     }
@@ -72,6 +78,10 @@ impl ActionPolicyMsg {
 
 /// Provides the serde default for software action buttons.
 fn default_software_buttons_enabled() -> bool {
+    true
+}
+
+fn default_interlock_satisfied() -> bool {
     true
 }
 
