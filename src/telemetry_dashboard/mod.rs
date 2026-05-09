@@ -721,17 +721,8 @@ fn fallback_latest_telemetry_value(
     sender_id: Option<&str>,
     index: usize,
 ) -> Option<f32> {
-    const DEFAULT_LOADCELL_FULL_MASS_KG: f32 = 10.0;
-
-    match (data_type, index) {
-        ("LOADCELL_WEIGHT_KG", 0) => latest_telemetry_value_direct("KG1000", sender_id, 0),
-        ("LOADCELL_FILL_PERCENT", 0) => {
-            let mass_kg = latest_telemetry_value_direct("LOADCELL_WEIGHT_KG", sender_id, 0)
-                .or_else(|| latest_telemetry_value_direct("KG1000", sender_id, 0))?;
-            Some(((mass_kg / DEFAULT_LOADCELL_FULL_MASS_KG) * 100.0).clamp(0.0, 100.0))
-        }
-        _ => None,
-    }
+    let _ = (data_type, sender_id, index);
+    None
 }
 
 #[cfg(test)]
@@ -745,7 +736,7 @@ mod latest_telemetry_tests {
     use std::collections::HashMap;
 
     #[test]
-    fn derives_latest_loadcell_labels_from_kg1000_samples() {
+    fn does_not_alias_raw_loadcell_samples_into_calibrated_labels() {
         reset_latest_telemetry(&[TelemetryRow {
             timestamp_ms: 1_700_000_030_000,
             data_type: "KG1000".to_string(),
@@ -754,14 +745,7 @@ mod latest_telemetry_tests {
         }]);
 
         assert_eq!(latest_telemetry_value("KG1000", None, 0), Some(9.5754));
-        assert_eq!(
-            latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0),
-            Some(9.5754)
-        );
-        let fill_percent =
-            latest_telemetry_value("LOADCELL_FILL_PERCENT", None, 0).expect("derived fill percent");
-        assert!((fill_percent - 95.754).abs() < 0.001);
-
+        assert_eq!(latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0), None);
         reset_latest_telemetry(&[]);
     }
 
@@ -7291,7 +7275,24 @@ fn send_cmd(cmd: &str) {
         && let Err(e) = sender.send_cmd(cmd)
     {
         log!("[CMD] ws send failed for '{cmd}': {e}");
+    } else {
+        schedule_action_policy_resync();
     }
+}
+
+fn schedule_action_policy_resync() {
+    spawn(async move {
+        for delay_ms in [250_u32, 800_u32, 1_500_u32] {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(delay_ms).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+
+            if let Ok(policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await {
+                *ACTION_POLICY_SIGNAL.write() = policy;
+            }
+        }
+    });
 }
 
 fn should_send_command_activation(cmd: &str) -> bool {

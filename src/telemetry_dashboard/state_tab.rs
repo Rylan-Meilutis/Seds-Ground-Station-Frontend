@@ -152,6 +152,7 @@ pub fn StateTab(
                     style: "display:contents;",
                     {render_state_section(
                         section,
+                        &state,
                         &boards_snapshot,
                         &data_layout,
                         &actions_snapshot,
@@ -186,7 +187,7 @@ fn state_layout_needs_fill_targets(state_layout: &super::layout::StateLayout) ->
             widget.items.as_ref().is_some_and(|items| {
                 items.iter().any(|item| {
                     item.fill_target_fluid.is_some() && item.fill_target_kind.is_some()
-                        || summary_item_fill_target_source(widget.data_type.as_deref(), item)
+                        || summary_item_fill_target_source(widget.data_type.as_deref(), "", item)
                             .is_some()
                 })
             })
@@ -230,6 +231,7 @@ fn Section(
 
 fn render_state_section(
     section: &StateSection,
+    flight_state: &str,
     boards: &[BoardStatusEntry],
     data_layout: &DataTabLayout,
     actions: &[ActionSpec],
@@ -325,6 +327,7 @@ fn render_state_section(
                         ),
                         {render_state_widget(
                             widget,
+                            flight_state,
                             boards,
                             data_layout,
                             actions,
@@ -414,6 +417,7 @@ fn section_uses_horizontal_values(section: &StateSection) -> bool {
 
 fn render_state_widget(
     widget: &StateWidget,
+    flight_state: &str,
     boards: &[BoardStatusEntry],
     data_layout: &DataTabLayout,
     actions: &[ActionSpec],
@@ -434,7 +438,8 @@ fn render_state_widget(
             let dt = widget.data_type.as_deref().unwrap_or("");
             let items = widget.items.as_deref().unwrap_or(&[]);
             let has_fill_target_item = items.iter().any(|item| {
-                summary_item_fill_target_source(widget.data_type.as_deref(), item).is_some()
+                summary_item_fill_target_source(widget.data_type.as_deref(), flight_state, item)
+                    .is_some()
             });
             if dt.is_empty() && !has_fill_target_item {
                 rsx! { div { style: "color:#94a3b8; font-size:12px;", "{translate_text(\"Missing summary data_type\")}" } }
@@ -442,6 +447,7 @@ fn render_state_widget(
                 rsx! {
                     StateSummaryWidget {
                         dt: (!dt.is_empty()).then_some(dt.to_string()),
+                        flight_state: flight_state.to_string(),
                         items: items.to_vec(),
                         fill_targets: fill_targets,
                         style: widget.summary_style.clone(),
@@ -1277,6 +1283,7 @@ fn fullscreen_view_height() -> f64 {
 #[component]
 fn StateSummaryWidget(
     dt: Option<String>,
+    flight_state: String,
     items: Vec<SummaryItem>,
     fill_targets: Signal<Option<FillTargetsConfig>>,
     style: Option<SummaryCardStyle>,
@@ -1288,6 +1295,7 @@ fn StateSummaryWidget(
     let fill_targets_snapshot = fill_targets.read().clone();
     summary_row(
         dt.as_deref(),
+        &flight_state,
         &items,
         fill_targets_snapshot.as_ref(),
         style.as_ref(),
@@ -1634,6 +1642,7 @@ fn action_style(
 
 fn summary_row(
     dt: Option<&str>,
+    flight_state: &str,
     items: &[SummaryItem],
     fill_targets: Option<&FillTargetsConfig>,
     style: Option<&SummaryCardStyle>,
@@ -1655,8 +1664,8 @@ fn summary_row(
             (
                 item.label.clone(),
                 item.index,
-                summary_item_value(dt, item, fill_targets),
-                summary_item_fill_target_value_string(dt, item, fill_targets),
+                summary_item_value(dt, flight_state, item, fill_targets),
+                summary_item_fill_target_value_string(dt, flight_state, item, fill_targets),
                 item.formatter.as_ref(),
             )
         })
@@ -1743,28 +1752,61 @@ fn SummaryCard(
 
 fn summary_item_value(
     dt: Option<&str>,
+    flight_state: &str,
     item: &SummaryItem,
     fill_targets: Option<&FillTargetsConfig>,
 ) -> Option<f32> {
     let dt = dt?;
-    latest_telemetry_value(dt, None, item.index)
-        .or_else(|| fallback_summary_item_value(dt, item, fill_targets))
+    current_summary_item_value(dt, flight_state, item, fill_targets)
+        .or_else(|| latest_telemetry_value(dt, None, item.index))
+        .or_else(|| fallback_summary_item_value(dt, flight_state, item, fill_targets))
 }
 
-fn fallback_summary_item_value(
+fn loadcell_uses_nitrogen_target(flight_state: &str) -> bool {
+    matches!(flight_state, "PreFill" | "FillTest" | "NitrogenFill")
+}
+
+fn loadcell_target_for_flight_state(
+    fill_targets: &FillTargetsConfig,
+    flight_state: &str,
+) -> Option<f32> {
+    let target_mass_kg = if loadcell_uses_nitrogen_target(flight_state) {
+        fill_targets.nitrogen.target_mass_kg
+    } else {
+        fill_targets.nitrous.target_mass_kg
+    };
+    target_mass_kg
+        .is_finite()
+        .then_some(target_mass_kg)
+        .filter(|target| *target > 0.0)
+}
+
+fn current_summary_item_value(
     dt: &str,
+    flight_state: &str,
     item: &SummaryItem,
     fill_targets: Option<&FillTargetsConfig>,
 ) -> Option<f32> {
     match (dt, item.index) {
-        ("LOADCELL_WEIGHT_KG", 0) => latest_telemetry_value("KG1000", None, 0),
         ("LOADCELL_FILL_PERCENT", 0) => {
-            let mass_kg = latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0)
-                .or_else(|| latest_telemetry_value("KG1000", None, 0))?;
-            let full_mass_kg = fill_targets
-                .map(|targets| targets.nitrous.target_mass_kg)
-                .filter(|target| target.is_finite() && *target > 0.0)
-                .unwrap_or(10.0);
+            let mass_kg = latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0)?;
+            let target_mass_kg = loadcell_target_for_flight_state(fill_targets?, flight_state)?;
+            Some(((mass_kg / target_mass_kg) * 100.0).clamp(0.0, 100.0))
+        }
+        _ => None,
+    }
+}
+
+fn fallback_summary_item_value(
+    dt: &str,
+    flight_state: &str,
+    item: &SummaryItem,
+    fill_targets: Option<&FillTargetsConfig>,
+) -> Option<f32> {
+    match (dt, item.index) {
+        ("LOADCELL_FILL_PERCENT", 0) => {
+            let mass_kg = latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0)?;
+            let full_mass_kg = loadcell_target_for_flight_state(fill_targets?, flight_state)?;
             Some(((mass_kg / full_mass_kg) * 100.0).clamp(0.0, 100.0))
         }
         _ => None,
@@ -1773,35 +1815,51 @@ fn fallback_summary_item_value(
 
 fn summary_item_fill_target_source<'a>(
     dt: Option<&str>,
+    flight_state: &str,
     item: &'a SummaryItem,
 ) -> Option<(&'a FillTargetFluid, &'a FillTargetValueKind)> {
     item.fill_target_fluid
         .as_ref()
         .zip(item.fill_target_kind.as_ref())
-        .or_else(|| summary_item_fill_target_legacy_source(dt, item))
+        .or_else(|| summary_item_fill_target_legacy_source(dt, flight_state, item))
 }
 
 fn summary_item_fill_target_legacy_source(
     dt: Option<&str>,
+    flight_state: &str,
     item: &SummaryItem,
 ) -> Option<(&'static FillTargetFluid, &'static FillTargetValueKind)> {
+    static NITROGEN: FillTargetFluid = FillTargetFluid::Nitrogen;
     static NITROUS: FillTargetFluid = FillTargetFluid::Nitrous;
     static PRESSURE: FillTargetValueKind = FillTargetValueKind::PressurePsi;
     static MASS: FillTargetValueKind = FillTargetValueKind::MassKg;
+    let fluid = if loadcell_uses_nitrogen_target(flight_state) {
+        &NITROGEN
+    } else {
+        &NITROUS
+    };
 
     match (dt, item.index) {
-        (Some("FUEL_TANK_PRESSURE"), 0) => Some((&NITROUS, &PRESSURE)),
-        (Some("LOADCELL_WEIGHT_KG"), 0) => Some((&NITROUS, &MASS)),
+        (Some("FUEL_TANK_PRESSURE"), 0) => Some((fluid, &PRESSURE)),
+        (Some("LOADCELL_WEIGHT_KG"), 0) => Some((fluid, &MASS)),
         _ => None,
     }
 }
 
 fn summary_item_fill_target_value(
     dt: Option<&str>,
+    flight_state: &str,
     item: &SummaryItem,
     cfg: &FillTargetsConfig,
 ) -> Option<f32> {
-    let (fluid, kind) = summary_item_fill_target_source(dt, item)?;
+    let (fluid, kind) = summary_item_fill_target_source(dt, flight_state, item)?;
+    let fluid = if item.fill_target_fluid.is_some() {
+        fluid
+    } else {
+        summary_item_fill_target_legacy_source(dt, flight_state, item)
+            .map(|(fluid, _)| fluid)
+            .unwrap_or(fluid)
+    };
     let target = match fluid {
         FillTargetFluid::Nitrogen => &cfg.nitrogen,
         FillTargetFluid::Nitrous => &cfg.nitrous,
@@ -1814,10 +1872,19 @@ fn summary_item_fill_target_value(
 
 fn summary_item_fill_target_value_string(
     dt: Option<&str>,
+    flight_state: &str,
     item: &SummaryItem,
     fill_targets: Option<&FillTargetsConfig>,
 ) -> Option<String> {
-    let (_, kind) = summary_item_fill_target_source(dt, item)?;
+    let (_, kind) = if let Some(explicit) = item
+        .fill_target_fluid
+        .as_ref()
+        .zip(item.fill_target_kind.as_ref())
+    {
+        explicit
+    } else {
+        summary_item_fill_target_legacy_source(dt, flight_state, item)?
+    };
     let label = match kind {
         FillTargetValueKind::MassKg => translate_text("Target"),
         FillTargetValueKind::PressurePsi => translate_text("Target"),
@@ -1825,7 +1892,7 @@ fn summary_item_fill_target_value_string(
     let Some(cfg) = fill_targets else {
         return Some(format!("{label} -"));
     };
-    let raw = summary_item_fill_target_value(dt, item, cfg)?;
+    let raw = summary_item_fill_target_value(dt, flight_state, item, cfg)?;
     let formatted = format_summary_value(Some(raw), item.formatter.as_ref());
     Some(format!("{label} {formatted}"))
 }

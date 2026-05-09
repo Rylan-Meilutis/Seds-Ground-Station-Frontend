@@ -581,38 +581,8 @@ fn chart_keys_for_row(r: &TelemetryRow) -> Vec<String> {
 }
 
 fn derived_chart_rows(row: &TelemetryRow) -> Vec<TelemetryRow> {
-    const DEFAULT_LOADCELL_FULL_MASS_KG: f32 = 10.0;
-
-    match row.data_type.as_str() {
-        "KG1000" | "LOADCELL_WEIGHT_KG" => {
-            let Some(Some(mass_kg)) = row.values.first().copied() else {
-                return Vec::new();
-            };
-            if !mass_kg.is_finite() {
-                return Vec::new();
-            }
-
-            let mut rows = Vec::with_capacity(2);
-            if row.data_type != "LOADCELL_WEIGHT_KG" {
-                rows.push(TelemetryRow {
-                    timestamp_ms: row.timestamp_ms,
-                    data_type: "LOADCELL_WEIGHT_KG".to_string(),
-                    sender_id: row.sender_id.clone(),
-                    values: vec![Some(mass_kg)],
-                });
-            }
-            rows.push(TelemetryRow {
-                timestamp_ms: row.timestamp_ms,
-                data_type: "LOADCELL_FILL_PERCENT".to_string(),
-                sender_id: row.sender_id.clone(),
-                values: vec![Some(
-                    ((mass_kg / DEFAULT_LOADCELL_FULL_MASS_KG) * 100.0).clamp(0.0, 100.0),
-                )],
-            });
-            rows
-        }
-        _ => Vec::new(),
-    }
+    let _ = row;
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -625,7 +595,7 @@ mod tests {
     use crate::telemetry_dashboard::types::TelemetryRow;
 
     #[test]
-    fn derives_loadcell_chart_rows_from_kg1000_samples() {
+    fn does_not_derive_calibrated_loadcell_chart_rows_from_raw_samples() {
         charts_cache_clear_active();
 
         for i in 0..3 {
@@ -643,14 +613,14 @@ mod tests {
         assert!(
             weight_chunks
                 .iter()
-                .any(|chunk| chunk.paths.iter().any(|path| !path.is_empty())),
-            "KG1000 should populate the LOADCELL_WEIGHT_KG chart cache"
+                .all(|chunk| chunk.paths.iter().all(|path| path.is_empty())),
+            "raw KG1000 samples should not fabricate calibrated chart rows"
         );
         assert!(
             fill_chunks
                 .iter()
-                .any(|chunk| chunk.paths.iter().any(|path| !path.is_empty())),
-            "KG1000 should populate the LOADCELL_FILL_PERCENT chart cache"
+                .all(|chunk| chunk.paths.iter().all(|path| path.is_empty())),
+            "raw KG1000 samples should not fabricate fill-percent chart rows"
         );
     }
 
@@ -671,6 +641,18 @@ mod tests {
                 data_type: "KG1000".to_string(),
                 sender_id: "DAQ".to_string(),
                 values: vec![Some(4.0 + i as f32)],
+            });
+            charts_cache_ingest_row(&TelemetryRow {
+                timestamp_ms,
+                data_type: "LOADCELL_WEIGHT_KG".to_string(),
+                sender_id: "DAQ".to_string(),
+                values: vec![Some(8.0 + i as f32)],
+            });
+            charts_cache_ingest_row(&TelemetryRow {
+                timestamp_ms,
+                data_type: "LOADCELL_FILL_PERCENT".to_string(),
+                sender_id: "DAQ".to_string(),
+                values: vec![Some(40.0 + i as f32)],
             });
         }
 
