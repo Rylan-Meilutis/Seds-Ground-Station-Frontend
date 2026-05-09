@@ -216,12 +216,6 @@ fn hitl_button_interlock_active(policy: &ActionPolicyMsg) -> bool {
         .unwrap_or(false)
 }
 
-fn hitl_launch_interlock_active(policy: &ActionPolicyMsg) -> bool {
-    action_control(policy, "ToggleLaunchInterlock")
-        .and_then(|control| control.actuated)
-        .unwrap_or(false)
-}
-
 fn button_interlock_exempt(cmd: &str) -> bool {
     matches!(
         cmd,
@@ -237,25 +231,12 @@ fn button_interlock_exempt(cmd: &str) -> bool {
     )
 }
 
-fn launch_interlock_command(cmd: &str) -> bool {
-    matches!(cmd, "Launch" | "GroundStationLaunch" | "LaunchSignal")
-}
-
 fn hitl_button_interlock_blocking(policy: &ActionPolicyMsg) -> bool {
     hitl_button_interlock_active(policy)
         && policy.controls.iter().any(|control| {
             !control.enabled
                 && !control.actuated.unwrap_or(false)
                 && !button_interlock_exempt(control.cmd.as_str())
-        })
-}
-
-fn hitl_launch_interlock_blocking(policy: &ActionPolicyMsg) -> bool {
-    hitl_launch_interlock_active(policy)
-        && policy.controls.iter().any(|control| {
-            !control.enabled
-                && !control.actuated.unwrap_or(false)
-                && launch_interlock_command(control.cmd.as_str())
         })
 }
 
@@ -269,7 +250,6 @@ pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str)
     };
     control.enabled
         && !(hitl_button_interlock_blocking(policy) && !button_interlock_exempt(cmd))
-        && !(hitl_launch_interlock_blocking(policy) && launch_interlock_command(cmd))
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
