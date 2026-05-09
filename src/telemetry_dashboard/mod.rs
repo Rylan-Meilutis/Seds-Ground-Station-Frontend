@@ -5232,11 +5232,13 @@ fn TelemetryDashboardInner() -> Element {
         alert_pulse_high(warning_alert_phase_anchor_tick.get(), header_clock_tick, 12);
     let error_alert_pulse_high =
         alert_pulse_high(error_alert_phase_anchor_tick.get(), header_clock_tick, 12);
+    let active_error_alert = has_unacked_errors && has_errors;
+    let active_warning_alert = has_unacked_warnings && has_warnings;
 
     let border_style = "1px solid transparent";
-    let app_alert_effect = if has_unacked_errors && has_errors && error_alert_pulse_high {
+    let app_alert_effect = if active_error_alert && error_alert_pulse_high {
         "inset 0 0 0 2px #ef4444"
-    } else if has_unacked_warnings && has_warnings && warning_alert_pulse_high {
+    } else if active_warning_alert && !active_error_alert && warning_alert_pulse_high {
         "inset 0 0 0 2px #facc15"
     } else {
         "none"
@@ -5256,7 +5258,7 @@ fn TelemetryDashboardInner() -> Element {
     } else {
         "1"
     };
-    let warnings_tab_icon_style = if has_unacked_warnings {
+    let warnings_tab_icon_style = if active_warning_alert {
         format!(
             "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:{warnings_tab_icon_opacity};"
         )
@@ -5265,9 +5267,9 @@ fn TelemetryDashboardInner() -> Element {
     } else {
         "display:none; animation:none;".to_string()
     };
-    let errors_tab_icon_style = if has_unacked_errors {
+    let errors_tab_icon_style = if active_error_alert {
         format!(
-            "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#fecaca; opacity:{errors_tab_icon_opacity};"
+            "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#ef4444; opacity:{errors_tab_icon_opacity};"
         )
     } else if has_errors {
         "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#94a3b8; opacity:1; animation:none;".to_string()
@@ -7007,16 +7009,24 @@ fn TelemetryDashboardInner() -> Element {
                                         theme: theme.clone(),
                                         on_ack: {
                                             let mut ack_warning_ts = ack_warning_ts;
+                                            let mut ack_error_ts = ack_error_ts;
                                             let latest_warning_ts = latest_warning_ts;
+                                            let latest_error_ts = latest_error_ts;
+                                            let remote_alert_acks_enabled = remote_alert_acks_enabled;
                                             move |_| {
-                                                ack_warning_ts.set(latest_warning_ts);
-                                                spawn(async move {
-                                                    let _ = post_remote_alert_ack(
-                                                        "warning",
-                                                        latest_warning_ts,
-                                                    )
-                                                    .await;
-                                                });
+                                                if *remote_alert_acks_enabled.read() {
+                                                    ack_warning_ts.set(latest_warning_ts);
+                                                    ack_error_ts.set(latest_error_ts);
+                                                    spawn(async move {
+                                                        let _ = post_remote_alert_ack(
+                                                            latest_warning_ts,
+                                                            latest_error_ts,
+                                                        )
+                                                        .await;
+                                                    });
+                                                } else {
+                                                    ack_warning_ts.set(latest_warning_ts);
+                                                }
                                             }
                                         }
                                     }
@@ -7029,17 +7039,25 @@ fn TelemetryDashboardInner() -> Element {
                                         ack_timestamp_ms: *ack_error_ts.read(),
                                         theme: theme.clone(),
                                         on_ack: {
+                                            let mut ack_warning_ts = ack_warning_ts;
                                             let mut ack_error_ts = ack_error_ts;
+                                            let latest_warning_ts = latest_warning_ts;
                                             let latest_error_ts = latest_error_ts;
+                                            let remote_alert_acks_enabled = remote_alert_acks_enabled;
                                             move |_| {
-                                                ack_error_ts.set(latest_error_ts);
-                                                spawn(async move {
-                                                    let _ = post_remote_alert_ack(
-                                                        "error",
-                                                        latest_error_ts,
-                                                    )
-                                                    .await;
-                                                });
+                                                if *remote_alert_acks_enabled.read() {
+                                                    ack_warning_ts.set(latest_warning_ts);
+                                                    ack_error_ts.set(latest_error_ts);
+                                                    spawn(async move {
+                                                        let _ = post_remote_alert_ack(
+                                                            latest_warning_ts,
+                                                            latest_error_ts,
+                                                        )
+                                                        .await;
+                                                    });
+                                                } else {
+                                                    ack_error_ts.set(latest_error_ts);
+                                                }
                                             }
                                         }
                                     }
@@ -7542,16 +7560,19 @@ pub(crate) async fn http_post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
 
 #[derive(Serialize)]
 struct AlertAckRequest {
-    severity: &'static str,
-    timestamp_ms: i64,
+    warning_timestamp_ms: i64,
+    error_timestamp_ms: i64,
 }
 
-async fn post_remote_alert_ack(severity: &'static str, timestamp_ms: i64) -> Result<(), String> {
+async fn post_remote_alert_ack(
+    warning_timestamp_ms: i64,
+    error_timestamp_ms: i64,
+) -> Result<(), String> {
     let _: AlertAckStateMsg = http_post_json(
         "/api/alerts/ack",
         &AlertAckRequest {
-            severity,
-            timestamp_ms,
+            warning_timestamp_ms,
+            error_timestamp_ms,
         },
     )
     .await?;
