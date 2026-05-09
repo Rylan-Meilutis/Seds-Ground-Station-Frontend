@@ -6186,8 +6186,12 @@ fn TelemetryDashboardInner() -> Element {
                  display:inline-flex;
                  align-items:center;
                  justify-content:center;
+                 position:fixed;
+                 top:16px;
+                 right:16px;
                  margin-left:0 !important;
                  flex:0 0 auto;
+                 z-index:3100;
                }}
                .gs26-header-menu-toggle {{
                  display:inline-flex;
