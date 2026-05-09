@@ -200,6 +200,21 @@ fn live_telemetry_row_is_fresh(row: &TelemetryRow, now_ms: i64) -> bool {
     (-LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS..=LIVE_TELEMETRY_MAX_AGE_MS).contains(&age_ms)
 }
 
+fn normalize_live_telemetry_row_for_client_clock(
+    mut row: TelemetryRow,
+    now_ms: i64,
+) -> Option<TelemetryRow> {
+    if live_telemetry_row_is_fresh(&row, now_ms) {
+        return Some(row);
+    }
+
+    // Remote backends can have wall-clock skew relative to the client.
+    // Preserve live telemetry instead of dropping it entirely when the row
+    // is otherwise current but timestamped against a skewed host clock.
+    row.timestamp_ms = now_ms;
+    Some(row)
+}
+
 fn action_control<'a>(policy: &'a ActionPolicyMsg, cmd: &str) -> Option<&'a ActionControl> {
     policy.controls.iter().find(|control| control.cmd == cmd)
 }
@@ -9153,9 +9168,9 @@ fn handle_ws_message(
 
     match msg {
         WsInMsg::Telemetry(row) => {
-            if !live_telemetry_row_is_fresh(&row, now_ms) {
+            let Some(row) = normalize_live_telemetry_row_for_client_clock(row, now_ms) else {
                 return;
-            }
+            };
             note_incoming_telemetry_rows(1, 0);
             note_sender_telemetry_activity_batch(std::slice::from_ref(&row));
             if RESEED_IN_PROGRESS.load(Ordering::Relaxed)
@@ -9186,7 +9201,7 @@ fn handle_ws_message(
             }
             let batch: Vec<TelemetryRow> = batch
                 .into_iter()
-                .filter(|row| live_telemetry_row_is_fresh(row, now_ms))
+                .filter_map(|row| normalize_live_telemetry_row_for_client_clock(row, now_ms))
                 .collect();
             if batch.is_empty() {
                 return;
