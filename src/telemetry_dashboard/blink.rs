@@ -29,10 +29,10 @@ pub(crate) fn action_animation_style(
     actuated: Option<bool>,
 ) -> &'static str {
     if !enabled {
-        return "";
+        return "animation:none;";
     }
     match (blink, actuated.unwrap_or(false)) {
-        (BlinkMode::None, _) => "",
+        (BlinkMode::None, _) => "animation:none;",
         (BlinkMode::Slow, false) => "animation:gs26-blink-slow 1800ms ease-in-out infinite;",
         (BlinkMode::Slow, true) => "animation:gs26-blink-slow-invert 1800ms ease-in-out infinite;",
         (BlinkMode::Fast, false) => "animation:gs26-blink-fast 600ms ease-in-out infinite;",
