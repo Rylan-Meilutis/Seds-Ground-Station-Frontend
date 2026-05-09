@@ -111,6 +111,12 @@ enum CaptureMode {
     SequencePoint,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelectedCalibrationPoint {
+    Zero,
+    Weighted(usize),
+}
+
 fn latest_raw(data_type: &str) -> Option<f32> {
     latest_telemetry_value(data_type, None, 0)
 }
@@ -239,6 +245,11 @@ fn remove_point_by_key(cfg: &mut CalibrationFile, channel: &str, index: usize) -
 
 fn upsert_point_by_key(cfg: &mut CalibrationFile, channel: &str, expected: f32, raw: f32) {
     let expected = expected.max(0.0);
+    if expected <= 1e-6 {
+        let channel = cfg.channels.entry(channel.to_string()).or_default();
+        channel.zero_raw = Some(raw);
+        return;
+    }
     let channel = cfg.channels.entry(channel.to_string()).or_default();
     if let Some(p) = channel
         .points
@@ -255,6 +266,18 @@ fn matching_point_idx(points: &[(f32, f32)], expected: f32) -> Option<usize> {
     points
         .iter()
         .position(|(_, point_expected)| (*point_expected - expected).abs() < 1e-4)
+}
+
+fn zero_raw_for_channel_key(cfg: &CalibrationFile, channel: &str) -> Option<f32> {
+    cfg.channels.get(channel).and_then(|c| c.zero_raw)
+}
+
+fn remove_zero_by_key(cfg: &mut CalibrationFile, channel: &str) -> bool {
+    cfg.channels.get_mut(channel).is_some_and(|c| {
+        let had_zero = c.zero_raw.is_some();
+        c.zero_raw = None;
+        had_zero
+    })
 }
 
 fn now_ms() -> u64 {
@@ -274,6 +297,354 @@ fn now_ms() -> u64 {
 
 fn reset_channel_by_key(cfg: &mut CalibrationFile, channel: &str) {
     cfg.channels.remove(channel);
+}
+
+fn points_for_channel_key(cfg: &CalibrationFile, channel: &str) -> Vec<(f64, f64)> {
+    let mut points: Vec<(f64, f64)> = cfg
+        .channels
+        .get(channel)
+        .map(|channel| {
+            channel
+                .points
+                .iter()
+                .map(|p| (p.raw as f64, p.expected as f64))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(zero_raw) = zero_raw_for_channel_key(cfg, channel) {
+        points.push((zero_raw as f64, 0.0));
+    }
+    points
+}
+
+fn fit_line(xs: &[f64], ys: &[f64]) -> Result<(f64, f64), String> {
+    let n = xs.len() as f64;
+    let sx: f64 = xs.iter().sum();
+    let sy: f64 = ys.iter().sum();
+    let sxx: f64 = xs.iter().map(|x| x * x).sum();
+    let sxy: f64 = xs.iter().zip(ys).map(|(x, y)| x * y).sum();
+    let denom = n * sxx - sx * sx;
+    if denom.abs() < 1e-18 {
+        return Err("degenerate points for linear fit".to_string());
+    }
+    Ok(((n * sxy - sx * sy) / denom, (sy * sxx - sx * sxy) / denom))
+}
+
+fn fit_line_through_zero(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
+    let denom: f64 = xs.iter().map(|x| x * x).sum();
+    if denom.abs() < 1e-18 {
+        return Err("degenerate points for linear-zero fit".to_string());
+    }
+    Ok(xs.iter().zip(ys).map(|(x, y)| x * y).sum::<f64>() / denom)
+}
+
+fn solve_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, String> {
+    let n = a.len();
+    if n == 0 || b.len() != n || a.iter().any(|row| row.len() != n) {
+        return Err("invalid linear system dimensions".to_string());
+    }
+    for i in 0..n {
+        let mut pivot = i;
+        let mut max_abs = a[i][i].abs();
+        for (r, row) in a.iter().enumerate().skip(i + 1) {
+            if row[i].abs() > max_abs {
+                max_abs = row[i].abs();
+                pivot = r;
+            }
+        }
+        if max_abs < 1e-18 {
+            return Err("degenerate system".to_string());
+        }
+        if pivot != i {
+            a.swap(i, pivot);
+            b.swap(i, pivot);
+        }
+        let pivot_val = a[i][i];
+        for item in a[i].iter_mut().skip(i) {
+            *item /= pivot_val;
+        }
+        b[i] /= pivot_val;
+        for r in 0..n {
+            if r == i {
+                continue;
+            }
+            let factor = a[r][i];
+            if factor.abs() < 1e-18 {
+                continue;
+            }
+            let pivot_tail = a[i][i..].to_vec();
+            for (dest, pivot_entry) in a[r].iter_mut().skip(i).zip(pivot_tail.iter()) {
+                *dest -= factor * *pivot_entry;
+            }
+            b[r] -= factor * b[i];
+        }
+    }
+    Ok(b)
+}
+
+fn fit_poly2(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64), String> {
+    let sx: f64 = xs.iter().sum();
+    let sx2: f64 = xs.iter().map(|x| x * x).sum();
+    let sx3: f64 = xs.iter().map(|x| x * x * x).sum();
+    let sx4: f64 = xs.iter().map(|x| x * x * x * x).sum();
+    let sy: f64 = ys.iter().sum();
+    let sxy: f64 = xs.iter().zip(ys).map(|(x, y)| x * y).sum();
+    let sx2y: f64 = xs.iter().zip(ys).map(|(x, y)| x * x * y).sum();
+    let a = vec![
+        vec![sx4, sx3, sx2],
+        vec![sx3, sx2, sx],
+        vec![sx2, sx, xs.len() as f64],
+    ];
+    let b = vec![sx2y, sxy, sy];
+    let sol = solve_linear_system(a, b)?;
+    Ok((sol[0], sol[1], sol[2]))
+}
+
+fn fit_poly2_through_zero(xs: &[f64], ys: &[f64]) -> Result<(f64, f64), String> {
+    let sx2: f64 = xs.iter().map(|x| x * x).sum();
+    let sx3: f64 = xs.iter().map(|x| x * x * x).sum();
+    let sx4: f64 = xs.iter().map(|x| x * x * x * x).sum();
+    let sxy: f64 = xs.iter().zip(ys).map(|(x, y)| x * y).sum();
+    let sx2y: f64 = xs.iter().zip(ys).map(|(x, y)| x * x * y).sum();
+    let det = sx4 * sx2 - sx3 * sx3;
+    if det.abs() < 1e-18 {
+        return Err("degenerate points for poly2-zero fit".to_string());
+    }
+    Ok((
+        (sx2y * sx2 - sxy * sx3) / det,
+        (sx4 * sxy - sx3 * sx2y) / det,
+    ))
+}
+
+fn fit_poly3(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64, f64), String> {
+    let sx: f64 = xs.iter().sum();
+    let sx2: f64 = xs.iter().map(|x| x * x).sum();
+    let sx3: f64 = xs.iter().map(|x| x * x * x).sum();
+    let sx4: f64 = xs.iter().map(|x| x * x * x * x).sum();
+    let sx5: f64 = xs.iter().map(|x| x * x * x * x * x).sum();
+    let sx6: f64 = xs.iter().map(|x| x * x * x * x * x * x).sum();
+    let sy: f64 = ys.iter().sum();
+    let sxy: f64 = xs.iter().zip(ys).map(|(x, y)| x * y).sum();
+    let sx2y: f64 = xs.iter().zip(ys).map(|(x, y)| x * x * y).sum();
+    let sx3y: f64 = xs.iter().zip(ys).map(|(x, y)| x * x * x * y).sum();
+    let a = vec![
+        vec![sx6, sx5, sx4, sx3],
+        vec![sx5, sx4, sx3, sx2],
+        vec![sx4, sx3, sx2, sx],
+        vec![sx3, sx2, sx, xs.len() as f64],
+    ];
+    let b = vec![sx3y, sx2y, sxy, sy];
+    let sol = solve_linear_system(a, b)?;
+    Ok((sol[0], sol[1], sol[2], sol[3]))
+}
+
+fn fit_poly3_through_zero(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64), String> {
+    let sx2: f64 = xs.iter().map(|x| x * x).sum();
+    let sx3: f64 = xs.iter().map(|x| x * x * x).sum();
+    let sx4: f64 = xs.iter().map(|x| x * x * x * x).sum();
+    let sx5: f64 = xs.iter().map(|x| x * x * x * x * x).sum();
+    let sx6: f64 = xs.iter().map(|x| x * x * x * x * x * x).sum();
+    let sxy: f64 = xs.iter().zip(ys).map(|(x, y)| x * y).sum();
+    let sx2y: f64 = xs.iter().zip(ys).map(|(x, y)| x * x * y).sum();
+    let sx3y: f64 = xs.iter().zip(ys).map(|(x, y)| x * x * x * y).sum();
+    let a = vec![
+        vec![sx6, sx5, sx4],
+        vec![sx5, sx4, sx3],
+        vec![sx4, sx3, sx2],
+    ];
+    let b = vec![sx3y, sx2y, sxy];
+    let sol = solve_linear_system(a, b)?;
+    Ok((sol[0], sol[1], sol[2]))
+}
+
+fn fit_poly_degree(xs: &[f64], ys: &[f64], degree: usize) -> Result<Vec<f64>, String> {
+    if xs.len() <= degree {
+        return Err(format!("need at least {} points for poly{degree} fit", degree + 1));
+    }
+    let n = degree + 1;
+    let mut a = vec![vec![0.0; n]; n];
+    let mut b = vec![0.0; n];
+    for (row, row_values) in a.iter_mut().enumerate().take(n) {
+        for (col, slot) in row_values.iter_mut().enumerate().take(n) {
+            let power = (2 * degree).saturating_sub(row + col) as i32;
+            *slot = xs.iter().map(|x| x.powi(power)).sum();
+        }
+        let power = degree.saturating_sub(row) as i32;
+        b[row] = xs.iter().zip(ys).map(|(x, y)| x.powi(power) * y).sum();
+    }
+    solve_linear_system(a, b)
+}
+
+fn fit_poly4(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64, f64, f64), String> {
+    let sol = fit_poly_degree(xs, ys, 4)?;
+    Ok((sol[0], sol[1], sol[2], sol[3], sol[4]))
+}
+
+fn fit_poly4_through_zero(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64, f64), String> {
+    if xs.len() < 4 {
+        return Err("need at least 4 points for poly4-zero fit".to_string());
+    }
+    let a = vec![
+        vec![xs.iter().map(|x| x.powi(8)).sum(), xs.iter().map(|x| x.powi(7)).sum(), xs.iter().map(|x| x.powi(6)).sum(), xs.iter().map(|x| x.powi(5)).sum()],
+        vec![xs.iter().map(|x| x.powi(7)).sum(), xs.iter().map(|x| x.powi(6)).sum(), xs.iter().map(|x| x.powi(5)).sum(), xs.iter().map(|x| x.powi(4)).sum()],
+        vec![xs.iter().map(|x| x.powi(6)).sum(), xs.iter().map(|x| x.powi(5)).sum(), xs.iter().map(|x| x.powi(4)).sum(), xs.iter().map(|x| x.powi(3)).sum()],
+        vec![xs.iter().map(|x| x.powi(5)).sum(), xs.iter().map(|x| x.powi(4)).sum(), xs.iter().map(|x| x.powi(3)).sum(), xs.iter().map(|x| x.powi(2)).sum()],
+    ];
+    let b = vec![
+        xs.iter().zip(ys).map(|(x, y)| x.powi(4) * y).sum(),
+        xs.iter().zip(ys).map(|(x, y)| x.powi(3) * y).sum(),
+        xs.iter().zip(ys).map(|(x, y)| x.powi(2) * y).sum(),
+        xs.iter().zip(ys).map(|(x, y)| x * y).sum(),
+    ];
+    let sol = solve_linear_system(a, b)?;
+    Ok((sol[0], sol[1], sol[2], sol[3]))
+}
+
+fn sse_line(xs: &[f64], ys: &[f64], m: f64, b: f64) -> f64 {
+    xs.iter().zip(ys).map(|(x, y)| (y - (m * x + b)).powi(2)).sum()
+}
+
+fn sse_poly2(xs: &[f64], ys: &[f64], a: f64, b: f64, c: f64) -> f64 {
+    xs.iter().zip(ys).map(|(x, y)| (y - (a * x * x + b * x + c)).powi(2)).sum()
+}
+
+fn sse_poly3(xs: &[f64], ys: &[f64], a: f64, b: f64, c: f64, d: f64) -> f64 {
+    xs.iter().zip(ys).map(|(x, y)| (y - (a * x.powi(3) + b * x * x + c * x + d)).powi(2)).sum()
+}
+
+fn sse_poly4(xs: &[f64], ys: &[f64], a: f64, b: f64, c: f64, d: f64, e0: f64) -> f64 {
+    xs.iter().zip(ys).map(|(x, y)| (y - (a * x.powi(4) + b * x.powi(3) + c * x * x + d * x + e0)).powi(2)).sum()
+}
+
+fn aic(sse: f64, n: usize, k: usize) -> f64 {
+    if n == 0 {
+        return f64::INFINITY;
+    }
+    let s = sse.max(1e-18);
+    (n as f64) * (s / n as f64).ln() + 2.0 * (k as f64)
+}
+
+fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> Result<(), String> {
+    let pts = points_for_channel_key(cfg, channel);
+    if pts.len() < 2 {
+        return Err("need at least 2 points".to_string());
+    }
+    let xs: Vec<f64> = pts.iter().map(|(x, _)| *x).collect();
+    let ys: Vec<f64> = pts.iter().map(|(_, y)| *y).collect();
+    let zero_hint = zero_raw_for_channel_key(cfg, channel)
+        .map(|v| v as f64)
+        .or_else(|| pts.iter().find(|(_, y)| y.abs() < 1e-9).map(|(x, _)| *x));
+    let mut candidates: Vec<(&str, f64)> = Vec::new();
+    let (lin_m, lin_b) = fit_line(&xs, &ys)?;
+    candidates.push(("linear", aic(sse_line(&xs, &ys, lin_m, lin_b), xs.len(), 2)));
+    let mut lin0_m = None;
+    if let Some(x0) = zero_hint {
+        let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+        let m = fit_line_through_zero(&xs_shift, &ys)?;
+        lin0_m = Some((m, x0));
+        candidates.push(("linear_zero", aic(sse_line(&xs_shift, &ys, m, 0.0), xs_shift.len(), 1)));
+    }
+    let mut poly2 = None;
+    if xs.len() >= 3 {
+        let v = fit_poly2(&xs, &ys)?;
+        candidates.push(("poly2", aic(sse_poly2(&xs, &ys, v.0, v.1, v.2), xs.len(), 3)));
+        poly2 = Some(v);
+    }
+    let mut poly2_zero = None;
+    if let Some(x0) = zero_hint && xs.len() >= 2 {
+        let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+        let v = fit_poly2_through_zero(&xs_shift, &ys)?;
+        candidates.push(("poly2_zero", aic(sse_poly2(&xs_shift, &ys, v.0, v.1, 0.0), xs_shift.len(), 2)));
+        poly2_zero = Some((v.0, v.1, x0));
+    }
+    let mut poly3 = None;
+    if xs.len() >= 4 {
+        let v = fit_poly3(&xs, &ys)?;
+        candidates.push(("poly3", aic(sse_poly3(&xs, &ys, v.0, v.1, v.2, v.3), xs.len(), 4)));
+        poly3 = Some(v);
+    }
+    let mut poly3_zero = None;
+    if let Some(x0) = zero_hint && xs.len() >= 3 {
+        let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+        let v = fit_poly3_through_zero(&xs_shift, &ys)?;
+        candidates.push(("poly3_zero", aic(sse_poly3(&xs_shift, &ys, v.0, v.1, v.2, 0.0), xs_shift.len(), 3)));
+        poly3_zero = Some((v.0, v.1, v.2, x0));
+    }
+    let mut poly4 = None;
+    if xs.len() >= 5 {
+        let v = fit_poly4(&xs, &ys)?;
+        candidates.push(("poly4", aic(sse_poly4(&xs, &ys, v.0, v.1, v.2, v.3, v.4), xs.len(), 5)));
+        poly4 = Some(v);
+    }
+    let mut poly4_zero = None;
+    if let Some(x0) = zero_hint && xs.len() >= 4 {
+        let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+        let v = fit_poly4_through_zero(&xs_shift, &ys)?;
+        candidates.push(("poly4_zero", aic(sse_poly4(&xs_shift, &ys, v.0, v.1, v.2, v.3, 0.0), xs_shift.len(), 4)));
+        poly4_zero = Some((v.0, v.1, v.2, v.3, x0));
+    }
+    let chosen = if mode == "best" {
+        candidates
+            .iter()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(m, _)| *m)
+            .ok_or_else(|| "no fit candidates".to_string())?
+    } else {
+        mode
+    };
+    let channel_slot = cfg.channels.entry(channel.to_string()).or_default();
+    match chosen {
+        "linear" => {
+            channel_slot.linear.m = Some(lin_m as f32);
+            channel_slot.linear.b = Some(lin_b as f32);
+            channel_slot.fit = Some(FitMeta { fit_type: Some("linear".to_string()), x0: None, ..FitMeta::default() });
+        }
+        "linear_zero" => {
+            let (m, x0) = lin0_m.ok_or_else(|| "linear_zero fit unavailable".to_string())?;
+            channel_slot.linear.m = Some(m as f32);
+            channel_slot.linear.b = Some((-m * x0) as f32);
+            channel_slot.fit = Some(FitMeta { fit_type: Some("linear".to_string()), x0: Some(x0 as f32), ..FitMeta::default() });
+        }
+        "poly2" | "parabolic" | "quadratic" => {
+            let (a, b, c) = poly2.ok_or_else(|| "poly2 fit unavailable".to_string())?;
+            channel_slot.linear.m = Some(b as f32);
+            channel_slot.linear.b = Some(c as f32);
+            channel_slot.fit = Some(FitMeta { fit_type: Some("poly2".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), ..FitMeta::default() });
+        }
+        "poly2_zero" | "parabolic_zero" | "quadratic_zero" => {
+            let (a, b, x0) = poly2_zero.ok_or_else(|| "poly2_zero fit unavailable".to_string())?;
+            let m_lin = a + b;
+            channel_slot.linear.m = Some(m_lin as f32);
+            channel_slot.linear.b = Some((-m_lin * x0) as f32);
+            channel_slot.fit = Some(FitMeta { fit_type: Some("poly2".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(0.0), d: Some(0.0), x0: Some(x0 as f32), ..FitMeta::default() });
+        }
+        "poly3" | "cubic" => {
+            let (a, b, c, d) = poly3.ok_or_else(|| "poly3 fit unavailable".to_string())?;
+            channel_slot.linear.m = Some(c as f32);
+            channel_slot.linear.b = Some(d as f32);
+            channel_slot.fit = Some(FitMeta { fit_type: Some("poly3".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), ..FitMeta::default() });
+        }
+        "poly3_zero" | "cubic_zero" => {
+            let (a, b, c, x0) = poly3_zero.ok_or_else(|| "poly3_zero fit unavailable".to_string())?;
+            channel_slot.linear.m = Some(c as f32);
+            channel_slot.linear.b = Some((-c * x0) as f32);
+            channel_slot.fit = Some(FitMeta { fit_type: Some("poly3".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(0.0), x0: Some(x0 as f32), ..FitMeta::default() });
+        }
+        "poly4" | "quartic" => {
+            let (a, b, c, d, e) = poly4.ok_or_else(|| "poly4 fit unavailable".to_string())?;
+            channel_slot.linear.m = Some(d as f32);
+            channel_slot.linear.b = Some(e as f32);
+            channel_slot.fit = Some(FitMeta { fit_type: Some("poly4".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), e: Some(e as f32), x0: None });
+        }
+        "poly4_zero" | "quartic_zero" => {
+            let (a, b, c, d, x0) = poly4_zero.ok_or_else(|| "poly4_zero fit unavailable".to_string())?;
+            channel_slot.linear.m = Some(d as f32);
+            channel_slot.linear.b = Some((-d * x0) as f32);
+            channel_slot.fit = Some(FitMeta { fit_type: Some("poly4".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), e: Some(0.0), x0: Some(x0 as f32) });
+        }
+        _ => return Err("invalid fit mode".to_string()),
+    }
+    Ok(())
 }
 
 fn fit_for_channel_key<'a>(cfg: &'a CalibrationFile, channel: &str) -> Option<&'a FitMeta> {
@@ -447,8 +818,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let known_kg = use_signal(|| "1.0".to_string());
     let manual_kg = use_signal(|| "1.0".to_string());
     let manual_raw = use_signal(String::new);
-    let selected_point_idx = use_signal(|| None::<usize>);
-    let inspected_point_idx = use_signal(|| None::<usize>);
+    let selected_point = use_signal(|| None::<SelectedCalibrationPoint>);
+    let inspected_point_idx = use_signal(|| None::<SelectedCalibrationPoint>);
     let status = use_signal(|| "Loading calibration...".to_string());
     let dirty = use_signal(|| false);
     let manual_capture_progress = use_signal(String::new);
@@ -643,15 +1014,31 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .unwrap_or_default();
     {
         let points = points.clone();
-        let mut selected_point_idx = selected_point_idx;
+        let mut selected_point = selected_point;
         let manual_kg = manual_kg;
+        let zero_raw = cfg
+            .read()
+            .as_ref()
+            .and_then(|c| zero_raw_for_channel_key(c, &channel_key));
         use_effect(move || {
-            let Some(idx) = *selected_point_idx.read() else {
+            let Some(selection) = *selected_point.read() else {
                 return;
             };
-            let Some((_, expected)) = points.get(idx).copied() else {
-                selected_point_idx.set(None);
-                return;
+            let expected = match selection {
+                SelectedCalibrationPoint::Zero => {
+                    if zero_raw.is_none() {
+                        selected_point.set(None);
+                        return;
+                    }
+                    0.0
+                }
+                SelectedCalibrationPoint::Weighted(idx) => {
+                    let Some((_, expected)) = points.get(idx).copied() else {
+                        selected_point.set(None);
+                        return;
+                    };
+                    expected
+                }
             };
             let kg_matches = manual_kg
                 .read()
@@ -659,21 +1046,29 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 .ok()
                 .is_some_and(|value| (value - expected).abs() <= 0.0001);
             if !kg_matches {
-                selected_point_idx.set(None);
+                selected_point.set(None);
             }
         });
     }
     {
         let points = points.clone();
         let manual_kg = manual_kg;
-        let mut selected_point_idx = selected_point_idx;
+        let mut selected_point = selected_point;
+        let zero_raw = cfg
+            .read()
+            .as_ref()
+            .and_then(|c| zero_raw_for_channel_key(c, &channel_key));
         use_effect(move || {
             let Ok(kg) = manual_kg.read().parse::<f32>() else {
                 return;
             };
-            let next_idx = matching_point_idx(&points, kg);
-            if *selected_point_idx.read() != next_idx {
-                selected_point_idx.set(next_idx);
+            let next_selection = if kg.abs() <= 0.0001 && zero_raw.is_some() {
+                Some(SelectedCalibrationPoint::Zero)
+            } else {
+                matching_point_idx(&points, kg).map(SelectedCalibrationPoint::Weighted)
+            };
+            if *selected_point.read() != next_selection {
+                selected_point.set(next_selection);
             }
         });
     }
@@ -701,6 +1096,17 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .map(|sensor| sensor.fit_color.as_str())
         .filter(|color| !color.trim().is_empty())
         .unwrap_or("#22d3ee");
+    let zero_raw = cfg
+        .read()
+        .as_ref()
+        .and_then(|c| zero_raw_for_channel_key(c, &channel_key));
+    let mut display_points = Vec::with_capacity(points.len() + usize::from(zero_raw.is_some()));
+    if let Some(raw) = zero_raw {
+        display_points.push((raw, 0.0, SelectedCalibrationPoint::Zero));
+    }
+    for (idx, (raw, expected)) in points.iter().copied().enumerate() {
+        display_points.push((raw, expected, SelectedCalibrationPoint::Weighted(idx)));
+    }
 
     let plot_w = 900.0_f32;
     let plot_h = 260.0_f32;
@@ -708,24 +1114,24 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let pad_r = 14.0_f32;
     let pad_t = 14.0_f32;
     let pad_b = 28.0_f32;
-    let mut x_min = points
+    let mut x_min = display_points
         .iter()
-        .map(|(x, _)| *x)
+        .map(|(x, _, _)| *x)
         .min_by(f32::total_cmp)
         .unwrap_or(0.0);
-    let mut x_max = points
+    let mut x_max = display_points
         .iter()
-        .map(|(x, _)| *x)
+        .map(|(x, _, _)| *x)
         .max_by(f32::total_cmp)
         .unwrap_or(1.0);
-    let mut y_min = points
+    let mut y_min = display_points
         .iter()
-        .map(|(_, y)| *y)
+        .map(|(_, y, _)| *y)
         .min_by(f32::total_cmp)
         .unwrap_or(0.0);
-    let mut y_max = points
+    let mut y_max = display_points
         .iter()
-        .map(|(_, y)| *y)
+        .map(|(_, y, _)| *y)
         .max_by(f32::total_cmp)
         .unwrap_or(1.0);
     if (x_max - x_min).abs() < 1e-6 {
@@ -747,7 +1153,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let sy = |y: f32| {
         pad_t + (1.0 - ((y - y_min) / (y_max - y_min)).clamp(0.0, 1.0)) * (plot_h - pad_t - pad_b)
     };
-    let scatter_xy: Vec<(f32, f32)> = points.iter().map(|(x, y)| (sx(*x), sy(*y))).collect();
+    let scatter_xy: Vec<(f32, f32)> = display_points
+        .iter()
+        .map(|(x, y, _)| (sx(*x), sy(*y)))
+        .collect();
     let fit_path = cfg
         .read()
         .as_ref()
@@ -765,9 +1174,22 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             d
         })
         .unwrap_or_default();
-    let highlighted_plot_point_idx = (*inspected_point_idx.read()).or(*selected_point_idx.read());
+    let highlighted_plot_point_idx = (*inspected_point_idx.read()).or(*selected_point.read());
     let inspected_plot_point_idx = *inspected_point_idx.read();
-    let active_plot_point = inspected_plot_point_idx.and_then(|idx| points.get(idx).copied());
+    let active_plot_point =
+        inspected_plot_point_idx.and_then(|selection| {
+            display_points
+                .iter()
+                .find(|(_, _, point)| *point == selection)
+                .map(|(raw, expected, _)| (*raw, *expected))
+        });
+    let active_plot_point_coords =
+        inspected_plot_point_idx.and_then(|selection| {
+            display_points
+                .iter()
+                .position(|(_, _, point)| *point == selection)
+                .and_then(|idx| scatter_xy.get(idx).copied())
+        });
 
     let sensor_button_style = |active: bool| {
         if active {
@@ -815,19 +1237,17 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         "display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:10px 12px; border:1px solid {}; border-radius:14px; background:{};",
         theme.border_soft, theme.panel_background_alt
     );
-    let sequence_points_summary = if points.is_empty() {
+    let sequence_points_summary = if display_points.is_empty() {
         "No saved points yet.".to_string()
     } else {
-        points
+        display_points
             .iter()
-            .map(|(raw, expected)| format!("{expected:.3} kg -> {raw:.raw_precision$}"))
+            .map(|(raw, expected, _)| format!("{expected:.3} kg -> {raw:.raw_precision$}"))
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let active_plot_point_cx =
-        inspected_plot_point_idx.and_then(|idx| scatter_xy.get(idx).map(|(cx, _)| *cx));
-    let active_plot_point_cy =
-        inspected_plot_point_idx.and_then(|idx| scatter_xy.get(idx).map(|(_, cy)| *cy));
+    let active_plot_point_cx = active_plot_point_coords.map(|(cx, _)| cx);
+    let active_plot_point_cy = active_plot_point_coords.map(|(_, cy)| cy);
     const GRAPH_POINT_RADIUS_IDLE: f32 = 5.0;
     const GRAPH_POINT_RADIUS_ACTIVE: f32 = 7.0;
     const GRAPH_POINT_TOUCH_RADIUS: f32 = 16.0;
@@ -854,6 +1274,24 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .clamp(10.0, plot_h - point_overlay_height - 10.0);
         format!("{top:.1}px")
     });
+    let point_rows: Vec<(f32, f32, SelectedCalibrationPoint, String, String)> = display_points
+        .iter()
+        .map(|(raw, expected, selection)| {
+            let label = if expected.abs() <= 0.0001 {
+                "0.0000 kg (zero)".to_string()
+            } else {
+                format!("{expected:.4} kg")
+            };
+            let raw_label = format!("raw {}", format_raw_with_precision(*raw, raw_precision));
+            (*raw, *expected, *selection, label, raw_label)
+        })
+        .collect();
+    let plotted_points: Vec<(f32, f32, SelectedCalibrationPoint)> = scatter_xy
+        .iter()
+        .copied()
+        .zip(display_points.iter().map(|(_, _, selection)| *selection))
+        .map(|((cx, cy), selection)| (cx, cy, selection))
+        .collect();
 
     rsx! {
         div { style: "{shell_style}",
@@ -939,11 +1377,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         style: "{sensor_button_style(sensor.id == effective_selected_sensor_id)}",
                         onclick: {
                             let mut selected_sensor_id = selected_sensor_id;
-                            let mut selected_point_idx = selected_point_idx;
+                            let mut selected_point = selected_point;
                             let sensor_id = sensor.id.clone();
                             move |_| {
                                 selected_sensor_id.set(sensor_id.clone());
-                                selected_point_idx.set(None);
+                                selected_point.set(None);
                             }
                         },
                         "{sensor.label}"
@@ -989,24 +1427,28 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             let selected_sensor = selected_sensor.clone();
                             let fit_mode = fit_mode;
                             let mut status = status;
+                            let mut dirty = dirty;
                             move |_| {
+                                let Some(mut current_cfg) = cfg.read().clone() else {
+                                    status.set("No calibration data loaded".to_string());
+                                    return;
+                                };
                                 let Some(sensor) = selected_sensor.clone() else {
                                     status.set("No sensor selected".to_string());
                                     return;
                                 };
-                                let body = RefitReq {
-                                    channel: sensor.channel.clone(),
-                                    mode: fit_mode.read().clone(),
-                                };
-                                spawn(async move {
-                                    match http_post_json::<RefitReq, CalibrationFile>("/api/calibration/refit", &body).await {
-                                        Ok(new_cfg) => {
-                                            cfg.set(Some(new_cfg));
-                                            status.set("Refit complete".to_string());
-                                        }
-                                        Err(e) => status.set(format!("Refit failed: {e}")),
+                                match local_refit_channel(
+                                    &mut current_cfg,
+                                    &sensor.channel,
+                                    fit_mode.read().as_str(),
+                                ) {
+                                    Ok(()) => {
+                                        cfg.set(Some(current_cfg));
+                                        dirty.set(true);
+                                        status.set("Refit preview updated locally".to_string());
                                     }
-                                });
+                                    Err(e) => status.set(format!("Refit failed: {e}")),
+                                }
                             }
                         },
                         "Refit"
@@ -1082,7 +1524,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         let mut status = status;
                         let mut manual_capture_progress = manual_capture_progress;
                         let mut manual_capture_progress_epoch = manual_capture_progress_epoch;
-                        let is_edit_capture = selected_point_idx.read().is_some();
+                        let is_edit_capture = selected_point.read().is_some();
                         move |_| {
                             let Some(sensor) = selected_sensor.clone() else {
                                 status.set("No sensor selected".to_string());
@@ -1134,7 +1576,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             });
                         }
                     },
-                    if selected_point_idx.read().is_some() { "Capture for Edit" } else { "Capture for Point" }
+                    if selected_point.read().is_some() { "Capture for Edit" } else { "Capture for Point" }
                 }
                 if !manual_capture_progress.read().is_empty() {
                     div { style: "padding:6px 10px; min-height:20px; display:flex; align-items:center; font-size:12px; color:{theme.info_text}; border:1px solid {theme.info_accent}; border-radius:999px; background:{theme.info_background};",
@@ -1175,7 +1617,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             sequence_dialog_weight.set("0".to_string());
                             sequence_dialog_captured_raw.set(String::new());
                             sequence_dialog_status.set(
-                                "Capture a zero-load sample, then save to start a fresh sequence."
+                                "Capture a zero-load sample, save it, then keep adding sequence points."
                                     .to_string(),
                             );
                             sequence_dialog_replace_existing.set(true);
@@ -1204,11 +1646,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 sequence_dialog_weight.set(known_kg.read().clone());
                                 sequence_dialog_captured_raw.set(String::new());
                                 sequence_dialog_status.set(
-                                    "Capture the current live reading for the next sequence point, then save it."
+                                    "Capture the current live reading for a sequence point, then save it. Reusing the same mass recaptures that point."
                                         .to_string(),
                                 );
                                 sequence_dialog_replace_existing.set(false);
-                                sequence_dialog_confirm_reset.set(true);
+                                sequence_dialog_confirm_reset.set(false);
                                 sequence_dialog_open.set(true);
                             }
                         },
@@ -1222,15 +1664,15 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             div { style: "{toolbar_style}",
                 button {
                     style: "{error_button_style}",
-                    disabled: cfg.read().is_none() || selected_point_idx.read().is_none() || !can_edit,
+                    disabled: cfg.read().is_none() || selected_point.read().is_none() || !can_edit,
                     onclick: {
                         let mut cfg = cfg;
                         let selected_sensor = selected_sensor.clone();
-                        let mut selected_point_idx = selected_point_idx;
+                        let mut selected_point = selected_point;
                         let mut status = status;
                         let mut dirty = dirty;
                         move |_| {
-                            let Some(idx) = *selected_point_idx.read() else {
+                            let Some(selection) = *selected_point.read() else {
                                 status.set("Select a point first".to_string());
                                 return;
                             };
@@ -1239,12 +1681,20 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 return;
                             };
                             let mut next = cfg.read().clone().unwrap_or_default();
-                            if !remove_point_by_key(&mut next, &sensor.channel, idx) {
+                            let removed = match selection {
+                                SelectedCalibrationPoint::Zero => {
+                                    remove_zero_by_key(&mut next, &sensor.channel)
+                                }
+                                SelectedCalibrationPoint::Weighted(idx) => {
+                                    remove_point_by_key(&mut next, &sensor.channel, idx)
+                                }
+                            };
+                            if !removed {
                                 status.set("Invalid selected point".to_string());
                                 return;
                             }
                             cfg.set(Some(next.clone()));
-                            selected_point_idx.set(None);
+                            selected_point.set(None);
                             dirty.set(true);
                             status.set("Point removed locally. Save to push changes to the backend.".to_string());
                         }
@@ -1257,7 +1707,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     onclick: {
                         let mut cfg = cfg;
                         let selected_sensor = selected_sensor.clone();
-                        let mut selected_point_idx = selected_point_idx;
+                        let mut selected_point = selected_point;
                         let mut status = status;
                         let mut dirty = dirty;
                         move |_| {
@@ -1268,7 +1718,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             let mut next = cfg.read().clone().unwrap_or_default();
                             reset_channel_by_key(&mut next, &sensor.channel);
                             cfg.set(Some(next.clone()));
-                            selected_point_idx.set(None);
+                            selected_point.set(None);
                             dirty.set(true);
                             status.set("Channel reset locally. Save to push changes to the backend.".to_string());
                         }
@@ -1284,9 +1734,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 div { style: "display:flex; flex-direction:column; gap:8px;",
                     div { style: "font-size:13px; font-weight:700; color:{theme.text_secondary}; text-transform:uppercase; letter-spacing:0.04em;", "Points" }
                     div { style: "display:grid; grid-template-columns:1fr; gap:6px; border:1px solid {theme.border}; border-radius:12px; padding:10px; background:{theme.panel_background_alt}; max-height:420px; overflow:auto;",
-                for (idx, (raw, expected)) in points.clone().into_iter().enumerate() {
+                for (raw, expected, selection, point_label, raw_label) in point_rows.clone().into_iter() {
                     button {
-                        style: if *selected_point_idx.read() == Some(idx) {
+                        style: if *selected_point.read() == Some(selection) {
                             format!(
                                 "text-align:left; padding:8px; border-radius:8px; border:1px solid {}; background:{}; color:{}; cursor:pointer;",
                                 theme.info_accent, theme.info_background, theme.info_text
@@ -1298,20 +1748,20 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             )
                         },
                         onclick: {
-                            let mut selected_point_idx = selected_point_idx;
+                            let mut selected_point = selected_point;
                             let mut manual_kg = manual_kg;
                             let mut manual_raw = manual_raw;
                             move |_| {
-                                selected_point_idx.set(Some(idx));
+                                selected_point.set(Some(selection));
                                 manual_kg.set(format!("{expected}"));
                                 manual_raw.set(format_raw_with_precision(raw, raw_precision));
                             }
                         },
-                        div { style: "font-weight:700;", "{expected:.4} kg" }
-                        div { style: "font-size:12px; opacity:0.82;", "raw {format_raw_with_precision(raw, raw_precision)}" }
+                        div { style: "font-weight:700;", "{point_label}" }
+                        div { style: "font-size:12px; opacity:0.82;", "{raw_label}" }
                     }
                 }
-                if points.is_empty() {
+                if display_points.is_empty() {
                     div { style: "color:{theme.text_muted};", "(no points for this channel)" }
                 }
             }
@@ -1345,18 +1795,18 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     if !fit_path.is_empty() {
                         path { d: "{fit_path}", fill:"none", stroke:"{fit_color}", "stroke-width":"2.5" }
                     }
-                    for (idx, (cx, cy)) in scatter_xy.iter().enumerate() {
+                    for (cx, cy, selection) in plotted_points.clone().into_iter() {
                         circle {
                             cx:"{cx}",
                             cy:"{cy}",
-                            r: if highlighted_plot_point_idx == Some(idx) { "{GRAPH_POINT_RADIUS_ACTIVE}" } else { "{GRAPH_POINT_RADIUS_IDLE}" },
-                            fill: if highlighted_plot_point_idx == Some(idx) { "{theme.info_accent}" } else { "{theme.warning_text}" },
-                            stroke: if highlighted_plot_point_idx == Some(idx) { "{theme.info_text}" } else { "none" },
-                            "stroke-width": if highlighted_plot_point_idx == Some(idx) { "1.5" } else { "0" },
+                            r: if highlighted_plot_point_idx == Some(selection) { "{GRAPH_POINT_RADIUS_ACTIVE}" } else { "{GRAPH_POINT_RADIUS_IDLE}" },
+                            fill: if highlighted_plot_point_idx == Some(selection) { "{theme.info_accent}" } else { "{theme.warning_text}" },
+                            stroke: if highlighted_plot_point_idx == Some(selection) { "{theme.info_text}" } else { "none" },
+                            "stroke-width": if highlighted_plot_point_idx == Some(selection) { "1.5" } else { "0" },
                             style: "cursor:pointer;",
                             onmouseenter: {
                                 let mut inspected_point_idx = inspected_point_idx;
-                                move |_| inspected_point_idx.set(Some(idx))
+                                move |_| inspected_point_idx.set(Some(selection))
                             },
                             onmouseleave: {
                                 let mut inspected_point_idx = inspected_point_idx;
@@ -1366,7 +1816,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 let mut inspected_point_idx = inspected_point_idx;
                                 move |evt| {
                                     evt.stop_propagation();
-                                    inspected_point_idx.set(Some(idx));
+                                    inspected_point_idx.set(Some(selection));
                                 }
                             }
                         }
@@ -1379,7 +1829,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             style:"cursor:pointer;",
                             onmouseenter: {
                                 let mut inspected_point_idx = inspected_point_idx;
-                                move |_| inspected_point_idx.set(Some(idx))
+                                move |_| inspected_point_idx.set(Some(selection))
                             },
                             onmouseleave: {
                                 let mut inspected_point_idx = inspected_point_idx;
@@ -1389,7 +1839,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 let mut inspected_point_idx = inspected_point_idx;
                                 move |evt| {
                                     evt.stop_propagation();
-                                    inspected_point_idx.set(Some(idx));
+                                    inspected_point_idx.set(Some(selection));
                                 }
                             }
                         }
@@ -1508,15 +1958,23 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 disabled: !can_edit,
                                 onclick: {
                                     let selected_sensor = selected_sensor.clone();
+                                    let known_kg = known_kg;
+                                    let mut cfg = cfg;
+                                    let mut dirty = dirty;
+                                    let mut status = status;
+                                    let mut sequence_dialog_mode = sequence_dialog_mode;
+                                    let mut sequence_dialog_weight = sequence_dialog_weight;
                                     let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
                                     let mut sequence_dialog_status = sequence_dialog_status;
+                                    let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
+                                    let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
                                     move |_| {
                                         let Some(sensor) = selected_sensor.clone() else {
                                             sequence_dialog_status.set("No sensor selected.".to_string());
                                             return;
                                         };
                                         sequence_dialog_status.set(format!(
-                                            "Capturing and averaging {} live samples for {}...",
+                                            "Capturing and adding {} live samples for {}...",
                                             effective_capture_sample_count,
                                             sensor.label
                                         ));
@@ -1535,6 +1993,33 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             .await
                                             {
                                                 Ok((raw, captured)) => {
+                                                    let mode = *sequence_dialog_mode.read();
+                                                    let weight = if mode == CaptureMode::SequenceZero {
+                                                        0.0
+                                                    } else {
+                                                        match sequence_dialog_weight.read().trim().parse::<f32>() {
+                                                            Ok(value) if value > 0.0 => value,
+                                                            _ => {
+                                                                sequence_dialog_status.set("Enter a sequence point mass greater than zero.".to_string());
+                                                                return;
+                                                            }
+                                                        }
+                                                    };
+                                                    let replace_existing = *sequence_dialog_replace_existing.read();
+                                                    let mut next = cfg.read().clone().unwrap_or_default();
+                                                    if replace_existing {
+                                                        reset_channel_by_key(&mut next, &sensor.channel);
+                                                    }
+                                                    if mode == CaptureMode::SequenceZero {
+                                                        let channel = next.channels.entry(sensor.channel.clone()).or_default();
+                                                        channel.zero_raw = Some(raw);
+                                                        channel.points.clear();
+                                                        channel.fit = None;
+                                                    } else {
+                                                        upsert_point_by_key(&mut next, &sensor.channel, weight, raw);
+                                                    }
+                                                    cfg.set(Some(next));
+                                                    dirty.set(true);
                                                     sequence_dialog_captured_raw.set(
                                                         format_sensor_raw_value(
                                                             raw,
@@ -1542,18 +2027,44 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                             6,
                                                         ),
                                                     );
-                                                    sequence_dialog_status.set(format!(
-                                                        "Captured averaged raw sample {} from {} samples on {}.",
-                                                        format_sensor_raw_value(raw, Some(&sensor), 6),
-                                                        captured, sensor.label
-                                                    ));
+                                                    if mode == CaptureMode::SequenceZero {
+                                                        status.set(format!(
+                                                            "Captured zero for {} locally. Continue adding points, then Save to push changes to the backend.",
+                                                            sensor.label
+                                                        ));
+                                                        sequence_dialog_mode.set(CaptureMode::SequencePoint);
+                                                        sequence_dialog_weight.set(known_kg.read().clone());
+                                                        sequence_dialog_replace_existing.set(false);
+                                                        sequence_dialog_confirm_reset.set(false);
+                                                        sequence_dialog_status.set(format!(
+                                                            "Zero captured as {} from {} samples on {}. Enter the next mass and capture again.",
+                                                            format_sensor_raw_value(raw, Some(&sensor), 6),
+                                                            captured,
+                                                            sensor.label
+                                                        ));
+                                                    } else {
+                                                        status.set(format!(
+                                                            "Captured {} kg on {} locally. Capture another point or Save to push changes to the backend.",
+                                                            weight, sensor.label
+                                                        ));
+                                                        sequence_dialog_status.set(format!(
+                                                            "Added/updated {weight} kg as {} from {} samples on {}. Enter the next mass and capture again.",
+                                                            format_sensor_raw_value(raw, Some(&sensor), 6),
+                                                            captured,
+                                                            sensor.label
+                                                        ));
+                                                    }
                                                 }
                                                 Err(err) => sequence_dialog_status.set(err),
                                             }
                                         });
                                     }
                                 },
-                                "Capture Averaged Sample"
+                                if *sequence_dialog_mode.read() == CaptureMode::SequenceZero {
+                                    "Capture Zero"
+                                } else {
+                                    "Capture Averaged Sample"
+                                }
                             }
                         }
                         div {
@@ -1571,63 +2082,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 "Cancel"
                             }
                             button {
-                                style: "{warning_button_style}",
-                                disabled: !can_edit
-                                    || sequence_dialog_captured_raw.read().trim().is_empty()
-                                    || (*sequence_dialog_replace_existing.read() && !*sequence_dialog_confirm_reset.read()),
+                                style: "{success_button_style}",
+                                disabled: !can_edit,
                                 onclick: {
-                                    let selected_sensor = selected_sensor.clone();
-                                    let mut cfg = cfg;
-                                    let mut status = status;
-                                    let mut dirty = dirty;
                                     let mut sequence_dialog_open = sequence_dialog_open;
-                                    let mut sequence_dialog_status = sequence_dialog_status;
-                                    let sequence_dialog_mode = sequence_dialog_mode;
-                                    let sequence_dialog_weight = sequence_dialog_weight;
-                                    let sequence_dialog_captured_raw = sequence_dialog_captured_raw;
-                                    let sequence_dialog_replace_existing = sequence_dialog_replace_existing;
                                     move |_| {
-                                        let Some(sensor) = selected_sensor.clone() else {
-                                            sequence_dialog_status.set("No sensor selected.".to_string());
-                                            return;
-                                        };
-                                        let Ok(raw) = sequence_dialog_captured_raw.read().trim().parse::<f32>() else {
-                                            sequence_dialog_status.set("Capture a live raw sample before saving.".to_string());
-                                            return;
-                                        };
-                                        let mode = *sequence_dialog_mode.read();
-                                        let weight = if mode == CaptureMode::SequenceZero {
-                                            0.0
-                                        } else {
-                                            match sequence_dialog_weight.read().trim().parse::<f32>() {
-                                                Ok(value) if value > 0.0 => value,
-                                                _ => {
-                                                    sequence_dialog_status.set("Enter a sequence point mass greater than zero.".to_string());
-                                                    return;
-                                                }
-                                            }
-                                        };
-                                        let replace_existing = *sequence_dialog_replace_existing.read();
-                                        let mut next = cfg.read().clone().unwrap_or_default();
-                                        if replace_existing {
-                                            reset_channel_by_key(&mut next, &sensor.channel);
-                                        }
-                                        if mode == CaptureMode::SequenceZero {
-                                            let channel = next.channels.entry(sensor.channel.clone()).or_default();
-                                            channel.zero_raw = Some(raw);
-                                            channel.points.clear();
-                                            channel.fit = None;
-                                        }
-                                        if mode == CaptureMode::SequencePoint {
-                                            upsert_point_by_key(&mut next, &sensor.channel, weight, raw);
-                                        }
-                                        cfg.set(Some(next.clone()));
-                                        dirty.set(true);
-                                        status.set(if mode == CaptureMode::SequenceZero {
-                                            format!("Started a new sequence on {} locally. Save to push changes to the backend.", sensor.label)
-                                        } else {
-                                            format!("Captured {} kg on {} locally. Save to push changes to the backend.", weight, sensor.label)
-                                        });
                                         sequence_dialog_open.set(false);
                                     }
                                 },
