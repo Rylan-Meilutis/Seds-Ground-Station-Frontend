@@ -573,8 +573,9 @@ pub fn MapTab(
     let effective_user = move || -> Option<(f64, f64)> { *user_gps.read() };
     #[cfg(target_arch = "wasm32")]
     let effective_user = move || -> Option<(f64, f64)> { *browser_user_gps.read() };
+    let rendered_user_coords = effective_user();
     let distance_text =
-        format_distance_label(*rocket_gps.read(), effective_user(), distance_units_metric);
+        format_distance_label(*rocket_gps.read(), rendered_user_coords, distance_units_metric);
     let rocket_altitude_value =
         sanitize_altitude_m(rocket_altitude_m.as_ref().and_then(|signal| *signal.read()));
     let user_altitude_value =
@@ -582,7 +583,7 @@ pub fn MapTab(
     let rocket_elevation_text = format_elevation(rocket_altitude_value, distance_units_metric);
     let user_elevation_text = format_elevation(user_altitude_value, distance_units_metric);
     #[cfg(any(target_os = "ios", target_os = "macos", target_os = "android"))]
-    let native_location_warning = if !user_location_manual && (*user_gps.read()).is_none() {
+    let native_location_warning = if !user_location_manual && rendered_user_coords.is_none() {
         Some(translate_text(
             "User location unavailable. Native GPS has not provided coordinates yet.",
         ))
@@ -612,7 +613,7 @@ pub fn MapTab(
     {
         use_effect(move || {
             let r = *rocket_gps.read();
-            let u = effective_user();
+            let u = rendered_user_coords;
 
             let (r_lat, r_lon) = r.unwrap_or((f64::NAN, f64::NAN));
             let (u_lat, u_lon) = u.unwrap_or((f64::NAN, f64::NAN));

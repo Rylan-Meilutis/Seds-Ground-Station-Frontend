@@ -576,6 +576,15 @@ fn install_drag_handlers(
           const withinSurface = (target) => {{
             return target === state.surface || state.surface.contains(target);
           }};
+          const isInteractiveNodeTarget = (target) => {{
+            return !!(
+              target &&
+              typeof target.closest === "function" &&
+              (target.closest("[data-network-node='true']") ||
+               target.closest("[data-network-panel='true']") ||
+               target.closest("button"))
+            );
+          }};
 
           const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
           const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -769,8 +778,7 @@ fn install_drag_handlers(
 
           document.addEventListener("wheel", (evt) => {{
             if (!withinSurface(evt.target)) return;
-            const target = evt.target;
-            if (target && typeof target.closest === "function" && target.closest("button")) {{
+            if (isInteractiveNodeTarget(evt.target)) {{
               return;
             }}
             zoomFromWheel(evt);
@@ -779,8 +787,7 @@ fn install_drag_handlers(
 
           document.addEventListener("pointerdown", (evt) => {{
             if (!withinSurface(evt.target)) return;
-            const target = evt.target;
-            if (target && typeof target.closest === "function" && target.closest("button")) {{
+            if (isInteractiveNodeTarget(evt.target)) {{
               return;
             }}
             state.pointers.set(evt.pointerId, {{ x: evt.clientX, y: evt.clientY, pointerType: String(evt.pointerType || "") }});

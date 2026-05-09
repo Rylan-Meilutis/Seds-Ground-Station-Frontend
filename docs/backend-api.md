@@ -590,6 +590,9 @@ Response type:
       "fit_color": "#f59e0b",
       "raw_label": "Raw",
       "expected_label": "kg",
+      "formatter": {
+        "precision": 7
+      },
       "fit_modes": ["best", "linear", "linear_zero", "parabolic", "parabolic_zero"]
     },
     {
@@ -600,6 +603,9 @@ Response type:
       "fit_color": "#a78bfa",
       "raw_label": "Raw",
       "expected_label": "psi",
+      "formatter": {
+        "precision": 7
+      },
       "fit_modes": ["best", "linear", "parabolic", "quartic"]
     }
   ]
@@ -609,7 +615,9 @@ Response type:
 The backend reads this from `backend/config/calibration_config.json` by default, or from
 `GS_CALIBRATION_CONFIG_PATH` when set. `fit_modes` at the top level defines the backend-supported
 regressions. A sensor can override that list with its own `fit_modes`. The frontend must use these
-backend-provided modes rather than hard-coding regression choices.
+backend-provided modes rather than hard-coding regression choices. A sensor may also provide a
+`formatter` payload with the same shape used by the data tab so raw calibration values use the
+same backend-defined precision.
 
 Supported regression mode ids are:
 

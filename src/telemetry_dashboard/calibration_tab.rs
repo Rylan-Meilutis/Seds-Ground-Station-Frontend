@@ -2,7 +2,7 @@
 
 use super::{
     TELEMETRY_RENDER_EPOCH, http_get_json, http_post_json, latest_telemetry_value,
-    layout::ThemeConfig, persist, translate_text,
+    layout::{ThemeConfig, ValueFormatter}, persist, translate_text,
 };
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -95,6 +95,8 @@ pub(crate) struct CalibrationSensorSpec {
     expected_label: String,
     #[serde(default)]
     fit_modes: Vec<String>,
+    #[serde(default)]
+    formatter: Option<ValueFormatter>,
 }
 
 fn default_capture_target_samples() -> usize {
@@ -191,6 +193,26 @@ fn fmt_fixed(v: Option<f32>, width: usize, prec: usize) -> String {
         Some(x) => format!("{x:+width$.prec$}", width = width, prec = prec),
         None => "-".to_string(),
     }
+}
+
+fn sensor_raw_precision(sensor: Option<&CalibrationSensorSpec>, default_precision: usize) -> usize {
+    sensor
+        .and_then(|sensor| sensor.formatter.as_ref())
+        .and_then(|formatter| formatter.precision)
+        .unwrap_or(default_precision)
+}
+
+fn format_sensor_raw_value(
+    value: f32,
+    sensor: Option<&CalibrationSensorSpec>,
+    default_precision: usize,
+) -> String {
+    let precision = sensor_raw_precision(sensor, default_precision);
+    format_raw_with_precision(value, precision)
+}
+
+fn format_raw_with_precision(value: f32, precision: usize) -> String {
+    format!("{value:.precision$}")
 }
 
 fn sensors_from_layout(layout: &CalibrationTabLayout) -> Vec<CalibrationSensorSpec> {
@@ -561,6 +583,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .find(|s| s.id == selected_id)
         .cloned()
         .or_else(|| sensors.first().cloned());
+    let raw_precision = sensor_raw_precision(selected_sensor.as_ref(), 6);
     if sensors.is_empty() {
         return rsx! {};
     }
@@ -797,7 +820,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     } else {
         points
             .iter()
-            .map(|(raw, expected)| format!("{expected:.3} kg -> {raw:.6}"))
+            .map(|(raw, expected)| format!("{expected:.3} kg -> {raw:.raw_precision$}"))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -1090,9 +1113,14 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 .await
                                 {
                                     Ok((raw, captured)) => {
-                                        manual_raw.set(format!("{raw:.6}"));
+                                        manual_raw.set(format_sensor_raw_value(
+                                            raw,
+                                            Some(&sensor),
+                                            6,
+                                        ));
                                         let done = format!(
-                                            "Captured averaged raw sample {raw:.6} from {} samples on {}.",
+                                            "Captured averaged raw sample {} from {} samples on {}.",
+                                            format_sensor_raw_value(raw, Some(&sensor), 6),
                                             captured, sensor.label
                                         );
                                         manual_capture_progress.set(done.clone());
@@ -1276,11 +1304,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             move |_| {
                                 selected_point_idx.set(Some(idx));
                                 manual_kg.set(format!("{expected}"));
-                                manual_raw.set(format!("{raw}"));
+                                manual_raw.set(format_raw_with_precision(raw, raw_precision));
                             }
                         },
                         div { style: "font-weight:700;", "{expected:.4} kg" }
-                        div { style: "font-size:12px; opacity:0.82;", "raw {raw:.6}" }
+                        div { style: "font-size:12px; opacity:0.82;", "raw {format_raw_with_precision(raw, raw_precision)}" }
                     }
                 }
                 if points.is_empty() {
@@ -1368,8 +1396,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     }
                     text { x:"6", y:"14", fill:"{theme.text_muted}", "font-size":"11", {format!("y max {:.3}", y_max)} }
                     text { x:"6", y:"{plot_h - pad_b + 4.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("y min {:.3}", y_min)} }
-                    text { x:"{pad_l}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x min {:.3}", x_min)} }
-                    text { x:"{plot_w - 130.0}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x max {:.3}", x_max)} }
+                    text { x:"{pad_l}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x min {:.raw_precision$}", x_min)} }
+                    text { x:"{plot_w - 130.0}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x max {:.raw_precision$}", x_max)} }
                 }
                 if let (Some((raw, expected)), Some(panel_horizontal_style), Some(panel_top)) = (active_plot_point, point_overlay_horizontal_style.clone(), point_overlay_top.clone()) {
                     div {
@@ -1383,7 +1411,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             }
                             div { style: "display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;",
                                 span { "Raw" }
-                                span { "{raw:.6}" }
+                                span { "{format_raw_with_precision(raw, raw_precision)}" }
                             }
                         }
                     }
@@ -1403,7 +1431,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 }
                                 div { style: "display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;",
                                     span { "Raw" }
-                                    span { "{raw:.6}" }
+                                    span { "{format_raw_with_precision(raw, raw_precision)}" }
                                 }
                             }
                         }
@@ -1507,9 +1535,16 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             .await
                                             {
                                                 Ok((raw, captured)) => {
-                                                    sequence_dialog_captured_raw.set(format!("{raw:.6}"));
+                                                    sequence_dialog_captured_raw.set(
+                                                        format_sensor_raw_value(
+                                                            raw,
+                                                            Some(&sensor),
+                                                            6,
+                                                        ),
+                                                    );
                                                     sequence_dialog_status.set(format!(
-                                                        "Captured averaged raw sample {raw:.6} from {} samples on {}.",
+                                                        "Captured averaged raw sample {} from {} samples on {}.",
+                                                        format_sensor_raw_value(raw, Some(&sensor), 6),
                                                         captured, sensor.label
                                                     ));
                                                 }
@@ -1621,7 +1656,7 @@ fn CalibrationLiveMetrics(
     let calibrated_live = calibration
         .as_ref()
         .and_then(|cfg| raw_live.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
-    let raw_live_s = fmt_fixed(raw_live, 12, 6);
+    let raw_live_s = fmt_fixed(raw_live, 12, sensor_raw_precision(selected_sensor.as_ref(), 6));
     let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
 
     rsx! {
