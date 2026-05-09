@@ -201,10 +201,9 @@ fn live_telemetry_row_is_fresh(row: &TelemetryRow, now_ms: i64) -> bool {
     (-LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS..=LIVE_TELEMETRY_MAX_AGE_MS).contains(&age_ms)
 }
 
-fn alert_pulse_high(anchor_ms: Option<i64>, now_ms: i64, period_ms: i64) -> bool {
-    let phase_anchor_ms = anchor_ms.unwrap_or(now_ms);
-    let elapsed_ms = now_ms.saturating_sub(phase_anchor_ms);
-    elapsed_ms.rem_euclid(period_ms) < period_ms / 2
+fn alert_pulse_high(anchor_tick: Option<u64>, tick: u64, period_ticks: u64) -> bool {
+    let phase_anchor_tick = anchor_tick.unwrap_or(tick);
+    tick.wrapping_sub(phase_anchor_tick) % period_ticks < period_ticks / 2
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
@@ -1397,6 +1396,7 @@ fn reset_local_app_data() {
 // When this number changes, we tear down and rebuild the websocket connection.
 static WS_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static WS_CONNECTED_SIGNAL: GlobalSignal<bool> = Signal::global(|| false);
+static SOFTWARE_BUTTONS_ENABLED_SIGNAL: GlobalSignal<bool> = Signal::global(|| false);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static HEADER_CLOCK_TICK: GlobalSignal<u64> = Signal::global(|| 0);
@@ -4005,6 +4005,14 @@ fn TelemetryDashboardInner() -> Element {
     }
 
     {
+        let action_policy = action_policy;
+        use_effect(move || {
+            let enabled = action_policy.read().software_buttons_enabled;
+            *SOFTWARE_BUTTONS_ENABLED_SIGNAL.write() = enabled;
+        });
+    }
+
+    {
         let mut active_main_tab = active_main_tab;
         let layout_config = layout_config;
         let abort_only_mode = abort_only_mode;
@@ -5163,8 +5171,8 @@ fn TelemetryDashboardInner() -> Element {
     };
     let warn_count_label = format_capped_alert_count(warn_count);
     let err_count_label = format_capped_alert_count(err_count);
-    let warning_alert_phase_anchor_ms = use_hook(|| Cell::new(None::<i64>));
-    let error_alert_phase_anchor_ms = use_hook(|| Cell::new(None::<i64>));
+    let warning_alert_phase_anchor_tick = use_hook(|| Cell::new(None::<u64>));
+    let error_alert_phase_anchor_tick = use_hook(|| Cell::new(None::<u64>));
 
     let latest_warning_ts = warnings
         .read()
@@ -5186,24 +5194,25 @@ fn TelemetryDashboardInner() -> Element {
 
     let has_unacked_warnings = latest_warning_ts > *ack_warning_ts.read();
     let has_unacked_errors = latest_error_ts > *ack_error_ts.read();
-    let now_ms = monotonic_now_ms() as i64;
+    let header_clock_tick = *HEADER_CLOCK_TICK.read();
     if has_unacked_warnings {
-        if warning_alert_phase_anchor_ms.get().is_none() {
-            warning_alert_phase_anchor_ms.set(Some(now_ms));
+        if warning_alert_phase_anchor_tick.get().is_none() {
+            warning_alert_phase_anchor_tick.set(Some(header_clock_tick));
         }
-    } else if warning_alert_phase_anchor_ms.get().is_some() {
-        warning_alert_phase_anchor_ms.set(None);
+    } else if warning_alert_phase_anchor_tick.get().is_some() {
+        warning_alert_phase_anchor_tick.set(None);
     }
     if has_unacked_errors {
-        if error_alert_phase_anchor_ms.get().is_none() {
-            error_alert_phase_anchor_ms.set(Some(now_ms));
+        if error_alert_phase_anchor_tick.get().is_none() {
+            error_alert_phase_anchor_tick.set(Some(header_clock_tick));
         }
-    } else if error_alert_phase_anchor_ms.get().is_some() {
-        error_alert_phase_anchor_ms.set(None);
+    } else if error_alert_phase_anchor_tick.get().is_some() {
+        error_alert_phase_anchor_tick.set(None);
     }
     let warning_alert_pulse_high =
-        alert_pulse_high(warning_alert_phase_anchor_ms.get(), now_ms, 1_150);
-    let error_alert_pulse_high = alert_pulse_high(error_alert_phase_anchor_ms.get(), now_ms, 1_150);
+        alert_pulse_high(warning_alert_phase_anchor_tick.get(), header_clock_tick, 12);
+    let error_alert_pulse_high =
+        alert_pulse_high(error_alert_phase_anchor_tick.get(), header_clock_tick, 12);
 
     let border_style = "1px solid transparent";
     let app_alert_effect = if has_unacked_errors && has_errors && error_alert_pulse_high {
@@ -7097,7 +7106,7 @@ fn TelemetryDashboardInner() -> Element {
 }
 
 fn send_cmd(cmd: &str) {
-    if !auth::can_send_command(cmd) {
+    if !*SOFTWARE_BUTTONS_ENABLED_SIGNAL.read() || !auth::can_send_command(cmd) {
         return;
     }
     if let Some(sender) = WS_SENDER.read().clone()
@@ -7123,6 +7132,9 @@ fn should_send_command_activation(cmd: &str) -> bool {
 }
 
 pub(crate) fn send_cmd_from_press(cmd: &str) {
+    if !*SOFTWARE_BUTTONS_ENABLED_SIGNAL.read() || !auth::can_send_command(cmd) {
+        return;
+    }
     let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
         return;
     };
@@ -7164,6 +7176,13 @@ fn should_send_command_release(cmd: &str) -> bool {
 }
 
 pub(crate) fn send_cmd_from_click(cmd: &str) {
+    if !*SOFTWARE_BUTTONS_ENABLED_SIGNAL.read() || !auth::can_send_command(cmd) {
+        let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
+            return;
+        };
+        pending.take();
+        return;
+    }
     if should_send_command_release(cmd) {
         send_cmd(cmd);
     }
