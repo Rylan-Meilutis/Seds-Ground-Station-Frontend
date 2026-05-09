@@ -1601,25 +1601,26 @@ fn action_style(
     actuated: Option<bool>,
 ) -> String {
     let cursor = if enabled { "pointer" } else { "not-allowed" };
+    let actuated_active = actuated.unwrap_or(false);
     let recommended = enabled && blink != BlinkMode::None;
-    let opacity = if !enabled {
-        "0.72"
-    } else if recommended || actuated.unwrap_or(false) {
+    let opacity = if recommended || actuated_active {
         "1.0"
+    } else if !enabled {
+        "0.72"
     } else {
         "0.62"
     };
-    let filter = if !enabled {
-        "grayscale(0.72) brightness(0.78)"
-    } else if actuated.unwrap_or(false) || recommended {
+    let filter = if actuated_active || recommended {
         "none"
+    } else if !enabled {
+        "grayscale(0.72) brightness(0.78)"
     } else {
         "saturate(0.58) brightness(0.82)"
     };
-    let box_shadow = if !enabled {
-        "none"
-    } else if recommended || actuated.unwrap_or(false) {
+    let box_shadow = if recommended || actuated_active {
         "0 10px 25px rgba(0,0,0,0.25)"
+    } else if !enabled {
+        "none"
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
     };
