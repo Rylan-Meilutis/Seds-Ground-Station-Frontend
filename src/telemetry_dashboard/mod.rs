@@ -6196,6 +6196,7 @@ fn TelemetryDashboardInner() -> Element {
                  align-items:center;
                  gap:8px;
                  flex-wrap:nowrap !important;
+                 min-height:42px;
                }}
                .gs26-header-title {{
                  grid-column:2;
@@ -6203,18 +6204,26 @@ fn TelemetryDashboardInner() -> Element {
                  text-align:center;
                  min-width:0;
                  max-width:100%;
-                 font-size:18px !important;
-                 line-height:1.1;
+                 width:100%;
+                 padding:0 5.4rem;
+                 font-size:clamp(12px, 4.2vw, 18px) !important;
+                 line-height:1;
+                 white-space:nowrap;
+                 overflow:hidden;
+                 text-overflow:ellipsis;
                  pointer-events:none;
                }}
                .gs26-header-actions-shell {{
                  grid-column:1 / 4;
+                 position:absolute;
+                 inset:0;
                  display:flex;
                  align-items:center;
                  justify-content:space-between;
                  gap:8px;
                  width:100%;
                  margin-left:0;
+                 pointer-events:none;
                }}
                .gs26-header-abort-mobile {{
                  display:inline-flex;
@@ -6223,6 +6232,7 @@ fn TelemetryDashboardInner() -> Element {
                  margin-left:0 !important;
                  flex:0 0 auto;
                  order:0;
+                 pointer-events:auto;
                }}
                .gs26-header-menu-toggle {{
                  display:inline-flex;
@@ -6238,6 +6248,7 @@ fn TelemetryDashboardInner() -> Element {
                  cursor:pointer;
                  margin-left:auto;
                  order:2;
+                 pointer-events:auto;
                }}
                .gs26-header-actions-list {{
                  display:none;
