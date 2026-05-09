@@ -1423,6 +1423,7 @@ pub(crate) static WS_CONNECTED_SIGNAL: GlobalSignal<bool> = Signal::global(|| fa
 static SOFTWARE_BUTTONS_ENABLED_SIGNAL: GlobalSignal<bool> = Signal::global(|| false);
 static ACTION_POLICY_SIGNAL: GlobalSignal<ActionPolicyMsg> =
     Signal::global(ActionPolicyMsg::default_locked);
+static ACTION_POLICY_RESYNC_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static HEADER_CLOCK_TICK: GlobalSignal<u64> = Signal::global(|| 0);
@@ -4037,6 +4038,29 @@ fn TelemetryDashboardInner() -> Element {
             let enabled = snapshot.software_buttons_enabled;
             *SOFTWARE_BUTTONS_ENABLED_SIGNAL.write() = enabled;
             *ACTION_POLICY_SIGNAL.write() = snapshot;
+        });
+    }
+
+    {
+        let mut action_policy = action_policy;
+        use_effect(move || {
+            let epoch = *ACTION_POLICY_RESYNC_EPOCH.read();
+            if epoch == 0 {
+                return;
+            }
+            spawn(async move {
+                for delay_ms in [250_u32, 800_u32, 1_500_u32] {
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_timers::future::TimeoutFuture::new(delay_ms).await;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+
+                    if let Ok(policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await
+                    {
+                        set_signal_if_changed(&mut action_policy, policy);
+                    }
+                }
+            });
         });
     }
 
@@ -7281,18 +7305,8 @@ fn send_cmd(cmd: &str) {
 }
 
 fn schedule_action_policy_resync() {
-    spawn(async move {
-        for delay_ms in [250_u32, 800_u32, 1_500_u32] {
-            #[cfg(target_arch = "wasm32")]
-            gloo_timers::future::TimeoutFuture::new(delay_ms).await;
-            #[cfg(not(target_arch = "wasm32"))]
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
-
-            if let Ok(policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await {
-                *ACTION_POLICY_SIGNAL.write() = policy;
-            }
-        }
-    });
+    let mut epoch = ACTION_POLICY_RESYNC_EPOCH.write();
+    *epoch = epoch.wrapping_add(1);
 }
 
 fn should_send_command_activation(cmd: &str) -> bool {
