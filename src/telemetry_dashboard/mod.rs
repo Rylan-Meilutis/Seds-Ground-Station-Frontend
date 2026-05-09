@@ -6423,7 +6423,12 @@ fn TelemetryDashboardInner() -> Element {
                                     .find(|c| c.cmd == "Abort")
                                     .cloned();
                                 let abort_visible = auth::can_send_command("Abort");
-                                let abort_allowed = software_buttons_enabled && abort_visible;
+                                let abort_interlock_enabled = abort_control
+                                    .as_ref()
+                                    .map(|c| c.enabled)
+                                    .unwrap_or(true);
+                                let abort_allowed =
+                                    software_buttons_enabled && abort_visible && abort_interlock_enabled;
                                 let abort_active = abort_control
                                     .as_ref()
                                     .and_then(|c| c.actuated)
@@ -6466,6 +6471,7 @@ fn TelemetryDashboardInner() -> Element {
                                 font-weight:900;
                                 cursor:not-allowed;
                                 opacity:0.72;
+                                pointer-events:none;
                             "
                                 };
                                 rsx! {
@@ -6500,7 +6506,15 @@ fn TelemetryDashboardInner() -> Element {
                                                     }
                                                 }
                                             },
-                                            "{translate_text(\"ABORT\")}"
+                                            span { style: "display:inline-flex; align-items:center; gap:8px;",
+                                                span { "{translate_text(\"ABORT\")}" }
+                                                if !abort_allowed {
+                                                    span {
+                                                        style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
+                                                        "{translate_text(\"Disabled\")}"
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
