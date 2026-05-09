@@ -6179,16 +6179,42 @@ fn TelemetryDashboardInner() -> Element {
                  display:none !important;
                }}
              }}
+             .gs26-header-row {{
+               position:relative;
+             }}
+             .gs26-header-title {{
+               flex:0 1 auto;
+             }}
              .gs26-header-actions-shell {{ margin-left:auto; position:relative; z-index:2000; }}
              .gs26-header-actions-list {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
              .gs26-header-menu-toggle {{ display:none; }}
              .gs26-header-abort-mobile {{ display:none; }}
              @media (max-width: 900px) {{
+               .gs26-header-row {{
+                 display:grid !important;
+                 grid-template-columns:minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+                 align-items:center;
+                 gap:8px;
+                 flex-wrap:nowrap !important;
+               }}
+               .gs26-header-title {{
+                 grid-column:2;
+                 justify-self:center;
+                 text-align:center;
+                 min-width:0;
+                 max-width:100%;
+                 font-size:18px !important;
+                 line-height:1.1;
+                 pointer-events:none;
+               }}
                .gs26-header-actions-shell {{
+                 grid-column:1 / 4;
                  display:flex;
                  align-items:center;
-                 justify-content:flex-end;
+                 justify-content:space-between;
                  gap:8px;
+                 width:100%;
+                 margin-left:0;
                }}
                .gs26-header-abort-mobile {{
                  display:inline-flex;
@@ -6196,6 +6222,7 @@ fn TelemetryDashboardInner() -> Element {
                  justify-content:center;
                  margin-left:0 !important;
                  flex:0 0 auto;
+                 order:0;
                }}
                .gs26-header-menu-toggle {{
                  display:inline-flex;
@@ -6209,6 +6236,8 @@ fn TelemetryDashboardInner() -> Element {
                  font:inherit;
                  font-weight:800;
                  cursor:pointer;
+                 margin-left:auto;
+                 order:2;
                }}
                .gs26-header-actions-list {{
                  display:none;
@@ -6399,6 +6428,7 @@ fn TelemetryDashboardInner() -> Element {
 
                     // Header row 1
                     div {
+                        class: "gs26-header-row",
                         style: "
                     display:flex;
                     align-items:center;
@@ -6410,7 +6440,11 @@ fn TelemetryDashboardInner() -> Element {
                     position:relative;
                     z-index:2000;
                 ",
-                        h1 { style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;", "{_dashboard_title(&layout)}" }
+                        h1 {
+                            class: "gs26-header-title",
+                            style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
+                            "{_dashboard_title(&layout)}"
+                        }
 
                         {
                             let show_disable_actions = _actions_tab_has_visible_actions(&layout, *abort_only_mode.read());
@@ -7307,6 +7341,15 @@ fn send_cmd(cmd: &str) {
 fn schedule_action_policy_resync() {
     let mut epoch = ACTION_POLICY_RESYNC_EPOCH.write();
     *epoch = epoch.wrapping_add(1);
+}
+
+fn clear_command_feedback_latches() {
+    if let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() {
+        pending.take();
+    }
+    if let Ok(mut last) = LAST_COMMAND_ACTIVATION.lock() {
+        last.take();
+    }
 }
 
 fn should_send_command_activation(cmd: &str) -> bool {
@@ -9250,6 +9293,7 @@ fn handle_ws_message(
 
         WsInMsg::ActionPolicy(policy) => {
             if page_visible {
+                clear_command_feedback_latches();
                 set_signal_if_changed(&mut action_policy, policy);
             } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
                 pending.action_policy = Some(policy);
