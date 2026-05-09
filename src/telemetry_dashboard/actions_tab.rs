@@ -566,7 +566,6 @@ fn fill_target_editor(
                 input {
                     r#type: "number",
                     step: "0.01",
-                    min: "0",
                     disabled: !enabled,
                     style: "{input_style(theme)} cursor:{cursor};",
                     value: "{mass_value}",
@@ -578,9 +577,14 @@ fn fill_target_editor(
                             return;
                         };
                         if let Ok(value) = evt.value().parse::<f32>() {
+                            let normalized = if value.abs() < 0.01 {
+                                if value.is_sign_negative() { -0.01 } else { 0.01 }
+                            } else {
+                                value
+                            };
                             match field {
-                                "nitrogen" => next_cfg.nitrogen.target_mass_kg = value.max(0.01),
-                                "nitrous" => next_cfg.nitrous.target_mass_kg = value.max(0.01),
+                                "nitrogen" => next_cfg.nitrogen.target_mass_kg = normalized,
+                                "nitrous" => next_cfg.nitrous.target_mass_kg = normalized,
                                 _ => {}
                             }
                             fill_targets.set(Some(next_cfg));

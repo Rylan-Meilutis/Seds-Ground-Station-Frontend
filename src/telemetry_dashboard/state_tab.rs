@@ -1778,7 +1778,7 @@ fn loadcell_target_for_flight_state(
     target_mass_kg
         .is_finite()
         .then_some(target_mass_kg)
-        .filter(|target| *target > 0.0)
+        .filter(|target| target.abs() > 0.0001)
 }
 
 fn current_summary_item_value(

@@ -6225,6 +6225,9 @@ fn TelemetryDashboardInner() -> Element {
                  margin-left:0;
                  pointer-events:none;
                }}
+               .gs26-header-actions-shell[data-expanded=\"true\"] {{
+                 pointer-events:auto;
+               }}
                .gs26-header-abort-mobile {{
                  display:inline-flex;
                  align-items:center;
@@ -6266,6 +6269,7 @@ fn TelemetryDashboardInner() -> Element {
                  flex-direction:column;
                  align-items:stretch;
                  gap:8px;
+                 pointer-events:auto;
                }}
                .gs26-header-actions-shell[data-expanded=\"true\"] .gs26-header-actions-list {{
                  display:flex;
