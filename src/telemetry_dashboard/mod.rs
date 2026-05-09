@@ -6174,11 +6174,20 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-header-actions-shell {{ margin-left:auto; position:relative; z-index:2000; }}
              .gs26-header-actions-list {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
              .gs26-header-menu-toggle {{ display:none; }}
+             .gs26-header-abort-mobile {{ display:none; }}
              @media (max-width: 900px) {{
                .gs26-header-actions-shell {{
                  display:flex;
                  align-items:center;
                  justify-content:flex-end;
+                 gap:8px;
+               }}
+               .gs26-header-abort-mobile {{
+                 display:inline-flex;
+                 align-items:center;
+                 justify-content:center;
+                 margin-left:0 !important;
+                 flex:0 0 auto;
                }}
                .gs26-header-menu-toggle {{
                  display:inline-flex;
@@ -6216,6 +6225,9 @@ fn TelemetryDashboardInner() -> Element {
                .gs26-header-actions-list button {{
                  width:100%;
                  margin-left:0 !important;
+               }}
+               .gs26-header-actions-list .gs26-header-abort-menu {{
+                 display:none;
                }}
              }}
              @media (max-width: 720px), (max-height: 780px) {{
@@ -6418,6 +6430,95 @@ fn TelemetryDashboardInner() -> Element {
                                 },
                                 {if *header_actions_expanded.read() { translate_text("Close menu") } else { translate_text("Menu") }}
                             }
+                            {
+                                let abort_control = action_policy
+                                    .read()
+                                    .controls
+                                    .iter()
+                                    .find(|c| c.cmd == "Abort")
+                                    .cloned();
+                                let abort_visible = auth::can_send_command("Abort");
+                                let abort_allowed =
+                                    abort_visible && action_policy_control_enabled(&action_policy.read(), "Abort");
+                                let abort_active = abort_control
+                                    .as_ref()
+                                    .and_then(|c| c.actuated)
+                                    .unwrap_or(false)
+                                    || command_feedback_active("Abort");
+                                let abort_style = if abort_allowed {
+                                    if abort_active {
+                                        "
+                                margin-left:clamp(20px, 6vw, 96px);
+                                padding:0.45rem 0.85rem;
+                                border-radius:0.75rem;
+                                border:1px solid #fca5a5;
+                                background:#7f1d1d;
+                                color:#fee2e2;
+                                box-shadow:0 0 0 1px rgba(252,165,165,0.3), 0 10px 28px rgba(127,29,29,0.5);
+                                font-weight:900;
+                                cursor:pointer;
+                            "
+                                    } else {
+                                        "
+                                margin-left:clamp(20px, 6vw, 96px);
+                                padding:0.45rem 0.85rem;
+                                border-radius:0.75rem;
+                                border:1px solid #ef4444;
+                                background:#450a0a;
+                                color:#fecaca;
+                                box-shadow:0 0 0 1px rgba(239,68,68,0.16), 0 10px 24px rgba(69,10,10,0.35);
+                                font-weight:900;
+                                cursor:pointer;
+                            "
+                                    }
+                                } else {
+                                    "
+                                margin-left:clamp(20px, 6vw, 96px);
+                                padding:0.45rem 0.85rem;
+                                border-radius:0.75rem;
+                                border:1px solid #991b1b;
+                                background:#2b0b0b;
+                                color:#fca5a5;
+                                font-weight:900;
+                                cursor:not-allowed;
+                                opacity:0.72;
+                                pointer-events:none;
+                            "
+                                };
+                                rsx! {
+                                    if abort_visible {
+                                        button {
+                                            class: "gs26-header-abort-mobile",
+                                            style: "{abort_style} touch-action:manipulation;",
+                                            disabled: !abort_allowed,
+                                            onmousedown: move |_| {
+                                                if abort_allowed {
+                                                    send_cmd_from_press("Abort");
+                                                }
+                                            },
+                                            ontouchstart: move |_| {
+                                                if abort_allowed {
+                                                    send_cmd_from_press("Abort");
+                                                }
+                                            },
+                                            onclick: move |_| {
+                                                if abort_allowed {
+                                                    send_cmd_from_click("Abort");
+                                                }
+                                            },
+                                            span { style: "display:inline-flex; align-items:center; gap:8px;",
+                                                span { "{translate_text(\"ABORT\")}" }
+                                                if !abort_allowed {
+                                                    span {
+                                                        style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
+                                                        "{translate_text(\"Disabled\")}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         div { class: "gs26-header-actions-list",
                             if show_disable_actions {
                             button {
@@ -6523,6 +6624,7 @@ fn TelemetryDashboardInner() -> Element {
                                 rsx! {
                                     if abort_visible {
                                         button {
+                                            class: "gs26-header-abort-menu",
                                             style: "{abort_style} touch-action:manipulation;",
                                             disabled: !abort_allowed,
                                             onmousedown: {
@@ -7263,7 +7365,7 @@ pub(crate) fn send_cmd_from_click(cmd: &str) {
         pending.take();
         return;
     }
-    if should_send_command_release(cmd) {
+    if should_send_command_release(cmd) || should_send_command_activation(cmd) {
         send_cmd(cmd);
     }
 }
