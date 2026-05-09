@@ -486,8 +486,8 @@ pub fn ActionsTab(
                     h3 { style: "margin:0; color:{theme.text_primary};", "{translate_text(\"Fill Targets\")}" }
                     if let Some(cfg) = fill_targets.read().clone() {
                         div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap:10px;",
-                            {fill_target_editor("Nitrogen", "nitrogen", &cfg.nitrogen, &theme, fill_targets, fill_targets_status, fill_targets_editable)}
-                            {fill_target_editor("Nitrous", "nitrous", &cfg.nitrous, &theme, fill_targets, fill_targets_status, fill_targets_editable)}
+                            FillTargetEditor { key: "nitrogen-{cfg.nitrogen.target_mass_kg:.2}-{cfg.nitrogen.target_pressure_psi:.1}", title: "Nitrogen", field: "nitrogen", target: cfg.nitrogen.clone(), theme: theme.clone(), fill_targets: fill_targets, fill_targets_status: fill_targets_status, enabled: fill_targets_editable }
+                            FillTargetEditor { key: "nitrous-{cfg.nitrous.target_mass_kg:.2}-{cfg.nitrous.target_pressure_psi:.1}", title: "Nitrous", field: "nitrous", target: cfg.nitrous.clone(), theme: theme.clone(), fill_targets: fill_targets, fill_targets_status: fill_targets_status, enabled: fill_targets_editable }
                         }
                         button {
                             style: "{apply_button_style(&theme, !*fill_targets_busy.read() && fill_targets_editable)}",
@@ -545,17 +545,82 @@ fn flight_setup_metric(label: &str, value: String, theme: &ThemeConfig) -> Eleme
     }
 }
 
-fn fill_target_editor(
+fn sanitize_fill_target_input(raw: &str) -> String {
+    raw.chars()
+        .filter(|ch| ch.is_ascii_digit() || matches!(ch, '-' | '.'))
+        .collect()
+}
+
+fn commit_fill_target_mass(
+    title: &str,
+    field: &str,
+    draft: &str,
+    fill_targets: &mut Signal<Option<FillTargetsConfig>>,
+    fill_targets_status: &mut Signal<String>,
+) -> Result<String, String> {
+    let value = draft
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| format!("Enter a valid target mass for {title}."))?;
+    let normalized = if value.abs() < 0.01 {
+        if value.is_sign_negative() { -0.01 } else { 0.01 }
+    } else {
+        value
+    };
+    let Some(mut next_cfg) = fill_targets.read().clone() else {
+        return Err("Fill targets are not loaded yet.".to_string());
+    };
+    match field {
+        "nitrogen" => next_cfg.nitrogen.target_mass_kg = normalized,
+        "nitrous" => next_cfg.nitrous.target_mass_kg = normalized,
+        _ => {}
+    }
+    fill_targets.set(Some(next_cfg));
+    fill_targets_status.set("Unsaved fill target changes.".to_string());
+    Ok(format!("{normalized:.2}"))
+}
+
+fn commit_fill_target_pressure(
+    title: &str,
+    field: &str,
+    draft: &str,
+    fill_targets: &mut Signal<Option<FillTargetsConfig>>,
+    fill_targets_status: &mut Signal<String>,
+) -> Result<String, String> {
+    let value = draft
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| format!("Enter a valid target pressure for {title}."))?;
+    let normalized = value.max(0.0);
+    let Some(mut next_cfg) = fill_targets.read().clone() else {
+        return Err("Fill targets are not loaded yet.".to_string());
+    };
+    match field {
+        "nitrogen" => next_cfg.nitrogen.target_pressure_psi = normalized,
+        "nitrous" => next_cfg.nitrous.target_pressure_psi = normalized,
+        _ => {}
+    }
+    fill_targets.set(Some(next_cfg));
+    fill_targets_status.set("Unsaved fill target changes.".to_string());
+    Ok(format!("{normalized:.1}"))
+}
+
+#[component]
+fn FillTargetEditor(
     title: &'static str,
     field: &'static str,
-    target: &FluidFillTarget,
-    theme: &ThemeConfig,
-    mut fill_targets: Signal<Option<FillTargetsConfig>>,
-    mut fill_targets_status: Signal<String>,
+    target: FluidFillTarget,
+    theme: ThemeConfig,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
+    fill_targets_status: Signal<String>,
     enabled: bool,
 ) -> Element {
-    let mass_value = format!("{:.2}", target.target_mass_kg);
-    let pressure_value = format!("{:.1}", target.target_pressure_psi);
+    let mut fill_targets = fill_targets;
+    let mut fill_targets_status = fill_targets_status;
+    let mut mass_draft = use_signal(|| format!("{:.2}", target.target_mass_kg));
+    let mut pressure_draft = use_signal(|| format!("{:.1}", target.target_pressure_psi));
+    let committed_mass_value = format!("{:.2}", target.target_mass_kg);
+    let committed_pressure_value = format!("{:.1}", target.target_pressure_psi);
     let cursor = if enabled { "text" } else { "not-allowed" };
     let opacity = if enabled { "1.0" } else { "0.6" };
     rsx! {
@@ -564,31 +629,35 @@ fn fill_target_editor(
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{translate_text(\"Target mass (kg)\")}" }
                 input {
-                    r#type: "number",
-                    step: "0.01",
+                    r#type: "text",
+                    inputmode: "decimal",
                     disabled: !enabled,
-                    style: "{input_style(theme)} cursor:{cursor};",
-                    value: "{mass_value}",
+                    style: "{input_style(&theme)} cursor:{cursor};",
+                    value: "{mass_draft.read().clone()}",
                     oninput: move |evt| {
                         if !enabled {
                             return;
                         }
-                        let Some(mut next_cfg) = fill_targets.read().clone() else {
+                        mass_draft.set(sanitize_fill_target_input(&evt.value()));
+                    },
+                    onblur: move |_| {
+                        if !enabled {
+                            mass_draft.set(committed_mass_value.clone());
                             return;
-                        };
-                        if let Ok(value) = evt.value().parse::<f32>() {
-                            let normalized = if value.abs() < 0.01 {
-                                if value.is_sign_negative() { -0.01 } else { 0.01 }
-                            } else {
-                                value
-                            };
-                            match field {
-                                "nitrogen" => next_cfg.nitrogen.target_mass_kg = normalized,
-                                "nitrous" => next_cfg.nitrous.target_mass_kg = normalized,
-                                _ => {}
+                        }
+                        let current_draft = mass_draft.read().clone();
+                        match commit_fill_target_mass(
+                            title,
+                            field,
+                            current_draft.as_str(),
+                            &mut fill_targets,
+                            &mut fill_targets_status,
+                        ) {
+                            Ok(next) => mass_draft.set(next),
+                            Err(err) => {
+                                fill_targets_status.set(err);
+                                mass_draft.set(committed_mass_value.clone());
                             }
-                            fill_targets.set(Some(next_cfg));
-                            fill_targets_status.set("Unsaved fill target changes.".to_string());
                         }
                     }
                 }
@@ -596,27 +665,35 @@ fn fill_target_editor(
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{translate_text(\"Target pressure (psi)\")}" }
                 input {
-                    r#type: "number",
-                    step: "0.1",
-                    min: "0",
+                    r#type: "text",
+                    inputmode: "decimal",
                     disabled: !enabled,
-                    style: "{input_style(theme)} cursor:{cursor};",
-                    value: "{pressure_value}",
+                    style: "{input_style(&theme)} cursor:{cursor};",
+                    value: "{pressure_draft.read().clone()}",
                     oninput: move |evt| {
                         if !enabled {
                             return;
                         }
-                        let Some(mut next_cfg) = fill_targets.read().clone() else {
+                        pressure_draft.set(sanitize_fill_target_input(&evt.value()));
+                    },
+                    onblur: move |_| {
+                        if !enabled {
+                            pressure_draft.set(committed_pressure_value.clone());
                             return;
-                        };
-                        if let Ok(value) = evt.value().parse::<f32>() {
-                            match field {
-                                "nitrogen" => next_cfg.nitrogen.target_pressure_psi = value.max(0.0),
-                                "nitrous" => next_cfg.nitrous.target_pressure_psi = value.max(0.0),
-                                _ => {}
+                        }
+                        let current_draft = pressure_draft.read().clone();
+                        match commit_fill_target_pressure(
+                            title,
+                            field,
+                            current_draft.as_str(),
+                            &mut fill_targets,
+                            &mut fill_targets_status,
+                        ) {
+                            Ok(next) => pressure_draft.set(next),
+                            Err(err) => {
+                                fill_targets_status.set(err);
+                                pressure_draft.set(committed_pressure_value.clone());
                             }
-                            fill_targets.set(Some(next_cfg));
-                            fill_targets_status.set("Unsaved fill target changes.".to_string());
                         }
                     }
                 }

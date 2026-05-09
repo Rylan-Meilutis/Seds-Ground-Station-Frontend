@@ -182,7 +182,7 @@ Notes:
 
 - the frontend uses `values[0]` and `values[1]` as latitude/longitude for `GPS`, `GPS_DATA`, or `ROCKET_GPS`
 - an empty array is acceptable
-- `KG1000` is accepted as the raw 1000 kg loadcell source. The frontend derives `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` from it for summary labels and chart series when those derived telemetry rows are not provided directly.
+- `KG1000` is accepted as the raw 1000 kg loadcell source, but it is treated as raw-only telemetry by the current frontend. Backends should publish `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` explicitly for calibrated displays and charts.
 - native builds accept either the array response or NDJSON-style streaming for faster reseed startup
 - native builds advertise `Accept: application/x-ndjson` on this route
 - if you stream, emit one complete telemetry row per line and start sending bytes promptly
@@ -789,8 +789,10 @@ Generic layout behavior:
 - when the backend is reachable, `/api/recent` is treated as the source of truth for the telemetry cache and overwrites the cached telemetry snapshot. Cached telemetry is only used as startup/offline fallback.
 - the dashboard reload button refetches `/api/layout` and reapplies the result to the current dashboard session. Cached layout is only used when live layout fetch fails.
 - clear-cache controls are split in the Settings UI: data cache only, data plus map tile cache, and all caches including layout/settings.
-- state summary fill targets require explicit `fill_target_fluid` and `fill_target_kind` on each item that should show a target. The frontend does not infer targets from display labels.
-- loadcell aliases are shared between labels and charts: `LOADCELL_WEIGHT_KG[0]` falls back to `KG1000[0]`, and `LOADCELL_FILL_PERCENT[0]` is derived from that mass using a default 10 kg full-scale target if no backend-derived value is present.
+- state summary fill targets support explicit `fill_target_fluid` and `fill_target_kind` per item. Current legacy inference also exists for `FUEL_TANK_PRESSURE[0]` and `LOADCELL_WEIGHT_KG[0]`, and for those legacy cases the frontend chooses nitrogen vs nitrous target mass/pressure from the current flight state.
+- `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` should be published by the backend as real derived telemetry. The frontend no longer fabricates calibrated loadcell or fill-percent chart/label data from raw `KG1000`.
+- `LOADCELL_FILL_PERCENT[0]` is expected to use the active fill target for the current flight state. Current frontend/backend behavior is nitrogen target during `PreFill`, `FillTest`, and `NitrogenFill`, and nitrous target otherwise.
+- when `/api/fill_targets` changes, frontend loadcell fill-percentage displays are recomputed immediately from the latest calibrated mass plus the current fill-target snapshot.
 - calibration sensors, labels, colors, telemetry data types, channel ids, and regression choices come from `/api/calibration_config`.
 
 Main tab ids recognized by the frontend:

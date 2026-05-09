@@ -238,7 +238,9 @@ If you are implementing the backend streaming path, use [`docs/backend-recent-st
 - WebSocket message tags are case-sensitive because they are deserialized from Rust enum variant names.
 - Commands are sent over WebSocket as JSON objects like `{ "cmd": "Abort" }`.
 - Layout drives a large part of the UI. If your backend returns a small valid layout, the frontend can still function without the full production config.
-- If you publish raw `KG1000` loadcell rows, the frontend derives `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` for labels and charts. Backends can also publish those derived rows directly.
+- Raw `KG1000` is treated as raw-only telemetry. Backends should publish `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` explicitly if they want calibrated loadcell values and fill percentage to appear in labels/charts.
+- `LOADCELL_FILL_PERCENT` should use the active fill target for the current flight state. Current behavior is nitrogen target during `PreFill`, `FillTest`, and `NitrogenFill`, and nitrous target otherwise.
+- When `/api/fill_targets` is edited and saved, the frontend recomputes visible loadcell fill-percentage displays immediately from the latest calibrated mass and the new target snapshot.
 - Ground Station-provided theme colors are optional and are only used when the user explicitly selects the `backend` preset.
 
 ## Regression Checks
@@ -249,7 +251,7 @@ Run the fast Rust regression suite before shipping layout, telemetry, chart, or 
 cargo test
 ```
 
-The current suite covers layout parsing/validation, sender-aware chart series, derived loadcell labels/charts, launch-clock monotonic behavior, and state/data chart regressions.
+The current suite covers layout parsing/validation, sender-aware chart series, launch-clock monotonic behavior, and state/data chart regressions, including current loadcell display behavior.
 
 ## Reference Files
 

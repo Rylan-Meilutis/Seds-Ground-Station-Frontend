@@ -1598,6 +1598,7 @@ fn flush_hidden_pending_ws_state(
         apply_messages_snapshot(next, message_history);
     }
     if let Some(next) = pending.action_policy {
+        clear_command_feedback_latches();
         set_signal_if_changed(action_policy, next);
     }
     if let Some(next) = pending.fill_targets {
@@ -5098,6 +5099,7 @@ fn TelemetryDashboardInner() -> Element {
         let mut dismissed_notifications_s = dismissed_notifications;
         let mut unread_notification_ids_s = unread_notification_ids;
         let mut action_policy_s = action_policy;
+        let mut recording_status_s = recording_status;
         let mut fill_targets_s = fill_targets;
         let mut network_time_s = network_time;
         let mut launch_clock_s = launch_clock;
@@ -5153,6 +5155,7 @@ fn TelemetryDashboardInner() -> Element {
                             &mut dismissed_notifications_s,
                             &mut unread_notification_ids_s,
                             &mut action_policy_s,
+                            &mut recording_status_s,
                             &mut fill_targets_s,
                             &mut network_time_s,
                             &mut launch_clock_s,
@@ -8170,6 +8173,7 @@ async fn seed_from_db(
     dismissed_notifications: &mut Signal<Vec<DismissedNotification>>,
     unread_notification_ids: &mut Signal<Vec<u64>>,
     action_policy: &mut Signal<ActionPolicyMsg>,
+    recording_status: &mut Signal<RecordingStatusMsg>,
     fill_targets: &mut Signal<Option<FillTargetsConfig>>,
     network_time: &mut Signal<Option<NetworkTimeSync>>,
     launch_clock: &mut Signal<Option<LaunchClockMsg>>,
@@ -8385,6 +8389,7 @@ async fn seed_from_db(
     if let Ok(policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await
         && alive.load(Ordering::Relaxed)
     {
+        clear_command_feedback_latches();
         action_policy.set(policy);
     }
 
@@ -8394,19 +8399,16 @@ async fn seed_from_db(
         fill_targets.set(Some(targets));
     }
 
-    if let Ok(nt) = http_get_json::<NetworkTimeMsg>("/api/network_time").await
-        && alive.load(Ordering::Relaxed)
-    {
-        network_time.set(Some(NetworkTimeSync {
-            network_ms: nt.timestamp_ms,
-            received_mono_ms: monotonic_now_ms(),
-        }));
-    }
-
     if let Ok(clock) = http_get_json::<LaunchClockMsg>("/api/launch_clock").await
         && alive.load(Ordering::Relaxed)
     {
         launch_clock.set(Some(clock));
+    }
+
+    if let Ok(status) = http_get_json::<BoardStatusMsg>("/api/boards").await
+        && alive.load(Ordering::Relaxed)
+    {
+        board_status.set(status.boards);
     }
 
     if let Ok(topology) = http_get_json::<NetworkTopologyMsg>("/api/network_topology").await
@@ -8416,15 +8418,19 @@ async fn seed_from_db(
         network_topology.set(topology);
     }
 
-    if !alive.load(Ordering::Relaxed) {
-        return Ok(());
-    }
-
-    // ---- Board status (/api/boards) ----
-    if let Ok(status) = http_get_json::<BoardStatusMsg>("/api/boards").await
+    if let Ok(status) = http_get_json::<RecordingStatusMsg>("/api/recording_status").await
         && alive.load(Ordering::Relaxed)
     {
-        board_status.set(status.boards);
+        recording_status.set(status);
+    }
+
+    if let Ok(nt) = http_get_json::<NetworkTimeMsg>("/api/network_time").await
+        && alive.load(Ordering::Relaxed)
+    {
+        network_time.set(Some(NetworkTimeSync {
+            network_ms: nt.timestamp_ms,
+            received_mono_ms: monotonic_now_ms(),
+        }));
     }
 
     if !alive.load(Ordering::Relaxed) {
@@ -9214,19 +9220,11 @@ fn handle_ws_message(
         }
 
         WsInMsg::FlightState(st) => {
-            if page_visible {
-                set_signal_if_changed(&mut flight_state, st.state);
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.flight_state = Some(st.state);
-            }
+            set_signal_if_changed(&mut flight_state, st.state);
         }
 
         WsInMsg::LaunchClock(clock) => {
-            if page_visible {
-                set_signal_if_changed(&mut launch_clock, Some(clock));
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.launch_clock = Some(clock);
-            }
+            set_signal_if_changed(&mut launch_clock, Some(clock));
         }
 
         WsInMsg::Warning(w) => {
@@ -9268,86 +9266,54 @@ fn handle_ws_message(
         }
 
         WsInMsg::BoardStatus(status) => {
-            if page_visible {
-                set_signal_if_changed(&mut board_status, status.boards);
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.board_status = Some(status.boards);
-            }
+            set_signal_if_changed(&mut board_status, status.boards);
         }
 
         WsInMsg::NetworkTopology(topology) => {
             note_network_topology_received();
-            if page_visible {
-                set_signal_if_changed(&mut network_topology, topology);
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.network_topology = Some(topology);
-            }
+            set_signal_if_changed(&mut network_topology, topology);
         }
 
         WsInMsg::Notifications(list) => {
-            if page_visible {
-                apply_notifications_snapshot(
-                    list,
-                    notifications,
-                    notification_history,
-                    dismissed_notifications,
-                    unread_notification_ids,
-                );
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.notifications = Some(list);
-            }
+            apply_notifications_snapshot(
+                list,
+                notifications,
+                notification_history,
+                dismissed_notifications,
+                unread_notification_ids,
+            );
         }
 
         WsInMsg::Messages(list) => {
-            if page_visible {
-                apply_messages_snapshot(list, message_history);
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.messages = Some(list);
-            }
+            apply_messages_snapshot(list, message_history);
         }
 
         WsInMsg::ActionPolicy(policy) => {
-            if page_visible {
-                clear_command_feedback_latches();
-                set_signal_if_changed(&mut action_policy, policy);
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.action_policy = Some(policy);
-            }
+            clear_command_feedback_latches();
+            set_signal_if_changed(&mut action_policy, policy);
         }
 
         WsInMsg::FillTargets(targets) => {
-            if page_visible {
-                set_signal_if_changed(&mut fill_targets, Some(targets));
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.fill_targets = Some(targets);
-            }
+            set_signal_if_changed(&mut fill_targets, Some(targets));
         }
 
         WsInMsg::RecordingStatus(status) => {
-            if page_visible {
-                set_signal_if_changed(&mut recording_status, status);
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.recording_status = Some(status);
-            }
+            set_signal_if_changed(&mut recording_status, status);
         }
 
         WsInMsg::NetworkTime(t) => {
-            if page_visible {
-                let next = NetworkTimeSync {
-                    network_ms: t.timestamp_ms,
-                    received_mono_ms: monotonic_now_ms(),
-                };
-                let changed = {
-                    let current = network_time.read();
-                    current
-                        .as_ref()
-                        .is_none_or(|value| value.network_ms != next.network_ms)
-                };
-                if changed {
-                    network_time.set(Some(next));
-                }
-            } else if let Ok(mut pending) = HIDDEN_PENDING_WS_STATE.lock() {
-                pending.network_time = Some(t);
+            let next = NetworkTimeSync {
+                network_ms: t.timestamp_ms,
+                received_mono_ms: monotonic_now_ms(),
+            };
+            let changed = {
+                let current = network_time.read();
+                current
+                    .as_ref()
+                    .is_none_or(|value| value.network_ms != next.network_ms)
+            };
+            if changed {
+                network_time.set(Some(next));
             }
         }
     }
