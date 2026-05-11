@@ -4633,7 +4633,6 @@ pub fn TelemetryDashboard() -> Element {
 fn TelemetryDashboardInner() -> Element {
     // Always valid; becomes “real” once outer publishes it.
     let alive = dashboard_alive();
-    let _header_clock_tick = *HEADER_CLOCK_TICK.read();
     let _restored_cached_rows = use_signal(restore_cached_telemetry_rows_if_needed);
     let frontend_data_clear_epoch = frontend_data_clear_epoch();
 
