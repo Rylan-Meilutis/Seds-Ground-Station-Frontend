@@ -2214,7 +2214,7 @@ fn note_local_ws_disconnect(reason: impl Into<String>) {
 #[cfg(target_arch = "wasm32")]
 fn platform_network_available() -> bool {
     web_sys::window()
-        .and_then(|window| window.navigator().on_line().ok())
+        .map(|window| window.navigator().on_line())
         .unwrap_or(true)
 }
 
