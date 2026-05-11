@@ -4949,6 +4949,15 @@ fn TelemetryDashboardInner() -> Element {
     }
 
     {
+        let active_main_tab = active_main_tab;
+        let mut tabs_expanded = tabs_expanded;
+        use_effect(move || {
+            let _ = *active_main_tab.read();
+            tabs_expanded.set(false);
+        });
+    }
+
+    {
         let mut calibration_has_sensors = calibration_has_sensors;
         let mut calibration_request_base = calibration_request_base;
         use_effect(move || {
@@ -6541,6 +6550,7 @@ fn TelemetryDashboardInner() -> Element {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let alive_for_click = alive.clone();
+            let mut header_actions_expanded = header_actions_expanded;
             let connect_button_label =
                 localized_copy(&current_language(), "CONNECT", "CONECTAR", "CONNECTER");
 
@@ -6557,6 +6567,7 @@ fn TelemetryDashboardInner() -> Element {
                         cursor:pointer;
                     ", theme.button_border, theme.button_background, theme.button_text),
                     onclick: move |_| {
+                        header_actions_expanded.set(false);
                         // KEY CHANGE:
                         // Mark dashboard "not alive" *before* bumping WS_EPOCH.
                         // That prevents the dashboard's WS supervisor effect from spawning
@@ -6580,6 +6591,7 @@ fn TelemetryDashboardInner() -> Element {
 
     let version_button: Element = {
         let show_version_overlay = show_version_overlay;
+        let mut header_actions_expanded = header_actions_expanded;
         rsx! {
             button {
                 style: format!("
@@ -6594,12 +6606,14 @@ fn TelemetryDashboardInner() -> Element {
                 onclick: {
                     let mut show_version_overlay = show_version_overlay;
                     move |_| {
+                        header_actions_expanded.set(false);
                         show_version_overlay.set(true);
                     }
                 },
                 ontouchend: {
                     let mut show_version_overlay = show_version_overlay;
                     move |_| {
+                        header_actions_expanded.set(false);
                         show_version_overlay.set(true);
                     }
                 },
@@ -6610,6 +6624,7 @@ fn TelemetryDashboardInner() -> Element {
 
     let settings_button: Element = {
         let show_settings_overlay = show_settings_overlay;
+        let mut header_actions_expanded = header_actions_expanded;
         rsx! {
             button {
                 style: format!("
@@ -6624,12 +6639,14 @@ fn TelemetryDashboardInner() -> Element {
                 onclick: {
                     let mut show_settings_overlay = show_settings_overlay;
                     move |_| {
+                        header_actions_expanded.set(false);
                         show_settings_overlay.set(true);
                     }
                 },
                 ontouchend: {
                     let mut show_settings_overlay = show_settings_overlay;
                     move |_| {
+                        header_actions_expanded.set(false);
                         show_settings_overlay.set(true);
                     }
                 },
@@ -6669,6 +6686,7 @@ fn TelemetryDashboardInner() -> Element {
         let nav = use_navigator();
         let base = UrlConfig::base_http();
         let skip_tls = UrlConfig::_skip_tls_verify();
+        let mut header_actions_expanded = header_actions_expanded;
         rsx! {
             button {
                 style: format!("
@@ -6681,6 +6699,7 @@ fn TelemetryDashboardInner() -> Element {
                     cursor:pointer;
                 ", theme.button_border, theme.button_background, theme.button_text),
                 onclick: move |_| {
+                    header_actions_expanded.set(false);
                     if auth::current_session().is_some() {
                         let base = base.clone();
                         spawn(async move {
@@ -6761,7 +6780,9 @@ fn TelemetryDashboardInner() -> Element {
         });
     };
 
-    let reload_button: Element = rsx! {
+    let reload_button: Element = {
+        let mut header_actions_expanded = header_actions_expanded;
+        rsx! {
         button {
             style: format!("
                 padding:0.45rem 0.85rem;
@@ -6773,11 +6794,13 @@ fn TelemetryDashboardInner() -> Element {
                 cursor:pointer;
             ", theme.button_border, theme.button_background, theme.button_text),
             onclick: move |_| {
+                header_actions_expanded.set(false);
                 _refresh_layout();
                 hard_reload_dashboard_data();
             },
             "{reload_button_label}"
         }
+    }
     };
 
     fn start_gps_js() -> bool {
@@ -7220,14 +7243,23 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-header-actions-list {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
              .gs26-header-menu-toggle {{ display:none; }}
              .gs26-header-abort-mobile {{ display:none; }}
+             .gs26-header-secondary {{
+               display:flex;
+               align-items:center;
+               gap:12px;
+               width:100%;
+               margin-bottom:12px;
+               flex-wrap:wrap;
+             }}
              @media (max-width: 900px) {{
                .gs26-header-row {{
                  display:grid !important;
                  grid-template-columns:minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
                  align-items:center;
-                 gap:8px;
+                 gap:4px;
                  flex-wrap:nowrap !important;
-                 min-height:42px;
+                 min-height:32px;
+                 margin-bottom:8px !important;
                }}
                .gs26-header-title {{
                  grid-column:2;
@@ -7236,9 +7268,9 @@ fn TelemetryDashboardInner() -> Element {
                  min-width:0;
                  max-width:100%;
                  width:100%;
-                 padding:0 5.4rem;
-                 font-size:clamp(12px, 4.2vw, 18px) !important;
-                 line-height:1;
+                 padding:0 3.9rem;
+                 font-size:clamp(10px, 3.4vw, 14px) !important;
+                 line-height:0.95;
                  white-space:nowrap;
                  overflow:hidden;
                  text-overflow:ellipsis;
@@ -7251,7 +7283,7 @@ fn TelemetryDashboardInner() -> Element {
                  display:flex;
                  align-items:center;
                  justify-content:space-between;
-                 gap:8px;
+                 gap:6px;
                  width:100%;
                  margin-left:0;
                  pointer-events:none;
@@ -7272,13 +7304,14 @@ fn TelemetryDashboardInner() -> Element {
                  display:inline-flex;
                  align-items:center;
                  justify-content:center;
-                 padding:0.4rem 0.7rem;
-                 border-radius:0.75rem;
+                 padding:0.24rem 0.52rem;
+                 border-radius:0.58rem;
                  border:1px solid var(--gs26-header-menu-border);
                  background:var(--gs26-header-menu-background);
                  color:var(--gs26-header-menu-text);
                  font:inherit;
                  font-weight:800;
+                 font-size:0.76rem;
                  cursor:pointer;
                  margin-left:auto;
                  order:2;
@@ -7287,19 +7320,19 @@ fn TelemetryDashboardInner() -> Element {
                .gs26-header-actions-list {{
                  display:none;
                  position:absolute;
-                 top:calc(100% + 8px);
+                 top:calc(100% + 6px);
                  right:0;
                  z-index:60;
                  min-width:min(320px, calc(100vw - 32px));
                  max-width:calc(100vw - 32px);
-                 padding:0.8rem;
-                 border-radius:0.9rem;
+                 padding:0.45rem;
+                 border-radius:0.8rem;
                  border:1px solid var(--gs26-header-menu-border);
                  background:var(--gs26-header-menu-background);
                  box-shadow:0 18px 40px rgba(0,0,0,0.4);
                  flex-direction:column;
                  align-items:stretch;
-                 gap:8px;
+                 gap:5px;
                  pointer-events:auto;
                }}
                .gs26-header-actions-shell[data-expanded=\"true\"] .gs26-header-actions-list {{
@@ -7308,12 +7341,28 @@ fn TelemetryDashboardInner() -> Element {
                .gs26-header-actions-list button {{
                  width:100%;
                  margin-left:0 !important;
-               }}
+                 padding:0.3rem 0.62rem !important;
+                 font-size:0.78rem !important;
+                }}
                .gs26-header-actions-list .gs26-header-abort-menu {{
                  display:none;
                }}
+               .gs26-header-secondary {{
+                 gap:6px !important;
+                 margin-bottom:6px !important;
+               }}
              }}
              @media (max-width: 720px), (max-height: 780px) {{
+               .gs26-dashboard-shell {{
+                 padding:5px 7px 7px 7px !important;
+               }}
+               .gs26-header-row {{
+                 min-height:30px;
+               }}
+               .gs26-header-secondary {{
+                 gap:5px !important;
+                 margin-bottom:5px !important;
+               }}
                .gs26-tab-shell {{
                  flex:1 1 100%;
                  min-width:0;
@@ -7322,8 +7371,8 @@ fn TelemetryDashboardInner() -> Element {
                  justify-content:stretch !important;
                  align-items:center !important;
                  justify-items:center !important;
-                 row-gap:0.45rem;
-                 padding:0.45rem;
+                 row-gap:0.35rem;
+                 padding:0.32rem;
                }}
                .gs26-tab-shell[data-expanded=\"false\"] {{
                  grid-template-columns:minmax(0, 1fr);
@@ -7356,12 +7405,13 @@ fn TelemetryDashboardInner() -> Element {
                  white-space:normal;
                  overflow-wrap:anywhere;
                  word-break:break-word;
-                 padding:0.28rem 0.65rem 0.32rem 0.65rem;
-                 border-radius:0.75rem;
+                 padding:0.22rem 0.55rem 0.26rem 0.55rem;
+                 border-radius:0.65rem;
                  border:1px solid var(--gs26-header-menu-border);
                  background:var(--gs26-header-menu-background);
                  color:var(--gs26-header-menu-text);
                  font-weight:800;
+                 font-size:0.8rem;
                  cursor:pointer;
                }}
                .gs26-tab-nav {{
@@ -7375,7 +7425,7 @@ fn TelemetryDashboardInner() -> Element {
                  justify-items:stretch;
                  justify-self:stretch;
                  width:100%;
-                 gap:0.35rem;
+                 gap:0.28rem;
                  margin-top:0;
                }}
                .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav button {{
@@ -7386,7 +7436,7 @@ fn TelemetryDashboardInner() -> Element {
                  justify-content:center !important;
                  align-items:center !important;
                  text-align:center !important;
-                 padding:0.28rem 0.65rem 0.32rem 0.65rem !important;
+                 padding:0.22rem 0.55rem 0.26rem 0.55rem !important;
                  margin-left:0;
                  margin-right:0;
                }}
@@ -7453,6 +7503,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
                 } else if let Some(layout) = layout_snapshot {
                 div {
+                    class: "gs26-dashboard-shell",
 
                     style: "
                 height:var(--gs26-app-height);
@@ -7793,14 +7844,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
                     // Header row 2
                     div {
-                        style: "
-                    display:flex;
-                    align-items:center;
-                    gap:12px;
-                    width:100%;
-                    margin-bottom:12px;
-                    flex-wrap:wrap;
-                ",
+                        class: "gs26-header-secondary",
 
                         div {
                             class: "gs26-tab-shell",
