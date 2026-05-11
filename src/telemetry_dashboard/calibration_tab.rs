@@ -148,11 +148,15 @@ fn calibration_draft_storage_key() -> String {
 
 fn load_calibration_draft() -> Option<CalibrationDraft> {
     let raw = persist::get_string(&calibration_draft_storage_key())?;
-    serde_json::from_str::<CalibrationDraft>(&raw).ok()
+    let mut draft = serde_json::from_str::<CalibrationDraft>(&raw).ok()?;
+    sanitize_calibration_file(&mut draft.calibration);
+    Some(draft)
 }
 
 fn save_calibration_draft(draft: &CalibrationDraft) {
-    if let Ok(raw) = serde_json::to_string(draft) {
+    let mut draft = draft.clone();
+    sanitize_calibration_file(&mut draft.calibration);
+    if let Ok(raw) = serde_json::to_string(&draft) {
         persist::set_string(&calibration_draft_storage_key(), &raw);
     }
 }
@@ -190,11 +194,15 @@ fn save_cached_calibration_layout(layout: &CalibrationTabLayout) {
 
 fn load_cached_calibration_file() -> Option<CalibrationFile> {
     let raw = persist::get_string(&calibration_file_cache_storage_key())?;
-    serde_json::from_str::<CalibrationFile>(&raw).ok()
+    let mut cfg = serde_json::from_str::<CalibrationFile>(&raw).ok()?;
+    sanitize_calibration_file(&mut cfg);
+    Some(cfg)
 }
 
 fn save_cached_calibration_file(cfg: &CalibrationFile) {
-    if let Ok(raw) = serde_json::to_string(cfg) {
+    let mut cfg = cfg.clone();
+    sanitize_calibration_file(&mut cfg);
+    if let Ok(raw) = serde_json::to_string(&cfg) {
         persist::set_string(&calibration_file_cache_storage_key(), &raw);
     }
 }
@@ -301,6 +309,33 @@ fn format_sensor_raw_value(
 
 fn format_raw_with_precision(value: f32, precision: usize) -> String {
     format!("{value:.precision$}")
+}
+
+fn sanitize_opt_f32(value: &mut Option<f32>) {
+    if value.is_some_and(|value| !value.is_finite()) {
+        *value = None;
+    }
+}
+
+fn sanitize_calibration_file(cfg: &mut CalibrationFile) {
+    sanitize_opt_f32(&mut cfg.full_mass_kg);
+    cfg.weights_kg.retain(|value| value.is_finite());
+    for channel in cfg.channels.values_mut() {
+        sanitize_opt_f32(&mut channel.linear.m);
+        sanitize_opt_f32(&mut channel.linear.b);
+        sanitize_opt_f32(&mut channel.zero_raw);
+        channel
+            .points
+            .retain(|point| point.expected.is_finite() && point.raw.is_finite());
+        if let Some(fit) = channel.fit.as_mut() {
+            sanitize_opt_f32(&mut fit.a);
+            sanitize_opt_f32(&mut fit.b);
+            sanitize_opt_f32(&mut fit.c);
+            sanitize_opt_f32(&mut fit.d);
+            sanitize_opt_f32(&mut fit.e);
+            sanitize_opt_f32(&mut fit.x0);
+        }
+    }
 }
 
 fn sensors_from_layout(layout: &CalibrationTabLayout) -> Vec<CalibrationSensorSpec> {
@@ -1188,7 +1223,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
             spawn(async move {
                 match http_get_json::<CalibrationFile>("/api/calibration").await {
-                    Ok(v) => {
+                    Ok(mut v) => {
+                        sanitize_calibration_file(&mut v);
                         save_cached_calibration_file(&v);
                         if *dirty.read() {
                             if cfg.read().is_none() {
@@ -1293,7 +1329,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             let current_cfg = cfg.read().clone();
             spawn(async move {
                 match http_get_json::<CalibrationFile>("/api/calibration").await {
-                    Ok(remote_cfg) => {
+                    Ok(mut remote_cfg) => {
+                        sanitize_calibration_file(&mut remote_cfg);
                         if current_cfg.as_ref() != Some(&remote_cfg) {
                             save_cached_calibration_file(&remote_cfg);
                             cfg.set(Some(remote_cfg));
@@ -1726,7 +1763,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                         status.set("Saving calibration to backend...".to_string());
                                         spawn(async move {
                                             match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
-                                                Ok(saved_cfg) => {
+                                                Ok(mut saved_cfg) => {
+                                                    sanitize_calibration_file(&mut saved_cfg);
                                                     save_cached_calibration_file(&saved_cfg);
                                                     cfg.set(Some(saved_cfg));
                                                     dirty.set(false);
@@ -2349,11 +2387,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     input {
                                         r#type: "checkbox",
                                         checked: *sequence_dialog_confirm_reset.read(),
-                                        onclick: {
+                                        onchange: {
                                             let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
-                                            move |_| {
-                                                let next = !*sequence_dialog_confirm_reset.read();
-                                                sequence_dialog_confirm_reset.set(next);
+                                            move |evt| {
+                                                sequence_dialog_confirm_reset
+                                                    .set(evt.checked());
                                             }
                                         }
                                     }
