@@ -188,6 +188,12 @@ The History tab includes two operator-facing telemetry timeline controls:
 - `Keep data for` sets how long recent telemetry is retained locally before older samples are dropped.
 - `Visible chart range` sets how much recent telemetry the charts show at once. It is automatically capped so it cannot exceed the retained data duration.
 
+WebSocket connection handling:
+
+- Incoming live WebSocket messages now also restore the connected state if a platform sleep/wake or network transition caused the open event path to desynchronize from actual live traffic.
+- The dashboard includes a stale-activity watchdog. If the socket appears connected but no WebSocket activity is seen for a short interval, the frontend marks it disconnected and forces a reconnect.
+- On web builds, browser online/offline state also feeds the same reconnect path so network loss is reflected faster.
+
 The Maintenance tab includes separate storage, log, and cache controls:
 
 - Used Storage shows a breakdown for frontend data cache, map tile cache, layout/settings cache, and related local storage.
@@ -195,6 +201,7 @@ The Maintenance tab includes separate storage, log, and cache controls:
 - Logs are intended for frontend/runtime debugging only and exclude location coordinates, telemetry payload dumps, passwords, and auth tokens.
 - The log action is per-file: operators choose an individual log artifact before using `Download Logs` on web, `Share Logs` on mobile, or `View Logs` on desktop.
 - Clear Logs removes locally stored debug logs without touching cached data or saved settings.
+- Clear Current Data removes the current live telemetry and persisted telemetry cache without reconnecting or reseeding. New live packets can begin filling the dashboard again immediately after that.
 - Cache Storage Limit defaults to `500 MB`. It is a budget/warning gate for data and map caches, not a hard filesystem quota.
 - Data Cache can be disabled independently. When disabled, telemetry/layout restore data is not written or restored from the local data cache.
 - Map Tile Cache can be disabled independently. When disabled, map tiles are fetched for display but not written to the persistent tile cache.

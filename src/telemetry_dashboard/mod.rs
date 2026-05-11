@@ -172,6 +172,7 @@ const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
 const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 100;
 const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 100;
 const CHART_RENDER_MIN_INTERVAL_MS: i64 = 0;
+const WS_STALE_RECONNECT_MS: i64 = 8_000;
 const LIVE_TELEMETRY_MAX_AGE_MS: i64 = 20 * 60 * 1000;
 const LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS: i64 = 60_000;
 
@@ -1532,6 +1533,12 @@ fn clear_data_caches_and_reseed() {
     reconnect_and_reload_ui();
 }
 
+fn clear_current_dashboard_data_without_reseed() {
+    clear_frontend_data_caches();
+    set_reseed_status(0, None);
+    charts_cache_request_refit();
+}
+
 fn clear_data_and_map_tile_caches_and_reseed() {
     clear_frontend_data_caches();
     clear_map_tile_caches();
@@ -2167,6 +2174,28 @@ fn note_ws_connected_and_restore_data_flow(
     }
 }
 
+fn note_ws_connected_from_live_message(
+    epoch: u64,
+    notifications: Signal<Vec<PersistentNotification>>,
+    notification_history: Signal<Vec<PersistentNotification>>,
+    unread_notification_ids: Signal<Vec<u64>>,
+) {
+    if frontend_network_metrics_snapshot().ws_connected {
+        return;
+    }
+    LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
+    note_ws_connection_state(true, auth_ws_url(&UrlConfig::base_ws()), None, epoch);
+    let mut notifications = notifications;
+    let mut notification_history = notification_history;
+    let mut unread_notification_ids = unread_notification_ids;
+    clear_ws_connection_notification(
+        &mut notifications,
+        &mut notification_history,
+        &mut unread_notification_ids,
+    );
+    bump_render_epoch();
+}
+
 fn note_local_ws_disconnect(reason: impl Into<String>) {
     if !frontend_network_metrics_snapshot().ws_connected {
         return;
@@ -2180,6 +2209,18 @@ fn note_local_ws_disconnect(reason: impl Into<String>) {
         Some(reason),
         *WS_EPOCH.read(),
     );
+}
+
+#[cfg(target_arch = "wasm32")]
+fn platform_network_available() -> bool {
+    web_sys::window()
+        .and_then(|window| window.navigator().on_line().ok())
+        .unwrap_or(true)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn platform_network_available() -> bool {
+    true
 }
 
 pub(crate) fn note_network_topology_received() {
@@ -2976,6 +3017,9 @@ pub fn NativeSettingsPage() -> Element {
             theme,
             on_clear_data_cache: move |_| {
                 clear_data_caches_and_reseed();
+            },
+            on_clear_current_data: move |_| {
+                clear_current_dashboard_data_without_reseed();
             },
             on_clear_data_and_map_cache: move |_| {
                 clear_data_and_map_tile_caches_and_reseed();
@@ -5059,6 +5103,69 @@ fn TelemetryDashboardInner() -> Element {
             persist::set_string(BASE_URL_STORAGE_KEY, &v);
         });
     }
+    {
+        let alive = alive.clone();
+        let notifications = notifications;
+        let notification_history = notification_history;
+        let unread_notification_ids = unread_notification_ids;
+        use_effect(move || {
+            let alive = alive.clone();
+            let mut notifications = notifications;
+            let mut notification_history = notification_history;
+            let mut unread_notification_ids = unread_notification_ids;
+            let epoch = *WS_EPOCH.read();
+            spawn(async move {
+                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_timers::future::TimeoutFuture::new(1_000).await;
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+
+                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
+                        break;
+                    }
+
+                    if !platform_network_available() {
+                        if frontend_network_metrics_snapshot().ws_connected {
+                            note_ws_connection_notification(
+                                &mut notifications,
+                                &mut notification_history,
+                                &mut unread_notification_ids,
+                                &auth_ws_url(&UrlConfig::base_ws()),
+                                "platform network reported offline",
+                            );
+                            reconnect_and_reload_ui();
+                        }
+                        continue;
+                    }
+
+                    if !frontend_network_metrics_snapshot().ws_connected {
+                        continue;
+                    }
+
+                    let last_activity_ms = LAST_WS_ACTIVITY_MONO_MS.load(Ordering::Relaxed);
+                    if last_activity_ms <= 0 {
+                        continue;
+                    }
+
+                    let idle_ms = (monotonic_now_ms() as i64).saturating_sub(last_activity_ms);
+                    if idle_ms < WS_STALE_RECONNECT_MS {
+                        continue;
+                    }
+
+                    note_ws_connection_notification(
+                        &mut notifications,
+                        &mut notification_history,
+                        &mut unread_notification_ids,
+                        &auth_ws_url(&UrlConfig::base_ws()),
+                        "websocket activity timed out",
+                    );
+                    reconnect_and_reload_ui();
+                }
+            });
+        });
+    }
 
     // ------------------------------------------------------------------------
     // Event-driven runtime pump: coalesces telemetry flushes and render wakeups
@@ -6177,6 +6284,10 @@ fn TelemetryDashboardInner() -> Element {
                             on_clear_data_cache: move |_| {
                                 debug_log::append("[settings] clear_data_cache requested");
                                 clear_data_caches_and_reseed();
+                            },
+                            on_clear_current_data: move |_| {
+                                debug_log::append("[settings] clear_current_data requested");
+                                clear_current_dashboard_data_without_reseed();
                             },
                             on_clear_data_and_map_cache: move |_| {
                                 debug_log::append("[settings] clear_data_and_map_cache requested");
@@ -9352,6 +9463,12 @@ fn handle_ws_message(
     user_gps: Signal<Option<(f64, f64)>>,
     _user_gps_altitude_m: Signal<Option<f64>>,
 ) {
+    note_ws_connected_from_live_message(
+        *WS_EPOCH.read(),
+        notifications,
+        notification_history,
+        unread_notification_ids,
+    );
     LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
     let mut warnings = warnings;
     let mut errors = errors;

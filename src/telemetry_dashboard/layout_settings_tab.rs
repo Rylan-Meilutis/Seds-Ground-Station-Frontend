@@ -37,6 +37,7 @@ pub fn SettingsPage(
     measured_cache_bytes: u64,
     theme: ThemeConfig,
     on_clear_data_cache: EventHandler<()>,
+    on_clear_current_data: EventHandler<()>,
     on_clear_data_and_map_cache: EventHandler<()>,
     on_clear_all_caches: EventHandler<()>,
     on_prefetch_map_tiles: EventHandler<()>,
@@ -527,11 +528,23 @@ pub fn SettingsPage(
     );
     let clear_cache_done_title =
         localized_copy(&language, "Cache Cleared", "Cache limpiada", "Cache vide");
+    let clear_current_data_title = localized_copy(
+        &language,
+        "Clear Current Data",
+        "Borrar datos actuales",
+        "Effacer les donnees actuelles",
+    );
     let clear_data_cache_desc = localized_copy(
         &language,
         "Clears telemetry, chart, and runtime data caches without removing map tiles or layout cache.",
         "Limpia telemetria, graficas y caches de datos sin borrar mosaicos ni layout.",
         "Efface les caches de telemetrie, graphes et donnees sans supprimer les tuiles ni la disposition.",
+    );
+    let clear_current_data_desc = localized_copy(
+        &language,
+        "Clears the current live telemetry and removes the saved data cache without reconnecting or reseeding.",
+        "Borra la telemetria en vivo actual y elimina la cache de datos guardada sin reconectar ni recargar.",
+        "Efface la telemetrie en direct actuelle et supprime le cache de donnees enregistre sans reconnexion ni reseed.",
     );
     let clear_data_map_cache_desc = localized_copy(
         &language,
@@ -1432,6 +1445,24 @@ pub fn SettingsPage(
                                 style: if !map_tile_cache_enabled_value { chip_selected.clone() } else { chip_idle.clone() },
                                 onclick: move |_| map_tile_cache_enabled.set(false),
                                 "{prefetch_off}"
+                            }
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{clear_current_data_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{clear_current_data_desc}" }
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: chip_idle.clone(),
+                                onclick: {
+                                    let cache_cleared_label = cache_cleared_label.clone();
+                                    move |_| {
+                                        on_clear_current_data.call(());
+                                        maintenance_status.set(cache_cleared_label.clone());
+                                        confirm_reset.set(false);
+                                    }
+                                },
+                                "{clear_current_data_title}"
                             }
                         }
                     }
