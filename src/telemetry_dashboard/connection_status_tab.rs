@@ -51,9 +51,9 @@ pub fn ConnectionStatusTab(
         use_future(move || async move {
             loop {
                 #[cfg(target_arch = "wasm32")]
-                gloo_timers::future::TimeoutFuture::new(250).await;
+                gloo_timers::future::TimeoutFuture::new(1_000).await;
                 #[cfg(not(target_arch = "wasm32"))]
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
                 board_age_now_ms.set(current_wallclock_ms());
             }
         });

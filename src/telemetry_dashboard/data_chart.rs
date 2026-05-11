@@ -3049,9 +3049,9 @@ async fn chart_visibility_poll_delay() {
     let delay_ms = if ACTIVE_CHART_VISIBILITY_PANELS.load(Ordering::Relaxed) == 0 {
         5_000
     } else if super::dashboard_page_visible() {
-        250
+        1_000
     } else {
-        2_000
+        5_000
     };
 
     #[cfg(target_arch = "wasm32")]

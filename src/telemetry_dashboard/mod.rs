@@ -176,7 +176,8 @@ include!("dashboard_messages.rs");
 
 const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
-const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 100;
+const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 1_000;
+const ACTIVE_LAUNCH_CLOCK_REFRESH_MS: u32 = 100;
 const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 16;
 const CHART_RENDER_MIN_INTERVAL_MS: i64 = 16;
 const WS_STALE_RECONNECT_MS: i64 = 8_000;
@@ -5285,10 +5286,10 @@ fn TelemetryDashboardInner() -> Element {
                 let mut was_visible = dashboard_page_visible();
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(750).await;
+                    gloo_timers::future::TimeoutFuture::new(2_000).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
 
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
@@ -5747,10 +5748,10 @@ fn TelemetryDashboardInner() -> Element {
             spawn(async move {
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(1_000).await;
+                    gloo_timers::future::TimeoutFuture::new(2_000).await;
 
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
 
                     if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
@@ -6041,17 +6042,28 @@ fn TelemetryDashboardInner() -> Element {
     // ------------------------------------------------------------------------
     {
         let alive = alive.clone();
+        let launch_clock = launch_clock;
+        let network_time = network_time;
 
         use_effect(move || {
             let alive = alive.clone();
+            let launch_clock = launch_clock;
+            let network_time = network_time;
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                    let effective_tick_ms = if dashboard_page_visible() {
-                        NETWORK_TIME_BADGE_REFRESH_MS
-                    } else {
+                    let launch_clock_active = launch_clock
+                        .read()
+                        .as_ref()
+                        .is_some_and(|clock| matches!(clock.kind, LaunchClockKind::TMinus | LaunchClockKind::TPlus));
+                    let network_time_active = network_time.read().is_some();
+                    let effective_tick_ms = if !dashboard_page_visible() {
                         5_000
+                    } else if launch_clock_active || network_time_active {
+                        ACTIVE_LAUNCH_CLOCK_REFRESH_MS
+                    } else {
+                        NETWORK_TIME_BADGE_REFRESH_MS
                     };
 
                     if dashboard_page_visible() {
