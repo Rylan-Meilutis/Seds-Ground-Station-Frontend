@@ -33,7 +33,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use super::{
@@ -41,16 +41,9 @@ use super::{
 };
 
 static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<TelemetryTextId>>> = OnceLock::new();
-static CHART_VISIBILITY_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
-static CHART_VISIBILITY_POLLER_STARTED: AtomicBool = AtomicBool::new(false);
-static ACTIVE_CHART_VISIBILITY_PANELS: AtomicUsize = AtomicUsize::new(0);
 static CHART_DRAW_QUEUE: OnceLock<Mutex<Vec<(String, String)>>> = OnceLock::new();
 static CHART_DRAW_FLUSH_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
-const CHART_VISIBILITY_TRACKING_SUPPORTED: bool = true;
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
-const CHART_VISIBILITY_TRACKING_SUPPORTED: bool = false;
 
 pub fn configure_sender_split_data_types(data_types: &[String]) {
     let configured = SENDER_SPLIT_DATA_TYPES.get_or_init(|| Mutex::new(HashSet::new()));
@@ -2269,8 +2262,6 @@ pub fn SeriesSwatch(index: usize) -> Element {
 static NEXT_CANVAS_ID: AtomicU64 = AtomicU64::new(1);
 static CHART_CANVAS_RENDERER_INSTALLED: AtomicBool = AtomicBool::new(false);
 static CHART_CANVAS_RENDERER_BOOTSTRAP: OnceLock<String> = OnceLock::new();
-static CHART_VISIBILITY_OBSERVER_INSTALLED: AtomicBool = AtomicBool::new(false);
-static CHART_VISIBILITY_OBSERVER_BOOTSTRAP: OnceLock<String> = OnceLock::new();
 static INTERPOLATED_GAP_THRESHOLD_MS: AtomicU64 = AtomicU64::new(HISTORY_MS as u64);
 
 pub fn set_interpolated_gap_threshold_ms(value_ms: u64) {
@@ -2976,242 +2967,15 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
     })
 }
 
-fn chart_visibility_observer_bootstrap() -> &'static str {
-    CHART_VISIBILITY_OBSERVER_BOOTSTRAP.get_or_init(|| {
-        r##"
-            (function() {
-              if (window.__gs26ChartVisibilityObserverInstalled) return;
-              window.__gs26ChartVisibilityObserverInstalled = true;
-              const state = window.__gs26ChartVisibility || (window.__gs26ChartVisibility = Object.create(null));
-              window.__gs26ChartVisibilityVersion = Number(window.__gs26ChartVisibilityVersion || 0);
-              const markChanged = () => {
-                window.__gs26ChartVisibilityVersion = Number(window.__gs26ChartVisibilityVersion || 0) + 1;
-              };
-              const observer = typeof IntersectionObserver === "function"
-                ? new IntersectionObserver((entries) => {
-                    for (const entry of entries) {
-                      const el = entry && entry.target;
-                      const id = el && el.id;
-                      if (!id) continue;
-                      const nextVisible = !!(entry.isIntersecting && entry.intersectionRatio > 0);
-                      if (state[id] !== nextVisible) {
-                        state[id] = nextVisible;
-                        markChanged();
-                      }
-                    }
-                  }, { root: null, threshold: 0.01 })
-                : null;
-
-              window.__gs26ObserveChartVisibility = function(id) {
-                try {
-                  if (!id) return;
-                  const el = document.getElementById(id);
-                  if (!el) return;
-                  const rect = el.getBoundingClientRect();
-                  const nextVisible = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
-                    && rect.top < (window.innerHeight || document.documentElement?.clientHeight || 0)
-                    && rect.left < (window.innerWidth || document.documentElement?.clientWidth || 0);
-                  if (state[id] !== nextVisible) {
-                    state[id] = nextVisible;
-                    markChanged();
-                  }
-                  if (observer) observer.observe(el);
-                } catch (e) {}
-              };
-
-              window.__gs26UnobserveChartVisibility = function(id) {
-                try {
-                  if (!id) return;
-                  const el = document.getElementById(id);
-                  if (el && observer) observer.unobserve(el);
-                  if (Object.prototype.hasOwnProperty.call(state, id)) {
-                    delete state[id];
-                    markChanged();
-                  }
-                } catch (e) {}
-              };
-            })();
-        "##
-        .to_string()
-    })
-}
-
-fn ensure_chart_visibility_observer_installed() {
-    if CHART_VISIBILITY_OBSERVER_INSTALLED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        super::js_eval(chart_visibility_observer_bootstrap());
-    }
-}
-
-async fn chart_visibility_poll_delay() {
-    let delay_ms = if ACTIVE_CHART_VISIBILITY_PANELS.load(Ordering::Relaxed) == 0 {
-        5_000
-    } else if super::dashboard_page_visible() {
-        1_000
-    } else {
-        5_000
-    };
-
-    #[cfg(target_arch = "wasm32")]
-    gloo_timers::future::TimeoutFuture::new(delay_ms).await;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
-}
-
-#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
-fn chart_visibility_window_value(key: &str) -> Option<String> {
-    super::js_eval(&format!(
-        r#"
-        (function() {{
-          try {{
-            const value = window[{key_json}];
-            window.__gs26_chart_visibility_readback =
-              value == null ? "" : String(value);
-          }} catch (e) {{
-            window.__gs26_chart_visibility_readback = "";
-          }}
-        }})();
-        "#,
-        key_json = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string()),
-    ));
-    #[cfg(target_arch = "wasm32")]
-    {
-        super::js_read_window_string("__gs26_chart_visibility_readback")
-    }
-    #[cfg(target_os = "ios")]
-    {
-        super::js_read_window_string("__gs26_chart_visibility_readback")
-    }
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
-fn chart_visibility_window_value(_key: &str) -> Option<String> {
-    None
-}
-
-fn ensure_chart_visibility_poller_started() {
-    if !CHART_VISIBILITY_TRACKING_SUPPORTED {
-        return;
-    }
-    if CHART_VISIBILITY_POLLER_STARTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
-
-    spawn(async move {
-        let mut last_version = u64::MAX;
-        loop {
-            if ACTIVE_CHART_VISIBILITY_PANELS.load(Ordering::Relaxed) == 0 {
-                chart_visibility_poll_delay().await;
-                continue;
-            }
-            let next_version = chart_visibility_window_value("__gs26ChartVisibilityVersion")
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0);
-            if next_version != last_version {
-                last_version = next_version;
-                let mut epoch = CHART_VISIBILITY_EPOCH.write();
-                *epoch = (*epoch).wrapping_add(1);
-            }
-            chart_visibility_poll_delay().await;
-        }
-    });
-}
-
 pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
-    if enabled && CHART_VISIBILITY_TRACKING_SUPPORTED {
-        ensure_chart_visibility_observer_installed();
-        ensure_chart_visibility_poller_started();
-    }
-
     let panel_id = use_hook(|| {
         format!(
             "gs26-chart-panel-{}",
             NEXT_CANVAS_ID.fetch_add(1, Ordering::Relaxed)
         )
     });
-    let mut is_visible = use_signal(|| true);
-    let alive = use_hook(|| Rc::new(Cell::new(true)));
-    let visibility_registered = use_hook(|| Rc::new(Cell::new(false)));
-
-    use_drop({
-        let panel_id = panel_id.clone();
-        let alive = alive.clone();
-        let visibility_registered = visibility_registered.clone();
-        move || {
-            alive.set(false);
-            if enabled
-                && CHART_VISIBILITY_TRACKING_SUPPORTED
-                && visibility_registered.replace(false)
-            {
-                ACTIVE_CHART_VISIBILITY_PANELS.fetch_sub(1, Ordering::Relaxed);
-            }
-            let id_json = serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string());
-            super::js_eval(&format!(
-                r#"(function(){{try{{if(typeof window.__gs26UnobserveChartVisibility==="function"){{window.__gs26UnobserveChartVisibility({id_json});}}}}catch(e){{}}}})();"#,
-            ));
-        }
-    });
-
-    use_effect({
-        let panel_id = panel_id.clone();
-        let visibility_registered = visibility_registered.clone();
-        move || {
-            if enabled
-                && CHART_VISIBILITY_TRACKING_SUPPORTED
-                && !visibility_registered.replace(true)
-            {
-                ACTIVE_CHART_VISIBILITY_PANELS.fetch_add(1, Ordering::Relaxed);
-            }
-            let id_json = serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string());
-            super::js_eval(&format!(
-                r#"(function(){{try{{if(typeof window.__gs26ObserveChartVisibility==="function"){{window.__gs26ObserveChartVisibility({id_json});}}}}catch(e){{}}}})();"#,
-            ));
-        }
-    });
-
-    if enabled && CHART_VISIBILITY_TRACKING_SUPPORTED {
-        let _ = *CHART_VISIBILITY_EPOCH.read();
-    }
-
-    use_effect({
-        let panel_id = panel_id.clone();
-        move || {
-            if enabled && CHART_VISIBILITY_TRACKING_SUPPORTED {
-                let key = format!("__gs26_chart_visibility_tmp_{}", panel_id);
-                super::js_eval(&format!(
-                    r#"
-                    (function() {{
-                      try {{
-                        const vis = window.__gs26ChartVisibility || {{}};
-                        window[{key_json}] = vis[{id_json}] === false ? "false" : "true";
-                      }} catch (e) {{
-                        window[{key_json}] = "true";
-                      }}
-                    }})();
-                    "#,
-                    key_json = serde_json::to_string(&key).unwrap_or_else(|_| "\"\"".to_string()),
-                    id_json =
-                        serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string()),
-                ));
-                let next_visible = chart_visibility_window_value(&key)
-                    .map(|value| value.eq_ignore_ascii_case("true"))
-                    .unwrap_or(true);
-                if *is_visible.read() != next_visible {
-                    is_visible.set(next_visible);
-                }
-            } else if !*is_visible.read() {
-                is_visible.set(true);
-            }
-        }
-    });
-
-    (panel_id, *is_visible.read())
+    let _ = enabled;
+    (panel_id, true)
 }
 
 fn ensure_chart_canvas_renderer_installed() {
