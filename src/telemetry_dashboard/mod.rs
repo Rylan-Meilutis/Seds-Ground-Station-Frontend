@@ -37,8 +37,7 @@ use crate::debug_log;
 use data_chart::charts_cache_request_refit;
 use data_chart::{
     charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build, charts_cache_clear_active,
-    charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_ingest_rows,
-    charts_cache_reseed_ingest_row,
+    charts_cache_finish_reseed_build, charts_cache_ingest_row,
     configure_sender_split_data_types,
 };
 
@@ -170,8 +169,8 @@ include!("dashboard_messages.rs");
 const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
 const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 100;
-const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 100;
-const CHART_RENDER_MIN_INTERVAL_MS: i64 = 0;
+const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 16;
+const CHART_RENDER_MIN_INTERVAL_MS: i64 = 16;
 const WS_STALE_RECONNECT_MS: i64 = 8_000;
 const LIVE_TELEMETRY_MAX_AGE_MS: i64 = 20 * 60 * 1000;
 const LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS: i64 = 60_000;
@@ -204,7 +203,7 @@ fn live_telemetry_row_is_fresh(row: &TelemetryRow, now_ms: i64) -> bool {
     (-LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS..=LIVE_TELEMETRY_MAX_AGE_MS).contains(&age_ms)
 }
 
-fn telemetry_row_received_ms(row: &TelemetryRow) -> i64 {
+pub(crate) fn telemetry_row_received_ms(row: &TelemetryRow) -> i64 {
     if row.received_timestamp_ms > 0 {
         row.received_timestamp_ms
     } else {
@@ -230,6 +229,15 @@ fn normalize_live_telemetry_row_for_client_clock(
     Some(row)
 }
 
+fn normalize_telemetry_rows_for_runtime(rows: &mut [TelemetryRow]) {
+    for row in rows {
+        if row.received_timestamp_ms == 0 {
+            row.received_timestamp_ms = row.timestamp_ms;
+        }
+        row.refresh_interned_ids();
+    }
+}
+
 fn action_control<'a>(policy: &'a ActionPolicyMsg, cmd: &str) -> Option<&'a ActionControl> {
     policy.controls.iter().find(|control| control.cmd == cmd)
 }
@@ -243,6 +251,14 @@ pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str)
         return cmd == "Abort";
     };
     control.enabled
+}
+
+pub(crate) fn action_buttons_disabled_message(policy: &ActionPolicyMsg) -> &'static str {
+    if !policy.hitl_button_interlock_satisfied || !policy.hitl_launch_interlock_satisfied {
+        "Actions disabled until the hardware interlock is pressed."
+    } else {
+        "Actions are currently disabled by the ground station."
+    }
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
@@ -282,6 +298,8 @@ const DEFAULT_TELEMETRY_RETENTION_MS: u64 = HISTORY_MS as u64;
 const DEFAULT_TELEMETRY_VIEW_WINDOW_MS: u64 = HISTORY_MS as u64;
 const MIN_TELEMETRY_HISTORY_MS: u64 = 5 * 60_000;
 const MAX_TELEMETRY_HISTORY_MS: u64 = 60 * 60_000;
+pub(crate) const MIN_TELEMETRY_HISTORY_MINUTES: u64 = MIN_TELEMETRY_HISTORY_MS / 60_000;
+pub(crate) const MAX_TELEMETRY_HISTORY_MINUTES: u64 = MAX_TELEMETRY_HISTORY_MS / 60_000;
 pub(crate) const TELEMETRY_HISTORY_PRESET_MINUTES: [u64; 5] = [5, 10, 20, 30, 60];
 const UI_ROW_BUCKET_MS: i64 = 20; // Match chart bucket width in data_chart.rs.
 const STARTUP_SEED_DELAY_MS: u64 = 1_200;
@@ -308,6 +326,13 @@ struct LatestTelemetrySample {
     values: Arc<[Option<f32>]>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+struct ChannelMinMaxKey {
+    data_type: TelemetryTextId,
+    sender_id: TelemetryTextId,
+    index: usize,
+}
+
 impl LatestTelemetryKey {
     /// Builds the cache key used for latest-row tracking.
     fn new(data_type: TelemetryTextId, sender_id: TelemetryTextId) -> Self {
@@ -321,12 +346,16 @@ impl LatestTelemetryKey {
 #[derive(Default)]
 struct UiTelemetryStore {
     rows: BTreeMap<UiRowKey, TelemetryRow>,
+    channel_minmax_cache: HashMap<ChannelMinMaxKey, (f32, f32)>,
+    channel_minmax_dirty: bool,
 }
 
 impl UiTelemetryStore {
     /// Replaces the compacted UI store with a fresh telemetry snapshot.
     fn replace_from_rows(&mut self, rows: &[TelemetryRow]) {
         self.rows.clear();
+        self.channel_minmax_cache.clear();
+        self.channel_minmax_dirty = true;
         self.apply_rows(rows.iter().cloned());
     }
 
@@ -335,20 +364,29 @@ impl UiTelemetryStore {
     where
         I: IntoIterator<Item = TelemetryRow>,
     {
+        let mut newest_received_ms = None::<i64>;
         for row in rows {
             // The UI only needs one representative row per bucket/sender/type tuple.
+            newest_received_ms =
+                Some(newest_received_ms.map_or(telemetry_row_received_ms(&row), |current| {
+                    current.max(telemetry_row_received_ms(&row))
+                }));
             let key = UiRowKey {
-                bucket: row.timestamp_ms.div_euclid(UI_ROW_BUCKET_MS),
+                bucket: telemetry_row_received_ms(&row).div_euclid(UI_ROW_BUCKET_MS),
                 data_type: row.interned_data_type_id(),
                 sender_id: row.interned_sender_id(),
             };
             self.rows.insert(key, row);
         }
+        self.channel_minmax_dirty = true;
 
-        self.prune_history();
+        if let Some(newest_received_ms) = newest_received_ms {
+            self.prune_history_from(newest_received_ms);
+        }
     }
 
     /// Drops buckets that are older than the retained history window.
+    #[allow(dead_code)]
     fn prune_history(&mut self) {
         let newest_received_ms = self
             .rows
@@ -358,9 +396,23 @@ impl UiTelemetryStore {
         let Some(newest_received_ms) = newest_received_ms else {
             return;
         };
+        self.prune_history_from(newest_received_ms);
+    }
+
+    fn prune_history_from(&mut self, newest_received_ms: i64) {
         let min_received_ms = newest_received_ms - telemetry_history_retention_ms();
-        self.rows
-            .retain(|_, row| telemetry_row_received_ms(row) >= min_received_ms);
+        let mut pruned_any = false;
+        while self
+            .rows
+            .first_key_value()
+            .is_some_and(|(_, row)| telemetry_row_received_ms(row) < min_received_ms)
+        {
+            self.rows.pop_first();
+            pruned_any = true;
+        }
+        if pruned_any {
+            self.channel_minmax_dirty = true;
+        }
     }
 
     /// Returns the compacted UI store as a sorted vector.
@@ -396,6 +448,59 @@ impl UiTelemetryStore {
     fn latest_rocket_gps_altitude_m(&self) -> Option<f64> {
         self.rows.values().rev().find_map(row_to_gps_altitude_m)
     }
+
+    fn channel_minmax(
+        &mut self,
+        data_type: TelemetryTextId,
+        sender_id: Option<TelemetryTextId>,
+        index: usize,
+    ) -> Option<(f32, f32)> {
+        self.rebuild_channel_minmax_cache_if_dirty();
+        let key = ChannelMinMaxKey {
+            data_type,
+            sender_id: sender_id.unwrap_or(TelemetryTextId::EMPTY),
+            index,
+        };
+        self.channel_minmax_cache.get(&key).copied()
+    }
+
+    fn rebuild_channel_minmax_cache_if_dirty(&mut self) {
+        if !self.channel_minmax_dirty {
+            return;
+        }
+
+        self.channel_minmax_cache.clear();
+        for row in self.rows.values() {
+            let data_type = row.interned_data_type_id();
+            let sender_id = row.interned_sender_id();
+            for (index, value) in row.values.iter().enumerate() {
+                let Some(value) = *value else {
+                    continue;
+                };
+                for key in [
+                    ChannelMinMaxKey {
+                        data_type,
+                        sender_id,
+                        index,
+                    },
+                    ChannelMinMaxKey {
+                        data_type,
+                        sender_id: TelemetryTextId::EMPTY,
+                        index,
+                    },
+                ] {
+                    self.channel_minmax_cache
+                        .entry(key)
+                        .and_modify(|(min_value, max_value)| {
+                            *min_value = min_value.min(value);
+                            *max_value = max_value.max(value);
+                        })
+                        .or_insert((value, value));
+                }
+            }
+        }
+        self.channel_minmax_dirty = false;
+    }
 }
 
 static UI_TELEMETRY_STORE: Lazy<Mutex<UiTelemetryStore>> =
@@ -430,8 +535,9 @@ pub(crate) fn telemetry_view_window_ms() -> i64 {
 /// Sorts telemetry rows into a stable UI presentation order.
 fn sort_rows(rows: &mut [TelemetryRow]) {
     rows.sort_by(|a, b| {
-        a.timestamp_ms
-            .cmp(&b.timestamp_ms)
+        telemetry_row_received_ms(a)
+            .cmp(&telemetry_row_received_ms(b))
+            .then_with(|| a.timestamp_ms.cmp(&b.timestamp_ms))
             .then_with(|| a.sender_id.cmp(&b.sender_id))
             .then_with(|| a.data_type.cmp(&b.data_type))
     });
@@ -451,7 +557,7 @@ fn compact_rows_for_ui(rows: Vec<TelemetryRow>) -> Vec<TelemetryRow> {
     let mut by_key: HashMap<(TelemetryTextId, TelemetryTextId, i64), TelemetryRow> =
         HashMap::new();
     for row in rows {
-        let bucket = row.timestamp_ms.div_euclid(UI_ROW_BUCKET_MS);
+        let bucket = telemetry_row_received_ms(&row).div_euclid(UI_ROW_BUCKET_MS);
         let key = (row.interned_data_type_id(), row.interned_sender_id(), bucket);
         by_key.insert(key, row);
     }
@@ -528,6 +634,45 @@ fn note_sender_telemetry_activity_batch(rows: &[TelemetryRow]) {
             );
         }
     }
+}
+
+fn ingest_telemetry_rows_into_runtime_caches_with_chart_mode(
+    rows: Vec<TelemetryRow>,
+    charts_live_enabled: bool,
+) -> Option<(Option<(f64, f64)>, Option<f64>)> {
+    if rows.is_empty() {
+        return None;
+    }
+
+    note_sender_telemetry_activity_batch(&rows);
+    update_latest_telemetry_batch(&rows);
+    if charts_live_enabled {
+        data_chart::charts_cache_ingest_rows(&rows);
+    } else {
+        data_chart::charts_cache_store_rows_for_later(&rows);
+    }
+    if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+        store.apply_rows(rows);
+        return Some((store.latest_rocket_gps(), store.latest_rocket_gps_altitude_m()));
+    }
+    None
+}
+
+#[cfg(test)]
+fn ingest_telemetry_rows_profile_only(rows: Vec<TelemetryRow>) -> Option<(Option<(f64, f64)>, Option<f64>)> {
+    if rows.is_empty() {
+        return None;
+    }
+
+    update_latest_telemetry_batch(&rows);
+    for row in &rows {
+        charts_cache_ingest_row(row);
+    }
+    if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+        store.apply_rows(rows);
+        return Some((store.latest_rocket_gps(), store.latest_rocket_gps_altitude_m()));
+    }
+    None
 }
 
 #[allow(dead_code)]
@@ -612,6 +757,14 @@ fn update_latest_telemetry_locked(
     let should_replace = latest
         .get(&key)
         .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
+    let should_replace_type = latest_by_type
+        .get(&data_type_id)
+        .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
+    if !should_replace && !should_replace_type {
+        return;
+    }
+
+    let values = Arc::<[Option<f32>]>::from(row.values.clone());
     if should_replace {
         latest.insert(
             key,
@@ -619,14 +772,11 @@ fn update_latest_telemetry_locked(
                 timestamp_ms: row.timestamp_ms,
                 data_type: data_type_id,
                 sender_id,
-                values: Arc::<[Option<f32>]>::from(row.values.clone()),
+                values: values.clone(),
             },
         );
     }
 
-    let should_replace_type = latest_by_type
-        .get(&data_type_id)
-        .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
     if should_replace_type {
         latest_by_type.insert(
             data_type_id,
@@ -634,7 +784,7 @@ fn update_latest_telemetry_locked(
                 timestamp_ms: row.timestamp_ms,
                 data_type: data_type_id,
                 sender_id,
-                values: Arc::<[Option<f32>]>::from(row.values.clone()),
+                values,
             },
         );
     }
@@ -718,32 +868,12 @@ pub(crate) fn telemetry_channel_minmax(
     sender_id: Option<&str>,
     index: usize,
 ) -> Option<(f32, f32)> {
-    let Ok(store) = UI_TELEMETRY_STORE.lock() else {
+    let Ok(mut store) = UI_TELEMETRY_STORE.lock() else {
         return None;
     };
     let data_type_id = intern_telemetry_text(data_type);
     let sender_id = sender_id.map(intern_telemetry_text);
-
-    let mut min_value = None::<f32>;
-    let mut max_value = None::<f32>;
-
-    for row in store.rows.values() {
-        if row.interned_data_type_id() != data_type_id {
-            continue;
-        }
-        if let Some(sender_id) = sender_id
-            && row.interned_sender_id() != sender_id
-        {
-            continue;
-        }
-        let Some(value) = row.values.get(index).copied().flatten() else {
-            continue;
-        };
-        min_value = Some(min_value.map_or(value, |current| current.min(value)));
-        max_value = Some(max_value.map_or(value, |current| current.max(value)));
-    }
-
-    min_value.zip(max_value)
+    store.channel_minmax(data_type_id, sender_id, index)
 }
 
 fn latest_telemetry_value_direct(
@@ -788,11 +918,22 @@ fn fallback_latest_telemetry_value(
 mod latest_telemetry_tests {
     use super::{
         AlertMsg, LIVE_TELEMETRY_MAX_AGE_MS, LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS,
-        SenderTelemetryActivity, TelemetryRow, intern_telemetry_text, latest_telemetry_value,
-        live_telemetry_row_is_fresh, normalize_alert_list, prune_history, push_alert_deduped,
-        reset_latest_telemetry, stale_sender_telemetry_for_epoch,
+        SenderTelemetryActivity, TelemetryRow, compact_rows_for_ui,
+        ingest_telemetry_rows_profile_only, intern_telemetry_text, latest_telemetry_row,
+        latest_telemetry_value, live_telemetry_row_is_fresh, normalize_alert_list,
+        normalize_telemetry_rows_for_runtime, prune_history, push_alert_deduped,
+        reset_latest_telemetry, sort_rows, stale_sender_telemetry_for_epoch,
+        telemetry_channel_minmax,
     };
+    use crate::telemetry_dashboard::{
+        UI_TELEMETRY_STORE, charts_cache_clear_active, data_chart,
+        data_chart::charts_cache_get,
+    };
+    use once_cell::sync::Lazy;
     use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static PROFILE_TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn does_not_alias_raw_loadcell_samples_into_calibrated_labels() {
@@ -925,6 +1066,272 @@ mod latest_telemetry_tests {
         assert_eq!(alerts[0].timestamp_ms, 20);
         assert_eq!(alerts[1].timestamp_ms, 10);
     }
+
+    #[test]
+    #[ignore = "profiling smoke test"]
+    fn ingress_profile_smoke() {
+        use std::time::Instant;
+
+        let _guard = PROFILE_TEST_GUARD.lock().unwrap();
+        charts_cache_clear_active();
+        if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+            store.rows.clear();
+        }
+        reset_latest_telemetry(&[]);
+
+        let total_rows = 20_000usize;
+        let start_ts = 1_700_000_000_000i64;
+        let mut rows: Vec<TelemetryRow> = (0..total_rows)
+            .map(|i| TelemetryRow {
+                timestamp_ms: start_ts + (i as i64 * 17),
+                received_timestamp_ms: start_ts + (i as i64 * 17),
+                data_type: if i % 2 == 0 {
+                    "BATTERY_VOLTAGE".to_string()
+                } else {
+                    "GPS".to_string()
+                },
+                data_type_id: Default::default(),
+                sender_id: if i % 3 == 0 {
+                    "PB".to_string()
+                } else {
+                    "DAQ".to_string()
+                },
+                sender_id_id: Default::default(),
+                values: if i % 2 == 0 {
+                    vec![Some(12.0 + (i % 10) as f32 * 0.1)]
+                } else {
+                    vec![Some(42.0 + i as f32 * 0.0001), Some(-78.0 - i as f32 * 0.0001)]
+                },
+            })
+            .collect();
+        normalize_telemetry_rows_for_runtime(&mut rows);
+
+        let started = Instant::now();
+        let result = ingest_telemetry_rows_profile_only(rows);
+        let elapsed = started.elapsed();
+
+        assert!(result.is_some());
+        eprintln!(
+            "ingress_profile_smoke: {} rows in {:?} ({:.0} rows/s)",
+            total_rows,
+            elapsed,
+            total_rows as f64 / elapsed.as_secs_f64().max(1e-9)
+        );
+    }
+
+    #[test]
+    #[ignore = "profiling smoke test"]
+    fn minmax_lookup_profile_smoke() {
+        use std::time::Instant;
+
+        let _guard = PROFILE_TEST_GUARD.lock().unwrap();
+        charts_cache_clear_active();
+        if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+            store.rows.clear();
+            store.channel_minmax_cache.clear();
+            store.channel_minmax_dirty = true;
+        }
+        reset_latest_telemetry(&[]);
+
+        let total_rows = 20_000usize;
+        let start_ts = 1_700_100_000_000i64;
+        let mut rows: Vec<TelemetryRow> = (0..total_rows)
+            .map(|i| TelemetryRow {
+                timestamp_ms: start_ts + (i as i64 * 20),
+                received_timestamp_ms: start_ts + (i as i64 * 20),
+                data_type: if i % 2 == 0 {
+                    "BATTERY_VOLTAGE".to_string()
+                } else {
+                    "LOADCELL_WEIGHT_KG".to_string()
+                },
+                data_type_id: Default::default(),
+                sender_id: if i % 3 == 0 {
+                    "PB".to_string()
+                } else {
+                    "DAQ".to_string()
+                },
+                sender_id_id: Default::default(),
+                values: vec![Some(10.0 + (i % 100) as f32 * 0.1), Some((i % 50) as f32)],
+            })
+            .collect();
+        normalize_telemetry_rows_for_runtime(&mut rows);
+
+        assert!(ingest_telemetry_rows_profile_only(rows).is_some());
+
+        let started = Instant::now();
+        let mut observed = 0usize;
+        for _ in 0..2_000 {
+            observed += telemetry_channel_minmax("BATTERY_VOLTAGE", None, 0).is_some() as usize;
+            observed += telemetry_channel_minmax("BATTERY_VOLTAGE", Some("PB"), 0).is_some() as usize;
+            observed += telemetry_channel_minmax("LOADCELL_WEIGHT_KG", Some("DAQ"), 1).is_some() as usize;
+        }
+        let elapsed = started.elapsed();
+
+        assert_eq!(observed, 6_000);
+        eprintln!(
+            "minmax_lookup_profile_smoke: {} lookups in {:?} ({:.0} lookups/s)",
+            observed,
+            elapsed,
+            observed as f64 / elapsed.as_secs_f64().max(1e-9)
+        );
+    }
+
+    #[test]
+    #[ignore = "profiling smoke test"]
+    fn latest_and_chart_query_profile_smoke() {
+        use std::time::Instant;
+
+        let _guard = PROFILE_TEST_GUARD.lock().unwrap();
+        charts_cache_clear_active();
+        if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+            store.rows.clear();
+            store.channel_minmax_cache.clear();
+            store.channel_minmax_dirty = true;
+        }
+        reset_latest_telemetry(&[]);
+
+        let total_rows = 12_000usize;
+        let start_ts = 1_700_200_000_000i64;
+        let mut rows: Vec<TelemetryRow> = (0..total_rows)
+            .map(|i| TelemetryRow {
+                timestamp_ms: start_ts + (i as i64 * 20),
+                received_timestamp_ms: start_ts + (i as i64 * 20),
+                data_type: "BATTERY_VOLTAGE".to_string(),
+                data_type_id: Default::default(),
+                sender_id: if i % 2 == 0 { "PB".to_string() } else { "DAQ".to_string() },
+                sender_id_id: Default::default(),
+                values: vec![Some(12.0 + (i % 20) as f32 * 0.05)],
+            })
+            .collect();
+        normalize_telemetry_rows_for_runtime(&mut rows);
+
+        assert!(ingest_telemetry_rows_profile_only(rows).is_some());
+
+        let started = Instant::now();
+        let mut lookups = 0usize;
+        for _ in 0..500 {
+            lookups += latest_telemetry_value("BATTERY_VOLTAGE", None, 0).is_some() as usize;
+            lookups += latest_telemetry_row("BATTERY_VOLTAGE", Some("PB")).is_some() as usize;
+            let _ = charts_cache_get("BATTERY_VOLTAGE", 1200.0, 280.0);
+            lookups += 1;
+        }
+        let elapsed = started.elapsed();
+
+        assert_eq!(lookups, 1_500);
+        eprintln!(
+            "latest_and_chart_query_profile_smoke: {} ops in {:?} ({:.0} ops/s)",
+            lookups,
+            elapsed,
+            lookups as f64 / elapsed.as_secs_f64().max(1e-9)
+        );
+    }
+
+    #[test]
+    #[ignore = "profiling smoke test"]
+    fn cached_restore_profile_smoke() {
+        use std::time::Instant;
+
+        let _guard = PROFILE_TEST_GUARD.lock().unwrap();
+        charts_cache_clear_active();
+        if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+            store.rows.clear();
+            store.channel_minmax_cache.clear();
+            store.channel_minmax_dirty = true;
+        }
+        reset_latest_telemetry(&[]);
+
+        let total_rows = 20_000usize;
+        let start_ts = 1_700_300_000_000i64;
+        let mut rows: Vec<TelemetryRow> = (0..total_rows)
+            .map(|i| TelemetryRow {
+                timestamp_ms: start_ts + (i as i64 * 20),
+                received_timestamp_ms: start_ts + (i as i64 * 20),
+                data_type: if i % 2 == 0 {
+                    "BATTERY_VOLTAGE".to_string()
+                } else {
+                    "LOADCELL_WEIGHT_KG".to_string()
+                },
+                data_type_id: Default::default(),
+                sender_id: if i % 3 == 0 {
+                    "PB".to_string()
+                } else {
+                    "DAQ".to_string()
+                },
+                sender_id_id: Default::default(),
+                values: vec![Some(10.0 + (i % 100) as f32 * 0.1), Some((i % 50) as f32)],
+            })
+            .collect();
+
+        let started = Instant::now();
+        normalize_telemetry_rows_for_runtime(&mut rows);
+        sort_rows(&mut rows);
+        prune_history(&mut rows);
+        let rows = compact_rows_for_ui(rows);
+        if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+            store.replace_from_rows(&rows);
+        }
+        reset_latest_telemetry(&rows);
+        charts_cache_clear_active();
+        for row in &rows {
+            data_chart::charts_cache_ingest_row(row);
+        }
+        let elapsed = started.elapsed();
+
+        assert!(!rows.is_empty());
+        eprintln!(
+            "cached_restore_profile_smoke: {} rows in {:?} ({:.0} rows/s)",
+            total_rows,
+            elapsed,
+            total_rows as f64 / elapsed.as_secs_f64().max(1e-9)
+        );
+    }
+
+    #[test]
+    #[ignore = "profiling smoke test"]
+    fn offscreen_chart_store_profile_smoke() {
+        use std::time::Instant;
+
+        let _guard = PROFILE_TEST_GUARD.lock().unwrap();
+        charts_cache_clear_active();
+
+        let total_rows = 20_000usize;
+        let start_ts = 1_700_400_000_000i64;
+        let mut rows: Vec<TelemetryRow> = (0..total_rows)
+            .map(|i| TelemetryRow {
+                timestamp_ms: start_ts + (i as i64 * 17),
+                received_timestamp_ms: start_ts + (i as i64 * 17),
+                data_type: if i % 2 == 0 {
+                    "BATTERY_VOLTAGE".to_string()
+                } else {
+                    "GPS".to_string()
+                },
+                data_type_id: Default::default(),
+                sender_id: if i % 3 == 0 {
+                    "PB".to_string()
+                } else {
+                    "DAQ".to_string()
+                },
+                sender_id_id: Default::default(),
+                values: if i % 2 == 0 {
+                    vec![Some(12.0 + (i % 10) as f32 * 0.1)]
+                } else {
+                    vec![Some(42.0 + i as f32 * 0.0001), Some(-78.0 - i as f32 * 0.0001)]
+                },
+            })
+            .collect();
+        normalize_telemetry_rows_for_runtime(&mut rows);
+
+        let started = Instant::now();
+        data_chart::charts_cache_store_rows_for_later(&rows);
+        let elapsed = started.elapsed();
+
+        eprintln!(
+            "offscreen_chart_store_profile_smoke: {} rows in {:?} ({:.0} rows/s)",
+            total_rows,
+            elapsed,
+            total_rows as f64 / elapsed.as_secs_f64().max(1e-9)
+        );
+    }
 }
 
 /// Returns the compacted UI telemetry store as a snapshot vector.
@@ -1017,6 +1424,7 @@ fn restore_cached_telemetry_rows_if_needed() -> usize {
         return 0;
     }
 
+    normalize_telemetry_rows_for_runtime(&mut rows);
     sort_rows(&mut rows);
     prune_history(&mut rows);
     rows = compact_rows_for_ui(rows);
@@ -1024,9 +1432,6 @@ fn restore_cached_telemetry_rows_if_needed() -> usize {
         return 0;
     }
 
-    for row in &rows {
-        charts_cache_ingest_row(row);
-    }
     if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
         store.replace_from_rows(&rows);
     }
@@ -1591,6 +1996,7 @@ static HEADER_CLOCK_TICK: GlobalSignal<u64> = Signal::global(|| 0);
 static TELEMETRY_RENDER_DIRTY: AtomicBool = AtomicBool::new(false);
 static CHART_RENDER_DIRTY: AtomicBool = AtomicBool::new(false);
 static DASHBOARD_RUNTIME_PUMP_SCHEDULED: AtomicBool = AtomicBool::new(false);
+static DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED: AtomicBool = AtomicBool::new(false);
 static DASHBOARD_RUNTIME_TX: Lazy<
     Mutex<Option<futures_channel::mpsc::UnboundedSender<DashboardRuntimeEvent>>>,
 > = Lazy::new(|| Mutex::new(None));
@@ -1666,12 +2072,8 @@ pub(crate) fn frontend_data_clear_epoch() -> u64 {
     *FRONTEND_DATA_CLEAR_EPOCH.read()
 }
 
-fn mark_telemetry_render_dirty() {
+fn mark_live_dashboard_data_dirty() {
     TELEMETRY_RENDER_DIRTY.store(true, Ordering::Release);
-    schedule_dashboard_runtime_pump();
-}
-
-fn mark_chart_render_dirty() {
     CHART_RENDER_DIRTY.store(true, Ordering::Release);
     schedule_dashboard_runtime_pump();
 }
@@ -1681,6 +2083,26 @@ fn telemetry_queue_has_rows() -> bool {
         .lock()
         .map(|q| !q.is_empty())
         .unwrap_or(false)
+}
+
+fn telemetry_rows_per_frame_budget() -> usize {
+    let metrics = frontend_network_metrics_snapshot();
+    let rows_per_sec = metrics.rows_per_sec.max(1.0);
+    let frame_ms = TELEMETRY_RENDER_MIN_INTERVAL_MS.max(1) as f64;
+    let rows = (rows_per_sec * frame_ms / 1000.0).ceil() as usize;
+    rows.clamp(1, 256)
+}
+
+fn drain_telemetry_queue_for_frame() -> Vec<TelemetryRow> {
+    if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let take = q.len().min(telemetry_rows_per_frame_budget());
+        q.drain(0..take).collect()
+    } else {
+        Vec::new()
+    }
 }
 
 fn hidden_pending_ws_state_exists() -> bool {
@@ -1827,6 +2249,44 @@ fn schedule_dashboard_runtime_pump() {
     }
 }
 
+fn schedule_dashboard_runtime_pump_after(delay_ms: u32) {
+    if delay_ms == 0 {
+        schedule_dashboard_runtime_pump();
+        return;
+    }
+    if DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    spawn(async move {
+        #[cfg(target_arch = "wasm32")]
+        gloo_timers::future::TimeoutFuture::new(delay_ms).await;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+
+        DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED.store(false, Ordering::Release);
+        schedule_dashboard_runtime_pump();
+    });
+}
+
+fn pending_ws_open_events_exist() -> bool {
+    PENDING_WS_OPEN_EVENTS
+        .lock()
+        .map(|q| !q.is_empty())
+        .unwrap_or(false)
+}
+
+fn pending_ws_message_events_exist() -> bool {
+    PENDING_WS_MESSAGE_EVENTS
+        .lock()
+        .map(|q| !q.is_empty())
+        .unwrap_or(false)
+}
+
 #[cfg(target_arch = "wasm32")]
 fn queue_ws_open_event(epoch: u64, ws_url: String) {
     if let Ok(mut q) = PENDING_WS_OPEN_EVENTS.lock() {
@@ -1847,6 +2307,79 @@ fn queue_ws_message_event(epoch: u64, payload: String) {
         }
     }
     schedule_dashboard_runtime_pump();
+}
+
+#[cfg(target_arch = "wasm32")]
+fn queue_live_telemetry_from_ws_message(payload: &str) -> bool {
+    let Ok(msg) = serde_json::from_str::<WsTelemetryIngressMsg>(payload) else {
+        return false;
+    };
+
+    LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
+    note_incoming_ws_message(payload.len());
+
+    let page_visible = dashboard_page_visible();
+    let now_ms = current_wallclock_ms();
+
+    match msg {
+        WsTelemetryIngressMsg::Telemetry(row) => {
+            let Some(row) = normalize_live_telemetry_row_for_client_clock(row, now_ms) else {
+                return true;
+            };
+            note_incoming_telemetry_rows(1, 0);
+            if RESEED_IN_PROGRESS.load(Ordering::Relaxed)
+                && let Ok(mut v) = RESEED_LIVE_BUFFER.lock()
+            {
+                v.push(row.clone());
+            }
+            if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                q.push_back(row);
+                let overflow = q.len().saturating_sub(MAX_TELEMETRY_QUEUE);
+                if overflow > 0 {
+                    q.drain(0..overflow);
+                }
+            }
+        }
+        WsTelemetryIngressMsg::TelemetryBatch(batch) => {
+            if batch.is_empty() {
+                return true;
+            }
+            let batch: Vec<TelemetryRow> = batch
+                .into_iter()
+                .filter_map(|row| normalize_live_telemetry_row_for_client_clock(row, now_ms))
+                .collect();
+            if batch.is_empty() {
+                return true;
+            }
+            note_incoming_telemetry_rows(batch.len(), 1);
+            let reseed_active = RESEED_IN_PROGRESS.load(Ordering::Relaxed);
+            let mut reseed_live = if reseed_active {
+                RESEED_LIVE_BUFFER.lock().ok()
+            } else {
+                None
+            };
+            if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                if let Some(v) = reseed_live.as_mut() {
+                    q.reserve(batch.len());
+                    for row in batch {
+                        v.push(row.clone());
+                        q.push_back(row);
+                    }
+                } else {
+                    q.extend(batch);
+                }
+                let overflow = q.len().saturating_sub(MAX_TELEMETRY_QUEUE);
+                if overflow > 0 {
+                    q.drain(0..overflow);
+                }
+            }
+        }
+    }
+
+    if page_visible {
+        mark_live_dashboard_data_dirty();
+    }
+    true
 }
 
 fn schedule_seed_watcher() {
@@ -4263,17 +4796,33 @@ fn TelemetryDashboardInner() -> Element {
     {
         let mut frontend_network_metrics = frontend_network_metrics;
         let alive = alive.clone();
+        let active_main_tab = active_main_tab;
         use_effect(move || {
             reset_frontend_network_metrics_state();
             let alive = alive.clone();
+            let active_main_tab = active_main_tab;
             let epoch = *WS_EPOCH.read();
             spawn(async move {
+                let mut last_snapshot = FrontendNetworkMetrics::default();
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                    frontend_network_metrics.set(frontend_network_metrics_snapshot());
+                    let snapshot = frontend_network_metrics_snapshot();
+                    if snapshot != last_snapshot {
+                        last_snapshot = snapshot.clone();
+                        frontend_network_metrics.set(snapshot);
+                    }
+
+                    let sleep_ms = if !dashboard_page_visible() {
+                        5_000
+                    } else if *active_main_tab.read() == MainTab::ConnectionStatus {
+                        500
+                    } else {
+                        2_000
+                    };
+
                     #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(250).await;
+                    gloo_timers::future::TimeoutFuture::new(sleep_ms).await;
                     #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms as u64)).await;
                 }
             });
         });
@@ -4672,6 +5221,35 @@ fn TelemetryDashboardInner() -> Element {
             let s = _main_tab_to_str(*active_main_tab.read()).to_string();
             st_main_tab.set(s.clone());
             persist::set_string(MAIN_TAB_STORAGE_KEY, &s);
+        });
+    }
+    {
+        let alive = alive.clone();
+        let startup_seed_ready = startup_seed_ready;
+        use_effect(move || {
+            let alive = alive.clone();
+            let epoch = *WS_EPOCH.read();
+            spawn(async move {
+                let mut was_visible = dashboard_page_visible();
+                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                    #[cfg(target_arch = "wasm32")]
+                    gloo_timers::future::TimeoutFuture::new(750).await;
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+
+                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
+                        break;
+                    }
+
+                    let visible = dashboard_page_visible();
+                    if visible && !was_visible && *startup_seed_ready.read() {
+                        log!("[seed] dashboard returned to foreground; reseeding recent data");
+                        bump_seed_epoch();
+                    }
+                    was_visible = visible;
+                }
+            });
         });
     }
     {
@@ -5308,26 +5886,21 @@ fn TelemetryDashboardInner() -> Element {
                         &mut network_time_flush,
                     );
 
-                    let drained: Vec<TelemetryRow> = if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
-                        std::mem::take(&mut *q).into_iter().collect()
-                    } else {
-                        Vec::new()
-                    };
+                    let drained = drain_telemetry_queue_for_frame();
 
-                    if !drained.is_empty() {
-                        update_latest_telemetry_batch(&drained);
-                        charts_cache_ingest_rows(&drained);
-                        if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-                            store.apply_rows(drained);
-                            if let Some(gps) = store.latest_rocket_gps() {
-                                set_signal_if_changed(&mut rocket_gps_flush, Some(gps));
-                            }
-                            if let Some(altitude_m) = store.latest_rocket_gps_altitude_m() {
-                                set_signal_if_changed(
-                                    &mut rocket_gps_altitude_flush,
-                                    Some(altitude_m),
-                                );
-                            }
+                    let charts_live_enabled =
+                        matches!(*active_main_tab.read(), MainTab::Data | MainTab::State);
+                    if let Some((gps, altitude_m)) =
+                        ingest_telemetry_rows_into_runtime_caches_with_chart_mode(
+                            drained,
+                            charts_live_enabled,
+                        )
+                    {
+                        if let Some(gps) = gps {
+                            set_signal_if_changed(&mut rocket_gps_flush, Some(gps));
+                        }
+                        if let Some(altitude_m) = altitude_m {
+                            set_signal_if_changed(&mut rocket_gps_altitude_flush, Some(altitude_m));
                         }
                         persist_cached_telemetry_snapshot_if_due(false);
                     }
@@ -5353,6 +5926,54 @@ fn TelemetryDashboardInner() -> Element {
                         LAST_CHART_RENDER_FLUSH_MS.store(now_ms, Ordering::Relaxed);
                         bump_chart_render_epoch();
                     }
+
+                    let active_tab = active_main_tab.read().clone();
+                    let page_visible = dashboard_page_visible();
+                    if telemetry_queue_has_rows() {
+                        TELEMETRY_RENDER_DIRTY.store(true, Ordering::Release);
+                        CHART_RENDER_DIRTY.store(true, Ordering::Release);
+                    }
+                    let pending_ws_work =
+                        pending_ws_open_events_exist() || pending_ws_message_events_exist();
+                    let pending_hidden_state = hidden_pending_ws_state_exists();
+                    let telemetry_backlog = telemetry_queue_has_rows();
+                    let mut delayed_pump_ms: Option<u32> = None;
+
+                    if TELEMETRY_RENDER_DIRTY.load(Ordering::Acquire)
+                        && page_visible
+                        && matches!(
+                            active_tab,
+                            MainTab::State | MainTab::Data | MainTab::Calibration
+                        )
+                    {
+                        let elapsed = now_ms.saturating_sub(
+                            LAST_TELEMETRY_RENDER_FLUSH_MS.load(Ordering::Relaxed),
+                        );
+                        let remaining = TELEMETRY_RENDER_MIN_INTERVAL_MS.saturating_sub(elapsed);
+                        delayed_pump_ms = Some(remaining.max(1) as u32);
+                    }
+
+                    if CHART_RENDER_DIRTY.load(Ordering::Acquire)
+                        && matches!(active_tab, MainTab::Data | MainTab::State)
+                    {
+                        let elapsed = now_ms.saturating_sub(
+                            LAST_CHART_RENDER_FLUSH_MS.load(Ordering::Relaxed),
+                        );
+                        let remaining = CHART_RENDER_MIN_INTERVAL_MS.saturating_sub(elapsed);
+                        let remaining = remaining.max(1) as u32;
+                        delayed_pump_ms = Some(
+                            delayed_pump_ms.map_or(remaining, |current| current.min(remaining)),
+                        );
+                    }
+
+                    if pending_ws_work || pending_hidden_state {
+                        schedule_dashboard_runtime_pump();
+                    } else if telemetry_backlog || delayed_pump_ms.is_some() {
+                        let delay_ms =
+                            delayed_pump_ms.unwrap_or(TELEMETRY_RENDER_MIN_INTERVAL_MS as u32);
+                        schedule_dashboard_runtime_pump_after(delay_ms);
+                    }
+
                 }
 
                 DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
@@ -5383,8 +6004,7 @@ fn TelemetryDashboardInner() -> Element {
 
                     if dashboard_page_visible() {
                         if telemetry_queue_has_rows() {
-                            mark_telemetry_render_dirty();
-                            mark_chart_render_dirty();
+                            mark_live_dashboard_data_dirty();
                         } else if TELEMETRY_RENDER_DIRTY.load(Ordering::Acquire)
                             || CHART_RENDER_DIRTY.load(Ordering::Acquire)
                             || hidden_pending_ws_state_exists()
@@ -7104,7 +7724,7 @@ fn TelemetryDashboardInner() -> Element {
 
                     if !action_policy.read().software_buttons_enabled {
                         div { style: "margin-bottom:12px; padding:10px 12px; border-radius:10px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:12px;",
-                            "Software command buttons are disabled by the hardware GPIO lockout."
+                            "{action_buttons_disabled_message(&action_policy.read())}"
                         }
                     }
                     // Header row 2
@@ -7897,7 +8517,9 @@ fn native_ws_connect_timeout() -> std::time::Duration {
 
 #[cfg(target_arch = "wasm32")]
 async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
-    http_get_json::<Vec<TelemetryRow>>("/api/recent").await
+    let mut rows = http_get_json::<Vec<TelemetryRow>>("/api/recent").await?;
+    normalize_telemetry_rows_for_runtime(&mut rows);
+    Ok(rows)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7957,10 +8579,12 @@ async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
                 UrlConfig::base_http()
             )
         })?;
-        return serde_json::from_str::<Vec<TelemetryRow>>(&body).map_err(|e| {
+        let mut rows = serde_json::from_str::<Vec<TelemetryRow>>(&body).map_err(|e| {
             let snippet: String = body.chars().take(200).collect();
             format!("invalid JSON ({e}): {}", snippet.trim())
-        });
+        })?;
+        normalize_telemetry_rows_for_runtime(&mut rows);
+        return Ok(rows);
     }
 
     let mut rows = Vec::<TelemetryRow>::new();
@@ -7976,24 +8600,32 @@ async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
             if trimmed.is_empty() {
                 continue;
             }
-            let row = serde_json::from_str::<TelemetryRow>(trimmed).map_err(|e| {
+            let mut row = serde_json::from_str::<TelemetryRow>(trimmed).map_err(|e| {
                 format!(
                     "invalid NDJSON row ({e}): {}",
                     trimmed.chars().take(200).collect::<String>()
                 )
             })?;
+            row.refresh_interned_ids();
+            if row.received_timestamp_ms == 0 {
+                row.received_timestamp_ms = row.timestamp_ms;
+            }
             rows.push(row);
         }
     }
     let tail = String::from_utf8_lossy(&buffered);
     let trimmed = tail.trim();
     if !trimmed.is_empty() {
-        let row = serde_json::from_str::<TelemetryRow>(trimmed).map_err(|e| {
+        let mut row = serde_json::from_str::<TelemetryRow>(trimmed).map_err(|e| {
             format!(
                 "invalid NDJSON tail ({e}): {}",
                 trimmed.chars().take(200).collect::<String>()
             )
         })?;
+        row.refresh_interned_ids();
+        if row.received_timestamp_ms == 0 {
+            row.received_timestamp_ms = row.timestamp_ms;
+        }
         rows.push(row);
     }
     Ok(rows)
@@ -8611,17 +9243,15 @@ async fn seed_from_db(
 
             // Build reseed cache in a double buffer while active cache keeps live updates.
             const RESEED_INGEST_CHUNK: usize = 1024;
-            for (i, row) in list.iter().enumerate() {
-                charts_cache_reseed_ingest_row(row);
-                if i % RESEED_INGEST_CHUNK == 0 {
-                    cooperative_yield().await;
-                }
+            for chunk in list.chunks(RESEED_INGEST_CHUNK) {
+                data_chart::charts_cache_reseed_ingest_rows(chunk);
+                cooperative_yield().await;
             }
 
             // Replay queued rows into reseed cache as a second safety net.
             let post_reset_queued_rows = queue_snapshot();
-            for row in &post_reset_queued_rows {
-                charts_cache_reseed_ingest_row(row);
+            for chunk in post_reset_queued_rows.chunks(RESEED_INGEST_CHUNK) {
+                data_chart::charts_cache_reseed_ingest_rows(chunk);
             }
             if !post_reset_queued_rows.is_empty() {
                 list.extend(post_reset_queued_rows);
@@ -8635,8 +9265,8 @@ async fn seed_from_db(
                 Vec::new()
             };
             if !reseed_live_rows.is_empty() {
-                for row in &reseed_live_rows {
-                    charts_cache_reseed_ingest_row(row);
+                for chunk in reseed_live_rows.chunks(RESEED_INGEST_CHUNK) {
+                    data_chart::charts_cache_reseed_ingest_rows(chunk);
                 }
                 list.extend(reseed_live_rows);
                 list = compact_rows_for_ui(list);
@@ -9039,7 +9669,9 @@ async fn connect_ws_once_wasm(
             }
             last_activity_ms.set(Date::now());
             if let Some(s) = e.data().as_string() {
-                queue_ws_message_event(epoch, s);
+                if !queue_live_telemetry_from_ws_message(&s) {
+                    queue_ws_message_event(epoch, s);
+                }
             }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
@@ -9436,6 +10068,96 @@ async fn connect_ws_once_native(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn try_handle_ws_telemetry_message_fast(
+    s: &str,
+    notifications: Signal<Vec<PersistentNotification>>,
+    notification_history: Signal<Vec<PersistentNotification>>,
+    unread_notification_ids: Signal<Vec<u64>>,
+) -> bool {
+    let Ok(msg) = serde_json::from_str::<WsTelemetryIngressMsg>(s) else {
+        return false;
+    };
+
+    note_ws_connected_from_live_message(
+        *WS_EPOCH.read(),
+        notifications,
+        notification_history,
+        unread_notification_ids,
+    );
+    LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
+    note_incoming_ws_message(s.len());
+
+    let page_visible = dashboard_page_visible();
+    let now_ms = current_wallclock_ms();
+
+    match msg {
+        WsTelemetryIngressMsg::Telemetry(row) => {
+            let Some(row) = normalize_live_telemetry_row_for_client_clock(row, now_ms) else {
+                return true;
+            };
+            note_incoming_telemetry_rows(1, 0);
+            if RESEED_IN_PROGRESS.load(Ordering::Relaxed)
+                && let Ok(mut v) = RESEED_LIVE_BUFFER.lock()
+            {
+                v.push(row.clone());
+            }
+
+            if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                q.push_back(row);
+                let overflow = q.len().saturating_sub(MAX_TELEMETRY_QUEUE);
+                if overflow > 0 {
+                    q.drain(0..overflow);
+                }
+            }
+
+            if page_visible {
+                mark_live_dashboard_data_dirty();
+            }
+        }
+        WsTelemetryIngressMsg::TelemetryBatch(batch) => {
+            if batch.is_empty() {
+                return true;
+            }
+            let batch: Vec<TelemetryRow> = batch
+                .into_iter()
+                .filter_map(|row| normalize_live_telemetry_row_for_client_clock(row, now_ms))
+                .collect();
+            if batch.is_empty() {
+                return true;
+            }
+            note_incoming_telemetry_rows(batch.len(), 1);
+            let reseed_active = RESEED_IN_PROGRESS.load(Ordering::Relaxed);
+            let mut reseed_live = if reseed_active {
+                RESEED_LIVE_BUFFER.lock().ok()
+            } else {
+                None
+            };
+            if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                if let Some(v) = reseed_live.as_mut() {
+                    q.reserve(batch.len());
+                    for row in batch {
+                        v.push(row.clone());
+                        q.push_back(row);
+                    }
+                } else {
+                    q.extend(batch);
+                }
+                let overflow = q.len().saturating_sub(MAX_TELEMETRY_QUEUE);
+                if overflow > 0 {
+                    q.drain(0..overflow);
+                }
+            }
+
+            if page_visible {
+                mark_live_dashboard_data_dirty();
+            }
+        }
+    }
+
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_ws_message(
     s: &str,
     warnings: Signal<Vec<AlertMsg>>,
@@ -9463,6 +10185,15 @@ fn handle_ws_message(
     user_gps: Signal<Option<(f64, f64)>>,
     _user_gps_altitude_m: Signal<Option<f64>>,
 ) {
+    if try_handle_ws_telemetry_message_fast(
+        s,
+        notifications,
+        notification_history,
+        unread_notification_ids,
+    ) {
+        return;
+    }
+
     note_ws_connected_from_live_message(
         *WS_EPOCH.read(),
         notifications,
@@ -9507,7 +10238,6 @@ fn handle_ws_message(
                 return;
             };
             note_incoming_telemetry_rows(1, 0);
-            note_sender_telemetry_activity_batch(std::slice::from_ref(&row));
             if RESEED_IN_PROGRESS.load(Ordering::Relaxed)
                 && let Ok(mut v) = RESEED_LIVE_BUFFER.lock()
             {
@@ -9525,8 +10255,7 @@ fn handle_ws_message(
             }
 
             if page_visible {
-                mark_telemetry_render_dirty();
-                mark_chart_render_dirty();
+                mark_live_dashboard_data_dirty();
             }
         }
 
@@ -9542,7 +10271,6 @@ fn handle_ws_message(
                 return;
             }
             note_incoming_telemetry_rows(batch.len(), 1);
-            note_sender_telemetry_activity_batch(&batch);
             let reseed_active = RESEED_IN_PROGRESS.load(Ordering::Relaxed);
             let mut reseed_live = if reseed_active {
                 RESEED_LIVE_BUFFER.lock().ok()
@@ -9550,22 +10278,23 @@ fn handle_ws_message(
                 None
             };
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
-                q.reserve(batch.len());
-                for row in batch {
-                    if let Some(v) = reseed_live.as_mut() {
+                if let Some(v) = reseed_live.as_mut() {
+                    q.reserve(batch.len());
+                    for row in batch {
                         v.push(row.clone());
+                        q.push_back(row);
                     }
-                    q.push_back(row);
+                } else {
+                    q.extend(batch);
                 }
-
-                while q.len() > MAX_TELEMETRY_QUEUE {
-                    q.pop_front();
+                let overflow = q.len().saturating_sub(MAX_TELEMETRY_QUEUE);
+                if overflow > 0 {
+                    q.drain(0..overflow);
                 }
             }
 
             if page_visible {
-                mark_telemetry_render_dirty();
-                mark_chart_render_dirty();
+                mark_live_dashboard_data_dirty();
             }
         }
 

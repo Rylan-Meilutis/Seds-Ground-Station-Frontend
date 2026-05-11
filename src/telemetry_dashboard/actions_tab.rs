@@ -9,7 +9,8 @@ use super::blink::{ACTION_BLINK_CSS, action_animation_style};
 use super::layout::{ActionSpec, ActionsTabLayout, ThemeConfig};
 use super::{
     ActionPolicyMsg, BlinkMode, FillTargetsConfig, FluidFillTarget, RecordingStatusMsg,
-    action_policy_control_enabled, command_feedback_active, translate_text,
+    action_buttons_disabled_message, action_policy_control_enabled, command_feedback_active,
+    translate_text,
 };
 
 fn btn_style(
@@ -278,6 +279,12 @@ pub fn ActionsTab(
                 div {
                     style: "margin:0; padding:6px 10px; border-radius:8px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:11px; line-height:1.25;",
                     "{translate_text(\"Disable Actions is enabled. All action and flight-state buttons except Abort are disabled.\")}"
+                }
+            }
+            if !software_buttons_enabled {
+                div {
+                    style: "margin:0; padding:8px 10px; border-radius:8px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:11px; line-height:1.3;",
+                    "{action_buttons_disabled_message(&action_policy.read())}"
                 }
             }
             if visible_actions.is_empty() {

@@ -217,6 +217,20 @@ pub fn DetailedTab(
         "Application ↔ Station au sol",
     );
 
+    let mut session_rows = vec![
+        ("Rows per second", format!("{:.1}/s", metrics_snapshot.rows_per_sec)),
+        ("WS disconnects", metrics_snapshot.ws_disconnects_total.to_string()),
+    ];
+    if ws_connected {
+        session_rows.push(("Connected for", opt_i64_ms(ws_connected_for_ms)));
+        session_rows.push(("WS idle", opt_i64_ms(ws_idle_ms)));
+    }
+    session_rows.extend([
+        ("Last WS message", opt_timestamp(metrics_snapshot.last_ws_message_wall_ms)),
+        ("Last disconnect", last_disconnect_display),
+        ("Last connect", opt_timestamp(metrics_snapshot.last_connect_wall_ms)),
+    ]);
+
     rsx! {
         div { style: "padding:18px; height:100%; overflow-y:auto; overflow-x:hidden; color:{theme.text_primary}; background:{theme.app_background};",
             div { style: "column-width:320px; column-gap:14px; column-fill:balance; margin-bottom:14px;",
@@ -263,15 +277,7 @@ pub fn DetailedTab(
                     {metric_card(
                         &theme,
                         "Session",
-                        vec![
-                            ("Rows per second", format!("{:.1}/s", metrics_snapshot.rows_per_sec)),
-                            ("WS disconnects", metrics_snapshot.ws_disconnects_total.to_string()),
-                            ("Connected for", opt_i64_ms(ws_connected_for_ms)),
-                            ("WS idle", opt_i64_ms(ws_idle_ms)),
-                            ("Last WS message", opt_timestamp(metrics_snapshot.last_ws_message_wall_ms)),
-                            ("Last disconnect", last_disconnect_display),
-                            ("Last connect", opt_timestamp(metrics_snapshot.last_connect_wall_ms)),
-                        ],
+                        session_rows,
                     )}
                 }
                 div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",

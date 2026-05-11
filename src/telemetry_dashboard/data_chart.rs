@@ -33,14 +33,22 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use super::{HISTORY_MS, telemetry_history_retention_ms, telemetry_view_window_ms};
+use super::{
+    HISTORY_MS, telemetry_history_retention_ms, telemetry_row_received_ms, telemetry_view_window_ms,
+};
 
 static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<TelemetryTextId>>> = OnceLock::new();
 static CHART_VISIBILITY_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static CHART_VISIBILITY_POLLER_STARTED: AtomicBool = AtomicBool::new(false);
+static ACTIVE_CHART_VISIBILITY_PANELS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+const CHART_VISIBILITY_TRACKING_SUPPORTED: bool = true;
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+const CHART_VISIBILITY_TRACKING_SUPPORTED: bool = false;
 
 pub fn configure_sender_split_data_types(data_types: &[String]) {
     let configured = SENDER_SPLIT_DATA_TYPES.get_or_init(|| Mutex::new(HashSet::new()));
@@ -142,10 +150,13 @@ pub fn charts_cache_cancel_reseed_build() {
     });
 }
 
-pub fn charts_cache_reseed_ingest_row(row: &TelemetryRow) {
+pub fn charts_cache_reseed_ingest_rows(rows: &[TelemetryRow]) {
+    if rows.is_empty() {
+        return;
+    }
     RESEED_CACHE.with(|c| {
         if let Some(cache) = c.borrow_mut().as_mut() {
-            cache.ingest_row(row);
+            cache.ingest_rows(rows);
         }
     });
 }
@@ -174,6 +185,16 @@ pub fn charts_cache_ingest_rows(rows: &[TelemetryRow]) {
     CHARTS_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
         cache.ingest_rows(rows);
+    });
+}
+
+pub fn charts_cache_store_rows_for_later(rows: &[TelemetryRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    CHARTS_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        cache.store_rows_for_later(rows);
     });
 }
 
@@ -417,29 +438,11 @@ impl ChartsCache {
     }
 
     fn ingest_row(&mut self, r: &TelemetryRow) {
-        self.generation = self.generation.wrapping_add(1).max(1);
-        self.store_raw_row(r);
-        self.note_source_row(r);
-        self.ingest_interested_row(r);
-
-        for derived in derived_chart_rows(r) {
-            self.note_source_row(&derived);
-            self.ingest_interested_row(&derived);
-        }
-
-        self.prune_interest();
+        self.ingest_rows(std::slice::from_ref(r));
     }
 
     fn ingest_rows(&mut self, rows: &[TelemetryRow]) {
-        if rows.is_empty() {
-            return;
-        }
-
-        self.generation = self
-            .generation
-            .wrapping_add(rows.len() as u64)
-            .max(1);
-
+        self.generation = self.generation.wrapping_add(1).max(1);
         for row in rows {
             self.store_raw_row_without_prune(row);
             self.note_source_row(row);
@@ -450,22 +453,27 @@ impl ChartsCache {
                 self.ingest_interested_row(&derived);
             }
         }
-
         self.prune_raw_rows();
         self.prune_interest();
     }
 
-    fn store_raw_row(&mut self, r: &TelemetryRow) {
-        self.store_raw_row_without_prune(r);
+    fn store_rows_for_later(&mut self, rows: &[TelemetryRow]) {
+        self.generation = self.generation.wrapping_add(1).max(1);
+        for row in rows {
+            self.store_raw_row_without_prune(row);
+            self.note_source_row(row);
+        }
         self.prune_raw_rows();
+        self.prune_interest();
     }
 
     fn store_raw_row_without_prune(&mut self, r: &TelemetryRow) {
-        if self.newest_ts == 0 || r.timestamp_ms > self.newest_ts {
-            self.newest_ts = r.timestamp_ms;
+        let plot_ts = telemetry_row_received_ms(r);
+        if self.newest_ts == 0 || plot_ts > self.newest_ts {
+            self.newest_ts = plot_ts;
         }
         let key = ChartRawRowKey {
-            bucket: r.timestamp_ms.div_euclid(BUCKET_MS),
+            bucket: plot_ts.div_euclid(BUCKET_MS),
             data_type: r.interned_data_type_id(),
             sender_id: r.interned_sender_id(),
         };
@@ -1101,8 +1109,8 @@ fn lod_bucket_ms_for_span(span_ms: i64) -> i64 {
         (5 * 60_000, 50),
         (10 * 60_000, 100),
         (15 * 60_000, 250),
-        (18 * 60_000, 500),
-        (telemetry_view_window_ms(), 1_000),
+        (18 * 60_000, 250),
+        (telemetry_view_window_ms(), 100),
     ];
     for (span_threshold_ms, bucket_ms) in levels {
         if span_ms <= span_threshold_ms {
@@ -1153,7 +1161,7 @@ impl CachedChart {
         if ch_count > self.channel_count {
             self.ensure_channels(ch_count);
         }
-        let ts = r.timestamp_ms;
+        let ts = telemetry_row_received_ms(r);
         let bid = ts.div_euclid(BUCKET_MS);
 
         if self.newest_ts == 0 || ts > self.newest_ts {
@@ -2928,7 +2936,9 @@ fn ensure_chart_visibility_observer_installed() {
 }
 
 async fn chart_visibility_poll_delay() {
-    let delay_ms = if super::dashboard_page_visible() {
+    let delay_ms = if ACTIVE_CHART_VISIBILITY_PANELS.load(Ordering::Relaxed) == 0 {
+        5_000
+    } else if super::dashboard_page_visible() {
         250
     } else {
         2_000
@@ -2973,6 +2983,9 @@ fn chart_visibility_window_value(_key: &str) -> Option<String> {
 }
 
 fn ensure_chart_visibility_poller_started() {
+    if !CHART_VISIBILITY_TRACKING_SUPPORTED {
+        return;
+    }
     if CHART_VISIBILITY_POLLER_STARTED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -2983,6 +2996,10 @@ fn ensure_chart_visibility_poller_started() {
     spawn(async move {
         let mut last_version = u64::MAX;
         loop {
+            if ACTIVE_CHART_VISIBILITY_PANELS.load(Ordering::Relaxed) == 0 {
+                chart_visibility_poll_delay().await;
+                continue;
+            }
             let next_version = chart_visibility_window_value("__gs26ChartVisibilityVersion")
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0);
@@ -2997,8 +3014,10 @@ fn ensure_chart_visibility_poller_started() {
 }
 
 pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
-    ensure_chart_visibility_observer_installed();
-    ensure_chart_visibility_poller_started();
+    if enabled && CHART_VISIBILITY_TRACKING_SUPPORTED {
+        ensure_chart_visibility_observer_installed();
+        ensure_chart_visibility_poller_started();
+    }
 
     let panel_id = use_hook(|| {
         format!(
@@ -3008,12 +3027,20 @@ pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
     });
     let mut is_visible = use_signal(|| true);
     let alive = use_hook(|| Rc::new(Cell::new(true)));
+    let visibility_registered = use_hook(|| Rc::new(Cell::new(false)));
 
     use_drop({
         let panel_id = panel_id.clone();
         let alive = alive.clone();
+        let visibility_registered = visibility_registered.clone();
         move || {
             alive.set(false);
+            if enabled
+                && CHART_VISIBILITY_TRACKING_SUPPORTED
+                && visibility_registered.replace(false)
+            {
+                ACTIVE_CHART_VISIBILITY_PANELS.fetch_sub(1, Ordering::Relaxed);
+            }
             let id_json = serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string());
             super::js_eval(&format!(
                 r#"(function(){{try{{if(typeof window.__gs26UnobserveChartVisibility==="function"){{window.__gs26UnobserveChartVisibility({id_json});}}}}catch(e){{}}}})();"#,
@@ -3023,7 +3050,14 @@ pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
 
     use_effect({
         let panel_id = panel_id.clone();
+        let visibility_registered = visibility_registered.clone();
         move || {
+            if enabled
+                && CHART_VISIBILITY_TRACKING_SUPPORTED
+                && !visibility_registered.replace(true)
+            {
+                ACTIVE_CHART_VISIBILITY_PANELS.fetch_add(1, Ordering::Relaxed);
+            }
             let id_json = serde_json::to_string(&panel_id).unwrap_or_else(|_| "\"\"".to_string());
             super::js_eval(&format!(
                 r#"(function(){{try{{if(typeof window.__gs26ObserveChartVisibility==="function"){{window.__gs26ObserveChartVisibility({id_json});}}}}catch(e){{}}}})();"#,
@@ -3031,14 +3065,14 @@ pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
         }
     });
 
-    if enabled {
+    if enabled && CHART_VISIBILITY_TRACKING_SUPPORTED {
         let _ = *CHART_VISIBILITY_EPOCH.read();
     }
 
     use_effect({
         let panel_id = panel_id.clone();
         move || {
-            if enabled {
+            if enabled && CHART_VISIBILITY_TRACKING_SUPPORTED {
                 let key = format!("__gs26_chart_visibility_tmp_{}", panel_id);
                 super::js_eval(&format!(
                     r#"
@@ -3061,8 +3095,8 @@ pub fn use_chart_panel_visibility(enabled: bool) -> (String, bool) {
                 if *is_visible.read() != next_visible {
                     is_visible.set(next_visible);
                 }
-            } else if *is_visible.read() {
-                is_visible.set(false);
+            } else if !*is_visible.read() {
+                is_visible.set(true);
             }
         }
     });

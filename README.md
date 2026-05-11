@@ -185,8 +185,9 @@ The Settings overlay is split into tabs:
 
 The History tab includes two operator-facing telemetry timeline controls:
 
-- `Keep data for` sets how long recent telemetry is retained locally before older samples are dropped.
-- `Visible chart range` sets how much recent telemetry the charts show at once. It is automatically capped so it cannot exceed the retained data duration.
+- `Keep recent data` sets how long recent telemetry is retained locally before older samples are dropped.
+- `Show charts for` sets how much recent telemetry the charts show at once. It is automatically capped so it cannot exceed the retained data duration.
+- Both controls include preset buttons plus a custom minutes field with a supported range of `5` to `60` minutes.
 
 WebSocket connection handling:
 

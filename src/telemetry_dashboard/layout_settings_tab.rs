@@ -1,4 +1,5 @@
 use super::{
+    MAX_TELEMETRY_HISTORY_MINUTES, MIN_TELEMETRY_HISTORY_MINUTES,
     TELEMETRY_HISTORY_PRESET_MINUTES, builtin_theme_presets, js_eval, layout::ThemeConfig,
     localized_copy, set_preferred_language,
 };
@@ -47,6 +48,8 @@ pub fn SettingsPage(
     let mut maintenance_status = use_signal(String::new);
     let mut confirm_reset = use_signal(|| false);
     let mut active_settings_tab = use_signal(|| "general".to_string());
+    let telemetry_retention_custom_input = use_signal(String::new);
+    let telemetry_view_window_custom_input = use_signal(String::new);
     let language = language_code.read().clone();
     let title = title
         .filter(|value| !value.trim().is_empty())
@@ -71,6 +74,8 @@ pub fn SettingsPage(
     let telemetry_view_window_ms_value = (*telemetry_view_window_ms.read()).min(telemetry_retention_ms_value);
     let telemetry_retention_minutes = telemetry_retention_ms_value / 60_000;
     let telemetry_view_window_minutes = telemetry_view_window_ms_value / 60_000;
+    let telemetry_retention_custom_input_value = telemetry_retention_custom_input.read().clone();
+    let telemetry_view_window_custom_input_value = telemetry_view_window_custom_input.read().clone();
     let data_cache_enabled_value = *data_cache_enabled.read();
     let map_tile_cache_enabled_value = *map_tile_cache_enabled.read();
     let cache_budget_mb_value = (*cache_budget_mb.read()).clamp(1, 100_000);
@@ -159,9 +164,9 @@ pub fn SettingsPage(
     let section_history = localized_copy(&language, "History", "Historial", "Historique");
     let history_retention_title = localized_copy(
         &language,
-        "Keep data for",
-        "Conservar datos durante",
-        "Conserver les donnees pendant",
+        "Keep recent data",
+        "Conservar datos recientes",
+        "Conserver les donnees recentes",
     );
     let history_retention_desc = localized_copy(
         &language,
@@ -171,9 +176,9 @@ pub fn SettingsPage(
     );
     let history_view_title = localized_copy(
         &language,
-        "Visible chart range",
-        "Rango visible de la grafica",
-        "Plage visible du graphique",
+        "Show charts for",
+        "Mostrar graficas durante",
+        "Afficher les graphiques sur",
     );
     let history_view_desc = localized_copy(
         &language,
@@ -181,6 +186,25 @@ pub fn SettingsPage(
         "Cuanta telemetria reciente muestran las graficas a la vez. No puede ser mayor que la duracion de datos conservados.",
         "Combien de telemetrie recente les graphiques affichent a la fois. Cela ne peut pas depasser la duree de conservation.",
     );
+    let history_custom_minutes_title = localized_copy(
+        &language,
+        "Custom minutes",
+        "Minutos personalizados",
+        "Minutes personnalisees",
+    );
+    let history_custom_minutes_hint = localized_copy(
+        &language,
+        "Enter a value from 5 to 60 minutes.",
+        "Ingresa un valor entre 5 y 60 minutos.",
+        "Saisissez une valeur entre 5 et 60 minutes.",
+    );
+    let history_view_custom_minutes_hint = localized_copy(
+        &language,
+        "Enter a value from 5 minutes up to the kept data duration.",
+        "Ingresa un valor desde 5 minutos hasta la duracion conservada.",
+        "Saisissez une valeur entre 5 minutes et la duree conservee.",
+    );
+    let minutes_suffix = localized_copy(&language, "min", "min", "min");
     let section_cache_control = localized_copy(
         &language,
         "Cache Control",
@@ -558,6 +582,27 @@ pub fn SettingsPage(
         "Limpia datos, mosaicos del mapa y layouts en cache.",
         "Efface les donnees, les tuiles de carte et les dispositions en cache.",
     );
+
+    {
+        let telemetry_retention_ms = telemetry_retention_ms;
+        let mut telemetry_retention_custom_input = telemetry_retention_custom_input;
+        use_effect(move || {
+            let next_value = ((*telemetry_retention_ms.read()) / 60_000).to_string();
+            if telemetry_retention_custom_input.read().as_str() != next_value.as_str() {
+                telemetry_retention_custom_input.set(next_value);
+            }
+        });
+    }
+    {
+        let telemetry_view_window_ms = telemetry_view_window_ms;
+        let mut telemetry_view_window_custom_input = telemetry_view_window_custom_input;
+        use_effect(move || {
+            let next_value = ((*telemetry_view_window_ms.read()) / 60_000).to_string();
+            if telemetry_view_window_custom_input.read().as_str() != next_value.as_str() {
+                telemetry_view_window_custom_input.set(next_value);
+            }
+        });
+    }
     let prefetch_now_title = localized_copy(
         &language,
         "Prefetch Map Tiles",
@@ -1285,22 +1330,89 @@ pub fn SettingsPage(
                         }
                     }
                 }
+                div { style: "display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted}; min-width:120px;", "{history_custom_minutes_title}" }
+                    input {
+                        style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:120px;",
+                        r#type: "number",
+                        min: "{MIN_TELEMETRY_HISTORY_MINUTES}",
+                        max: "{MAX_TELEMETRY_HISTORY_MINUTES}",
+                        step: "1",
+                        value: "{telemetry_retention_custom_input_value}",
+                        oninput: {
+                            let mut telemetry_retention_custom_input = telemetry_retention_custom_input;
+                            let mut telemetry_retention_ms = telemetry_retention_ms;
+                            let mut telemetry_view_window_ms = telemetry_view_window_ms;
+                            move |e| {
+                                let raw = e.value();
+                                telemetry_retention_custom_input.set(raw.clone());
+                                if let Ok(value) = raw.trim().parse::<u64>() {
+                                    let next_minutes = value.clamp(
+                                        MIN_TELEMETRY_HISTORY_MINUTES,
+                                        MAX_TELEMETRY_HISTORY_MINUTES,
+                                    );
+                                    let next_ms = next_minutes * 60_000;
+                                    telemetry_retention_ms.set(next_ms);
+                                    if *telemetry_view_window_ms.read() > next_ms {
+                                        telemetry_view_window_ms.set(next_ms);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{minutes_suffix}" }
+                }
+                div { style: "font-size:12px; color:{theme.text_soft};", "{history_custom_minutes_hint}" }
                 div { style: "font-size:13px; color:{theme.text_muted}; margin-top:12px;", "{history_view_title}" }
                 div { style: "font-size:13px; color:{theme.text_soft};", "{history_view_desc}" }
                 div { style: "display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;",
                     for preset_minutes in TELEMETRY_HISTORY_PRESET_MINUTES {
                         button {
-                            key: "view-{preset_minutes}",
+                            key: "view-{preset_minutes}-{telemetry_retention_minutes}",
                             style: if telemetry_view_window_minutes == preset_minutes { chip_selected.clone() } else if preset_minutes > telemetry_retention_minutes { chip_disabled.clone() } else { chip_idle.clone() },
                             disabled: preset_minutes > telemetry_retention_minutes,
                             onclick: {
+                                let telemetry_retention_ms = telemetry_retention_ms;
                                 let mut telemetry_view_window_ms = telemetry_view_window_ms;
-                                move |_| telemetry_view_window_ms.set((preset_minutes * 60_000).min(telemetry_retention_ms_value))
+                                move |_| {
+                                    let retention_ms = *telemetry_retention_ms.read();
+                                    telemetry_view_window_ms
+                                        .set((preset_minutes * 60_000).min(retention_ms));
+                                }
                             },
                             "{preset_minutes} min"
                         }
                     }
                 }
+                div { style: "display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:10px;",
+                    div { style: "font-size:13px; color:{theme.text_muted}; min-width:120px;", "{history_custom_minutes_title}" }
+                    input {
+                        style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:120px;",
+                        r#type: "number",
+                        min: "{MIN_TELEMETRY_HISTORY_MINUTES}",
+                        max: "{telemetry_retention_minutes.max(MIN_TELEMETRY_HISTORY_MINUTES)}",
+                        step: "1",
+                        value: "{telemetry_view_window_custom_input_value}",
+                        oninput: {
+                            let mut telemetry_view_window_custom_input = telemetry_view_window_custom_input;
+                            let mut telemetry_view_window_ms = telemetry_view_window_ms;
+                            let telemetry_retention_ms = telemetry_retention_ms;
+                            move |e| {
+                                let raw = e.value();
+                                telemetry_view_window_custom_input.set(raw.clone());
+                                if let Ok(value) = raw.trim().parse::<u64>() {
+                                    let retention_minutes = (*telemetry_retention_ms.read() / 60_000)
+                                        .max(MIN_TELEMETRY_HISTORY_MINUTES);
+                                    let next_minutes =
+                                        value.clamp(MIN_TELEMETRY_HISTORY_MINUTES, retention_minutes);
+                                    telemetry_view_window_ms.set(next_minutes * 60_000);
+                                }
+                            }
+                        }
+                    }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "{minutes_suffix}" }
+                }
+                div { style: "font-size:12px; color:{theme.text_soft};", "{history_view_custom_minutes_hint}" }
             }
             }
 

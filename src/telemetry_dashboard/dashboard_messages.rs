@@ -18,6 +18,13 @@ enum WsInMsg {
     NetworkTime(NetworkTimeMsg),
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(tag = "ty", content = "data")]
+enum WsTelemetryIngressMsg {
+    Telemetry(TelemetryRow),
+    TelemetryBatch(Vec<TelemetryRow>),
+}
+
 #[derive(Deserialize, Debug, Clone)]
 struct FlightStateMsg {
     state: FlightState,
