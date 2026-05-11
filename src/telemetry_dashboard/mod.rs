@@ -95,10 +95,18 @@ static TRANSLATION_MISS_QUEUE: Lazy<Mutex<HashSet<String>>> =
 static TRANSLATION_REQUEST_ACTIVE: AtomicBool = AtomicBool::new(false);
 static LAST_COMMAND_ACTIVATION: Lazy<Mutex<Option<(String, f64)>>> = Lazy::new(|| Mutex::new(None));
 static PENDING_COMMAND_PRESS: Lazy<Mutex<Option<(String, f64)>>> = Lazy::new(|| Mutex::new(None));
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+static PAGE_VISIBILITY_BRIDGE_INSTALLED: AtomicBool = AtomicBool::new(false);
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+static PAGE_VISIBILITY_LAST_POLL_MS: AtomicI64 = AtomicI64::new(0);
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+static PAGE_VISIBILITY_CACHED: AtomicBool = AtomicBool::new(true);
 
 const COMMAND_ACTIVATION_DEDUP_MS: f64 = 450.0;
 const COMMAND_MAX_PRESS_RELEASE_MS: f64 = 650.0;
 const COMMAND_VISUAL_FEEDBACK_MS: f64 = 700.0;
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+const PAGE_VISIBILITY_POLL_INTERVAL_MS: i64 = 750;
 
 // ============================================================================
 // Dashboard lifetime: STATIC + ALWAYS PRESENT (never Option)
@@ -263,12 +271,54 @@ pub(crate) fn action_buttons_disabled_message(policy: &ActionPolicyMsg) -> &'sta
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 pub(crate) fn dashboard_page_visible() -> bool {
+    let now_ms = current_wallclock_ms();
+    let last_poll_ms = PAGE_VISIBILITY_LAST_POLL_MS.load(Ordering::Relaxed);
+    if last_poll_ms > 0 && now_ms.saturating_sub(last_poll_ms) < PAGE_VISIBILITY_POLL_INTERVAL_MS {
+        return PAGE_VISIBILITY_CACHED.load(Ordering::Relaxed);
+    }
+
+    if PAGE_VISIBILITY_BRIDGE_INSTALLED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        js_eval(
+            r#"
+            (function() {
+              try {
+                if (window.__gs26_page_visibility_hook_installed) return;
+                const update = () => {
+                  try {
+                    const visible = !(document && document.visibilityState === "hidden");
+                    window.__gs26_page_visible_state = visible ? "true" : "false";
+                  } catch (e) {
+                    window.__gs26_page_visible_state = "true";
+                  }
+                };
+                window.__gs26_page_visibility_hook_installed = true;
+                window.__gs26_page_visible_state = "true";
+                if (typeof document !== "undefined" && document && typeof document.addEventListener === "function") {
+                  document.addEventListener("visibilitychange", update, { passive: true });
+                }
+                if (typeof window !== "undefined" && window && typeof window.addEventListener === "function") {
+                  window.addEventListener("pageshow", update, { passive: true });
+                  window.addEventListener("pagehide", update, { passive: true });
+                  window.addEventListener("focus", update, { passive: true });
+                  window.addEventListener("blur", update, { passive: true });
+                }
+                update();
+              } catch (e) {
+                window.__gs26_page_visible_state = "true";
+              }
+            })();
+            "#,
+        );
+    }
+
     js_eval(
         r#"
         (function() {
           try {
-            const visible = !(document && document.visibilityState === "hidden");
-            window.__gs26_tmp_page_visible = visible ? "true" : "false";
+            window.__gs26_tmp_page_visible = String(window.__gs26_page_visible_state || "true");
           } catch (e) {
             window.__gs26_tmp_page_visible = "true";
           }
@@ -276,9 +326,12 @@ pub(crate) fn dashboard_page_visible() -> bool {
         "#,
     );
 
-    js_read_window_string("__gs26_tmp_page_visible")
+    let visible = js_read_window_string("__gs26_tmp_page_visible")
         .unwrap_or_else(|| "true".to_string())
-        .eq_ignore_ascii_case("true")
+        .eq_ignore_ascii_case("true");
+    PAGE_VISIBILITY_CACHED.store(visible, Ordering::Relaxed);
+    PAGE_VISIBILITY_LAST_POLL_MS.store(now_ms, Ordering::Relaxed);
+    visible
 }
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
