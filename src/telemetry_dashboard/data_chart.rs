@@ -44,6 +44,8 @@ static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<TelemetryTextId>>> = Once
 static CHART_VISIBILITY_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static CHART_VISIBILITY_POLLER_STARTED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CHART_VISIBILITY_PANELS: AtomicUsize = AtomicUsize::new(0);
+static CHART_DRAW_QUEUE: OnceLock<Mutex<Vec<(String, String)>>> = OnceLock::new();
+static CHART_DRAW_FLUSH_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 const CHART_VISIBILITY_TRACKING_SUPPORTED: bool = true;
@@ -93,6 +95,8 @@ const LIVE_BUCKETS_BACK: i64 = 3;
 const CURVE_MIN_DELTA_PX: f32 = 0.35;
 const RENDER_CHUNK_MS: i64 = 30_000;
 const SMOOTHING_MAX_POINTS_PER_SEGMENT: usize = 240;
+const TARGET_PIXELS_PER_SAMPLE: f32 = 2.0;
+const MIN_RENDER_COLUMNS: f32 = 96.0;
 
 // Avoid zero span
 const MIN_SPAN_MS: i64 = 1_000;
@@ -210,6 +214,24 @@ pub fn charts_cache_get(
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         c.get(data_type, width, height)
+    })
+}
+
+pub fn charts_cache_source_generation(data_type: &str) -> u64 {
+    CHARTS_CACHE.with(|c| {
+        c.borrow()
+            .source_generation_for_key(ChartSeriesKey::from_query(data_type))
+    })
+}
+
+pub fn charts_cache_source_generation_multi(series: &[(String, usize)]) -> u64 {
+    CHARTS_CACHE.with(|c| {
+        let cache = c.borrow();
+        series
+            .iter()
+            .map(|(key, _)| cache.source_generation_for_key(ChartSeriesKey::from_query(key)))
+            .max()
+            .unwrap_or(0)
     })
 }
 
@@ -563,6 +585,10 @@ impl ChartsCache {
             return;
         }
         self.rebuild_chart_for_key(key, source_generation);
+    }
+
+    fn source_generation_for_key(&self, key: ChartSeriesKey) -> u64 {
+        self.source_generation.get(&key).copied().unwrap_or(0)
     }
 
     fn rebuild_chart_for_key(&mut self, key: ChartSeriesKey, source_generation: u64) {
@@ -1120,6 +1146,20 @@ fn lod_bucket_ms_for_span(span_ms: i64) -> i64 {
     BUCKET_MS
 }
 
+fn render_bucket_ms_for_span(span_ms: i64, plot_width_px: f32) -> i64 {
+    let span_bucket_ms = lod_bucket_ms_for_span(span_ms);
+    let target_columns = (plot_width_px.max(MIN_RENDER_COLUMNS) / TARGET_PIXELS_PER_SAMPLE)
+        .round()
+        .max(1.0) as i64;
+    let width_bucket_ms =
+        ((span_ms.max(BUCKET_MS) + target_columns - 1) / target_columns).max(BUCKET_MS);
+    let width_bucket_ms = width_bucket_ms
+        .div_euclid(BUCKET_MS)
+        .max(1)
+        .saturating_mul(BUCKET_MS);
+    span_bucket_ms.max(width_bucket_ms)
+}
+
 fn max_buckets_per_type() -> usize {
     (telemetry_history_retention_ms().max(BUCKET_MS) as usize / BUCKET_MS as usize) + 500
 }
@@ -1426,7 +1466,9 @@ impl CachedChart {
         };
         span_ms = span_ms.min(view_window_ms);
         self.prev_span_ms = span_ms;
-        let lod_bucket_ms = lod_bucket_ms_for_span(span_ms);
+        let plot_width_px =
+            ((w - CHART_GRID_RIGHT_PAD as f32).max(CHART_GRID_LEFT as f32 + 1.0)) - CHART_GRID_LEFT as f32;
+        let lod_bucket_ms = render_bucket_ms_for_span(span_ms, plot_width_px);
 
         // Determine how many buckets to render from that span (stable)
         let want_buckets = span_ms.div_euclid(BUCKET_MS).max(1);
@@ -1637,7 +1679,13 @@ impl CachedChart {
         let span_ms = self
             .prev_span_ms
             .clamp(MIN_SPAN_MS, telemetry_view_window_ms().max(MIN_SPAN_MS));
-        let lod_bucket_ms = lod_bucket_ms_for_span(span_ms);
+        let left = CHART_GRID_LEFT as f32;
+        let right = (w - CHART_GRID_RIGHT_PAD as f32).max(left + 1.0);
+        let top = CHART_GRID_TOP as f32;
+        let bottom = (h - CHART_GRID_BOTTOM_PAD as f32).max(top + 1.0);
+        let pw = right - left;
+        let ph = bottom - top;
+        let lod_bucket_ms = render_bucket_ms_for_span(span_ms, pw);
         let want_buckets = span_ms.div_euclid(BUCKET_MS).max(1);
         let start_bid = newest_bid.saturating_sub(want_buckets - 1);
         let view_buckets = self.view_buckets(start_bid, newest_bid, lod_bucket_ms);
@@ -1647,13 +1695,6 @@ impl CachedChart {
         let newest_view_id = newest_bid
             .saturating_mul(BUCKET_MS)
             .div_euclid(lod_bucket_ms);
-
-        let left = CHART_GRID_LEFT as f32;
-        let right = (w - CHART_GRID_RIGHT_PAD as f32).max(left + 1.0);
-        let top = CHART_GRID_TOP as f32;
-        let bottom = (h - CHART_GRID_BOTTOM_PAD as f32).max(top + 1.0);
-        let pw = right - left;
-        let ph = bottom - top;
 
         let mut raw_min = f32::INFINITY;
         let mut raw_max = f32::NEG_INFINITY;
@@ -1853,7 +1894,13 @@ impl CachedChart {
         let span_ms = self
             .prev_span_ms
             .clamp(MIN_SPAN_MS, telemetry_view_window_ms().max(MIN_SPAN_MS));
-        let lod_bucket_ms = lod_bucket_ms_for_span(span_ms);
+        let left = grid_left.max(0.0);
+        let right = (w - grid_right_pad.max(0.0)).max(left + 1.0);
+        let top = grid_top.max(0.0);
+        let bottom = (h - grid_bottom_pad.max(0.0)).max(top + 1.0);
+        let pw = right - left;
+        let ph = bottom - top;
+        let lod_bucket_ms = render_bucket_ms_for_span(span_ms, pw);
         let want_buckets = span_ms.div_euclid(BUCKET_MS).max(1);
         let start_bid = newest_bid.saturating_sub(want_buckets - 1);
         let view_buckets = self.view_buckets(start_bid, newest_bid, lod_bucket_ms);
@@ -1863,13 +1910,6 @@ impl CachedChart {
         let newest_view_id = newest_bid
             .saturating_mul(BUCKET_MS)
             .div_euclid(lod_bucket_ms);
-
-        let left = grid_left.max(0.0);
-        let right = (w - grid_right_pad.max(0.0)).max(left + 1.0);
-        let top = grid_top.max(0.0);
-        let bottom = (h - grid_bottom_pad.max(0.0)).max(top + 1.0);
-        let pw = right - left;
-        let ph = bottom - top;
 
         let mut raw_min = f32::INFINITY;
         let mut raw_max = f32::NEG_INFINITY;
@@ -2428,6 +2468,69 @@ fn build_combined_canvas_paths(chunks: &[ChartRenderChunk]) -> Vec<String> {
     combined_paths
 }
 
+fn queue_chart_canvas_draw(canvas_id_json: String, payload_json: String) {
+    let queue = CHART_DRAW_QUEUE.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut pending) = queue.lock() {
+        pending.push((canvas_id_json, payload_json));
+    }
+    if CHART_DRAW_FLUSH_SCHEDULED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    spawn(async move {
+        #[cfg(target_arch = "wasm32")]
+        gloo_timers::future::TimeoutFuture::new(0).await;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        tokio::time::sleep(std::time::Duration::from_millis(0)).await;
+
+        CHART_DRAW_FLUSH_SCHEDULED.store(false, Ordering::Release);
+        let queued = CHART_DRAW_QUEUE
+            .get()
+            .and_then(|queue| queue.lock().ok().map(|mut pending| std::mem::take(&mut *pending)))
+            .unwrap_or_default();
+        if queued.is_empty() {
+            return;
+        }
+
+        let mut batch_json = String::from("[");
+        for (index, (canvas_id_json, payload_json)) in queued.iter().enumerate() {
+            if index > 0 {
+                batch_json.push(',');
+            }
+            batch_json.push_str("{\"id\":");
+            batch_json.push_str(canvas_id_json);
+            batch_json.push_str(",\"data\":");
+            batch_json.push_str(payload_json);
+            batch_json.push('}');
+        }
+        batch_json.push(']');
+        super::js_eval(&format!(
+            r#"
+                (function() {{
+                  try {{
+                    if (typeof window.__gs26QueueChartCanvasDrawBatch === "function") {{
+                      window.__gs26QueueChartCanvasDrawBatch({batch_json});
+                    }} else if (typeof window.__gs26DrawChartCanvas === "function") {{
+                      const batch = {batch_json};
+                      for (const item of batch) {{
+                        if (item && item.id) {{
+                          window.__gs26DrawChartCanvas(item.id, item.data);
+                        }}
+                      }}
+                    }}
+                  }} catch (e) {{
+                    console.warn("chart canvas batch draw failed", e);
+                  }}
+                }})();
+            "#,
+        ));
+    });
+}
+
 fn chart_canvas_renderer_bootstrap() -> &'static str {
     CHART_CANVAS_RENDERER_BOOTSTRAP.get_or_init(|| {
         format!(
@@ -2856,6 +2959,13 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                       setTimeout(draw, 0);
                     }}
                   }};
+                  window.__gs26QueueChartCanvasDrawBatch = function(batch) {{
+                    if (!Array.isArray(batch) || !batch.length) return;
+                    for (const item of batch) {{
+                      if (!item || !item.id) continue;
+                      window.__gs26DrawChartCanvas(item.id, item.data);
+                    }}
+                  }};
                 }})();
             "##,
             chart_grid_left = CHART_GRID_LEFT,
@@ -3171,20 +3281,7 @@ pub fn ChartCanvas(
             if last_draw_signature.get() == render_signature {
                 return;
             }
-            let draw_js = format!(
-                r#"
-                    (function() {{
-                      try {{
-                        if (typeof window.__gs26DrawChartCanvas === "function") {{
-                          window.__gs26DrawChartCanvas({id_json}, {payload_json});
-                        }}
-                      }} catch (e) {{
-                        console.warn("chart canvas draw failed", e);
-                      }}
-                    }})();
-                "#,
-            );
-            super::js_eval(&draw_js);
+            queue_chart_canvas_draw(id_json.clone(), payload_json.clone());
             last_draw_signature.set(render_signature);
         }
     ));

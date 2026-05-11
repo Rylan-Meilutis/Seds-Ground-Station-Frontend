@@ -14,7 +14,8 @@ use super::data_chart::{
     CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
     CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
     ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    charts_cache_get_subset_per_series_with_grid, sender_scoped_chart_key, series_color,
+    charts_cache_get_subset_per_series_with_grid, charts_cache_source_generation,
+    charts_cache_source_generation_multi, sender_scoped_chart_key, series_color,
     use_chart_panel_visibility,
 };
 use super::{
@@ -141,6 +142,25 @@ fn hash_chart_series_specs(
         spec.index.hash(hasher);
         spec.sender_id.hash(hasher);
         spec.label.hash(hasher);
+    }
+}
+
+fn chart_render_source_generation(chart_key: &str, multi_series: Option<&[ChartSeriesSpec]>) -> u64 {
+    if let Some(series) = multi_series {
+        let cache_series = series
+            .iter()
+            .map(|spec| {
+                let chart_key = spec
+                    .sender_id
+                    .as_deref()
+                    .map(|sender_id| sender_scoped_chart_key(&spec.data_type, sender_id))
+                    .unwrap_or_else(|| spec.data_type.clone());
+                (chart_key, spec.index)
+            })
+            .collect::<Vec<_>>();
+        charts_cache_source_generation_multi(&cache_series)
+    } else {
+        charts_cache_source_generation(chart_key)
     }
 }
 
@@ -1457,7 +1477,7 @@ fn chart_group_render_payload_cached(
     state_chart_labels_vertical: bool,
 ) -> DataChartRenderPayload {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (*CHART_RENDER_EPOCH.read()).hash(&mut hasher);
+    chart_render_source_generation(chart_key, multi_series).hash(&mut hasher);
     chart_key.hash(&mut hasher);
     group.title.hash(&mut hasher);
     group.data_type.hash(&mut hasher);

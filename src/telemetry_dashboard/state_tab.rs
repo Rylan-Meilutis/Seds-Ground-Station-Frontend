@@ -30,6 +30,7 @@ use crate::telemetry_dashboard::data_chart::{
     CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
     ChartCanvas, ChartRenderChunk, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
     charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
+    charts_cache_source_generation, charts_cache_source_generation_multi,
     sender_scoped_chart_key, series_color, use_chart_panel_visibility,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
@@ -758,16 +759,6 @@ fn chart_key_for_series_spec(spec: &ChartSeriesSpec) -> String {
         .unwrap_or_else(|| spec.data_type.clone())
 }
 
-fn current_chart_epoch() -> u64 {
-    *CHART_RENDER_EPOCH.read()
-}
-
-fn cache_key_seed() -> std::collections::hash_map::DefaultHasher {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    current_chart_epoch().hash(&mut hasher);
-    hasher
-}
-
 fn retain_recent_chart_cache_entries<T>(cache: &mut HashMap<u64, T>) {
     if cache.len() > 128 {
         cache.clear();
@@ -775,7 +766,8 @@ fn retain_recent_chart_cache_entries<T>(cache: &mut HashMap<u64, T>) {
 }
 
 fn simple_chart_payload_cached(dt: &str, view_w: f64, view_h: f64) -> SimpleChartPayload {
-    let mut hasher = cache_key_seed();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    charts_cache_source_generation(dt).hash(&mut hasher);
     dt.hash(&mut hasher);
     view_w.to_bits().hash(&mut hasher);
     view_h.to_bits().hash(&mut hasher);
@@ -825,7 +817,12 @@ fn combined_chart_payload(
         .map(|spec| default_series_label(data_layout, spec))
         .collect::<Vec<_>>();
 
-    let mut hasher = cache_key_seed();
+    let cache_series = specs
+        .iter()
+        .map(|spec| (chart_key_for_series_spec(spec), spec.index))
+        .collect::<Vec<_>>();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    charts_cache_source_generation_multi(&cache_series).hash(&mut hasher);
     view_w.to_bits().hash(&mut hasher);
     view_h.to_bits().hash(&mut hasher);
     _grid_left.to_bits().hash(&mut hasher);
@@ -865,10 +862,6 @@ fn combined_chart_payload(
         return Some(payload);
     }
 
-    let cache_series = specs
-        .iter()
-        .map(|spec| (chart_key_for_series_spec(spec), spec.index))
-        .collect::<Vec<_>>();
     let (chunks, series_scales, span_min) = charts_cache_get_multi_series_per_series_with_grid(
         &cache_series,
         view_w as f32,
