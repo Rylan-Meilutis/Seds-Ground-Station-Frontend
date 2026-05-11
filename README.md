@@ -64,6 +64,10 @@ The app uses WebSocket for:
 - Graph-level reseed status notices for running, success, and failure
 - Offline native startup with locally cached layout/telemetry/GPS/map state when the configured Ground Station cannot be reached
 - Per-Ground-Station cache isolation for layout, telemetry, GPS, and map tile state
+- Calibration tab local draft persistence and offline restore of the last seen calibration layout/document per Ground Station URL
+- Calibration zero-point editing toggle to preserve or recalculate the active regression
+- Settings tabs for general, map, telemetry, history, and maintenance controls
+- Maintenance settings for rotating frontend debug logs, per-log export/share/download/view, and clearing local logs
 - Settings controls for data cache, map tile cache, map tile prefetch, cache storage budget, and manual map tile prefetch
 - Launch clock badge and launch clock synchronization from both HTTP and WebSocket updates
 - Sender-aware multi-series charts and per-series scaling for state/data graphs
@@ -171,9 +175,26 @@ Distribution signing requires an `Apple Distribution:` identity that matches the
 
 ## Settings, Cache, And Map Prefetch
 
-The Settings overlay includes separate storage and cache controls:
+The Settings overlay is split into tabs:
+
+- `General` groups language, time format, and theme controls.
+- `Map` groups map header, manual location/heading, and map tile prefetch controls.
+- `Telemetry` groups network, remote alert acknowledgement, chart, and calibration capture controls.
+- `History` groups recent telemetry timeline settings.
+- `Maintenance` groups storage inspection, rotating debug logs, cache controls, and reset actions.
+
+The History tab includes two operator-facing telemetry timeline controls:
+
+- `Keep data for` sets how long recent telemetry is retained locally before older samples are dropped.
+- `Visible chart range` sets how much recent telemetry the charts show at once. It is automatically capped so it cannot exceed the retained data duration.
+
+The Maintenance tab includes separate storage, log, and cache controls:
 
 - Used Storage shows a breakdown for frontend data cache, map tile cache, layout/settings cache, and related local storage.
+- Frontend debug logs are rotated locally with a combined native cap of about `100 MB`.
+- Logs are intended for frontend/runtime debugging only and exclude location coordinates, telemetry payload dumps, passwords, and auth tokens.
+- The log action is per-file: operators choose an individual log artifact before using `Download Logs` on web, `Share Logs` on mobile, or `View Logs` on desktop.
+- Clear Logs removes locally stored debug logs without touching cached data or saved settings.
 - Cache Storage Limit defaults to `500 MB`. It is a budget/warning gate for data and map caches, not a hard filesystem quota.
 - Data Cache can be disabled independently. When disabled, telemetry/layout restore data is not written or restored from the local data cache.
 - Map Tile Cache can be disabled independently. When disabled, map tiles are fetched for display but not written to the persistent tile cache.
@@ -223,9 +244,19 @@ When the app reconnects or explicitly reseeds, it keeps existing chart history v
 - WebSocket reconnects trigger telemetry reseed and preserve live rows received during reseed
 - reseed status is shown directly on graphs so operators can tell whether it is running, succeeded, or failed
 - if reseed fails after data was already visible, the app keeps the existing visible history instead of blanking the graphs
+- the live 20-minute history window is pruned using local receive time, not packet/network timestamp, so delayed or skewed packets do not incorrectly evict visible history
 - native builds keep the last valid layout per Ground Station URL plus a compact local telemetry snapshot so a failed connection attempt can still open the dashboard with the last remembered data/GPS/map state. Without a cached layout for that URL, the app shows the connection failure page.
 
 If you are implementing the backend streaming path, use [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md).
+
+## Calibration Behavior
+
+- The Calibration tab fetches both `/api/calibration_config` and `/api/calibration`, then caches the last successful responses per Ground Station URL for offline reuse.
+- If the backend disconnects later, the tab keeps showing the last cached calibration layout/document instead of rendering blank.
+- Unsaved calibration edits are stored locally as a draft per Ground Station URL, so switching tabs or remounting the page does not discard a local refit/edit before it is saved to the backend.
+- Saving calibration clears the local draft and refreshes the cached backend copy.
+- Zero-point changes include a `Preserve regression when changing zero point` toggle so operators can choose whether the existing fit shape should shift with the new zero or be recalculated independently.
+- Calibration sensor definitions, channel ids, labels, colors, and allowed regression modes still come entirely from `/api/calibration_config`.
 
 ## Notes For Backend Authors
 

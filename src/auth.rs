@@ -1,3 +1,4 @@
+use crate::debug_log;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
@@ -403,6 +404,7 @@ pub async fn login(
         remember_me,
     };
     set_current_session(stored.clone());
+    debug_log::append("[auth] login succeeded");
     Ok(stored)
 }
 
@@ -471,6 +473,7 @@ pub async fn logout(base: &str, skip_tls_verify: bool) -> Result<(), String> {
     let url = build_url(base, "/api/auth/logout")?;
     let _ = auth_request_post_empty(&url, skip_tls_verify).await;
     clear_current_session();
+    debug_log::append("[auth] logout completed");
     Ok(())
 }
 

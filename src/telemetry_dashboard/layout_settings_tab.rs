@@ -1,6 +1,8 @@
 use super::{
-    builtin_theme_presets, js_eval, layout::ThemeConfig, localized_copy, set_preferred_language,
+    TELEMETRY_HISTORY_PRESET_MINUTES, builtin_theme_presets, js_eval, layout::ThemeConfig,
+    localized_copy, set_preferred_language,
 };
+use crate::debug_log;
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
 
@@ -22,6 +24,8 @@ pub fn SettingsPage(
     network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
     chart_interpolated_gap_ms: Signal<u64>,
+    telemetry_retention_ms: Signal<u64>,
+    telemetry_view_window_ms: Signal<u64>,
     data_cache_enabled: Signal<bool>,
     map_tile_cache_enabled: Signal<bool>,
     cache_budget_mb: Signal<u32>,
@@ -41,6 +45,7 @@ pub fn SettingsPage(
 ) -> Element {
     let mut maintenance_status = use_signal(String::new);
     let mut confirm_reset = use_signal(|| false);
+    let mut active_settings_tab = use_signal(|| "general".to_string());
     let language = language_code.read().clone();
     let title = title
         .filter(|value| !value.trim().is_empty())
@@ -61,6 +66,10 @@ pub fn SettingsPage(
     let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
     let chart_interpolated_gap_ms_value = (*chart_interpolated_gap_ms.read()).clamp(0, 60_000);
+    let telemetry_retention_ms_value = *telemetry_retention_ms.read();
+    let telemetry_view_window_ms_value = (*telemetry_view_window_ms.read()).min(telemetry_retention_ms_value);
+    let telemetry_retention_minutes = telemetry_retention_ms_value / 60_000;
+    let telemetry_view_window_minutes = telemetry_view_window_ms_value / 60_000;
     let data_cache_enabled_value = *data_cache_enabled.read();
     let map_tile_cache_enabled_value = *map_tile_cache_enabled.read();
     let cache_budget_mb_value = (*cache_budget_mb.read()).clamp(1, 100_000);
@@ -90,6 +99,7 @@ pub fn SettingsPage(
         0.0
     };
     let cache_budget_percent_label = format!("{cache_budget_percent:.1}%");
+    let log_artifacts = debug_log::list_log_artifacts();
     let cache_budget_warning = if measured_cache_bytes >= cache_budget_bytes {
         Some(localized_copy(
             &language,
@@ -124,6 +134,10 @@ pub fn SettingsPage(
         "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:600; cursor:not-allowed; opacity:0.5; filter:saturate(0.7);",
         theme.button_border, theme.button_background, theme.button_text
     );
+    let settings_tab_bar_style = format!(
+        "display:flex; gap:8px; flex-wrap:wrap; margin:0 0 14px 0; padding:10px; border:1px solid {}; border-radius:14px; background:{};",
+        theme.border, theme.panel_background_alt
+    );
 
     let section_general = localized_copy(&language, "General", "General", "General");
     let section_appearance = localized_copy(&language, "Appearance", "Apariencia", "Apparence");
@@ -133,6 +147,39 @@ pub fn SettingsPage(
     let section_calibration =
         localized_copy(&language, "Calibration", "Calibracion", "Calibration");
     let section_storage = localized_copy(&language, "Storage", "Almacenamiento", "Stockage");
+    let section_logs = localized_copy(&language, "Logs", "Registros", "Journaux");
+    let settings_tab_general = localized_copy(&language, "General", "General", "General");
+    let settings_tab_map = localized_copy(&language, "Map", "Mapa", "Carte");
+    let settings_tab_telemetry =
+        localized_copy(&language, "Telemetry", "Telemetria", "Telemetrie");
+    let settings_tab_history = localized_copy(&language, "History", "Historial", "Historique");
+    let settings_tab_maintenance =
+        localized_copy(&language, "Maintenance", "Mantenimiento", "Maintenance");
+    let section_history = localized_copy(&language, "History", "Historial", "Historique");
+    let history_retention_title = localized_copy(
+        &language,
+        "Keep data for",
+        "Conservar datos durante",
+        "Conserver les donnees pendant",
+    );
+    let history_retention_desc = localized_copy(
+        &language,
+        "How long the dashboard keeps recent telemetry available locally before older samples are dropped.",
+        "Cuanto tiempo el panel conserva la telemetria reciente localmente antes de descartar las muestras antiguas.",
+        "Combien de temps le tableau de bord conserve la telemetrie recente localement avant de supprimer les anciens echantillons.",
+    );
+    let history_view_title = localized_copy(
+        &language,
+        "Visible chart range",
+        "Rango visible de la grafica",
+        "Plage visible du graphique",
+    );
+    let history_view_desc = localized_copy(
+        &language,
+        "How much recent telemetry the charts show at once. This cannot be longer than the kept data duration.",
+        "Cuanta telemetria reciente muestran las graficas a la vez. No puede ser mayor que la duracion de datos conservados.",
+        "Combien de telemetrie recente les graphiques affichent a la fois. Cela ne peut pas depasser la duree de conservation.",
+    );
     let section_cache_control = localized_copy(
         &language,
         "Cache Control",
@@ -555,6 +602,72 @@ pub fn SettingsPage(
         "Datos borrados.",
         "Donnees effacees.",
     );
+    let logs_cleared_label = localized_copy(
+        &language,
+        "Logs cleared.",
+        "Registros borrados.",
+        "Journaux effaces.",
+    );
+    let logs_opened_label = localized_copy(
+        &language,
+        if cfg!(target_arch = "wasm32") {
+            "Log download started."
+        } else if cfg!(any(target_os = "android", target_os = "ios")) {
+            "Share sheet opened."
+        } else {
+            "Log folder opened."
+        },
+        if cfg!(target_arch = "wasm32") {
+            "Descarga de registros iniciada."
+        } else if cfg!(any(target_os = "android", target_os = "ios")) {
+            "Menu para compartir abierto."
+        } else {
+            "Carpeta de registros abierta."
+        },
+        if cfg!(target_arch = "wasm32") {
+            "Telechargement des journaux lance."
+        } else if cfg!(any(target_os = "android", target_os = "ios")) {
+            "Menu de partage ouvert."
+        } else {
+            "Dossier des journaux ouvert."
+        },
+    );
+    let logs_export_title = localized_copy(
+        &language,
+        if cfg!(target_arch = "wasm32") {
+            "Download Logs"
+        } else if cfg!(any(target_os = "android", target_os = "ios")) {
+            "Share Logs"
+        } else {
+            "View Logs"
+        },
+        if cfg!(target_arch = "wasm32") {
+            "Descargar registros"
+        } else if cfg!(any(target_os = "android", target_os = "ios")) {
+            "Compartir registros"
+        } else {
+            "Ver registros"
+        },
+        if cfg!(target_arch = "wasm32") {
+            "Telecharger les journaux"
+        } else if cfg!(any(target_os = "android", target_os = "ios")) {
+            "Partager les journaux"
+        } else {
+            "Voir les journaux"
+        },
+    );
+    let logs_clear_title = localized_copy(
+        &language,
+        "Clear Logs",
+        "Borrar registros",
+        "Effacer les journaux",
+    );
+    let logs_clear_desc = localized_copy(
+        &language,
+        "Deletes the locally stored frontend debug logs without touching saved settings or caches.",
+        "Elimina los registros locales de depuracion del frontend sin tocar ajustes guardados ni cache.",
+        "Supprime les journaux de debogage locaux du frontend sans toucher aux reglages ni aux caches.",
+    );
     let prefetch_disabled_label = localized_copy(
         &language,
         "Enable Map Tile Cache and Map Tile Prefetch to run a manual prefetch.",
@@ -652,7 +765,35 @@ pub fn SettingsPage(
     rsx! {
         div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
             h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "{title}" }
+            div { style: "{settings_tab_bar_style}",
+                button {
+                    style: if active_settings_tab.read().as_str() == "general" { chip_selected.clone() } else { chip_idle.clone() },
+                    onclick: move |_| active_settings_tab.set("general".to_string()),
+                    "{settings_tab_general}"
+                }
+                button {
+                    style: if active_settings_tab.read().as_str() == "map" { chip_selected.clone() } else { chip_idle.clone() },
+                    onclick: move |_| active_settings_tab.set("map".to_string()),
+                    "{settings_tab_map}"
+                }
+                button {
+                    style: if active_settings_tab.read().as_str() == "telemetry" { chip_selected.clone() } else { chip_idle.clone() },
+                    onclick: move |_| active_settings_tab.set("telemetry".to_string()),
+                    "{settings_tab_telemetry}"
+                }
+                button {
+                    style: if active_settings_tab.read().as_str() == "history" { chip_selected.clone() } else { chip_idle.clone() },
+                    onclick: move |_| active_settings_tab.set("history".to_string()),
+                    "{settings_tab_history}"
+                }
+                button {
+                    style: if active_settings_tab.read().as_str() == "maintenance" { chip_selected.clone() } else { chip_idle.clone() },
+                    onclick: move |_| active_settings_tab.set("maintenance".to_string()),
+                    "{settings_tab_maintenance}"
+                }
+            }
 
+            if active_settings_tab.read().as_str() == "general" {
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px;",
                 div { style: "{card_style}",
                     div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_general}" }
@@ -727,7 +868,9 @@ pub fn SettingsPage(
                     }
                 }
             }
+            }
 
+            if active_settings_tab.read().as_str() == "map" {
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_map}" }
                 div { style: "font-size:13px; color:{theme.text_muted};", "{units_title}" }
@@ -989,7 +1132,9 @@ pub fn SettingsPage(
                     }
                 }
             }
+            }
 
+            if active_settings_tab.read().as_str() == "telemetry" {
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_network}" }
                 div { style: "font-size:13px; color:{theme.text_muted};", "{network_anim_title}" }
@@ -1100,7 +1245,53 @@ pub fn SettingsPage(
                     }
                 }
             }
+            }
 
+            if active_settings_tab.read().as_str() == "history" {
+            div { style: "margin-top:12px; {card_style}",
+                div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_history}" }
+                div { style: "font-size:13px; color:{theme.text_muted};", "{history_retention_title}" }
+                div { style: "font-size:13px; color:{theme.text_soft};", "{history_retention_desc}" }
+                div { style: "display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;",
+                    for preset_minutes in TELEMETRY_HISTORY_PRESET_MINUTES {
+                        button {
+                            key: "retention-{preset_minutes}",
+                            style: if telemetry_retention_minutes == preset_minutes { chip_selected.clone() } else { chip_idle.clone() },
+                            onclick: {
+                                let mut telemetry_retention_ms = telemetry_retention_ms;
+                                let mut telemetry_view_window_ms = telemetry_view_window_ms;
+                                move |_| {
+                                    let next_ms = preset_minutes * 60_000;
+                                    telemetry_retention_ms.set(next_ms);
+                                    if *telemetry_view_window_ms.read() > next_ms {
+                                        telemetry_view_window_ms.set(next_ms);
+                                    }
+                                }
+                            },
+                            "{preset_minutes} min"
+                        }
+                    }
+                }
+                div { style: "font-size:13px; color:{theme.text_muted}; margin-top:12px;", "{history_view_title}" }
+                div { style: "font-size:13px; color:{theme.text_soft};", "{history_view_desc}" }
+                div { style: "display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;",
+                    for preset_minutes in TELEMETRY_HISTORY_PRESET_MINUTES {
+                        button {
+                            key: "view-{preset_minutes}",
+                            style: if telemetry_view_window_minutes == preset_minutes { chip_selected.clone() } else if preset_minutes > telemetry_retention_minutes { chip_disabled.clone() } else { chip_idle.clone() },
+                            disabled: preset_minutes > telemetry_retention_minutes,
+                            onclick: {
+                                let mut telemetry_view_window_ms = telemetry_view_window_ms;
+                                move |_| telemetry_view_window_ms.set((preset_minutes * 60_000).min(telemetry_retention_ms_value))
+                            },
+                            "{preset_minutes} min"
+                        }
+                    }
+                }
+            }
+            }
+
+            if active_settings_tab.read().as_str() == "maintenance" {
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_storage}" }
                 div { style: "display:flex; flex-direction:column; gap:12px;",
@@ -1110,6 +1301,66 @@ pub fn SettingsPage(
                             for (label, value) in storage_breakdown.iter() {
                                 div { style: "font-size:13px; color:{theme.text_soft}; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{label}" }
                                 div { style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align:right;", "{value}" }
+                            }
+                        }
+                    }
+                }
+            }
+
+            div { style: "margin-top:12px; {card_style}",
+                div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_logs}" }
+                div { style: "display:flex; flex-direction:column; gap:12px;",
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{logs_export_title}" }
+                        if log_artifacts.is_empty() {
+                            div { style: "font-size:13px; color:{theme.text_soft};", "No logs available." }
+                        } else {
+                            div { style: "display:flex; flex-direction:column; gap:8px;",
+                                for artifact in log_artifacts.iter().cloned() {
+                                    div { style: "display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:10px 12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt};",
+                                        div { style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;", "{artifact.label}" }
+                                        button {
+                                            style: chip_idle.clone(),
+                                            onclick: {
+                                                let artifact = artifact.clone();
+                                                let logs_opened_label = logs_opened_label.clone();
+                                                move |_| {
+                                                    match debug_log::export_log_artifact_for_user(&artifact.id) {
+                                                        Ok(()) => {
+                                                            debug_log::append(&format!(
+                                                                "[settings] debug log export requested artifact={}",
+                                                                artifact.id
+                                                            ));
+                                                            maintenance_status.set(logs_opened_label.clone());
+                                                            confirm_reset.set(false);
+                                                        }
+                                                        Err(err) => maintenance_status.set(err),
+                                                    }
+                                                }
+                                            },
+                                            "{logs_export_title}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { style: "display:flex; flex-direction:column; gap:6px;",
+                        div { style: "font-size:13px; color:{theme.text_muted};", "{logs_clear_title}" }
+                        div { style: "font-size:13px; color:{theme.text_soft};", "{logs_clear_desc}" }
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: chip_idle.clone(),
+                                onclick: move |_| {
+                                    match debug_log::clear_logs() {
+                                        Ok(()) => {
+                                            maintenance_status.set(logs_cleared_label.clone());
+                                            confirm_reset.set(false);
+                                        }
+                                        Err(err) => maintenance_status.set(err),
+                                    }
+                                },
+                                "{logs_clear_title}"
                             }
                         }
                     }
@@ -1247,7 +1498,7 @@ pub fn SettingsPage(
                         div { style: "font-size:13px; color:{theme.text_soft};", "{reset_app_data_desc}" }
                         div { style: "display:flex; gap:8px; flex-wrap:wrap;",
                             button {
-                                style: danger_idle,
+                                style: danger_idle.clone(),
                                 onclick: move |_| {
                                     confirm_reset.set(true);
                                     maintenance_status.set(String::new());
@@ -1260,6 +1511,7 @@ pub fn SettingsPage(
                         div { style: "font-size:13px; color:{theme.info_text};", "{maintenance_status}" }
                     }
                 }
+            }
             }
 
             if *confirm_reset.read() {

@@ -33,6 +33,7 @@ pub mod warnings_tab;
 
 use crate::app::Route;
 use crate::auth;
+use crate::debug_log;
 use data_chart::charts_cache_request_refit;
 use data_chart::{
     charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build, charts_cache_clear_active,
@@ -200,10 +201,19 @@ fn live_telemetry_row_is_fresh(row: &TelemetryRow, now_ms: i64) -> bool {
     (-LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS..=LIVE_TELEMETRY_MAX_AGE_MS).contains(&age_ms)
 }
 
+fn telemetry_row_received_ms(row: &TelemetryRow) -> i64 {
+    if row.received_timestamp_ms > 0 {
+        row.received_timestamp_ms
+    } else {
+        row.timestamp_ms
+    }
+}
+
 fn normalize_live_telemetry_row_for_client_clock(
     mut row: TelemetryRow,
     now_ms: i64,
 ) -> Option<TelemetryRow> {
+    row.received_timestamp_ms = now_ms;
     if live_telemetry_row_is_fresh(&row, now_ms) {
         return Some(row);
     }
@@ -262,7 +272,12 @@ macro_rules! log {
     }}
 }
 
-pub const HISTORY_MS: i64 = 60_000 * 20; // 20 minutes
+pub const HISTORY_MS: i64 = 60_000 * 20; // default 20 minutes
+const DEFAULT_TELEMETRY_RETENTION_MS: u64 = HISTORY_MS as u64;
+const DEFAULT_TELEMETRY_VIEW_WINDOW_MS: u64 = HISTORY_MS as u64;
+const MIN_TELEMETRY_HISTORY_MS: u64 = 5 * 60_000;
+const MAX_TELEMETRY_HISTORY_MS: u64 = 60 * 60_000;
+pub(crate) const TELEMETRY_HISTORY_PRESET_MINUTES: [u64; 5] = [5, 10, 20, 30, 60];
 const UI_ROW_BUCKET_MS: i64 = 20; // Match chart bucket width in data_chart.rs.
 const STARTUP_SEED_DELAY_MS: u64 = 1_200;
 const MAX_TELEMETRY_QUEUE: usize = 120_000;
@@ -330,19 +345,17 @@ impl UiTelemetryStore {
 
     /// Drops buckets that are older than the retained history window.
     fn prune_history(&mut self) {
-        let Some((&newest_bucket, _)) = self.rows.last_key_value().map(|(k, v)| (&k.bucket, v))
-        else {
+        let newest_received_ms = self
+            .rows
+            .values()
+            .map(telemetry_row_received_ms)
+            .max();
+        let Some(newest_received_ms) = newest_received_ms else {
             return;
         };
-        let min_bucket =
-            (newest_bucket * UI_ROW_BUCKET_MS - HISTORY_MS).div_euclid(UI_ROW_BUCKET_MS);
-        while self
-            .rows
-            .first_key_value()
-            .is_some_and(|(key, _)| key.bucket < min_bucket)
-        {
-            self.rows.pop_first();
-        }
+        let min_received_ms = newest_received_ms - telemetry_history_retention_ms();
+        self.rows
+            .retain(|_, row| telemetry_row_received_ms(row) >= min_received_ms);
     }
 
     /// Returns the compacted UI store as a sorted vector.
@@ -398,6 +411,16 @@ static TELEMETRY_ACTIVITY_BY_SENDER: Lazy<Mutex<HashMap<String, SenderTelemetryA
     Lazy::new(|| Mutex::new(HashMap::new()));
 static LAST_TELEMETRY_CACHE_PERSIST_MS: AtomicI64 = AtomicI64::new(0);
 static RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD: AtomicBool = AtomicBool::new(false);
+static TELEMETRY_RETENTION_MS: AtomicU64 = AtomicU64::new(DEFAULT_TELEMETRY_RETENTION_MS);
+static TELEMETRY_VIEW_WINDOW_MS: AtomicU64 = AtomicU64::new(DEFAULT_TELEMETRY_VIEW_WINDOW_MS);
+
+pub(crate) fn telemetry_history_retention_ms() -> i64 {
+    TELEMETRY_RETENTION_MS.load(Ordering::Relaxed) as i64
+}
+
+pub(crate) fn telemetry_view_window_ms() -> i64 {
+    TELEMETRY_VIEW_WINDOW_MS.load(Ordering::Relaxed) as i64
+}
 
 /// Sorts telemetry rows into a stable UI presentation order.
 fn sort_rows(rows: &mut [TelemetryRow]) {
@@ -411,12 +434,10 @@ fn sort_rows(rows: &mut [TelemetryRow]) {
 
 /// Trims a telemetry vector down to the retained history window.
 fn prune_history(rows: &mut Vec<TelemetryRow>) {
-    if let Some(last) = rows.last() {
-        let cutoff = last.timestamp_ms - HISTORY_MS;
-        let start = rows.partition_point(|r| r.timestamp_ms < cutoff);
-        if start > 0 {
-            rows.drain(0..start);
-        }
+    if let Some(last_received_ms) = rows.iter().map(telemetry_row_received_ms).max() {
+        let cutoff = last_received_ms - telemetry_history_retention_ms();
+        rows.retain(|row| telemetry_row_received_ms(row) >= cutoff);
+        sort_rows(rows);
     }
 }
 
@@ -640,6 +661,7 @@ pub(crate) fn latest_telemetry_row(
                     .get(&LatestTelemetryKey::new(data_type, sender_id))
                     .map(|sample| TelemetryRow {
                         timestamp_ms: sample.timestamp_ms,
+                        received_timestamp_ms: sample.timestamp_ms,
                         data_type: sample.data_type.clone(),
                         sender_id: sample.sender_id.clone(),
                         values: sample.values.as_ref().to_vec(),
@@ -652,6 +674,7 @@ pub(crate) fn latest_telemetry_row(
             if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
                 latest_by_type.get(data_type).map(|sample| TelemetryRow {
                     timestamp_ms: sample.timestamp_ms,
+                    received_timestamp_ms: sample.timestamp_ms,
                     data_type: sample.data_type.clone(),
                     sender_id: sample.sender_id.clone(),
                     values: sample.values.as_ref().to_vec(),
@@ -745,7 +768,7 @@ mod latest_telemetry_tests {
     use super::{
         AlertMsg, LIVE_TELEMETRY_MAX_AGE_MS, LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS,
         SenderTelemetryActivity, TelemetryRow, latest_telemetry_value, live_telemetry_row_is_fresh,
-        normalize_alert_list, push_alert_deduped, reset_latest_telemetry,
+        normalize_alert_list, prune_history, push_alert_deduped, reset_latest_telemetry,
         stale_sender_telemetry_for_epoch,
     };
     use std::collections::HashMap;
@@ -754,6 +777,7 @@ mod latest_telemetry_tests {
     fn does_not_alias_raw_loadcell_samples_into_calibrated_labels() {
         reset_latest_telemetry(&[TelemetryRow {
             timestamp_ms: 1_700_000_030_000,
+            received_timestamp_ms: 1_700_000_030_000,
             data_type: "KG1000".to_string(),
             sender_id: "DAQ".to_string(),
             values: vec![Some(9.5754)],
@@ -791,6 +815,7 @@ mod latest_telemetry_tests {
         let now_ms = 1_700_000_100_000;
         let row = TelemetryRow {
             timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
+            received_timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
             data_type: "BATTERY_VOLTAGE".to_string(),
             sender_id: "PB".to_string(),
             values: vec![Some(12.0)],
@@ -803,11 +828,38 @@ mod latest_telemetry_tests {
         let now_ms = 1_700_000_100_000;
         let row = TelemetryRow {
             timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
+            received_timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             data_type: "BATTERY_VOLTAGE".to_string(),
             sender_id: "PB".to_string(),
             values: vec![Some(12.0)],
         };
         assert!(live_telemetry_row_is_fresh(&row, now_ms));
+    }
+
+    #[test]
+    fn history_pruning_uses_received_time_instead_of_network_timestamp() {
+        let newest_received_ms = 1_700_000_500_000;
+        let mut rows = vec![
+            TelemetryRow {
+                timestamp_ms: 1_699_000_000_000,
+                received_timestamp_ms: newest_received_ms - 1_000,
+                data_type: "GPS".to_string(),
+                sender_id: "DAQ".to_string(),
+                values: vec![Some(1.0)],
+            },
+            TelemetryRow {
+                timestamp_ms: 1_700_000_490_000,
+                received_timestamp_ms: newest_received_ms,
+                data_type: "GPS".to_string(),
+                sender_id: "DAQ".to_string(),
+                values: vec![Some(2.0)],
+            },
+        ];
+
+        prune_history(&mut rows);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].values, vec![Some(1.0)]);
     }
 
     #[test]
@@ -969,6 +1021,33 @@ fn rebuild_chart_cache_from_visible_rows() {
     bump_chart_render_epoch();
 }
 
+fn apply_telemetry_history_settings(retention_ms: u64, view_window_ms: u64) {
+    let retention_ms = clamp_telemetry_history_ms(retention_ms);
+    let view_window_ms = clamp_telemetry_history_ms(view_window_ms).min(retention_ms);
+    TELEMETRY_RETENTION_MS.store(retention_ms, Ordering::Relaxed);
+    TELEMETRY_VIEW_WINDOW_MS.store(view_window_ms, Ordering::Relaxed);
+
+    let mut rows = ui_telemetry_rows_snapshot();
+    if !rows.is_empty() {
+        prune_history(&mut rows);
+        if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+            store.replace_from_rows(&rows);
+        }
+        reset_latest_telemetry(&rows);
+        if rows.is_empty() {
+            charts_cache_clear_active();
+            persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
+        } else {
+            rebuild_chart_cache_from_visible_rows();
+            persist_cached_telemetry_rows(&rows);
+            LAST_TELEMETRY_CACHE_PERSIST_MS.store(current_wallclock_ms(), Ordering::Relaxed);
+        }
+    }
+
+    charts_cache_request_refit();
+    bump_chart_render_epoch();
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn dashboard_has_cached_layout_for_base(base: &str) -> bool {
     let cache_key = layout_cache_key_for_base(base);
@@ -994,6 +1073,8 @@ const REMOTE_ALERT_ACKS_ENABLED_STORAGE_KEY: &str = "gs_remote_alert_acks_enable
 const NETWORK_TOPOLOGY_VERTICAL_STORAGE_KEY: &str = "gs_network_topology_vertical";
 const STATE_CHART_LABELS_VERTICAL_STORAGE_KEY: &str = "gs_state_chart_labels_vertical";
 const CHART_INTERPOLATED_GAP_MS_STORAGE_KEY: &str = "gs_chart_interpolated_gap_ms";
+const TELEMETRY_RETENTION_MS_STORAGE_KEY: &str = "gs_telemetry_retention_ms";
+const TELEMETRY_VIEW_WINDOW_MS_STORAGE_KEY: &str = "gs_telemetry_view_window_ms";
 const DATA_CACHE_ENABLED_STORAGE_KEY: &str = "gs_data_cache_enabled";
 const MAP_TILE_CACHE_ENABLED_STORAGE_KEY: &str = "gs26_tile_cache_enabled";
 const CACHE_BUDGET_MB_STORAGE_KEY: &str = "gs_cache_budget_mb";
@@ -1041,6 +1122,34 @@ fn stored_cache_budget_mb() -> u32 {
     .ok()
     .unwrap_or(DEFAULT_CACHE_BUDGET_MB)
     .clamp(1, 100_000)
+}
+
+fn clamp_telemetry_history_ms(value_ms: u64) -> u64 {
+    value_ms.clamp(MIN_TELEMETRY_HISTORY_MS, MAX_TELEMETRY_HISTORY_MS)
+}
+
+fn stored_telemetry_retention_ms() -> u64 {
+    persist::get_or(
+        TELEMETRY_RETENTION_MS_STORAGE_KEY,
+        &DEFAULT_TELEMETRY_RETENTION_MS.to_string(),
+    )
+    .parse::<u64>()
+    .ok()
+    .map(clamp_telemetry_history_ms)
+    .unwrap_or(DEFAULT_TELEMETRY_RETENTION_MS)
+}
+
+fn stored_telemetry_view_window_ms() -> u64 {
+    let retention_ms = stored_telemetry_retention_ms();
+    persist::get_or(
+        TELEMETRY_VIEW_WINDOW_MS_STORAGE_KEY,
+        &DEFAULT_TELEMETRY_VIEW_WINDOW_MS.to_string(),
+    )
+    .parse::<u64>()
+    .ok()
+    .map(clamp_telemetry_history_ms)
+    .unwrap_or(DEFAULT_TELEMETRY_VIEW_WINDOW_MS)
+    .min(retention_ms)
 }
 
 fn cache_budget_bytes_from_mb(mb: u32) -> u64 {
@@ -2390,6 +2499,8 @@ pub fn NativeSettingsPage() -> Element {
             parsed.clamp(0, HISTORY_MS as u64)
         }
     });
+    let telemetry_retention_ms = use_signal(stored_telemetry_retention_ms);
+    let telemetry_view_window_ms = use_signal(stored_telemetry_view_window_ms);
     let data_cache_enabled =
         use_signal(|| persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_tile_cache_enabled =
@@ -2569,6 +2680,27 @@ pub fn NativeSettingsPage() -> Element {
         });
     }
     {
+        let telemetry_retention_ms = telemetry_retention_ms;
+        let mut telemetry_view_window_ms = telemetry_view_window_ms;
+        use_effect(move || {
+            let retention_ms = clamp_telemetry_history_ms(*telemetry_retention_ms.read());
+            let view_window_ms =
+                clamp_telemetry_history_ms(*telemetry_view_window_ms.read()).min(retention_ms);
+            if *telemetry_view_window_ms.read() != view_window_ms {
+                telemetry_view_window_ms.set(view_window_ms);
+            }
+            persist::set_string(
+                TELEMETRY_RETENTION_MS_STORAGE_KEY,
+                &retention_ms.to_string(),
+            );
+            persist::set_string(
+                TELEMETRY_VIEW_WINDOW_MS_STORAGE_KEY,
+                &view_window_ms.to_string(),
+            );
+            apply_telemetry_history_settings(retention_ms, view_window_ms);
+        });
+    }
+    {
         let data_cache_enabled = data_cache_enabled;
         use_effect(move || {
             let enabled = *data_cache_enabled.read();
@@ -2743,6 +2875,8 @@ pub fn NativeSettingsPage() -> Element {
         let mut network_topology_vertical = network_topology_vertical;
         let mut state_chart_labels_vertical = state_chart_labels_vertical;
         let mut chart_interpolated_gap_ms = chart_interpolated_gap_ms;
+        let mut telemetry_retention_ms = telemetry_retention_ms;
+        let mut telemetry_view_window_ms = telemetry_view_window_ms;
         let mut data_cache_enabled = data_cache_enabled;
         let mut map_tile_cache_enabled = map_tile_cache_enabled;
         let mut cache_budget_mb = cache_budget_mb;
@@ -2768,6 +2902,8 @@ pub fn NativeSettingsPage() -> Element {
             network_topology_vertical.set(false);
             state_chart_labels_vertical.set(false);
             chart_interpolated_gap_ms.set(HISTORY_MS as u64);
+            telemetry_retention_ms.set(DEFAULT_TELEMETRY_RETENTION_MS);
+            telemetry_view_window_ms.set(DEFAULT_TELEMETRY_VIEW_WINDOW_MS);
             data_cache_enabled.set(true);
             map_tile_cache_enabled.set(true);
             cache_budget_mb.set(DEFAULT_CACHE_BUDGET_MB);
@@ -2796,6 +2932,8 @@ pub fn NativeSettingsPage() -> Element {
             network_topology_vertical,
             state_chart_labels_vertical,
             chart_interpolated_gap_ms,
+            telemetry_retention_ms,
+            telemetry_view_window_ms,
             data_cache_enabled,
             map_tile_cache_enabled,
             cache_budget_mb,
@@ -3890,6 +4028,8 @@ fn TelemetryDashboardInner() -> Element {
             parsed.clamp(0, HISTORY_MS as u64)
         }
     });
+    let telemetry_retention_ms = use_signal(stored_telemetry_retention_ms);
+    let telemetry_view_window_ms = use_signal(stored_telemetry_view_window_ms);
     let data_cache_enabled =
         use_signal(|| persist::get_or(DATA_CACHE_ENABLED_STORAGE_KEY, "on") != "off");
     let map_tile_cache_enabled =
@@ -3978,6 +4118,24 @@ fn TelemetryDashboardInner() -> Element {
     let show_version_overlay = use_signal(|| false);
 
     let active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
+
+    {
+        use_effect(move || {
+            log!("[UI] active_main_tab={}", _main_tab_to_str(*active_main_tab.read()));
+        });
+    }
+    {
+        use_effect(move || {
+            log!(
+                "[UI] settings_overlay_open={}",
+                if *show_settings_overlay.read() {
+                    "true"
+                } else {
+                    "false"
+                }
+            );
+        });
+    }
 
     {
         let mut warnings = warnings;
@@ -4624,6 +4782,27 @@ fn TelemetryDashboardInner() -> Element {
             let value = (*chart_interpolated_gap_ms.read()).clamp(0, 60_000);
             persist::set_string(CHART_INTERPOLATED_GAP_MS_STORAGE_KEY, &value.to_string());
             data_chart::set_interpolated_gap_threshold_ms(value);
+        });
+    }
+    {
+        let telemetry_retention_ms = telemetry_retention_ms;
+        let mut telemetry_view_window_ms = telemetry_view_window_ms;
+        use_effect(move || {
+            let retention_ms = clamp_telemetry_history_ms(*telemetry_retention_ms.read());
+            let view_window_ms =
+                clamp_telemetry_history_ms(*telemetry_view_window_ms.read()).min(retention_ms);
+            if *telemetry_view_window_ms.read() != view_window_ms {
+                telemetry_view_window_ms.set(view_window_ms);
+            }
+            persist::set_string(
+                TELEMETRY_RETENTION_MS_STORAGE_KEY,
+                &retention_ms.to_string(),
+            );
+            persist::set_string(
+                TELEMETRY_VIEW_WINDOW_MS_STORAGE_KEY,
+                &view_window_ms.to_string(),
+            );
+            apply_telemetry_history_settings(retention_ms, view_window_ms);
         });
     }
     {
@@ -5955,6 +6134,8 @@ fn TelemetryDashboardInner() -> Element {
                             network_topology_vertical: network_topology_vertical,
                             state_chart_labels_vertical: state_chart_labels_vertical,
                             chart_interpolated_gap_ms: chart_interpolated_gap_ms,
+                            telemetry_retention_ms: telemetry_retention_ms,
+                            telemetry_view_window_ms: telemetry_view_window_ms,
                             data_cache_enabled: data_cache_enabled,
                             map_tile_cache_enabled: map_tile_cache_enabled,
                             cache_budget_mb: cache_budget_mb,
@@ -5966,15 +6147,19 @@ fn TelemetryDashboardInner() -> Element {
                             measured_cache_bytes: cache_storage_measured_bytes(),
                             theme: theme.clone(),
                             on_clear_data_cache: move |_| {
+                                debug_log::append("[settings] clear_data_cache requested");
                                 clear_data_caches_and_reseed();
                             },
                             on_clear_data_and_map_cache: move |_| {
+                                debug_log::append("[settings] clear_data_and_map_cache requested");
                                 clear_data_and_map_tile_caches_and_reseed();
                             },
                             on_clear_all_caches: move |_| {
+                                debug_log::append("[settings] clear_all_caches requested");
                                 clear_all_frontend_caches_and_reseed();
                             },
                             on_prefetch_map_tiles: move |_| {
+                                debug_log::append("[settings] map_prefetch requested");
                                 trigger_map_prefetch_now();
                             },
                             on_reset_app_data: {
@@ -5999,6 +6184,8 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut network_topology_vertical = network_topology_vertical;
                                 let mut state_chart_labels_vertical = state_chart_labels_vertical;
                                 let mut chart_interpolated_gap_ms = chart_interpolated_gap_ms;
+                                let mut telemetry_retention_ms = telemetry_retention_ms;
+                                let mut telemetry_view_window_ms = telemetry_view_window_ms;
                                 let mut data_cache_enabled = data_cache_enabled;
                                 let mut map_tile_cache_enabled = map_tile_cache_enabled;
                                 let mut cache_budget_mb = cache_budget_mb;
@@ -6007,6 +6194,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
                                 let mut calibration_capture_sample_count = calibration_capture_sample_count;
                                 move |_| {
+                                    debug_log::append("[settings] reset_app_data requested");
                                     reset_local_app_data();
                                     st_warn_ack.set("0".to_string());
                                     st_err_ack.set("0".to_string());
@@ -6029,6 +6217,8 @@ fn TelemetryDashboardInner() -> Element {
                                     network_topology_vertical.set(false);
                                     state_chart_labels_vertical.set(false);
                                     chart_interpolated_gap_ms.set(HISTORY_MS as u64);
+                                    telemetry_retention_ms.set(DEFAULT_TELEMETRY_RETENTION_MS);
+                                    telemetry_view_window_ms.set(DEFAULT_TELEMETRY_VIEW_WINDOW_MS);
                                     data_cache_enabled.set(true);
                                     map_tile_cache_enabled.set(true);
                                     cache_budget_mb.set(DEFAULT_CACHE_BUDGET_MB);
@@ -7360,6 +7550,7 @@ fn TelemetryDashboardInner() -> Element {
 
 fn send_cmd(cmd: &str) {
     if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd) || !auth::can_send_command(cmd) {
+        log!("[CMD] blocked cmd='{cmd}'");
         return;
     }
     if let Some(sender) = WS_SENDER.read().clone()
@@ -7367,6 +7558,7 @@ fn send_cmd(cmd: &str) {
     {
         log!("[CMD] ws send failed for '{cmd}': {e}");
     } else {
+        log!("[CMD] dispatched cmd='{cmd}'");
         schedule_action_policy_resync();
     }
 }
@@ -7404,6 +7596,7 @@ pub(crate) fn send_cmd_from_press(cmd: &str) {
     if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
         || !auth::can_send_command(cmd)
     {
+        log!("[CMD] press ignored cmd='{cmd}'");
         return;
     }
     let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
@@ -7450,6 +7643,7 @@ pub(crate) fn send_cmd_from_click(cmd: &str) {
     if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
         || !auth::can_send_command(cmd)
     {
+        log!("[CMD] click ignored cmd='{cmd}'");
         let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
             return;
         };
@@ -7486,11 +7680,7 @@ fn row_to_gps_altitude_m(row: &TelemetryRow) -> Option<f64> {
 
 // ---------- Web vs Native logging ----------
 fn log(msg: &str) {
-    #[cfg(target_arch = "wasm32")]
-    web_sys::console::log_1(&msg.into());
-
-    #[cfg(not(target_arch = "wasm32"))]
-    println!("{msg}");
+    debug_log::append(msg);
 }
 
 // ---------- HTTP helpers ----------

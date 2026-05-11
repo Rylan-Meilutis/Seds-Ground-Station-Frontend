@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod debug_log;
 mod native_storage;
 mod telemetry_dashboard;
 
@@ -17,17 +18,13 @@ use std::backtrace::Backtrace;
 #[cfg(not(target_arch = "wasm32"))]
 use std::borrow::Cow;
 #[cfg(not(target_arch = "wasm32"))]
-use std::fs::{OpenOptions, create_dir_all};
+use std::fs::create_dir_all;
 #[cfg(not(target_arch = "wasm32"))]
 use std::hash::{Hash, Hasher};
-#[cfg(not(target_arch = "wasm32"))]
-use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::panic::{self, AssertUnwindSafe};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(target_arch = "wasm32"))]
 use std::{collections::hash_map::DefaultHasher, fs};
 
@@ -53,45 +50,17 @@ fn init_panic_hook() {
             .map(|loc| format!("{}:{}", loc.file(), loc.line()))
             .unwrap_or_else(|| "unknown".to_string());
         let bt = Backtrace::force_capture();
-        append_native_log(&format!(
+        debug_log::append(&format!(
             "[panic] location={location} payload={payload}\n[panic] backtrace={bt:?}"
         ));
     }));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Resolves the native frontend log file path, honoring the override environment variable.
-fn log_file_path() -> PathBuf {
-    if let Ok(p) = std::env::var("GS26_FRONTEND_LOG")
-        && !p.trim().is_empty()
-    {
-        return PathBuf::from(p);
-    }
-    std::env::temp_dir().join("groundstation_frontend.log")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Appends a timestamped line to the native frontend log file.
-fn append_native_log(message: &str) {
-    let path = log_file_path();
-    if let Some(parent) = path.parent() {
-        let _ = create_dir_all(parent);
-    }
-    let ts_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let line = format!("[{ts_ms}] {message}\n");
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = file.write_all(line.as_bytes());
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn init_rustls_crypto_provider() {
     match rustls::crypto::aws_lc_rs::default_provider().install_default() {
-        Ok(()) => append_native_log("[startup] rustls crypto provider installed"),
-        Err(_) => append_native_log("[startup] rustls crypto provider already installed"),
+        Ok(()) => debug_log::append("[startup] rustls crypto provider installed"),
+        Err(_) => debug_log::append("[startup] rustls crypto provider already installed"),
     }
 }
 
@@ -145,8 +114,8 @@ fn init_android_platform_tls_verifier() {
         rustls_platform_verifier::android::init_with_env(env, context)?;
         Ok(())
     }) {
-        Ok(_) => append_native_log("[startup] android TLS verifier initialized"),
-        Err(e) => append_native_log(&format!("[startup] android TLS verifier init failed: {e}")),
+        Ok(_) => debug_log::append("[startup] android TLS verifier initialized"),
+        Err(e) => debug_log::append(&format!("[startup] android TLS verifier init failed: {e}")),
     }
 
     match (|| -> ::jni021::errors::Result<()> {
@@ -156,8 +125,8 @@ fn init_android_platform_tls_verifier() {
         rustls_platform_verifier_reqwest::android::init_with_env(&mut env, context)?;
         Ok(())
     })() {
-        Ok(_) => append_native_log("[startup] android reqwest TLS verifier initialized"),
-        Err(e) => append_native_log(&format!(
+        Ok(_) => debug_log::append("[startup] android reqwest TLS verifier initialized"),
+        Err(e) => debug_log::append(&format!(
             "[startup] android reqwest TLS verifier init failed: {e}"
         )),
     }
@@ -178,21 +147,21 @@ fn main() {
 fn main() {
     init_panic_hook();
     init_rustls_crypto_provider();
-    append_native_log("[startup] native main entered");
+    debug_log::append("[startup] native main entered");
     #[cfg(target_os = "android")]
     init_android_platform_tls_verifier();
     let mut cfg = dioxus_desktop::Config::new();
     #[cfg(target_os = "android")]
     {
         cfg = cfg.with_custom_protocol("gs26", |_id, request| {
-            append_native_log("[startup] protocol request dispatched");
+            debug_log::append("[startup] protocol request dispatched");
             handle_gs26_protocol_safely(request)
         });
     }
     #[cfg(not(target_os = "android"))]
     {
         cfg = cfg.with_asynchronous_custom_protocol("gs26", |_id, request, responder| {
-            append_native_log("[startup] protocol request dispatched");
+            debug_log::append("[startup] protocol request dispatched");
             _handle_gs26_protocol_async(request, responder);
         });
     }
@@ -202,9 +171,9 @@ fn main() {
     if let Some(icon) = load_desktop_window_icon() {
         cfg = cfg.with_icon(icon);
     }
-    append_native_log("[startup] launching desktop app");
+    debug_log::append("[startup] launching desktop app");
     LaunchBuilder::desktop().with_cfg(cfg).launch(app::App);
-    append_native_log("[startup] desktop launch returned");
+    debug_log::append("[startup] desktop launch returned");
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -212,7 +181,7 @@ fn handle_gs26_protocol_safely(request: HttpRequest<Vec<u8>>) -> HttpResponse<Co
     match panic::catch_unwind(AssertUnwindSafe(|| handle_gs26_protocol(request))) {
         Ok(resp) => resp,
         Err(_) => {
-            append_native_log("[protocol] panic while handling request");
+            debug_log::append("[protocol] panic while handling request");
             HttpResponse::builder()
                 .status(500)
                 .body(Cow::Owned(Vec::new()))
@@ -337,7 +306,7 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
     }
 
     let uri = request.uri().to_string();
-    append_native_log(&format!("[protocol] request uri={uri}"));
+    debug_log::append(&format!("[protocol] request uri={uri}"));
     let path = request.uri().path();
     let segs: Vec<&str> = path
         .trim_start_matches('/')
@@ -374,13 +343,13 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
     let base = telemetry_dashboard::persisted_base_http_for_native_io();
     let skip_tls = telemetry_dashboard::persisted_skip_tls_for_base_for_native_io(&base);
     let tile_url = format!("{}/tiles/{z}/{x}/{y}.jpg", base.trim_end_matches('/'));
-    append_native_log(&format!(
+    debug_log::append(&format!(
         "[protocol] tile fetch base={} skip_tls={} url={}",
         base, skip_tls, tile_url
     ));
 
     if let Some(cached) = read_cached_tile(&base, z, x, y) {
-        append_native_log("[protocol] cache hit, serving tile without upstream fetch");
+        debug_log::append("[protocol] cache hit, serving tile without upstream fetch");
         return build_response(200, Some("image/jpeg"), cached);
     }
 
@@ -395,7 +364,7 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
     let upstream = match client.get(tile_url).send() {
         Ok(r) => r,
         Err(err) => {
-            append_native_log(&format!(
+            debug_log::append(&format!(
                 "[protocol] upstream fetch failed, attempting cache fallback: {err}"
             ));
             if let Some(cached) = read_cached_tile(&base, z, x, y) {
@@ -414,7 +383,7 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
     let bytes = match upstream.bytes() {
         Ok(b) => b.to_vec(),
         Err(err) => {
-            append_native_log(&format!(
+            debug_log::append(&format!(
                 "[protocol] upstream body read failed, attempting cache fallback: {err}"
             ));
             if let Some(cached) = read_cached_tile(&base, z, x, y) {
@@ -445,7 +414,7 @@ fn _handle_gs26_protocol_async(request: HttpRequest<Vec<u8>>, responder: Request
         .spawn(move || {
             let response = handle_gs26_protocol_safely(request);
             if panic::catch_unwind(AssertUnwindSafe(|| responder.respond(response))).is_err() {
-                append_native_log("[protocol] panic while responding to request");
+            debug_log::append("[protocol] panic while responding to request");
             }
         });
 }

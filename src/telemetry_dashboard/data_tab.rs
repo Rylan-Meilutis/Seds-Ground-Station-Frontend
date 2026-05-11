@@ -665,6 +665,7 @@ mod tests {
             sender_id: Some("PB".to_string()),
             formatter: None,
             boolean_labels: None,
+            show_min_max: None,
         }];
 
         let series = chart_series_for_group(&group, &summary_items, &[])
@@ -701,6 +702,7 @@ mod tests {
             sender_id: Some("PB".to_string()),
             formatter: None,
             boolean_labels: None,
+            show_min_max: None,
         }];
 
         assert!(chart_groups_have_graph_source(
@@ -714,6 +716,7 @@ mod tests {
     fn sender_scoped_chart_group_counts_as_live_telemetry() {
         reset_latest_telemetry(&[TelemetryRow {
             timestamp_ms: 1_700_000_050_000,
+            received_timestamp_ms: 1_700_000_050_000,
             data_type: "BATTERY_VOLTAGE".to_string(),
             sender_id: "PB".to_string(),
             values: vec![Some(12.4)],
@@ -735,6 +738,7 @@ mod tests {
             sender_id: Some("PB".to_string()),
             formatter: None,
             boolean_labels: None,
+            show_min_max: None,
         }];
 
         assert!(data_live_panel_has_telemetry(

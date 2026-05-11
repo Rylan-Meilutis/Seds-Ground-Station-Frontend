@@ -297,7 +297,7 @@ Notes:
 - map tile caches are keyed by tile URL/Ground Station URL. Tiles cached for one configured URL are not reused after the operator switches to another configured URL.
 - map prefetch warms the visible/user/rocket tile area from the effective minimum zoom through the effective native max zoom so cached maps can remain visible when operators zoom out offline.
 - persistent high-resolution map prefetch is budget-controlled by the frontend cache storage limit. It no longer has a fixed tile-count cap; fixed caps are only used in memory-sensitive runtime paths such as tracking prefetch and DOM fallback rendering.
-- the Settings UI lets operators separately enable/disable data cache, map tile cache, and map tile prefetch, and set separate user and rocket prefetch radii. Radius values are displayed in the selected distance units.
+- the Settings UI is split into `General`, `Map`, `Telemetry`, `History`, and `Maintenance` tabs. It lets operators separately enable/disable data cache, map tile cache, and map tile prefetch, set separate user and rocket prefetch radii, and choose telemetry retention/view windows. Radius values are displayed in the selected distance units.
 - the frontend estimates user-radius, rocket-radius, and combined prefetch storage by sampling tile size and multiplying by planned tile count. If the combined estimate exceeds the configured cache budget, the prefetch is blocked with a budget warning.
 - display overzoom is allowed above native tile zoom, but the tile source is capped at the native max zoom so offline views reuse cached native tiles instead of requesting uncached synthetic higher-zoom tile URLs.
 
@@ -695,6 +695,13 @@ Legacy channels remain present for compatibility:
 Future channels should use `extra_channels[channel_id]` with generic `{ "expected", "raw" }`
 points plus `linear`, `zero_raw`, and `fit` metadata.
 
+Frontend behavior notes:
+
+- The frontend caches the last successful `/api/calibration_config` and `/api/calibration` responses per configured Ground Station URL and restores them on later offline mounts.
+- If the backend disconnects after calibration data was already loaded, the calibration tab keeps showing the cached last-seen data instead of going blank.
+- Unsaved frontend-only calibration edits are stored locally per Ground Station URL until saved or replaced by a newer successful backend save.
+- The calibration UI includes a `Preserve regression when changing zero point` toggle. This only affects local frontend editing behavior; it does not change the request schema.
+
 ### `POST /api/calibration`
 
 Request and response use the same shape as `GET /api/calibration`.
@@ -785,10 +792,14 @@ Generic layout behavior:
 - `state_tab` widgets can set `"full_width": true` to span the full section grid. This is intended for charts under horizontally arranged summary fields.
 - `state_tab` chart widgets can use either `data_type` for a normal single telemetry chart or `chart_series` for explicit multi-line charts. Multi-line `chart_series` use compact per-series scaling so every configured line remains visible, and each series can include `sender_id` to target a sender-specific chart cache.
 - after any WebSocket reconnect, the frontend reseeds telemetry/history from `/api/recent` and preserves live rows received during the reseed.
+- the visible rolling telemetry window is currently pruned by local receive time rather than packet/network timestamp so delayed packets do not incorrectly evict recent on-screen history.
+- operators can configure two separate telemetry timeline settings locally: `Keep data for` controls how much recent telemetry is retained in memory/cache, and `Visible chart range` controls how much of that retained telemetry the charts display at once.
 - native builds persist the layout per Ground Station URL plus a compact telemetry snapshot and map state locally. If the configured backend cannot be reached on startup or after a failed connect attempt, the frontend opens the dashboard with cached layout/data/GPS/map state instead of blocking on the connection screen. If there is no valid cached layout for that configured URL, the app shows the connection failure page.
 - when the backend is reachable, `/api/recent` is treated as the source of truth for the telemetry cache and overwrites the cached telemetry snapshot. Cached telemetry is only used as startup/offline fallback.
 - the dashboard reload button refetches `/api/layout` and reapplies the result to the current dashboard session. Cached layout is only used when live layout fetch fails.
-- clear-cache controls are split in the Settings UI: data cache only, data plus map tile cache, and all caches including layout/settings.
+- clear-cache controls are split in the Settings UI `Maintenance` tab: data cache only, data plus map tile cache, and all caches including layout/settings.
+- the Settings UI `Maintenance` tab also shows rotating frontend debug logs. Operators choose an individual log artifact before using the platform-specific action: `Download Logs` on web, `Share Logs` on mobile, or `View Logs` on desktop.
+- frontend debug logs intentionally omit location coordinates, telemetry payload dumps, passwords, and auth tokens. They are meant to capture UI actions, runtime events, connection transitions, and similar debugging context.
 - state summary fill targets support explicit `fill_target_fluid` and `fill_target_kind` per item. Current legacy inference also exists for `FUEL_TANK_PRESSURE[0]` and `LOADCELL_WEIGHT_KG[0]`, and for those legacy cases the frontend chooses nitrogen vs nitrous target mass/pressure from the current flight state.
 - `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` should be published by the backend as real derived telemetry. The frontend no longer fabricates calibrated loadcell or fill-percent chart/label data from raw `KG1000`.
 - `LOADCELL_FILL_PERCENT[0]` is expected to use the active fill target for the current flight state. Current frontend/backend behavior is nitrogen target during `PreFill`, `FillTest`, and `NitrogenFill`, and nitrous target otherwise.

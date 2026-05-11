@@ -36,7 +36,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use super::HISTORY_MS;
+use super::{HISTORY_MS, telemetry_history_retention_ms, telemetry_view_window_ms};
 
 static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static CHART_VISIBILITY_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
@@ -68,15 +68,6 @@ pub fn sender_scoped_chart_key(data_type: &str, sender_id: &str) -> String {
 //
 // 20ms = 50Hz plotted. 40ms = 25Hz plotted. 100ms = 10Hz plotted.
 const BUCKET_MS: i64 = 20;
-const LOD_BUCKET_MS_LEVELS: &[(i64, i64)] = &[
-    (2 * 60_000, BUCKET_MS),
-    (5 * 60_000, 50),
-    (10 * 60_000, 100),
-    (15 * 60_000, 250),
-    (18 * 60_000, 500),
-    (HISTORY_MS, 1_000),
-];
-
 pub const CHART_GRID_LEFT: f64 = 96.0;
 pub const CHART_GRID_RIGHT_PAD: f64 = 20.0;
 pub const CHART_GRID_TOP: f64 = 20.0;
@@ -88,8 +79,6 @@ pub const CHART_Y_LABEL_MAX_WIDTH: f64 = 64.0;
 
 // Only this many most-recent buckets are kept (hard cap besides HISTORY_MS).
 // Keep enough to cover the full HISTORY_MS window at BUCKET_MS granularity.
-const MAX_BUCKETS_PER_TYPE: usize = (HISTORY_MS as usize / BUCKET_MS as usize) + 500;
-
 // Only recent buckets are mutable. Older buckets are frozen.
 // Allow a few buckets for packet jitter/reordering on slower devices.
 const LIVE_BUCKETS_BACK: i64 = 3;
@@ -443,7 +432,7 @@ impl ChartsCache {
         }
         let oldest_allowed_bid = self
             .newest_ts
-            .saturating_sub(HISTORY_MS)
+            .saturating_sub(telemetry_history_retention_ms())
             .div_euclid(BUCKET_MS);
         while self
             .raw_rows
@@ -601,6 +590,7 @@ mod tests {
         for i in 0..3 {
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms: 1_700_000_000_000 + i * 40,
+                received_timestamp_ms: 1_700_000_000_000 + i * 40,
                 data_type: "KG1000".to_string(),
                 sender_id: "DAQ".to_string(),
                 values: vec![Some(5.0 + i as f32)],
@@ -632,24 +622,28 @@ mod tests {
             let timestamp_ms = 1_700_000_010_000 + i * 40;
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
+                received_timestamp_ms: timestamp_ms,
                 data_type: "FUEL_TANK_PRESSURE".to_string(),
                 sender_id: "DAQ".to_string(),
                 values: vec![Some(100.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
+                received_timestamp_ms: timestamp_ms,
                 data_type: "KG1000".to_string(),
                 sender_id: "DAQ".to_string(),
                 values: vec![Some(4.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
+                received_timestamp_ms: timestamp_ms,
                 data_type: "LOADCELL_WEIGHT_KG".to_string(),
                 sender_id: "DAQ".to_string(),
                 values: vec![Some(8.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
+                received_timestamp_ms: timestamp_ms,
                 data_type: "LOADCELL_FILL_PERCENT".to_string(),
                 sender_id: "DAQ".to_string(),
                 values: vec![Some(40.0 + i as f32)],
@@ -683,12 +677,14 @@ mod tests {
         let mut chart = super::CachedChart::new();
         chart.ingest(&TelemetryRow {
             timestamp_ms: 1_700_000_000_000,
+            received_timestamp_ms: 1_700_000_000_000,
             data_type: "GPS".to_string(),
             sender_id: "DAQ".to_string(),
             values: vec![Some(1.0)],
         });
         chart.ingest(&TelemetryRow {
             timestamp_ms: i64::MAX - 1_000,
+            received_timestamp_ms: i64::MAX - 1_000,
             data_type: "GPS".to_string(),
             sender_id: "DAQ".to_string(),
             values: vec![Some(2.0)],
@@ -712,12 +708,14 @@ mod tests {
             let timestamp_ms = 1_700_000_020_000 + i * 40;
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
+                received_timestamp_ms: timestamp_ms,
                 data_type: "BATTERY_VOLTAGE".to_string(),
                 sender_id: "GB".to_string(),
                 values: vec![Some(14.0 + i as f32 * 0.1)],
             });
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
+                received_timestamp_ms: timestamp_ms,
                 data_type: "BATTERY_VOLTAGE".to_string(),
                 sender_id: "VB".to_string(),
                 values: vec![Some(7.0 + i as f32 * 0.1)],
@@ -749,6 +747,7 @@ mod tests {
         for i in 0..3 {
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms: 1_700_000_030_000 + i * 40,
+                received_timestamp_ms: 1_700_000_030_000 + i * 40,
                 data_type: "BATTERY_VOLTAGE".to_string(),
                 sender_id: "PB".to_string(),
                 values: vec![Some(12.0 + i as f32 * 0.1)],
@@ -839,6 +838,7 @@ mod tests {
         for i in 0..36 {
             chart.ingest(&TelemetryRow {
                 timestamp_ms: base_ts + i * 1_000,
+                received_timestamp_ms: base_ts + i * 1_000,
                 data_type: "PRESSURE".to_string(),
                 sender_id: "DAQ".to_string(),
                 values: vec![Some(100.0 + i as f32)],
@@ -996,12 +996,24 @@ struct CachedChart {
 }
 
 fn lod_bucket_ms_for_span(span_ms: i64) -> i64 {
-    for &(span_threshold_ms, bucket_ms) in LOD_BUCKET_MS_LEVELS {
+    let levels = [
+        (2 * 60_000, BUCKET_MS),
+        (5 * 60_000, 50),
+        (10 * 60_000, 100),
+        (15 * 60_000, 250),
+        (18 * 60_000, 500),
+        (telemetry_view_window_ms(), 1_000),
+    ];
+    for (span_threshold_ms, bucket_ms) in levels {
         if span_ms <= span_threshold_ms {
             return bucket_ms.max(BUCKET_MS);
         }
     }
     BUCKET_MS
+}
+
+fn max_buckets_per_type() -> usize {
+    (telemetry_history_retention_ms().max(BUCKET_MS) as usize / BUCKET_MS as usize) + 500
 }
 
 impl CachedChart {
@@ -1086,8 +1098,10 @@ impl CachedChart {
             }
         }
 
-        // time prune by HISTORY_MS using bucket ids
-        let oldest_allowed_ts = self.newest_ts.saturating_sub(HISTORY_MS);
+        // time prune by the configured retention window using bucket ids
+        let oldest_allowed_ts = self
+            .newest_ts
+            .saturating_sub(telemetry_history_retention_ms());
         let oldest_allowed_bid = oldest_allowed_ts.div_euclid(BUCKET_MS);
 
         while let Some(front) = self.buckets.front() {
@@ -1098,7 +1112,7 @@ impl CachedChart {
             }
         }
 
-        while self.buckets.len() > MAX_BUCKETS_PER_TYPE {
+        while self.buckets.len() > max_buckets_per_type() {
             self.buckets.pop_front();
         }
 
@@ -1282,7 +1296,8 @@ impl CachedChart {
         // compute actual available span from buckets (in ms)
         let raw_span_ms = ((newest_bid - oldest_bid_available + 1).max(1)) * BUCKET_MS;
 
-        let desired_span_ms = raw_span_ms.clamp(MIN_SPAN_MS, HISTORY_MS);
+        let view_window_ms = telemetry_view_window_ms().max(MIN_SPAN_MS);
+        let desired_span_ms = raw_span_ms.clamp(MIN_SPAN_MS, view_window_ms);
 
         // expand-only span unless refit
         let prev = self.prev_span_ms;
@@ -1301,7 +1316,7 @@ impl CachedChart {
         } else {
             prev
         };
-        span_ms = span_ms.min(HISTORY_MS);
+        span_ms = span_ms.min(view_window_ms);
         self.prev_span_ms = span_ms;
         let lod_bucket_ms = lod_bucket_ms_for_span(span_ms);
 
@@ -1511,7 +1526,9 @@ impl CachedChart {
         }
 
         let newest_bid = self.newest_bucket_id;
-        let span_ms = self.prev_span_ms.clamp(MIN_SPAN_MS, HISTORY_MS);
+        let span_ms = self
+            .prev_span_ms
+            .clamp(MIN_SPAN_MS, telemetry_view_window_ms().max(MIN_SPAN_MS));
         let lod_bucket_ms = lod_bucket_ms_for_span(span_ms);
         let want_buckets = span_ms.div_euclid(BUCKET_MS).max(1);
         let start_bid = newest_bid.saturating_sub(want_buckets - 1);
@@ -1725,7 +1742,9 @@ impl CachedChart {
         }
 
         let newest_bid = self.newest_bucket_id;
-        let span_ms = self.prev_span_ms.clamp(MIN_SPAN_MS, HISTORY_MS);
+        let span_ms = self
+            .prev_span_ms
+            .clamp(MIN_SPAN_MS, telemetry_view_window_ms().max(MIN_SPAN_MS));
         let lod_bucket_ms = lod_bucket_ms_for_span(span_ms);
         let want_buckets = span_ms.div_euclid(BUCKET_MS).max(1);
         let start_bid = newest_bid.saturating_sub(want_buckets - 1);

@@ -1,6 +1,6 @@
 # `/api/recent` Streaming Notes
 
-This document matches the current frontend implementation in version `0.3.1` (build `11`).
+This document matches the current frontend implementation in version `0.3.1` (build `23`).
 
 ## Compatibility Summary
 
@@ -67,3 +67,4 @@ Field expectations:
 - Start sending bytes promptly; the native app reads incrementally.
 - Keep web compatibility by preserving the JSON array response path for browser clients.
 - If you cannot provide streaming yet, returning `[]` or a normal array is still valid.
+- The frontend still plots points using each row's `timestamp_ms`, but the rolling 20-minute retention window is trimmed by local receive time. Backend packet timestamps therefore do not need to be perfectly monotonic to keep recent history visible after delayed delivery.

@@ -166,6 +166,8 @@ mod tests {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TelemetryRow {
     pub timestamp_ms: i64,
+    #[serde(default)]
+    pub received_timestamp_ms: i64,
     pub data_type: String,
     #[serde(default)]
     pub sender_id: String,

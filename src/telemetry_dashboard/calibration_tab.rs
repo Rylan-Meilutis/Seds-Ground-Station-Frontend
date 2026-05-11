@@ -2,7 +2,9 @@
 
 use super::{
     TELEMETRY_RENDER_EPOCH, http_get_json, http_post_json, latest_telemetry_value,
-    layout::{ThemeConfig, ValueFormatter}, persist, translate_text,
+    UrlConfig,
+    layout::{ThemeConfig, ValueFormatter},
+    persist, translate_text,
 };
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -65,12 +67,6 @@ impl Default for CalibrationFile {
     }
 }
 
-#[derive(Serialize)]
-struct RefitReq {
-    channel: String,
-    mode: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct CalibrationTabLayout {
     #[serde(default = "default_capture_target_samples")]
@@ -104,6 +100,11 @@ fn default_capture_target_samples() -> usize {
 }
 
 const CALIBRATION_SELECTED_SENSOR_STORAGE_KEY: &str = "gs_calibration_selected_sensor";
+const CALIBRATION_PRESERVE_REGRESSION_STORAGE_KEY: &str =
+    "gs_calibration_preserve_regression_on_zero_change";
+const CALIBRATION_DRAFT_STORAGE_KEY_PREFIX: &str = "gs_calibration_draft_v1_";
+const CALIBRATION_LAYOUT_CACHE_STORAGE_KEY_PREFIX: &str = "gs_calibration_layout_v1_";
+const CALIBRATION_FILE_CACHE_STORAGE_KEY_PREFIX: &str = "gs_calibration_file_v1_";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
@@ -115,6 +116,87 @@ enum CaptureMode {
 enum SelectedCalibrationPoint {
     Zero,
     Weighted(usize),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct CalibrationDraft {
+    calibration: CalibrationFile,
+    fit_mode: String,
+    preserve_regression_on_zero_change: bool,
+}
+
+fn calibration_storage_key_suffix() -> String {
+    UrlConfig::base_http()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn calibration_draft_storage_key() -> String {
+    format!(
+        "{}{}",
+        CALIBRATION_DRAFT_STORAGE_KEY_PREFIX,
+        calibration_storage_key_suffix()
+    )
+}
+
+fn load_calibration_draft() -> Option<CalibrationDraft> {
+    let raw = persist::get_string(&calibration_draft_storage_key())?;
+    serde_json::from_str::<CalibrationDraft>(&raw).ok()
+}
+
+fn save_calibration_draft(draft: &CalibrationDraft) {
+    if let Ok(raw) = serde_json::to_string(draft) {
+        persist::set_string(&calibration_draft_storage_key(), &raw);
+    }
+}
+
+fn clear_calibration_draft() {
+    persist::_remove(&calibration_draft_storage_key());
+}
+
+fn calibration_layout_cache_storage_key() -> String {
+    format!(
+        "{}{}",
+        CALIBRATION_LAYOUT_CACHE_STORAGE_KEY_PREFIX,
+        calibration_storage_key_suffix()
+    )
+}
+
+fn calibration_file_cache_storage_key() -> String {
+    format!(
+        "{}{}",
+        CALIBRATION_FILE_CACHE_STORAGE_KEY_PREFIX,
+        calibration_storage_key_suffix()
+    )
+}
+
+fn load_cached_calibration_layout() -> Option<CalibrationTabLayout> {
+    let raw = persist::get_string(&calibration_layout_cache_storage_key())?;
+    serde_json::from_str::<CalibrationTabLayout>(&raw).ok()
+}
+
+fn save_cached_calibration_layout(layout: &CalibrationTabLayout) {
+    if let Ok(raw) = serde_json::to_string(layout) {
+        persist::set_string(&calibration_layout_cache_storage_key(), &raw);
+    }
+}
+
+fn load_cached_calibration_file() -> Option<CalibrationFile> {
+    let raw = persist::get_string(&calibration_file_cache_storage_key())?;
+    serde_json::from_str::<CalibrationFile>(&raw).ok()
+}
+
+fn save_cached_calibration_file(cfg: &CalibrationFile) {
+    if let Ok(raw) = serde_json::to_string(cfg) {
+        persist::set_string(&calibration_file_cache_storage_key(), &raw);
+    }
 }
 
 fn latest_raw(data_type: &str) -> Option<f32> {
@@ -243,11 +325,40 @@ fn remove_point_by_key(cfg: &mut CalibrationFile, channel: &str, index: usize) -
     })
 }
 
-fn upsert_point_by_key(cfg: &mut CalibrationFile, channel: &str, expected: f32, raw: f32) {
-    let expected = expected.max(0.0);
-    if expected <= 1e-6 {
-        let channel = cfg.channels.entry(channel.to_string()).or_default();
-        channel.zero_raw = Some(raw);
+fn set_zero_raw_by_key(
+    cfg: &mut CalibrationFile,
+    channel: &str,
+    raw: f32,
+    preserve_regression: bool,
+) {
+    let channel = cfg.channels.entry(channel.to_string()).or_default();
+    if preserve_regression
+        && let Some(previous_zero_raw) = channel.zero_raw
+    {
+        let shift = raw - previous_zero_raw;
+        if shift.abs() > f32::EPSILON {
+            for point in &mut channel.points {
+                point.raw += shift;
+            }
+        }
+    }
+    channel.zero_raw = Some(raw);
+}
+
+fn upsert_point_by_key(
+    cfg: &mut CalibrationFile,
+    channel: &str,
+    expected: f32,
+    raw: f32,
+    preserve_regression_on_zero_change: bool,
+) {
+    if expected.abs() <= 1e-6 {
+        set_zero_raw_by_key(
+            cfg,
+            channel,
+            raw,
+            preserve_regression_on_zero_change,
+        );
         return;
     }
     let channel = cfg.channels.entry(channel.to_string()).or_default();
@@ -278,6 +389,25 @@ fn remove_zero_by_key(cfg: &mut CalibrationFile, channel: &str) -> bool {
         c.zero_raw = None;
         had_zero
     })
+}
+
+fn clear_fit_preview_by_key(cfg: &mut CalibrationFile, channel: &str) {
+    if let Some(channel) = cfg.channels.get_mut(channel) {
+        channel.linear = ChannelLinear::default();
+        channel.fit = None;
+    }
+}
+
+fn refresh_local_fit_preview(
+    cfg: &mut CalibrationFile,
+    channel: &str,
+    mode: &str,
+) -> Result<(), String> {
+    if points_for_channel_key(cfg, channel).len() < 2 {
+        clear_fit_preview_by_key(cfg, channel);
+        return Ok(());
+    }
+    local_refit_channel(cfg, channel, mode)
 }
 
 fn now_ms() -> u64 {
@@ -534,56 +664,47 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
     let zero_hint = zero_raw_for_channel_key(cfg, channel)
         .map(|v| v as f64)
         .or_else(|| pts.iter().find(|(_, y)| y.abs() < 1e-9).map(|(x, _)| *x));
-    let mut candidates: Vec<(&str, f64)> = Vec::new();
-    let (lin_m, lin_b) = fit_line(&xs, &ys)?;
-    candidates.push(("linear", aic(sse_line(&xs, &ys, lin_m, lin_b), xs.len(), 2)));
-    let mut lin0_m = None;
-    if let Some(x0) = zero_hint {
-        let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
-        let m = fit_line_through_zero(&xs_shift, &ys)?;
-        lin0_m = Some((m, x0));
-        candidates.push(("linear_zero", aic(sse_line(&xs_shift, &ys, m, 0.0), xs_shift.len(), 1)));
-    }
-    let mut poly2 = None;
-    if xs.len() >= 3 {
-        let v = fit_poly2(&xs, &ys)?;
-        candidates.push(("poly2", aic(sse_poly2(&xs, &ys, v.0, v.1, v.2), xs.len(), 3)));
-        poly2 = Some(v);
-    }
-    let mut poly2_zero = None;
-    if let Some(x0) = zero_hint && xs.len() >= 2 {
-        let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
-        let v = fit_poly2_through_zero(&xs_shift, &ys)?;
-        candidates.push(("poly2_zero", aic(sse_poly2(&xs_shift, &ys, v.0, v.1, 0.0), xs_shift.len(), 2)));
-        poly2_zero = Some((v.0, v.1, x0));
-    }
-    let mut poly3 = None;
-    if xs.len() >= 4 {
-        let v = fit_poly3(&xs, &ys)?;
-        candidates.push(("poly3", aic(sse_poly3(&xs, &ys, v.0, v.1, v.2, v.3), xs.len(), 4)));
-        poly3 = Some(v);
-    }
-    let mut poly3_zero = None;
-    if let Some(x0) = zero_hint && xs.len() >= 3 {
-        let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
-        let v = fit_poly3_through_zero(&xs_shift, &ys)?;
-        candidates.push(("poly3_zero", aic(sse_poly3(&xs_shift, &ys, v.0, v.1, v.2, 0.0), xs_shift.len(), 3)));
-        poly3_zero = Some((v.0, v.1, v.2, x0));
-    }
-    let mut poly4 = None;
-    if xs.len() >= 5 {
-        let v = fit_poly4(&xs, &ys)?;
-        candidates.push(("poly4", aic(sse_poly4(&xs, &ys, v.0, v.1, v.2, v.3, v.4), xs.len(), 5)));
-        poly4 = Some(v);
-    }
-    let mut poly4_zero = None;
-    if let Some(x0) = zero_hint && xs.len() >= 4 {
-        let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
-        let v = fit_poly4_through_zero(&xs_shift, &ys)?;
-        candidates.push(("poly4_zero", aic(sse_poly4(&xs_shift, &ys, v.0, v.1, v.2, v.3, 0.0), xs_shift.len(), 4)));
-        poly4_zero = Some((v.0, v.1, v.2, v.3, x0));
-    }
     let chosen = if mode == "best" {
+        let mut candidates: Vec<(&str, f64)> = Vec::new();
+        if let Ok((lin_m, lin_b)) = fit_line(&xs, &ys) {
+            candidates.push(("linear", aic(sse_line(&xs, &ys, lin_m, lin_b), xs.len(), 2)));
+        }
+        if let Some(x0) = zero_hint {
+            let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+            if let Ok(m) = fit_line_through_zero(&xs_shift, &ys) {
+                candidates.push(("linear_zero", aic(sse_line(&xs_shift, &ys, m, 0.0), xs_shift.len(), 1)));
+            }
+            if xs.len() >= 2
+                && let Ok(v) = fit_poly2_through_zero(&xs_shift, &ys)
+            {
+                candidates.push(("poly2_zero", aic(sse_poly2(&xs_shift, &ys, v.0, v.1, 0.0), xs_shift.len(), 2)));
+            }
+            if xs.len() >= 3
+                && let Ok(v) = fit_poly3_through_zero(&xs_shift, &ys)
+            {
+                candidates.push(("poly3_zero", aic(sse_poly3(&xs_shift, &ys, v.0, v.1, v.2, 0.0), xs_shift.len(), 3)));
+            }
+            if xs.len() >= 4
+                && let Ok(v) = fit_poly4_through_zero(&xs_shift, &ys)
+            {
+                candidates.push(("poly4_zero", aic(sse_poly4(&xs_shift, &ys, v.0, v.1, v.2, v.3, 0.0), xs_shift.len(), 4)));
+            }
+        }
+        if xs.len() >= 3
+            && let Ok(v) = fit_poly2(&xs, &ys)
+        {
+            candidates.push(("poly2", aic(sse_poly2(&xs, &ys, v.0, v.1, v.2), xs.len(), 3)));
+        }
+        if xs.len() >= 4
+            && let Ok(v) = fit_poly3(&xs, &ys)
+        {
+            candidates.push(("poly3", aic(sse_poly3(&xs, &ys, v.0, v.1, v.2, v.3), xs.len(), 4)));
+        }
+        if xs.len() >= 5
+            && let Ok(v) = fit_poly4(&xs, &ys)
+        {
+            candidates.push(("poly4", aic(sse_poly4(&xs, &ys, v.0, v.1, v.2, v.3, v.4), xs.len(), 5)));
+        }
         candidates
             .iter()
             .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -595,49 +716,58 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
     let channel_slot = cfg.channels.entry(channel.to_string()).or_default();
     match chosen {
         "linear" => {
+            let (lin_m, lin_b) = fit_line(&xs, &ys)?;
             channel_slot.linear.m = Some(lin_m as f32);
             channel_slot.linear.b = Some(lin_b as f32);
             channel_slot.fit = Some(FitMeta { fit_type: Some("linear".to_string()), x0: None, ..FitMeta::default() });
         }
         "linear_zero" => {
-            let (m, x0) = lin0_m.ok_or_else(|| "linear_zero fit unavailable".to_string())?;
+            let x0 = zero_hint.ok_or_else(|| "linear_zero fit unavailable".to_string())?;
+            let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+            let m = fit_line_through_zero(&xs_shift, &ys)?;
             channel_slot.linear.m = Some(m as f32);
             channel_slot.linear.b = Some((-m * x0) as f32);
             channel_slot.fit = Some(FitMeta { fit_type: Some("linear".to_string()), x0: Some(x0 as f32), ..FitMeta::default() });
         }
         "poly2" | "parabolic" | "quadratic" => {
-            let (a, b, c) = poly2.ok_or_else(|| "poly2 fit unavailable".to_string())?;
+            let (a, b, c) = fit_poly2(&xs, &ys)?;
             channel_slot.linear.m = Some(b as f32);
             channel_slot.linear.b = Some(c as f32);
             channel_slot.fit = Some(FitMeta { fit_type: Some("poly2".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), ..FitMeta::default() });
         }
         "poly2_zero" | "parabolic_zero" | "quadratic_zero" => {
-            let (a, b, x0) = poly2_zero.ok_or_else(|| "poly2_zero fit unavailable".to_string())?;
+            let x0 = zero_hint.ok_or_else(|| "poly2_zero fit unavailable".to_string())?;
+            let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+            let (a, b) = fit_poly2_through_zero(&xs_shift, &ys)?;
             let m_lin = a + b;
             channel_slot.linear.m = Some(m_lin as f32);
             channel_slot.linear.b = Some((-m_lin * x0) as f32);
             channel_slot.fit = Some(FitMeta { fit_type: Some("poly2".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(0.0), d: Some(0.0), x0: Some(x0 as f32), ..FitMeta::default() });
         }
         "poly3" | "cubic" => {
-            let (a, b, c, d) = poly3.ok_or_else(|| "poly3 fit unavailable".to_string())?;
+            let (a, b, c, d) = fit_poly3(&xs, &ys)?;
             channel_slot.linear.m = Some(c as f32);
             channel_slot.linear.b = Some(d as f32);
             channel_slot.fit = Some(FitMeta { fit_type: Some("poly3".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), ..FitMeta::default() });
         }
         "poly3_zero" | "cubic_zero" => {
-            let (a, b, c, x0) = poly3_zero.ok_or_else(|| "poly3_zero fit unavailable".to_string())?;
+            let x0 = zero_hint.ok_or_else(|| "poly3_zero fit unavailable".to_string())?;
+            let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+            let (a, b, c) = fit_poly3_through_zero(&xs_shift, &ys)?;
             channel_slot.linear.m = Some(c as f32);
             channel_slot.linear.b = Some((-c * x0) as f32);
             channel_slot.fit = Some(FitMeta { fit_type: Some("poly3".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(0.0), x0: Some(x0 as f32), ..FitMeta::default() });
         }
         "poly4" | "quartic" => {
-            let (a, b, c, d, e) = poly4.ok_or_else(|| "poly4 fit unavailable".to_string())?;
+            let (a, b, c, d, e) = fit_poly4(&xs, &ys)?;
             channel_slot.linear.m = Some(d as f32);
             channel_slot.linear.b = Some(e as f32);
             channel_slot.fit = Some(FitMeta { fit_type: Some("poly4".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), e: Some(e as f32), x0: None });
         }
         "poly4_zero" | "quartic_zero" => {
-            let (a, b, c, d, x0) = poly4_zero.ok_or_else(|| "poly4_zero fit unavailable".to_string())?;
+            let x0 = zero_hint.ok_or_else(|| "poly4_zero fit unavailable".to_string())?;
+            let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
+            let (a, b, c, d) = fit_poly4_through_zero(&xs_shift, &ys)?;
             channel_slot.linear.m = Some(d as f32);
             channel_slot.linear.b = Some((-d * x0) as f32);
             channel_slot.fit = Some(FitMeta { fit_type: Some("poly4".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), e: Some(0.0), x0: Some(x0 as f32) });
@@ -649,6 +779,52 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
 
 fn fit_for_channel_key<'a>(cfg: &'a CalibrationFile, channel: &str) -> Option<&'a FitMeta> {
     cfg.channels.get(channel).and_then(|c| c.fit.as_ref())
+}
+
+fn fit_mode_candidates_from_meta(meta: &FitMeta) -> &'static [&'static str] {
+    match meta.fit_type.as_deref().unwrap_or("linear") {
+        "poly4" => {
+            if meta.x0.is_some() {
+                &["poly4_zero", "quartic_zero"]
+            } else {
+                &["poly4", "quartic"]
+            }
+        }
+        "poly3" => {
+            if meta.x0.is_some() {
+                &["poly3_zero", "cubic_zero"]
+            } else {
+                &["poly3", "cubic"]
+            }
+        }
+        "poly2" => {
+            if meta.x0.is_some() {
+                &["poly2_zero", "parabolic_zero", "quadratic_zero"]
+            } else {
+                &["poly2", "parabolic", "quadratic"]
+            }
+        }
+        _ => {
+            if meta.x0.is_some() {
+                &["linear_zero"]
+            } else {
+                &["linear"]
+            }
+        }
+    }
+}
+
+fn resolved_fit_mode_for_channel_key(
+    cfg: &CalibrationFile,
+    channel: &str,
+    available_modes: &[String],
+) -> Option<String> {
+    let fit = fit_for_channel_key(cfg, channel)?;
+    fit_mode_candidates_from_meta(fit)
+        .iter()
+        .find(|candidate| available_modes.iter().any(|mode| mode == **candidate))
+        .map(|candidate| (*candidate).to_string())
+        .or_else(|| fit.fit_type.clone())
 }
 
 fn linear_for_channel_key<'a>(
@@ -763,7 +939,10 @@ fn fit_details_text_parts((linear, fit): (&ChannelLinear, Option<&FitMeta>)) -> 
 
 #[cfg(test)]
 mod calibration_eval_tests {
-    use super::{CalibrationFile, ChannelLinear, GenericCalibrationChannel, eval_fit_key};
+    use super::{
+        CalibrationFile, CalibrationPoint, ChannelLinear, GenericCalibrationChannel, eval_fit_key,
+        local_refit_channel, set_zero_raw_by_key,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -787,6 +966,96 @@ mod calibration_eval_tests {
 
         assert_eq!(eval_fit_key(&cfg, "LOADCELL", 3.0), Some(0.0));
         assert_eq!(eval_fit_key(&cfg, "LOADCELL", 4.5), Some(3.0));
+    }
+
+    #[test]
+    fn changing_zero_raw_shifts_existing_points_by_same_delta() {
+        let mut channels = BTreeMap::new();
+        channels.insert(
+            "LOADCELL".to_string(),
+            GenericCalibrationChannel {
+                zero_raw: Some(10.0),
+                points: vec![
+                    CalibrationPoint {
+                        expected: 5.0,
+                        raw: 15.0,
+                    },
+                    CalibrationPoint {
+                        expected: 10.0,
+                        raw: 20.0,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        let mut cfg = CalibrationFile {
+            channels,
+            ..Default::default()
+        };
+
+        set_zero_raw_by_key(&mut cfg, "LOADCELL", 13.5, true);
+
+        let channel = cfg.channels.get("LOADCELL").expect("channel should exist");
+        assert_eq!(channel.zero_raw, Some(13.5));
+        assert_eq!(channel.points[0].raw, 18.5);
+        assert_eq!(channel.points[1].raw, 23.5);
+    }
+
+    #[test]
+    fn local_linear_refit_supports_negative_point_values() {
+        let mut channels = BTreeMap::new();
+        channels.insert(
+            "LOADCELL".to_string(),
+            GenericCalibrationChannel {
+                points: vec![
+                    CalibrationPoint {
+                        expected: -10.0,
+                        raw: 1.0,
+                    },
+                    CalibrationPoint {
+                        expected: 10.0,
+                        raw: 3.0,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        let mut cfg = CalibrationFile {
+            channels,
+            ..Default::default()
+        };
+
+        local_refit_channel(&mut cfg, "LOADCELL", "linear").expect("linear fit should succeed");
+
+        let channel = cfg.channels.get("LOADCELL").expect("channel should exist");
+        assert_eq!(channel.linear.m, Some(10.0));
+        assert_eq!(channel.linear.b, Some(-20.0));
+    }
+
+    #[test]
+    fn changing_zero_raw_without_preserving_regression_keeps_existing_points() {
+        let mut channels = BTreeMap::new();
+        channels.insert(
+            "LOADCELL".to_string(),
+            GenericCalibrationChannel {
+                zero_raw: Some(10.0),
+                points: vec![CalibrationPoint {
+                    expected: 5.0,
+                    raw: 15.0,
+                }],
+                ..Default::default()
+            },
+        );
+        let mut cfg = CalibrationFile {
+            channels,
+            ..Default::default()
+        };
+
+        set_zero_raw_by_key(&mut cfg, "LOADCELL", 13.5, false);
+
+        let channel = cfg.channels.get("LOADCELL").expect("channel should exist");
+        assert_eq!(channel.zero_raw, Some(13.5));
+        assert_eq!(channel.points[0].raw, 15.0);
     }
 }
 
@@ -822,6 +1091,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let inspected_point_idx = use_signal(|| None::<SelectedCalibrationPoint>);
     let status = use_signal(|| "Loading calibration...".to_string());
     let dirty = use_signal(|| false);
+    let preserve_regression_on_zero_change = use_signal(|| {
+        persist::get_or(CALIBRATION_PRESERVE_REGRESSION_STORAGE_KEY, "on") != "off"
+    });
     let manual_capture_progress = use_signal(String::new);
     let manual_capture_progress_epoch = use_signal(|| 0u64);
     let last_sync_poll_ms = use_signal(now_ms);
@@ -837,12 +1109,26 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         let mut layout_cfg = layout_cfg;
         let mut status = status;
         use_effect(move || {
+            if let Some(cached_layout) = load_cached_calibration_layout() {
+                layout_cfg.set(Some(cached_layout));
+            }
             spawn(async move {
                 match http_get_json::<CalibrationTabLayout>("/api/calibration_config").await {
-                    Ok(v) => layout_cfg.set(Some(v)),
-                    Err(e) => status.set(format!(
-                        "Failed to load calibration config, using defaults: {e}"
-                    )),
+                    Ok(v) => {
+                        save_cached_calibration_layout(&v);
+                        layout_cfg.set(Some(v));
+                    }
+                    Err(e) => {
+                        if layout_cfg.read().is_some() {
+                            status.set(format!(
+                                "Backend disconnected. Showing cached calibration layout: {e}"
+                            ));
+                        } else {
+                            status.set(format!(
+                                "Failed to load calibration config and no cached layout is available: {e}"
+                            ));
+                        }
+                    }
                 }
             });
         });
@@ -882,14 +1168,54 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     {
         let mut cfg = cfg;
         let mut status = status;
+        let mut dirty = dirty;
+        let mut fit_mode = fit_mode;
+        let mut preserve_regression_on_zero_change = preserve_regression_on_zero_change;
         use_effect(move || {
+            if let Some(cached_cfg) = load_cached_calibration_file() {
+                cfg.set(Some(cached_cfg));
+                if status.read().starts_with("Loading calibration") {
+                    status.set("Showing cached calibration data".to_string());
+                }
+            }
+            if let Some(draft) = load_calibration_draft() {
+                cfg.set(Some(draft.calibration));
+                fit_mode.set(draft.fit_mode);
+                preserve_regression_on_zero_change
+                    .set(draft.preserve_regression_on_zero_change);
+                dirty.set(true);
+                status.set("Restored unsaved calibration changes from this device".to_string());
+            }
             spawn(async move {
                 match http_get_json::<CalibrationFile>("/api/calibration").await {
                     Ok(v) => {
-                        cfg.set(Some(v));
-                        status.set("Calibration loaded".to_string());
+                        save_cached_calibration_file(&v);
+                        if *dirty.read() {
+                            if cfg.read().is_none() {
+                                cfg.set(Some(v));
+                            }
+                            if status.read().starts_with("Loading calibration") {
+                                status.set(
+                                    "Unsaved local calibration changes restored from this device"
+                                        .to_string(),
+                                );
+                            }
+                        } else {
+                            cfg.set(Some(v));
+                            status.set("Calibration loaded".to_string());
+                        }
                     }
-                    Err(e) => status.set(format!("Failed to load: {e}")),
+                    Err(e) => {
+                        if cfg.read().is_some() {
+                            if !*dirty.read() {
+                                status.set(format!(
+                                    "Backend disconnected. Showing cached calibration data: {e}"
+                                ));
+                            }
+                        } else {
+                            status.set(format!("Failed to load: {e}"));
+                        }
+                    }
                 }
             });
         });
@@ -914,6 +1240,41 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     }
 
     {
+        let preserve_regression_on_zero_change = preserve_regression_on_zero_change;
+        use_effect(move || {
+            persist::set_string(
+                CALIBRATION_PRESERVE_REGRESSION_STORAGE_KEY,
+                if *preserve_regression_on_zero_change.read() {
+                    "on"
+                } else {
+                    "off"
+                },
+            );
+        });
+    }
+
+    {
+        let cfg = cfg;
+        let dirty = dirty;
+        let fit_mode = fit_mode;
+        let preserve_regression_on_zero_change = preserve_regression_on_zero_change;
+        use_effect(move || {
+            if *dirty.read() {
+                if let Some(calibration) = cfg.read().clone() {
+                    save_calibration_draft(&CalibrationDraft {
+                        calibration,
+                        fit_mode: fit_mode.read().clone(),
+                        preserve_regression_on_zero_change:
+                            *preserve_regression_on_zero_change.read(),
+                    });
+                }
+            } else {
+                clear_calibration_draft();
+            }
+        });
+    }
+
+    {
         let mut cfg = cfg;
         let mut status = status;
         let mut last_sync_poll_ms = last_sync_poll_ms;
@@ -934,6 +1295,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 match http_get_json::<CalibrationFile>("/api/calibration").await {
                     Ok(remote_cfg) => {
                         if current_cfg.as_ref() != Some(&remote_cfg) {
+                            save_cached_calibration_file(&remote_cfg);
                             cfg.set(Some(remote_cfg));
                             status.set("Calibration synced from backend".to_string());
                         }
@@ -956,7 +1318,33 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .or_else(|| sensors.first().cloned());
     let raw_precision = sensor_raw_precision(selected_sensor.as_ref(), 6);
     if sensors.is_empty() {
-        return rsx! {};
+        let shell_style = format!(
+            "padding:12px; display:flex; flex-direction:column; gap:12px; min-height:100%; overflow:visible; color:{}; background:{};",
+            theme.text_primary, theme.tab_shell_background
+        );
+        let section_style = format!(
+            "display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid {}; border-radius:16px; background:{}; box-shadow:0 10px 24px rgba(0,0,0,0.18);",
+            theme.tab_shell_border, theme.panel_background
+        );
+        return rsx! {
+            div { style: "{shell_style}",
+                div { style: "{section_style}",
+                    h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
+                    div { style: "color:{theme.text_muted}; font-size:13px;", "{status.read()}" }
+                    if cfg.read().is_some() {
+                        div {
+                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
+                            "Showing the last calibration data seen on this device. The backend is disconnected and the sensor layout mapping is currently unavailable."
+                        }
+                    } else {
+                        div {
+                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
+                            "No cached calibration layout is available yet for this backend."
+                        }
+                    }
+                }
+            }
+        };
     }
     let channel_key = selected_sensor
         .as_ref()
@@ -994,8 +1382,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             let seeded = cfg
                 .read()
                 .as_ref()
-                .and_then(|cfg| fit_for_channel_key(cfg, &channel_key))
-                .and_then(|fit| fit.fit_type.clone());
+                .and_then(|cfg| resolved_fit_mode_for_channel_key(cfg, &channel_key, &fit_modes));
             if let Some(seeded_mode) =
                 seeded.filter(|mode| fit_modes.iter().any(|candidate| candidate == mode))
             {
@@ -1329,8 +1716,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 disabled: cfg.read().is_none() || !*dirty.read(),
                                 onclick: {
                                     let mut cfg = cfg;
-                                    let selected_sensor = selected_sensor.clone();
-                                    let fit_mode = fit_mode;
                                     let mut status = status;
                                     let mut dirty = dirty;
                                     move |_| {
@@ -1338,26 +1723,15 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             status.set("No calibration data loaded".to_string());
                                             return;
                                         };
-                                        let Some(sensor) = selected_sensor.clone() else {
-                                            status.set("No sensor selected".to_string());
-                                            return;
-                                        };
                                         status.set("Saving calibration to backend...".to_string());
                                         spawn(async move {
                                             match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
-                                                Ok(_) => {
-                                                    let body = RefitReq {
-                                                        channel: sensor.channel.clone(),
-                                                        mode: fit_mode.read().clone(),
-                                                    };
-                                                    match http_post_json::<RefitReq, CalibrationFile>("/api/calibration/refit", &body).await {
-                                                        Ok(new_cfg) => {
-                                                            cfg.set(Some(new_cfg));
-                                                            dirty.set(false);
-                                                            status.set("Calibration saved".to_string());
-                                                        }
-                                                        Err(e) => status.set(format!("Refit failed: {e}")),
-                                                    }
+                                                Ok(saved_cfg) => {
+                                                    save_cached_calibration_file(&saved_cfg);
+                                                    cfg.set(Some(saved_cfg));
+                                                    dirty.set(false);
+                                                    clear_calibration_draft();
+                                                    status.set("Calibration saved".to_string());
                                                 }
                                                 Err(e) => status.set(format!("Save failed: {e}")),
                                             }
@@ -1458,6 +1832,26 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
 
             if can_edit {
             div { style: "{toolbar_style}",
+                label {
+                    style: "display:flex; align-items:center; gap:8px; color:{theme.text_secondary}; font-size:13px;",
+                    input {
+                        r#type: "checkbox",
+                        checked: *preserve_regression_on_zero_change.read(),
+                        onchange: {
+                            let mut preserve_regression_on_zero_change = preserve_regression_on_zero_change;
+                            move |_| {
+                                let next = !*preserve_regression_on_zero_change.read();
+                                preserve_regression_on_zero_change.set(next);
+                            }
+                        }
+                    }
+                    span { "Preserve regression when changing zero point" }
+                }
+            }
+            }
+
+            if can_edit {
+            div { style: "{toolbar_style}",
                 input {
                     style: "{input_style}",
                     r#type: "number",
@@ -1490,6 +1884,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         let selected_sensor = selected_sensor.clone();
                         let manual_kg = manual_kg;
                         let manual_raw = manual_raw;
+                        let fit_mode = fit_mode;
+                        let preserve_regression_on_zero_change =
+                            preserve_regression_on_zero_change;
                         let mut status = status;
                         let mut dirty = dirty;
                         move |_| {
@@ -1507,10 +1904,28 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             };
                             let selected_channel = sensor.channel.clone();
                             let mut next = cfg.read().clone().unwrap_or_default();
-                            upsert_point_by_key(&mut next, &selected_channel, kg, raw);
+                            upsert_point_by_key(
+                                &mut next,
+                                &selected_channel,
+                                kg,
+                                raw,
+                                *preserve_regression_on_zero_change.read(),
+                            );
+                            let refit_err = refresh_local_fit_preview(
+                                &mut next,
+                                &selected_channel,
+                                fit_mode.read().as_str(),
+                            )
+                            .err();
                             cfg.set(Some(next.clone()));
                             dirty.set(true);
-                            status.set("Point updated locally. Save to push changes to the backend.".to_string());
+                            if let Some(err) = refit_err {
+                                status.set(format!(
+                                    "Point updated locally, but preview refit failed: {err}. Keeping the existing backend regression until a valid refit succeeds."
+                                ));
+                            } else {
+                                status.set("Point updated locally and refit preview refreshed. Save to push changes to the backend.".to_string());
+                            }
                         }
                     },
                     "Add/Update Point"
@@ -1669,6 +2084,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         let mut cfg = cfg;
                         let selected_sensor = selected_sensor.clone();
                         let mut selected_point = selected_point;
+                        let fit_mode = fit_mode;
                         let mut status = status;
                         let mut dirty = dirty;
                         move |_| {
@@ -1693,10 +2109,22 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 status.set("Invalid selected point".to_string());
                                 return;
                             }
+                            let refit_err = refresh_local_fit_preview(
+                                &mut next,
+                                &sensor.channel,
+                                fit_mode.read().as_str(),
+                            )
+                            .err();
                             cfg.set(Some(next.clone()));
                             selected_point.set(None);
                             dirty.set(true);
-                            status.set("Point removed locally. Save to push changes to the backend.".to_string());
+                            if let Some(err) = refit_err {
+                                status.set(format!(
+                                    "Point removed locally, but preview refit failed: {err}. Keeping the existing backend regression until a valid refit succeeds."
+                                ));
+                            } else {
+                                status.set("Point removed locally and refit preview refreshed. Save to push changes to the backend.".to_string());
+                            }
                         }
                     },
                     "Remove Selected"
@@ -1962,6 +2390,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     let mut cfg = cfg;
                                     let mut dirty = dirty;
                                     let mut status = status;
+                                    let fit_mode = fit_mode;
+                                    let preserve_regression_on_zero_change =
+                                        preserve_regression_on_zero_change;
                                     let mut sequence_dialog_mode = sequence_dialog_mode;
                                     let mut sequence_dialog_weight = sequence_dialog_weight;
                                     let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
@@ -1998,9 +2429,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         0.0
                                                     } else {
                                                         match sequence_dialog_weight.read().trim().parse::<f32>() {
-                                                            Ok(value) if value > 0.0 => value,
+                                                            Ok(value) if value.abs() > 1e-6 => value,
                                                             _ => {
-                                                                sequence_dialog_status.set("Enter a sequence point mass greater than zero.".to_string());
+                                                                sequence_dialog_status.set("Enter a non-zero sequence point mass.".to_string());
                                                                 return;
                                                             }
                                                         }
@@ -2011,13 +2442,30 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         reset_channel_by_key(&mut next, &sensor.channel);
                                                     }
                                                     if mode == CaptureMode::SequenceZero {
+                                                        set_zero_raw_by_key(
+                                                            &mut next,
+                                                            &sensor.channel,
+                                                            raw,
+                                                            *preserve_regression_on_zero_change.read(),
+                                                        );
                                                         let channel = next.channels.entry(sensor.channel.clone()).or_default();
-                                                        channel.zero_raw = Some(raw);
                                                         channel.points.clear();
                                                         channel.fit = None;
                                                     } else {
-                                                        upsert_point_by_key(&mut next, &sensor.channel, weight, raw);
+                                                        upsert_point_by_key(
+                                                            &mut next,
+                                                            &sensor.channel,
+                                                            weight,
+                                                            raw,
+                                                            *preserve_regression_on_zero_change.read(),
+                                                        );
                                                     }
+                                                    let refit_err = refresh_local_fit_preview(
+                                                        &mut next,
+                                                        &sensor.channel,
+                                                        fit_mode.read().as_str(),
+                                                    )
+                                                    .err();
                                                     cfg.set(Some(next));
                                                     dirty.set(true);
                                                     sequence_dialog_captured_raw.set(
@@ -2028,10 +2476,17 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         ),
                                                     );
                                                     if mode == CaptureMode::SequenceZero {
-                                                        status.set(format!(
-                                                            "Captured zero for {} locally. Continue adding points, then Save to push changes to the backend.",
-                                                            sensor.label
-                                                        ));
+                                                        if let Some(err) = refit_err.as_ref() {
+                                                            status.set(format!(
+                                                                "Captured zero for {} locally, but preview refit failed: {}. Keeping the existing backend regression until a valid refit succeeds.",
+                                                                sensor.label, err
+                                                            ));
+                                                        } else {
+                                                            status.set(format!(
+                                                                "Captured zero for {} locally. Continue adding points, then Save to push changes to the backend.",
+                                                                sensor.label
+                                                            ));
+                                                        }
                                                         sequence_dialog_mode.set(CaptureMode::SequencePoint);
                                                         sequence_dialog_weight.set(known_kg.read().clone());
                                                         sequence_dialog_replace_existing.set(false);
@@ -2043,10 +2498,17 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                             sensor.label
                                                         ));
                                                     } else {
-                                                        status.set(format!(
-                                                            "Captured {} kg on {} locally. Capture another point or Save to push changes to the backend.",
-                                                            weight, sensor.label
-                                                        ));
+                                                        if let Some(err) = refit_err.as_ref() {
+                                                            status.set(format!(
+                                                                "Captured {} kg on {} locally, but preview refit failed: {}. Keeping the existing backend regression until a valid refit succeeds.",
+                                                                weight, sensor.label, err
+                                                            ));
+                                                        } else {
+                                                            status.set(format!(
+                                                                "Captured {} kg on {} locally. Capture another point or Save to push changes to the backend.",
+                                                                weight, sensor.label
+                                                            ));
+                                                        }
                                                         sequence_dialog_status.set(format!(
                                                             "Added/updated {weight} kg as {} from {} samples on {}. Enter the next mass and capture again.",
                                                             format_sensor_raw_value(raw, Some(&sensor), 6),
