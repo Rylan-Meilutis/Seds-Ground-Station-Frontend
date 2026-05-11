@@ -37,7 +37,8 @@ use crate::debug_log;
 use data_chart::charts_cache_request_refit;
 use data_chart::{
     charts_cache_begin_reseed_build, charts_cache_cancel_reseed_build, charts_cache_clear_active,
-    charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_reseed_ingest_row,
+    charts_cache_finish_reseed_build, charts_cache_ingest_row, charts_cache_ingest_rows,
+    charts_cache_reseed_ingest_row,
     configure_sender_split_data_types,
 };
 
@@ -59,6 +60,7 @@ use serde::{Deserialize, Serialize};
 use state_tab::StateTab;
 use types::{
     BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
+    TelemetryTextId, intern_telemetry_text, resolve_telemetry_text,
     display_flight_state,
 };
 use version_page::VersionTab;
@@ -214,6 +216,7 @@ fn normalize_live_telemetry_row_for_client_clock(
     now_ms: i64,
 ) -> Option<TelemetryRow> {
     row.received_timestamp_ms = now_ms;
+    row.refresh_interned_ids();
     if live_telemetry_row_is_fresh(&row, now_ms) {
         return Some(row);
     }
@@ -222,6 +225,7 @@ fn normalize_live_telemetry_row_for_client_clock(
     // Preserve live telemetry instead of dropping it entirely when the row
     // is otherwise current but timestamped against a skewed host clock.
     row.timestamp_ms = now_ms;
+    row.refresh_interned_ids();
     Some(row)
 }
 
@@ -285,30 +289,30 @@ const MAX_TELEMETRY_QUEUE: usize = 120_000;
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct UiRowKey {
     bucket: i64,
-    data_type: String,
-    sender_id: String,
+    data_type: TelemetryTextId,
+    sender_id: TelemetryTextId,
 }
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 struct LatestTelemetryKey {
-    data_type: String,
-    sender_id: String,
+    data_type: TelemetryTextId,
+    sender_id: TelemetryTextId,
 }
 
 #[derive(Clone)]
 struct LatestTelemetrySample {
     timestamp_ms: i64,
-    data_type: String,
-    sender_id: String,
+    data_type: TelemetryTextId,
+    sender_id: TelemetryTextId,
     values: Arc<[Option<f32>]>,
 }
 
 impl LatestTelemetryKey {
     /// Builds the cache key used for latest-row tracking.
-    fn new(data_type: &str, sender_id: &str) -> Self {
+    fn new(data_type: TelemetryTextId, sender_id: TelemetryTextId) -> Self {
         Self {
-            data_type: data_type.to_string(),
-            sender_id: sender_id.to_string(),
+            data_type,
+            sender_id,
         }
     }
 }
@@ -334,8 +338,8 @@ impl UiTelemetryStore {
             // The UI only needs one representative row per bucket/sender/type tuple.
             let key = UiRowKey {
                 bucket: row.timestamp_ms.div_euclid(UI_ROW_BUCKET_MS),
-                data_type: row.data_type.clone(),
-                sender_id: row.sender_id.clone(),
+                data_type: row.interned_data_type_id(),
+                sender_id: row.interned_sender_id(),
             };
             self.rows.insert(key, row);
         }
@@ -397,9 +401,9 @@ static UI_TELEMETRY_STORE: Lazy<Mutex<UiTelemetryStore>> =
     Lazy::new(|| Mutex::new(UiTelemetryStore::default()));
 static LATEST_TELEMETRY: Lazy<Mutex<HashMap<LatestTelemetryKey, LatestTelemetrySample>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-static LATEST_TELEMETRY_BY_TYPE: Lazy<Mutex<HashMap<String, LatestTelemetrySample>>> =
+static LATEST_TELEMETRY_BY_TYPE: Lazy<Mutex<HashMap<TelemetryTextId, LatestTelemetrySample>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-static TELEMETRY_PACKET_COUNTS_BY_SENDER: Lazy<Mutex<HashMap<String, u64>>> =
+static TELEMETRY_PACKET_COUNTS_BY_SENDER: Lazy<Mutex<HashMap<TelemetryTextId, u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -407,7 +411,7 @@ struct SenderTelemetryActivity {
     last_mono_ms: i64,
     ws_epoch: u64,
 }
-static TELEMETRY_ACTIVITY_BY_SENDER: Lazy<Mutex<HashMap<String, SenderTelemetryActivity>>> =
+static TELEMETRY_ACTIVITY_BY_SENDER: Lazy<Mutex<HashMap<TelemetryTextId, SenderTelemetryActivity>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static LAST_TELEMETRY_CACHE_PERSIST_MS: AtomicI64 = AtomicI64::new(0);
 static RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD: AtomicBool = AtomicBool::new(false);
@@ -443,10 +447,11 @@ fn prune_history(rows: &mut Vec<TelemetryRow>) {
 
 /// Compacts raw telemetry rows down to the newest row per UI bucket.
 fn compact_rows_for_ui(rows: Vec<TelemetryRow>) -> Vec<TelemetryRow> {
-    let mut by_key: HashMap<(String, String, i64), TelemetryRow> = HashMap::new();
+    let mut by_key: HashMap<(TelemetryTextId, TelemetryTextId, i64), TelemetryRow> =
+        HashMap::new();
     for row in rows {
         let bucket = row.timestamp_ms.div_euclid(UI_ROW_BUCKET_MS);
-        let key = (row.data_type.clone(), row.sender_id.clone(), bucket);
+        let key = (row.interned_data_type_id(), row.interned_sender_id(), bucket);
         by_key.insert(key, row);
     }
     let mut out: Vec<TelemetryRow> = by_key.into_values().collect();
@@ -485,8 +490,9 @@ fn reset_telemetry_packet_counts(rows: &[TelemetryRow]) {
     if let Ok(mut counts) = TELEMETRY_PACKET_COUNTS_BY_SENDER.lock() {
         counts.clear();
         for row in rows {
-            if !row.sender_id.trim().is_empty() {
-                *counts.entry(row.sender_id.clone()).or_insert(0) += 1;
+            let sender_id = row.interned_sender_id();
+            if !sender_id.is_empty() {
+                *counts.entry(sender_id).or_insert(0) += 1;
             }
         }
     }
@@ -495,8 +501,9 @@ fn reset_telemetry_packet_counts(rows: &[TelemetryRow]) {
 fn note_sender_packet_count_batch(rows: &[TelemetryRow]) {
     if let Ok(mut counts) = TELEMETRY_PACKET_COUNTS_BY_SENDER.lock() {
         for row in rows {
-            if !row.sender_id.trim().is_empty() {
-                *counts.entry(row.sender_id.clone()).or_insert(0) += 1;
+            let sender_id = row.interned_sender_id();
+            if !sender_id.is_empty() {
+                *counts.entry(sender_id).or_insert(0) += 1;
             }
         }
     }
@@ -507,11 +514,12 @@ fn note_sender_telemetry_activity_batch(rows: &[TelemetryRow]) {
     let ws_epoch = *WS_EPOCH.read();
     if let Ok(mut activity) = TELEMETRY_ACTIVITY_BY_SENDER.lock() {
         for row in rows {
-            if row.sender_id.trim().is_empty() {
+            let sender_id = row.interned_sender_id();
+            if sender_id.is_empty() {
                 continue;
             }
             activity.insert(
-                row.sender_id.clone(),
+                sender_id,
                 SenderTelemetryActivity {
                     last_mono_ms: now_ms,
                     ws_epoch,
@@ -523,7 +531,7 @@ fn note_sender_telemetry_activity_batch(rows: &[TelemetryRow]) {
 
 #[allow(dead_code)]
 fn stale_sender_telemetry_for_epoch(
-    activity: &HashMap<String, SenderTelemetryActivity>,
+    activity: &HashMap<TelemetryTextId, SenderTelemetryActivity>,
     ws_epoch: u64,
     now_ms: i64,
     stale_limit_ms: i64,
@@ -538,7 +546,7 @@ fn stale_sender_telemetry_for_epoch(
     let mut stale_senders = Vec::new();
 
     for (sender_id, entry) in activity.iter() {
-        if entry.ws_epoch != ws_epoch || sender_id.trim().is_empty() {
+        if entry.ws_epoch != ws_epoch || sender_id.is_empty() {
             continue;
         }
         current_epoch_senders += 1;
@@ -546,7 +554,7 @@ fn stale_sender_telemetry_for_epoch(
         if idle_ms <= active_recent_limit_ms {
             active_sender_present = true;
         } else if idle_ms >= stale_limit_ms {
-            stale_senders.push(sender_id.clone());
+            stale_senders.push(resolve_telemetry_text(*sender_id).to_string());
         }
     }
 
@@ -594,10 +602,12 @@ pub(crate) fn latest_rocket_gps_altitude_m_from_store() -> Option<f64> {
 /// Applies latest-row replacement rules while both latest-row maps are already locked.
 fn update_latest_telemetry_locked(
     latest: &mut HashMap<LatestTelemetryKey, LatestTelemetrySample>,
-    latest_by_type: &mut HashMap<String, LatestTelemetrySample>,
+    latest_by_type: &mut HashMap<TelemetryTextId, LatestTelemetrySample>,
     row: &TelemetryRow,
 ) {
-    let key = LatestTelemetryKey::new(&row.data_type, &row.sender_id);
+    let data_type_id = row.interned_data_type_id();
+    let sender_id = row.interned_sender_id();
+    let key = LatestTelemetryKey::new(data_type_id, sender_id);
     let should_replace = latest
         .get(&key)
         .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
@@ -606,23 +616,23 @@ fn update_latest_telemetry_locked(
             key,
             LatestTelemetrySample {
                 timestamp_ms: row.timestamp_ms,
-                data_type: row.data_type.clone(),
-                sender_id: row.sender_id.clone(),
+                data_type: data_type_id,
+                sender_id,
                 values: Arc::<[Option<f32>]>::from(row.values.clone()),
             },
         );
     }
 
     let should_replace_type = latest_by_type
-        .get(&row.data_type)
+        .get(&data_type_id)
         .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
     if should_replace_type {
         latest_by_type.insert(
-            row.data_type.clone(),
+            data_type_id,
             LatestTelemetrySample {
                 timestamp_ms: row.timestamp_ms,
-                data_type: row.data_type.clone(),
-                sender_id: row.sender_id.clone(),
+                data_type: data_type_id,
+                sender_id,
                 values: Arc::<[Option<f32>]>::from(row.values.clone()),
             },
         );
@@ -654,16 +664,20 @@ pub(crate) fn latest_telemetry_row(
     data_type: &str,
     sender_id: Option<&str>,
 ) -> Option<TelemetryRow> {
+    let data_type_id = intern_telemetry_text(data_type);
     match sender_id {
         Some(sender_id) => {
+            let sender_id = intern_telemetry_text(sender_id);
             if let Ok(latest) = LATEST_TELEMETRY.lock() {
                 latest
-                    .get(&LatestTelemetryKey::new(data_type, sender_id))
+                    .get(&LatestTelemetryKey::new(data_type_id, sender_id))
                     .map(|sample| TelemetryRow {
                         timestamp_ms: sample.timestamp_ms,
                         received_timestamp_ms: sample.timestamp_ms,
-                        data_type: sample.data_type.clone(),
-                        sender_id: sample.sender_id.clone(),
+                        data_type: resolve_telemetry_text(sample.data_type).to_string(),
+                        data_type_id: sample.data_type,
+                        sender_id: resolve_telemetry_text(sample.sender_id).to_string(),
+                        sender_id_id: sample.sender_id,
                         values: sample.values.as_ref().to_vec(),
                     })
             } else {
@@ -672,11 +686,13 @@ pub(crate) fn latest_telemetry_row(
         }
         None => {
             if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
-                latest_by_type.get(data_type).map(|sample| TelemetryRow {
+                latest_by_type.get(&data_type_id).map(|sample| TelemetryRow {
                     timestamp_ms: sample.timestamp_ms,
                     received_timestamp_ms: sample.timestamp_ms,
-                    data_type: sample.data_type.clone(),
-                    sender_id: sample.sender_id.clone(),
+                    data_type: resolve_telemetry_text(sample.data_type).to_string(),
+                    data_type_id: sample.data_type,
+                    sender_id: resolve_telemetry_text(sample.sender_id).to_string(),
+                    sender_id_id: sample.sender_id,
                     values: sample.values.as_ref().to_vec(),
                 })
             } else {
@@ -704,16 +720,18 @@ pub(crate) fn telemetry_channel_minmax(
     let Ok(store) = UI_TELEMETRY_STORE.lock() else {
         return None;
     };
+    let data_type_id = intern_telemetry_text(data_type);
+    let sender_id = sender_id.map(intern_telemetry_text);
 
     let mut min_value = None::<f32>;
     let mut max_value = None::<f32>;
 
     for row in store.rows.values() {
-        if row.data_type != data_type {
+        if row.interned_data_type_id() != data_type_id {
             continue;
         }
         if let Some(sender_id) = sender_id
-            && row.sender_id != sender_id
+            && row.interned_sender_id() != sender_id
         {
             continue;
         }
@@ -732,11 +750,13 @@ fn latest_telemetry_value_direct(
     sender_id: Option<&str>,
     index: usize,
 ) -> Option<f32> {
+    let data_type_id = intern_telemetry_text(data_type);
     match sender_id {
         Some(sender_id) => {
+            let sender_id = intern_telemetry_text(sender_id);
             if let Ok(latest) = LATEST_TELEMETRY.lock() {
                 latest
-                    .get(&LatestTelemetryKey::new(data_type, sender_id))
+                    .get(&LatestTelemetryKey::new(data_type_id, sender_id))
                     .and_then(|row| row.values.get(index).copied().flatten())
             } else {
                 None
@@ -745,7 +765,7 @@ fn latest_telemetry_value_direct(
         None => {
             if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
                 latest_by_type
-                    .get(data_type)
+                    .get(&data_type_id)
                     .and_then(|row| row.values.get(index).copied().flatten())
             } else {
                 None
@@ -767,9 +787,9 @@ fn fallback_latest_telemetry_value(
 mod latest_telemetry_tests {
     use super::{
         AlertMsg, LIVE_TELEMETRY_MAX_AGE_MS, LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS,
-        SenderTelemetryActivity, TelemetryRow, latest_telemetry_value, live_telemetry_row_is_fresh,
-        normalize_alert_list, prune_history, push_alert_deduped, reset_latest_telemetry,
-        stale_sender_telemetry_for_epoch,
+        SenderTelemetryActivity, TelemetryRow, intern_telemetry_text, latest_telemetry_value,
+        live_telemetry_row_is_fresh, normalize_alert_list, prune_history, push_alert_deduped,
+        reset_latest_telemetry, stale_sender_telemetry_for_epoch,
     };
     use std::collections::HashMap;
 
@@ -779,7 +799,9 @@ mod latest_telemetry_tests {
             timestamp_ms: 1_700_000_030_000,
             received_timestamp_ms: 1_700_000_030_000,
             data_type: "KG1000".to_string(),
+            data_type_id: Default::default(),
             sender_id: "DAQ".to_string(),
+            sender_id_id: Default::default(),
             values: vec![Some(9.5754)],
         }]);
 
@@ -792,14 +814,14 @@ mod latest_telemetry_tests {
     fn detects_stale_sender_when_another_sender_is_still_active() {
         let mut activity = HashMap::new();
         activity.insert(
-            "DAQ".to_string(),
+            intern_telemetry_text("DAQ"),
             SenderTelemetryActivity {
                 last_mono_ms: 1_000,
                 ws_epoch: 42,
             },
         );
         activity.insert(
-            "PB".to_string(),
+            intern_telemetry_text("PB"),
             SenderTelemetryActivity {
                 last_mono_ms: 19_500,
                 ws_epoch: 42,
@@ -817,7 +839,9 @@ mod latest_telemetry_tests {
             timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
             received_timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
             data_type: "BATTERY_VOLTAGE".to_string(),
+            data_type_id: Default::default(),
             sender_id: "PB".to_string(),
+            sender_id_id: Default::default(),
             values: vec![Some(12.0)],
         };
         assert!(!live_telemetry_row_is_fresh(&row, now_ms));
@@ -830,7 +854,9 @@ mod latest_telemetry_tests {
             timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             received_timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             data_type: "BATTERY_VOLTAGE".to_string(),
+            data_type_id: Default::default(),
             sender_id: "PB".to_string(),
+            sender_id_id: Default::default(),
             values: vec![Some(12.0)],
         };
         assert!(live_telemetry_row_is_fresh(&row, now_ms));
@@ -844,14 +870,18 @@ mod latest_telemetry_tests {
                 timestamp_ms: 1_699_000_000_000,
                 received_timestamp_ms: newest_received_ms - 1_000,
                 data_type: "GPS".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(1.0)],
             },
             TelemetryRow {
                 timestamp_ms: 1_700_000_490_000,
                 received_timestamp_ms: newest_received_ms,
                 data_type: "GPS".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(2.0)],
             },
         ];
@@ -5179,9 +5209,7 @@ fn TelemetryDashboardInner() -> Element {
 
                     if !drained.is_empty() {
                         update_latest_telemetry_batch(&drained);
-                        for row in &drained {
-                            charts_cache_ingest_row(row);
-                        }
+                        charts_cache_ingest_rows(&drained);
                         if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
                             store.apply_rows(drained);
                             if let Some(gps) = store.latest_rocket_gps() {

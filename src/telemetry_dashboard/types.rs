@@ -1,6 +1,71 @@
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub type FlightState = String;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+pub struct TelemetryTextId(u32);
+
+impl TelemetryTextId {
+    pub const EMPTY: Self = Self(0);
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+#[derive(Default)]
+struct TelemetryTextInterner {
+    by_text: HashMap<Arc<str>, TelemetryTextId>,
+    by_id: Vec<Arc<str>>,
+}
+
+impl TelemetryTextInterner {
+    fn intern(&mut self, value: &str) -> TelemetryTextId {
+        if value.is_empty() {
+            return TelemetryTextId::EMPTY;
+        }
+        if let Some(id) = self.by_text.get(value) {
+            return *id;
+        }
+        let text: Arc<str> = Arc::from(value);
+        let id = TelemetryTextId((self.by_id.len() as u32).saturating_add(1));
+        self.by_id.push(text.clone());
+        self.by_text.insert(text, id);
+        id
+    }
+
+    fn resolve(&self, id: TelemetryTextId) -> Arc<str> {
+        if id.is_empty() {
+            return Arc::from("");
+        }
+        self.by_id
+            .get(id.0.saturating_sub(1) as usize)
+            .cloned()
+            .unwrap_or_else(|| Arc::from(""))
+    }
+}
+
+static TELEMETRY_TEXT_INTERNER: Lazy<Mutex<TelemetryTextInterner>> =
+    Lazy::new(|| Mutex::new(TelemetryTextInterner::default()));
+
+pub fn intern_telemetry_text(value: &str) -> TelemetryTextId {
+    TELEMETRY_TEXT_INTERNER
+        .lock()
+        .ok()
+        .map(|mut interner| interner.intern(value))
+        .unwrap_or(TelemetryTextId::EMPTY)
+}
+
+pub fn resolve_telemetry_text(id: TelemetryTextId) -> Arc<str> {
+    TELEMETRY_TEXT_INTERNER
+        .lock()
+        .ok()
+        .map(|interner| interner.resolve(id))
+        .unwrap_or_else(|| Arc::from(""))
+}
 
 pub fn display_flight_state(state: &str) -> String {
     let mut out = String::with_capacity(state.len() + 4);
@@ -169,7 +234,32 @@ pub struct TelemetryRow {
     #[serde(default)]
     pub received_timestamp_ms: i64,
     pub data_type: String,
+    #[serde(skip)]
+    pub(crate) data_type_id: TelemetryTextId,
     #[serde(default)]
     pub sender_id: String,
+    #[serde(skip)]
+    pub(crate) sender_id_id: TelemetryTextId,
     pub values: Vec<Option<f32>>,
+}
+
+impl TelemetryRow {
+    pub fn refresh_interned_ids(&mut self) {
+        self.data_type_id = intern_telemetry_text(&self.data_type);
+        self.sender_id_id = intern_telemetry_text(&self.sender_id);
+    }
+
+    pub fn interned_data_type_id(&self) -> TelemetryTextId {
+        if self.data_type_id.is_empty() && !self.data_type.is_empty() {
+            return intern_telemetry_text(&self.data_type);
+        }
+        self.data_type_id
+    }
+
+    pub fn interned_sender_id(&self) -> TelemetryTextId {
+        if self.sender_id_id.is_empty() && !self.sender_id.is_empty() {
+            return intern_telemetry_text(&self.sender_id);
+        }
+        self.sender_id_id
+    }
 }

@@ -26,7 +26,7 @@
 // - This intentionally trades “perfect accuracy for late/out-of-order samples”
 //   for visual stability: once a bucket is in the past, it is frozen.
 
-use super::types::TelemetryRow;
+use super::types::{TelemetryRow, TelemetryTextId, intern_telemetry_text};
 use dioxus::prelude::*;
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
@@ -38,7 +38,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{HISTORY_MS, telemetry_history_retention_ms, telemetry_view_window_ms};
 
-static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<TelemetryTextId>>> = OnceLock::new();
 static CHART_VISIBILITY_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static CHART_VISIBILITY_POLLER_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -49,7 +49,7 @@ pub fn configure_sender_split_data_types(data_types: &[String]) {
             .iter()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
+            .map(intern_telemetry_text)
             .collect();
     }
 }
@@ -123,7 +123,10 @@ thread_local! {
 pub fn _charts_cache_is_dirty(data_type: &str) -> bool {
     CHARTS_CACHE.with(|c| {
         let c = c.borrow();
-        c.charts.get(data_type).map(|ch| ch.dirty).unwrap_or(false)
+        c.charts
+            .get(&ChartSeriesKey::from_query(data_type))
+            .map(|ch| ch.dirty)
+            .unwrap_or(false)
     })
 }
 
@@ -164,6 +167,16 @@ pub fn charts_cache_ingest_row(row: &TelemetryRow) {
     });
 }
 
+pub fn charts_cache_ingest_rows(rows: &[TelemetryRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    CHARTS_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        cache.ingest_rows(rows);
+    });
+}
+
 /// Returns:
 /// - chunked path groups for canvas rendering
 /// - y_min, y_max (labels)
@@ -187,8 +200,9 @@ pub fn charts_cache_get_subset(
 ) -> (Rc<Vec<ChartRenderChunk>>, f32, f32, f32) {
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        c.ensure_interested_chart(data_type);
-        if let Some(chart) = c.charts.get_mut(data_type) {
+        let chart_key = ChartSeriesKey::from_query(data_type);
+        c.ensure_interested_chart(chart_key);
+        if let Some(chart) = c.charts.get_mut(&chart_key) {
             chart.build_subset(channels, width, height)
         } else {
             (Rc::new(Vec::new()), 0.0, 1.0, 0.0)
@@ -228,8 +242,9 @@ pub fn charts_cache_get_subset_per_series_with_grid(
 ) -> PerSeriesChartCacheResult {
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        c.ensure_interested_chart(data_type);
-        if let Some(chart) = c.charts.get_mut(data_type) {
+        let chart_key = ChartSeriesKey::from_query(data_type);
+        c.ensure_interested_chart(chart_key);
+        if let Some(chart) = c.charts.get_mut(&chart_key) {
             chart.build_subset_per_series_with_grid(
                 channels,
                 width,
@@ -283,8 +298,9 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
         let mut span_min = 0.0_f32;
 
         for (series_idx, (data_type, channel)) in series.iter().enumerate() {
-            cache.ensure_interested_chart(data_type);
-            let Some(chart) = cache.charts.get_mut(data_type) else {
+            let chart_key = ChartSeriesKey::from_query(data_type);
+            cache.ensure_interested_chart(chart_key);
+            let Some(chart) = cache.charts.get_mut(&chart_key) else {
                 series_scales.push(None);
                 continue;
             };
@@ -355,8 +371,9 @@ pub fn charts_cache_get_channel_minmax(
 ) -> (Vec<Option<f32>>, Vec<Option<f32>>) {
     CHARTS_CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        c.ensure_interested_chart(data_type);
-        if let Some(ch) = c.charts.get_mut(data_type) {
+        let chart_key = ChartSeriesKey::from_query(data_type);
+        c.ensure_interested_chart(chart_key);
+        if let Some(ch) = c.charts.get_mut(&chart_key) {
             ch.build_if_needed(width, height);
             (ch.chan_min.clone(), ch.chan_max.clone())
         } else {
@@ -370,10 +387,10 @@ pub fn charts_cache_get_channel_minmax(
 // ============================================================
 
 struct ChartsCache {
-    charts: HashMap<String, CachedChart>,
+    charts: HashMap<ChartSeriesKey, CachedChart>,
     raw_rows: BTreeMap<ChartRawRowKey, TelemetryRow>,
-    source_generation: HashMap<String, u64>,
-    interested_until_generation: HashMap<String, u64>,
+    source_generation: HashMap<ChartSeriesKey, u64>,
+    interested_until_generation: HashMap<ChartSeriesKey, u64>,
     generation: u64,
     newest_ts: i64,
 }
@@ -413,17 +430,46 @@ impl ChartsCache {
         self.prune_interest();
     }
 
+    fn ingest_rows(&mut self, rows: &[TelemetryRow]) {
+        if rows.is_empty() {
+            return;
+        }
+
+        self.generation = self
+            .generation
+            .wrapping_add(rows.len() as u64)
+            .max(1);
+
+        for row in rows {
+            self.store_raw_row_without_prune(row);
+            self.note_source_row(row);
+            self.ingest_interested_row(row);
+
+            for derived in derived_chart_rows(row) {
+                self.note_source_row(&derived);
+                self.ingest_interested_row(&derived);
+            }
+        }
+
+        self.prune_raw_rows();
+        self.prune_interest();
+    }
+
     fn store_raw_row(&mut self, r: &TelemetryRow) {
+        self.store_raw_row_without_prune(r);
+        self.prune_raw_rows();
+    }
+
+    fn store_raw_row_without_prune(&mut self, r: &TelemetryRow) {
         if self.newest_ts == 0 || r.timestamp_ms > self.newest_ts {
             self.newest_ts = r.timestamp_ms;
         }
         let key = ChartRawRowKey {
             bucket: r.timestamp_ms.div_euclid(BUCKET_MS),
-            data_type: r.data_type.clone(),
-            sender_id: r.sender_id.clone(),
+            data_type: r.interned_data_type_id(),
+            sender_id: r.interned_sender_id(),
         };
         self.raw_rows.insert(key, r.clone());
-        self.prune_raw_rows();
     }
 
     fn prune_raw_rows(&mut self) {
@@ -444,25 +490,25 @@ impl ChartsCache {
     }
 
     fn note_source_row(&mut self, r: &TelemetryRow) {
-        for key in chart_keys_for_row(r) {
+        for_each_chart_key(r, |key| {
             self.source_generation.insert(key, self.generation);
-        }
+        });
     }
 
     fn ingest_interested_row(&mut self, r: &TelemetryRow) {
-        for key in chart_keys_for_row(r) {
-            if !self.is_key_interested(&key) {
-                continue;
+        for_each_chart_key(r, |key| {
+            if !self.is_key_interested(key) {
+                return;
             }
             let chart = self.charts.entry(key).or_insert_with(CachedChart::new);
             chart.ingest(r);
             chart.source_generation = self.generation;
-        }
+        });
     }
 
-    fn is_key_interested(&self, key: &str) -> bool {
+    fn is_key_interested(&self, key: ChartSeriesKey) -> bool {
         self.interested_until_generation
-            .get(key)
+            .get(&key)
             .is_some_and(|until| *until >= self.generation)
     }
 
@@ -486,18 +532,18 @@ impl ChartsCache {
         }
     }
 
-    fn mark_interested(&mut self, key: &str) {
+    fn mark_interested(&mut self, key: ChartSeriesKey) {
         self.interested_until_generation.insert(
-            key.to_string(),
+            key,
             self.generation
                 .saturating_add(CHART_INTEREST_TTL_GENERATIONS),
         );
     }
 
-    fn ensure_interested_chart(&mut self, key: &str) {
+    fn ensure_interested_chart(&mut self, key: ChartSeriesKey) {
         self.mark_interested(key);
-        let source_generation = self.source_generation.get(key).copied().unwrap_or(0);
-        let existing_chart = self.charts.get(key);
+        let source_generation = self.source_generation.get(&key).copied().unwrap_or(0);
+        let existing_chart = self.charts.get(&key);
         let chart_generation = existing_chart
             .map(|chart| chart.source_generation)
             .unwrap_or(0);
@@ -511,7 +557,7 @@ impl ChartsCache {
         self.rebuild_chart_for_key(key, source_generation);
     }
 
-    fn rebuild_chart_for_key(&mut self, key: &str, source_generation: u64) {
+    fn rebuild_chart_for_key(&mut self, key: ChartSeriesKey, source_generation: u64) {
         let rows = self.raw_rows.values().cloned().collect::<Vec<_>>();
         let mut chart = CachedChart::new();
         for row in rows.iter() {
@@ -521,21 +567,25 @@ impl ChartsCache {
             }
         }
         chart.source_generation = source_generation;
-        self.charts.insert(key.to_string(), chart);
+        self.charts.insert(key, chart);
     }
 
-    fn ingest_row_for_key(&self, chart: &mut CachedChart, key: &str, row: &TelemetryRow) {
-        if chart_keys_for_row(row)
-            .iter()
-            .any(|candidate| candidate == key)
-        {
+    fn ingest_row_for_key(&self, chart: &mut CachedChart, key: ChartSeriesKey, row: &TelemetryRow) {
+        let mut matched = false;
+        for_each_chart_key(row, |candidate| {
+            if candidate == key {
+                matched = true;
+            }
+        });
+        if matched {
             chart.ingest(row);
         }
     }
 
     fn get(&mut self, dt: &str, w: f32, h: f32) -> (Rc<Vec<ChartRenderChunk>>, f32, f32, f32) {
-        self.ensure_interested_chart(dt);
-        if let Some(c) = self.charts.get_mut(dt) {
+        let chart_key = ChartSeriesKey::from_query(dt);
+        self.ensure_interested_chart(chart_key);
+        if let Some(c) = self.charts.get_mut(&chart_key) {
             c.build_if_needed(w, h);
             (c.chunks.clone(), c.disp_min, c.disp_max, c.span_min)
         } else {
@@ -554,19 +604,47 @@ impl ChartsCache {
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct ChartRawRowKey {
     bucket: i64,
-    data_type: String,
-    sender_id: String,
+    data_type: TelemetryTextId,
+    sender_id: TelemetryTextId,
 }
 
-fn chart_keys_for_row(r: &TelemetryRow) -> Vec<String> {
-    let mut keys = vec![r.data_type.clone()];
-    // Explicit sender-scoped chart requests should always be satisfiable when
-    // telemetry includes a sender id, even if the layout did not declare the
-    // data type in sender_split_data_types before rows were ingested.
-    if !r.sender_id.is_empty() {
-        keys.push(sender_scoped_chart_key(&r.data_type, &r.sender_id));
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
+struct ChartSeriesKey {
+    data_type: TelemetryTextId,
+    sender_id: TelemetryTextId,
+}
+
+impl ChartSeriesKey {
+    fn from_row(row: &TelemetryRow) -> Self {
+        Self {
+            data_type: row.interned_data_type_id(),
+            sender_id: row.interned_sender_id(),
+        }
     }
-    keys
+
+    fn from_query(key: &str) -> Self {
+        if let Some((data_type, sender_id)) = key.split_once("@@") {
+            return Self {
+                data_type: intern_telemetry_text(data_type),
+                sender_id: intern_telemetry_text(sender_id),
+            };
+        }
+        Self {
+            data_type: intern_telemetry_text(key),
+            sender_id: TelemetryTextId::EMPTY,
+        }
+    }
+}
+
+fn for_each_chart_key(row: &TelemetryRow, mut visit: impl FnMut(ChartSeriesKey)) {
+    let base = ChartSeriesKey::from_row(row);
+    visit(ChartSeriesKey {
+        data_type: base.data_type,
+        sender_id: TelemetryTextId::EMPTY,
+    });
+    if !base.sender_id.is_empty() {
+        visit(base);
+    }
 }
 
 fn derived_chart_rows(row: &TelemetryRow) -> Vec<TelemetryRow> {
@@ -592,7 +670,9 @@ mod tests {
                 timestamp_ms: 1_700_000_000_000 + i * 40,
                 received_timestamp_ms: 1_700_000_000_000 + i * 40,
                 data_type: "KG1000".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(5.0 + i as f32)],
             });
         }
@@ -624,28 +704,36 @@ mod tests {
                 timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "FUEL_TANK_PRESSURE".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(100.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "KG1000".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(4.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "LOADCELL_WEIGHT_KG".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(8.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "LOADCELL_FILL_PERCENT".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(40.0 + i as f32)],
             });
         }
@@ -679,14 +767,18 @@ mod tests {
             timestamp_ms: 1_700_000_000_000,
             received_timestamp_ms: 1_700_000_000_000,
             data_type: "GPS".to_string(),
+            data_type_id: Default::default(),
             sender_id: "DAQ".to_string(),
+            sender_id_id: Default::default(),
             values: vec![Some(1.0)],
         });
         chart.ingest(&TelemetryRow {
             timestamp_ms: i64::MAX - 1_000,
             received_timestamp_ms: i64::MAX - 1_000,
             data_type: "GPS".to_string(),
+            data_type_id: Default::default(),
             sender_id: "DAQ".to_string(),
+            sender_id_id: Default::default(),
             values: vec![Some(2.0)],
         });
 
@@ -710,14 +802,18 @@ mod tests {
                 timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "BATTERY_VOLTAGE".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "GB".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(14.0 + i as f32 * 0.1)],
             });
             charts_cache_ingest_row(&TelemetryRow {
                 timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "BATTERY_VOLTAGE".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "VB".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(7.0 + i as f32 * 0.1)],
             });
         }
@@ -749,7 +845,9 @@ mod tests {
                 timestamp_ms: 1_700_000_030_000 + i * 40,
                 received_timestamp_ms: 1_700_000_030_000 + i * 40,
                 data_type: "BATTERY_VOLTAGE".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "PB".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(12.0 + i as f32 * 0.1)],
             });
         }
@@ -840,7 +938,9 @@ mod tests {
                 timestamp_ms: base_ts + i * 1_000,
                 received_timestamp_ms: base_ts + i * 1_000,
                 data_type: "PRESSURE".to_string(),
+                data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
+                sender_id_id: Default::default(),
                 values: vec![Some(100.0 + i as f32)],
             });
         }

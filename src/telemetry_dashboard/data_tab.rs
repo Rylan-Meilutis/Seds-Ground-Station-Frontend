@@ -718,7 +718,9 @@ mod tests {
             timestamp_ms: 1_700_000_050_000,
             received_timestamp_ms: 1_700_000_050_000,
             data_type: "BATTERY_VOLTAGE".to_string(),
+            data_type_id: Default::default(),
             sender_id: "PB".to_string(),
+            sender_id_id: Default::default(),
             values: vec![Some(12.4)],
         }]);
 
