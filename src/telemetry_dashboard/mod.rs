@@ -375,6 +375,7 @@ struct LatestTelemetryKey {
 #[derive(Clone)]
 struct LatestTelemetrySample {
     timestamp_ms: i64,
+    received_timestamp_ms: i64,
     data_type: TelemetryTextId,
     sender_id: TelemetryTextId,
     values: Arc<[Option<f32>]>,
@@ -805,15 +806,16 @@ fn update_latest_telemetry_locked(
     latest_by_type: &mut HashMap<TelemetryTextId, LatestTelemetrySample>,
     row: &TelemetryRow,
 ) {
+    let row_received_ms = telemetry_row_received_ms(row);
     let data_type_id = row.interned_data_type_id();
     let sender_id = row.interned_sender_id();
     let key = LatestTelemetryKey::new(data_type_id, sender_id);
     let should_replace = latest
         .get(&key)
-        .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
+        .is_none_or(|existing| existing.received_timestamp_ms <= row_received_ms);
     let should_replace_type = latest_by_type
         .get(&data_type_id)
-        .is_none_or(|existing| existing.timestamp_ms <= row.timestamp_ms);
+        .is_none_or(|existing| existing.received_timestamp_ms <= row_received_ms);
     if !should_replace && !should_replace_type {
         return;
     }
@@ -824,6 +826,7 @@ fn update_latest_telemetry_locked(
             key,
             LatestTelemetrySample {
                 timestamp_ms: row.timestamp_ms,
+                received_timestamp_ms: row_received_ms,
                 data_type: data_type_id,
                 sender_id,
                 values: values.clone(),
@@ -836,6 +839,7 @@ fn update_latest_telemetry_locked(
             data_type_id,
             LatestTelemetrySample {
                 timestamp_ms: row.timestamp_ms,
+                received_timestamp_ms: row_received_ms,
                 data_type: data_type_id,
                 sender_id,
                 values,
@@ -878,7 +882,7 @@ pub(crate) fn latest_telemetry_row(
                     .get(&LatestTelemetryKey::new(data_type_id, sender_id))
                     .map(|sample| TelemetryRow {
                         timestamp_ms: sample.timestamp_ms,
-                        received_timestamp_ms: sample.timestamp_ms,
+                        received_timestamp_ms: sample.received_timestamp_ms,
                         data_type: resolve_telemetry_text(sample.data_type).to_string(),
                         data_type_id: sample.data_type,
                         sender_id: resolve_telemetry_text(sample.sender_id).to_string(),
@@ -893,7 +897,7 @@ pub(crate) fn latest_telemetry_row(
             if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
                 latest_by_type.get(&data_type_id).map(|sample| TelemetryRow {
                     timestamp_ms: sample.timestamp_ms,
-                    received_timestamp_ms: sample.timestamp_ms,
+                    received_timestamp_ms: sample.received_timestamp_ms,
                     data_type: resolve_telemetry_text(sample.data_type).to_string(),
                     data_type_id: sample.data_type,
                     sender_id: resolve_telemetry_text(sample.sender_id).to_string(),
@@ -972,12 +976,13 @@ fn fallback_latest_telemetry_value(
 mod latest_telemetry_tests {
     use super::{
         AlertMsg, LIVE_TELEMETRY_MAX_AGE_MS, LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS,
-        SenderTelemetryActivity, TelemetryRow, compact_rows_for_ui,
+        LatestTelemetryKey, SenderTelemetryActivity, TelemetryRow, compact_rows_for_ui,
         ingest_telemetry_rows_profile_only, intern_telemetry_text, latest_telemetry_row,
         latest_telemetry_value, live_telemetry_row_is_fresh, normalize_alert_list,
         normalize_telemetry_rows_for_runtime, prune_history, push_alert_deduped,
         reset_latest_telemetry, sort_rows, stale_sender_telemetry_for_epoch,
         telemetry_channel_minmax,
+        update_latest_telemetry_locked,
     };
     use crate::telemetry_dashboard::{
         UI_TELEMETRY_STORE, charts_cache_clear_active, data_chart,
@@ -1056,6 +1061,44 @@ mod latest_telemetry_tests {
             values: vec![Some(12.0)],
         };
         assert!(live_telemetry_row_is_fresh(&row, now_ms));
+    }
+
+    #[test]
+    fn latest_cache_prefers_newer_received_time_over_future_skewed_timestamp() {
+        let mut latest = HashMap::new();
+        let mut latest_by_type = HashMap::new();
+        let data_type = "BATTERY_VOLTAGE".to_string();
+        let sender_id = "PB".to_string();
+
+        let first = TelemetryRow {
+            timestamp_ms: 1_700_000_000_000 + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
+            received_timestamp_ms: 1_700_000_000_000,
+            data_type: data_type.clone(),
+            data_type_id: Default::default(),
+            sender_id: sender_id.clone(),
+            sender_id_id: Default::default(),
+            values: vec![Some(10.0)],
+        };
+        update_latest_telemetry_locked(&mut latest, &mut latest_by_type, &first);
+
+        let second = TelemetryRow {
+            timestamp_ms: 1_700_000_000_100,
+            received_timestamp_ms: 1_700_000_000_100,
+            data_type,
+            data_type_id: Default::default(),
+            sender_id,
+            sender_id_id: Default::default(),
+            values: vec![Some(11.0)],
+        };
+        update_latest_telemetry_locked(&mut latest, &mut latest_by_type, &second);
+
+        let key = LatestTelemetryKey::new(
+            second.interned_data_type_id(),
+            second.interned_sender_id(),
+        );
+        let sample = latest.get(&key).expect("latest sample should exist");
+        assert_eq!(sample.received_timestamp_ms, second.received_timestamp_ms);
+        assert_eq!(sample.values.as_ref(), &[Some(11.0)]);
     }
 
     #[test]
