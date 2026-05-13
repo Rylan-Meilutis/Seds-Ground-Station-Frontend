@@ -414,7 +414,7 @@ fn _handle_gs26_protocol_async(request: HttpRequest<Vec<u8>>, responder: Request
         .spawn(move || {
             let response = handle_gs26_protocol_safely(request);
             if panic::catch_unwind(AssertUnwindSafe(|| responder.respond(response))).is_err() {
-            debug_log::append("[protocol] panic while responding to request");
+                debug_log::append("[protocol] panic while responding to request");
             }
         });
 }

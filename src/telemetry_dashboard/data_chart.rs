@@ -44,7 +44,6 @@ static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<TelemetryTextId>>> = Once
 static CHART_DRAW_QUEUE: OnceLock<Mutex<Vec<(String, String)>>> = OnceLock::new();
 static CHART_DRAW_FLUSH_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
-
 pub fn configure_sender_split_data_types(data_types: &[String]) {
     let configured = SENDER_SPLIT_DATA_TYPES.get_or_init(|| Mutex::new(HashSet::new()));
     if let Ok(mut configured) = configured.lock() {
@@ -1459,8 +1458,8 @@ impl CachedChart {
         };
         span_ms = span_ms.min(view_window_ms);
         self.prev_span_ms = span_ms;
-        let plot_width_px =
-            ((w - CHART_GRID_RIGHT_PAD as f32).max(CHART_GRID_LEFT as f32 + 1.0)) - CHART_GRID_LEFT as f32;
+        let plot_width_px = ((w - CHART_GRID_RIGHT_PAD as f32).max(CHART_GRID_LEFT as f32 + 1.0))
+            - CHART_GRID_LEFT as f32;
         let lod_bucket_ms = render_bucket_ms_for_span(span_ms, plot_width_px);
 
         // Determine how many buckets to render from that span (stable)
@@ -2481,7 +2480,12 @@ fn queue_chart_canvas_draw(canvas_id_json: String, payload_json: String) {
         CHART_DRAW_FLUSH_SCHEDULED.store(false, Ordering::Release);
         let queued = CHART_DRAW_QUEUE
             .get()
-            .and_then(|queue| queue.lock().ok().map(|mut pending| std::mem::take(&mut *pending)))
+            .and_then(|queue| {
+                queue
+                    .lock()
+                    .ok()
+                    .map(|mut pending| std::mem::take(&mut *pending))
+            })
             .unwrap_or_default();
         if queued.is_empty() {
             return;
@@ -3040,15 +3044,17 @@ pub fn ChartCanvas(
     };
     let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
     let id_json = serde_json::to_string(&canvas_id).unwrap_or_else(|_| "\"\"".to_string());
-    use_effect(use_reactive!(
-        |(render_signature, payload_json, id_json)| {
-            if last_draw_signature.get() == render_signature {
-                return;
-            }
-            queue_chart_canvas_draw(id_json.clone(), payload_json.clone());
-            last_draw_signature.set(render_signature);
+    use_effect(use_reactive!(|(
+        render_signature,
+        payload_json,
+        id_json,
+    )| {
+        if last_draw_signature.get() == render_signature {
+            return;
         }
-    ));
+        queue_chart_canvas_draw(id_json.clone(), payload_json.clone());
+        last_draw_signature.set(render_signature);
+    }));
 
     rsx! {
         canvas {

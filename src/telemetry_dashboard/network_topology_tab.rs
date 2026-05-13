@@ -1000,13 +1000,13 @@ fn endpoint_route_owners(
 fn endpoint_owner_label(node: &NetworkTopologyNode, endpoint_name: &str) -> Option<String> {
     match node.kind {
         NetworkTopologyNodeKind::Router | NetworkTopologyNodeKind::Board
-        if node
-            .endpoints
-            .iter()
-            .any(|endpoint| endpoint == endpoint_name) =>
-            {
-                Some(node.label.clone())
-            }
+            if node
+                .endpoints
+                .iter()
+                .any(|endpoint| endpoint == endpoint_name) =>
+        {
+            Some(node.label.clone())
+        }
         NetworkTopologyNodeKind::Endpoint | NetworkTopologyNodeKind::Side => None,
         _ => None,
     }

@@ -13,7 +13,8 @@ use std::rc::Rc;
 use super::data_chart::{
     CHART_GRID_BOTTOM_PAD, CHART_GRID_LEFT, CHART_GRID_RIGHT_PAD, CHART_GRID_TOP,
     CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
-    ChartCanvas, SeriesSwatch, charts_cache_get, charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
+    ChartCanvas, SeriesSwatch, charts_cache_get,
+    charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
     charts_cache_get_subset_per_series_with_grid, charts_cache_source_generation,
     charts_cache_source_generation_multi, sender_scoped_chart_key, series_color,
     use_chart_panel_visibility,
@@ -145,7 +146,10 @@ fn hash_chart_series_specs(
     }
 }
 
-fn chart_render_source_generation(chart_key: &str, multi_series: Option<&[ChartSeriesSpec]>) -> u64 {
+fn chart_render_source_generation(
+    chart_key: &str,
+    multi_series: Option<&[ChartSeriesSpec]>,
+) -> u64 {
     if let Some(series) = multi_series {
         let cache_series = series
             .iter()
@@ -1034,19 +1038,17 @@ fn DataSummarySection(
             } else {
                 None
             };
-            let value = if let Some(lbls) = channel_boolean_labels
-                .as_ref()
-                .and_then(|list| list.get(i))
-            {
-                boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
-            } else if boolean_labels.is_some() {
-                boolean_value_text(vals.get(i).copied().flatten(), boolean_labels.as_ref())
-            } else {
-                format_value(
-                    vals.get(i).copied().flatten(),
-                    channel_formatters.as_ref().and_then(|list| list.get(i)),
-                )
-            };
+            let value =
+                if let Some(lbls) = channel_boolean_labels.as_ref().and_then(|list| list.get(i)) {
+                    boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
+                } else if boolean_labels.is_some() {
+                    boolean_value_text(vals.get(i).copied().flatten(), boolean_labels.as_ref())
+                } else {
+                    format_value(
+                        vals.get(i).copied().flatten(),
+                        channel_formatters.as_ref().and_then(|list| list.get(i)),
+                    )
+                };
             (
                 label.clone(),
                 min_max.map(|(min, _)| {

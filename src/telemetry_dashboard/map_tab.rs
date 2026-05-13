@@ -574,8 +574,11 @@ pub fn MapTab(
     #[cfg(target_arch = "wasm32")]
     let effective_user = move || -> Option<(f64, f64)> { *browser_user_gps.read() };
     let rendered_user_coords = effective_user();
-    let distance_text =
-        format_distance_label(*rocket_gps.read(), rendered_user_coords, distance_units_metric);
+    let distance_text = format_distance_label(
+        *rocket_gps.read(),
+        rendered_user_coords,
+        distance_units_metric,
+    );
     let rocket_altitude_value =
         sanitize_altitude_m(rocket_altitude_m.as_ref().and_then(|signal| *signal.read()));
     let user_altitude_value =

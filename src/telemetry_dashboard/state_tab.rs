@@ -30,8 +30,8 @@ use crate::telemetry_dashboard::data_chart::{
     CHART_X_LABEL_BOTTOM, CHART_X_LABEL_LEFT_INSET, CHART_Y_LABEL_LEFT, CHART_Y_LABEL_MAX_WIDTH,
     ChartCanvas, ChartRenderChunk, SeriesSwatch, charts_cache_get, charts_cache_get_channel_minmax,
     charts_cache_get_multi_series_per_series_with_grid, charts_cache_get_subset,
-    charts_cache_source_generation, charts_cache_source_generation_multi,
-    sender_scoped_chart_key, series_color, use_chart_panel_visibility,
+    charts_cache_source_generation, charts_cache_source_generation_multi, sender_scoped_chart_key,
+    series_color, use_chart_panel_visibility,
 };
 use crate::telemetry_dashboard::map_tab::MapTab;
 

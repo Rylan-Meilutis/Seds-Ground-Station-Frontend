@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 
 pub type FlightState = String;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub struct TelemetryTextId(u32);
 
 impl TelemetryTextId {

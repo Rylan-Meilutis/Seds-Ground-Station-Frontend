@@ -570,7 +570,11 @@ fn commit_fill_target_mass(
         .parse::<f32>()
         .map_err(|_| format!("Enter a valid target mass for {title}."))?;
     let normalized = if value.abs() < 0.01 {
-        if value.is_sign_negative() { -0.01 } else { 0.01 }
+        if value.is_sign_negative() {
+            -0.01
+        } else {
+            0.01
+        }
     } else {
         value
     };

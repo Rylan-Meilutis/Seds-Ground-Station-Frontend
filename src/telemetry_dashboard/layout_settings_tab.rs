@@ -1,7 +1,6 @@
 use super::{
-    MAX_TELEMETRY_HISTORY_MINUTES, MIN_TELEMETRY_HISTORY_MINUTES,
-    TELEMETRY_HISTORY_PRESET_MINUTES, builtin_theme_presets, js_eval, layout::ThemeConfig,
-    localized_copy, set_preferred_language,
+    MAX_TELEMETRY_HISTORY_MINUTES, MIN_TELEMETRY_HISTORY_MINUTES, TELEMETRY_HISTORY_PRESET_MINUTES,
+    builtin_theme_presets, js_eval, layout::ThemeConfig, localized_copy, set_preferred_language,
 };
 use crate::debug_log;
 use dioxus::prelude::*;
@@ -71,11 +70,13 @@ pub fn SettingsPage(
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
     let chart_interpolated_gap_ms_value = (*chart_interpolated_gap_ms.read()).clamp(0, 60_000);
     let telemetry_retention_ms_value = *telemetry_retention_ms.read();
-    let telemetry_view_window_ms_value = (*telemetry_view_window_ms.read()).min(telemetry_retention_ms_value);
+    let telemetry_view_window_ms_value =
+        (*telemetry_view_window_ms.read()).min(telemetry_retention_ms_value);
     let telemetry_retention_minutes = telemetry_retention_ms_value / 60_000;
     let telemetry_view_window_minutes = telemetry_view_window_ms_value / 60_000;
     let telemetry_retention_custom_input_value = telemetry_retention_custom_input.read().clone();
-    let telemetry_view_window_custom_input_value = telemetry_view_window_custom_input.read().clone();
+    let telemetry_view_window_custom_input_value =
+        telemetry_view_window_custom_input.read().clone();
     let data_cache_enabled_value = *data_cache_enabled.read();
     let map_tile_cache_enabled_value = *map_tile_cache_enabled.read();
     let cache_budget_mb_value = (*cache_budget_mb.read()).clamp(1, 100_000);
@@ -156,8 +157,7 @@ pub fn SettingsPage(
     let section_logs = localized_copy(&language, "Logs", "Registros", "Journaux");
     let settings_tab_general = localized_copy(&language, "General", "General", "General");
     let settings_tab_map = localized_copy(&language, "Map", "Mapa", "Carte");
-    let settings_tab_telemetry =
-        localized_copy(&language, "Telemetry", "Telemetria", "Telemetrie");
+    let settings_tab_telemetry = localized_copy(&language, "Telemetry", "Telemetria", "Telemetrie");
     let settings_tab_history = localized_copy(&language, "History", "Historial", "Historique");
     let settings_tab_maintenance =
         localized_copy(&language, "Maintenance", "Mantenimiento", "Maintenance");

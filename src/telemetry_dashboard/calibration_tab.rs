@@ -1,8 +1,7 @@
 #![allow(clippy::redundant_locals)]
 
 use super::{
-    TELEMETRY_RENDER_EPOCH, http_get_json, http_post_json, latest_telemetry_value,
-    UrlConfig,
+    TELEMETRY_RENDER_EPOCH, UrlConfig, http_get_json, http_post_json, latest_telemetry_value,
     layout::{ThemeConfig, ValueFormatter},
     persist, translate_text,
 };
@@ -367,9 +366,7 @@ fn set_zero_raw_by_key(
     preserve_regression: bool,
 ) {
     let channel = cfg.channels.entry(channel.to_string()).or_default();
-    if preserve_regression
-        && let Some(previous_zero_raw) = channel.zero_raw
-    {
+    if preserve_regression && let Some(previous_zero_raw) = channel.zero_raw {
         let shift = raw - previous_zero_raw;
         if shift.abs() > f32::EPSILON {
             for point in &mut channel.points {
@@ -388,12 +385,7 @@ fn upsert_point_by_key(
     preserve_regression_on_zero_change: bool,
 ) {
     if expected.abs() <= 1e-6 {
-        set_zero_raw_by_key(
-            cfg,
-            channel,
-            raw,
-            preserve_regression_on_zero_change,
-        );
+        set_zero_raw_by_key(cfg, channel, raw, preserve_regression_on_zero_change);
         return;
     }
     let channel = cfg.channels.entry(channel.to_string()).or_default();
@@ -624,7 +616,10 @@ fn fit_poly3_through_zero(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64), Str
 
 fn fit_poly_degree(xs: &[f64], ys: &[f64], degree: usize) -> Result<Vec<f64>, String> {
     if xs.len() <= degree {
-        return Err(format!("need at least {} points for poly{degree} fit", degree + 1));
+        return Err(format!(
+            "need at least {} points for poly{degree} fit",
+            degree + 1
+        ));
     }
     let n = degree + 1;
     let mut a = vec![vec![0.0; n]; n];
@@ -650,10 +645,30 @@ fn fit_poly4_through_zero(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64, f64)
         return Err("need at least 4 points for poly4-zero fit".to_string());
     }
     let a = vec![
-        vec![xs.iter().map(|x| x.powi(8)).sum(), xs.iter().map(|x| x.powi(7)).sum(), xs.iter().map(|x| x.powi(6)).sum(), xs.iter().map(|x| x.powi(5)).sum()],
-        vec![xs.iter().map(|x| x.powi(7)).sum(), xs.iter().map(|x| x.powi(6)).sum(), xs.iter().map(|x| x.powi(5)).sum(), xs.iter().map(|x| x.powi(4)).sum()],
-        vec![xs.iter().map(|x| x.powi(6)).sum(), xs.iter().map(|x| x.powi(5)).sum(), xs.iter().map(|x| x.powi(4)).sum(), xs.iter().map(|x| x.powi(3)).sum()],
-        vec![xs.iter().map(|x| x.powi(5)).sum(), xs.iter().map(|x| x.powi(4)).sum(), xs.iter().map(|x| x.powi(3)).sum(), xs.iter().map(|x| x.powi(2)).sum()],
+        vec![
+            xs.iter().map(|x| x.powi(8)).sum(),
+            xs.iter().map(|x| x.powi(7)).sum(),
+            xs.iter().map(|x| x.powi(6)).sum(),
+            xs.iter().map(|x| x.powi(5)).sum(),
+        ],
+        vec![
+            xs.iter().map(|x| x.powi(7)).sum(),
+            xs.iter().map(|x| x.powi(6)).sum(),
+            xs.iter().map(|x| x.powi(5)).sum(),
+            xs.iter().map(|x| x.powi(4)).sum(),
+        ],
+        vec![
+            xs.iter().map(|x| x.powi(6)).sum(),
+            xs.iter().map(|x| x.powi(5)).sum(),
+            xs.iter().map(|x| x.powi(4)).sum(),
+            xs.iter().map(|x| x.powi(3)).sum(),
+        ],
+        vec![
+            xs.iter().map(|x| x.powi(5)).sum(),
+            xs.iter().map(|x| x.powi(4)).sum(),
+            xs.iter().map(|x| x.powi(3)).sum(),
+            xs.iter().map(|x| x.powi(2)).sum(),
+        ],
     ];
     let b = vec![
         xs.iter().zip(ys).map(|(x, y)| x.powi(4) * y).sum(),
@@ -666,19 +681,31 @@ fn fit_poly4_through_zero(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64, f64)
 }
 
 fn sse_line(xs: &[f64], ys: &[f64], m: f64, b: f64) -> f64 {
-    xs.iter().zip(ys).map(|(x, y)| (y - (m * x + b)).powi(2)).sum()
+    xs.iter()
+        .zip(ys)
+        .map(|(x, y)| (y - (m * x + b)).powi(2))
+        .sum()
 }
 
 fn sse_poly2(xs: &[f64], ys: &[f64], a: f64, b: f64, c: f64) -> f64 {
-    xs.iter().zip(ys).map(|(x, y)| (y - (a * x * x + b * x + c)).powi(2)).sum()
+    xs.iter()
+        .zip(ys)
+        .map(|(x, y)| (y - (a * x * x + b * x + c)).powi(2))
+        .sum()
 }
 
 fn sse_poly3(xs: &[f64], ys: &[f64], a: f64, b: f64, c: f64, d: f64) -> f64 {
-    xs.iter().zip(ys).map(|(x, y)| (y - (a * x.powi(3) + b * x * x + c * x + d)).powi(2)).sum()
+    xs.iter()
+        .zip(ys)
+        .map(|(x, y)| (y - (a * x.powi(3) + b * x * x + c * x + d)).powi(2))
+        .sum()
 }
 
 fn sse_poly4(xs: &[f64], ys: &[f64], a: f64, b: f64, c: f64, d: f64, e0: f64) -> f64 {
-    xs.iter().zip(ys).map(|(x, y)| (y - (a * x.powi(4) + b * x.powi(3) + c * x * x + d * x + e0)).powi(2)).sum()
+    xs.iter()
+        .zip(ys)
+        .map(|(x, y)| (y - (a * x.powi(4) + b * x.powi(3) + c * x * x + d * x + e0)).powi(2))
+        .sum()
 }
 
 fn aic(sse: f64, n: usize, k: usize) -> f64 {
@@ -707,38 +734,67 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
         if let Some(x0) = zero_hint {
             let xs_shift: Vec<f64> = xs.iter().map(|x| x - x0).collect();
             if let Ok(m) = fit_line_through_zero(&xs_shift, &ys) {
-                candidates.push(("linear_zero", aic(sse_line(&xs_shift, &ys, m, 0.0), xs_shift.len(), 1)));
+                candidates.push((
+                    "linear_zero",
+                    aic(sse_line(&xs_shift, &ys, m, 0.0), xs_shift.len(), 1),
+                ));
             }
             if xs.len() >= 2
                 && let Ok(v) = fit_poly2_through_zero(&xs_shift, &ys)
             {
-                candidates.push(("poly2_zero", aic(sse_poly2(&xs_shift, &ys, v.0, v.1, 0.0), xs_shift.len(), 2)));
+                candidates.push((
+                    "poly2_zero",
+                    aic(sse_poly2(&xs_shift, &ys, v.0, v.1, 0.0), xs_shift.len(), 2),
+                ));
             }
             if xs.len() >= 3
                 && let Ok(v) = fit_poly3_through_zero(&xs_shift, &ys)
             {
-                candidates.push(("poly3_zero", aic(sse_poly3(&xs_shift, &ys, v.0, v.1, v.2, 0.0), xs_shift.len(), 3)));
+                candidates.push((
+                    "poly3_zero",
+                    aic(
+                        sse_poly3(&xs_shift, &ys, v.0, v.1, v.2, 0.0),
+                        xs_shift.len(),
+                        3,
+                    ),
+                ));
             }
             if xs.len() >= 4
                 && let Ok(v) = fit_poly4_through_zero(&xs_shift, &ys)
             {
-                candidates.push(("poly4_zero", aic(sse_poly4(&xs_shift, &ys, v.0, v.1, v.2, v.3, 0.0), xs_shift.len(), 4)));
+                candidates.push((
+                    "poly4_zero",
+                    aic(
+                        sse_poly4(&xs_shift, &ys, v.0, v.1, v.2, v.3, 0.0),
+                        xs_shift.len(),
+                        4,
+                    ),
+                ));
             }
         }
         if xs.len() >= 3
             && let Ok(v) = fit_poly2(&xs, &ys)
         {
-            candidates.push(("poly2", aic(sse_poly2(&xs, &ys, v.0, v.1, v.2), xs.len(), 3)));
+            candidates.push((
+                "poly2",
+                aic(sse_poly2(&xs, &ys, v.0, v.1, v.2), xs.len(), 3),
+            ));
         }
         if xs.len() >= 4
             && let Ok(v) = fit_poly3(&xs, &ys)
         {
-            candidates.push(("poly3", aic(sse_poly3(&xs, &ys, v.0, v.1, v.2, v.3), xs.len(), 4)));
+            candidates.push((
+                "poly3",
+                aic(sse_poly3(&xs, &ys, v.0, v.1, v.2, v.3), xs.len(), 4),
+            ));
         }
         if xs.len() >= 5
             && let Ok(v) = fit_poly4(&xs, &ys)
         {
-            candidates.push(("poly4", aic(sse_poly4(&xs, &ys, v.0, v.1, v.2, v.3, v.4), xs.len(), 5)));
+            candidates.push((
+                "poly4",
+                aic(sse_poly4(&xs, &ys, v.0, v.1, v.2, v.3, v.4), xs.len(), 5),
+            ));
         }
         candidates
             .iter()
@@ -754,7 +810,11 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
             let (lin_m, lin_b) = fit_line(&xs, &ys)?;
             channel_slot.linear.m = Some(lin_m as f32);
             channel_slot.linear.b = Some(lin_b as f32);
-            channel_slot.fit = Some(FitMeta { fit_type: Some("linear".to_string()), x0: None, ..FitMeta::default() });
+            channel_slot.fit = Some(FitMeta {
+                fit_type: Some("linear".to_string()),
+                x0: None,
+                ..FitMeta::default()
+            });
         }
         "linear_zero" => {
             let x0 = zero_hint.ok_or_else(|| "linear_zero fit unavailable".to_string())?;
@@ -762,13 +822,23 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
             let m = fit_line_through_zero(&xs_shift, &ys)?;
             channel_slot.linear.m = Some(m as f32);
             channel_slot.linear.b = Some((-m * x0) as f32);
-            channel_slot.fit = Some(FitMeta { fit_type: Some("linear".to_string()), x0: Some(x0 as f32), ..FitMeta::default() });
+            channel_slot.fit = Some(FitMeta {
+                fit_type: Some("linear".to_string()),
+                x0: Some(x0 as f32),
+                ..FitMeta::default()
+            });
         }
         "poly2" | "parabolic" | "quadratic" => {
             let (a, b, c) = fit_poly2(&xs, &ys)?;
             channel_slot.linear.m = Some(b as f32);
             channel_slot.linear.b = Some(c as f32);
-            channel_slot.fit = Some(FitMeta { fit_type: Some("poly2".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), ..FitMeta::default() });
+            channel_slot.fit = Some(FitMeta {
+                fit_type: Some("poly2".to_string()),
+                a: Some(a as f32),
+                b: Some(b as f32),
+                c: Some(c as f32),
+                ..FitMeta::default()
+            });
         }
         "poly2_zero" | "parabolic_zero" | "quadratic_zero" => {
             let x0 = zero_hint.ok_or_else(|| "poly2_zero fit unavailable".to_string())?;
@@ -777,13 +847,28 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
             let m_lin = a + b;
             channel_slot.linear.m = Some(m_lin as f32);
             channel_slot.linear.b = Some((-m_lin * x0) as f32);
-            channel_slot.fit = Some(FitMeta { fit_type: Some("poly2".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(0.0), d: Some(0.0), x0: Some(x0 as f32), ..FitMeta::default() });
+            channel_slot.fit = Some(FitMeta {
+                fit_type: Some("poly2".to_string()),
+                a: Some(a as f32),
+                b: Some(b as f32),
+                c: Some(0.0),
+                d: Some(0.0),
+                x0: Some(x0 as f32),
+                ..FitMeta::default()
+            });
         }
         "poly3" | "cubic" => {
             let (a, b, c, d) = fit_poly3(&xs, &ys)?;
             channel_slot.linear.m = Some(c as f32);
             channel_slot.linear.b = Some(d as f32);
-            channel_slot.fit = Some(FitMeta { fit_type: Some("poly3".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), ..FitMeta::default() });
+            channel_slot.fit = Some(FitMeta {
+                fit_type: Some("poly3".to_string()),
+                a: Some(a as f32),
+                b: Some(b as f32),
+                c: Some(c as f32),
+                d: Some(d as f32),
+                ..FitMeta::default()
+            });
         }
         "poly3_zero" | "cubic_zero" => {
             let x0 = zero_hint.ok_or_else(|| "poly3_zero fit unavailable".to_string())?;
@@ -791,13 +876,29 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
             let (a, b, c) = fit_poly3_through_zero(&xs_shift, &ys)?;
             channel_slot.linear.m = Some(c as f32);
             channel_slot.linear.b = Some((-c * x0) as f32);
-            channel_slot.fit = Some(FitMeta { fit_type: Some("poly3".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(0.0), x0: Some(x0 as f32), ..FitMeta::default() });
+            channel_slot.fit = Some(FitMeta {
+                fit_type: Some("poly3".to_string()),
+                a: Some(a as f32),
+                b: Some(b as f32),
+                c: Some(c as f32),
+                d: Some(0.0),
+                x0: Some(x0 as f32),
+                ..FitMeta::default()
+            });
         }
         "poly4" | "quartic" => {
             let (a, b, c, d, e) = fit_poly4(&xs, &ys)?;
             channel_slot.linear.m = Some(d as f32);
             channel_slot.linear.b = Some(e as f32);
-            channel_slot.fit = Some(FitMeta { fit_type: Some("poly4".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), e: Some(e as f32), x0: None });
+            channel_slot.fit = Some(FitMeta {
+                fit_type: Some("poly4".to_string()),
+                a: Some(a as f32),
+                b: Some(b as f32),
+                c: Some(c as f32),
+                d: Some(d as f32),
+                e: Some(e as f32),
+                x0: None,
+            });
         }
         "poly4_zero" | "quartic_zero" => {
             let x0 = zero_hint.ok_or_else(|| "poly4_zero fit unavailable".to_string())?;
@@ -805,7 +906,15 @@ fn local_refit_channel(cfg: &mut CalibrationFile, channel: &str, mode: &str) -> 
             let (a, b, c, d) = fit_poly4_through_zero(&xs_shift, &ys)?;
             channel_slot.linear.m = Some(d as f32);
             channel_slot.linear.b = Some((-d * x0) as f32);
-            channel_slot.fit = Some(FitMeta { fit_type: Some("poly4".to_string()), a: Some(a as f32), b: Some(b as f32), c: Some(c as f32), d: Some(d as f32), e: Some(0.0), x0: Some(x0 as f32) });
+            channel_slot.fit = Some(FitMeta {
+                fit_type: Some("poly4".to_string()),
+                a: Some(a as f32),
+                b: Some(b as f32),
+                c: Some(c as f32),
+                d: Some(d as f32),
+                e: Some(0.0),
+                x0: Some(x0 as f32),
+            });
         }
         _ => return Err("invalid fit mode".to_string()),
     }
@@ -1126,9 +1235,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let inspected_point_idx = use_signal(|| None::<SelectedCalibrationPoint>);
     let status = use_signal(|| "Loading calibration...".to_string());
     let dirty = use_signal(|| false);
-    let preserve_regression_on_zero_change = use_signal(|| {
-        persist::get_or(CALIBRATION_PRESERVE_REGRESSION_STORAGE_KEY, "on") != "off"
-    });
+    let preserve_regression_on_zero_change =
+        use_signal(|| persist::get_or(CALIBRATION_PRESERVE_REGRESSION_STORAGE_KEY, "on") != "off");
     let manual_capture_progress = use_signal(String::new);
     let manual_capture_progress_epoch = use_signal(|| 0u64);
     let last_sync_poll_ms = use_signal(now_ms);
@@ -1216,8 +1324,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             if let Some(draft) = load_calibration_draft() {
                 cfg.set(Some(draft.calibration));
                 fit_mode.set(draft.fit_mode);
-                preserve_regression_on_zero_change
-                    .set(draft.preserve_regression_on_zero_change);
+                preserve_regression_on_zero_change.set(draft.preserve_regression_on_zero_change);
                 dirty.set(true);
                 status.set("Restored unsaved calibration changes from this device".to_string());
             }
@@ -1300,8 +1407,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     save_calibration_draft(&CalibrationDraft {
                         calibration,
                         fit_mode: fit_mode.read().clone(),
-                        preserve_regression_on_zero_change:
-                            *preserve_regression_on_zero_change.read(),
+                        preserve_regression_on_zero_change: *preserve_regression_on_zero_change
+                            .read(),
                     });
                 }
             } else {
@@ -1600,20 +1707,18 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .unwrap_or_default();
     let highlighted_plot_point_idx = (*inspected_point_idx.read()).or(*selected_point.read());
     let inspected_plot_point_idx = *inspected_point_idx.read();
-    let active_plot_point =
-        inspected_plot_point_idx.and_then(|selection| {
-            display_points
-                .iter()
-                .find(|(_, _, point)| *point == selection)
-                .map(|(raw, expected, _)| (*raw, *expected))
-        });
-    let active_plot_point_coords =
-        inspected_plot_point_idx.and_then(|selection| {
-            display_points
-                .iter()
-                .position(|(_, _, point)| *point == selection)
-                .and_then(|idx| scatter_xy.get(idx).copied())
-        });
+    let active_plot_point = inspected_plot_point_idx.and_then(|selection| {
+        display_points
+            .iter()
+            .find(|(_, _, point)| *point == selection)
+            .map(|(raw, expected, _)| (*raw, *expected))
+    });
+    let active_plot_point_coords = inspected_plot_point_idx.and_then(|selection| {
+        display_points
+            .iter()
+            .position(|(_, _, point)| *point == selection)
+            .and_then(|idx| scatter_xy.get(idx).copied())
+    });
 
     let sensor_button_style = |active: bool| {
         if active {
@@ -2615,7 +2720,11 @@ fn CalibrationLiveMetrics(
     let calibrated_live = calibration
         .as_ref()
         .and_then(|cfg| raw_live.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
-    let raw_live_s = fmt_fixed(raw_live, 12, sensor_raw_precision(selected_sensor.as_ref(), 6));
+    let raw_live_s = fmt_fixed(
+        raw_live,
+        12,
+        sensor_raw_precision(selected_sensor.as_ref(), 6),
+    );
     let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
 
     rsx! {

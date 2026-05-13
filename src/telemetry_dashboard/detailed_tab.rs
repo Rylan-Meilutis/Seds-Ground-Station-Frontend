@@ -218,17 +218,29 @@ pub fn DetailedTab(
     );
 
     let mut session_rows = vec![
-        ("Rows per second", format!("{:.1}/s", metrics_snapshot.rows_per_sec)),
-        ("WS disconnects", metrics_snapshot.ws_disconnects_total.to_string()),
+        (
+            "Rows per second",
+            format!("{:.1}/s", metrics_snapshot.rows_per_sec),
+        ),
+        (
+            "WS disconnects",
+            metrics_snapshot.ws_disconnects_total.to_string(),
+        ),
     ];
     if ws_connected {
         session_rows.push(("Connected for", opt_i64_ms(ws_connected_for_ms)));
         session_rows.push(("WS idle", opt_i64_ms(ws_idle_ms)));
     }
     session_rows.extend([
-        ("Last WS message", opt_timestamp(metrics_snapshot.last_ws_message_wall_ms)),
+        (
+            "Last WS message",
+            opt_timestamp(metrics_snapshot.last_ws_message_wall_ms),
+        ),
         ("Last disconnect", last_disconnect_display),
-        ("Last connect", opt_timestamp(metrics_snapshot.last_connect_wall_ms)),
+        (
+            "Last connect",
+            opt_timestamp(metrics_snapshot.last_connect_wall_ms),
+        ),
     ]);
 
     rsx! {

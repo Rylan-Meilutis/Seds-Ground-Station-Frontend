@@ -127,9 +127,7 @@ fn parse_contributors() -> Vec<String> {
 #[component]
 pub fn VersionTab(theme: ThemeConfig) -> Element {
     let info = &*VERSION_INFO;
-    let build_rows = vec![
-        ("Version", info.app_version.clone()),
-    ];
+    let build_rows = vec![("Version", info.app_version.clone())];
     #[cfg(not(target_arch = "wasm32"))]
     let build_rows = {
         let mut rows = build_rows;
@@ -140,7 +138,10 @@ pub fn VersionTab(theme: ThemeConfig) -> Element {
         ));
         rows
     };
-    let mut runtime_rows = vec![("Runtime", "Rust + Dioxus".to_string()), ("Map Engine", "MapLibre GL JS".to_string())];
+    let mut runtime_rows = vec![
+        ("Runtime", "Rust + Dioxus".to_string()),
+        ("Map Engine", "MapLibre GL JS".to_string()),
+    ];
     #[cfg(target_arch = "wasm32")]
     {
         runtime_rows.push(("Packaging", "Web".to_string()));

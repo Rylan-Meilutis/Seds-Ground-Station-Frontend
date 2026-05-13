@@ -284,7 +284,10 @@ pub(crate) fn read_logs() -> Result<String, String> {
     Ok(out)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(any(target_os = "android", target_os = "ios"))))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "android", target_os = "ios"))
+))]
 pub(crate) fn export_log_artifact_for_user(id: &str) -> Result<(), String> {
     use std::process::Command;
 
