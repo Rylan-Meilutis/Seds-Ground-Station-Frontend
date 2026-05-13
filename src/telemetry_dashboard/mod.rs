@@ -1081,6 +1081,7 @@ pub(crate) fn persisted_skip_tls_for_base_for_native_io(base: &str) -> bool {
 /// Forces all WebSocket-backed tasks to tear down and reconnect on the next render tick.
 fn bump_ws_epoch() {
     *WS_SENDER.write() = None;
+    reset_tminus_display_latch();
     if let Ok(mut activity) = TELEMETRY_ACTIVITY_BY_SENDER.lock() {
         activity.clear();
     }
@@ -2452,6 +2453,33 @@ mod launch_clock_tests {
         );
         reset_tminus_display_latch();
     }
+
+    #[test]
+    fn tminus_display_can_reset_after_reconnect_or_idle_snapshot() {
+        let _guard = MONOTONIC_TMINUS_TEST_LOCK.lock().unwrap();
+        reset_tminus_display_latch();
+        let expired = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: Some(100_000),
+            duration_ms: Some(10_000),
+        };
+        let reset = LaunchClockMsg {
+            kind: LaunchClockKind::Idle,
+            anchor_timestamp_ms: None,
+            duration_ms: Some(10_000),
+        };
+
+        assert_eq!(
+            monotonic_tminus_display_ms(&expired, Some(110_500)),
+            Some(0)
+        );
+        reset_tminus_display_latch();
+        assert_eq!(
+            monotonic_tminus_display_ms(&reset, Some(111_000)),
+            Some(10_000)
+        );
+        reset_tminus_display_latch();
+    }
 }
 
 #[component]
@@ -2476,13 +2504,17 @@ fn LaunchClockBadge(
 
             match clock {
                 Some(clock) => match clock.kind {
-                    LaunchClockKind::Idle | LaunchClockKind::TMinus => {
+                    LaunchClockKind::Idle => {
+                        reset_tminus_display_latch();
                         if fallback_anchor.is_some() {
                             fallback_tplus_anchor_ms.set(None);
                         }
-                        if clock.kind == LaunchClockKind::TMinus {
-                            let _ = monotonic_tminus_display_ms(&clock, now_ms);
+                    }
+                    LaunchClockKind::TMinus => {
+                        if fallback_anchor.is_some() {
+                            fallback_tplus_anchor_ms.set(None);
                         }
+                        let _ = monotonic_tminus_display_ms(&clock, now_ms);
                     }
                     LaunchClockKind::TPlus => {
                         reset_tminus_display_latch();
@@ -7579,6 +7611,8 @@ fn apply_notifications_snapshot(
     notifications.set(active.clone());
 
     let mut unread: HashSet<u64> = unread_notification_ids.read().iter().copied().collect();
+    let active_ids: HashSet<u64> = active.iter().map(|n| n.id).collect();
+    unread.retain(|id| active_ids.contains(id));
     for n in &active {
         if !prev_ids.contains(&n.id) {
             unread.insert(n.id);

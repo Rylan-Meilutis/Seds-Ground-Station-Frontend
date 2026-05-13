@@ -215,6 +215,10 @@ pub(super) fn clear_ws_connection_notification(
         let mut history = notification_history.read().clone();
         history.retain(|n| !is_ws_disconnect_notification(n));
         notification_history.set(history);
+        let active_ids: HashSet<u64> = notifications.read().iter().map(|n| n.id).collect();
+        let mut unread = unread_notification_ids.read().clone();
+        unread.retain(|id| active_ids.contains(id));
+        unread_notification_ids.set(unread);
         return;
     }
 
