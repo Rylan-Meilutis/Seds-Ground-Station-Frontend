@@ -1,10 +1,86 @@
 use super::{
     MAX_TELEMETRY_HISTORY_MINUTES, MIN_TELEMETRY_HISTORY_MINUTES, TELEMETRY_HISTORY_PRESET_MINUTES,
-    builtin_theme_presets, js_eval, layout::ThemeConfig, localized_copy, set_preferred_language,
+    builtin_theme_presets, js_eval, layout::ThemeConfig, localized_copy, persist,
+    set_preferred_language,
 };
 use crate::debug_log;
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataFilterSettingsRow {
+    pub id: String,
+    pub label: String,
+    pub backend_default: String,
+    pub backend_window_ms: Option<u64>,
+    pub backend_cutoff_hz: Option<f32>,
+    pub backend_alpha: Option<f32>,
+    pub backend_deadband: Option<f32>,
+    pub backend_max_rate_per_sec: Option<f32>,
+}
+
+fn data_filter_storage_key(tab_id: &str) -> String {
+    format!("gs26_data_filter::{tab_id}")
+}
+
+fn data_filter_param_storage_key(tab_id: &str, param: &str) -> String {
+    format!("gs26_data_filter_param::{tab_id}::{param}")
+}
+
+fn data_filter_param_storage_prefix(tab_id: &str) -> String {
+    format!("gs26_data_filter_param::{tab_id}::")
+}
+
+fn data_filter_has_param_override(tab_id: &str) -> bool {
+    [
+        "window_ms",
+        "cutoff_hz",
+        "alpha",
+        "deadband",
+        "max_rate_per_sec",
+    ]
+    .iter()
+    .any(|param| persist::get_string(&data_filter_param_storage_key(tab_id, param)).is_some())
+}
+
+fn data_filter_label(kind: &str) -> &'static str {
+    match kind {
+        "time_average" => "Average",
+        "low_pass" => "Low-pass",
+        "high_pass" => "High-pass",
+        "exponential_average" => "EMA",
+        "median" => "Median",
+        "min_max" => "Min/max",
+        "deadband" => "Deadband",
+        "rate_limit" => "Rate limit",
+        _ => "Raw",
+    }
+}
+
+fn data_filter_param_string(
+    tab_id: &str,
+    param: &str,
+    backend_value: Option<f32>,
+    fallback: f32,
+) -> String {
+    persist::get_string(&data_filter_param_storage_key(tab_id, param)).unwrap_or_else(|| {
+        let value = backend_value.unwrap_or(fallback);
+        if value.fract().abs() < f32::EPSILON {
+            format!("{}", value as i64)
+        } else {
+            format!("{value:.3}")
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string()
+        }
+    })
+}
+
+fn data_filter_window_string(tab_id: &str, backend_window_ms: Option<u64>) -> String {
+    persist::get_string(&data_filter_param_storage_key(tab_id, "window_ms"))
+        .unwrap_or_else(|| backend_window_ms.unwrap_or(500).to_string())
+}
 
 #[component]
 pub fn SettingsPage(
@@ -24,6 +100,8 @@ pub fn SettingsPage(
     network_topology_vertical: Signal<bool>,
     state_chart_labels_vertical: Signal<bool>,
     chart_interpolated_gap_ms: Signal<u64>,
+    data_filter_rows: Vec<DataFilterSettingsRow>,
+    data_filter_overrides: Signal<HashMap<String, String>>,
     telemetry_retention_ms: Signal<u64>,
     telemetry_view_window_ms: Signal<u64>,
     data_cache_enabled: Signal<bool>,
@@ -69,6 +147,7 @@ pub fn SettingsPage(
     let topology_vertical_enabled = *network_topology_vertical.read();
     let state_chart_labels_vertical_enabled = *state_chart_labels_vertical.read();
     let chart_interpolated_gap_ms_value = (*chart_interpolated_gap_ms.read()).clamp(0, 60_000);
+    let data_filter_overrides_value = data_filter_overrides.read().clone();
     let telemetry_retention_ms_value = *telemetry_retention_ms.read();
     let telemetry_view_window_ms_value =
         (*telemetry_view_window_ms.read()).min(telemetry_retention_ms_value);
@@ -158,10 +237,53 @@ pub fn SettingsPage(
     let settings_tab_general = localized_copy(&language, "General", "General", "General");
     let settings_tab_map = localized_copy(&language, "Map", "Mapa", "Carte");
     let settings_tab_telemetry = localized_copy(&language, "Telemetry", "Telemetria", "Telemetrie");
+    let settings_tab_data = localized_copy(&language, "Data", "Datos", "Donnees");
     let settings_tab_history = localized_copy(&language, "History", "Historial", "Historique");
     let settings_tab_maintenance =
         localized_copy(&language, "Maintenance", "Mantenimiento", "Maintenance");
     let section_history = localized_copy(&language, "History", "Historial", "Historique");
+    let section_data_filters = localized_copy(
+        &language,
+        "Data Display Filters",
+        "Filtros de visualizacion de datos",
+        "Filtres d'affichage des donnees",
+    );
+    let data_filters_desc = localized_copy(
+        &language,
+        "Overrides only change how live data is displayed. Raw telemetry remains saved and cached unchanged.",
+        "Los ajustes solo cambian como se muestran los datos en vivo. La telemetria sin procesar se guarda y conserva sin cambios.",
+        "Ces reglages ne changent que l'affichage des donnees en direct. La telemetrie brute reste enregistree et mise en cache sans modification.",
+    );
+    let data_filter_groundstation_default = localized_copy(
+        &language,
+        "Groundstation default",
+        "Predeterminado de la estacion",
+        "Defaut station sol",
+    );
+    let data_filter_raw = localized_copy(&language, "Raw", "Sin filtro", "Brut");
+    let data_filter_average = localized_copy(&language, "Average", "Promedio", "Moyenne");
+    let data_filter_low_pass = localized_copy(&language, "Low-pass", "Paso bajo", "Passe-bas");
+    let data_filter_high_pass = localized_copy(&language, "High-pass", "Paso alto", "Passe-haut");
+    let data_filter_ema = localized_copy(&language, "EMA", "EMA", "Moy. exp.");
+    let data_filter_median = localized_copy(&language, "Median", "Mediana", "Mediane");
+    let data_filter_min_max = localized_copy(&language, "Min/max", "Min/max", "Min/max");
+    let data_filter_deadband = localized_copy(&language, "Deadband", "Banda muerta", "Zone morte");
+    let data_filter_rate_limit =
+        localized_copy(&language, "Rate limit", "Limite de tasa", "Limite de taux");
+    let data_filter_window_label =
+        localized_copy(&language, "Window ms", "Ventana ms", "Fenetre ms");
+    let data_filter_cutoff_label = localized_copy(&language, "Cutoff Hz", "Corte Hz", "Coupure Hz");
+    let data_filter_alpha_label = localized_copy(&language, "Alpha", "Alfa", "Alpha");
+    let data_filter_deadband_label =
+        localized_copy(&language, "Deadband", "Banda muerta", "Zone morte");
+    let data_filter_rate_label =
+        localized_copy(&language, "Max rate/s", "Tasa max/s", "Taux max/s");
+    let data_filter_none_configured = localized_copy(
+        &language,
+        "No groundstation data tabs are available yet.",
+        "Aun no hay pestanas de datos de la estacion disponibles.",
+        "Aucun onglet de donnees station sol n'est encore disponible.",
+    );
     let history_retention_title = localized_copy(
         &language,
         "Keep recent data",
@@ -840,6 +962,11 @@ pub fn SettingsPage(
                     "{settings_tab_telemetry}"
                 }
                 button {
+                    style: if active_settings_tab.read().as_str() == "data" { chip_selected.clone() } else { chip_idle.clone() },
+                    onclick: move |_| active_settings_tab.set("data".to_string()),
+                    "{settings_tab_data}"
+                }
+                button {
                     style: if active_settings_tab.read().as_str() == "history" { chip_selected.clone() } else { chip_idle.clone() },
                     onclick: move |_| active_settings_tab.set("history".to_string()),
                     "{settings_tab_history}"
@@ -1186,6 +1313,233 @@ pub fn SettingsPage(
                                 }
                             },
                             "{prefetch_now_title}"
+                        }
+                    }
+                }
+            }
+            }
+
+            if active_settings_tab.read().as_str() == "data" {
+            div { style: "margin-top:12px; {card_style}",
+                div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_data_filters}" }
+                div { style: "font-size:13px; color:{theme.text_soft};", "{data_filters_desc}" }
+                if data_filter_rows.is_empty() {
+                    div { style: "font-size:13px; color:{theme.text_muted};", "{data_filter_none_configured}" }
+                }
+                for row in data_filter_rows.iter() {
+                    {
+                        let persisted = persist::get_string(&data_filter_storage_key(&row.id));
+                        let has_param_override = data_filter_has_param_override(&row.id);
+                        let current = data_filter_overrides_value
+                            .get(&row.id)
+                            .cloned()
+                            .or_else(|| persisted.clone())
+                            .unwrap_or_else(|| row.backend_default.clone());
+                        let is_groundstation_default = persisted.is_none()
+                            && !has_param_override
+                            && current == row.backend_default;
+                        let options = [
+                            ("raw", data_filter_raw.as_str()),
+                            ("time_average", data_filter_average.as_str()),
+                            ("low_pass", data_filter_low_pass.as_str()),
+                            ("high_pass", data_filter_high_pass.as_str()),
+                            ("exponential_average", data_filter_ema.as_str()),
+                            ("median", data_filter_median.as_str()),
+                            ("min_max", data_filter_min_max.as_str()),
+                            ("deadband", data_filter_deadband.as_str()),
+                            ("rate_limit", data_filter_rate_limit.as_str()),
+                        ];
+                        let window_value = data_filter_window_string(&row.id, row.backend_window_ms);
+                        let cutoff_value = data_filter_param_string(
+                            &row.id,
+                            "cutoff_hz",
+                            row.backend_cutoff_hz,
+                            8.0,
+                        );
+                        let alpha_value = data_filter_param_string(
+                            &row.id,
+                            "alpha",
+                            row.backend_alpha,
+                            0.25,
+                        );
+                        let deadband_value = data_filter_param_string(
+                            &row.id,
+                            "deadband",
+                            row.backend_deadband,
+                            0.1,
+                        );
+                        let rate_value = data_filter_param_string(
+                            &row.id,
+                            "max_rate_per_sec",
+                            row.backend_max_rate_per_sec,
+                            10.0,
+                        );
+                        rsx! {
+                            div { style: "display:flex; flex-direction:column; gap:8px; padding:10px; border-radius:12px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt};",
+                                div { style: "display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;",
+                                    div { style: "font-size:14px; color:{theme.text_primary}; font-weight:700;", "{row.label}" }
+                                    div { style: "font-size:12px; color:{theme.text_muted};", "{data_filter_groundstation_default}: {data_filter_label(&row.backend_default)}" }
+                                }
+                                div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                                    button {
+                                        style: if is_groundstation_default { chip_selected.clone() } else { chip_idle.clone() },
+                                        onclick: {
+                                            let row_id = row.id.clone();
+                                            let mut data_filter_overrides = data_filter_overrides;
+                                            move |_| {
+                                                let mut next = data_filter_overrides.read().clone();
+                                                next.remove(&row_id);
+                                                data_filter_overrides.set(next);
+                                                persist::_remove(&data_filter_storage_key(&row_id));
+                                                persist::remove_prefix(&data_filter_param_storage_prefix(&row_id));
+                                            }
+                                        },
+                                        "{data_filter_groundstation_default}"
+                                    }
+                                    for (kind, label) in options {
+                                        button {
+                                            style: if current == kind { chip_selected.clone() } else { chip_idle.clone() },
+                                            onclick: {
+                                                let row_id = row.id.clone();
+                                                let kind = kind.to_string();
+                                                let mut data_filter_overrides = data_filter_overrides;
+                                                move |_| {
+                                                    let mut next = data_filter_overrides.read().clone();
+                                                    next.insert(row_id.clone(), kind.clone());
+                                                    data_filter_overrides.set(next);
+                                                    persist::set_string(&data_filter_storage_key(&row_id), &kind);
+                                                }
+                                            },
+                                            "{label}"
+                                        }
+                                    }
+                                }
+                                if current != "raw" {
+                                    div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(132px, 1fr)); gap:8px;",
+                                        if matches!(current.as_str(), "time_average" | "median" | "min_max") {
+                                            label { style: "display:flex; flex-direction:column; gap:4px; font-size:12px; color:{theme.text_soft};",
+                                                "{data_filter_window_label}"
+                                                input {
+                                                    r#type: "number",
+                                                    min: "20",
+                                                    step: "20",
+                                                    value: "{window_value}",
+                                                    style: "padding:7px 8px; border-radius:8px; border:1px solid {theme.border}; background:{theme.app_background}; color:{theme.text_primary};",
+                                                    onchange: {
+                                                        let row_id = row.id.clone();
+                                                        let current_kind = current.clone();
+                                                        let mut data_filter_overrides = data_filter_overrides;
+                                                        move |evt| {
+                                                            persist::set_string(&data_filter_param_storage_key(&row_id, "window_ms"), &evt.value());
+                                                            persist::set_string(&data_filter_storage_key(&row_id), &current_kind);
+                                                            let mut next = data_filter_overrides.read().clone();
+                                                            next.entry(row_id.clone()).or_insert_with(|| current_kind.clone());
+                                                            data_filter_overrides.set(next);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if matches!(current.as_str(), "low_pass" | "high_pass") {
+                                            label { style: "display:flex; flex-direction:column; gap:4px; font-size:12px; color:{theme.text_soft};",
+                                                "{data_filter_cutoff_label}"
+                                                input {
+                                                    r#type: "number",
+                                                    min: "0.01",
+                                                    step: "0.1",
+                                                    value: "{cutoff_value}",
+                                                    style: "padding:7px 8px; border-radius:8px; border:1px solid {theme.border}; background:{theme.app_background}; color:{theme.text_primary};",
+                                                    onchange: {
+                                                        let row_id = row.id.clone();
+                                                        let current_kind = current.clone();
+                                                        let mut data_filter_overrides = data_filter_overrides;
+                                                        move |evt| {
+                                                            persist::set_string(&data_filter_param_storage_key(&row_id, "cutoff_hz"), &evt.value());
+                                                            persist::set_string(&data_filter_storage_key(&row_id), &current_kind);
+                                                            let mut next = data_filter_overrides.read().clone();
+                                                            next.entry(row_id.clone()).or_insert_with(|| current_kind.clone());
+                                                            data_filter_overrides.set(next);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if current == "exponential_average" {
+                                            label { style: "display:flex; flex-direction:column; gap:4px; font-size:12px; color:{theme.text_soft};",
+                                                "{data_filter_alpha_label}"
+                                                input {
+                                                    r#type: "number",
+                                                    min: "0.01",
+                                                    max: "1",
+                                                    step: "0.01",
+                                                    value: "{alpha_value}",
+                                                    style: "padding:7px 8px; border-radius:8px; border:1px solid {theme.border}; background:{theme.app_background}; color:{theme.text_primary};",
+                                                    onchange: {
+                                                        let row_id = row.id.clone();
+                                                        let current_kind = current.clone();
+                                                        let mut data_filter_overrides = data_filter_overrides;
+                                                        move |evt| {
+                                                            persist::set_string(&data_filter_param_storage_key(&row_id, "alpha"), &evt.value());
+                                                            persist::set_string(&data_filter_storage_key(&row_id), &current_kind);
+                                                            let mut next = data_filter_overrides.read().clone();
+                                                            next.entry(row_id.clone()).or_insert_with(|| current_kind.clone());
+                                                            data_filter_overrides.set(next);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if current == "deadband" {
+                                            label { style: "display:flex; flex-direction:column; gap:4px; font-size:12px; color:{theme.text_soft};",
+                                                "{data_filter_deadband_label}"
+                                                input {
+                                                    r#type: "number",
+                                                    min: "0",
+                                                    step: "0.01",
+                                                    value: "{deadband_value}",
+                                                    style: "padding:7px 8px; border-radius:8px; border:1px solid {theme.border}; background:{theme.app_background}; color:{theme.text_primary};",
+                                                    onchange: {
+                                                        let row_id = row.id.clone();
+                                                        let current_kind = current.clone();
+                                                        let mut data_filter_overrides = data_filter_overrides;
+                                                        move |evt| {
+                                                            persist::set_string(&data_filter_param_storage_key(&row_id, "deadband"), &evt.value());
+                                                            persist::set_string(&data_filter_storage_key(&row_id), &current_kind);
+                                                            let mut next = data_filter_overrides.read().clone();
+                                                            next.entry(row_id.clone()).or_insert_with(|| current_kind.clone());
+                                                            data_filter_overrides.set(next);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if current == "rate_limit" {
+                                            label { style: "display:flex; flex-direction:column; gap:4px; font-size:12px; color:{theme.text_soft};",
+                                                "{data_filter_rate_label}"
+                                                input {
+                                                    r#type: "number",
+                                                    min: "0",
+                                                    step: "0.1",
+                                                    value: "{rate_value}",
+                                                    style: "padding:7px 8px; border-radius:8px; border:1px solid {theme.border}; background:{theme.app_background}; color:{theme.text_primary};",
+                                                    onchange: {
+                                                        let row_id = row.id.clone();
+                                                        let current_kind = current.clone();
+                                                        let mut data_filter_overrides = data_filter_overrides;
+                                                        move |evt| {
+                                                            persist::set_string(&data_filter_param_storage_key(&row_id, "max_rate_per_sec"), &evt.value());
+                                                            persist::set_string(&data_filter_storage_key(&row_id), &current_kind);
+                                                            let mut next = data_filter_overrides.read().clone();
+                                                            next.entry(row_id.clone()).or_insert_with(|| current_kind.clone());
+                                                            data_filter_overrides.set(next);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

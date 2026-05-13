@@ -1,7 +1,4 @@
-use super::{
-    PersistentNotification, format_timestamp_ms_clock, layout::ThemeConfig, translate_text,
-};
-use dioxus::prelude::*;
+use super::{PersistentNotification, format_timestamp_ms_clock, prelude::*};
 
 #[component]
 pub fn NotificationsTab(

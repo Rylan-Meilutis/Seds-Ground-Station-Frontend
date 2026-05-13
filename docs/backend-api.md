@@ -443,20 +443,35 @@ Request type:
 
 ```json
 {
-  "severity": "warning",
-  "timestamp_ms": 1750000004000
+  "warning_timestamp_ms": 1750000001000,
+  "error_timestamp_ms": 1750000002000
 }
 ```
 
 Schema:
 
-- `severity`: `warning` | `error`
-- `timestamp_ms`: `i64`
+- `warning_timestamp_ms`: `i64`
+- `error_timestamp_ms`: `i64`
+
+Response type:
+
+```json
+{
+  "warning_ack_timestamp_ms": 1750000001000,
+  "error_ack_timestamp_ms": 1750000002000
+}
+```
+
+Response schema:
+
+- `warning_ack_timestamp_ms`: `i64`
+- `error_ack_timestamp_ms`: `i64`
 
 Notes:
 
-- this is the shared backend acknowledgement path for warnings/errors
+- this is the shared backend acknowledgement path for warnings/errors; the frontend posts both timestamps together so a backend can maintain one shared operator/hardware acknowledgement state
 - the frontend also supports remote ack broadcasts from hardware/operator inputs through the same shared state
+- a WebSocket `AlertAckState` message uses the same response shape
 
 ### `POST /api/notifications/{id}/dismiss`
 
@@ -758,7 +773,7 @@ This is the largest payload in the frontend contract. It controls tab visibility
 
 Theme behavior notes:
 
-- Ground Station-provided theme colors are only used when the user selects the `backend` preset
+- Ground Station-provided theme colors are only used when the user selects the `backend` preset, labeled as the Ground Station theme in the UI
 - built-in presets such as `default`, `light`, `sunset`, `forest`, and `high_contrast` come from the app's compiled theme catalog
 - operators can edit built-in theme presets in [`assets/themes/presets.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/assets/themes/presets.json), which is compiled into the app during build
 
@@ -776,11 +791,15 @@ Important enum values used by layout:
 - `state_tab.states[].sections[].widgets[].kind`: `board_status`, `summary`, `chart`, `valve_state`, `map`, `actions`
 - `value formatter kind`: `number`, `integer`
 - `data chart scale mode`: `shared`, `per_series`
+- `data display filter kind`: `raw`, `time_average`, `low_pass`, `high_pass`, `exponential_average`, `median`, `min_max`, `deadband`, `rate_limit`
 
 Generic layout behavior:
 
 - `network_tab.expected_boards` accepts any non-empty sender id. The frontend no longer restricts this to a fixed board list.
 - `data_tab.tabs[].chart.enabled` controls whether a telemetry type should render a graph. GPS or boolean telemetry should disable charts in layout instead of relying on frontend data-type names.
+- `data_tab.default_display_filter`, `data_tab.tabs[].display_filter`, `data_tab.tabs[].subtabs[].display_filter`, `chart_groups[].display_filter`, `summary_items[].display_filter`, and `chart_series[].display_filter` describe UI-only display filters. Raw telemetry is still kept and cached unmodified.
+- display filters use `{ "enabled": bool, "kind": "...", "window_ms": optional, "cutoff_hz": optional, "alpha": optional, "deadband": optional, "max_rate_per_sec": optional }`. Use `time_average`, `median`, or `min_max` with `window_ms`; use `low_pass` or `high_pass` with `cutoff_hz`; use `exponential_average` with `alpha`; use `deadband` with `deadband`; use `rate_limit` with `max_rate_per_sec`.
+- the settings UI calls layout-provided filter values "Groundstation default". Operators can leave each data type on the groundstation default or override the filter kind and numeric parameters locally.
 - `data_tab.tabs[].boolean_labels` and `channel_boolean_labels` control boolean value rendering. The frontend does not infer boolean rendering from a hardcoded telemetry id.
 - `data_tab.sender_split_data_types` lists telemetry `data_type` values that should maintain separate chart caches per `sender_id`. Leave it empty for single shared charts.
 - `data_tab.tabs[].chart_groups[]` can plot a subset of channels from the current tab with `channels`, `labels`, and `scale_mode`.

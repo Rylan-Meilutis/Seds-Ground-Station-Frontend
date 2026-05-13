@@ -114,7 +114,7 @@ For a more complete dashboard, also implement:
 - `GET /api/i18n/catalog?lang=<code>`
 - `POST /api/i18n/translate`
 
-Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph enablement, sender-split chart types, boolean labels, state widgets, state summary fill-target metadata, and calibration channel names/colors/regressions should be supplied by `/api/layout` and `/api/calibration_config`; avoid depending on frontend hardcoded telemetry names. Layout validation rejects duplicate tab ids, invalid known chart-series indexes, invalid chart-group channel references, and incomplete fill-target metadata.
+Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph enablement, sender-split chart types, UI-only data display filter defaults, boolean labels, state widgets, state summary fill-target metadata, and calibration channel names/colors/regressions should be supplied by `/api/layout` and `/api/calibration_config`; avoid depending on frontend hardcoded telemetry names. Layout validation rejects duplicate tab ids, invalid known chart-series indexes, invalid chart-group channel references, and incomplete fill-target metadata. Display filters are for presentation only; raw telemetry remains unmodified for cache/history/export paths. Users can keep each data type on the groundstation default filter or override the filter kind and tuning values locally.
 
 ## Running The Frontend
 
@@ -238,7 +238,7 @@ The editor writes back to `assets/themes/presets.json`. After saving, rebuild th
 
 Theme notes:
 
-- `backend` is the only preset that applies Ground Station-provided palette colors
+- `backend` is the only preset that applies Ground Station-provided palette colors; the settings UI labels it as the Ground Station theme
 - all other presets use the compiled app theme palette
 - the full window shell, menus, tabs, chart panels, and major dashboard pages are intended to follow the active theme
 - button and panel colors are normalized to keep borders and text readable across themes

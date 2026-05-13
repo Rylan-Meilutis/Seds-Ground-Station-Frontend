@@ -121,20 +121,87 @@
     ]
   },
   "data_tab": {
+    "default_display_filter": {
+      "enabled": false,
+      "kind": "raw"
+    },
     "sender_split_data_types": ["BATTERY_VOLTAGE"],
     "tabs": [
       {
         "id": "GPS",
         "label": "GPS",
         "channels": ["Latitude", "Longitude", "Altitude"],
+        "display_filter": {
+          "enabled": false,
+          "kind": "raw"
+        },
         "chart": {
           "enabled": false
         }
       },
       {
+        "id": "VALVE_STATE",
+        "label": "Valves",
+        "channels": ["Main", "Vent", "Fill"],
+        "display_filter": {
+          "enabled": false,
+          "kind": "raw"
+        },
+        "channel_boolean_labels": [
+          {
+            "true_label": "Open",
+            "false_label": "Closed",
+            "unknown_label": "Unknown"
+          },
+          {
+            "true_label": "Open",
+            "false_label": "Closed",
+            "unknown_label": "Unknown"
+          },
+          {
+            "true_label": "Open",
+            "false_label": "Closed",
+            "unknown_label": "Unknown"
+          }
+        ],
+        "chart": {
+          "enabled": false
+        }
+      },
+      {
+        "id": "LOADCELL_WEIGHT_KG",
+        "label": "Loadcell",
+        "channels": ["Weight"],
+        "display_filter": {
+          "enabled": true,
+          "kind": "time_average",
+          "window_ms": 500
+        },
+        "chart": {
+          "enabled": true
+        },
+        "chart_groups": [
+          {
+            "title": "Loadcell Average",
+            "channels": [0],
+            "labels": ["Weight"],
+            "display_filter": {
+              "enabled": true,
+              "kind": "time_average",
+              "window_ms": 500
+            }
+          }
+        ]
+      },
+      {
         "id": "ACCEL",
         "label": "Acceleration",
         "channels": ["X", "Y", "Z"],
+        "display_filter": {
+          "enabled": true,
+          "kind": "low_pass",
+          "cutoff_hz": 8.0
+        },
         "chart": {
           "enabled": true
         },

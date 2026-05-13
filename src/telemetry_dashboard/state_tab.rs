@@ -566,6 +566,7 @@ fn StateChartPanel(
                         index,
                         sender_id: None,
                         label: Some(label.clone()),
+                        display_filter: None,
                     })
                     .collect::<Vec<_>>();
                 combined_state_chart_cached(
@@ -895,6 +896,7 @@ mod tests {
             index: 0,
             sender_id: Some("PB".to_string()),
             label: Some("AV Bay".to_string()),
+            display_filter: None,
         };
 
         assert_eq!(chart_key_for_series_spec(&spec), "BATTERY_VOLTAGE@@PB");

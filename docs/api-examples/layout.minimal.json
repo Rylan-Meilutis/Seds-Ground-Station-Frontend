@@ -56,14 +56,35 @@
     ]
   },
   "data_tab": {
+    "default_display_filter": {
+      "enabled": false,
+      "kind": "raw"
+    },
     "sender_split_data_types": ["BATTERY_VOLTAGE"],
     "tabs": [
       {
         "id": "GPS",
         "label": "GPS",
         "channels": ["Latitude", "Longitude", "Altitude"],
+        "display_filter": {
+          "enabled": false,
+          "kind": "raw"
+        },
         "chart": {
           "enabled": false
+        }
+      },
+      {
+        "id": "LOADCELL_WEIGHT_KG",
+        "label": "Loadcell",
+        "channels": ["Weight"],
+        "display_filter": {
+          "enabled": true,
+          "kind": "time_average",
+          "window_ms": 500
+        },
+        "chart": {
+          "enabled": true
         }
       },
       {

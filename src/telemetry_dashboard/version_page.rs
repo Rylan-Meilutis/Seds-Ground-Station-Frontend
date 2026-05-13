@@ -1,5 +1,4 @@
-use super::layout::ThemeConfig;
-use dioxus::prelude::*;
+use super::prelude::*;
 use once_cell::sync::Lazy;
 
 const FRONTEND_CARGO_TOML: &str = include_str!("../../Cargo.toml");
