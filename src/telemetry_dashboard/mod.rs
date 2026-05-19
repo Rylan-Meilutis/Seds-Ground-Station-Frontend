@@ -1123,6 +1123,21 @@ fn note_ws_connected_and_restore_data_flow(
     }
 }
 
+fn refresh_flight_state_after_ws_reconnect(mut flight_state: Signal<FlightState>, epoch: u64) {
+    spawn(async move {
+        match http_get_json::<FlightState>("/flightstate").await {
+            Ok(state) => {
+                if *WS_EPOCH.read() == epoch {
+                    set_signal_if_changed(&mut flight_state, state);
+                }
+            }
+            Err(err) => {
+                log!("[flightstate] reconnect refresh failed: {err}");
+            }
+        }
+    });
+}
+
 fn note_ws_connected_from_live_message(
     epoch: u64,
     notifications: Signal<Vec<PersistentNotification>>,
@@ -4321,6 +4336,7 @@ fn TelemetryDashboardInner() -> Element {
                             &mut notification_history_flush,
                             &mut unread_notification_ids_flush,
                         );
+                        refresh_flight_state_after_ws_reconnect(flight_state_flush, epoch);
                         refresh_layout_after_ws_reconnect(
                             layout_config,
                             layout_loading,
@@ -8518,6 +8534,7 @@ async fn connect_ws_once_native(
         &mut notification_history,
         &mut unread_notification_ids,
     );
+    refresh_flight_state_after_ws_reconnect(flight_state, epoch);
     refresh_layout_after_ws_reconnect(
         layout_config,
         layout_loading,

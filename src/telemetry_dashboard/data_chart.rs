@@ -910,6 +910,14 @@ mod tests {
     }
 
     #[test]
+    fn long_running_visible_chunks_still_allow_smoothing() {
+        assert!(
+            super::should_smooth_chunk(360.0, 1_500),
+            "smoothing should be gated by visible density, not only raw bucket count"
+        );
+    }
+
+    #[test]
     fn interpolated_gap_reuses_previous_point_when_next_chunk_starts() {
         let mut paths = vec![String::new()];
         let mut gap_paths = vec![String::new()];
@@ -2268,7 +2276,13 @@ pub fn set_interpolated_gap_threshold_ms(value_ms: u64) {
 }
 
 fn should_smooth_chunk(chunk_width: f32, chunk_bucket_count: i64) -> bool {
-    chunk_width >= 220.0 && chunk_bucket_count <= SMOOTHING_MAX_POINTS_PER_SEGMENT as i64
+    if chunk_width < 220.0 {
+        return false;
+    }
+
+    let estimated_visible_points = (chunk_width / TARGET_PIXELS_PER_SAMPLE).ceil() as i64;
+    chunk_bucket_count <= SMOOTHING_MAX_POINTS_PER_SEGMENT as i64
+        || estimated_visible_points <= SMOOTHING_MAX_POINTS_PER_SEGMENT as i64
 }
 
 fn flush_smoothed_segment(path: &mut String, points: &[(f32, f32)], smooth: bool) {
