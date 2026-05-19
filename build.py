@@ -3212,6 +3212,10 @@ def sign_macos_app_and_dmg(
         print("Warning: no macOS .dmg found to sign.", file=sys.stderr)
         return
 
+    sign_macos_dmg(frontend_dir, dmg, identity)
+
+
+def sign_macos_dmg(frontend_dir: Path, dmg: Path, identity: str) -> None:
     print(f"Signing macOS dmg with identity: {identity}")
     run(
         [
@@ -3226,6 +3230,28 @@ def sign_macos_app_and_dmg(
     )
 
 
+def verify_macos_distribution(frontend_dir: Path, target: Path) -> None:
+    print(f"Validating stapled notarization ticket: {target.name}")
+    run(["xcrun", "stapler", "validate", str(target)], cwd=frontend_dir)
+    print(f"Assessing Gatekeeper acceptance: {target.name}")
+    if target.suffix.lower() == ".dmg":
+        run(
+            [
+                "spctl",
+                "--assess",
+                "--type",
+                "open",
+                "--context",
+                "context:primary-signature",
+                "-vv",
+                str(target),
+            ],
+            cwd=frontend_dir,
+        )
+    else:
+        run(["spctl", "--assess", "--type", "execute", "-vv", str(target)], cwd=frontend_dir)
+
+
 def notarize_macos(frontend_dir: Path) -> None:
     if platform.system() != "Darwin":
         print("Error: macOS notarization requires macOS.", file=sys.stderr)
@@ -3237,6 +3263,12 @@ def notarize_macos(frontend_dir: Path) -> None:
     target = dmg if dmg and dmg.exists() else app_bundle_path(frontend_dir)
     if not target.exists():
         raise FileNotFoundError(f"Notarization target not found: {target}")
+
+    if target.suffix.lower() == ".dmg":
+        cert_regex = os.environ.get("CERT_REGEX", r"^Developer ID Application:")
+        cert_pick = os.environ.get("CERT_PICK", "newest")
+        identity = _pick_codesign_identity(frontend_dir, cert_regex, cert_pick)
+        sign_macos_dmg(frontend_dir, target, identity)
 
     profile = os.environ.get("NOTARY_PROFILE", "").strip()
     apple_id = os.environ.get("NOTARY_APPLE_ID", "").strip()
@@ -3257,6 +3289,7 @@ def notarize_macos(frontend_dir: Path) -> None:
     print(f"Notarizing macOS artifact: {target.name}")
     run(["xcrun", "notarytool", "submit", str(target), "--wait", *auth_args], cwd=frontend_dir)
     run(["xcrun", "stapler", "staple", str(target)], cwd=frontend_dir)
+    verify_macos_distribution(frontend_dir, target)
 
 
 def _prebuild_frontend_for_container(frontend_dir: Path) -> None:
