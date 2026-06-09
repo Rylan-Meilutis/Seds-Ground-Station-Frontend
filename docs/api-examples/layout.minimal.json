@@ -4,7 +4,7 @@
     "app_name": "UBSEDS GS",
     "dashboard_title": "Ground Station",
     "tab_labels": {
-      "state": "State",
+      "state": "Dashboard",
       "connection-status": "Connection",
       "data": "Telemetry"
     }

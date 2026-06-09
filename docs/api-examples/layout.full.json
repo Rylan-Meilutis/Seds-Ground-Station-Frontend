@@ -4,7 +4,7 @@
     "app_name": "UBSEDS GS",
     "dashboard_title": "UBSEDS Ground Station",
     "tab_labels": {
-      "state": "State",
+      "state": "Dashboard",
       "connection-status": "Connection",
       "map": "Recovery Map",
       "actions": "Actions",

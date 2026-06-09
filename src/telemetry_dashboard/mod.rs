@@ -2646,7 +2646,7 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
 fn _default_main_tab_label(tab: MainTab) -> String {
     let lang = current_language();
     match tab {
-        MainTab::State => localized_copy(&lang, "Flight", "Vuelo", "Vol"),
+        MainTab::State => localized_copy(&lang, "Dashboard", "Panel", "Tableau"),
         MainTab::ConnectionStatus => localized_copy(
             &lang,
             "Connection Status",
