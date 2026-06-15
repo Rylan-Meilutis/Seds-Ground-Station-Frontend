@@ -5,9 +5,9 @@ This repository contains the Dioxus-based frontend for the UBSEDS ground station
 Current release:
 
 - Frontend version: `0.3.1`
-- App build: `23`
-- Dioxus line: `0.7.6`
-- Targets: web, macOS desktop, Android, iOS
+- App build: `36`
+- Dioxus line: `0.7.9`
+- Targets: web, macOS desktop, Windows desktop, Linux desktop, Android, iOS
 
 Backend compatibility note:
 
@@ -121,7 +121,7 @@ Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph e
 Web:
 
 ```bash
-cargo install dioxus-cli --version 0.7.6
+cargo install dioxus-cli --version 0.7.9
 dx serve
 ```
 
@@ -131,14 +131,15 @@ Build via helper:
 python3 build.py web
 ```
 
-Use `python3 build.py` for the full build helper usage.
+Running `python3 build.py` with no arguments now performs the default clean Android build. Use `python3 build.py --help` for the full build helper usage.
 
-The codebase is currently pinned to Dioxus `0.7.6`. Any compatible `0.7.x` CLI is the safe choice; the helper also contains guards for patch-level CLI/runtime skew.
+The codebase is currently pinned to Dioxus `0.7.9`. Use the matching `0.7.9` CLI when possible; the helper also contains guards for patch-level CLI/runtime skew.
 
 ## Android Build Notes
 
 The Android build helper does more than just call `dx`:
 
+- treats `python3 build.py` and `python3 build.py candroid` as clean Android builds
 - patches the generated Android Gradle project after `dx bundle`
 - applies repo-managed Android fixes on rebuild instead of requiring manual edits under `target/dx/...`
 - emits context-aware error messages so downstream Gradle or Android failures are not mislabeled as missing `dx`
@@ -153,9 +154,16 @@ If Android bundling fails, read the Gradle error block first. The helper disting
 
 Android native notes:
 
-- the generated WebView client proxies `gs26.local/tiles/...` tile requests to the configured Ground Station and keeps an app-cache tile fallback keyed by Ground Station URL plus tile path
+- the generated WebView client proxies `https://gs26.local/tiles/...` tile requests to the configured Ground Station and keeps an app-cache tile fallback keyed by Ground Station URL plus tile path
+- Android MapLibre tile rendering uses that native WebView proxy directly so raster tiles render through the app-managed tile path instead of the JS protocol fallback
 - Android tile cache entries for one Ground Station URL are not reused for another URL
 - Android location uses both GPS and network providers with high-frequency updates, and heading uses the rotation-vector sensor
+
+## Windows Build Notes
+
+- Windows desktop builds target `x86_64-pc-windows-msvc`.
+- Windows GPS uses the `windows` `0.62.x` async projection; WinRT async operations are waited with `join()` rather than the older `get()` helper.
+- Building Windows from a non-Windows host still requires a working Windows/MSVC cross toolchain and Windows SDK headers. Missing headers such as `windows.h` are environment setup issues rather than frontend source errors.
 
 ## iOS Build And Signing Notes
 

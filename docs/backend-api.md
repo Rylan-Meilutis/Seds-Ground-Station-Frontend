@@ -2,7 +2,7 @@
 
 This document describes the backend contract that the frontend currently expects.
 
-Verified against frontend version `0.3.1`, app build `23`, and the current Dioxus `0.7.6` codebase.
+Verified against frontend version `0.3.1`, app build `36`, and the current Dioxus `0.7.9` codebase.
 
 It has also been checked against the current `../groundstation26` backend implementation in:
 
@@ -293,6 +293,7 @@ Notes:
 - `max_display_zoom` defaults to one level above `max_native_zoom` in the frontend if omitted.
 - blank or non-finite numeric values are sanitized by the frontend, but the backend should still send valid values.
 - the tile source itself is requested from `/tiles/{z}/{x}/{y}.jpg` on the configured host.
+- Android builds expose the map source to MapLibre as `https://gs26.local/tiles/{z}/{x}/{y}.jpg`; the app's WebView client intercepts that host and proxies it to the configured Ground Station tile route.
 - the frontend persists the last effective `max_native_zoom` per tile URL template in browser/native storage and reuses it if the backend is unavailable later. This allows cached high-zoom map tiles and previously zoomed-in map views to restore without requiring `/api/map_config` to be reachable.
 - map tile caches are keyed by tile URL/Ground Station URL. Tiles cached for one configured URL are not reused after the operator switches to another configured URL.
 - map prefetch warms the visible/user/rocket tile area from the effective minimum zoom through the effective native max zoom so cached maps can remain visible when operators zoom out offline.
@@ -303,7 +304,7 @@ Notes:
 
 ### `GET /tiles/{z}/{x}/{y}.jpg`
 
-The frontend map loads raster tiles from this path by default.
+The frontend map loads raster tiles from this path by default. On Android, the visible tile URL is the app-local `https://gs26.local/tiles/...` proxy, but the backend still only needs to serve this same `/tiles/{z}/{x}/{y}.jpg` route on the configured Ground Station base URL.
 
 Notes:
 
