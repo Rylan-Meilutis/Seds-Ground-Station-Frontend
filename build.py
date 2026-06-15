@@ -1020,9 +1020,31 @@ def cleanup_linux_package_artifacts(frontend_dir: Path) -> None:
         return
 
     for item in sorted(dist.iterdir()):
-        if item.suffix.lower() in {".deb", ".rpm", ".appimage", ".flatpak"} or ".pkg.tar." in item.name:
+        if _is_linux_package_artifact(item):
             print(f"Removing stale Linux package artifact: {item.name}")
             _remove_path(item)
+
+
+def _is_linux_package_artifact(path: Path) -> bool:
+    return path.is_file() and (
+        path.suffix.lower() in {".deb", ".rpm", ".appimage", ".flatpak"}
+        or ".pkg.tar." in path.name
+    )
+
+
+def cleanup_linux_generated_package_artifacts(frontend_dir: Path) -> None:
+    dist = dist_dir(frontend_dir)
+    if not dist.exists():
+        return
+
+    package_prefix = _frontend_package_name(frontend_dir)
+    for item in sorted(dist.iterdir()):
+        if not _is_linux_package_artifact(item):
+            continue
+        if not item.name.startswith(package_prefix):
+            continue
+        print(f"Removing generated Linux package artifact: {item.name}")
+        _remove_path(item)
 
 
 def cleanup_linux_loose_binary_artifacts(frontend_dir: Path) -> None:
@@ -5174,12 +5196,14 @@ def build_frontend(
             if platform_name == "windows":
                 build_manual_windows_installer(frontend_dir, rust_target, debug_mode)
             else:
+                cleanup_linux_generated_package_artifacts(frontend_dir)
                 if not linux_bundle_partial:
                     patch_linux_bundle_metadata(frontend_dir)
                 build_manual_appimage(frontend_dir, rust_target, debug_mode)
                 build_manual_linux_packages(frontend_dir, rust_target, debug_mode)
                 build_manual_arch_package(frontend_dir, rust_target, debug_mode)
                 build_manual_flatpak_package(frontend_dir, rust_target, debug_mode)
+                cleanup_linux_generated_package_artifacts(frontend_dir)
                 cleanup_linux_loose_binary_artifacts(frontend_dir)
         elif platform_name == "android":
             rename_android_artifacts(frontend_dir)
