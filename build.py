@@ -1025,6 +1025,24 @@ def cleanup_linux_package_artifacts(frontend_dir: Path) -> None:
             _remove_path(item)
 
 
+def cleanup_linux_loose_binary_artifacts(frontend_dir: Path) -> None:
+    dist = dist_dir(frontend_dir)
+    if not dist.exists():
+        return
+
+    loose_names = {
+        "groundstation_frontend",
+        LEGACY_APP_NAME,
+        APP_NAME,
+        LINUX_PACKAGE_NAME,
+    }
+    for item in sorted(dist.iterdir()):
+        if not item.is_file() or item.name not in loose_names:
+            continue
+        print(f"Removing loose Linux binary artifact: {item.name}")
+        _remove_path(item)
+
+
 def _windows_bundle_search_roots(
         frontend_dir: Path,
         rust_target: Optional[str],
@@ -5067,6 +5085,7 @@ def build_frontend(
             prepare_windows_dist_for_bundle(frontend_dir)
         elif platform_name == "linux":
             cleanup_linux_package_artifacts(frontend_dir)
+            cleanup_linux_loose_binary_artifacts(frontend_dir)
 
         if rust_target:
             cmd.extend(["--target", rust_target])
@@ -5161,6 +5180,7 @@ def build_frontend(
                 build_manual_linux_packages(frontend_dir, rust_target, debug_mode)
                 build_manual_arch_package(frontend_dir, rust_target, debug_mode)
                 build_manual_flatpak_package(frontend_dir, rust_target, debug_mode)
+                cleanup_linux_loose_binary_artifacts(frontend_dir)
         elif platform_name == "android":
             rename_android_artifacts(frontend_dir)
             if android_package_type != "aab":
