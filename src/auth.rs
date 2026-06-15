@@ -1,7 +1,7 @@
 use crate::debug_log;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use once_cell::sync::Lazy;
 use pbkdf2::pbkdf2_hmac_array;
 use serde::{Deserialize, Serialize};
@@ -446,7 +446,7 @@ async fn build_login_request(
     let verifier: [u8; 32] =
         pbkdf2_hmac_array::<Sha256, 32>(password.as_bytes(), &salt, challenge.iterations.max(1));
     let mut client_nonce = [0u8; 32];
-    getrandom::getrandom(&mut client_nonce)
+    getrandom::fill(&mut client_nonce)
         .map_err(|e| format!("secure random generation failed: {e}"))?;
     let client_nonce_b64 = URL_SAFE_NO_PAD.encode(client_nonce);
     let username_normalized = normalize_username(username);

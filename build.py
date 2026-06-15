@@ -5204,13 +5204,25 @@ def _display_build_script_path() -> str:
     return "./frontend/build.py"
 
 
+def _host_frontend_platform() -> tuple[str, Optional[str]]:
+    system = platform.system()
+    if system == "Darwin":
+        return "macos", None
+    if system == "Windows":
+        return "windows", None
+    if system == "Linux":
+        return "linux", None
+    return "web", None
+
+
 def print_usage(exit_code: int = 1) -> None:
     build_script = _display_build_script_path()
     print("Frontend build script")
     print("")
     print("Usage:")
+    print(f"  {build_script}                         # default: clean Android build")
     print(f"  {build_script} frontend_web|web [debug] [max_size] [existing] [log=<path>]")
-    print(f"  {build_script} ios|ios_sim|macos|windows|android|linux [debug] [existing] [no_sign] [log=<path>]")
+    print(f"  {build_script} ios|ios_sim|macos|windows|android|candroid|linux [debug] [existing] [no_sign] [log=<path>]")
     print(f"  {build_script} android [apk|aab] [debug] [existing] [no_sign] [log=<path>]")
     print("")
     print("Frontend packaging and deploy actions:")
@@ -5286,8 +5298,10 @@ def print_usage(exit_code: int = 1) -> None:
 
 def main() -> None:
     raw_args = [a.strip() for a in sys.argv[1:]]
-    if not raw_args or any(a in {"-h", "--help", "help"} for a in raw_args):
-        print_usage(0 if raw_args else 1)
+    if not raw_args:
+        raw_args = ["candroid"]
+    elif any(a in {"-h", "--help", "help"} for a in raw_args):
+        print_usage(0)
 
     debug_mode = False
     max_size_mode = False
@@ -5311,6 +5325,7 @@ def main() -> None:
         "macos": ("macos", None),
         "windows": ("windows", None),
         "android": ("android", None),
+        "candroid": ("android", None),
         "linux": ("linux", None),
         "web": ("web", None),
         "frontend_web": ("web", None),
@@ -5596,11 +5611,13 @@ def main() -> None:
         sys.exit(1)
 
     if frontend_only_platform is None:
-        print("Error: expected a frontend platform or frontend action.", file=sys.stderr)
-        print_usage()
+        if use_existing and android_package_type is None:
+            frontend_only_platform, frontend_rust_target = _host_frontend_platform()
+        else:
+            frontend_only_platform, frontend_rust_target = frontend_platform_map["candroid"]
 
     if use_existing:
-        print("Skipping frontend build (existing requested).")
+        print(f"Skipping {frontend_only_platform} frontend build (existing requested).")
         if frontend_only_platform == "ios":
             ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="distribution", debug_mode=debug_mode)
             print(f"Distribution IPA created: {ipa}")

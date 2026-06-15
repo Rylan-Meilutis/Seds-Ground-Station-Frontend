@@ -1097,6 +1097,9 @@ function isBrowserHostedMapRuntime() {
 
 function shouldUseNativeTileTemplate(tilesUrl) {
     const url = String(tilesUrl || "");
+    if (isAndroidPlatform() && /^https:\/\/gs26\.local\/tiles\//i.test(url)) {
+        return true;
+    }
     if (isBrowserHostedMapRuntime() && /^https?:\/\//i.test(url)) {
         return true;
     }
