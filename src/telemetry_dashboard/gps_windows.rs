@@ -22,7 +22,7 @@ pub fn stop() {
 fn read_location_once_blocking() -> Result<Option<(f64, f64, Option<f64>)>, String> {
     let access = Geolocator::RequestAccessAsync()
         .map_err(|e| format!("Windows GPS access request failed: {e}"))?
-        .get()
+        .join()
         .map_err(|e| format!("Windows GPS access status failed: {e}"))?;
 
     if access != GeolocationAccessStatus::Allowed {
@@ -35,7 +35,7 @@ fn read_location_once_blocking() -> Result<Option<(f64, f64, Option<f64>)>, Stri
     let position = locator
         .GetGeopositionAsync()
         .map_err(|e| format!("Windows GPS position request failed: {e}"))?
-        .get()
+        .join()
         .map_err(|e| format!("Windows GPS position read failed: {e}"))?;
 
     let coordinate = position
