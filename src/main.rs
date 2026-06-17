@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use dioxus_desktop::RequestAsyncResponder;
 #[cfg(not(target_arch = "wasm32"))]
-use dioxus_desktop::tao::window::WindowBuilder;
+use dioxus_desktop::tao::window::{Fullscreen, WindowBuilder};
 #[cfg(not(target_arch = "wasm32"))]
 use dioxus_desktop::wry::http::{Request as HttpRequest, Response as HttpResponse};
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,6 +67,11 @@ fn init_rustls_crypto_provider() {
 #[cfg(not(target_arch = "wasm32"))]
 fn tile_cache_root() -> PathBuf {
     std::env::temp_dir().join("gs26-tile-cache")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn launch_fullscreen_requested() -> bool {
+    std::env::args().skip(1).any(|arg| arg == "--fullscreen")
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -167,7 +172,12 @@ fn main() {
     }
     cfg = cfg.with_custom_head(startup_custom_head());
     cfg = cfg.with_background_color((0x02, 0x06, 0x17, 0xff));
-    cfg = cfg.with_window(WindowBuilder::new().with_title(app::APP_DISPLAY_NAME));
+    let mut window = WindowBuilder::new().with_title(app::APP_DISPLAY_NAME);
+    if launch_fullscreen_requested() {
+        debug_log::append("[startup] fullscreen launch requested");
+        window = window.with_fullscreen(Some(Fullscreen::Borderless(None)));
+    }
+    cfg = cfg.with_window(window);
     if let Some(icon) = load_desktop_window_icon() {
         cfg = cfg.with_icon(icon);
     }
