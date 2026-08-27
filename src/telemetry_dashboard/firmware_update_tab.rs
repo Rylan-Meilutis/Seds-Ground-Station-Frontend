@@ -9,8 +9,11 @@ struct FirmwareTarget {
     board_label: String,
     hostname: String,
     discovered: bool,
+    supported: bool,
     ota_stream_port: u16,
     artifact_kind: String,
+    workflow: String,
+    unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -220,7 +223,9 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
             match http_get_json::<Vec<FirmwareTarget>>("/api/firmware/targets").await {
                 Ok(found) => {
                     if selected_board.read().is_empty()
-                        && let Some(first) = found.iter().find(|target| target.discovered)
+                        && let Some(first) = found
+                            .iter()
+                            .find(|target| target.supported && target.discovered)
                     {
                         selected_board.set(first.board.clone());
                     }
@@ -250,7 +255,7 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
             .is_some_and(|bytes| !bytes.is_empty())
         && selected_target
             .as_ref()
-            .is_some_and(|target| target.discovered)
+            .is_some_and(|target| target.supported && target.discovered)
         && !active;
 
     let panel_style = format!(
@@ -292,14 +297,16 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                         value: "{selected_board}",
                         disabled: active || loading(),
                         onchange: move |event| selected_board.set(event.value()),
-                        if targets.read().is_empty() {
-                            option { value: "", "No discovered boards" }
+                        if selected_board.read().is_empty() {
+                            option { value: "", disabled: true, "No supported online OTA targets" }
                         }
                         for target in targets.read().iter() {
                             option {
                                 value: "{target.board}",
-                                disabled: !target.discovered,
-                                if target.discovered {
+                                disabled: !target.supported || !target.discovered,
+                                if !target.supported {
+                                    "{target.board_label} ({target.hostname}) — OTA not implemented"
+                                } else if target.discovered {
                                     "{target.board_label} ({target.hostname}) — online"
                                 } else {
                                     "{target.board_label} ({target.hostname}) — not discovered"
@@ -345,10 +352,21 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                 if let Some(bytes) = selected_bytes.read().as_ref() {
                     div { style: "color:{theme.text_secondary};", "Selected: {selected_filename} ({human_bytes(bytes.len())})" }
                 }
+                if let Some(target) = selected_target.as_ref()
+                    && !target.supported
+                    && let Some(reason) = target.unavailable_reason.as_deref()
+                {
+                    div { style: "color:{theme.warning_text};", "{reason}" }
+                }
+                if let Some(target) = selected_target.as_ref()
+                    && target.supported
+                {
+                    div { style: "color:{theme.text_muted}; font-size:0.9rem;", "Workflow: {target.workflow} on SEDSnet stream port {target.ota_stream_port}" }
+                }
 
                 div { style: "padding:12px; border:1px solid {theme.warning_border}; border-radius:10px; background:{theme.warning_background}; color:{theme.warning_text}; line-height:1.45;",
                     strong { "Warning: " }
-                    "The delta must be generated against the firmware currently installed on this board. A successful transfer reboots the target immediately."
+                    "Only a live-update delta .seds artifact is accepted. It must be generated against the firmware currently installed on this board. Full-image recovery .seds files require the board's UART recovery tool. A successful live transfer reboots the target immediately."
                 }
                 label { style: "display:flex; align-items:flex-start; gap:9px; color:{theme.text_secondary};",
                     input {
