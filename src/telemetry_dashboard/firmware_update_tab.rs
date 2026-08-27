@@ -32,6 +32,10 @@ fn terminal_phase(phase: &str) -> bool {
     matches!(phase, "completed" | "cancelled" | "failed")
 }
 
+fn is_seds_filename(filename: &str) -> bool {
+    filename.to_ascii_lowercase().ends_with(".seds")
+}
+
 fn human_bytes(bytes: usize) -> String {
     if bytes >= 1024 * 1024 {
         format!("{:.2} MiB", bytes as f64 / (1024.0 * 1024.0))
@@ -276,7 +280,7 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
             div { style: "{panel_style}",
                 h2 { style: "margin:0 0 8px; color:{firmware_accent};", "Firmware Update" }
                 p { style: "margin:0; color:{theme.text_secondary}; line-height:1.45;",
-                    "Upload a LaunchCore delta artifact. The backend sends it to the selected board over the routed SEDSnet stream, then the board validates, installs, and reboots."
+                    "Upload a .seds firmware artifact. The backend sends it to the selected board over the routed SEDSnet stream, then the board validates, installs, and reboots."
                 }
             }
 
@@ -306,17 +310,24 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                 }
 
                 label { style: "display:grid; gap:6px; font-weight:600;",
-                    "Firmware delta file"
+                    "SEDS firmware file"
                     input {
                         style: "{input_style}",
                         r#type: "file",
-                        accept: ".delta,.img,.bin,application/octet-stream",
+                        accept: ".seds",
                         disabled: active,
                         onchange: move |event| {
                             let Some(file) = event.files().first().cloned() else {
                                 return;
                             };
                             let filename = file.name();
+                            if !is_seds_filename(&filename) {
+                                selected_filename.set(String::new());
+                                selected_bytes.set(None);
+                                acknowledged.set(false);
+                                upload_error.set("Only .seds firmware files can be uploaded.".to_string());
+                                return;
+                            }
                             spawn(async move {
                                 match file.read_bytes().await {
                                     Ok(bytes) => {
