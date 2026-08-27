@@ -26,6 +26,7 @@ fn default_main_tabs() -> Vec<String> {
         "connection-status".to_string(),
         "map".to_string(),
         "actions".to_string(),
+        "firmware-update".to_string(),
         "calibration".to_string(),
         "notifications".to_string(),
         "warnings".to_string(),
@@ -276,6 +277,7 @@ fn default_main_tab_accents() -> HashMap<String, String> {
         ("detailed".to_string(), "#4ab4ff".to_string()),
         ("map".to_string(), "#58d68d".to_string()),
         ("actions".to_string(), "#b8a0ff".to_string()),
+        ("firmware-update".to_string(), "#22d3ee".to_string()),
         ("calibration".to_string(), "#40d4c4".to_string()),
         ("notifications".to_string(), "#63a4ff".to_string()),
         ("warnings".to_string(), "#f3c969".to_string()),
@@ -695,6 +697,7 @@ impl LayoutConfig {
                     | "connection-status"
                     | "map"
                     | "actions"
+                    | "firmware-update"
                     | "calibration"
                     | "messages"
                     | "notifications"

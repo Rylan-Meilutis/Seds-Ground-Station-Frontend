@@ -316,6 +316,7 @@ enum MainTab {
     NetworkTopology,
     Map,
     Actions,
+    FirmwareUpdate,
     Calibration,
     Messages,
     Notifications,

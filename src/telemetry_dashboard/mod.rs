@@ -9,6 +9,7 @@ pub mod data_chart;
 pub mod data_tab;
 mod detailed_tab;
 pub mod errors_tab;
+mod firmware_update_tab;
 mod gps;
 pub(crate) mod gps_android;
 #[cfg(target_os = "linux")]
@@ -49,6 +50,7 @@ use detailed_tab::DetailedTab;
 use dioxus::prelude::*;
 use dioxus_signals::Signal;
 use errors_tab::ErrorsTab;
+use firmware_update_tab::FirmwareUpdateTab;
 use layout::LayoutConfig;
 use layout_settings_tab::{DataFilterSettingsRow, SettingsPage};
 use map_tab::MapTab;
@@ -2633,6 +2635,7 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
         MainTab::NetworkTopology => "network-topology",
         MainTab::Map => "map",
         MainTab::Actions => "actions",
+        MainTab::FirmwareUpdate => "firmware-update",
         MainTab::Calibration => "calibration",
         MainTab::Messages => "messages",
         MainTab::Notifications => "notifications",
@@ -2664,6 +2667,12 @@ fn _default_main_tab_label(tab: MainTab) -> String {
         ),
         MainTab::Map => localized_copy(&lang, "Map", "Mapa", "Carte"),
         MainTab::Actions => localized_copy(&lang, "Actions", "Acciones", "Actions"),
+        MainTab::FirmwareUpdate => localized_copy(
+            &lang,
+            "Firmware Update",
+            "Actualizacion de Firmware",
+            "Mise a jour du micrologiciel",
+        ),
         MainTab::Calibration => localized_copy(&lang, "Calibration", "Calibracion", "Calibration"),
         MainTab::Messages => localized_copy(&lang, "Messages", "Mensajes", "Messages"),
         MainTab::Notifications => {
@@ -2712,6 +2721,7 @@ fn _main_tab_from_str(s: &str) -> MainTab {
         "network-topology" => MainTab::NetworkTopology,
         "map" => MainTab::Map,
         "actions" => MainTab::Actions,
+        "firmware-update" => MainTab::FirmwareUpdate,
         "calibration" => MainTab::Calibration,
         "messages" => MainTab::Messages,
         "notifications" => MainTab::Notifications,
@@ -2754,6 +2764,9 @@ fn _configured_main_tabs(
             continue;
         }
         if tab == MainTab::Actions && !_actions_tab_has_visible_actions(layout, abort_only_mode) {
+            continue;
+        }
+        if tab == MainTab::FirmwareUpdate && !auth::can_send_command("FirmwareUpdate") {
             continue;
         }
         if tab == MainTab::Calibration && !_calibration_tab_visible(calibration_has_sensors) {
@@ -6417,6 +6430,21 @@ fn TelemetryDashboardInner() -> Element {
                                                 "{_main_tab_label(&layout, MainTab::Actions)}"
                                             }
                                         },
+                                        MainTab::FirmwareUpdate => rsx! {
+                                            button {
+                                                key: "{\"main-tab-firmware-update\"}",
+                                                style: if *active_main_tab.read() == MainTab::FirmwareUpdate { tab_style_active(&main_tab_accent("firmware-update", "#22d3ee")) } else { tab_style_inactive.to_string() },
+                                                onclick: {
+                                                    let mut t = active_main_tab;
+                                                    let mut tabs_expanded = tabs_expanded;
+                                                    move |_| {
+                                                        t.set(MainTab::FirmwareUpdate);
+                                                        tabs_expanded.set(false);
+                                                    }
+                                                },
+                                                "{_main_tab_label(&layout, MainTab::FirmwareUpdate)}"
+                                            }
+                                        },
                                         MainTab::Calibration => rsx! {
                                             button {
                                                 key: "{\"main-tab-calibration\"}",
@@ -6680,6 +6708,9 @@ fn TelemetryDashboardInner() -> Element {
                                     theme: theme.clone(),
                                 }
                                 }
+                            },
+                            MainTab::FirmwareUpdate => rsx! {
+                                FirmwareUpdateTab { theme: theme.clone() }
                             },
                             MainTab::Calibration => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
