@@ -6673,7 +6673,6 @@ fn TelemetryDashboardInner() -> Element {
                                 div { key: "network-topology-clear-{frontend_data_clear_epoch}", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                                     NetworkTopologyTab {
                                         topology: network_topology,
-                                        board_status: board_status,
                                         ws_connected: *WS_CONNECTED_SIGNAL.read(),
                                         layout: layout.network_tab.clone(),
                                         flow_animation_enabled: *network_flow_animation_enabled.read(),

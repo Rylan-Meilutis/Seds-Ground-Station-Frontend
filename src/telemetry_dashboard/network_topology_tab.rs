@@ -14,8 +14,8 @@ const GRAPH_CANVAS_FULLSCREEN_ID: &str = "network-topology-canvas-fullscreen";
 
 use super::layout::{NetworkTabLayout, ThemeConfig};
 use super::types::{
-    BoardStatusEntry, NetworkTopologyLink, NetworkTopologyMsg, NetworkTopologyNode,
-    NetworkTopologyNodeKind, NetworkTopologyStatus,
+    NetworkTopologyLink, NetworkTopologyMsg, NetworkTopologyNode, NetworkTopologyNodeKind,
+    NetworkTopologyStatus,
 };
 use super::{js_eval, translate_text};
 
@@ -56,8 +56,16 @@ struct NodePacketPulse {
 
 #[derive(Clone)]
 struct NodePacketStats {
-    sender_id: String,
-    total: u64,
+    packets_sent: u64,
+    packets_received: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
+}
+
+impl NodePacketStats {
+    fn total_packets(&self) -> u64 {
+        self.packets_sent.saturating_add(self.packets_received)
+    }
 }
 
 #[derive(Clone)]
@@ -146,7 +154,6 @@ fn link_adjacency_map(links: &[NetworkTopologyLink]) -> HashMap<String, Vec<Stri
 #[component]
 pub fn NetworkTopologyTab(
     topology: Signal<NetworkTopologyMsg>,
-    board_status: Signal<Vec<BoardStatusEntry>>,
     ws_connected: bool,
     layout: NetworkTabLayout,
     flow_animation_enabled: bool,
@@ -154,7 +161,6 @@ pub fn NetworkTopologyTab(
     theme: ThemeConfig,
 ) -> Element {
     let snapshot = topology.read();
-    let board_status_snapshot = board_status.read().clone();
     let expanded_node_id = use_signal(|| None::<String>);
     let mut is_fullscreen = use_signal(|| false);
     let title = layout
@@ -162,8 +168,7 @@ pub fn NetworkTopologyTab(
         .unwrap_or_else(|| "Network Topology".to_string());
     let topology_hash = topology_cache_hash(&snapshot, vertical_layout);
     let derived = topology_derived_cached(&snapshot, vertical_layout, topology_hash);
-    let packet_stats =
-        packet_stats_by_node_cached(&derived.graph_nodes, &board_status_snapshot, topology_hash);
+    let packet_stats = packet_stats_by_node_cached(&derived.graph_nodes, topology_hash);
     let packet_pulses =
         node_packet_pulse_serials(&derived.graph_nodes, &packet_stats, flow_animation_enabled);
     let viewport_id = if *is_fullscreen.read() {
@@ -1205,7 +1210,7 @@ fn render_node(
         "auto"
     };
     let node_z_index = if is_expanded { "20" } else { "2" };
-    let packet_count_label = packet_stats.map(|stats| format_packet_count(stats.total));
+    let packet_count_label = packet_stats.map(|stats| format_packet_count(stats.total_packets()));
 
     rsx! {
         div {
@@ -1263,8 +1268,13 @@ fn render_node(
                         div { style: "display:flex; flex-direction:column; gap:6px; margin-bottom:12px;",
                             div {
                                 style: "display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border-radius:10px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:0.8rem;",
-                                span { "From {stats.sender_id}" }
-                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.total)}" }
+                                span { "Network TX" }
+                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.packets_sent)} pkt / {format_byte_count(stats.bytes_sent)}" }
+                            }
+                            div {
+                                style: "display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border-radius:10px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:0.8rem;",
+                                span { "Network RX" }
+                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.packets_received)} pkt / {format_byte_count(stats.bytes_received)}" }
                             }
                         }
                     } else {
@@ -1306,27 +1316,19 @@ fn placement_for(id: &str, placements: &HashMap<String, NodePlacement>) -> Optio
     placements.get(id).copied()
 }
 
-fn packet_stats_by_node(
-    nodes: &[NetworkTopologyNode],
-    board_status: &[BoardStatusEntry],
-) -> HashMap<String, NodePacketStats> {
-    let counts_by_sender = board_status
-        .iter()
-        .map(|entry| (entry.sender_id.as_str(), entry.packet_count))
-        .collect::<HashMap<_, _>>();
+fn packet_stats_by_node(nodes: &[NetworkTopologyNode]) -> HashMap<String, NodePacketStats> {
     nodes
         .iter()
         .filter_map(|node| {
-            let sender_id = node.sender_id.as_ref()?;
-            let total = counts_by_sender
-                .get(sender_id.as_str())
-                .copied()
-                .unwrap_or(0);
+            node.sender_id.as_ref()?;
+            let stats = node.stats?;
             Some((
                 node.id.clone(),
                 NodePacketStats {
-                    sender_id: sender_id.clone(),
-                    total,
+                    packets_sent: stats.packets_sent,
+                    packets_received: stats.packets_received,
+                    bytes_sent: stats.bytes_sent,
+                    bytes_received: stats.bytes_received,
                 },
             ))
         })
@@ -1353,7 +1355,7 @@ fn node_packet_pulse_serials(
     for node in nodes {
         let count = packet_stats
             .get(&node.id)
-            .map(|stats| stats.total)
+            .map(NodePacketStats::total_packets)
             .unwrap_or(0);
         let pulse = pulses.entry(node.id.clone()).or_default();
         if count > pulse.last_count {
@@ -1397,6 +1399,18 @@ fn format_packet_count(total: u64) -> String {
         format!("{:.1}k", total as f64 / 1_000.0)
     } else {
         total.to_string()
+    }
+}
+
+fn format_byte_count(total: u64) -> String {
+    if total >= 1_000_000_000 {
+        format!("{:.1} GB", total as f64 / 1_000_000_000.0)
+    } else if total >= 1_000_000 {
+        format!("{:.1} MB", total as f64 / 1_000_000.0)
+    } else if total >= 1_000 {
+        format!("{:.1} kB", total as f64 / 1_000.0)
+    } else {
+        format!("{total} B")
     }
 }
 
@@ -1591,35 +1605,21 @@ fn topology_derived_cached(
     }
 }
 
-fn packet_stats_cache_hash(
-    nodes: &[NetworkTopologyNode],
-    board_status: &[BoardStatusEntry],
-) -> u64 {
-    let counts_by_sender = board_status
-        .iter()
-        .map(|entry| (entry.sender_id.as_str(), entry.packet_count))
-        .collect::<HashMap<_, _>>();
+fn packet_stats_cache_hash(nodes: &[NetworkTopologyNode]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for node in nodes {
         node.id.hash(&mut hasher);
         node.sender_id.hash(&mut hasher);
-        let count = node
-            .sender_id
-            .as_ref()
-            .and_then(|sender_id| counts_by_sender.get(sender_id.as_str()))
-            .copied()
-            .unwrap_or(0);
-        count.hash(&mut hasher);
+        node.stats.hash(&mut hasher);
     }
     hasher.finish()
 }
 
 fn packet_stats_by_node_cached(
     nodes: &[NetworkTopologyNode],
-    board_status: &[BoardStatusEntry],
     topology_hash: u64,
 ) -> HashMap<String, NodePacketStats> {
-    let packet_hash = packet_stats_cache_hash(nodes, board_status);
+    let packet_hash = packet_stats_cache_hash(nodes);
     if let Ok(cache) = TOPOLOGY_PACKET_STATS_CACHE.lock()
         && let Some((cached_topology_hash, cached_packet_hash, stats)) = cache.as_ref()
         && *cached_topology_hash == topology_hash
@@ -1628,7 +1628,7 @@ fn packet_stats_by_node_cached(
         return stats.clone();
     }
 
-    let stats = packet_stats_by_node(nodes, board_status);
+    let stats = packet_stats_by_node(nodes);
     if let Ok(mut cache) = TOPOLOGY_PACKET_STATS_CACHE.lock() {
         *cache = Some((topology_hash, packet_hash, stats.clone()));
     }
