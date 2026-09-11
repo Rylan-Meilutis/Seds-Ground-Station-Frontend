@@ -397,7 +397,7 @@ pub(crate) fn LiveStreamTab(
             }
             if crate::auth::can_view_actions() && super::gse_panel::ground_visible(&flight_state.read()) {
                 section {style:"margin:16px 0;",h2 {style:"font-size:18px;","Ground setup"}
-                    super::gse_panel::GsePanel {action_policy,abort_only_mode,theme:theme.clone()}
+                    super::gse_panel::GsePanel {action_policy,abort_only_mode,theme:theme.clone(),show_model:false}
                 }
             }
             if prefs.show_angle_strip && online_feeds.len() > 1 {

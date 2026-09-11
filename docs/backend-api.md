@@ -1232,6 +1232,10 @@ state uses neutral/unknown visuals, never live values. A camera relay outage can
 return model/telemetry state. The full-size WebGL model is unmounted while video plays.
 # Model scene and HITL action updates
 
+Mission Live ground setup is status/settings/checklist only. Its secondary GSE
+model is not mounted or synchronized; the main media/model area owns visualization.
+This is a presentation change and does not change backend contracts.
+
 HITL layouts now include `ToggleGroundStationControl` ("Ground station control"),
 an illuminated command toggle whose default is ON. Read enabled/actuated state
 from `action_policy.controls`; do not persist or infer it in the client. It enables

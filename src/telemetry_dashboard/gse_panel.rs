@@ -133,6 +133,8 @@ pub(super) fn GsePanel(
     action_policy: Signal<ActionPolicyMsg>,
     abort_only_mode: bool,
     theme: ThemeConfig,
+    #[props(default = true)]
+    show_model: bool,
 ) -> Element {
     let mut settings = use_signal(|| None::<Settings>);
     let mut status = use_signal(Status::default);
@@ -163,7 +165,11 @@ pub(super) fn GsePanel(
         }
     });
     let snapshot = status.read().clone();
-    use_effect(move || sync_scene(&status.read()));
+    use_effect(move || {
+        if show_model {
+            sync_scene(&status.read());
+        }
+    });
     let active = !["idle", "passed", "cancelled", "fault"].contains(&snapshot.phase.as_str());
     let can_edit = auth::can_view_actions() && !active && !abort_only_mode && !*busy.read();
     let pressure_label = snapshot
@@ -178,15 +184,18 @@ pub(super) fn GsePanel(
                 }
                 span {style:"font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{theme.text_muted};",if snapshot.nitrogen_passed {"Fill unlocked"}else{"Fill locked"}}
             }
+            if show_model {
             div {style:"height:360px;background:radial-gradient(ellipse at center,#202b34,#0b1016);",
                 div {style:"width:100%;height:100%;",dangerous_inner_html:r#"<model-viewer id="gs26-gse-model" alt="Nitrogen and nitrous tanks, fill manifold, plumbing and launch tower" camera-controls camera-orbit="35deg 68deg auto" shadow-intensity="0.6" exposure="1" style="width:100%;height:100%;background:transparent"></model-viewer>"#}
+            }
             }
             div {style:"padding:18px 20px;display:grid;gap:14px;",
                 div {style:"display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:{theme.text_muted};",
                     for (i, label) in ["Pilot", "Vent", "Dump", "Nitrogen", "Nitrous"].iter().enumerate() {
                         { let value=match snapshot.valves[i] {Some(true)=>"OPEN",Some(false)=>"CLOSED",None=>"UNKNOWN"}; rsx! {span {"{label}: {value}"}} }
                     }
-                    span {"Last board acknowledgement · animation indicates sequence activity, not measured flow"}
+                    span {"Last board acknowledgement"}
+                    if show_model {span {"Animation indicates sequence activity, not measured flow"}}
                 }
                 p {style:"margin:0;color:{theme.text_primary};", "{snapshot.message}"}
                 div {style:"display:flex;gap:24px;flex-wrap:wrap;color:{theme.text_muted};font-size:12px;font-variant-numeric:tabular-nums;",
