@@ -113,10 +113,7 @@ fn visual_now_ms() -> i64 {
     }
 }
 fn value(binding: &VehicleTelemetryBinding) -> Option<f32> {
-    let row = super::latest_telemetry_row(
-        &binding.data_type,
-        binding.sender_id.as_deref(),
-    )?;
+    let row = super::latest_telemetry_row(&binding.data_type, binding.sender_id.as_deref())?;
     let age = visual_now_ms().saturating_sub(row.received_timestamp_ms);
     if !(0..=5000).contains(&age) {
         return None;
@@ -328,7 +325,6 @@ pub(crate) fn VehicleTab(
                 }
                 div { role: "status", "aria-atomic": "true", style: "padding:7px 10px; border:1px solid {theme.border}; border-radius:999px; color:{theme.text_secondary}; font-size:12px;", "{load_status.read()}" }
             }
-            if crate::auth::can_view_actions() { ModelBindingsEditor { initial:cfg.clone(), on_saved:move |next| {let mut config=config;config.set(Some(next));} } }
             div { class: "gs26-vehicle-grid",
                 div { style: "min-height:460px; position:relative; overflow:hidden; border:1px solid {theme.tab_shell_border}; border-radius:18px; background:radial-gradient(circle at 50% 42%, {theme.panel_background_alt}, {theme.panel_background} 68%);",
                     if !cfg.model_url.trim().is_empty() {
@@ -471,31 +467,4 @@ mod tests {
         assert_eq!(fraction, 0.0);
         assert!(!active);
     }
-}
-#[component]
-fn ModelBindingsEditor(
-    initial: VehicleVisualizationConfig,
-    on_saved: EventHandler<VehicleVisualizationConfig>,
-) -> Element {
-    let mut draft = use_signal(|| serde_json::to_string_pretty(&initial).unwrap_or_default());
-    let mut status = use_signal(String::new);
-    let mut busy = use_signal(|| false);
-    rsx! {details {style:"margin:12px 0;padding:12px;border:1px solid #344454;border-radius:12px;",
-        summary {"Model & telemetry animation bindings"}
-        p {"Choose /assets/models/vehicle.glb or /assets/models/gse-site.glb, or an uploaded stage model. Map named nodes using motions: rotate (degrees), translate (model units), scale, or visible. Binding values are normalized 0–1; phase_values are illustrative fallbacks only when no binding is configured."}
-        textarea {style:"width:100%;min-height:260px;background:#101923;color:#dce6ed;font:12px monospace;box-sizing:border-box;",value:"{draft}",oninput:move|e|draft.set(e.value()),disabled:*busy.read()}
-        button {disabled:*busy.read(),onclick:move |_|{
-            let mut cfg=match serde_json::from_str::<VehicleVisualizationConfig>(&draft.read()){Ok(v)=>v,Err(e)=>{status.set(e.to_string());return;}};
-            if let Some(path)=cfg.model_url.strip_prefix("/api/media-assets/models/"){cfg.model_url=format!("/api/stage-models/{}",path.split('?').next().unwrap_or(path));}
-            busy.set(true);
-            spawn(async move {
-                match super::http_post_json::<VehicleVisualizationConfig,serde_json::Value>("/api/vehicle_visualization",&cfg).await {
-                    Ok(_)=>{match http_get_json::<VehicleVisualizationConfig>("/api/vehicle_visualization").await {Ok(next)=>{on_saved.call(next);status.set("Model bindings saved".into());},Err(e)=>status.set(e)}},
-                    Err(e)=>status.set(e),
-                }
-                busy.set(false);
-            });
-        },"Save model bindings"}
-        p {role:"status","{status}"}
-    }}
 }

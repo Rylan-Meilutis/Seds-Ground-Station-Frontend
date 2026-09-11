@@ -37,20 +37,13 @@ fn TelemetryDashboardInner() -> Element {
     // ----------------------------
     let st_warn_ack = use_signal(|| persist::get_or(WARNING_ACK_STORAGE_KEY, "0"));
     let st_err_ack = use_signal(|| persist::get_or(ERROR_ACK_STORAGE_KEY, "0"));
-    let st_main_tab = use_signal(|| {
-        persist::get_string(&scoped_main_tab_key()).unwrap_or_else(|| {
-            if auth::can_view_actions() {
-                "state".to_string()
-            } else {
-                "mission".to_string()
-            }
-        })
-    });
+    let st_main_tab = use_signal(|| "state".to_string());
     let st_data_tab = use_signal(|| persist::get_or(DATA_TAB_STORAGE_KEY, "GYRO_DATA"));
     let st_base_url = use_signal(|| persist::get_or(BASE_URL_STORAGE_KEY, ""));
     let dashboard_customization = use_signal(load_dashboard_customization);
     let dashboard_edit_mode = use_signal(|| false);
     let streamer_mode = use_signal(|| persist::get_or(&streamer_mode_key(), "off") == "on");
+    let ground_station_view = use_signal(|| persist::get_or(&ground_station_view_key(), "off") == "on");
     let distance_units_metric = use_signal(|| {
         persist::get_string(MAP_DISTANCE_UNITS_STORAGE_KEY)
             .map(|v| v == "metric")
@@ -2410,6 +2403,7 @@ fn TelemetryDashboardInner() -> Element {
                             map_prefetch_rocket_radius_m: map_prefetch_rocket_radius_m,
                             calibration_capture_sample_count: calibration_capture_sample_count,
                             streamer_mode: streamer_mode,
+                            ground_station_view,
                             storage_breakdown: cache_storage_stats_rows(),
                             measured_cache_bytes: cache_storage_measured_bytes(),
                             theme: theme.clone(),
@@ -2964,6 +2958,11 @@ fn TelemetryDashboardInner() -> Element {
                 overflow:hidden;
             ",
 
+                    if *streamer_mode.read() {
+                        button { title:"Exit streamer mode", style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:0.65;border:1px solid #526071;border-radius:8px;background:#101923;color:white;padding:6px;cursor:pointer;",
+                            onclick:move |_| {let mut streamer_mode=streamer_mode;streamer_mode.set(false);let mut active_main_tab=active_main_tab;active_main_tab.set(MainTab::State);}, "Exit streamer"
+                        }
+                    }
                     // Header row 1
                     div {
                         class: "gs26-header-row",
@@ -3718,6 +3717,9 @@ fn TelemetryDashboardInner() -> Element {
 
                     div { style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                         match *active_main_tab.read() {
+                            MainTab::State if !*ground_station_view.read() => rsx! {
+                                model_dashboard::ModelDashboard { theme:theme.clone(), flight_state, rocket_gps, rocket_altitude_m:rocket_gps_altitude_m }
+                            },
                             MainTab::State => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
                                         StateTab {

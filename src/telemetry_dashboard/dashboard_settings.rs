@@ -322,6 +322,7 @@ pub fn NativeSettingsPage() -> Element {
             .clamp(1, 5_000)
     });
     let streamer_mode = use_signal(|| persist::get_or(&streamer_mode_key(), "off") == "on");
+    let ground_station_view = use_signal(|| persist::get_or(&ground_station_view_key(), "off") == "on");
 
     {
         let streamer_mode = streamer_mode;
@@ -759,6 +760,7 @@ pub fn NativeSettingsPage() -> Element {
             map_prefetch_rocket_radius_m,
             calibration_capture_sample_count,
             streamer_mode,
+            ground_station_view,
             storage_breakdown: cache_storage_stats_rows(),
             measured_cache_bytes: cache_storage_measured_bytes(),
             theme,

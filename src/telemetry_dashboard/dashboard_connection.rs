@@ -51,7 +51,9 @@ fn _default_main_tab_label(tab: MainTab) -> String {
             "Mise a jour du micrologiciel",
         ),
         MainTab::Calibration => localized_copy(&lang, "Calibration", "Calibracion", "Calibration"),
-        MainTab::Mission => localized_copy(&lang, "Mission Live", "Mision en vivo", "Mission en direct"),
+        MainTab::Mission => {
+            localized_copy(&lang, "Mission Live", "Mision en vivo", "Mission en direct")
+        }
         MainTab::Vehicle => localized_copy(&lang, "Vehicle", "Vehiculo", "Vehicule"),
         MainTab::Messages => localized_copy(&lang, "Messages", "Mensajes", "Messages"),
         MainTab::Notifications => {
@@ -148,6 +150,10 @@ fn dashboard_customization_key() -> String {
     format!("gs26_dashboard_customization_v1_{suffix}")
 }
 
+fn ground_station_view_key() -> String {
+    format!("{}_ground_station_view", dashboard_customization_key())
+}
+
 fn streamer_mode_key() -> String {
     format!("{}_streamer", dashboard_customization_key())
 }
@@ -176,7 +182,8 @@ fn _available_main_tabs(
     let mut tabs = Vec::new();
     for id in &layout.main_tabs {
         let tab = _main_tab_from_str(id);
-        if !_layout_main_tab_enabled(layout, tab) || tabs.contains(&tab) {
+        if tab == MainTab::Vehicle || !_layout_main_tab_enabled(layout, tab) || tabs.contains(&tab)
+        {
             continue;
         }
         if tab == MainTab::Actions && !_actions_tab_has_visible_actions(layout, abort_only_mode) {
@@ -196,10 +203,8 @@ fn _available_main_tabs(
     if !tabs.contains(&MainTab::Mission) {
         tabs.insert(0, MainTab::Mission);
     }
-    if !tabs.contains(&MainTab::Vehicle) {
-        let index = usize::from(!tabs.is_empty()).min(tabs.len());
-        tabs.insert(index, MainTab::Vehicle);
-    }
+    tabs.retain(|tab| *tab != MainTab::State);
+    tabs.insert(0, MainTab::State);
     tabs
 }
 
@@ -216,14 +221,20 @@ fn _configured_main_tabs(
         let tab = _main_tab_from_str(id);
         if available.contains(&tab)
             && !tabs.contains(&tab)
-            && !customization.hidden.iter().any(|hidden| hidden == _main_tab_to_str(tab))
+            && !customization
+                .hidden
+                .iter()
+                .any(|hidden| hidden == _main_tab_to_str(tab))
         {
             tabs.push(tab);
         }
     }
     for tab in available {
         if !tabs.contains(&tab)
-            && !customization.hidden.iter().any(|hidden| hidden == _main_tab_to_str(tab))
+            && !customization
+                .hidden
+                .iter()
+                .any(|hidden| hidden == _main_tab_to_str(tab))
         {
             tabs.push(tab);
         }
@@ -234,9 +245,9 @@ fn _configured_main_tabs(
     {
         tabs.insert(notifications_idx, MainTab::Messages);
     }
-    if tabs.is_empty() {
-        tabs.push(MainTab::State);
-    }
+    // The primary dashboard stays reachable regardless of old tab customization.
+    tabs.retain(|tab| *tab != MainTab::State);
+    tabs.insert(0, MainTab::State);
     tabs
 }
 

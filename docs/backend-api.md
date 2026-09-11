@@ -833,11 +833,27 @@ fabricated state. Named nodes must exist in the GLB. For example:
  "phase_values":{}}
 ```
 
-The data type above is illustrative: bind actual firmware signals in the advanced model
-configuration editor. `POST /api/vehicle_visualization` saves configuration and returns
+The data type above is illustrative: backend administrators bind actual firmware signals in
+the stage-model directory `_presentation.json`; there is no user-facing binding editor.
+`POST /api/vehicle_visualization` remains available for backend administration and returns
 `{"saved":true}`; it requires configuration/hardware permission, not just a stream role.
 Existing PUT clients receive 204. Phase clips and node motions are interpolated, including
-stock stage, parachute, gimbal, fin, air-brake and GSE level nodes.
+parachute, gimbal, aft-fin and GSE level nodes. The stock rocket is single-stage (`stage-1`)
+with no upper fins or airbrakes. Other backend vehicle profiles can still be multi-stage.
+
+### Dashboard and viewing modes
+
+Dashboard opens on the model and a cycling telemetry bar; there is no separate Vehicle tab.
+Settings → General → Viewing mode → Ground Station view restores the instrument/control view
+on the current device. Streamer is available in the same settings section to any viewer;
+it does not require a stream-manager role. Exit streamer returns to Dashboard.
+
+`GET /api/dashboard_status` requires viewing access and returns `{phase,t_clock,stats}`.
+Each stat is `{label,value,unit,precision}` with bindings resolved by the backend; missing or
+older-than-five-second values are null. The live dashboard and delayed streamer bars cycle
+three fields every five seconds, retaining state and T clock. Default backend fields include
+RF GPS altitude/latitude/longitude, calibrated tank pressure, fill mass and fill percentage.
+The streamer uses the same fields from delayed snapshots, never from this live endpoint.
 
 ### `GET /api/live_streams`
 
