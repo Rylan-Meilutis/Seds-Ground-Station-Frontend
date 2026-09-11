@@ -114,7 +114,7 @@ fn visual_now_ms() -> i64 {
             .as_millis() as i64
     }
 }
-fn value(binding: &VehicleTelemetryBinding) -> Option<f32> {
+pub(super) fn value(binding: &VehicleTelemetryBinding) -> Option<f32> {
     let row = super::latest_telemetry_row(&binding.data_type, binding.sender_id.as_deref())?;
     let age = visual_now_ms().saturating_sub(row.received_timestamp_ms);
     if !(0..=5000).contains(&age) {

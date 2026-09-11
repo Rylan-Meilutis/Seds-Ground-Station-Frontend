@@ -1375,7 +1375,12 @@ fn render_chart_group(
         (columns as f64 * scale_chip_width)
             + (columns.saturating_sub(1) as f64 * DATA_CHART_VERTICAL_SCALE_LABEL_RAIL_GAP)
     } else if use_per_series_scale {
-        scale_chip_width + 8.0
+        let count = per_series_scales
+            .iter()
+            .filter(|scale| scale.is_some())
+            .count()
+            .max(1);
+        count as f64 * scale_chip_width + count.saturating_sub(1) as f64 * 4.0
     } else {
         0.0
     };
@@ -1407,14 +1412,14 @@ fn render_chart_group(
         )
     };
     rsx! {
-        div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
+        div { style: "box-sizing:border-box; min-width:0; width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(title) = group.title.as_ref() {
                 div { style: "font-size:13px; font-weight:600; color:{theme.text_primary};", "{translate_text(title)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
                 {reseed_note_banner(kind, note, theme, false)}
             }
-            div { style: "display:flex; gap:6px; align-items:stretch; width:100%; {chart_shell_size_style}",
+            div { style: "display:flex; gap:6px; align-items:stretch; width:100%; min-width:0; overflow-x:auto; padding-bottom:12px; {chart_shell_size_style}",
                 if use_per_series_scale {
                     {normalized_scale_labels_side(
                         &legend_labels,
@@ -1429,7 +1434,7 @@ fn render_chart_group(
                         &per_series_chip_style,
                     )}
                 }
-                div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%;",
+                div { style: "position:relative; flex:1 0 160px; min-width:160px; height:100%;",
                     ChartCanvas {
                         key: canvas_identity_key.clone(),
                         identity_key: canvas_identity_key.clone(),

@@ -980,12 +980,8 @@ fn combined_state_chart_cached(
     } else {
         0.0
     };
-    let rendered_chart_height = if normalize_per_series && state_chart_labels_vertical {
-        view_h
-    } else {
-        0.0
-    };
-    let chart_shell_size_style = if normalize_per_series && state_chart_labels_vertical {
+    let rendered_chart_height = if normalize_per_series { view_h } else { 0.0 };
+    let chart_shell_size_style = if normalize_per_series {
         format!("height:{rendered_chart_height}px;")
     } else {
         format!("aspect-ratio:{view_w}/{view_h};")
@@ -1004,14 +1000,14 @@ fn combined_state_chart_cached(
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     rsx! {
-        div { style: "width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
+        div { style: "box-sizing:border-box; min-width:0; width:100%; background:{theme.panel_background_alt}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(t) = title {
                 div { style: "color:{theme.text_primary}; font-weight:700; font-size:14px;", "{translate_text(t)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
                 {reseed_note_banner(kind, note, theme, false)}
             }
-            div { style: "display:flex; align-items:stretch; gap:{VERTICAL_SCALE_LABEL_RAIL_GAP}px; width:100%; {chart_shell_size_style} overflow:hidden;",
+            div { style: "display:flex; align-items:stretch; gap:{VERTICAL_SCALE_LABEL_RAIL_GAP}px; width:100%; min-width:0; {chart_shell_size_style} overflow-x:auto; padding-bottom:12px;",
                 if normalize_per_series {
                     {normalized_scale_labels_side(
                         &labels,
@@ -1026,7 +1022,7 @@ fn combined_state_chart_cached(
                         &scale_chip_style,
                     )}
                 }
-                div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%; container-type:inline-size;",
+                div { style: "position:relative; flex:1 0 160px; min-width:160px; height:100%; container-type:inline-size;",
                     ChartCanvas {
                         identity_key: format!(
                             "state-multi-chart::{}::{}::{:?}",

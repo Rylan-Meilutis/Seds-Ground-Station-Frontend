@@ -13,6 +13,16 @@ struct Stat {
     value: Option<f64>,
     unit: String,
     precision: usize,
+    #[serde(default)]
+    binding: Option<super::vehicle_tab::VehicleTelemetryBinding>,
+}
+impl Stat {
+    fn live_value(&self) -> Option<f64> {
+        match self.binding.as_ref() {
+            Some(binding) => super::vehicle_tab::value(binding).map(f64::from),
+            None => self.value, // Compatibility with older backends.
+        }
+    }
 }
 #[component]
 pub(super) fn ModelDashboard(
@@ -49,6 +59,9 @@ pub(super) fn ModelDashboard(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     });
+    // Binding metadata is backend-owned; values follow WebSocket ingress rather
+    // than waiting for the next dashboard-status HTTP request.
+    let _ = *super::TELEMETRY_RENDER_EPOCH.read();
     let data = snapshot.read().clone();
     let start = (*page.read() % data.stats.len().div_ceil(3).max(1)) * 3;
     rsx! {div {style:"height:100%;display:flex;flex-direction:column;min-height:0;",
@@ -62,11 +75,42 @@ pub(super) fn ModelDashboard(
             {card("Flight state",if *available.read(){data.phase.clone()}else{"Unavailable".into()})}
             {card("T clock",data.t_clock.clone().unwrap_or_else(||"—".into()))}
             for stat in data.stats.iter().skip(start).take(3) {
-                {card(&stat.label,stat.value.filter(|v|v.is_finite()).map(|v|format!("{:.*} {}",stat.precision.min(6),v,stat.unit)).unwrap_or_else(||"—".into()))}
+                {card(&stat.label,stat.live_value().filter(|v|v.is_finite()).map(|v|format!("{:.*} {}",stat.precision.min(6),v,stat.unit)).unwrap_or_else(||"—".into()))}
             }
         }
     }}
 }
 fn card(label: &str, value: String) -> Element {
     rsx! {div {div {style:"font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#9aaebb;","{label}"}div {style:"margin-top:4px;","{value}"}}}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bound_stats_follow_every_200ms_sample_without_http_refresh() {
+        let stat: Stat = serde_json::from_value(serde_json::json!({
+            "label":"FC regression", "value":999, "unit":"m", "precision":1,
+            "binding":{"data_type":"FC_LIVE_REGRESSION", "sender_id":"FC_TEST", "index":0,"scale":2,"offset":1}
+        })).unwrap();
+        let now = super::super::current_wallclock_ms();
+        for sample in 0..5 {
+            let timestamp_ms = now - 800 + sample * 200;
+            super::super::update_latest_telemetry_batch(&[super::super::types::TelemetryRow {
+                timestamp_ms,
+                received_timestamp_ms: timestamp_ms,
+                data_type: "FC_LIVE_REGRESSION".into(),
+                data_type_id: Default::default(),
+                sender_id: "FC_TEST".into(),
+                sender_id_id: Default::default(),
+                values: vec![Some(sample as f32)],
+            }]);
+            assert_eq!(stat.live_value(), Some((sample * 2 + 1) as f64));
+        }
+        let legacy: Stat = serde_json::from_value(serde_json::json!({
+            "label":"Legacy", "value":42, "unit":"m", "precision":1
+        }))
+        .unwrap();
+        assert_eq!(legacy.live_value(), Some(42.0));
+    }
 }

@@ -43,7 +43,8 @@ fn TelemetryDashboardInner() -> Element {
     let dashboard_customization = use_signal(load_dashboard_customization);
     let dashboard_edit_mode = use_signal(|| false);
     let streamer_mode = use_signal(|| persist::get_or(&streamer_mode_key(), "off") == "on");
-    let ground_station_view = use_signal(|| persist::get_or(&ground_station_view_key(), "off") == "on");
+    let ground_station_view =
+        use_signal(|| persist::get_or(&ground_station_view_key(), "off") == "on");
     let distance_units_metric = use_signal(|| {
         persist::get_string(MAP_DISTANCE_UNITS_STORAGE_KEY)
             .map(|v| v == "metric")
@@ -1390,7 +1391,11 @@ fn TelemetryDashboardInner() -> Element {
                         && telemetry_render_flush_due(now_ms)
                         && matches!(
                             *active_main_tab.read(),
-                            MainTab::State | MainTab::Data | MainTab::Calibration
+                            MainTab::State
+                                | MainTab::Data
+                                | MainTab::Calibration
+                                | MainTab::Mission
+                                | MainTab::Vehicle
                         )
                     {
                         TELEMETRY_RENDER_DIRTY.store(false, Ordering::Release);
@@ -1423,7 +1428,11 @@ fn TelemetryDashboardInner() -> Element {
                         && page_visible
                         && matches!(
                             active_tab,
-                            MainTab::State | MainTab::Data | MainTab::Calibration
+                            MainTab::State
+                                | MainTab::Data
+                                | MainTab::Calibration
+                                | MainTab::Mission
+                                | MainTab::Vehicle
                         )
                     {
                         let elapsed = now_ms

@@ -1,5 +1,16 @@
 # Backend API Reference
 
+Live dashboard stats include optional backend-owned `binding` metadata:
+`{data_type,sender_id,index,scale,offset}`. When present, the operator dashboard
+reads the corresponding WebSocket sample on each telemetry render (16 ms
+coalescing), instead of waiting for `/api/dashboard_status` HTTP polling. Bound
+values become unavailable after five seconds without fresh data; older backends
+without bindings retain HTTP-value fallback. Mission/Vehicle views participate in
+live rendering. The backend defaults to 20 ms telemetry batches, so 200 ms FC
+samples are not reduced to 1 Hz by this path. Physical board/radio rates are not
+changed by these UI updates. Bindings remain backend-owned, not UI settings.
+Delayed streamer views continue using delayed program values, not live samples.
+
 This document describes the backend contract that the frontend currently expects.
 
 Verified against frontend version `0.3.1`, app build `36`, and the current Dioxus `0.7.9` codebase.
@@ -1292,3 +1303,8 @@ locally dismissed entries. Persistent unresolved alerts remain visible but are
 not marked newly unread on reload. Routine GSE pause/cancel/pass/self-test
 completion notices are transient; sequence faults remain persistent. The wire
 schema is unchanged. Clearing local app storage resets replay tracking.
+
+Normalized charts reserve space for every horizontal per-series scale label.
+On narrow screens the chart panel scrolls horizontally, preserving a minimum
+160 px plot width instead of clipping labels or collapsing the plot. Both scale
+label orientations retain an explicit chart height. No backend contract changes.
