@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-const MODEL_VIEWER_HTML: &str = r#"<gs-vehicle-viewer id="gs26-vehicle-model" camera-controls touch-action="pan-y" loading="eager" reveal="auto" shadow-intensity="1" exposure="1" style="width:100%;height:100%;background:transparent" aria-label="Live three-dimensional rocket model"></gs-vehicle-viewer>"#;
+static VIEWER_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct VehicleVisualizationConfig {
@@ -16,6 +16,8 @@ pub(crate) struct VehicleVisualizationConfig {
     pub title: String,
     #[serde(default)]
     pub model_url: String,
+    #[serde(default)]
+    pub ground_model_url: String,
     /// Optional self-hosted model-viewer module. Ground stations can serve this
     /// alongside the GLB for fully offline operation.
     #[serde(default)]
@@ -159,6 +161,7 @@ fn model_animation(config: &VehicleVisualizationConfig, phase: &str) -> Option<S
 }
 
 fn sync_model_viewer(
+    viewer_id: usize,
     config: &VehicleVisualizationConfig,
     phase: &str,
     roll: Option<f32>,
@@ -188,13 +191,32 @@ fn sync_model_viewer(
         .collect();
     let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch.unwrap_or(0.0),yaw.unwrap_or(0.0),roll.unwrap_or(0.0)],"clip":model_animation(config,phase)}).to_string();
     let payload = serde_json::to_string(&payload).unwrap();
-    let src = serde_json::to_string(&backend_url(&config.model_url)).unwrap();
+    let ground = super::gse_panel::ground_visible(phase) && !config.ground_model_url.is_empty();
+    let src = serde_json::to_string(&backend_url(if ground {
+        &config.ground_model_url
+    } else {
+        &config.model_url
+    }))
+    .unwrap();
+    let payload = if ground {
+        let clip = match phase {
+            "NitrogenFill" => "nitrogen-test",
+            "NitrousFill" => "nitrous-fill",
+            _ => "",
+        };
+        serde_json::to_string(
+            &serde_json::json!({"motions":[],"attitude":[0,0,0],"clip":clip}).to_string(),
+        )
+        .unwrap()
+    } else {
+        payload
+    };
     let renderer =
         serde_json::to_string(&backend_url("/assets/three/vehicle-renderer.js")).unwrap();
     js_eval(&format!(
         r#"(() => {{
         if(!document.getElementById('gs26-node-renderer')){{const s=document.createElement('script');s.id='gs26-node-renderer';s.type='module';s.src={renderer};document.head.append(s);}}
-        const m=document.getElementById('gs26-vehicle-model');if(!m)return;
+        const m=document.getElementById('gs26-vehicle-model-{viewer_id}');if(!m)return;
         if(m.getAttribute('src')!=={src})m.setAttribute('src',{src});
         m.setAttribute('data-state',{payload});
     }})();"#
@@ -242,6 +264,10 @@ pub(crate) fn VehicleTab(
     rocket_altitude_m: Signal<Option<f64>>,
 ) -> Element {
     let config = use_signal(|| None::<VehicleVisualizationConfig>);
+    let viewer_id = use_hook(|| VIEWER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let viewer_html = format!(
+        r#"<gs-vehicle-viewer id="gs26-vehicle-model-{viewer_id}" style="display:block;width:100%;height:100%;position:relative" aria-label="Rocket and prelaunch ground equipment"></gs-vehicle-viewer>"#
+    );
     let mut model_tick = use_signal(|| 0u64);
     use_future(move || async move {
         loop {
@@ -298,6 +324,7 @@ pub(crate) fn VehicleTab(
             let phase = flight_state.read();
             if let Some(cfg) = config.read().as_ref() {
                 sync_model_viewer(
+                    viewer_id,
                     cfg,
                     &phase,
                     cfg.attitude.roll.as_ref().and_then(value),
@@ -312,9 +339,10 @@ pub(crate) fn VehicleTab(
         style { {r#"
             @keyframes gs26-chute-breathe { 0%,100% { transform:scale(.96) translateY(2px); } 50% { transform:scale(1.04) translateY(-2px); } }
             @keyframes gs26-thrust { 0%,100% { transform:scaleY(.72); opacity:.68; } 50% { transform:scaleY(1.08); opacity:1; } }
-            .gs26-vehicle-grid { display:grid; grid-template-columns:minmax(300px,1.35fr) minmax(280px,1fr); gap:12px; }
+            .gs26-vehicle-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
+            .gs26-vehicle-grid:has(.gs26-vehicle-details > *) { grid-template-columns:minmax(300px,1.8fr) minmax(220px,1fr); }
             .gs26-vehicle-stage { transition:transform .65s ease, opacity .4s ease; }
-            @media(max-width:900px) { .gs26-vehicle-grid { grid-template-columns:1fr; } }
+            @media(max-width:700px) { .gs26-vehicle-grid:has(.gs26-vehicle-details > *) { grid-template-columns:1fr; } }
             @media(prefers-reduced-motion:reduce) { .gs26-vehicle-stage, .gs26-vehicle-motion { animation:none!important; transition:none!important; } }
         "#} }
         div { class:"gs26-vehicle-shell", style: "height:100%; overflow-y:auto; padding:12px; box-sizing:border-box; color:{theme.text_primary}; background:{theme.tab_shell_background};",
@@ -328,7 +356,7 @@ pub(crate) fn VehicleTab(
             div { class: "gs26-vehicle-grid",
                 div { style: "min-height:460px; position:relative; overflow:hidden; border:1px solid {theme.tab_shell_border}; border-radius:18px; background:radial-gradient(circle at 50% 42%, {theme.panel_background_alt}, {theme.panel_background} 68%);",
                     if !cfg.model_url.trim().is_empty() {
-                        div { style: "position:absolute; inset:0;", dangerous_inner_html: "{MODEL_VIEWER_HTML}" }
+                        div { style: "position:absolute; inset:0;", dangerous_inner_html: "{viewer_html}" }
                     } else {
                         div { style: "height:100%; min-height:460px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0; padding:36px; box-sizing:border-box;",
                             if chute_visible {
@@ -360,8 +388,8 @@ pub(crate) fn VehicleTab(
                         {position_card(&theme, "Altitude", altitude.map(|v| format!("{v:.1} m")).unwrap_or_else(|| "--".into()))}
                     }
                 }
-                div { style: "display:flex; flex-direction:column; gap:10px;",
-                    for stage in cfg.stages.iter() {
+                div { class:"gs26-vehicle-details", style: "display:flex; flex-direction:column; gap:10px;",
+                    for stage in cfg.stages.iter().filter(|stage| !stage.components.is_empty() || stage.separation.is_some()) {
                         div { style: "padding:12px; border:1px solid {theme.tab_shell_border}; border-radius:16px; background:{theme.panel_background};",
                             div { style: "display:flex; justify-content:space-between; gap:8px; margin-bottom:9px;",
                                 strong { "{stage.label}" }
@@ -370,9 +398,6 @@ pub(crate) fn VehicleTab(
                             div { style: "display:grid; gap:7px;",
                                 for component in stage.components.iter() {
                                     {component_row(&theme, component)}
-                                }
-                                if stage.components.is_empty() {
-                                    div { style: "color:{theme.text_muted}; font-size:12px;", "No component bindings configured." }
                                 }
                             }
                         }
@@ -384,9 +409,6 @@ pub(crate) fn VehicleTab(
                                 for component in cfg.ground_systems.iter() { {component_row(&theme, component)} }
                             }
                         }
-                    }
-                    if cfg.stages.is_empty() && cfg.ground_systems.is_empty() {
-                        div { style: "padding:14px; border:1px dashed {theme.border}; border-radius:16px; color:{theme.text_muted}; font-size:13px; line-height:1.5;", "Add stages and component telemetry bindings to /api/vehicle_visualization to display motors, fin deflection, gimbal position, air brakes, tank fullness, separation, parachutes, fill systems, and link state." }
                     }
                 }
             }

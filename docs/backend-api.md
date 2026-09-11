@@ -1230,3 +1230,24 @@ schema, including scoped asset URL). `telemetry.model_state` contains resolved
 `clip`, sampled into the same delayed history as phase/stats/T clock. Missing delayed
 state uses neutral/unknown visuals, never live values. A camera relay outage can still
 return model/telemetry state. The full-size WebGL model is unmounted while video plays.
+# Model scene and HITL action updates
+
+Calibration labels are **New sequence** / **Continue existing**, with direction
+options **Low to high** / **High to low**. Both use the same editable mass and
+point-update workflow. Starting a new sequence preserves the prefilled mass;
+only its first capture replaces existing data, including in high-to-low mode.
+Zero captures remain fixed at 0 kg. Calibration wire endpoints are unchanged.
+
+Vehicle and delayed program model configuration now include `ground_model_url`.
+The bundled site GLB shows tanks, manifold, tower and rocket before launch; Launch
+and later phases use the rocket-only `model_url`. Streamer mode selects using the
+delayed phase. Separate Dashboard/Mission viewer instances have independent IDs.
+Empty stage cards are hidden, and the Mission data bar uses a responsive horizontal
+grid (wrapping on narrow screens).
+
+Sequence actions lead the Actions panel; Igniter and Igniter Sequence are grouped
+with manual valves. Only Valve Self-test uses its confirmation checkbox. HITL
+sequence request buttons follow the manual-button interlock, but every request
+still passes normal backend pressure, state, and safety checks before actuation.
+Rejected starts produce notifications. Regular/test-fire button availability is
+still sequenced; backend pressure ceiling and PT-offset limits remain mandatory.

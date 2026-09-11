@@ -252,7 +252,7 @@ pub(crate) fn LiveStreamTab(
             .gs26-mission-shell { height:100%; overflow-y:auto; padding:12px; box-sizing:border-box; }
             .gs26-mission-hero { position:relative; width:100%; min-height:clamp(390px,68vh,780px); overflow:hidden; border-radius:18px; }
             .gs26-mission-media { position:absolute; inset:0; width:100%; height:100%; border:0; object-fit:cover; background:#02050a; animation:gs26-mission-fade .55s ease both; }
-            .gs26-mission-banner { position:absolute; left:0; right:0; bottom:0; display:grid; grid-template-columns:1.2fr repeat(auto-fit,minmax(110px,1fr)); gap:1px; padding:1px; backdrop-filter:blur(12px); }
+            .gs26-mission-banner { position:absolute; left:0; right:0; bottom:0; display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:1px; padding:1px; backdrop-filter:blur(12px); }
             .gs26-angle-strip { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px; margin-top:10px; }
             @media(max-width:700px) { .gs26-mission-hero { min-height:430px; } .gs26-mission-banner { grid-template-columns:repeat(2,1fr); } }
         "#} }
@@ -376,7 +376,9 @@ pub(crate) fn LiveStreamTab(
                         div { style: "position:absolute; left:12px; top:12px; padding:7px 10px; border-radius:999px; background:{theme.overlay_background}; border:1px solid {theme.border}; font-size:12px; font-weight:800;", "LIVE · {feed.label}" }
                     }
                 } else {
-                    VehicleTab { theme: theme.clone(), flight_state, rocket_gps, rocket_altitude_m }
+                    div {style:"position:absolute;inset:0 0 110px;overflow:auto;",
+                        VehicleTab { theme: theme.clone(), flight_state, rocket_gps, rocket_altitude_m }
+                    }
                 }
                 if prefs.show_stats {
                     div { class: "gs26-mission-banner", style: "background:{theme.overlay_background};",

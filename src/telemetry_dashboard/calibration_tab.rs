@@ -1948,7 +1948,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         let mut sequence_direction = sequence_direction;
                         move |_| sequence_direction.set(CaptureDirection::Decreasing)
                     },
-                    div { style: "font-weight:800;", "High to zero" }
+                    div { style: "font-weight:800;", "High to low" }
                     div { style: "margin-top:4px; color:{theme.text_muted}; font-size:12px; line-height:1.4;", "Start with the highest known weight, remove weight between points, and finish unloaded at zero." }
                 }
             }
@@ -2217,7 +2217,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         let mut sequence_dialog_status = sequence_dialog_status;
                         let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
                         let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
-                        let mut known_kg = known_kg;
+                        let known_kg = known_kg;
                         let sequence_direction = sequence_direction;
                         move |_| {
                             let descending = *sequence_direction.read() == CaptureDirection::Decreasing;
@@ -2233,13 +2233,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             });
                             sequence_dialog_replace_existing.set(true);
                             sequence_dialog_confirm_reset.set(false);
-                            if !descending {
-                                known_kg.set("1.0".to_string());
-                            }
                             sequence_dialog_open.set(true);
                         }
                     },
-                    if *sequence_direction.read() == CaptureDirection::Decreasing { "Start at High Weight..." } else { "Start at Zero..." }
+                    "New sequence…"
                 }
                 if (*sequence_direction.read() == CaptureDirection::Increasing && sequence_has_zero)
                     || (*sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points) {
@@ -2273,7 +2270,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 sequence_dialog_open.set(true);
                             }
                         },
-                        if *sequence_direction.read() == CaptureDirection::Decreasing { "Capture Lower Point..." } else { "Capture Higher Point..." }
+                        "Continue existing…"
                     }
                 }
                 if *sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points && !sequence_has_zero {
@@ -2567,7 +2564,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;",
                             div {
                                 div { style: "font-size:18px; font-weight:700; color:{theme.text_primary};",
-                                    if *sequence_dialog_replace_existing.read() { "Start New Sequence" } else if *sequence_dialog_mode.read() == CaptureMode::SequenceZero { "Capture Final Zero" } else { "Continue Sequence" }
+                                    if *sequence_dialog_replace_existing.read() { "New sequence" } else { "Continue existing" }
                                 }
                                 div { style: "margin-top:4px; font-size:13px; color:{theme.text_muted};", "{sequence_dialog_status.read()}" }
                             }
@@ -2592,6 +2589,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     span { "I understand this will replace the existing sequence data." }
                                 }
                             }
+                        }
+                        div { style:"font-size:13px;color:{theme.text_secondary};",
+                            if *sequence_direction.read() == CaptureDirection::Decreasing { "High to low" } else { "Low to high" }
+                            " · Known mass (kg). Prefilled non-zero masses are editable in both sequences; zero captures remain 0 kg."
                         }
                         div { style: "{toolbar_style}",
                             input {
@@ -2751,6 +2752,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                                 weight, sensor.label
                                                             ));
                                                         }
+                                                        // Only the first capture of a new sequence replaces
+                                                        // old data; subsequent high-to-low points must accumulate.
+                                                        sequence_dialog_replace_existing.set(false);
+                                                        sequence_dialog_confirm_reset.set(false);
                                                         sequence_dialog_status.set(format!(
                                                             "Added/updated {weight} kg as {} from {} samples on {}. Enter the next mass and capture again.",
                                                             format_sensor_raw_value(raw, Some(&sensor), 6),

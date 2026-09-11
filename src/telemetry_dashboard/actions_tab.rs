@@ -267,6 +267,16 @@ pub fn ActionsTab(
             all_actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
         }
     }
+    for action in &mut all_actions {
+        if matches!(action.cmd.as_str(), "Igniter" | "IgniterSequence") {
+            action.group = "Manual GSE valves".into();
+        }
+    }
+    all_actions.sort_by_key(|action| match action.group.as_str() {
+        "GSE sequence actions" => 0,
+        "Manual GSE valves" => 2,
+        _ => 1,
+    });
     let visible_actions = if auth::can_view_actions() {
         all_actions.iter().collect::<Vec<_>>()
     } else {
