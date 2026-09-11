@@ -1,5 +1,13 @@
 # Backend API Reference
 
+The firmware-update tab refreshes `GET /api/firmware/targets` every two seconds
+while mounted, so later discovery becomes selectable without reopening the tab.
+It preserves the selected board and disables new uploads if target refresh fails.
+Discovery and OTA support are separate: the backend must advertise both before a
+target can be flashed. Current supported receivers are RF, Power, Valve, Gateway,
+Actuator and DAQ. Flight Computer remains unsupported until its application wires
+in the compatible live OTA receiver; discovery alone does not imply OTA support.
+
 Board status `age_ms` is the age when the backend creates its snapshot, not a
 live counter. On receipt the frontend attaches a local monotonic timestamp and
 displays `age_ms + elapsed_since_receipt`, refreshed every 100 ms in board-age

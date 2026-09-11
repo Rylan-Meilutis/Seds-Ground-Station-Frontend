@@ -215,11 +215,14 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
     let mut selected_bytes = use_signal(|| None::<Vec<u8>>);
     let mut acknowledged = use_signal(|| false);
     let mut loading = use_signal(|| true);
+    let mut target_error = use_signal(|| None::<String>);
     let mut upload_error = use_signal(String::new);
     let mut update = use_signal(|| None::<FirmwareUpdateStatus>);
 
-    use_effect(move || {
-        spawn(async move {
+    // Discovery continues after this tab mounts. Keep the address-book snapshot
+    // current, without switching an operator's selected firmware destination.
+    use_future(move || async move {
+        loop {
             match http_get_json::<Vec<FirmwareTarget>>("/api/firmware/targets").await {
                 Ok(found) => {
                     if selected_board.read().is_empty()
@@ -230,11 +233,18 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                         selected_board.set(first.board.clone());
                     }
                     targets.set(found);
+                    target_error.set(None);
                 }
-                Err(err) => upload_error.set(format!("Failed to load firmware targets: {err}")),
+                Err(err) => {
+                    targets.set(Vec::new());
+                    target_error.set(Some(format!("Unable to refresh firmware targets: {err}")));
+                }
             }
             loading.set(false);
-        });
+            for _ in 0..4 {
+                poll_delay().await;
+            }
+        }
     });
 
     let can_flash = auth::can_send_command("FirmwareUpdate");
@@ -292,6 +302,9 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
             div { style: "{panel_style} display:grid; gap:14px;",
                 label { style: "display:grid; gap:6px; font-weight:600;",
                     "Target board"
+                    if let Some(error) = target_error.read().as_ref() {
+                        span { style:"font-size:12px;font-weight:400;", "{error}" }
+                    }
                     select {
                         style: "{input_style}",
                         value: "{selected_board}",
