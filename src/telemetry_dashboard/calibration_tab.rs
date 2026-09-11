@@ -112,6 +112,12 @@ enum CaptureMode {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureDirection {
+    Increasing,
+    Decreasing,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SelectedCalibrationPoint {
     Zero,
     Weighted(usize),
@@ -1247,6 +1253,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let sequence_dialog_status = use_signal(String::new);
     let sequence_dialog_replace_existing = use_signal(|| false);
     let sequence_dialog_confirm_reset = use_signal(|| false);
+    let sequence_direction = use_signal(|| CaptureDirection::Increasing);
 
     {
         let mut layout_cfg = layout_cfg;
@@ -1603,12 +1610,13 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
         });
     }
-    let sequence_started = cfg.read().as_ref().is_some_and(|c| {
+    let sequence_has_zero = cfg.read().as_ref().is_some_and(|c| {
         c.channels
             .get(&channel_key)
             .and_then(|channel| channel.zero_raw)
             .is_some()
     });
+    let sequence_has_weighted_points = !points.is_empty();
     let fit_type_s = cfg
         .read()
         .as_ref()
@@ -1918,6 +1926,44 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
 
             div { style: "{section_style}",
+            div {
+                div { style: "font-size:16px; font-weight:800; color:{theme.text_primary};", "Guided calibration" }
+                div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px; line-height:1.45;", "Choose the direction that matches the physical setup. Capture at least two known loads, let each reading settle, and save only after reviewing the plotted fit." }
+            }
+
+            if can_edit {
+            div { style: "display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px;",
+                button {
+                    style: if *sequence_direction.read() == CaptureDirection::Increasing { "padding:14px; text-align:left; border-radius:14px; border:2px solid var(--cal-accent, #22d3ee); background:rgba(34,211,238,0.10); color:inherit; cursor:pointer;" } else { "padding:14px; text-align:left; border-radius:14px; border:1px solid currentColor; background:transparent; color:inherit; cursor:pointer; opacity:0.78;" },
+                    onclick: {
+                        let mut sequence_direction = sequence_direction;
+                        move |_| sequence_direction.set(CaptureDirection::Increasing)
+                    },
+                    div { style: "font-weight:800;", "Low to high" }
+                    div { style: "margin-top:4px; color:{theme.text_muted}; font-size:12px; line-height:1.4;", "Start unloaded at zero, then add known weights in increasing order." }
+                }
+                button {
+                    style: if *sequence_direction.read() == CaptureDirection::Decreasing { "padding:14px; text-align:left; border-radius:14px; border:2px solid var(--cal-accent, #22d3ee); background:rgba(34,211,238,0.10); color:inherit; cursor:pointer;" } else { "padding:14px; text-align:left; border-radius:14px; border:1px solid currentColor; background:transparent; color:inherit; cursor:pointer; opacity:0.78;" },
+                    onclick: {
+                        let mut sequence_direction = sequence_direction;
+                        move |_| sequence_direction.set(CaptureDirection::Decreasing)
+                    },
+                    div { style: "font-weight:800;", "High to zero" }
+                    div { style: "margin-top:4px; color:{theme.text_muted}; font-size:12px; line-height:1.4;", "Start with the highest known weight, remove weight between points, and finish unloaded at zero." }
+                }
+            }
+            }
+
+            div { style: "display:flex; gap:8px; flex-wrap:wrap; color:{theme.text_secondary}; font-size:12px;",
+                span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "1  Select sensor" }
+                span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "2  Stabilize load" }
+                span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "3  Capture point" }
+                span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "4  Review & save" }
+            }
+
+            details { style: "border:1px solid {theme.border_soft}; border-radius:14px; background:{theme.panel_background_alt};",
+            summary { style: "padding:11px 12px; cursor:pointer; color:{theme.text_secondary}; font-size:13px; font-weight:700;", "Advanced fit and manual point tools" }
+            div { style: "display:flex; flex-direction:column; gap:10px; padding:0 10px 10px;",
             div { style: "{toolbar_style}",
                 span { style: "color:{theme.text_secondary};", "Regression" }
                 if can_edit {
@@ -1990,6 +2036,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     }
                     span { "Preserve regression when changing zero point" }
                 }
+            }
+            }
             }
             }
 
@@ -2150,7 +2198,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     style: "{input_style}",
                     r#type: "number",
                     step: "0.01",
-                    placeholder: "Sequence point mass (kg)",
+                    placeholder: if *sequence_direction.read() == CaptureDirection::Decreasing { "Current mass — start high (kg)" } else { "Next known mass (kg)" },
                     value: "{known_kg.read()}",
                     disabled: !can_edit,
                     oninput: {
@@ -2170,23 +2218,31 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
                         let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
                         let mut known_kg = known_kg;
+                        let sequence_direction = sequence_direction;
                         move |_| {
-                            sequence_dialog_mode.set(CaptureMode::SequenceZero);
-                            sequence_dialog_weight.set("0".to_string());
+                            let descending = *sequence_direction.read() == CaptureDirection::Decreasing;
+                            sequence_dialog_mode.set(if descending { CaptureMode::SequencePoint } else { CaptureMode::SequenceZero });
+                            sequence_dialog_weight.set(if descending { known_kg.read().clone() } else { "0".to_string() });
                             sequence_dialog_captured_raw.set(String::new());
-                            sequence_dialog_status.set(
-                                "Capture a zero-load sample, save it, then keep adding sequence points."
-                                    .to_string(),
-                            );
+                            sequence_dialog_status.set(if descending {
+                                "Keep the highest known load applied and capture it first. Then remove weight and capture progressively lower points."
+                                    .to_string()
+                            } else {
+                                "Remove all load, allow the reading to settle, and capture zero first."
+                                    .to_string()
+                            });
                             sequence_dialog_replace_existing.set(true);
                             sequence_dialog_confirm_reset.set(false);
-                            known_kg.set("1.0".to_string());
+                            if !descending {
+                                known_kg.set("1.0".to_string());
+                            }
                             sequence_dialog_open.set(true);
                         }
                     },
-                    "Start New Sequence..."
+                    if *sequence_direction.read() == CaptureDirection::Decreasing { "Start at High Weight..." } else { "Start at Zero..." }
                 }
-                if sequence_started {
+                if (*sequence_direction.read() == CaptureDirection::Increasing && sequence_has_zero)
+                    || (*sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points) {
                     button {
                         style: "{neutral_button_style}",
                         disabled: selected_sensor.is_none() || !can_edit,
@@ -2204,7 +2260,40 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 sequence_dialog_weight.set(known_kg.read().clone());
                                 sequence_dialog_captured_raw.set(String::new());
                                 sequence_dialog_status.set(
-                                    "Capture the current live reading for a sequence point, then save it. Reusing the same mass recaptures that point."
+                                    if *sequence_direction.read() == CaptureDirection::Decreasing {
+                                        "Remove weight, let the reading settle, enter the lower remaining mass, and capture. Reusing a mass replaces that point."
+                                            .to_string()
+                                    } else {
+                                        "Add weight, let the reading settle, enter the total known mass, and capture. Reusing a mass replaces that point."
+                                            .to_string()
+                                    },
+                                );
+                                sequence_dialog_replace_existing.set(false);
+                                sequence_dialog_confirm_reset.set(false);
+                                sequence_dialog_open.set(true);
+                            }
+                        },
+                        if *sequence_direction.read() == CaptureDirection::Decreasing { "Capture Lower Point..." } else { "Capture Higher Point..." }
+                    }
+                }
+                if *sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points && !sequence_has_zero {
+                    button {
+                        style: "{success_button_style}",
+                        disabled: selected_sensor.is_none() || !can_edit,
+                        onclick: {
+                            let mut sequence_dialog_open = sequence_dialog_open;
+                            let mut sequence_dialog_mode = sequence_dialog_mode;
+                            let mut sequence_dialog_weight = sequence_dialog_weight;
+                            let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
+                            let mut sequence_dialog_status = sequence_dialog_status;
+                            let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
+                            let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
+                            move |_| {
+                                sequence_dialog_mode.set(CaptureMode::SequenceZero);
+                                sequence_dialog_weight.set("0".to_string());
+                                sequence_dialog_captured_raw.set(String::new());
+                                sequence_dialog_status.set(
+                                    "Remove all load, wait for a stable reading, then capture the final zero point. Existing weighted points will be kept."
                                         .to_string(),
                                 );
                                 sequence_dialog_replace_existing.set(false);
@@ -2212,7 +2301,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 sequence_dialog_open.set(true);
                             }
                         },
-                        "Continue Sequence..."
+                        "Finish at Zero..."
                     }
                 }
             }
@@ -2478,7 +2567,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;",
                             div {
                                 div { style: "font-size:18px; font-weight:700; color:{theme.text_primary};",
-                                    if *sequence_dialog_mode.read() == CaptureMode::SequenceZero { "Start New Sequence" } else { "Continue Sequence" }
+                                    if *sequence_dialog_replace_existing.read() { "Start New Sequence" } else if *sequence_dialog_mode.read() == CaptureMode::SequenceZero { "Capture Final Zero" } else { "Continue Sequence" }
                                 }
                                 div { style: "margin-top:4px; font-size:13px; color:{theme.text_muted};", "{sequence_dialog_status.read()}" }
                             }
@@ -2487,7 +2576,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             div {
                                 style: "padding:12px; border-radius:12px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text};",
                                 div { style: "font-weight:700; margin-bottom:4px;", "Replace Existing Sequence" }
-                                div { style: "font-size:13px;", "Saving this new sequence zero will replace the current channel calibration points and fit." }
+                                div { style: "font-size:13px;", "The first capture in this sequence will replace the current channel calibration points and fit." }
                                 label { style: "margin-top:8px; display:flex; align-items:center; gap:8px; font-size:13px;",
                                     input {
                                         r#type: "checkbox",
@@ -2526,7 +2615,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             }
                             button {
                                 style: "{success_button_style}",
-                                disabled: !can_edit,
+                                disabled: !can_edit || (*sequence_dialog_replace_existing.read() && !*sequence_dialog_confirm_reset.read()),
                                 onclick: {
                                     let selected_sensor = selected_sensor.clone();
                                     let known_kg = known_kg;
@@ -2542,6 +2631,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     let mut sequence_dialog_status = sequence_dialog_status;
                                     let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
                                     let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
+                                    let sequence_direction = sequence_direction;
+                                    let mut sequence_dialog_open = sequence_dialog_open;
                                     move |_| {
                                         let Some(sensor) = selected_sensor.clone() else {
                                             sequence_dialog_status.set("No sensor selected.".to_string());
@@ -2591,9 +2682,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                             raw,
                                                             *preserve_regression_on_zero_change.read(),
                                                         );
-                                                        let channel = next.channels.entry(sensor.channel.clone()).or_default();
-                                                        channel.points.clear();
-                                                        channel.fit = None;
+                                                        if replace_existing {
+                                                            let channel = next.channels.entry(sensor.channel.clone()).or_default();
+                                                            channel.points.clear();
+                                                            channel.fit = None;
+                                                        }
                                                     } else {
                                                         upsert_point_by_key(
                                                             &mut next,
@@ -2630,16 +2723,22 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                                 sensor.label
                                                             ));
                                                         }
-                                                        sequence_dialog_mode.set(CaptureMode::SequencePoint);
-                                                        sequence_dialog_weight.set(known_kg.read().clone());
-                                                        sequence_dialog_replace_existing.set(false);
-                                                        sequence_dialog_confirm_reset.set(false);
-                                                        sequence_dialog_status.set(format!(
-                                                            "Zero captured as {} from {} samples on {}. Enter the next mass and capture again.",
-                                                            format_sensor_raw_value(raw, Some(&sensor), 6),
-                                                            captured,
-                                                            sensor.label
-                                                        ));
+                                                        if *sequence_direction.read() == CaptureDirection::Decreasing && !replace_existing {
+                                                            sequence_dialog_status.set(format!(
+                                                                "Final zero captured as {} from {} samples on {}. Review the fit, then save the calibration.",
+                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label
+                                                            ));
+                                                            sequence_dialog_open.set(false);
+                                                        } else {
+                                                            sequence_dialog_mode.set(CaptureMode::SequencePoint);
+                                                            sequence_dialog_weight.set(known_kg.read().clone());
+                                                            sequence_dialog_replace_existing.set(false);
+                                                            sequence_dialog_confirm_reset.set(false);
+                                                            sequence_dialog_status.set(format!(
+                                                                "Zero captured as {} from {} samples on {}. Add the next known mass and capture again.",
+                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label
+                                                            ));
+                                                        }
                                                     } else {
                                                         if let Some(err) = refit_err.as_ref() {
                                                             status.set(format!(
@@ -2695,7 +2794,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                         sequence_dialog_open.set(false);
                                     }
                                 },
-                                "Save"
+                                "Done"
                             }
                         }
                     }
