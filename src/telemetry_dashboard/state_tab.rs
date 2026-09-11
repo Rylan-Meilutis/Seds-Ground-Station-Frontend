@@ -437,7 +437,9 @@ fn render_state_widget(
     horizontal_values: bool,
 ) -> Element {
     match widget.kind {
-        StateWidgetKind::BoardStatus => rsx! { {board_status_table(boards, theme)} },
+        StateWidgetKind::BoardStatus => {
+            rsx! { BoardStatusTable {boards: boards.to_vec(), theme: theme.clone()} }
+        }
         StateWidgetKind::Summary => {
             let dt = widget.data_type.as_deref().unwrap_or("");
             let items = widget.items.as_deref().unwrap_or(&[]);
@@ -1938,7 +1940,10 @@ fn format_summary_value_inner(
     }
 }
 
-fn board_status_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Element {
+#[component]
+fn BoardStatusTable(boards: Vec<BoardStatusEntry>, theme: ThemeConfig) -> Element {
+    let now_ms = super::connection_status_tab::use_board_age_clock();
+    let theme = &theme;
     if boards.is_empty() {
         return rsx! { div { style: "color:{theme.text_muted};", "No board status yet." } };
     }
@@ -1958,7 +1963,7 @@ fn board_status_table(boards: &[BoardStatusEntry], theme: &ThemeConfig) -> Eleme
                     div { style: cell_style(theme), "{entry.sender_id}" }
                     div { style: cell_style(theme), if entry.seen { "yes" } else { "no" } }
                     div { style: cell_style(theme), "{entry.last_seen_ms.map(|v| v.to_string()).unwrap_or_else(|| \"-\".into())}" }
-                    div { style: cell_style(theme), "{entry.age_ms.map(|v| v.to_string()).unwrap_or_else(|| \"-\".into())}" }
+                    div { style: cell_style(theme), "{entry.current_age_ms(now_ms).map(|v| v.to_string()).unwrap_or_else(|| \"-\".into())}" }
                 }
             }
         }

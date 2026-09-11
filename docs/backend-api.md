@@ -1,5 +1,11 @@
 # Backend API Reference
 
+Board status `age_ms` is the age when the backend creates its snapshot, not a
+live counter. On receipt the frontend attaches a local monotonic timestamp and
+displays `age_ms + elapsed_since_receipt`, refreshed every 100 ms in board-age
+views. Cloning/rendering a snapshot does not reset the anchor. The local timestamp
+is not serialized; the wire format is unchanged. Unknown age stays unavailable.
+
 Live dashboard stats include optional backend-owned `binding` metadata:
 `{data_type,sender_id,index,scale,offset}`. When present, the operator dashboard
 reads the corresponding WebSocket sample on each telemetry render (16 ms

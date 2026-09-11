@@ -43,21 +43,8 @@ pub fn ConnectionStatusTab(
     let history = use_signal(HashMap::<String, Vec<LatencyPoint>>::new);
     let previous_last_seen = use_signal(HashMap::<String, u64>::new);
     let smoothed_intervals = use_signal(HashMap::<String, f64>::new);
-    let board_age_now_ms = use_signal(current_wallclock_ms);
+    let board_age_now_ms = use_board_age_clock();
     let merged_boards = merged_connection_boards(&boards.read(), &expected_boards);
-
-    {
-        let mut board_age_now_ms = board_age_now_ms;
-        use_future(move || async move {
-            loop {
-                #[cfg(target_arch = "wasm32")]
-                gloo_timers::future::TimeoutFuture::new(1_000).await;
-                #[cfg(not(target_arch = "wasm32"))]
-                tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
-                board_age_now_ms.set(current_wallclock_ms());
-            }
-        });
-    }
 
     {
         use_effect(move || {
@@ -175,7 +162,7 @@ pub fn ConnectionStatusTab(
                                 }
                             }
                             if *show_board.read() {
-                                {render_board_table(&merged_boards, *board_age_now_ms.read(), ws_connected, &theme)}
+                                {render_board_table(&merged_boards, board_age_now_ms, ws_connected, &theme)}
                             }
                         }
                     },
@@ -237,7 +224,7 @@ pub fn ConnectionStatusTab(
                         "{translate_text(\"Exit Fullscreen\")}"
                     }
                 }
-                {render_board_table(&merged_boards, *board_age_now_ms.read(), ws_connected, &theme)}
+                {render_board_table(&merged_boards, board_age_now_ms, ws_connected, &theme)}
             }
         }
 
@@ -665,14 +652,14 @@ fn current_board_age_ms(entry: &BoardStatusEntry, now_ms: i64, ws_connected: boo
     if !ws_connected {
         return None;
     }
-    if let Some(age_ms) = entry.age_ms {
+    if let Some(age_ms) = entry.current_age_ms(now_ms) {
         return Some(age_ms);
     }
 
     if let Some(last_seen_ms) = entry.last_seen_ms
         && last_seen_ms >= 1_500_000_000_000
     {
-        let now_ms = u64::try_from(now_ms.max(0)).unwrap_or(0);
+        let now_ms = u64::try_from(current_wallclock_ms().max(0)).unwrap_or(0);
         return Some(now_ms.saturating_sub(last_seen_ms));
     }
 
@@ -690,4 +677,18 @@ fn format_last_seen(last_seen_ms: Option<u64>) -> String {
     }
 
     format!("{ts} ms")
+}
+
+pub(super) fn use_board_age_clock() -> i64 {
+    let mut now = use_signal(|| super::monotonic_now_ms() as i64);
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(100).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            now.set(super::monotonic_now_ms() as i64);
+        }
+    });
+    *now.read()
 }

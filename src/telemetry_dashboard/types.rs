@@ -112,9 +112,49 @@ pub struct BoardStatusEntry {
     pub packet_count: u64,
     pub last_seen_ms: Option<u64>,
     pub age_ms: Option<u64>,
+    /// Local receipt anchor, never a server timestamp or a wire field.
+    #[serde(skip, default = "board_status_received_ms")]
+    pub received_mono_ms: i64,
+}
+fn board_status_received_ms() -> i64 {
+    super::monotonic_now_ms() as i64
+}
+
+#[cfg(test)]
+mod board_age_tests {
+    use super::*;
+    #[test]
+    fn snapshot_age_advances_between_packets_without_changing_on_clone() {
+        let mut entry: BoardStatusEntry = serde_json::from_str(
+            r#"{"board":"FC","sender_id":"FC","seen":true,"last_seen_ms":100,"age_ms":0}"#,
+        )
+        .unwrap();
+        entry.received_mono_ms = 1000;
+        assert_eq!(entry.current_age_ms(1000), Some(0));
+        assert_eq!(entry.current_age_ms(1100), Some(100));
+        assert_eq!(entry.clone().current_age_ms(1500), Some(500));
+        assert_eq!(entry.current_age_ms(900), Some(0));
+        entry.age_ms = Some(250);
+        entry.received_mono_ms = 2000;
+        assert_eq!(entry.current_age_ms(2100), Some(350));
+        assert!(
+            serde_json::to_value(&entry)
+                .unwrap()
+                .get("received_mono_ms")
+                .is_none()
+        );
+        entry.age_ms = None;
+        assert_eq!(entry.current_age_ms(9999), None);
+    }
 }
 
 impl BoardStatusEntry {
+    pub fn current_age_ms(&self, now_mono_ms: i64) -> Option<u64> {
+        self.age_ms.map(|age| {
+            age.saturating_add(now_mono_ms.saturating_sub(self.received_mono_ms).max(0) as u64)
+        })
+    }
+
     pub fn display_name(&self) -> &str {
         if self.board_label.trim().is_empty() {
             &self.board
@@ -136,6 +176,7 @@ impl BoardStatusEntry {
             packet_count: 0,
             last_seen_ms: None,
             age_ms: None,
+            received_mono_ms: board_status_received_ms(),
         })
     }
 }

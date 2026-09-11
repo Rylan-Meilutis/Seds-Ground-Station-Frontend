@@ -34,6 +34,7 @@ pub fn DetailedTab(
     cache_stats: Vec<(String, String)>,
     theme: ThemeConfig,
 ) -> Element {
+    let board_age_now_ms = super::connection_status_tab::use_board_age_clock();
     use_effect(move || {
         js_eval(
             r#"
@@ -137,8 +138,14 @@ pub fn DetailedTab(
         .iter()
         .filter(|node| node.kind == NetworkTopologyNodeKind::Board)
         .count();
-    let max_board_age_ms = seen_boards.iter().filter_map(|board| board.age_ms).max();
-    let min_board_age_ms = seen_boards.iter().filter_map(|board| board.age_ms).min();
+    let max_board_age_ms = seen_boards
+        .iter()
+        .filter_map(|board| board.current_age_ms(board_age_now_ms))
+        .max();
+    let min_board_age_ms = seen_boards
+        .iter()
+        .filter_map(|board| board.current_age_ms(board_age_now_ms))
+        .min();
     let avg_bytes_per_msg = if metrics_snapshot.ws_messages_total > 0 {
         Some(metrics_snapshot.ws_bytes_total as f64 / metrics_snapshot.ws_messages_total as f64)
     } else {
@@ -378,7 +385,7 @@ pub fn DetailedTab(
                                     td { style: "{td_style(&theme)}", "{board.display_name()}" }
                                     td { style: "{td_style_mono(&theme)}", "{board.sender_id}" }
                                     td { style: "{td_style(&theme)}", "yes" }
-                                    td { style: "{td_style_mono(&theme)}", "{opt_i64_ms(board.age_ms.map(|v| v as i64))}" }
+                                    td { style: "{td_style_mono(&theme)}", "{opt_i64_ms(board.current_age_ms(board_age_now_ms).map(|v| v.min(i64::MAX as u64) as i64))}" }
                                     td { style: "{td_style_mono(&theme)}", "{board.last_seen_ms.map(|ts| format_timestamp_ms_clock(ts as i64)).unwrap_or_else(|| \"--\".to_string())}" }
                                 }
                             }
