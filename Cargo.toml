@@ -7,6 +7,12 @@ description = "Dioxus powered frontend for easy irec rocket control and managmen
 license-file = "LICENSE"
 repository = "https://github.com/Rylan-Meilutis/Seds-Ground-Station-Frontend"
 
+[patch.crates-io]
+tao = { path = "vendor-tao" }
+
+[package.metadata.groundstation]
+ios-event-loop-patch = "Tao 0.34.8 common-mode observers; see vendor-tao/GROUNDSTATION-PATCH.md"
+
 [dependencies]
 dioxus = { version = "0.7.9", default-features = false }
 dioxus-router = "0.7.9"
@@ -40,6 +46,8 @@ futures-util = "0.3.32"
 wasm-bindgen-futures = "0.4.75"
 web-sys = { version = "0.3.102", features = [
     "Window",
+    "AbortController",
+    "AbortSignal",
     "Location",
     "WebSocket",
     "MessageEvent",

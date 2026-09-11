@@ -1,5 +1,36 @@
 // HTTP seeding, notification synchronization, WebSocket transport, and JS bridges.
 
+fn ws_activity_expired(elapsed_ms: f64) -> bool {
+    elapsed_ms > 15_000.0
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WebSocketCleanup(web_sys::WebSocket);
+#[cfg(target_arch = "wasm32")]
+impl Drop for WebSocketCleanup {
+    fn drop(&mut self) {
+        self.0.set_onopen(None);
+        self.0.set_onmessage(None);
+        self.0.set_onerror(None);
+        self.0.set_onclose(None);
+        let _ = self.0.close();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct HttpAbortOnDrop(web_sys::AbortController);
+#[cfg(target_arch = "wasm32")]
+impl Drop for HttpAbortOnDrop {
+    fn drop(&mut self) { self.0.abort(); }
+}
+
+#[test]
+fn websocket_idle_deadline_allows_jitter_but_recovers_stalls() {
+    assert!(!ws_activity_expired(1000.0));
+    assert!(!ws_activity_expired(15_000.0));
+    assert!(ws_activity_expired(15_001.0));
+}
+
 // ---------- HTTP helpers ----------
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
@@ -28,11 +59,37 @@ pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> R
     if let Some(token) = auth::current_token() {
         request = request.header("Authorization", &format!("Bearer {token}"));
     }
+    let controller =
+        web_sys::AbortController::new().map_err(|_| "HTTP abort controller unavailable")?;
+    let _abort_on_cancel = HttpAbortOnDrop(controller.clone());
+    let signal = controller.signal();
+    request = request.abort_signal(Some(&signal));
     let started_mono_ms = monotonic_now_ms();
-    let response = request.send().await.map_err(|e| e.to_string())?;
+    let fetch = async {
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        let status = response.status();
+        let body = response.text().await.map_err(|e| e.to_string())?;
+        Ok::<_, String>((status, body))
+    };
+    futures_util::pin_mut!(fetch);
+    let timeout_ms = if path == "/api/recent" {
+        300_000
+    } else {
+        15_000
+    };
+    let (status, body) = match futures_util::future::select(
+        fetch,
+        gloo_timers::future::TimeoutFuture::new(timeout_ms),
+    )
+    .await
+    {
+        futures_util::future::Either::Left((result, _)) => result?,
+        futures_util::future::Either::Right(_) => {
+            controller.abort();
+            return Err(format!("HTTP GET {path} timed out"));
+        }
+    };
     note_http_rtt_ms(monotonic_now_ms() - started_mono_ms);
-    let status = response.status();
-    let body = response.text().await.map_err(|e| e.to_string())?;
     if status == 401 {
         auth::clear_current_session();
     }
@@ -1183,7 +1240,6 @@ async fn connect_ws_once_wasm(
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use futures_channel::oneshot;
-    use js_sys::Date;
     use js_sys::Reflect;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
@@ -1200,34 +1256,38 @@ async fn connect_ws_once_wasm(
     log!("[WS] connecting to {ws_url} (epoch={epoch})");
 
     let ws = WebSocket::new(&ws_url).map_err(|_| "failed to create websocket".to_string())?;
-    let last_activity_ms = std::rc::Rc::new(std::cell::Cell::new(Date::now()));
+    let last_activity_ms = std::rc::Rc::new(std::cell::Cell::new(monotonic_now_ms()));
 
     *WS_RAW.write() = Some(ws.clone());
     *WS_SENDER.write() = Some(WsSender { ws: ws.clone() });
 
     let (closed_tx, closed_rx) = oneshot::channel::<()>();
     let closed_tx = std::rc::Rc::new(std::cell::RefCell::new(Some(closed_tx)));
+    // Own callbacks for this connection, then detach and drop them on teardown.
+    let onopen;
+    let onmessage;
+    let onerror;
+    let onclose;
 
     {
         let last_activity_ms = last_activity_ms.clone();
         let ws_url_for_open = ws_url.clone();
-        let onopen: Closure<dyn FnMut(Event)> = Closure::new(move |_e: Event| {
-            last_activity_ms.set(Date::now());
+        onopen = Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
+            last_activity_ms.set(monotonic_now_ms());
             log!("[WS] open");
             queue_ws_open_event(epoch, ws_url_for_open.clone());
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
-        onopen.forget();
     }
 
     {
         let alive_for_message = alive.clone();
         let last_activity_ms = last_activity_ms.clone();
-        let onmessage: Closure<dyn FnMut(MessageEvent)> = Closure::new(move |e: MessageEvent| {
-            if !alive_for_message.load(Ordering::Relaxed) {
+        onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+            if !alive_for_message.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                 return;
             }
-            last_activity_ms.set(Date::now());
+            last_activity_ms.set(monotonic_now_ms());
             if let Some(s) = e.data().as_string() {
                 if !queue_live_telemetry_from_ws_message(&s) {
                     queue_ws_message_event(epoch, s);
@@ -1235,13 +1295,12 @@ async fn connect_ws_once_wasm(
             }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
-        onmessage.forget();
     }
 
     {
         let closed_tx = closed_tx.clone();
         let alive_for_error = alive.clone();
-        let onerror: Closure<dyn FnMut(ErrorEvent)> = Closure::new(move |e: ErrorEvent| {
+        onerror = Closure::<dyn FnMut(ErrorEvent)>::new(move |e: ErrorEvent| {
             if !alive_for_error.load(Ordering::Relaxed) {
                 return;
             }
@@ -1256,13 +1315,12 @@ async fn connect_ws_once_wasm(
             }
         });
         ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
-        onerror.forget();
     }
 
     {
         let closed_tx = closed_tx.clone();
         let alive_for_close = alive.clone();
-        let onclose: Closure<dyn FnMut(CloseEvent)> = Closure::new(move |e: CloseEvent| {
+        onclose = Closure::<dyn FnMut(CloseEvent)>::new(move |e: CloseEvent| {
             if !alive_for_close.load(Ordering::Relaxed) {
                 return;
             }
@@ -1272,9 +1330,11 @@ async fn connect_ws_once_wasm(
             }
         });
         ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
-        onclose.forget();
     }
 
+    // Declared after callbacks: cancellation detaches JS handlers before Rust
+    // closures are dropped, including component unmount and epoch replacement.
+    let _socket_cleanup = WebSocketCleanup(ws.clone());
     futures_util::pin_mut!(closed_rx);
 
     loop {
@@ -1297,6 +1357,12 @@ async fn connect_ws_once_wasm(
             futures_util::future::Either::Left((_closed, _timeout)) => break,
             futures_util::future::Either::Right((_timeout, _closed)) => {
                 let ready_state = ws.ready_state();
+                // The backend emits network time every second even with no
+                // telemetry. OPEN alone does not mean the connection is alive.
+                if ws_activity_expired(monotonic_now_ms() - last_activity_ms.get()) {
+                    log!("[WS] activity timeout; reconnecting and reseeding");
+                    break;
+                }
                 if ready_state == WebSocket::CLOSING || ready_state == WebSocket::CLOSED {
                     log!("[WS] websocket ready_state transitioned to {}", ready_state);
                     let _ = ws.close();
@@ -1306,8 +1372,19 @@ async fn connect_ws_once_wasm(
         }
     }
 
+    ws.set_onopen(None);
+    ws.set_onmessage(None);
+    ws.set_onerror(None);
+    ws.set_onclose(None);
+    let _ = ws.close();
+    drop((onopen, onmessage, onerror, onclose));
     if *WS_EPOCH.read() == epoch {
-        note_ws_connection_state(false, ws_url, Some("websocket closed".to_string()), epoch);
+        note_ws_connection_state(
+            false,
+            ws_url,
+            Some("websocket closed or stalled".to_string()),
+            epoch,
+        );
         *WS_SENDER.write() = None;
         *WS_RAW.write() = None;
     }
@@ -1552,7 +1629,12 @@ async fn connect_ws_once_native(
         Outgoing(Option<String>),
     }
 
+    let mut last_activity = std::time::Instant::now();
     while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+        if ws_activity_expired(last_activity.elapsed().as_secs_f64() * 1000.0) {
+            log!("[WS] activity timeout; reconnecting and reseeding");
+            break;
+        }
         let event = timeout(Duration::from_millis(250), async {
             tokio::select! {
                 outgoing = rx.recv() => NativeWsEvent::Outgoing(outgoing),
@@ -1564,15 +1646,25 @@ async fn connect_ws_once_native(
         let Ok(next_event) = event else {
             continue;
         };
+        if matches!(&next_event, NativeWsEvent::Incoming(Some(Ok(_)))) {
+            last_activity = std::time::Instant::now();
+        }
 
         match next_event {
             NativeWsEvent::Outgoing(Some(msg)) => {
-                if let Err(e) = ws_stream.send(Message::Text(msg.into())).await {
-                    log!("[WS] write error: {e}");
+                if !matches!(
+                    timeout(
+                        Duration::from_secs(5),
+                        ws_stream.send(Message::Text(msg.into()))
+                    )
+                    .await,
+                    Ok(Ok(()))
+                ) {
+                    log!("[WS] write failed or timed out; command will not be replayed");
                     break;
                 }
             }
-            NativeWsEvent::Outgoing(None) => {}
+            NativeWsEvent::Outgoing(None) => break,
             NativeWsEvent::Incoming(Some(Ok(Message::Text(s)))) => {
                 handle_ws_message(
                     &s,
@@ -1603,8 +1695,15 @@ async fn connect_ws_once_native(
                 );
             }
             NativeWsEvent::Incoming(Some(Ok(Message::Ping(payload)))) => {
-                if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
-                    log!("[WS] pong send failed: {e}");
+                if !matches!(
+                    timeout(
+                        Duration::from_secs(5),
+                        ws_stream.send(Message::Pong(payload))
+                    )
+                    .await,
+                    Ok(Ok(()))
+                ) {
+                    log!("[WS] pong failed or timed out");
                     break;
                 }
             }

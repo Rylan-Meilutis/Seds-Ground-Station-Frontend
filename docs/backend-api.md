@@ -1232,6 +1232,25 @@ state uses neutral/unknown visuals, never live values. A camera relay outage can
 return model/telemetry state. The full-size WebGL model is unmounted while video plays.
 # Model scene and HITL action updates
 
+HITL layouts now include `ToggleGroundStationControl` ("Ground station control"),
+an illuminated command toggle whose default is ON. Read enabled/actuated state
+from `action_policy.controls`; do not persist or infer it in the client. It enables
+main-sequence target/plateau cutoff for one-button Start Fill. OFF requires operator
+stopping; pressure and sequence interlocks remain enforced. Automatic cutoff uses
+Pause Fill and awaits valve acknowledgements, not a simulated frontend valve state.
+
+Connection recovery: the backend's one-second network-time messages serve as
+activity heartbeats. Both transports reconnect/reseed after 15 seconds without
+incoming activity; native sends are limited to five seconds and never replayed.
+Browser HTTP GETs abort after 15 seconds (300 seconds for large recent-history
+transfers). WebSocket callbacks are detached and released at teardown, and
+old-epoch callbacks cannot enqueue live telemetry. Disconnected controls remain
+subject to existing authorization and backend interlocks.
+
+The pinned Tao 0.34.8 patch in `vendor-tao` runs iOS event observers in common
+run-loop modes, including tracking mode. See its patch note for the required
+physical-device scrolling/background/resume validation.
+
 Calibration labels are **New sequence** / **Continue existing**, with direction
 options **Low to high** / **High to low**. Both use the same editable mass and
 point-update workflow. Starting a new sequence preserves the prefilled mass;
