@@ -391,6 +391,21 @@ pub fn ActionsTab(
                                                     && (action.cmd!="ValveSelfTest" || *self_test_confirmed.read())
                                                     && (!abort_only_mode || action.cmd == "Abort")
                                                 ;
+                                                let disabled_reason = if action.group != "GSE sequence actions" || enabled {
+                                                    None
+                                                } else if !auth::can_send_command(action.cmd.as_str()) {
+                                                    Some("Not permitted by your account")
+                                                } else if abort_only_mode {
+                                                    Some("Abort-only mode is enabled")
+                                                } else if !action_policy_snapshot.software_buttons_enabled {
+                                                    Some("Software controls disabled by backend")
+                                                } else if control.is_none() {
+                                                    Some("Command missing from backend policy")
+                                                } else if !control.as_ref().unwrap().enabled {
+                                                    Some("Sequence request disabled by backend")
+                                                } else {
+                                                    Some("Confirm dry valve self-test first")
+                                                };
                                                 let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
                                                 let actuated = merged_actuated(
                                                     action.cmd.as_str(),
@@ -425,7 +440,11 @@ pub fn ActionsTab(
                                                                 }
                                                             }
                                                         },
-                                                        span { style: "min-width:0; flex:1 1 auto;", "{action.label}" }
+                                                        span { style: "min-width:0; flex:1 1 auto;", "{action.label}"
+                                                            if let Some(reason) = disabled_reason {
+                                                                span {style:"display:block;margin-top:4px;font-size:11px;font-weight:400;white-space:normal;", "{reason}"}
+                                                            }
+                                                        }
                                                         if !enabled {
                                                             span {
                                                                 style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
