@@ -111,6 +111,7 @@ pub fn SettingsPage(
     map_prefetch_user_radius_m: Signal<u32>,
     map_prefetch_rocket_radius_m: Signal<u32>,
     calibration_capture_sample_count: Signal<usize>,
+    streamer_mode: Signal<bool>,
     storage_breakdown: Vec<(String, String)>,
     measured_cache_bytes: u64,
     theme: ThemeConfig,
@@ -164,6 +165,7 @@ pub fn SettingsPage(
     let map_prefetch_user_radius_m_value = *map_prefetch_user_radius_m.read();
     let map_prefetch_rocket_radius_m_value = *map_prefetch_rocket_radius_m.read();
     let calibration_capture_sample_count_value = *calibration_capture_sample_count.read();
+    let streamer_mode_enabled = *streamer_mode.read();
     let radius_unit_label = if metric_enabled { "m" } else { "ft" };
     let radius_min_display = if metric_enabled { 100 } else { 328 };
     let radius_max_display = if metric_enabled { 20_000 } else { 65_617 };
@@ -980,6 +982,14 @@ pub fn SettingsPage(
 
             if active_settings_tab.read().as_str() == "general" {
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px;",
+                div { style: "{card_style}",
+                    div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "Viewing mode" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "Streamer mode removes operational chrome and shows only the featured live feed or fallback vehicle model with its telemetry banner." }
+                    div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                        button { style: if !streamer_mode_enabled { chip_selected.clone() } else { chip_idle.clone() }, onclick: move |_| streamer_mode.set(false), "Operations" }
+                        button { style: if streamer_mode_enabled { chip_selected.clone() } else { chip_idle.clone() }, onclick: move |_| streamer_mode.set(true), "Streamer" }
+                    }
+                }
                 div { style: "{card_style}",
                     div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_general}" }
                     div { style: "font-size:13px; color:{theme.text_muted};", "{language_title}" }

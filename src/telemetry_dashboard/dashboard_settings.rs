@@ -321,6 +321,17 @@ pub fn NativeSettingsPage() -> Element {
             .unwrap_or(200)
             .clamp(1, 5_000)
     });
+    let streamer_mode = use_signal(|| persist::get_or(&streamer_mode_key(), "off") == "on");
+
+    {
+        let streamer_mode = streamer_mode;
+        use_effect(move || {
+            persist::set_string(
+                &streamer_mode_key(),
+                if *streamer_mode.read() { "on" } else { "off" },
+            );
+        });
+    }
 
     {
         let distance_units_metric = distance_units_metric;
@@ -686,6 +697,7 @@ pub fn NativeSettingsPage() -> Element {
         let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
         let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
         let mut calibration_capture_sample_count = calibration_capture_sample_count;
+        let mut streamer_mode = streamer_mode;
         move |_| {
             reset_local_app_data();
             distance_units_metric.set(false);
@@ -713,6 +725,7 @@ pub fn NativeSettingsPage() -> Element {
             map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
             map_prefetch_rocket_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
             calibration_capture_sample_count.set(200);
+            streamer_mode.set(false);
         }
     };
 
@@ -745,6 +758,7 @@ pub fn NativeSettingsPage() -> Element {
             map_prefetch_user_radius_m,
             map_prefetch_rocket_radius_m,
             calibration_capture_sample_count,
+            streamer_mode,
             storage_breakdown: cache_storage_stats_rows(),
             measured_cache_bytes: cache_storage_measured_bytes(),
             theme,

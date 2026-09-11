@@ -19,11 +19,13 @@ mod gps_webview;
 mod gps_windows;
 pub mod layout;
 mod layout_settings_tab;
+mod live_stream_tab;
 mod messages_tab;
 mod network_topology_tab;
 mod notifications_tab;
 pub(crate) mod prelude;
 pub mod types;
+mod vehicle_tab;
 pub mod version_page;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -53,6 +55,7 @@ use errors_tab::ErrorsTab;
 use firmware_update_tab::FirmwareUpdateTab;
 use layout::LayoutConfig;
 use layout_settings_tab::{DataFilterSettingsRow, SettingsPage};
+use live_stream_tab::LiveStreamTab;
 use map_tab::MapTab;
 use messages_tab::MessagesTab;
 use network_topology_tab::NetworkTopologyTab;
@@ -63,6 +66,7 @@ use types::{
     BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
     TelemetryTextId, display_flight_state, intern_telemetry_text, resolve_telemetry_text,
 };
+use vehicle_tab::VehicleTab;
 use version_page::VersionTab;
 use warnings_tab::WarningsTab;
 

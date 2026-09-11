@@ -28,6 +28,8 @@ fn default_main_tabs() -> Vec<String> {
         "actions".to_string(),
         "firmware-update".to_string(),
         "calibration".to_string(),
+        "mission".to_string(),
+        "vehicle".to_string(),
         "notifications".to_string(),
         "warnings".to_string(),
         "errors".to_string(),
@@ -279,6 +281,8 @@ fn default_main_tab_accents() -> HashMap<String, String> {
         ("actions".to_string(), "#b8a0ff".to_string()),
         ("firmware-update".to_string(), "#22d3ee".to_string()),
         ("calibration".to_string(), "#40d4c4".to_string()),
+        ("mission".to_string(), "#ef4444".to_string()),
+        ("vehicle".to_string(), "#38bdf8".to_string()),
         ("notifications".to_string(), "#63a4ff".to_string()),
         ("warnings".to_string(), "#f3c969".to_string()),
         ("errors".to_string(), "#ff8ca1".to_string()),
@@ -699,6 +703,9 @@ impl LayoutConfig {
                     | "actions"
                     | "firmware-update"
                     | "calibration"
+                    | "mission"
+                    | "live-stream"
+                    | "vehicle"
                     | "messages"
                     | "notifications"
                     | "warnings"

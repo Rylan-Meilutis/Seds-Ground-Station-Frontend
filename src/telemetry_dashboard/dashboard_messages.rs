@@ -318,6 +318,8 @@ enum MainTab {
     Actions,
     FirmwareUpdate,
     Calibration,
+    Mission,
+    Vehicle,
     Messages,
     Notifications,
     Warnings,

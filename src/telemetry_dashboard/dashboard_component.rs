@@ -37,9 +37,20 @@ fn TelemetryDashboardInner() -> Element {
     // ----------------------------
     let st_warn_ack = use_signal(|| persist::get_or(WARNING_ACK_STORAGE_KEY, "0"));
     let st_err_ack = use_signal(|| persist::get_or(ERROR_ACK_STORAGE_KEY, "0"));
-    let st_main_tab = use_signal(|| persist::get_or(MAIN_TAB_STORAGE_KEY, "state"));
+    let st_main_tab = use_signal(|| {
+        persist::get_string(&scoped_main_tab_key()).unwrap_or_else(|| {
+            if auth::can_view_actions() {
+                "state".to_string()
+            } else {
+                "mission".to_string()
+            }
+        })
+    });
     let st_data_tab = use_signal(|| persist::get_or(DATA_TAB_STORAGE_KEY, "GYRO_DATA"));
     let st_base_url = use_signal(|| persist::get_or(BASE_URL_STORAGE_KEY, ""));
+    let dashboard_customization = use_signal(load_dashboard_customization);
+    let dashboard_edit_mode = use_signal(|| false);
+    let streamer_mode = use_signal(|| persist::get_or(&streamer_mode_key(), "off") == "on");
     let distance_units_metric = use_signal(|| {
         persist::get_string(MAP_DISTANCE_UNITS_STORAGE_KEY)
             .map(|v| v == "metric")
@@ -174,6 +185,18 @@ fn TelemetryDashboardInner() -> Element {
     let show_version_overlay = use_signal(|| false);
 
     let active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
+
+    {
+        let streamer_mode = streamer_mode;
+        let mut active_main_tab = active_main_tab;
+        use_effect(move || {
+            let enabled = *streamer_mode.read();
+            persist::set_string(&streamer_mode_key(), if enabled { "on" } else { "off" });
+            if enabled && *active_main_tab.read() != MainTab::Mission {
+                active_main_tab.set(MainTab::Mission);
+            }
+        });
+    }
 
     {
         use_effect(move || {
@@ -318,6 +341,7 @@ fn TelemetryDashboardInner() -> Element {
         let layout_config = layout_config;
         let abort_only_mode = abort_only_mode;
         let calibration_has_sensors = calibration_has_sensors;
+        let dashboard_customization = dashboard_customization;
         use_effect(move || {
             let Some(layout) = layout_config.read().clone() else {
                 return;
@@ -327,6 +351,7 @@ fn TelemetryDashboardInner() -> Element {
                 &layout,
                 *abort_only_mode.read(),
                 *calibration_has_sensors.read(),
+                &dashboard_customization.read(),
             );
             if !configured.contains(&current) {
                 let next = configured.into_iter().next().unwrap_or(MainTab::State);
@@ -681,7 +706,7 @@ fn TelemetryDashboardInner() -> Element {
         use_effect(move || {
             let s = _main_tab_to_str(*active_main_tab.read()).to_string();
             st_main_tab.set(s.clone());
-            persist::set_string(MAIN_TAB_STORAGE_KEY, &s);
+            persist::set_string(&scoped_main_tab_key(), &s);
         });
     }
     {
@@ -2231,6 +2256,7 @@ fn TelemetryDashboardInner() -> Element {
                         inset:0;
                         z-index:3000;
                         display:flex;
+                        flex-wrap:wrap;
                         align-items:flex-start;
                         justify-content:center;
                         padding:24px 16px;
@@ -2383,6 +2409,7 @@ fn TelemetryDashboardInner() -> Element {
                             map_prefetch_user_radius_m: map_prefetch_user_radius_m,
                             map_prefetch_rocket_radius_m: map_prefetch_rocket_radius_m,
                             calibration_capture_sample_count: calibration_capture_sample_count,
+                            streamer_mode: streamer_mode,
                             storage_breakdown: cache_storage_stats_rows(),
                             measured_cache_bytes: cache_storage_measured_bytes(),
                             theme: theme.clone(),
@@ -2437,6 +2464,7 @@ fn TelemetryDashboardInner() -> Element {
                                 let mut map_prefetch_user_radius_m = map_prefetch_user_radius_m;
                                 let mut map_prefetch_rocket_radius_m = map_prefetch_rocket_radius_m;
                                 let mut calibration_capture_sample_count = calibration_capture_sample_count;
+                                let mut streamer_mode = streamer_mode;
                                 move |_| {
                                     debug_log::append("[settings] reset_app_data requested");
                                     reset_local_app_data();
@@ -2470,6 +2498,7 @@ fn TelemetryDashboardInner() -> Element {
                                     map_prefetch_user_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
                                     map_prefetch_rocket_radius_m.set(DEFAULT_PREFETCH_RADIUS_M);
                                     calibration_capture_sample_count.set(200);
+                                    streamer_mode.set(false);
                                 }
                             },
                             title: settings_title.clone(),
@@ -2500,6 +2529,19 @@ fn TelemetryDashboardInner() -> Element {
                50%, 100% {{ box-shadow: var(--gs26-alert-shadow-low, none); opacity: var(--gs26-alert-opacity-low, 1); }}
              }}
              .gs26-tab-shell {{ min-width:260px; }}
+             .gs26-dashboard-shell[data-streamer="true"] {{ padding:0 !important; }}
+             .gs26-dashboard-shell[data-streamer="true"] > .gs26-header-row,
+             .gs26-dashboard-shell[data-streamer="true"] > .gs26-header-secondary {{ display:none !important; }}
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-mission-shell {{ padding:0; overflow:hidden; }}
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-mission-hero {{ min-height:var(--gs26-app-height); border:0 !important; border-radius:0; }}
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-mission-header,
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-mission-editor,
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-angle-strip,
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-vehicle-header {{ display:none !important; }}
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-vehicle-shell {{ padding:0 !important; overflow:hidden; }}
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-vehicle-grid {{ grid-template-columns:1fr; gap:0; height:100%; }}
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-vehicle-grid > :first-child {{ height:100%; min-height:var(--gs26-app-height); border:0 !important; border-radius:0 !important; }}
+             .gs26-dashboard-shell[data-streamer="true"] .gs26-vehicle-grid > :nth-child(2) {{ display:none !important; }}
              .gs26-tab-toggle {{ display:none; }}
              .gs26-tab-nav {{ display:flex; gap:0.5rem; flex-wrap:wrap; }}
              .gs26-status-shell {{ flex:1000 1 520px; display:grid; grid-template-columns:minmax(0, 1fr) max-content; grid-template-rows:auto auto; align-items:center; column-gap:0.75rem; row-gap:0; padding:0.16rem 0.6rem 0.24rem 0.6rem; border-radius:1rem; min-width:260px; overflow:hidden; container-type:inline-size; align-self:start; }}
@@ -2902,6 +2944,7 @@ fn TelemetryDashboardInner() -> Element {
                 } else if let Some(layout) = layout_snapshot {
                 div {
                     class: "gs26-dashboard-shell",
+                    "data-streamer": if *streamer_mode.read() { "true" } else { "false" },
 
                     style: "
                 height:var(--gs26-app-height);
@@ -3255,6 +3298,7 @@ fn TelemetryDashboardInner() -> Element {
                         --gs26-header-menu-border:{theme.button_border};
                         --gs26-header-menu-text:{theme.button_text};
                         display:flex;
+                        flex-wrap:wrap;
                         align-items:center;
                         padding:0.85rem;
                         border-radius:0.75rem;
@@ -3283,8 +3327,20 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                                 }
                             }
+                            button {
+                                class: "gs26-tab-toggle",
+                                title: "Customize tab visibility and order for this Ground Station",
+                                onclick: {
+                                    let mut dashboard_edit_mode = dashboard_edit_mode;
+                                    move |_| {
+                                        let next = !*dashboard_edit_mode.read();
+                                        dashboard_edit_mode.set(next);
+                                    }
+                                },
+                                if *dashboard_edit_mode.read() { "Done editing" } else { "Edit layout" }
+                            }
                             nav { class: "gs26-tab-nav",
-                                for tab in _configured_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read()).into_iter() {
+                                for tab in _configured_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()).into_iter() {
                                     match tab {
                                         MainTab::State => rsx! {
                                             button {
@@ -3389,6 +3445,30 @@ fn TelemetryDashboardInner() -> Element {
                                                     }
                                                 },
                                                 "{_main_tab_label(&layout, MainTab::Calibration)}"
+                                            }
+                                        },
+                                        MainTab::Mission => rsx! {
+                                            button {
+                                                key: "{\"main-tab-mission\"}",
+                                                style: if *active_main_tab.read() == MainTab::Mission { tab_style_active(&main_tab_accent("mission", "#ef4444")) } else { tab_style_inactive.to_string() },
+                                                onclick: {
+                                                    let mut t = active_main_tab;
+                                                    let mut tabs_expanded = tabs_expanded;
+                                                    move |_| { t.set(MainTab::Mission); tabs_expanded.set(false); }
+                                                },
+                                                "{_main_tab_label(&layout, MainTab::Mission)}"
+                                            }
+                                        },
+                                        MainTab::Vehicle => rsx! {
+                                            button {
+                                                key: "{\"main-tab-vehicle\"}",
+                                                style: if *active_main_tab.read() == MainTab::Vehicle { tab_style_active(&main_tab_accent("vehicle", "#38bdf8")) } else { tab_style_inactive.to_string() },
+                                                onclick: {
+                                                    let mut t = active_main_tab;
+                                                    let mut tabs_expanded = tabs_expanded;
+                                                    move |_| { t.set(MainTab::Vehicle); tabs_expanded.set(false); }
+                                                },
+                                                "{_main_tab_label(&layout, MainTab::Vehicle)}"
                                             }
                                         },
                                         MainTab::Messages => rsx! {
@@ -3504,6 +3584,98 @@ fn TelemetryDashboardInner() -> Element {
                                                 "{_main_tab_label(&layout, MainTab::NetworkTopology)}"
                                             }
                                         },
+                    }
+                }
+                if *dashboard_edit_mode.read() {
+                    div {
+                        style: "flex:1 0 100%; display:flex; flex-direction:column; gap:8px; margin-top:10px; padding:10px; box-sizing:border-box; border:1px dashed {theme.info_accent}; border-radius:12px; background:{theme.info_background};",
+                        div { style: "display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;",
+                            div {
+                                div { style: "font-size:13px; font-weight:800; color:{theme.info_text};", "Dashboard layout" }
+                                div { style: "font-size:11px; color:{theme.text_muted};", "Changes are saved only for this Ground Station. Backend layout remains the default." }
+                            }
+                            button {
+                                style: "padding:5px 9px; border:1px solid {theme.button_border}; border-radius:9px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
+                                onclick: {
+                                    let mut dashboard_customization = dashboard_customization;
+                                    move |_| {
+                                        let next = DashboardCustomization::default();
+                                        save_dashboard_customization(&next);
+                                        dashboard_customization.set(next);
+                                    }
+                                },
+                                "Use Ground Station default"
+                            }
+                        }
+                        div { style: "display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:6px;",
+                            for (index, tab) in _available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read()).into_iter().enumerate() {
+                                {
+                                    let tab_id = _main_tab_to_str(tab).to_string();
+                                    let visible = !dashboard_customization.read().hidden.contains(&tab_id);
+                                    rsx! {
+                                        div { style: "display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:5px; padding:7px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background_alt};",
+                                            label { style: "display:flex; align-items:center; gap:7px; min-width:0; font-size:12px;",
+                                                input {
+                                                    r#type: "checkbox",
+                                                    checked: visible,
+                                                    onchange: {
+                                                        let mut dashboard_customization = dashboard_customization;
+                                                        let tab_id = tab_id.clone();
+                                                        move |event| {
+                                                            let mut next = dashboard_customization.read().clone();
+                                                            next.hidden.retain(|id| id != &tab_id);
+                                                            if !event.checked() { next.hidden.push(tab_id.clone()); }
+                                                            save_dashboard_customization(&next);
+                                                            dashboard_customization.set(next);
+                                                        }
+                                                    }
+                                                }
+                                                span { style: "overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{_main_tab_label(&layout, tab)}" }
+                                            }
+                                            button {
+                                                title: "Move earlier",
+                                                disabled: index == 0,
+                                                style: "padding:3px 7px; border:1px solid {theme.button_border}; border-radius:7px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
+                                                onclick: {
+                                                    let mut dashboard_customization = dashboard_customization;
+                                                    let available = _available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read());
+                                                    let tab_id = tab_id.clone();
+                                                    move |_| {
+                                                        let mut next = dashboard_customization.read().clone();
+                                                        let mut order = available.iter().map(|tab| _main_tab_to_str(*tab).to_string()).collect::<Vec<_>>();
+                                                        if !next.order.is_empty() { order.sort_by_key(|id| next.order.iter().position(|saved| saved == id).unwrap_or(usize::MAX)); }
+                                                        if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos > 0 { order.swap(pos, pos - 1); }
+                                                        next.order = order;
+                                                        save_dashboard_customization(&next);
+                                                        dashboard_customization.set(next);
+                                                    }
+                                                },
+                                                "↑"
+                                            }
+                                            button {
+                                                title: "Move later",
+                                                style: "padding:3px 7px; border:1px solid {theme.button_border}; border-radius:7px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
+                                                onclick: {
+                                                    let mut dashboard_customization = dashboard_customization;
+                                                    let available = _available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read());
+                                                    let tab_id = tab_id.clone();
+                                                    move |_| {
+                                                        let mut next = dashboard_customization.read().clone();
+                                                        let mut order = available.iter().map(|tab| _main_tab_to_str(*tab).to_string()).collect::<Vec<_>>();
+                                                        if !next.order.is_empty() { order.sort_by_key(|id| next.order.iter().position(|saved| saved == id).unwrap_or(usize::MAX)); }
+                                                        if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos + 1 < order.len() { order.swap(pos, pos + 1); }
+                                                        next.order = order;
+                                                        save_dashboard_customization(&next);
+                                                        dashboard_customization.set(next);
+                                                    }
+                                                },
+                                                "↓"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
         }
@@ -3649,6 +3821,22 @@ fn TelemetryDashboardInner() -> Element {
                                         can_edit: auth::can_edit_calibration(),
                                         capture_sample_count: *calibration_capture_sample_count.read(),
                                     }
+                                }
+                            },
+                            MainTab::Mission => rsx! {
+                                LiveStreamTab {
+                                    theme: theme.clone(),
+                                    flight_state,
+                                    rocket_gps,
+                                    rocket_altitude_m: rocket_gps_altitude_m,
+                                }
+                            },
+                            MainTab::Vehicle => rsx! {
+                                VehicleTab {
+                                    theme: theme.clone(),
+                                    flight_state,
+                                    rocket_gps,
+                                    rocket_altitude_m: rocket_gps_altitude_m,
                                 }
                             },
                             MainTab::Messages => rsx! {

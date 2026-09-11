@@ -12,6 +12,8 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
         MainTab::Actions => "actions",
         MainTab::FirmwareUpdate => "firmware-update",
         MainTab::Calibration => "calibration",
+        MainTab::Mission => "mission",
+        MainTab::Vehicle => "vehicle",
         MainTab::Messages => "messages",
         MainTab::Notifications => "notifications",
         MainTab::Warnings => "warnings",
@@ -49,6 +51,8 @@ fn _default_main_tab_label(tab: MainTab) -> String {
             "Mise a jour du micrologiciel",
         ),
         MainTab::Calibration => localized_copy(&lang, "Calibration", "Calibracion", "Calibration"),
+        MainTab::Mission => localized_copy(&lang, "Mission Live", "Mision en vivo", "Mission en direct"),
+        MainTab::Vehicle => localized_copy(&lang, "Vehicle", "Vehiculo", "Vehicule"),
         MainTab::Messages => localized_copy(&lang, "Messages", "Mensajes", "Messages"),
         MainTab::Notifications => {
             localized_copy(&lang, "Notifications", "Notificaciones", "Notifications")
@@ -98,6 +102,8 @@ fn _main_tab_from_str(s: &str) -> MainTab {
         "actions" => MainTab::Actions,
         "firmware-update" => MainTab::FirmwareUpdate,
         "calibration" => MainTab::Calibration,
+        "mission" | "live-stream" => MainTab::Mission,
+        "vehicle" => MainTab::Vehicle,
         "messages" => MainTab::Messages,
         "notifications" => MainTab::Notifications,
         "warnings" => MainTab::Warnings,
@@ -126,8 +132,43 @@ fn _calibration_tab_visible(calibration_has_sensors: Option<bool>) -> bool {
     auth::can_view_calibration() && calibration_has_sensors.unwrap_or(true)
 }
 
-/// Computes the final visible tab list after applying layout and auth filtering.
-fn _configured_main_tabs(
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+struct DashboardCustomization {
+    #[serde(default)]
+    order: Vec<String>,
+    #[serde(default)]
+    hidden: Vec<String>,
+}
+
+fn dashboard_customization_key() -> String {
+    let suffix: String = UrlConfig::base_http()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    format!("gs26_dashboard_customization_v1_{suffix}")
+}
+
+fn streamer_mode_key() -> String {
+    format!("{}_streamer", dashboard_customization_key())
+}
+
+fn scoped_main_tab_key() -> String {
+    format!("{}_active_tab", dashboard_customization_key())
+}
+
+fn load_dashboard_customization() -> DashboardCustomization {
+    persist::get_string(&dashboard_customization_key())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_dashboard_customization(value: &DashboardCustomization) {
+    if let Ok(raw) = serde_json::to_string(value) {
+        persist::set_string(&dashboard_customization_key(), &raw);
+    }
+}
+
+fn _available_main_tabs(
     layout: &LayoutConfig,
     abort_only_mode: bool,
     calibration_has_sensors: Option<bool>,
@@ -149,7 +190,46 @@ fn _configured_main_tabs(
         }
         tabs.push(tab);
     }
-    if !tabs.contains(&MainTab::Messages)
+    // These views degrade gracefully when their optional backend endpoints are
+    // absent, so older Ground Station layouts gain the new mission tools without
+    // requiring an immediate config migration.
+    if !tabs.contains(&MainTab::Mission) {
+        tabs.insert(0, MainTab::Mission);
+    }
+    if !tabs.contains(&MainTab::Vehicle) {
+        let index = usize::from(!tabs.is_empty()).min(tabs.len());
+        tabs.insert(index, MainTab::Vehicle);
+    }
+    tabs
+}
+
+/// Computes the final visible tab list after applying layout and auth filtering.
+fn _configured_main_tabs(
+    layout: &LayoutConfig,
+    abort_only_mode: bool,
+    calibration_has_sensors: Option<bool>,
+    customization: &DashboardCustomization,
+) -> Vec<MainTab> {
+    let available = _available_main_tabs(layout, abort_only_mode, calibration_has_sensors);
+    let mut tabs = Vec::new();
+    for id in &customization.order {
+        let tab = _main_tab_from_str(id);
+        if available.contains(&tab)
+            && !tabs.contains(&tab)
+            && !customization.hidden.iter().any(|hidden| hidden == _main_tab_to_str(tab))
+        {
+            tabs.push(tab);
+        }
+    }
+    for tab in available {
+        if !tabs.contains(&tab)
+            && !customization.hidden.iter().any(|hidden| hidden == _main_tab_to_str(tab))
+        {
+            tabs.push(tab);
+        }
+    }
+    if !customization.hidden.iter().any(|id| id == "messages")
+        && !tabs.contains(&MainTab::Messages)
         && let Some(notifications_idx) = tabs.iter().position(|tab| *tab == MainTab::Notifications)
     {
         tabs.insert(notifications_idx, MainTab::Messages);

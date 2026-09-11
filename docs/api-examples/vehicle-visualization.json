@@ -1,0 +1,43 @@
+{
+  "title": "IREC Vehicle",
+  "model_url": "/assets/vehicle.glb",
+  "renderer_url": "/assets/model-viewer.min.js",
+  "model_alt": "Two-stage IREC launch vehicle",
+  "camera_orbit": "35deg 70deg auto",
+  "phase_animations": {
+    "PreFill": "ground-disconnected",
+    "NitrogenFill": "filling",
+    "PoweredFlight": "motor-burn",
+    "DrogueDescent": "drogue-deploy",
+    "MainDescent": "main-deploy"
+  },
+  "attitude": {
+    "roll": { "data_type": "ORIENTATION", "index": 0 },
+    "pitch": { "data_type": "ORIENTATION", "index": 1 },
+    "yaw": { "data_type": "ORIENTATION", "index": 2 }
+  },
+  "stages": [
+    {
+      "id": "booster",
+      "label": "Stage 1",
+      "separation": { "data_type": "STAGE_STATUS", "index": 0 },
+      "components": [
+        { "id": "motor", "label": "Motor", "kind": "motor", "binding": { "data_type": "MOTOR_THRUST", "index": 0 }, "unit": "%", "min": 0, "max": 100, "active_threshold": 1 },
+        { "id": "fin-1", "label": "Fin 1", "kind": "fin", "binding": { "data_type": "FIN_DEFLECTION", "index": 0 }, "unit": "deg", "min": -20, "max": 20 },
+        { "id": "air-brakes", "label": "Air brakes", "kind": "air_brake", "binding": { "data_type": "AIR_BRAKES", "index": 0 }, "unit": "%", "min": 0, "max": 100 }
+      ]
+    },
+    {
+      "id": "sustainer",
+      "label": "Stage 2",
+      "components": [
+        { "id": "motor", "label": "Motor", "kind": "motor", "binding": { "data_type": "MOTOR_THRUST", "index": 1 }, "unit": "%", "min": 0, "max": 100, "active_threshold": 1 },
+        { "id": "main", "label": "Main parachute", "kind": "parachute", "binding": { "data_type": "RECOVERY", "index": 1 }, "active_threshold": 0.5 }
+      ]
+    }
+  ],
+  "ground_systems": [
+    { "id": "umbilical", "label": "Flight umbilical", "kind": "link", "binding": { "data_type": "GROUND_LINKS", "index": 0 }, "active_threshold": 0.5 },
+    { "id": "fill", "label": "Fill level", "kind": "tank", "binding": { "data_type": "LOADCELL_FILL_PERCENT", "index": 0 }, "unit": "%", "min": 0, "max": 100 }
+  ]
+}

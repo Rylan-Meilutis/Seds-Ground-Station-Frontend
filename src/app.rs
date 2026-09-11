@@ -159,12 +159,16 @@ pub fn App() -> Element {
         });
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))]
     let document_assets: Element = rsx! {
         document::Style { "{GLOBAL_CSS}" }
         document::Style { "{INLINE_MAPLIBRE_CSS}" }
         document::Script { "{INLINE_MAPLIBRE_JS}" }
         document::Script { "{INLINE_GROUND_MAP_JS}" }
+    };
+    #[cfg(target_os = "linux")]
+    let document_assets: Element = rsx! {
+        document::Style { "{GLOBAL_CSS}" }
     };
     #[cfg(target_arch = "wasm32")]
     let document_assets: Element = rsx! { Fragment {} };

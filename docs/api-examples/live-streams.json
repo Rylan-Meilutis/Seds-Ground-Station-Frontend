@@ -1,0 +1,20 @@
+{
+  "title": "Flight Test 1",
+  "default_stream_id": "pad-wide",
+  "streams": [
+    { "id": "pad-wide", "label": "Pad wide", "url": "/streams/pad/index.m3u8", "kind": "video", "poster_url": "/streams/pad/poster.jpg", "online": true },
+    { "id": "tower", "label": "Tower", "url": "/webrtc/tower", "kind": "iframe", "online": true },
+    { "id": "onboard", "label": "Onboard", "url": "/streams/onboard.mjpg", "kind": "mjpeg", "online": false }
+  ],
+  "stats": [
+    { "label": "Velocity", "binding": { "data_type": "VELOCITY", "index": 0 }, "unit": "m/s", "precision": 1 },
+    { "label": "Tank", "binding": { "data_type": "LOADCELL_FILL_PERCENT", "index": 0 }, "unit": "%", "precision": 0 }
+  ],
+  "broadcast": {
+    "label": "Flight Test 1",
+    "featured_stream_id": "pad-wide",
+    "hidden_stream_ids": [],
+    "layout": "hero",
+    "revision": 1
+  }
+}

@@ -211,7 +211,11 @@ fn load_desktop_window_icon() -> Option<dioxus_desktop::tao::window::Icon> {
     dioxus_desktop::tao::window::Icon::from_rgba(image.into_raw(), width, height).ok()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "android"),
+    not(target_os = "linux")
+))]
 fn startup_custom_head() -> String {
     String::from(
         r##"
@@ -235,6 +239,24 @@ body, #main {
 </style>
 "##,
     )
+}
+
+#[cfg(target_os = "linux")]
+fn startup_custom_head() -> String {
+    // WebKitGTK does not consistently execute large inline scripts inserted after the
+    // document has loaded. Put the self-contained map runtime in the initial document
+    // head so Debian/Ubuntu (including Raspberry Pi) initializes MapLibre reliably.
+    let mut head = String::from(
+        r##"<meta name="theme-color" content="#020617"><style>html,body,#main{margin:0;min-height:100%;background:#020617;color:#e5e7eb;color-scheme:dark}</style>"##,
+    );
+    head.push_str("<style id=\"gs26-maplibre-css\">");
+    head.push_str(include_str!("../static/vendor/maplibre-gl/maplibre-gl.css"));
+    head.push_str("</style><script id=\"gs26-maplibre-js\">");
+    head.push_str(include_str!("../static/vendor/maplibre-gl/maplibre-gl.js"));
+    head.push_str("</script><script id=\"gs26-ground-map-js\">");
+    head.push_str(include_str!("../static/ground_map.js"));
+    head.push_str("</script>");
+    head
 }
 
 #[cfg(target_os = "android")]

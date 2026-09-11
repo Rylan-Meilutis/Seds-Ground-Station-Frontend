@@ -81,6 +81,9 @@ Command uplink:
 | `POST` | `/api/calibration/capture_zero` | Capture a zero point |
 | `POST` | `/api/calibration/capture_span` | Capture a span point |
 | `POST` | `/api/calibration/refit` | Recompute calibration fit |
+| `GET` | `/api/vehicle_visualization` | 3D vehicle asset, stages, animation clips, and telemetry bindings |
+| `GET` | `/api/live_streams` | Camera angles, broadcast banner, and live-stat bindings |
+| `POST` | `/api/live_streams/control` | Stream-master broadcast control |
 | `GET` | `/api/i18n/catalog?lang=<code>` | Optional translation catalog |
 | `POST` | `/api/i18n/translate` | Optional translation service |
 
@@ -768,6 +771,99 @@ Response:
 
 - same shape as `GET /api/calibration`
 
+### `GET /api/vehicle_visualization`
+
+Returns the backend-owned GLB model and live telemetry bindings used by the Vehicle and Mission
+Live screens. Relative asset URLs are resolved against the selected Ground Station.
+
+```json
+{
+  "title": "IREC Vehicle",
+  "model_url": "/assets/vehicle.glb",
+  "renderer_url": "/assets/model-viewer.min.js",
+  "model_alt": "Two-stage IREC launch vehicle",
+  "camera_orbit": "35deg 70deg auto",
+  "phase_animations": {
+    "PreFill": "ground-disconnected",
+    "NitrogenFill": "filling",
+    "PoweredFlight": "motor-burn",
+    "DrogueDescent": "drogue-deploy",
+    "MainDescent": "main-deploy"
+  },
+  "attitude": {
+    "roll": { "data_type": "ORIENTATION", "index": 0 },
+    "pitch": { "data_type": "ORIENTATION", "index": 1 },
+    "yaw": { "data_type": "ORIENTATION", "index": 2 }
+  },
+  "stages": [
+    {
+      "id": "booster",
+      "label": "Stage 1",
+      "separation": { "data_type": "STAGE_STATUS", "index": 0 },
+      "components": [
+        { "id": "motor", "label": "Motor", "kind": "motor", "binding": { "data_type": "MOTOR_THRUST", "index": 0 }, "unit": "%", "min": 0, "max": 100, "active_threshold": 1 },
+        { "id": "gimbal_pitch", "label": "Gimbal pitch", "kind": "gimbal", "binding": { "data_type": "GIMBAL", "index": 0 }, "unit": "deg", "min": -10, "max": 10 },
+        { "id": "air_brakes", "label": "Air brakes", "kind": "air_brake", "binding": { "data_type": "AIR_BRAKES", "index": 0 }, "unit": "%", "min": 0, "max": 100 },
+        { "id": "oxidizer", "label": "Oxidizer", "kind": "tank", "binding": { "data_type": "TANK_FILL", "index": 0 }, "unit": "%", "min": 0, "max": 100 }
+      ]
+    }
+  ],
+  "ground_systems": [
+    { "id": "umbilical", "label": "Flight umbilical", "kind": "link", "binding": { "data_type": "GROUND_LINKS", "index": 0 }, "active_threshold": 0.5 },
+    { "id": "fill", "label": "Fill system", "kind": "tank", "binding": { "data_type": "LOADCELL_FILL_PERCENT", "index": 0 }, "unit": "%", "min": 0, "max": 100 }
+  ]
+}
+```
+
+Telemetry bindings accept `data_type`, optional `sender_id`, `index`, optional `scale` (default
+`1`), and optional `offset` (default `0`). Supported component kinds include `motor`, `fin`,
+`gimbal`, `air_brake`, `tank`, `propellant`, `parachute`, and `link`. Unknown kinds remain visible
+as generic systems. `phase_animations` values must match named animation clips in the GLB.
+
+The GLB response must be browser-readable. When it is on another origin, enable CORS. For offline
+ground stations, serve the model-viewer ES module locally and set `renderer_url`; otherwise the
+frontend uses the public model-viewer CDN. The view falls back to the telemetry-driven multi-stage
+schematic when the configuration is absent.
+
+### `GET /api/live_streams`
+
+```json
+{
+  "title": "Flight Test 1",
+  "default_stream_id": "pad-wide",
+  "streams": [
+    { "id": "pad-wide", "label": "Pad wide", "url": "/streams/pad/index.m3u8", "kind": "video", "poster_url": "/streams/pad/poster.jpg", "online": true },
+    { "id": "tower", "label": "Tower", "url": "/webrtc/tower", "kind": "iframe", "online": true },
+    { "id": "onboard", "label": "Onboard", "url": "/streams/onboard.mjpg", "kind": "mjpeg", "online": false }
+  ],
+  "stats": [
+    { "label": "Velocity", "binding": { "data_type": "VELOCITY", "index": 0 }, "unit": "m/s", "precision": 1 },
+    { "label": "Tank", "binding": { "data_type": "LOADCELL_FILL_PERCENT", "index": 0 }, "unit": "%", "precision": 0 }
+  ],
+  "broadcast": {
+    "label": "Flight Test 1",
+    "featured_stream_id": "pad-wide",
+    "hidden_stream_ids": [],
+    "layout": "hero",
+    "revision": 4
+  }
+}
+```
+
+`kind` may be `video` (browser-supported media/HLS), `iframe` or `webrtc` (backend-hosted player),
+or `mjpeg`. Multiple online streams become selectable camera angles. When none are online, the
+Mission Live hero automatically shows the 3D vehicle. Clients poll this endpoint so viewer-only
+sessions follow stream-master changes. Media URLs should be cookie-authenticated or public because
+HTML media elements cannot attach the frontend bearer header.
+
+### `POST /api/live_streams/control`
+
+Request and response use the `broadcast` object shown above. Only an authenticated session with
+`session_type: "stream_master"` or `"StreamControl"` in `allowed_commands` can see and use these
+controls. The backend should increment `revision`, persist the state, and return `403` for other
+sessions. Changing `featured_stream_id` fades the selected angle into all viewer sessions;
+`hidden_stream_ids` removes angles from their camera strip.
+
 ### `GET /api/layout`
 
 This is the largest payload in the frontend contract. It controls tab visibility, actions, data labels, chart behavior, state widgets, board placeholders, theming, and battery estimation settings.
@@ -837,6 +933,8 @@ Main tab ids recognized by the frontend:
 - `map`
 - `actions`
 - `calibration`
+- `mission` (legacy alias: `live-stream`)
+- `vehicle`
 - `notifications`
 - `warnings`
 - `errors`

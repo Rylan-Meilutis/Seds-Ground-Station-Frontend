@@ -162,6 +162,16 @@ pub fn can_edit_calibration() -> bool {
     current_status().can_edit_calibration.unwrap_or(false)
 }
 
+pub fn can_manage_stream() -> bool {
+    let status = current_status();
+    status.authenticated
+        && (status.session_type.as_deref() == Some("stream_master")
+            || status
+                .allowed_commands
+                .iter()
+                .any(|command| command == "StreamControl"))
+}
+
 pub fn set_current_session(session: StoredAuthSession) {
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
