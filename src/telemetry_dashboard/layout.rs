@@ -518,6 +518,8 @@ fn default_fill_targets_require_actions_enabled() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionSpec {
+    #[serde(default)]
+    pub group: String,
     pub label: String,
     pub cmd: String,
     pub border: String,

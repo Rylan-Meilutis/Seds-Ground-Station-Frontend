@@ -84,6 +84,7 @@ enum ActionRowItem<'a> {
 }
 
 enum ActionLayoutRow<'a> {
+    Heading(&'a str),
     Items(Vec<ActionRowItem<'a>>),
     Spacer,
 }
@@ -100,8 +101,14 @@ fn flush_action_row<'a>(
 fn build_action_rows<'a>(actions: &'a [&'a ActionSpec]) -> Vec<ActionLayoutRow<'a>> {
     let mut rows = Vec::new();
     let mut current_row = Vec::new();
+    let mut previous_group = "";
 
     for action in actions {
+        if !action.group.is_empty() && action.group != previous_group {
+            flush_action_row(&mut rows, &mut current_row);
+            rows.push(ActionLayoutRow::Heading(&action.group));
+            previous_group = &action.group;
+        }
         if action.new_row_before || action.spacer_row_before {
             flush_action_row(&mut rows, &mut current_row);
         }
@@ -271,6 +278,7 @@ pub fn ActionsTab(
             ",
             style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
+            super::gse_panel::GsePanel { action_policy, abort_only_mode, theme:theme.clone() }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "All available actions are available all the time, use with caution as improper use \
                 can and will damage the system."
@@ -305,6 +313,7 @@ pub fn ActionsTab(
                     ",
                     for row in action_rows.iter() {
                         match row {
+                            ActionLayoutRow::Heading(label) => rsx! {h3 {style:"margin:12px 0 0;color:{theme.text_muted};font-size:12px;letter-spacing:.08em;text-transform:uppercase;","{label}"}},
                             ActionLayoutRow::Spacer => rsx! {
                                 div {
                                     style: "height:14px;"

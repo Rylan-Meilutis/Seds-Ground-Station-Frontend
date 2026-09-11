@@ -17,6 +17,7 @@ mod gps_linux;
 mod gps_webview;
 #[cfg(target_os = "windows")]
 mod gps_windows;
+mod gse_panel;
 pub mod layout;
 mod layout_settings_tab;
 mod live_stream_tab;
