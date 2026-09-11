@@ -448,12 +448,11 @@ mod tests {
         ))
         .expect("vehicle example should remain valid");
 
-        assert_eq!(config.stages.len(), 2);
-        assert_eq!(config.ground_systems.len(), 2);
-        assert_eq!(
-            model_animation(&config, "Drogue Descent").as_deref(),
-            Some("drogue-deploy")
-        );
+        assert_eq!(config.stages.len(), 1);
+        assert_eq!(config.stages[0].id, "stage-1");
+        assert!(config.ground_systems.is_empty());
+        assert_eq!(config.motions.len(), 3);
+        assert_eq!(model_animation(&config, "ParachuteDeploy"), None);
     }
 
     #[test]

@@ -9,7 +9,12 @@
     },
     "expires_at_ms": 1760000000000,
     "anonymous": false,
-    "session_type": "operator",
-    "allowed_commands": ["Abort", "Arm", "Ignite"]
+    "session_type": "session",
+    "allowed_commands": [
+      "Abort"
+    ],
+    "roles": [],
+    "can_view_calibration": true,
+    "can_edit_calibration": true
   }
 }

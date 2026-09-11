@@ -2,6 +2,17 @@
 
 This repository contains the Dioxus-based frontend for the UBSEDS ground station UI.
 
+Dashboard now opens on the single-stage rocket model with aft fins only and a cycling
+backend-defined telemetry bar. **Settings → General → Viewing mode** offers Ground
+Station view (instrument/control dashboard) and Streamer (delayed audience video).
+Any viewer can watch; stream-master/admin roles are needed only to direct broadcasts
+or assign roles. **Exit streamer** returns to Dashboard. Bindings are backend-owned,
+not user-facing settings.
+
+See the [current API contract](docs/backend-api.md) and [JSON example index](docs/api-examples/README.md).
+Deploy the matching backend and frontend `dev` versions together; the backend's default
+build may select the stable frontend unless `--frontend-dev` is requested.
+
 Current release:
 
 - Frontend version: `0.3.1`
@@ -11,15 +22,15 @@ Current release:
 
 Backend compatibility note:
 
-- The current frontend contract has been checked against `../groundstation26/backend/src/web.rs`, `../groundstation26/backend/src/state.rs`, and `../groundstation26/backend/src/types.rs`.
+- The current frontend contract has been checked against the sibling `GroundStation26/backend/src/web.rs`, `state.rs`, `types.rs`, `auth.rs`, `media/contract.rs`, and `media/program.rs`.
 - In addition to the older dashboard routes, this frontend now expects backend support for shared alert acknowledgement state, message history, board `packet_count`, and the `ActionPolicy` / `FillTargets` / `RecordingStatus` WebSocket snapshots.
 
 If your goal is to build a backend that works with this frontend, start here:
 
-- Backend contract: [`docs/backend-api.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-api.md)
-- Example payloads: [`docs/api-examples`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples)
-- Build helper: [`build.py`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/build.py)
-- Streaming `/api/recent` notes: [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md)
+- Backend contract: [`docs/backend-api.md`](docs/backend-api.md)
+- Example payloads: [`docs/api-examples`](docs/api-examples)
+- Build helper: [`build.py`](build.py)
+- Streaming `/api/recent` notes: [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md)
 
 ## What The Frontend Expects
 
@@ -91,6 +102,12 @@ A minimal backend should implement at least:
 - `POST /api/auth/login`
 - `POST /api/auth/logout`
 - `GET /ws` or equivalent WebSocket upgrade on `/ws`
+
+The current model dashboard additionally requires `GET /api/vehicle_visualization`
+and `GET /api/dashboard_status`; missing endpoints display unavailable state. Mission
+and Streamer use `GET /api/live_streams` and its scoped program/player URLs. Directing
+the broadcast uses `POST /api/live_streams/control`; assigning roles uses
+`GET`/`POST /api/stream-roles` with stream-admin authorization.
 
 For a more complete dashboard, also implement:
 
@@ -234,7 +251,7 @@ The dashboard reload button refetches and reapplies layout/config for the active
 
 ## Editing Themes
 
-Built-in theme presets live in [`assets/themes/presets.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/assets/themes/presets.json). They are validated in `build.rs` and compiled into the app at build time, so there is no runtime file dependency.
+Built-in theme presets live in [`assets/themes/presets.json`](assets/themes/presets.json). They are validated in `build.rs` and compiled into the app at build time, so there is no runtime file dependency.
 
 For easier editing or adding presets, use the local Tkinter editor:
 
@@ -263,7 +280,7 @@ When the app reconnects or explicitly reseeds, it keeps existing chart history v
 - the live 20-minute history window is pruned using local receive time, not packet/network timestamp, so delayed or skewed packets do not incorrectly evict visible history
 - native builds keep the last valid layout per Ground Station URL plus a compact local telemetry snapshot so a failed connection attempt can still open the dashboard with the last remembered data/GPS/map state. Without a cached layout for that URL, the app shows the connection failure page.
 
-If you are implementing the backend streaming path, use [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md).
+If you are implementing the backend streaming path, use [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md).
 
 ## Calibration Behavior
 
@@ -302,7 +319,7 @@ The current suite covers layout parsing/validation, sender-aware chart series, l
 
 ## Reference Files
 
-- API reference: [`docs/backend-api.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-api.md)
-- Streaming notes: [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md)
-- Minimal layout example: [`docs/api-examples/layout.minimal.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/layout.minimal.json)
-- WebSocket examples: [`docs/api-examples/websocket-messages.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/websocket-messages.json)
+- API reference: [`docs/backend-api.md`](docs/backend-api.md)
+- Streaming notes: [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md)
+- Minimal layout example: [`docs/api-examples/layout.minimal.json`](docs/api-examples/layout.minimal.json)
+- WebSocket examples: [`docs/api-examples/websocket-messages.json`](docs/api-examples/websocket-messages.json)

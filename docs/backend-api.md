@@ -82,6 +82,11 @@ Command uplink:
 | `POST` | `/api/calibration/capture_span` | Capture a span point |
 | `POST` | `/api/calibration/refit` | Recompute calibration fit |
 | `GET` | `/api/vehicle_visualization` | 3D vehicle asset, stages, animation clips, and telemetry bindings |
+| `GET` | `/api/dashboard_status` | Server-resolved live dashboard statistics and T clock |
+| `GET` / `POST` | `/api/stream-roles` | Admin-only role listing/assignment |
+| `POST` / `PUT` | `/api/vehicle_visualization` | Backend administration; no binding editor in UI |
+| `GET` | `/api/media-assets/program/state` | Scoped delayed audience telemetry and current editorial state |
+| `GET` | `/api/media-assets/hls/{id}/{file}` | Scoped HLS with server-enforced release delay |
 | `GET` | `/api/live_streams` | Camera angles, broadcast banner, and live-stat bindings |
 | `POST` | `/api/live_streams/control` | Stream-master broadcast control |
 | `GET` | `/api/i18n/catalog?lang=<code>` | Optional translation catalog |
@@ -103,7 +108,8 @@ Response:
   },
   "expires_at_ms": null,
   "anonymous": true,
-  "session_type": "anonymous",
+  "session_type": null,
+  "roles": [],
   "allowed_commands": []
 }
 ```
@@ -139,7 +145,8 @@ Response:
     },
     "expires_at_ms": 1760000000000,
     "anonymous": false,
-    "session_type": "operator",
+    "session_type": "session",
+    "roles": [],
     "allowed_commands": ["Abort", "Arm", "Ignite"]
   }
 }
@@ -191,7 +198,7 @@ Notes:
 - if you stream, emit one complete telemetry row per line and start sending bytes promptly
 - the native streaming path is enabled when the response content type contains `ndjson` or `json-seq`
 - web builds should still be treated as requiring the array response path for compatibility
-- see [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md) for the current streaming-specific behavior
+- see [`docs/backend-recent-streaming.md`](backend-recent-streaming.md) for the current streaming-specific behavior
 
 ### `GET /api/alerts`
 
@@ -773,44 +780,82 @@ Response:
 
 ### `GET /api/vehicle_visualization`
 
-Returns the backend-owned GLB model and live telemetry bindings used by the Vehicle and Mission
-Live screens. Relative asset URLs are resolved against the selected Ground Station.
+Returns the backend-owned GLB model and live telemetry bindings used by the primary Dashboard and operator Mission
+fallback. Relative asset URLs are resolved against the selected Ground Station.
 
 ```json
 {
-  "title": "IREC Vehicle",
-  "model_url": "/assets/vehicle.glb",
-  "renderer_url": "/assets/model-viewer.min.js",
-  "model_alt": "Two-stage IREC launch vehicle",
-  "camera_orbit": "35deg 70deg auto",
-  "phase_animations": {
-    "PreFill": "ground-disconnected",
-    "NitrogenFill": "filling",
-    "PoweredFlight": "motor-burn",
-    "DrogueDescent": "drogue-deploy",
-    "MainDescent": "main-deploy"
-  },
+  "title": "Rocket",
+  "model_url": "/assets/models/vehicle.glb",
+  "renderer_url": "/assets/three/vehicle-renderer.js",
+  "model_alt": "Single-stage rocket with aft fins",
+  "camera_orbit": "",
+  "phase_animations": {},
   "attitude": {
-    "roll": { "data_type": "ORIENTATION", "index": 0 },
-    "pitch": { "data_type": "ORIENTATION", "index": 1 },
-    "yaw": { "data_type": "ORIENTATION", "index": 2 }
+    "roll": null,
+    "pitch": null,
+    "yaw": null
   },
   "stages": [
     {
-      "id": "booster",
-      "label": "Stage 1",
-      "separation": { "data_type": "STAGE_STATUS", "index": 0 },
-      "components": [
-        { "id": "motor", "label": "Motor", "kind": "motor", "binding": { "data_type": "MOTOR_THRUST", "index": 0 }, "unit": "%", "min": 0, "max": 100, "active_threshold": 1 },
-        { "id": "gimbal_pitch", "label": "Gimbal pitch", "kind": "gimbal", "binding": { "data_type": "GIMBAL", "index": 0 }, "unit": "deg", "min": -10, "max": 10 },
-        { "id": "air_brakes", "label": "Air brakes", "kind": "air_brake", "binding": { "data_type": "AIR_BRAKES", "index": 0 }, "unit": "%", "min": 0, "max": 100 },
-        { "id": "oxidizer", "label": "Oxidizer", "kind": "tank", "binding": { "data_type": "TANK_FILL", "index": 0 }, "unit": "%", "min": 0, "max": 100 }
-      ]
+      "id": "stage-1",
+      "label": "Single stage",
+      "separation": null,
+      "components": []
     }
   ],
-  "ground_systems": [
-    { "id": "umbilical", "label": "Flight umbilical", "kind": "link", "binding": { "data_type": "GROUND_LINKS", "index": 0 }, "active_threshold": 0.5 },
-    { "id": "fill", "label": "Fill system", "kind": "tank", "binding": { "data_type": "LOADCELL_FILL_PERCENT", "index": 0 }, "unit": "%", "min": 0, "max": 100 }
+  "ground_systems": [],
+  "motions": [
+    {
+      "node": "motor-flame",
+      "transform": "visible",
+      "axis": [
+        0,
+        1,
+        0
+      ],
+      "from": 0,
+      "to": 1,
+      "binding": null,
+      "phase_values": {
+        "*": 0,
+        "Ascent": 1
+      }
+    },
+    {
+      "node": "drogue-parachute",
+      "transform": "scale",
+      "axis": [
+        1,
+        1,
+        1
+      ],
+      "from": 0.001,
+      "to": 1,
+      "binding": null,
+      "phase_values": {
+        "*": 0,
+        "ParachuteDeploy": 1
+      }
+    },
+    {
+      "node": "main-parachute",
+      "transform": "scale",
+      "axis": [
+        1,
+        1,
+        1
+      ],
+      "from": 0.001,
+      "to": 1,
+      "binding": null,
+      "phase_values": {
+        "*": 0,
+        "Descent": 1,
+        "Landed": 1,
+        "Recovery": 1
+      }
+    }
   ]
 }
 ```
@@ -820,10 +865,14 @@ Telemetry bindings accept `data_type`, optional `sender_id`, `index`, optional `
 `gimbal`, `air_brake`, `tank`, `propellant`, `parachute`, and `link`. Unknown kinds remain visible
 as generic systems. `phase_animations` values must match named animation clips in the GLB.
 
+The JSON above is the current stock single-stage configuration; placeholder custom control-surface
+bindings below illustrate other backend profiles, not sensors present on the current rocket.
 The GLB response must be browser-readable. Scoped backend asset tickets avoid requiring bearer
 headers on model requests. The frontend loads the offline `/assets/three/vehicle-renderer.js`
-module and its bundled Three.js dependencies; no public CDN is required. Configuration adds
-`motions`, each with `node`, `transform` (`rotate`, `translate`, `scale`, `visible`), `axis`,++`from`, `to`, optional telemetry `binding`, and `phase_values`. Values are normalized 0–1;
+module and its bundled Three.js dependencies; no public CDN is required. `renderer_url` is a
+compatibility field, not an override used by this frontend. Configuration adds
+`motions`, each with `node`, `transform` (`rotate`, `translate`, `scale`, `visible`), `axis`,
+`from`, `to`, optional telemetry `binding`, and `phase_values`. Values are normalized 0–1;
 rotation endpoints are degrees. Bound telemetry older than five seconds is unknown, not a
 fabricated state. Named nodes must exist in the GLB. For example:
 
@@ -861,17 +910,60 @@ The streamer uses the same fields from delayed snapshots, never from this live e
 {
   "title": "Flight Test 1",
   "default_stream_id": "pad-wide",
-  "program_url": "/api/media-assets/program?ticket=SCOPED_TICKET",
+  "program_url": "/api/media-assets/program?ticket=EXAMPLE_PROGRAM_TICKET",
   "can_manage_stream": true,
   "can_preview_live": true,
   "streams": [
-    { "id": "pad-wide", "label": "Pad wide", "url": "/streams/pad/index.m3u8", "kind": "video", "poster_url": "/streams/pad/poster.jpg", "online": true },
-    { "id": "tower", "label": "Tower", "url": "/webrtc/tower", "kind": "iframe", "online": true },
-    { "id": "onboard", "label": "Onboard", "url": "/streams/onboard.mjpg", "kind": "mjpeg", "online": false }
+    {
+      "id": "pad-wide",
+      "label": "pad-wide",
+      "url": "/api/media-assets/streams/pad-wide?ticket=EXAMPLE_PAD_WIDE_TICKET",
+      "kind": "webrtc",
+      "poster_url": "",
+      "online": true
+    },
+    {
+      "id": "tower",
+      "label": "tower",
+      "url": "/api/media-assets/streams/tower?ticket=EXAMPLE_TOWER_TICKET",
+      "kind": "webrtc",
+      "poster_url": "",
+      "online": true
+    },
+    {
+      "id": "onboard",
+      "label": "onboard",
+      "url": "/api/media-assets/streams/onboard?ticket=EXAMPLE_ONBOARD_TICKET",
+      "kind": "webrtc",
+      "poster_url": "",
+      "online": false
+    }
   ],
   "stats": [
-    { "label": "Velocity", "binding": { "data_type": "VELOCITY", "index": 0 }, "unit": "m/s", "precision": 1 },
-    { "label": "Tank", "binding": { "data_type": "LOADCELL_FILL_PERCENT", "index": 0 }, "unit": "%", "precision": 0 }
+    {
+      "label": "Altitude",
+      "binding": {
+        "data_type": "GPS_DATA",
+        "sender_id": "RF",
+        "index": 2,
+        "scale": 1,
+        "offset": 0
+      },
+      "unit": "m",
+      "precision": 1
+    },
+    {
+      "label": "Tank pressure",
+      "binding": {
+        "data_type": "PRESSURE_TRANSDUCER_CALIBRATED",
+        "sender_id": null,
+        "index": 0,
+        "scale": 1,
+        "offset": 0
+      },
+      "unit": "psi",
+      "precision": 1
+    }
   ],
   "broadcast": {
     "label": "Flight Test 1",
@@ -879,10 +971,14 @@ The streamer uses the same fields from delayed snapshots, never from this live e
     "hidden_stream_ids": [],
     "layout": "hero",
     "delay_seconds": 10,
-    "revision": 4
+    "revision": 1
   }
 }
 ```
+
+The example is a manager response with a customized two-stat profile. The backend's empty/missing
+profile defaults contain six fields; the matching [viewer response](api-examples/live-streams-viewer.json)
+omits preview URLs. All `EXAMPLE_*_TICKET` values are placeholders, not usable credentials.
 
 `kind` may be `video` (browser-supported media/HLS), `iframe` or `webrtc` (backend-hosted player),
 or `mjpeg`. Multiple online streams become selectable camera angles. When none are online, the
@@ -926,15 +1022,15 @@ Theme behavior notes:
 
 - Ground Station-provided theme colors are only used when the user selects the `backend` preset, labeled as the Ground Station theme in the UI
 - built-in presets such as `default`, `light`, `sunset`, `forest`, and `high_contrast` come from the app's compiled theme catalog
-- operators can edit built-in theme presets in [`assets/themes/presets.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/assets/themes/presets.json), which is compiled into the app during build
+- operators can edit built-in theme presets in [`assets/themes/presets.json`](../assets/themes/presets.json), which is compiled into the app during build
 
 A minimal valid example is provided in:
 
-- [`docs/api-examples/layout.minimal.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/layout.minimal.json)
+- [`docs/api-examples/layout.minimal.json`](api-examples/layout.minimal.json)
 
 A richer example is provided in:
 
-- [`docs/api-examples/layout.full.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/layout.full.json)
+- [`docs/api-examples/layout.full.json`](api-examples/layout.full.json)
 
 Important enum values used by layout:
 
@@ -1069,7 +1165,7 @@ Supported `ty` values:
 
 Examples are available in:
 
-- [`docs/api-examples/websocket-messages.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/websocket-messages.json)
+- [`docs/api-examples/websocket-messages.json`](api-examples/websocket-messages.json)
 
 Payload notes:
 
@@ -1087,3 +1183,12 @@ Payload notes:
 - Keep route names and casing exact.
 - If auth is not implemented yet, return an anonymous session from `/api/auth/session` and accept no-op login/logout.
 - If you are prototyping, implement `/api/layout`, `/api/recent`, `/flightstate`, `/api/gps`, and WebSocket first. That gives you the fastest end-to-end feedback.
+
+## Current presentation examples
+
+See [example index](api-examples/README.md) for the single-stage model, manager/viewer
+streams, server-resolved dashboard status, delayed program state, and role API bodies.
+The backend's `docs/frontend/examples/` contains byte-identical media examples. Update
+both repositories together when changing these shapes. `/api/dashboard_status` polling
+is about 500 ms plus request time; the program polls every 500 ms plus request time,
+preloads at most eight visible cameras, and retains delayed telemetry for up to 90 s.

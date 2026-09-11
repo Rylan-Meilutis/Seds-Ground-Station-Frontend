@@ -7,6 +7,9 @@
   },
   "expires_at_ms": null,
   "anonymous": true,
-  "session_type": "anonymous",
-  "allowed_commands": []
+  "session_type": null,
+  "allowed_commands": [],
+  "roles": [],
+  "can_view_calibration": false,
+  "can_edit_calibration": false
 }
