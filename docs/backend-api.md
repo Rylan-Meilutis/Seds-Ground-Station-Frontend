@@ -251,6 +251,12 @@ Response type:
 
 ### `GET /flightstate`
 
+Returns the live backend state used by command gating and WebSocket snapshots,
+not recording history or an empty-history Startup fallback (`Cache-Control:
+no-store`). `/api/gse/status` adds `request_gate` with `hitl_mode`, `flight_state`,
+`prelaunch` and `button_interlock_satisfied`; Actions displays these backend gates
+for diagnostics. Neither refresh nor diagnostics changes the live flight state.
+
 Response type:
 
 ```json

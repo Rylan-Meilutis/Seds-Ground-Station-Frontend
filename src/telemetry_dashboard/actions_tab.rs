@@ -218,6 +218,29 @@ pub fn ActionsTab(
     let mut self_test_confirmed = use_signal(|| false);
     let mut self_test_busy = use_signal(|| false);
     let mut self_test_message = use_signal(String::new);
+    let mut gse_request_gate = use_signal(String::new);
+    use_future(move || async move {
+        loop {
+            let next = match super::http_get_json::<serde_json::Value>("/api/gse/status").await {
+                Ok(status) => match status.get("request_gate") {
+                    Some(gate) => format!(
+                        "Backend gate: mode={} · state={} · prelaunch={} · valve interlock={}",
+                        if gate["hitl_mode"].as_bool() == Some(true) { "HITL" } else { "sequenced" },
+                        gate["flight_state"].as_str().unwrap_or("unknown"),
+                        gate["prelaunch"].as_bool().map(|v| if v { "yes" } else { "no" }).unwrap_or("unknown"),
+                        gate["button_interlock_satisfied"].as_bool().map(|v| if v { "satisfied" } else { "blocked" }).unwrap_or("unknown"),
+                    ),
+                    None => "Backend does not expose request-gate diagnostics; rebuild/restart it from current dev.".into(),
+                },
+                Err(error) => format!("Cannot read backend GSE gate: {error}"),
+            };
+            if *gse_request_gate.read() != next { gse_request_gate.set(next); }
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(1000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+    });
     let mut flight_setup = use_signal(|| None::<FlightSetupConfig>);
     let mut flight_setup_status = use_signal(String::new);
     let mut flight_setup_busy = use_signal(|| false);
@@ -353,6 +376,7 @@ pub fn ActionsTab(
                                         }self_test_busy.set(false);});
                                     }} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
                                     p {role:"status","{self_test_message}"}
+                                    p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}
                                 }
                             },
                             ActionLayoutRow::Spacer => rsx! {
