@@ -873,7 +873,10 @@ or `mjpeg`. Multiple online streams become selectable camera angles. When none a
 operator Mission Live hero shows the 3D vehicle. Spectators and Settings → Streamer instead
 embed `program_url`, a delayed HLS program with matching delayed telemetry, banner and camera
 layout. They buffer rather than falling back to live data. Scoped expiring URLs support media
-elements without bearer headers. Viewer responses omit live previews; managers and hardware
+elements without bearer headers. The T−/T+ clock appears in the dashboard status bar and Mission
+data banner. The streamer program receives `telemetry.t_clock`, formatted at the delayed snapshot
+time, and shows an unknown value while buffering; it must not substitute the live launch clock.
+Viewer responses omit live previews; managers and hardware
 operators get live WebRTC previews. Clients use the returned capability flags as authoritative.
 
 ### `POST /api/live_streams/control`

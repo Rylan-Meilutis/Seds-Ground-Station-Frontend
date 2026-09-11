@@ -149,6 +149,8 @@ pub(crate) fn LiveStreamTab(
     theme: ThemeConfig,
     #[props(default = false)] program_only: bool,
     flight_state: Signal<FlightState>,
+    launch_clock: Signal<Option<super::LaunchClockMsg>>,
+    network_time: Signal<Option<super::NetworkTimeSync>>,
     rocket_gps: Signal<Option<(f64, f64)>>,
     rocket_altitude_m: Signal<Option<f64>>,
 ) -> Element {
@@ -376,6 +378,10 @@ pub(crate) fn LiveStreamTab(
                 }
                 if prefs.show_stats {
                     div { class: "gs26-mission-banner", style: "background:{theme.overlay_background};",
+                        div { style: "display:flex;flex-direction:column;gap:4px;",
+                            span { style: "font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:{theme.text_muted};", "T clock" }
+                            super::LaunchClockBadge { launch_clock, network_time }
+                        }
                         {broadcast_card(&theme, "Flight phase", flight_state.read().clone())}
                         if !cfg.broadcast.label.trim().is_empty() { {broadcast_card(&theme, "Mission", cfg.broadcast.label.clone())} }
                         {broadcast_card(&theme, "Altitude", (*rocket_altitude_m.read()).map(|v| format!("{v:.1} m")).unwrap_or_else(|| "--".into()))}

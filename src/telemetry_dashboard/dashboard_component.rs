@@ -3828,6 +3828,8 @@ fn TelemetryDashboardInner() -> Element {
                                     theme: theme.clone(),
                                     program_only: *streamer_mode.read(),
                                     flight_state,
+                                    launch_clock,
+                                    network_time,
                                     rocket_gps,
                                     rocket_altitude_m: rocket_gps_altitude_m,
                                 }
