@@ -30,6 +30,8 @@ pub struct Permissions {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionStatus {
     #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(default)]
     pub authenticated: bool,
     pub username: Option<String>,
     #[serde(default)]
@@ -162,10 +164,19 @@ pub fn can_edit_calibration() -> bool {
     current_status().can_edit_calibration.unwrap_or(false)
 }
 
+#[allow(dead_code)]
 pub fn can_manage_stream() -> bool {
     let status = current_status();
+    if status.roles.iter().any(|r| r == "stream_viewer")
+        && !status.roles.iter().any(|r| r == "stream_admin")
+    {
+        return false;
+    }
     status.authenticated
-        && (status.session_type.as_deref() == Some("stream_master")
+        && (status
+            .roles
+            .iter()
+            .any(|r| r == "stream_master" || r == "stream_admin")
             || status
                 .allowed_commands
                 .iter()

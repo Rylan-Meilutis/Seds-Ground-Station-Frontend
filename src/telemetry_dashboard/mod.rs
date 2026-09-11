@@ -25,6 +25,7 @@ mod messages_tab;
 mod network_topology_tab;
 mod notifications_tab;
 pub(crate) mod prelude;
+mod stream_studio;
 pub mod types;
 mod vehicle_tab;
 pub mod version_page;

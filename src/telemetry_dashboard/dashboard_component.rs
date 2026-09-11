@@ -3826,6 +3826,7 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::Mission => rsx! {
                                 LiveStreamTab {
                                     theme: theme.clone(),
+                                    program_only: *streamer_mode.read(),
                                     flight_state,
                                     rocket_gps,
                                     rocket_altitude_m: rocket_gps_altitude_m,

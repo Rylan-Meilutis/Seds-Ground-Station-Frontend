@@ -6,10 +6,12 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-const MODEL_VIEWER_HTML: &str = r#"<model-viewer id="gs26-vehicle-model" camera-controls touch-action="pan-y" loading="eager" reveal="auto" shadow-intensity="1" exposure="1" style="width:100%;height:100%;background:transparent" aria-label="Live three-dimensional rocket model"></model-viewer>"#;
+const MODEL_VIEWER_HTML: &str = r#"<gs-vehicle-viewer id="gs26-vehicle-model" camera-controls touch-action="pan-y" loading="eager" reveal="auto" shadow-intensity="1" exposure="1" style="width:100%;height:100%;background:transparent" aria-label="Live three-dimensional rocket model"></gs-vehicle-viewer>"#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct VehicleVisualizationConfig {
+    #[serde(default)]
+    pub motions: Vec<ModelMotion>,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -30,6 +32,19 @@ pub(crate) struct VehicleVisualizationConfig {
     pub stages: Vec<VehicleStageConfig>,
     #[serde(default)]
     pub ground_systems: Vec<VehicleComponentConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct ModelMotion {
+    pub node: String,
+    pub transform: String,
+    pub axis: [f32; 3],
+    pub from: f32,
+    pub to: f32,
+    #[serde(default)]
+    pub binding: Option<VehicleTelemetryBinding>,
+    #[serde(default)]
+    pub phase_values: BTreeMap<String, f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -84,7 +99,28 @@ fn default_scale() -> f32 {
     1.0
 }
 
+fn visual_now_ms() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64
+    }
+}
 fn value(binding: &VehicleTelemetryBinding) -> Option<f32> {
+    let row = super::latest_telemetry_row(
+        &binding.data_type,
+        binding.sender_id.as_deref(),
+    )?;
+    let age = visual_now_ms().saturating_sub(row.received_timestamp_ms);
+    if !(0..=5000).contains(&age) {
+        return None;
+    }
     latest_telemetry_value(
         &binding.data_type,
         binding.sender_id.as_deref(),
@@ -135,57 +171,36 @@ fn sync_model_viewer(
     if config.model_url.trim().is_empty() {
         return;
     }
-    let src = serde_json::to_string(&backend_url(&config.model_url)).unwrap_or_default();
-    let alt = serde_json::to_string(if config.model_alt.trim().is_empty() {
-        "Live three-dimensional rocket model"
-    } else {
-        config.model_alt.as_str()
-    })
-    .unwrap_or_default();
-    let orbit = serde_json::to_string(if config.camera_orbit.trim().is_empty() {
-        "35deg 70deg auto"
-    } else {
-        config.camera_orbit.as_str()
-    })
-    .unwrap_or_default();
-    let animation = serde_json::to_string(&model_animation(config, phase)).unwrap_or_default();
-    let orientation = serde_json::to_string(&format!(
-        "{}deg {}deg {}deg",
-        pitch.unwrap_or(0.0),
-        yaw.unwrap_or(0.0),
-        roll.unwrap_or(0.0)
-    ))
-    .unwrap_or_default();
-    let renderer_url = if config.renderer_url.trim().is_empty() {
-        "https://ajax.googleapis.com/ajax/libs/model-viewer/4.3.1/model-viewer.min.js".to_string()
-    } else {
-        backend_url(&config.renderer_url)
-    };
-    let renderer = serde_json::to_string(&renderer_url).unwrap_or_default();
+    let motions: Vec<_> = config
+        .motions
+        .iter()
+        .map(|m| {
+            let v = if let Some(binding) = &m.binding {
+                value(binding)
+            } else {
+                m.phase_values
+                    .iter()
+                    .find(|(name, _)| normalized_phase(name) == normalized_phase(phase))
+                    .map(|(_, v)| *v)
+                    .or_else(|| m.phase_values.get("*").copied())
+            };
+            let mut result = serde_json::to_value(m).unwrap_or_default();
+            result["value"] = serde_json::json!(v);
+            result
+        })
+        .collect();
+    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch.unwrap_or(0.0),yaw.unwrap_or(0.0),roll.unwrap_or(0.0)],"clip":model_animation(config,phase)}).to_string();
+    let payload = serde_json::to_string(&payload).unwrap();
+    let src = serde_json::to_string(&backend_url(&config.model_url)).unwrap();
+    let renderer =
+        serde_json::to_string(&backend_url("/assets/three/vehicle-renderer.js")).unwrap();
     js_eval(&format!(
         r#"(() => {{
-          if (!document.getElementById('gs26-model-viewer-loader')) {{
-            const script = document.createElement('script');
-            script.id = 'gs26-model-viewer-loader';
-            script.type = 'module';
-            script.src = {renderer};
-            document.head.appendChild(script);
-          }}
-          const model = document.getElementById('gs26-vehicle-model');
-          if (!model) return;
-          model.setAttribute('src', {src});
-          model.setAttribute('alt', {alt});
-          model.setAttribute('camera-orbit', {orbit});
-          model.setAttribute('orientation', {orientation});
-          const animation = {animation};
-          if (animation) {{
-            model.setAttribute('animation-name', animation);
-            model.setAttribute('autoplay', '');
-          }} else {{
-            model.removeAttribute('animation-name');
-            model.removeAttribute('autoplay');
-          }}
-        }})();"#
+        if(!document.getElementById('gs26-node-renderer')){{const s=document.createElement('script');s.id='gs26-node-renderer';s.type='module';s.src={renderer};document.head.append(s);}}
+        const m=document.getElementById('gs26-vehicle-model');if(!m)return;
+        if(m.getAttribute('src')!=={src})m.setAttribute('src',{src});
+        m.setAttribute('data-state',{payload});
+    }})();"#
     ));
 }
 
@@ -230,6 +245,17 @@ pub(crate) fn VehicleTab(
     rocket_altitude_m: Signal<Option<f64>>,
 ) -> Element {
     let config = use_signal(|| None::<VehicleVisualizationConfig>);
+    let mut model_tick = use_signal(|| 0u64);
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(500).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let next = *model_tick.read() + 1;
+            model_tick.set(next);
+        }
+    });
     let load_status = use_signal(|| "Loading vehicle configuration…".to_string());
 
     {
@@ -269,9 +295,20 @@ pub(crate) fn VehicleTab(
     );
 
     {
-        let cfg = cfg.clone();
-        let phase = phase.clone();
-        use_effect(move || sync_model_viewer(&cfg, &phase, roll, pitch, yaw));
+        use_effect(move || {
+            let _ = *TELEMETRY_RENDER_EPOCH.read();
+            let _ = *model_tick.read();
+            let phase = flight_state.read();
+            if let Some(cfg) = config.read().as_ref() {
+                sync_model_viewer(
+                    cfg,
+                    &phase,
+                    cfg.attitude.roll.as_ref().and_then(value),
+                    cfg.attitude.pitch.as_ref().and_then(value),
+                    cfg.attitude.yaw.as_ref().and_then(value),
+                );
+            }
+        });
     }
 
     rsx! {
@@ -291,6 +328,7 @@ pub(crate) fn VehicleTab(
                 }
                 div { role: "status", "aria-atomic": "true", style: "padding:7px 10px; border:1px solid {theme.border}; border-radius:999px; color:{theme.text_secondary}; font-size:12px;", "{load_status.read()}" }
             }
+            if crate::auth::can_view_actions() { ModelBindingsEditor { initial:cfg.clone(), on_saved:move |next| {let mut config=config;config.set(Some(next));} } }
             div { class: "gs26-vehicle-grid",
                 div { style: "min-height:460px; position:relative; overflow:hidden; border:1px solid {theme.tab_shell_border}; border-radius:18px; background:radial-gradient(circle at 50% 42%, {theme.panel_background_alt}, {theme.panel_background} 68%);",
                     if !cfg.model_url.trim().is_empty() {
@@ -433,4 +471,31 @@ mod tests {
         assert_eq!(fraction, 0.0);
         assert!(!active);
     }
+}
+#[component]
+fn ModelBindingsEditor(
+    initial: VehicleVisualizationConfig,
+    on_saved: EventHandler<VehicleVisualizationConfig>,
+) -> Element {
+    let mut draft = use_signal(|| serde_json::to_string_pretty(&initial).unwrap_or_default());
+    let mut status = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    rsx! {details {style:"margin:12px 0;padding:12px;border:1px solid #344454;border-radius:12px;",
+        summary {"Model & telemetry animation bindings"}
+        p {"Choose /assets/models/vehicle.glb or /assets/models/gse-site.glb, or an uploaded stage model. Map named nodes using motions: rotate (degrees), translate (model units), scale, or visible. Binding values are normalized 0–1; phase_values are illustrative fallbacks only when no binding is configured."}
+        textarea {style:"width:100%;min-height:260px;background:#101923;color:#dce6ed;font:12px monospace;box-sizing:border-box;",value:"{draft}",oninput:move|e|draft.set(e.value()),disabled:*busy.read()}
+        button {disabled:*busy.read(),onclick:move |_|{
+            let mut cfg=match serde_json::from_str::<VehicleVisualizationConfig>(&draft.read()){Ok(v)=>v,Err(e)=>{status.set(e.to_string());return;}};
+            if let Some(path)=cfg.model_url.strip_prefix("/api/media-assets/models/"){cfg.model_url=format!("/api/stage-models/{}",path.split('?').next().unwrap_or(path));}
+            busy.set(true);
+            spawn(async move {
+                match super::http_post_json::<VehicleVisualizationConfig,serde_json::Value>("/api/vehicle_visualization",&cfg).await {
+                    Ok(_)=>{match http_get_json::<VehicleVisualizationConfig>("/api/vehicle_visualization").await {Ok(next)=>{on_saved.call(next);status.set("Model bindings saved".into());},Err(e)=>status.set(e)}},
+                    Err(e)=>status.set(e),
+                }
+                busy.set(false);
+            });
+        },"Save model bindings"}
+        p {role:"status","{status}"}
+    }}
 }

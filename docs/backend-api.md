@@ -820,10 +820,24 @@ Telemetry bindings accept `data_type`, optional `sender_id`, `index`, optional `
 `gimbal`, `air_brake`, `tank`, `propellant`, `parachute`, and `link`. Unknown kinds remain visible
 as generic systems. `phase_animations` values must match named animation clips in the GLB.
 
-The GLB response must be browser-readable. When it is on another origin, enable CORS. For offline
-ground stations, serve the model-viewer ES module locally and set `renderer_url`; otherwise the
-frontend uses the public model-viewer CDN. The view falls back to the telemetry-driven multi-stage
-schematic when the configuration is absent.
+The GLB response must be browser-readable. Scoped backend asset tickets avoid requiring bearer
+headers on model requests. The frontend loads the offline `/assets/three/vehicle-renderer.js`
+module and its bundled Three.js dependencies; no public CDN is required. Configuration adds
+`motions`, each with `node`, `transform` (`rotate`, `translate`, `scale`, `visible`), `axis`,++`from`, `to`, optional telemetry `binding`, and `phase_values`. Values are normalized 0–1;
+rotation endpoints are degrees. Bound telemetry older than five seconds is unknown, not a
+fabricated state. Named nodes must exist in the GLB. For example:
+
+```json
+{"node":"fin-pivot-0","transform":"rotate","axis":[1,0,0],"from":-30,"to":30,
+ "binding":{"data_type":"FIN_POSITION","index":0,"scale":0.016666667,"offset":0.5},
+ "phase_values":{}}
+```
+
+The data type above is illustrative: bind actual firmware signals in the advanced model
+configuration editor. `POST /api/vehicle_visualization` saves configuration and returns
+`{"saved":true}`; it requires configuration/hardware permission, not just a stream role.
+Existing PUT clients receive 204. Phase clips and node motions are interpolated, including
+stock stage, parachute, gimbal, fin, air-brake and GSE level nodes.
 
 ### `GET /api/live_streams`
 
@@ -831,6 +845,9 @@ schematic when the configuration is absent.
 {
   "title": "Flight Test 1",
   "default_stream_id": "pad-wide",
+  "program_url": "/api/media-assets/program?ticket=SCOPED_TICKET",
+  "can_manage_stream": true,
+  "can_preview_live": true,
   "streams": [
     { "id": "pad-wide", "label": "Pad wide", "url": "/streams/pad/index.m3u8", "kind": "video", "poster_url": "/streams/pad/poster.jpg", "online": true },
     { "id": "tower", "label": "Tower", "url": "/webrtc/tower", "kind": "iframe", "online": true },
@@ -845,6 +862,7 @@ schematic when the configuration is absent.
     "featured_stream_id": "pad-wide",
     "hidden_stream_ids": [],
     "layout": "hero",
+    "delay_seconds": 10,
     "revision": 4
   }
 }
@@ -852,17 +870,34 @@ schematic when the configuration is absent.
 
 `kind` may be `video` (browser-supported media/HLS), `iframe` or `webrtc` (backend-hosted player),
 or `mjpeg`. Multiple online streams become selectable camera angles. When none are online, the
-Mission Live hero automatically shows the 3D vehicle. Clients poll this endpoint so viewer-only
-sessions follow stream-master changes. Media URLs should be cookie-authenticated or public because
-HTML media elements cannot attach the frontend bearer header.
+operator Mission Live hero shows the 3D vehicle. Spectators and Settings → Streamer instead
+embed `program_url`, a delayed HLS program with matching delayed telemetry, banner and camera
+layout. They buffer rather than falling back to live data. Scoped expiring URLs support media
+elements without bearer headers. Viewer responses omit live previews; managers and hardware
+operators get live WebRTC previews. Clients use the returned capability flags as authoritative.
 
 ### `POST /api/live_streams/control`
 
-Request and response use the `broadcast` object shown above. Only an authenticated session with
-`session_type: "stream_master"` or `"StreamControl"` in `allowed_commands` can see and use these
-controls. The backend should increment `revision`, persist the state, and return `403` for other
-sessions. Changing `featured_stream_id` fades the selected angle into all viewer sessions;
-`hidden_stream_ids` removes angles from their camera strip.
+Request and response use the `broadcast` object shown above. Account/session `roles` contains
+`stream_master` or `stream_admin`; `session_type` is not a role. Legacy explicit `StreamControl`
+grants remain supported unless the account has `stream_viewer`. These roles do not grant hardware
+commands. The backend increments and persists `revision`, returns 403 for unauthorized callers,
+409 for stale revisions, and 400 for invalid delay limits. `delay_seconds` is a server-enforced
+minimum of 3–60 seconds (default 10); playback adds about 2.5 seconds of buffering plus jitter.
+Managers cut the current delayed program while previewing live footage. Camera switches fade
+over 550 ms; hidden cameras are removed. Delay changes rebuild buffers without a live fallback.
+The program preloads up to eight visible angles and requires H.264/Media Source Extensions.
+
+### `GET` / `POST /api/stream-roles`
+
+Stream-admin-only role management. GET returns sanitized `{username, roles, disabled}` accounts.
+POST accepts `{"username":"producer","stream_master":true}` (false revokes) and returns
+`{"saved":true}`. The backend rechecks roles on every request and schedules closure of tracked
+live previews on revocation, unless the account retains operator/admin access. Role changes
+never broaden hardware command permissions. Bootstrap the first trusted admin by adding
+`"roles":["stream_admin"]` to an existing account in `backend/users/users.json`, with
+`permissions.view_data:true`; administrators cannot be created through this endpoint.
+The manager UI is in Mission → Stream controls → Broadcast studio → Stream manager roles.
 
 ### `GET /api/layout`
 

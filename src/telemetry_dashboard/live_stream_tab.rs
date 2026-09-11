@@ -2,13 +2,18 @@ use super::{
     TELEMETRY_RENDER_EPOCH, UrlConfig, http_get_json, http_post_json, latest_telemetry_value,
     layout::ThemeConfig, persist, types::FlightState,
 };
-use crate::auth;
 use crate::telemetry_dashboard::vehicle_tab::{VehicleTab, VehicleTelemetryBinding};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct LiveStreamConfig {
+    #[serde(default)]
+    pub program_url: String,
+    #[serde(default)]
+    pub can_manage_stream: bool,
+    #[serde(default)]
+    pub can_preview_live: bool,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -23,6 +28,8 @@ pub(crate) struct LiveStreamConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct BroadcastState {
+    #[serde(default = "default_delay")]
+    pub delay_seconds: u32,
     #[serde(default)]
     pub label: String,
     #[serde(default)]
@@ -58,6 +65,9 @@ pub(crate) struct BroadcastStatSpec {
     pub precision: usize,
 }
 
+fn default_delay() -> u32 {
+    10
+}
 fn default_true() -> bool {
     true
 }
@@ -137,6 +147,7 @@ async fn stream_poll_delay() {
 #[component]
 pub(crate) fn LiveStreamTab(
     theme: ThemeConfig,
+    #[props(default = false)] program_only: bool,
     flight_state: Signal<FlightState>,
     rocket_gps: Signal<Option<(f64, f64)>>,
     rocket_altitude_m: Signal<Option<f64>>,
@@ -201,6 +212,7 @@ pub(crate) fn LiveStreamTab(
 
     let _ = *TELEMETRY_RENDER_EPOCH.read();
     let cfg = config.read().clone().unwrap_or_default();
+    let can_manage_stream = cfg.can_manage_stream;
     let online_feeds: Vec<LiveStreamSpec> = cfg
         .streams
         .iter()
@@ -217,6 +229,13 @@ pub(crate) fn LiveStreamTab(
         .cloned()
         .or_else(|| online_feeds.first().cloned());
     let prefs = preferences.read().clone();
+    if program_only || !cfg.can_preview_live {
+        let url = media_url(&cfg.program_url);
+        return rsx! {div {style:"height:100%;min-height:70vh;background:#080d15;color:white;",
+            if cfg.program_url.is_empty() {p {"Waiting for the delayed broadcast program…"}}
+            else {iframe {src:url,title:"Audience program — delayed video and telemetry",allow:"autoplay; fullscreen",style:"width:100%;height:100%;min-height:70vh;border:0;" }}
+        }};
+    }
     let title = if cfg.title.trim().is_empty() {
         "Mission Live".to_string()
     } else {
@@ -248,7 +267,7 @@ pub(crate) fn LiveStreamTab(
                             edit_mode.set(next);
                         }
                     },
-                    if *edit_mode.read() { "Finish editing" } else if auth::can_manage_stream() { "Stream controls" } else { "Customize view" }
+                    if *edit_mode.read() { "Finish editing" } else if cfg.can_manage_stream { "Stream controls" } else { "Customize view" }
                 }
             }
             if *edit_mode.read() {
@@ -259,7 +278,8 @@ pub(crate) fn LiveStreamTab(
                     label { style: "display:flex; gap:6px; align-items:center; font-size:12px;", input { r#type:"checkbox", checked:prefs.show_feed_labels, onchange:{ let mut preferences=preferences; move |event| { let mut next=preferences.read().clone(); next.show_feed_labels=event.checked(); save_preferences(&next); preferences.set(next); } } } "Feed labels" }
                     button { style:"padding:5px 9px; border:1px solid {theme.button_border}; border-radius:9px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;", onclick:{ let mut preferences=preferences; move |_| { let next=MissionViewPreferences::default(); save_preferences(&next); preferences.set(next); } }, "Use ground station default" }
                 }
-                if auth::can_manage_stream() {
+                if cfg.can_manage_stream {
+                    super::stream_studio::StreamStudio { broadcast:cfg.broadcast.clone(), program_url:cfg.program_url.clone() }
                     div { class:"gs26-mission-editor", style: "display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; padding:11px; border:1px solid {theme.warning_border}; border-radius:14px; background:{theme.warning_background};",
                         strong { style:"font-size:12px;", "STREAM MASTER" }
                         input { style:"flex:1; min-width:180px; padding:7px 9px; border:1px solid {theme.border}; border-radius:9px; background:{theme.panel_background}; color:{theme.text_primary};", placeholder:"Broadcast label (Flight Test 1)", value:"{broadcast_label_input.read()}", oninput:{ let mut broadcast_label_input=broadcast_label_input; move |event| broadcast_label_input.set(event.value()) } }
@@ -378,7 +398,7 @@ pub(crate) fn LiveStreamTab(
                                 let mut status=status;
                                 move |_| {
                                     selected_stream_id.set(id.clone());
-                                    if auth::can_manage_stream() {
+                                    if can_manage_stream {
                                         request.featured_stream_id=id.clone();
                                         let request=request.clone();
                                         spawn(async move {
