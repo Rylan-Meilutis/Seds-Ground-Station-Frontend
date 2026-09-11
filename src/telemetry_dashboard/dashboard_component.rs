@@ -2537,7 +2537,8 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-dashboard-shell[data-streamer="true"] .gs26-vehicle-grid > :first-child {{ height:100%; min-height:var(--gs26-app-height); border:0 !important; border-radius:0 !important; }}
              .gs26-dashboard-shell[data-streamer="true"] .gs26-vehicle-grid > :nth-child(2) {{ display:none !important; }}
              .gs26-tab-toggle {{ display:none; }}
-             .gs26-tab-nav {{ display:flex; gap:0.5rem; flex-wrap:wrap; }}
+             .gs26-tab-nav {{ display:flex; gap:0.5rem; flex-wrap:nowrap; overflow-x:auto; max-width:100%; }}
+             .gs26-tab-nav > * {{ flex-shrink:0; }}
              .gs26-status-shell {{ flex:1000 1 520px; display:grid; grid-template-columns:minmax(0, 1fr) max-content; grid-template-rows:auto auto; align-items:center; column-gap:0.75rem; row-gap:0; padding:0.16rem 0.6rem 0.24rem 0.6rem; border-radius:1rem; min-width:260px; overflow:hidden; container-type:inline-size; align-self:start; }}
              .gs26-status-row {{ display:flex; align-items:center; flex-wrap:wrap; gap:0.5rem; min-width:0; line-height:1.08; margin:0; }}
              .gs26-status-row {{ grid-column:1; grid-row:1; }}
@@ -2882,7 +2883,10 @@ fn TelemetryDashboardInner() -> Element {
                .gs26-tab-shell[data-expanded=\"true\"] .gs26-tab-nav {{
                  grid-template-columns:1fr;
                }}
-             }}"
+             }}
+             .gs26-tab-toggle {{ display:none !important; }}
+             .gs26-tab-shell .gs26-tab-nav {{ display:flex !important; flex-wrap:nowrap !important; overflow-x:auto; width:100%; max-width:100%; }}
+             .gs26-tab-shell .gs26-tab-nav button {{ width:auto !important; flex:0 0 auto; white-space:nowrap; }}"
                 }
                 if layout_loading_snapshot && layout_snapshot.is_none() {
                     div {
@@ -2963,6 +2967,7 @@ fn TelemetryDashboardInner() -> Element {
                             onclick:move |_| {let mut streamer_mode=streamer_mode;streamer_mode.set(false);let mut active_main_tab=active_main_tab;active_main_tab.set(MainTab::State);}, "Exit streamer"
                         }
                     }
+                    if !*streamer_mode.read() {
                     // Header row 1
                     div {
                         class: "gs26-header-row",
@@ -3715,10 +3720,11 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
 
+                    }
                     div { style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
-                        match *active_main_tab.read() {
+                        match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
                             MainTab::State if !*ground_station_view.read() => rsx! {
-                                model_dashboard::ModelDashboard { theme:theme.clone(), flight_state, rocket_gps, rocket_altitude_m:rocket_gps_altitude_m }
+                                model_dashboard::ModelDashboard { theme:theme.clone(), action_policy, abort_only_mode:*abort_only_mode.read(), flight_state, rocket_gps, rocket_altitude_m:rocket_gps_altitude_m }
                             },
                             MainTab::State => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
@@ -3829,6 +3835,8 @@ fn TelemetryDashboardInner() -> Element {
                                 LiveStreamTab {
                                     theme: theme.clone(),
                                     program_only: *streamer_mode.read(),
+                                    action_policy,
+                                    abort_only_mode:*abort_only_mode.read(),
                                     flight_state,
                                     launch_clock,
                                     network_time,

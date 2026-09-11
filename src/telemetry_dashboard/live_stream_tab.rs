@@ -147,6 +147,8 @@ async fn stream_poll_delay() {
 #[component]
 pub(crate) fn LiveStreamTab(
     theme: ThemeConfig,
+    action_policy: Signal<super::ActionPolicyMsg>,
+    abort_only_mode: bool,
     #[props(default = false)] program_only: bool,
     flight_state: Signal<FlightState>,
     launch_clock: Signal<Option<super::LaunchClockMsg>>,
@@ -389,6 +391,11 @@ pub(crate) fn LiveStreamTab(
                             {broadcast_card(&theme, &stat.label, binding_value(&stat.binding).map(|value| if stat.unit.is_empty() { format!("{value:.precision$}", precision=stat.precision) } else { format!("{value:.precision$} {}", stat.unit, precision=stat.precision) }).unwrap_or_else(|| "--".into()))}
                         }
                     }
+                }
+            }
+            if crate::auth::can_view_actions() && super::gse_panel::ground_visible(&flight_state.read()) {
+                section {style:"margin:16px 0;",h2 {style:"font-size:18px;","Ground setup"}
+                    super::gse_panel::GsePanel {action_policy,abort_only_mode,theme:theme.clone()}
                 }
             }
             if prefs.show_angle_strip && online_feeds.len() > 1 {

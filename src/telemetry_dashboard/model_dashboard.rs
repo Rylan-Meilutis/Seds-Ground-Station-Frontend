@@ -17,6 +17,8 @@ struct Stat {
 #[component]
 pub(super) fn ModelDashboard(
     theme: ThemeConfig,
+    action_policy: Signal<super::ActionPolicyMsg>,
+    abort_only_mode: bool,
     flight_state: Signal<FlightState>,
     rocket_gps: Signal<Option<(f64, f64)>>,
     rocket_altitude_m: Signal<Option<f64>>,
@@ -50,7 +52,12 @@ pub(super) fn ModelDashboard(
     let data = snapshot.read().clone();
     let start = (*page.read() % data.stats.len().div_ceil(3).max(1)) * 3;
     rsx! {div {style:"height:100%;display:flex;flex-direction:column;min-height:0;",
-        div {style:"flex:1;min-height:0;overflow:auto;",VehicleTab {theme:theme.clone(),flight_state,rocket_gps,rocket_altitude_m}}
+        div {style:"flex:1;min-height:0;overflow:auto;",
+            div {style:"min-height:460px;",VehicleTab {theme:theme.clone(),flight_state,rocket_gps,rocket_altitude_m}}
+            if crate::auth::can_view_actions() && super::gse_panel::ground_visible(&flight_state.read()) {
+                super::gse_panel::GsePanel {action_policy,abort_only_mode,theme:theme.clone()}
+            }
+        }
         div {style:"flex:0 0 auto;display:flex;gap:24px;flex-wrap:wrap;padding:14px 18px;background:#101923;color:#e5edf4;font-variant-numeric:tabular-nums;",
             {card("Flight state",if *available.read(){data.phase.clone()}else{"Unavailable".into()})}
             {card("T clock",data.t_clock.clone().unwrap_or_else(||"—".into()))}

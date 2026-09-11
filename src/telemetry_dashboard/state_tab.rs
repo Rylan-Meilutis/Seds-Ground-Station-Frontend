@@ -178,6 +178,9 @@ pub fn StateTab(
         div { style: "padding:8px 10px 18px 10px; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px;",
             style { "{STATE_TAB_RESPONSIVE_CSS}" }
             {content}
+            if crate::auth::can_view_actions() && super::gse_panel::ground_visible(&state) {
+                super::gse_panel::GsePanel {action_policy,abort_only_mode,theme:theme.clone()}
+            }
         }
     }
 }

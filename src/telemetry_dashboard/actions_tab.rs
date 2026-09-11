@@ -209,6 +209,9 @@ pub fn ActionsTab(
     abort_only_mode: bool,
     theme: ThemeConfig,
 ) -> Element {
+    let mut self_test_confirmed = use_signal(|| false);
+    let mut self_test_busy = use_signal(|| false);
+    let mut self_test_message = use_signal(String::new);
     let mut flight_setup = use_signal(|| None::<FlightSetupConfig>);
     let mut flight_setup_status = use_signal(String::new);
     let mut flight_setup_busy = use_signal(|| false);
@@ -252,8 +255,20 @@ pub fn ActionsTab(
             fill_targets.set(Some(cfg));
         }
     });
+    let mut all_actions = layout.actions.clone();
+    for (cmd, label) in [
+        ("ValveSelfTest", "Valve self-test"),
+        ("NitrogenTest", "Nitrogen test"),
+        ("StartFill", "Start fill"),
+        ("PauseFill", "Pause fill"),
+        ("CancelFill", "Cancel fill"),
+    ] {
+        if !all_actions.iter().any(|action| action.cmd == cmd) {
+            all_actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
+        }
+    }
     let visible_actions = if auth::can_view_actions() {
-        layout.actions.iter().collect::<Vec<_>>()
+        all_actions.iter().collect::<Vec<_>>()
     } else {
         Vec::new()
     };
@@ -278,7 +293,6 @@ pub fn ActionsTab(
             ",
             style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
-            super::gse_panel::GsePanel { action_policy, abort_only_mode, theme:theme.clone() }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "All available actions are available all the time, use with caution as improper use \
                 can and will damage the system."
@@ -313,7 +327,18 @@ pub fn ActionsTab(
                     ",
                     for row in action_rows.iter() {
                         match row {
-                            ActionLayoutRow::Heading(label) => rsx! {h3 {style:"margin:12px 0 0;color:{theme.text_muted};font-size:12px;letter-spacing:.08em;text-transform:uppercase;","{label}"}},
+                            ActionLayoutRow::Heading(label) => rsx! {
+                                h3 {style:"margin:12px 0 0;color:{theme.text_muted};font-size:12px;letter-spacing:.08em;text-transform:uppercase;","{label}"}
+                                if *label=="GSE sequence actions" {
+                                    label {input {r#type:"checkbox",checked:*self_test_confirmed.read(),disabled:*self_test_busy.read()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:move |event| {
+                                        let confirmed=event.checked();self_test_confirmed.set(false);self_test_busy.set(true);
+                                        spawn(async move {match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":confirmed})).await {
+                                            Ok(_)=>{self_test_confirmed.set(confirmed);self_test_message.set(if confirmed {"Self-test confirmation accepted. Backend interlocks still apply."}else{"Self-test locked."}.into());},Err(error)=>self_test_message.set(error)
+                                        }self_test_busy.set(false);});
+                                    }} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
+                                    p {role:"status","{self_test_message}"}
+                                }
+                            },
                             ActionLayoutRow::Spacer => rsx! {
                                 div {
                                     style: "height:14px;"
@@ -347,6 +372,7 @@ pub fn ActionsTab(
                                                     .cloned();
                                                 let enabled = action_policy_control_enabled(&action_policy_snapshot, action.cmd.as_str())
                                                     && auth::can_send_command(action.cmd.as_str())
+                                                    && (action.cmd!="ValveSelfTest" || *self_test_confirmed.read())
                                                     && (!abort_only_mode || action.cmd == "Abort")
                                                 ;
                                                 let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);

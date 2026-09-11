@@ -377,7 +377,7 @@ pub(crate) fn VehicleTab(
                             }
                         }
                     }
-                    if !cfg.ground_systems.is_empty() {
+                    if !cfg.ground_systems.is_empty() && super::gse_panel::ground_visible(&phase) {
                         div { style: "padding:12px; border:1px solid {theme.tab_shell_border}; border-radius:16px; background:{theme.panel_background};",
                             strong { "Ground operations" }
                             div { style: "display:grid; gap:7px; margin-top:9px;",

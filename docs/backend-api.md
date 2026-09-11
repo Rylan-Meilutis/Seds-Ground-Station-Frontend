@@ -1192,3 +1192,41 @@ The backend's `docs/frontend/examples/` contains byte-identical media examples. 
 both repositories together when changing these shapes. `/api/dashboard_status` polling
 is about 500 ms plus request time; the program polls every 500 ms plus request time,
 preloads at most eight visible cameras, and retains delayed telemetry for up to 90 s.
+
+### GSE ground setup and confirmation
+
+Ground setup appears in both Dashboard/state and Mission before Launch and disappears
+from Launch through flight/recovery. It includes the equipment scene, status, checklist,
+and only two numeric settings: nitrogen maximum pressure (`nitrogen_target_psi`) and
+`pressure_step_psi` (positive, default 50 psi; final step capped at the target).
+`pressure_ceiling_psi`, `maximum_zero_offset_psi`, and `grouped_panel` remain
+backend-owned configuration, preserved by UI saves. Missing safety limits still
+disable automation.
+
+The Actions tab retains its prior controls; GSE sequence actions are in the main button
+section alongside manual controls, not embedded in ground setup. The dry self-test
+confirmation checkbox must be checked, and all backend action-policy gates must pass.
+
+- `GET /api/gse/config`, `GET /api/gse/status`: ViewData.
+- `POST` / `PUT /api/gse/config`: SendCommands, saves full configuration.
+- `POST /api/gse/self-test-confirmation`: `{"confirmed":true}` or false, echoes the
+  object. Requires SendCommands and ValveSelfTest authorization; 403 otherwise.
+  Returns 409 during active sequences or for unlock after nitrogen testing starts.
+  Confirmation is consumed by testing and is not persisted on backend restart.
+
+The checkable/resettable ground checklist is stored locally per ground-station URL.
+It is an operator reminder, not shared execution state, certification or an interlock.
+
+### Streamer model fallback and compact navigation
+
+Normal tab navigation stays in one horizontally scrolling row, including narrow
+screens. Streamer mode does not render header/tab navigation at all; Exit streamer
+remains available. Without active/decoded video, the backend-selected GLB fills the
+scene. With video, a basic single-stage 2D rocket is shown in the corner.
+
+`/api/media-assets/program/state` adds static `model` configuration (the vehicle
+schema, including scoped asset URL). `telemetry.model_state` contains resolved
+`motions` with nullable `value`, `attitude` in pitch/yaw/roll degrees, `orbit`, and
+`clip`, sampled into the same delayed history as phase/stats/T clock. Missing delayed
+state uses neutral/unknown visuals, never live values. A camera relay outage can still
+return model/telemetry state. The full-size WebGL model is unmounted while video plays.

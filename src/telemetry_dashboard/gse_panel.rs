@@ -8,11 +8,68 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Settings {
     nitrogen_target_psi: f32,
+    #[serde(default = "default_pressure_step")]
+    pressure_step_psi: f32,
     pressure_ceiling_psi: Option<f32>,
     maximum_zero_offset_psi: Option<f32>,
     dry_self_test_confirmed: bool,
     grouped_panel: bool,
 }
+fn default_pressure_step() -> f32 {
+    50.0
+}
+#[component]
+fn GroundChecklist() -> Element {
+    let key = format!("{}_ground_checklist", super::dashboard_customization_key());
+    let mut checked = use_signal(|| {
+        super::persist::get_string(&key)
+            .and_then(|s| serde_json::from_str::<[bool; 4]>(&s).ok())
+            .unwrap_or([false; 4])
+    });
+    rsx! {details {summary {"Ground checklist"}
+        p {style:"font-size:12px;","Operator reminders only; checkmarks do not bypass interlocks or unlock self-test. Reset before each operation."}
+        for (i,label) in ["Pressure transducer reading checked","Gas lines and connections inspected","Personnel clear of valves and vent/dump paths","Communications and abort procedure checked"].iter().enumerate() {
+            label {style:"display:block;padding:5px;",input {r#type:"checkbox",checked:checked.read()[i],onchange:{let key=key.clone();move |event|{let mut next=*checked.read();next[i]=event.checked();checked.set(next);super::persist::set_string(&key,&serde_json::to_string(&next).unwrap());}}} "{label}"}
+        }
+        button {onclick:{let key=key.clone();move |_|{checked.set([false;4]);super::persist::set_string(&key,"[false,false,false,false]");}},"Reset checklist"}
+    }}
+}
+#[cfg(test)]
+mod visibility_tests {
+    #[test]
+    fn ground_equipment_is_hidden_from_launch_onward() {
+        for phase in [
+            "Idle",
+            "PreFill",
+            "FillTest",
+            "NitrogenFill",
+            "NitrousFill",
+            "Armed",
+        ] {
+            assert!(super::ground_visible(phase));
+        }
+        for phase in [
+            "Launch",
+            "Ascent",
+            "Coast",
+            "Apogee",
+            "ParachuteDeploy",
+            "Descent",
+            "Landed",
+            "Recovery",
+            "Aborted",
+        ] {
+            assert!(!super::ground_visible(phase));
+        }
+    }
+}
+pub(super) fn ground_visible(phase: &str) -> bool {
+    matches!(
+        phase,
+        "Startup" | "Idle" | "PreFill" | "FillTest" | "NitrogenFill" | "NitrousFill" | "Armed"
+    )
+}
+
 #[derive(Clone, Default, Deserialize)]
 struct Noise {
     average_psi: f32,
@@ -90,7 +147,9 @@ pub(super) fn GsePanel(
             match http_get_json::<Status>("/api/gse/status").await {
                 Ok(next) => {
                     if !["idle", "passed", "cancelled", "fault"].contains(&next.phase.as_str()) {
-                        if let Some(cfg) = settings.write().as_mut() { cfg.dry_self_test_confirmed = false; }
+                        if let Some(cfg) = settings.write().as_mut() {
+                            cfg.dry_self_test_confirmed = false;
+                        }
                     }
                     status.set(next);
                     online.set(true);
@@ -107,13 +166,6 @@ pub(super) fn GsePanel(
     use_effect(move || sync_scene(&status.read()));
     let active = !["idle", "passed", "cancelled", "fault"].contains(&snapshot.phase.as_str());
     let can_edit = auth::can_view_actions() && !active && !abort_only_mode && !*busy.read();
-    let commands = [
-        ("ValveSelfTest", "Valve self-test"),
-        ("NitrogenTest", "Nitrogen test"),
-        ("StartFill", "Start fill"),
-        ("PauseFill", "Pause fill"),
-        ("CancelFill", "Cancel fill"),
-    ];
     let pressure_label = snapshot
         .pressure_psi
         .map(|v| format!("{v:.1} psi"))
@@ -145,25 +197,14 @@ pub(super) fn GsePanel(
                 if let Some(noise)=snapshot.baseline {
                     p {style:"margin:0;font-size:12px;color:{theme.text_muted};","PT baseline {noise.average_psi:.2} psi · range {noise.min_psi:.2}–{noise.max_psi:.2} · noise ±{noise.noise_psi:.2} · {noise.samples} samples"}
                 }
-                div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;",
-                    for (cmd,label) in commands {
-                        {
-                            let allowed=*online.read()&&!abort_only_mode&&auth::can_send_command(cmd)&&action_policy.read().controls.iter().any(|c|c.cmd==cmd&&c.enabled);
-                            let opacity=if allowed {"1"}else{".4"};
-                            rsx! {button {disabled:!allowed,style:"padding:12px;border:1px solid {theme.border};border-radius:7px;background:{theme.panel_background_alt};color:{theme.text_primary};font-weight:600;opacity:{opacity};",onclick:move |_| {if allowed {super::send_cmd_from_press(cmd);}}, "{label}"}}
-                        }
-                    }
-                }
+                GroundChecklist {}
                 details {
-                    summary {style:"cursor:pointer;color:{theme.text_muted};font-size:13px;","Sequence limits & panel configuration"}
+                    summary {style:"cursor:pointer;color:{theme.text_muted};font-size:13px;","Nitrogen test settings"}
                     if let Some(cfg)=settings.read().clone() {
                         div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;padding-top:16px;",
-                            label {"Nitrogen target (psi)" input {r#type:"number",value:"{cfg.nitrogen_target_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse(){if let Some(c)=settings.write().as_mut(){c.nitrogen_target_psi=v;}}}}}
-                            label {"Hard pressure ceiling (psi)" input {r#type:"number",value:"{cfg.pressure_ceiling_psi.map(|v|v.to_string()).unwrap_or_default()}",disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.pressure_ceiling_psi=e.value().parse().ok();}}}}
-                            label {"Maximum empty PT offset (psi)" input {r#type:"number",value:"{cfg.maximum_zero_offset_psi.map(|v|v.to_string()).unwrap_or_default()}",disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.maximum_zero_offset_psi=e.value().parse().ok();}}}}
-                            label {"GSE panel mode" select {disabled:!can_edit,value:if cfg.grouped_panel {"sequence"}else{"manual"},onchange:move |e|{if let Some(c)=settings.write().as_mut(){c.grouped_panel=e.value()=="sequence";}},option {value:"sequence","Grouped sequence actions"}option {value:"manual","Individual manual valves"}}}
+                            label {"Pressure step (psi)" input {r#type:"number",min:"0.1",step:"0.1",value:"{cfg.pressure_step_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse(){if let Some(c)=settings.write().as_mut(){c.pressure_step_psi=v;}}}}}
+                            label {"Nitrogen maximum pressure (psi)" input {r#type:"number",value:"{cfg.nitrogen_target_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse(){if let Some(c)=settings.write().as_mut(){c.nitrogen_target_psi=v;}}}}}
                         }
-                        label {style:"display:block;margin-top:12px;font-size:12px;color:{theme.text_muted};",input {r#type:"checkbox",checked:cfg.dry_self_test_confirmed,disabled:!can_edit,onchange:move |e|{if let Some(c)=settings.write().as_mut(){c.dry_self_test_confirmed=e.checked();}}}" Gas supplies isolated for this dry valve self-test"}
                         button {style:"margin-top:12px;padding:10px 14px;",disabled:!can_edit,onclick:move |_|{
                             let Some(cfg)=settings.read().clone() else{return;};
                             busy.set(true);
