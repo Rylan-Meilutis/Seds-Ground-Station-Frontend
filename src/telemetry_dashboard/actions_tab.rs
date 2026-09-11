@@ -20,10 +20,11 @@ fn btn_style(
     enabled: bool,
     blink: BlinkMode,
     actuated: Option<bool>,
+    illuminate_enabled: bool,
 ) -> String {
     let cursor = if enabled { "pointer" } else { "not-allowed" };
     let pointer_events = if enabled { "auto" } else { "none" };
-    let actuated_active = actuated.unwrap_or(false);
+    let actuated_active = actuated.unwrap_or(false) || (enabled && illuminate_enabled);
     let recommended = enabled && blink != BlinkMode::None;
     let opacity = if recommended || actuated_active {
         "1.0"
@@ -47,10 +48,15 @@ fn btn_style(
         "0 4px 12px rgba(0,0,0,0.16)"
     };
     let animation = action_animation_style(enabled, blink, actuated);
+    let ready_glow = if enabled && illuminate_enabled {
+        format!("box-shadow:0 0 14px {border};")
+    } else {
+        String::new()
+    };
     format!(
         "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
          display:flex; align-items:center; justify-content:space-between; gap:0.75rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
-         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation}"
+         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation} {ready_glow}"
     )
 }
 
@@ -393,7 +399,7 @@ pub fn ActionsTab(
                                                 );
                                                 rsx! {
                                                     button {
-                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated)}",
+                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\")}",
                                                         disabled: !enabled,
                                                         onmousedown: {
                                                             let cmd = action.cmd.clone();

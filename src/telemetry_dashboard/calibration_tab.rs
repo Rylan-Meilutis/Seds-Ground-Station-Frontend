@@ -1258,29 +1258,27 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     {
         let mut layout_cfg = layout_cfg;
         let mut status = status;
-        use_effect(move || {
+        use_future(move || async move {
             if let Some(cached_layout) = load_cached_calibration_layout() {
                 layout_cfg.set(Some(cached_layout));
             }
-            spawn(async move {
-                match http_get_json::<CalibrationTabLayout>("/api/calibration_config").await {
-                    Ok(v) => {
-                        save_cached_calibration_layout(&v);
-                        layout_cfg.set(Some(v));
-                    }
-                    Err(e) => {
-                        if layout_cfg.read().is_some() {
-                            status.set(format!(
-                                "Backend disconnected. Showing cached calibration layout: {e}"
-                            ));
-                        } else {
-                            status.set(format!(
+            match http_get_json::<CalibrationTabLayout>("/api/calibration_config").await {
+                Ok(v) => {
+                    save_cached_calibration_layout(&v);
+                    layout_cfg.set(Some(v));
+                }
+                Err(e) => {
+                    if layout_cfg.read().is_some() {
+                        status.set(format!(
+                            "Backend disconnected. Showing cached calibration layout: {e}"
+                        ));
+                    } else {
+                        status.set(format!(
                                 "Failed to load calibration config and no cached layout is available: {e}"
                             ));
-                        }
                     }
                 }
-            });
+            }
         });
     }
 
@@ -1298,7 +1296,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
             if let Some(first) = sensors.first() {
                 selected_sensor_id.set(first.id.clone());
-            } else {
+            } else if !cur.is_empty() {
                 selected_sensor_id.set(String::new());
                 persist::_remove(CALIBRATION_SELECTED_SENSOR_STORAGE_KEY);
             }
@@ -1321,7 +1319,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         let mut dirty = dirty;
         let mut fit_mode = fit_mode;
         let mut preserve_regression_on_zero_change = preserve_regression_on_zero_change;
-        use_effect(move || {
+        use_future(move || async move {
             if let Some(cached_cfg) = load_cached_calibration_file() {
                 cfg.set(Some(cached_cfg));
                 if status.read().starts_with("Loading calibration") {
@@ -1335,39 +1333,37 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 dirty.set(true);
                 status.set("Restored unsaved calibration changes from this device".to_string());
             }
-            spawn(async move {
-                match http_get_json::<CalibrationFile>("/api/calibration").await {
-                    Ok(mut v) => {
-                        sanitize_calibration_file(&mut v);
-                        save_cached_calibration_file(&v);
-                        if *dirty.read() {
-                            if cfg.read().is_none() {
-                                cfg.set(Some(v));
-                            }
-                            if status.read().starts_with("Loading calibration") {
-                                status.set(
-                                    "Unsaved local calibration changes restored from this device"
-                                        .to_string(),
-                                );
-                            }
-                        } else {
+            match http_get_json::<CalibrationFile>("/api/calibration").await {
+                Ok(mut v) => {
+                    sanitize_calibration_file(&mut v);
+                    save_cached_calibration_file(&v);
+                    if *dirty.read() {
+                        if cfg.read().is_none() {
                             cfg.set(Some(v));
-                            status.set("Calibration loaded".to_string());
                         }
-                    }
-                    Err(e) => {
-                        if cfg.read().is_some() {
-                            if !*dirty.read() {
-                                status.set(format!(
-                                    "Backend disconnected. Showing cached calibration data: {e}"
-                                ));
-                            }
-                        } else {
-                            status.set(format!("Failed to load: {e}"));
+                        if status.read().starts_with("Loading calibration") {
+                            status.set(
+                                "Unsaved local calibration changes restored from this device"
+                                    .to_string(),
+                            );
                         }
+                    } else {
+                        cfg.set(Some(v));
+                        status.set("Calibration loaded".to_string());
                     }
                 }
-            });
+                Err(e) => {
+                    if cfg.read().is_some() {
+                        if !*dirty.read() {
+                            status.set(format!(
+                                "Backend disconnected. Showing cached calibration data: {e}"
+                            ));
+                        }
+                    } else {
+                        status.set(format!("Failed to load: {e}"));
+                    }
+                }
+            }
         });
     }
 
@@ -1444,6 +1440,12 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             spawn(async move {
                 match http_get_json::<CalibrationFile>("/api/calibration").await {
                     Ok(mut remote_cfg) => {
+                        if *dirty.read()
+                            || *sequence_dialog_open.read()
+                            || cfg.read().as_ref() != current_cfg.as_ref()
+                        {
+                            return;
+                        }
                         sanitize_calibration_file(&mut remote_cfg);
                         if current_cfg.as_ref() != Some(&remote_cfg) {
                             save_cached_calibration_file(&remote_cfg);
@@ -1468,35 +1470,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .cloned()
         .or_else(|| sensors.first().cloned());
     let raw_precision = sensor_raw_precision(selected_sensor.as_ref(), 6);
-    if sensors.is_empty() {
-        let shell_style = format!(
-            "padding:12px; display:flex; flex-direction:column; gap:12px; min-height:100%; overflow:visible; color:{}; background:{};",
-            theme.text_primary, theme.tab_shell_background
-        );
-        let section_style = format!(
-            "display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid {}; border-radius:16px; background:{}; box-shadow:0 10px 24px rgba(0,0,0,0.18);",
-            theme.tab_shell_border, theme.panel_background
-        );
-        return rsx! {
-            div { style: "{shell_style}",
-                div { style: "{section_style}",
-                    h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
-                    div { style: "color:{theme.text_muted}; font-size:13px;", "{status.read()}" }
-                    if cfg.read().is_some() {
-                        div {
-                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
-                            "Showing the last calibration data seen on this device. The backend is disconnected and the sensor layout mapping is currently unavailable."
-                        }
-                    } else {
-                        div {
-                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
-                            "No cached calibration layout is available yet for this backend."
-                        }
-                    }
-                }
-            }
-        };
-    }
     let channel_key = selected_sensor
         .as_ref()
         .map(|s| s.channel.clone())
@@ -1829,6 +1802,36 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .zip(display_points.iter().map(|(_, _, selection)| *selection))
         .map(|((cx, cy), selection)| (cx, cy, selection))
         .collect();
+
+    if sensors.is_empty() {
+        let shell_style = format!(
+            "padding:12px; display:flex; flex-direction:column; gap:12px; min-height:100%; overflow:visible; color:{}; background:{};",
+            theme.text_primary, theme.tab_shell_background
+        );
+        let section_style = format!(
+            "display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid {}; border-radius:16px; background:{}; box-shadow:0 10px 24px rgba(0,0,0,0.18);",
+            theme.tab_shell_border, theme.panel_background
+        );
+        return rsx! {
+            div { style: "{shell_style}",
+                div { style: "{section_style}",
+                    h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
+                    div { style: "color:{theme.text_muted}; font-size:13px;", "{status.read()}" }
+                    if cfg.read().is_some() {
+                        div {
+                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
+                            "Showing the last calibration data seen on this device. The backend is disconnected and the sensor layout mapping is currently unavailable."
+                        }
+                    } else {
+                        div {
+                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
+                            "No cached calibration layout is available yet for this backend."
+                        }
+                    }
+                }
+            }
+        };
+    }
 
     rsx! {
         div { style: "{shell_style}",

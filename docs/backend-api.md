@@ -1274,3 +1274,21 @@ sequence request buttons follow the manual-button interlock, but every request
 still passes normal backend pressure, state, and safety checks before actuation.
 Rejected starts produce notifications. Regular/test-fire button availability is
 still sequenced; backend pressure ceiling and PT-offset limits remain mandatory.
+
+Enabled GSE sequence buttons illuminate in both Actions and State panels. HITL
+accepts sequence requests in Startup, Idle, PreFill, FillTest, NitrogenFill,
+NitrousFill and Armed when the valve/button interlock permits; launch, recovery
+and abort states remain blocked. Enabled means a request can be made, not that
+its pressure prerequisites have passed or its valves are actuated.
+
+Calibration initialization is a mount-scoped future, not a reactive reload
+effect. Hooks execute even while the sensor layout is empty. Background refresh
+responses must not replace edits made while the request was in flight.
+
+Notification snapshots are idempotent state, not new events. The frontend tracks
+seen `(id, timestamp_ms)` identities per backend across reloads, deduplicates
+snapshot/history entries, and does not replay already-seen transient toasts or
+locally dismissed entries. Persistent unresolved alerts remain visible but are
+not marked newly unread on reload. Routine GSE pause/cancel/pass/self-test
+completion notices are transient; sequence faults remain persistent. The wire
+schema is unchanged. Clearing local app storage resets replay tracking.

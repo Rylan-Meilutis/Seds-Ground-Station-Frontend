@@ -21,7 +21,9 @@ impl Drop for WebSocketCleanup {
 struct HttpAbortOnDrop(web_sys::AbortController);
 #[cfg(target_arch = "wasm32")]
 impl Drop for HttpAbortOnDrop {
-    fn drop(&mut self) { self.0.abort(); }
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[test]
@@ -621,6 +623,82 @@ fn merge_notification_history(
     }
 }
 
+fn notification_identity(n: &PersistentNotification) -> DismissedNotification {
+    DismissedNotification {
+        id: n.id,
+        timestamp_ms: n.timestamp_ms,
+    }
+}
+
+#[cfg(test)]
+mod notification_replay_tests {
+    use super::*;
+
+    #[test]
+    fn snapshots_and_reload_do_not_replay_transient_notifications() {
+        let mut notice = PersistentNotification {
+            id: 42,
+            timestamp_ms: 1000,
+            message: "GSE state changed".into(),
+            persistent: false,
+            action_label: None,
+            action_cmd: None,
+        };
+        let empty = HashSet::new();
+        let seen = HashSet::from([notification_identity(&notice)]);
+        assert!(notification_visible_on_snapshot(
+            &notice, &empty, &empty, &empty
+        ));
+        // A repeat snapshot keeps an existing toast, but remount/reload does not replay it.
+        assert!(notification_visible_on_snapshot(
+            &notice, &seen, &empty, &seen
+        ));
+        assert!(!notification_visible_on_snapshot(
+            &notice, &seen, &empty, &empty
+        ));
+        // A genuinely new event is not hidden just because the server reused its ID.
+        notice.timestamp_ms += 1;
+        assert!(notification_visible_on_snapshot(
+            &notice, &seen, &empty, &empty
+        ));
+        notice.timestamp_ms -= 1;
+        notice.persistent = true;
+        assert!(notification_visible_on_snapshot(
+            &notice, &seen, &empty, &empty
+        ));
+        assert!(!notification_visible_on_snapshot(
+            &notice, &seen, &seen, &empty
+        ));
+    }
+
+    #[test]
+    fn repeated_history_snapshots_do_not_duplicate_entries() {
+        let notice = PersistentNotification {
+            id: 42,
+            timestamp_ms: 1000,
+            message: "GSE state changed".into(),
+            persistent: false,
+            action_label: None,
+            action_cmd: None,
+        };
+        let mut history = Vec::new();
+        merge_notification_history(&mut history, &[notice.clone(), notice.clone()]);
+        merge_notification_history(&mut history, &[notice]);
+        assert_eq!(history.len(), 1);
+    }
+}
+
+fn notification_visible_on_snapshot(
+    n: &PersistentNotification,
+    seen: &HashSet<DismissedNotification>,
+    dismissed: &HashSet<DismissedNotification>,
+    visible: &HashSet<DismissedNotification>,
+) -> bool {
+    let identity = notification_identity(n);
+    !dismissed.contains(&identity)
+        && (n.persistent || !seen.contains(&identity) || visible.contains(&identity))
+}
+
 fn apply_notifications_snapshot(
     incoming: Vec<PersistentNotification>,
     notifications: Signal<Vec<PersistentNotification>>,
@@ -638,9 +716,35 @@ fn apply_notifications_snapshot(
     merge_notification_history(&mut history, &incoming);
     notification_history.set(history);
 
-    // Active notifications come directly from backend snapshot.
-    // Backend dismiss endpoint is source of truth; local cache is only for local bookkeeping.
-    let mut active: Vec<PersistentNotification> = incoming;
+    // Snapshots restore state; they are not new events. Scope replay tracking to
+    // the backend and include the timestamp because IDs restart with the server.
+    let seen_key = format!("gs_notification_seen_v1:{}", UrlConfig::base_http());
+    let seen: HashSet<DismissedNotification> = persist::get_string(&seen_key)
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let visible: HashSet<_> = notifications
+        .read()
+        .iter()
+        .map(notification_identity)
+        .collect();
+    let dismissed: HashSet<_> = dismissed_notifications.read().iter().copied().collect();
+    let mut unique = HashSet::new();
+    let mut active: Vec<PersistentNotification> = incoming
+        .iter()
+        .filter(|n| unique.insert(notification_identity(n)))
+        .filter(|n| notification_visible_on_snapshot(n, &seen, &dismissed, &visible))
+        .cloned()
+        .collect();
+    let mut remembered = seen.clone();
+    remembered.extend(incoming.iter().map(notification_identity));
+    if remembered != seen {
+        let mut remembered: Vec<_> = remembered.into_iter().collect();
+        remembered.sort_by_key(|n| std::cmp::Reverse(n.timestamp_ms));
+        remembered.truncate(MAX_NOTIFICATION_HISTORY);
+        if let Ok(raw) = serde_json::to_string(&remembered) {
+            persist::set_string(&seen_key, &raw);
+        }
+    }
     active.sort_by_key(|n| n.timestamp_ms);
     let mut dismissed_ids = dismissed_notifications.read().clone();
     let mut dismissed_changed = false;
@@ -681,7 +785,7 @@ fn apply_notifications_snapshot(
     let active_ids: HashSet<u64> = active.iter().map(|n| n.id).collect();
     unread.retain(|id| active_ids.contains(id));
     for n in &active {
-        if !prev_ids.contains(&n.id) {
+        if !prev_ids.contains(&n.id) && !seen.contains(&notification_identity(n)) {
             unread.insert(n.id);
         }
     }
