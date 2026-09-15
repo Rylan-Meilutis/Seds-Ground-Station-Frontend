@@ -2484,7 +2484,10 @@ fn queue_chart_canvas_draw(canvas_id_json: String, payload_json: String) {
         return;
     }
 
-    spawn(async move {
+    // The queue/latch are global, so its task must outlive a chart component.
+    // A tab/state change could cancel a component-owned task during the yield,
+    // leaving FLUSH_SCHEDULED true and every future chart draw stuck until reload.
+    dioxus::core::spawn_forever(async move {
         #[cfg(target_arch = "wasm32")]
         gloo_timers::future::TimeoutFuture::new(0).await;
 

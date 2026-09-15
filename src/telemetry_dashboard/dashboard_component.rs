@@ -4041,6 +4041,25 @@ fn TelemetryDashboardInner() -> Element {
 }
 
 fn send_cmd(cmd: &str) {
+    let confirmation = match cmd {
+        "ResetFlightState" => Some("Reset the shared flight state to Idle? This does not close valves or stop an active physical sequence. Confirm the system is safe first."),
+        "ResetTClock" => Some("Reset the displayed T-clock? Flight state and physical board sequences will not be changed."),
+        _ => None,
+    };
+    if let Some(message) = confirmation {
+        let cmd = cmd.to_string();
+        let script = format!("window.confirm({})", serde_json::to_string(message).unwrap());
+        spawn(async move {
+            if dioxus::document::eval(&script).join::<bool>().await.unwrap_or(false) {
+                send_confirmed_cmd(&cmd);
+            }
+        });
+    } else {
+        send_confirmed_cmd(cmd);
+    }
+}
+
+fn send_confirmed_cmd(cmd: &str) {
     if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
         || !auth::can_send_command(cmd)
     {
