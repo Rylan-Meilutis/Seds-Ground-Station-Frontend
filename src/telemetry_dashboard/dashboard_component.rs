@@ -37,7 +37,7 @@ fn TelemetryDashboardInner() -> Element {
     // ----------------------------
     let st_warn_ack = use_signal(|| persist::get_or(WARNING_ACK_STORAGE_KEY, "0"));
     let st_err_ack = use_signal(|| persist::get_or(ERROR_ACK_STORAGE_KEY, "0"));
-    let st_main_tab = use_signal(|| "state".to_string());
+    let st_main_tab = use_signal(|| persist::get_or(&scoped_main_tab_key(), "state"));
     let st_data_tab = use_signal(|| persist::get_or(DATA_TAB_STORAGE_KEY, "GYRO_DATA"));
     let st_base_url = use_signal(|| persist::get_or(BASE_URL_STORAGE_KEY, ""));
     let dashboard_customization = use_signal(load_dashboard_customization);
