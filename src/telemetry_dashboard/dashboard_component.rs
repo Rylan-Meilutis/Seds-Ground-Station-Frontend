@@ -1267,19 +1267,23 @@ fn TelemetryDashboardInner() -> Element {
             let mut launch_clock_flush = launch_clock_flush;
             let epoch = *WS_EPOCH.read();
             let (tx, mut rx) = futures_channel::mpsc::unbounded::<DashboardRuntimeEvent>();
+            let generation = NEXT_DASHBOARD_RUNTIME_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
             if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock() {
-                *slot = Some(tx);
+                *slot = Some(DashboardRuntimePump { generation, sender: tx });
+                DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
+                DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED.store(false, Ordering::Release);
             }
 
             spawn(async move {
                 use futures_util::StreamExt;
 
                 while let Some(DashboardRuntimeEvent::Pump) = rx.next().await {
-                    DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
-
-                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
+                    let owns_pump = DASHBOARD_RUNTIME_TX.lock().map(|slot|
+                        slot.as_ref().is_some_and(|pump| pump.generation == generation)).unwrap_or(false);
+                    if !owns_pump || !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
                     }
+                    DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
                     let now_ms = current_wallclock_ms();
 
                     let ws_open_events: Vec<(u64, String)> =
@@ -1462,9 +1466,11 @@ fn TelemetryDashboardInner() -> Element {
                     }
                 }
 
-                DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
                 if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock() {
-                    slot.take();
+                    if retire_dashboard_runtime_pump(&mut slot, generation) {
+                        DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
+                        DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED.store(false, Ordering::Release);
+                    }
                 }
             });
         });
@@ -2971,6 +2977,20 @@ fn TelemetryDashboardInner() -> Element {
                 overflow:hidden;
             ",
 
+                    if !*WS_CONNECTED_SIGNAL.read() {
+                        div {
+                            role: "alert",
+                            style: "flex-shrink:0;padding:10px 14px;margin-bottom:8px;border:1px solid currentColor;border-radius:8px;display:flex;gap:12px;align-items:center;justify-content:space-between;",
+                            span {
+                                if DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
+                                    "GroundStation disconnected. Reconnecting automatically; displayed data may be stale."
+                                } else {
+                                    "Connecting to GroundStation…"
+                                }
+                            }
+                            button { onclick: move |_| reconnect_and_reload_ui(), "Reconnect now" }
+                        }
+                    }
                     if *streamer_mode.read() {
                         button { title:"Exit streamer mode", style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:0.65;border:1px solid #526071;border-radius:8px;background:#101923;color:white;padding:6px;cursor:pointer;",
                             onclick:move |_| {let mut streamer_mode=streamer_mode;streamer_mode.set(false);let mut active_main_tab=active_main_tab;active_main_tab.set(MainTab::State);}, "Exit streamer"

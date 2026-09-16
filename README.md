@@ -13,6 +13,11 @@ See the [current API contract](docs/backend-api.md) and [JSON example index](doc
 Deploy the matching backend and frontend `dev` versions together; the backend's default
 build may select the stable frontend unless `--frontend-dev` is requested.
 
+The dashboard reconnects automatically after a backend restart. While its
+WebSocket is offline, a visible banner warns that data may be stale and offers
+Reconnect now. Replacing a connection cannot let the old event pump remove the
+new one; regression tests cover that ownership race.
+
 Current release:
 
 - Frontend version: `0.3.1`

@@ -383,9 +383,39 @@ static TELEMETRY_RENDER_DIRTY: AtomicBool = AtomicBool::new(false);
 static CHART_RENDER_DIRTY: AtomicBool = AtomicBool::new(false);
 static DASHBOARD_RUNTIME_PUMP_SCHEDULED: AtomicBool = AtomicBool::new(false);
 static DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED: AtomicBool = AtomicBool::new(false);
-static DASHBOARD_RUNTIME_TX: Lazy<
-    Mutex<Option<futures_channel::mpsc::UnboundedSender<DashboardRuntimeEvent>>>,
-> = Lazy::new(|| Mutex::new(None));
+#[derive(Clone)]
+struct DashboardRuntimePump {
+    generation: u64,
+    sender: futures_channel::mpsc::UnboundedSender<DashboardRuntimeEvent>,
+}
+static NEXT_DASHBOARD_RUNTIME_GENERATION: AtomicU64 = AtomicU64::new(0);
+static DASHBOARD_RUNTIME_TX: Lazy<Mutex<Option<DashboardRuntimePump>>> =
+    Lazy::new(|| Mutex::new(None));
+
+fn retire_dashboard_runtime_pump(slot: &mut Option<DashboardRuntimePump>, generation: u64) -> bool {
+    if slot.as_ref().is_some_and(|pump| pump.generation == generation) {
+        slot.take();
+        true
+    } else {
+        false
+    }
+}
+
+#[test]
+fn old_connection_cleanup_cannot_remove_restarted_dashboard_pump() {
+    let (old_tx, mut old_rx) = futures_channel::mpsc::unbounded();
+    let (new_tx, mut new_rx) = futures_channel::mpsc::unbounded();
+    let mut slot = Some(DashboardRuntimePump { generation: 1, sender: old_tx });
+    // Installing the replacement drops the old sender and wakes the retiring
+    // receiver. Its cleanup runs after the new channel has been installed.
+    slot.replace(DashboardRuntimePump { generation: 2, sender: new_tx });
+    assert!(old_rx.try_next().unwrap().is_none());
+    assert!(!retire_dashboard_runtime_pump(&mut slot, 1));
+    slot.as_ref().unwrap().sender.unbounded_send(DashboardRuntimeEvent::Pump).unwrap();
+    assert!(matches!(new_rx.try_next().unwrap(), Some(DashboardRuntimeEvent::Pump)));
+    assert!(retire_dashboard_runtime_pump(&mut slot, 2));
+    assert!(slot.is_none());
+}
 static PENDING_WS_OPEN_EVENTS: Lazy<Mutex<VecDeque<(u64, String)>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
 static PENDING_WS_MESSAGE_EVENTS: Lazy<Mutex<VecDeque<(u64, String)>>> =
@@ -672,7 +702,7 @@ fn schedule_dashboard_runtime_pump() {
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().cloned())
-        .is_some_and(|sender| sender.unbounded_send(DashboardRuntimeEvent::Pump).is_ok());
+        .is_some_and(|pump| pump.sender.unbounded_send(DashboardRuntimeEvent::Pump).is_ok());
 
     if !sent {
         DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
