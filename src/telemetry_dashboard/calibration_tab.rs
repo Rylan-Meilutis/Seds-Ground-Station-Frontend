@@ -111,10 +111,47 @@ enum CaptureMode {
     SequencePoint,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureDirection {
     Increasing,
     Decreasing,
+}
+
+// Direction is presentation state only: no calibration/dirty/save handle is
+// accepted here. Also prevent an enclosing form or click handler from acting.
+fn choose_capture_direction<T>(event: Event<T>, mut direction: Signal<CaptureDirection>, next: CaptureDirection) {
+    event.prevent_default();
+    event.stop_propagation();
+    direction.set(next);
+}
+
+fn apply_sequence_capture(
+    cfg: &mut CalibrationFile, channel: &str, mode: CaptureMode,
+    weight: f32, raw: f32, replace_existing: bool,
+) -> Result<(), String> {
+    if !raw.is_finite() || (mode == CaptureMode::SequencePoint && (!weight.is_finite() || weight.abs() <= 1e-6)) {
+        return Err("Capture requires a finite reading and a non-zero point mass.".to_string());
+    }
+    // Replacement is an explicitly confirmed first capture, never a direction
+    // change. Validation happens before touching the existing calibration.
+    if replace_existing { reset_channel_by_key(cfg, channel); }
+    if mode == CaptureMode::SequenceZero {
+        // A sequence endpoint is a measured point, not a tare adjustment.
+        set_zero_raw_by_key(cfg, channel, raw, false);
+    } else {
+        upsert_point_by_key(cfg, channel, weight, raw, false);
+    }
+    Ok(())
+}
+
+fn accept_calibration_save(
+    current: &mut CalibrationFile,
+    submitted: &CalibrationFile,
+    saved: CalibrationFile,
+) -> bool {
+    if current != submitted { return false; }
+    *current = saved;
+    true
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1088,6 +1125,10 @@ fn fit_details_text_parts((linear, fit): (&ChannelLinear, Option<&FitMeta>)) -> 
 }
 
 #[cfg(test)]
+#[path = "calibration_sequence_tests.rs"]
+mod calibration_sequence_tests;
+
+#[cfg(test)]
 mod calibration_eval_tests {
     use super::{
         CalibrationFile, CalibrationPoint, ChannelLinear, GenericCalibrationChannel, eval_fit_key,
@@ -1254,6 +1295,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let sequence_dialog_replace_existing = use_signal(|| false);
     let sequence_dialog_confirm_reset = use_signal(|| false);
     let sequence_direction = use_signal(|| CaptureDirection::Increasing);
+    let sequence_capture_busy = use_signal(|| false);
+    let calibration_save_busy = use_signal(|| false);
 
     {
         let mut layout_cfg = layout_cfg;
@@ -1865,30 +1908,40 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         }
                         if can_edit {
                             button {
+                                r#type: "button",
                                 style: "{success_button_style}",
-                                disabled: cfg.read().is_none() || !*dirty.read(),
+                                disabled: cfg.read().is_none() || !*dirty.read() || *sequence_capture_busy.read() || *calibration_save_busy.read(),
                                 onclick: {
                                     let mut cfg = cfg;
                                     let mut status = status;
                                     let mut dirty = dirty;
+                                    let mut calibration_save_busy = calibration_save_busy;
                                     move |_| {
+                                        if *calibration_save_busy.read() { return; }
                                         let Some(next) = cfg.read().clone() else {
                                             status.set("No calibration data loaded".to_string());
                                             return;
                                         };
                                         status.set("Saving calibration to backend...".to_string());
+                                        calibration_save_busy.set(true);
                                         spawn(async move {
                                             match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
                                                 Ok(mut saved_cfg) => {
                                                     sanitize_calibration_file(&mut saved_cfg);
                                                     save_cached_calibration_file(&saved_cfg);
-                                                    cfg.set(Some(saved_cfg));
-                                                    dirty.set(false);
-                                                    clear_calibration_draft();
-                                                    status.set("Calibration saved".to_string());
+                                                    let mut current = cfg.read().clone().unwrap_or_default();
+                                                    if accept_calibration_save(&mut current, &next, saved_cfg) {
+                                                        cfg.set(Some(current));
+                                                        dirty.set(false);
+                                                        clear_calibration_draft();
+                                                        status.set("Calibration saved".to_string());
+                                                    } else {
+                                                        status.set("Earlier calibration saved; newer local edits are preserved. Save again to publish them.".to_string());
+                                                    }
                                                 }
                                                 Err(e) => status.set(format!("Save failed: {e}")),
                                             }
+                                            calibration_save_busy.set(false);
                                         });
                                     }
                                 },
@@ -1937,19 +1990,29 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             if can_edit {
             div { style: "display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px;",
                 button {
+                    r#type: "button",
+                    key: "calibration-direction-increasing",
+                    disabled: *sequence_capture_busy.read(),
                     style: if *sequence_direction.read() == CaptureDirection::Increasing { "padding:14px; text-align:left; border-radius:14px; border:2px solid var(--cal-accent, #22d3ee); background:rgba(34,211,238,0.10); color:inherit; cursor:pointer;" } else { "padding:14px; text-align:left; border-radius:14px; border:1px solid currentColor; background:transparent; color:inherit; cursor:pointer; opacity:0.78;" },
                     onclick: {
-                        let mut sequence_direction = sequence_direction;
-                        move |_| sequence_direction.set(CaptureDirection::Increasing)
+                        let sequence_direction = sequence_direction;
+                        move |event| {
+                            choose_capture_direction(event, sequence_direction, CaptureDirection::Increasing);
+                        }
                     },
                     div { style: "font-weight:800;", "Low to high" }
                     div { style: "margin-top:4px; color:{theme.text_muted}; font-size:12px; line-height:1.4;", "Start unloaded at zero, then add known weights in increasing order." }
                 }
                 button {
+                    r#type: "button",
+                    key: "calibration-direction-decreasing",
+                    disabled: *sequence_capture_busy.read(),
                     style: if *sequence_direction.read() == CaptureDirection::Decreasing { "padding:14px; text-align:left; border-radius:14px; border:2px solid var(--cal-accent, #22d3ee); background:rgba(34,211,238,0.10); color:inherit; cursor:pointer;" } else { "padding:14px; text-align:left; border-radius:14px; border:1px solid currentColor; background:transparent; color:inherit; cursor:pointer; opacity:0.78;" },
                     onclick: {
-                        let mut sequence_direction = sequence_direction;
-                        move |_| sequence_direction.set(CaptureDirection::Decreasing)
+                        let sequence_direction = sequence_direction;
+                        move |event| {
+                            choose_capture_direction(event, sequence_direction, CaptureDirection::Decreasing);
+                        }
                     },
                     div { style: "font-weight:800;", "High to low" }
                     div { style: "margin-top:4px; color:{theme.text_muted}; font-size:12px; line-height:1.4;", "Start with the highest known weight, remove weight between points, and finish unloaded at zero." }
@@ -2604,7 +2667,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 step: "0.01",
                                 placeholder: if *sequence_dialog_mode.read() == CaptureMode::SequenceZero { "Sequence zero mass (kg)" } else { "Sequence point mass (kg)" },
                                 value: "{sequence_dialog_weight.read()}",
-                                disabled: *sequence_dialog_mode.read() == CaptureMode::SequenceZero,
+                                disabled: *sequence_dialog_mode.read() == CaptureMode::SequenceZero || *sequence_capture_busy.read(),
                                 oninput: {
                                     let mut sequence_dialog_weight = sequence_dialog_weight;
                                     move |e| sequence_dialog_weight.set(e.value())
@@ -2618,8 +2681,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 value: "{sequence_dialog_captured_raw.read()}",
                             }
                             button {
+                                r#type: "button",
                                 style: "{success_button_style}",
-                                disabled: !can_edit || (*sequence_dialog_replace_existing.read() && !*sequence_dialog_confirm_reset.read()),
+                                disabled: !can_edit || *sequence_capture_busy.read() || (*sequence_dialog_replace_existing.read() && !*sequence_dialog_confirm_reset.read()),
                                 onclick: {
                                     let selected_sensor = selected_sensor.clone();
                                     let known_kg = known_kg;
@@ -2627,8 +2691,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     let mut dirty = dirty;
                                     let mut status = status;
                                     let fit_mode = fit_mode;
-                                    let preserve_regression_on_zero_change =
-                                        preserve_regression_on_zero_change;
                                     let mut sequence_dialog_mode = sequence_dialog_mode;
                                     let mut sequence_dialog_weight = sequence_dialog_weight;
                                     let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
@@ -2637,11 +2699,34 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
                                     let sequence_direction = sequence_direction;
                                     let mut sequence_dialog_open = sequence_dialog_open;
+                                    let mut sequence_capture_busy = sequence_capture_busy;
                                     move |_| {
+                                        if *sequence_capture_busy.read() { return; }
                                         let Some(sensor) = selected_sensor.clone() else {
                                             sequence_dialog_status.set("No sensor selected.".to_string());
                                             return;
                                         };
+                                        // Freeze the request before awaiting live samples. Changing
+                                        // UI controls must not reinterpret or reset an in-flight capture.
+                                        let mode = *sequence_dialog_mode.read();
+                                        let weight = if mode == CaptureMode::SequenceZero {
+                                            0.0
+                                        } else {
+                                            match sequence_dialog_weight.read().trim().parse::<f32>() {
+                                                Ok(value) if value.is_finite() && value.abs() > 1e-6 => value,
+                                                _ => {
+                                                    sequence_dialog_status.set("Enter a finite non-zero sequence point mass.".to_string());
+                                                    return;
+                                                }
+                                            }
+                                        };
+                                        let replace_existing = *sequence_dialog_replace_existing.read();
+                                        if replace_existing && !*sequence_dialog_confirm_reset.read() { return; }
+                                        if cfg.read().is_none() {
+                                            sequence_dialog_status.set("Wait for calibration to load before capturing.".to_string());
+                                            return;
+                                        }
+                                        sequence_capture_busy.set(true);
                                         sequence_dialog_status.set(format!(
                                             "Capturing and adding {} live samples for {}...",
                                             effective_capture_sample_count,
@@ -2662,43 +2747,13 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             .await
                                             {
                                                 Ok((raw, captured)) => {
-                                                    let mode = *sequence_dialog_mode.read();
-                                                    let weight = if mode == CaptureMode::SequenceZero {
-                                                        0.0
-                                                    } else {
-                                                        match sequence_dialog_weight.read().trim().parse::<f32>() {
-                                                            Ok(value) if value.abs() > 1e-6 => value,
-                                                            _ => {
-                                                                sequence_dialog_status.set("Enter a non-zero sequence point mass.".to_string());
-                                                                return;
-                                                            }
-                                                        }
-                                                    };
-                                                    let replace_existing = *sequence_dialog_replace_existing.read();
                                                     let mut next = cfg.read().clone().unwrap_or_default();
-                                                    if replace_existing {
-                                                        reset_channel_by_key(&mut next, &sensor.channel);
-                                                    }
-                                                    if mode == CaptureMode::SequenceZero {
-                                                        set_zero_raw_by_key(
-                                                            &mut next,
-                                                            &sensor.channel,
-                                                            raw,
-                                                            *preserve_regression_on_zero_change.read(),
-                                                        );
-                                                        if replace_existing {
-                                                            let channel = next.channels.entry(sensor.channel.clone()).or_default();
-                                                            channel.points.clear();
-                                                            channel.fit = None;
-                                                        }
-                                                    } else {
-                                                        upsert_point_by_key(
-                                                            &mut next,
-                                                            &sensor.channel,
-                                                            weight,
-                                                            raw,
-                                                            *preserve_regression_on_zero_change.read(),
-                                                        );
+                                                    if let Err(error) = apply_sequence_capture(
+                                                        &mut next, &sensor.channel, mode, weight, raw, replace_existing,
+                                                    ) {
+                                                        sequence_dialog_status.set(error);
+                                                        sequence_capture_busy.set(false);
+                                                        return;
                                                     }
                                                     let refit_err = refresh_local_fit_preview(
                                                         &mut next,
@@ -2769,6 +2824,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                 }
                                                 Err(err) => sequence_dialog_status.set(err),
                                             }
+                                            sequence_capture_busy.set(false);
                                         });
                                     }
                                 },
@@ -2776,6 +2832,26 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     "Capture Zero"
                                 } else {
                                     "Capture Averaged Sample"
+                                }
+                            }
+                            if *sequence_direction.read() == CaptureDirection::Decreasing
+                                && *sequence_dialog_mode.read() == CaptureMode::SequencePoint
+                                && !*sequence_dialog_replace_existing.read() && sequence_has_weighted_points {
+                                button {
+                                    r#type: "button",
+                                    style: "{neutral_button_style}",
+                                    disabled: !can_edit || *sequence_capture_busy.read(),
+                                    onclick: {
+                                        let mut sequence_dialog_mode = sequence_dialog_mode;
+                                        let mut sequence_dialog_weight = sequence_dialog_weight;
+                                        let mut sequence_dialog_status = sequence_dialog_status;
+                                        move |_| {
+                                            sequence_dialog_mode.set(CaptureMode::SequenceZero);
+                                            sequence_dialog_weight.set("0".to_string());
+                                            sequence_dialog_status.set("Remove all load and let the reading settle. Capture Zero to finish; all weighted points are preserved.".to_string());
+                                        }
+                                    },
+                                    "Finish at zero…"
                                 }
                             }
                         }

@@ -288,6 +288,9 @@ If you are implementing the backend streaming path, use [`docs/backend-recent-st
 - If the backend disconnects later, the tab keeps showing the last cached calibration layout/document instead of rendering blank.
 - Unsaved calibration edits are stored locally as a draft per Ground Station URL, so switching tabs or remounting the page does not discard a local refit/edit before it is saved to the backend.
 - Saving calibration clears the local draft and refreshes the cached backend copy.
+- Choosing **Low to high** or **High to low** changes only capture direction; it does not clear points, change the saved fit, or submit calibration. Only the explicitly confirmed first capture of **New sequence** replaces existing points.
+- Within a high-to-low sequence, choose **Finish at zero…**, remove all load, then **Capture Zero** to finish. Weighted raw measurements are preserved (this final measurement is not a tare shift). Review and **Save** separately.
+- Captures cannot overlap, and delayed save responses cannot overwrite newer local edits.
 - Zero-point changes include a `Preserve regression when changing zero point` toggle so operators can choose whether the existing fit shape should shift with the new zero or be recalculated independently.
 - Calibration sensor definitions, channel ids, labels, colors, and allowed regression modes still come entirely from `/api/calibration_config`.
 

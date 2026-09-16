@@ -1291,6 +1291,11 @@ options **Low to high** / **High to low**. Both use the same editable mass and
 point-update workflow. Starting a new sequence preserves the prefilled mass;
 only its first capture replaces existing data, including in high-to-low mode.
 Zero captures remain fixed at 0 kg. Calibration wire endpoints are unchanged.
+Direction selection never sends a calibration POST or clears points. The
+high-to-low dialog includes **Finish at zero…** then **Capture Zero**; this
+records the final unloaded measurement without shifting previous raw samples.
+Only explicit **Save** publishes changes. A delayed save response is applied
+only if the local calibration still matches the submitted snapshot.
 
 Vehicle and delayed program model configuration now include `ground_model_url`.
 The bundled site GLB shows tanks, manifold, tower and rocket before launch; Launch
