@@ -346,6 +346,7 @@ pub fn DataTab(
         }
         div {
             style: "padding:8px 0 8px 0; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px; --gs26-data-toggle-background:{theme.tab_shell_background}; --gs26-data-toggle-border:{theme.tab_shell_border}; --gs26-data-toggle-text:{theme.button_text};",
+            super::recording_download::RecordingDownloads { theme: theme.clone() }
 
             div { style: "display:flex; flex-direction:column; gap:6px; width:100%; min-width:0; align-self:stretch;",
 

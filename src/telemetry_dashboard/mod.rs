@@ -24,6 +24,7 @@ mod live_stream_tab;
 mod messages_tab;
 mod network_topology_tab;
 mod notifications_tab;
+mod recording_download;
 pub(crate) mod prelude;
 mod stream_studio;
 mod model_dashboard;

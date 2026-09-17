@@ -2,6 +2,26 @@
 
 This repository contains the Dioxus-based frontend for the UBSEDS ground station UI.
 
+## Data capture downloads
+
+In Test Fire, HITL, or normal/main mode, start/stop recording in **Actions**, then
+open **Data → Data capture · CSV downloads**. Refresh, choose a recording, and
+select **Download CSV**. Browsers save through their download manager; native
+clients save to Downloads (or Documents) and display the path. Active sessions
+export only rows committed when requested; stop recording for the complete capture.
+
+The matching backend must provide authenticated GET /api/recordings and
+GET /api/recordings/{id}/csv endpoints. Exports include all recorded telemetry,
+source identities, receive/source timestamps, decoded values and payload bytes,
+without graph downsampling or extra calibration. Browser downloads buffer the
+CSV; use the native client for large captures. This does not fetch board SD files.
+
+Fill start/pause/cancel, nitrogen-test, and valve self-test macros remain in
+**Actions**, even for older/custom layouts, with existing safety interlocks and
+permissions. CSV viewing does not grant permission to operate valves.
+
+## Dashboard
+
 Dashboard now opens on the single-stage rocket model with aft fins only and a cycling
 backend-defined telemetry bar. **Settings → General → Viewing mode** offers Ground
 Station view (instrument/control dashboard) and Streamer (delayed audience video).

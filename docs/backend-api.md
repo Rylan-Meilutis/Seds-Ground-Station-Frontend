@@ -1,5 +1,18 @@
 # Backend API Reference
 
+## Recording downloads (all modes)
+
+The Data tab uses GET /api/recordings for a descending session list of
+{id, bytes, active}, then GET /api/recordings/{id}/csv for a CSV attachment.
+Both endpoints require ViewData permission and accept the normal Bearer token.
+The CSV fields are id, received_timestamp_ms, source_timestamp_ms, sender_id,
+data_type, values_json, and payload_json. JSON arrays are quoted CSV cells.
+The export is all recorded telemetry, not chart-downsampled values. An active
+recording is bounded at its last committed row when the request begins.
+Start/stop recording and GSE sequence command permissions are unchanged.
+
+## Live telemetry and firmware
+
 The firmware-update tab refreshes `GET /api/firmware/targets` every two seconds
 while mounted, so later discovery becomes selectable without reopening the tab.
 It preserves the selected board and disables new uploads if target refresh fails.

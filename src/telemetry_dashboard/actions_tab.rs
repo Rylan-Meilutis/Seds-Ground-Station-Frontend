@@ -13,6 +13,41 @@ use super::{
     translate_text,
 };
 
+// These controls must remain available even in older or custom layouts.
+fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
+    for (cmd, label) in [
+        ("ValveSelfTest", "Valve self-test"),
+        ("NitrogenTest", "Nitrogen test"),
+        ("StartFill", "Start fill"),
+        ("PauseFill", "Pause fill"),
+        ("CancelFill", "Cancel fill"),
+    ] {
+        if !actions.iter().any(|action| action.cmd == cmd) {
+            actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod sequence_action_tests {
+    use super::*;
+
+    #[test]
+    fn all_layouts_retain_fill_nitrogen_and_self_test_without_duplicates() {
+        let theme = ThemeConfig::default();
+        let mut actions = Vec::new();
+        ensure_sequence_actions(&mut actions, &theme);
+        assert_eq!(actions.len(), 5);
+        for cmd in ["StartFill", "PauseFill", "CancelFill", "NitrogenTest", "ValveSelfTest"] {
+            assert!(actions.iter().any(|action| action.cmd == cmd));
+        }
+        actions[0].label = "Custom self-test label".into();
+        let original = actions.clone();
+        ensure_sequence_actions(&mut actions, &theme);
+        assert_eq!(actions, original);
+    }
+}
+
 fn btn_style(
     border: &str,
     bg: &str,
@@ -285,17 +320,7 @@ pub fn ActionsTab(
         }
     });
     let mut all_actions = layout.actions.clone();
-    for (cmd, label) in [
-        ("ValveSelfTest", "Valve self-test"),
-        ("NitrogenTest", "Nitrogen test"),
-        ("StartFill", "Start fill"),
-        ("PauseFill", "Pause fill"),
-        ("CancelFill", "Cancel fill"),
-    ] {
-        if !all_actions.iter().any(|action| action.cmd == cmd) {
-            all_actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
-        }
-    }
+    ensure_sequence_actions(&mut all_actions, &theme);
     for action in &mut all_actions {
         if matches!(action.cmd.as_str(), "Igniter" | "IgniterSequence") {
             action.group = "Manual GSE valves".into();
