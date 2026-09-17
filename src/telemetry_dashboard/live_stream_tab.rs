@@ -28,6 +28,8 @@ pub(crate) struct LiveStreamConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct BroadcastState {
+    #[serde(default)]
+    pub comms_audio_enabled: bool,
     #[serde(default = "default_delay")]
     pub delay_seconds: u32,
     #[serde(default)]
@@ -261,6 +263,18 @@ pub(crate) fn LiveStreamTab(
                 div {
                     h2 { style: "margin:0; font-size:20px;", "{title}" }
                     div { role: "status", "aria-atomic": "true", style: "margin-top:3px; color:{theme.text_muted}; font-size:12px;", "{status.read()}" }
+                }
+                a {
+                    href: media_url("/radio"), target: "_blank", rel: "noopener",
+                    style: "padding:7px 11px; color:{theme.text_primary};",
+                    "Crew voice ↗"
+                }
+                if cfg.can_preview_live {
+                    a {
+                        href: media_url("/media#recordings-heading"), target: "_blank", rel: "noopener",
+                        style: "padding:7px 11px; color:{theme.text_primary};",
+                        "Camera recordings ↗"
+                    }
                 }
                 button {
                     style: "padding:7px 11px; border:1px solid {theme.button_border}; border-radius:999px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",

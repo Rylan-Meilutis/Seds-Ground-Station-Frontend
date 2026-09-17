@@ -16,6 +16,7 @@ struct Grant {
 #[component]
 pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> Element {
     let mut delay = use_signal(|| broadcast.delay_seconds);
+    let mut comms_audio = use_signal(|| broadcast.comms_audio_enabled);
     let mut message = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut accounts = use_signal(Vec::<Account>::new);
@@ -41,10 +42,11 @@ pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> El
       p {style:"font-size:12px;color:#a9b7c4;","Your cameras below are LIVE previews. Viewers receive the delayed program shown here. A camera cut takes effect on the current delayed timeline."}
       div {style:"display:flex;align-items:center;gap:12px;flex-wrap:wrap;",
        label {"Audience delay (3–60 seconds) " input {r#type:"number",min:"3",max:"60",value:"{delay}",disabled:*busy.read(),oninput:move|e|{if let Ok(v)=e.value().parse(){delay.set(v);}}}}
+       label { input {r#type:"checkbox",checked:*comms_audio.read(),disabled:*busy.read(),onchange:move|e|comms_audio.set(e.checked())} " Include crew audio in audience stream (delayed)" }
        button {disabled:*busy.read()||!(3..=60).contains(&*delay.read()),onclick:move |_|{
-         let mut next=broadcast.clone();next.delay_seconds=*delay.read();busy.set(true);
-         spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(_)=>message.set("Delay saved. Audience buffers are rebuilding.".into()),Err(e)=>message.set(e)}busy.set(false);});
-       },"Apply delay"}
+         let mut next=broadcast.clone();next.delay_seconds=*delay.read();next.comms_audio_enabled=*comms_audio.read();busy.set(true);
+         spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(_)=>message.set("Broadcast settings saved. Crew audio follows the audience delay.".into()),Err(e)=>message.set(e)}busy.set(false);});
+       },"Apply broadcast settings"}
       }
       iframe {src:url,title:"Delayed audience program monitor",allow:"autoplay; fullscreen",style:"width:100%;height:280px;border:0;margin-top:12px;background:#080d15;"}
       if admin {details {summary {"Stream manager roles"}
