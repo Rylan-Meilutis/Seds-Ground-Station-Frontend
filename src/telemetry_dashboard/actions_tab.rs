@@ -259,11 +259,13 @@ pub fn ActionsTab(
             let next = match super::http_get_json::<serde_json::Value>("/api/gse/status").await {
                 Ok(status) => match status.get("request_gate") {
                     Some(gate) => format!(
-                        "Backend gate: mode={} · state={} · prelaunch={} · valve interlock={}",
+                        "Backend gate: mode={} · state={} · prelaunch={} · valve interlock={} · {} · {}",
                         if gate["hitl_mode"].as_bool() == Some(true) { "HITL" } else { "sequenced" },
                         gate["flight_state"].as_str().unwrap_or("unknown"),
                         gate["prelaunch"].as_bool().map(|v| if v { "yes" } else { "no" }).unwrap_or("unknown"),
                         gate["button_interlock_satisfied"].as_bool().map(|v| if v { "satisfied" } else { "blocked" }).unwrap_or("unknown"),
+                        status["message"].as_str().unwrap_or("No sequence status"),
+                        status["configuration_error"].as_str().unwrap_or("Pressure configuration valid"),
                     ),
                     None => "Backend does not expose request-gate diagnostics; rebuild/restart it from current dev.".into(),
                 },

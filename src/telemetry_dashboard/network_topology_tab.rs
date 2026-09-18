@@ -161,6 +161,19 @@ pub fn NetworkTopologyTab(
     theme: ThemeConfig,
 ) -> Element {
     let snapshot = topology.read();
+    // Advance age labels between topology updates without rebuilding layout.
+    let mut age_tick = use_signal(|| 0_u64);
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(1_000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let next = age_tick.peek().wrapping_add(1);
+            age_tick.set(next);
+        }
+    });
+    let _age_tick = *age_tick.read();
     let expanded_node_id = use_signal(|| None::<String>);
     let mut is_fullscreen = use_signal(|| false);
     let title = layout
@@ -1211,6 +1224,11 @@ fn render_node(
     };
     let node_z_index = if is_expanded { "20" } else { "2" };
     let packet_count_label = packet_stats.map(|stats| format_packet_count(stats.total_packets()));
+    let age_label = format_seen_age(node.current_age_ms(super::monotonic_now_ms() as i64));
+    let last_seen = node.last_seen_ms
+        .and_then(|timestamp| i64::try_from(timestamp).ok())
+        .map(super::format_timestamp_ms_clock)
+        .unwrap_or_else(|| "Never observed".to_string());
 
     rsx! {
         div {
@@ -1246,6 +1264,7 @@ fn render_node(
                 style: "padding:2px 8px; border-radius:999px; background:{chip_bg}; color:{chip_fg}; font-size:0.7rem; font-weight:700;",
                 "{status_label}"
             }
+            div { style: "font-size:0.65rem; color:{theme.text_muted}; line-height:1.2;", "{age_label}" }
             div {
                 style: "font-size:0.68rem; color:{theme.text_muted}; max-width:100%; line-height:1.2;",
                 if let Some(packet_count_label) = packet_count_label.as_ref() {
@@ -1263,6 +1282,8 @@ fn render_node(
                             border:1px solid {theme.border}; background:{theme.panel_background}; box-shadow:0 20px 40px rgba(2, 6, 23, 0.55); z-index:4; text-align:left;",
                     div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{kind} details" }
                     div { style: "font-size:0.95rem; color:{theme.text_primary}; font-weight:700; margin:4px 0 10px 0;", "{node.label}" }
+                    div { style: "font-size:0.8rem; color:{theme.text_secondary}; margin-bottom:8px;", "Last seen: {last_seen}" }
+                    div { style: "font-size:0.8rem; color:{theme.text_secondary}; margin-bottom:12px;", "{age_label}" }
                     div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Packet stats" }
                     if let Some(stats) = packet_stats {
                         div { style: "display:flex; flex-direction:column; gap:6px; margin-bottom:12px;",
@@ -1280,7 +1301,7 @@ fn render_node(
                     } else {
                         div { style: "font-size:0.82rem; color:{theme.text_muted}; margin-bottom:12px;", "No packets seen for this node sender yet." }
                     }
-                    div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Connected to" }
+                    div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Known connections" }
                     if neighbors.is_empty() {
                         div { style: "font-size:0.82rem; color:{theme.text_muted}; margin-bottom:12px;", "No active links." }
                     } else {
@@ -1309,6 +1330,52 @@ fn render_node(
                 }
             }
         }
+    }
+}
+
+fn format_seen_age(age_ms: Option<u64>) -> String {
+    let Some(age_ms) = age_ms else {
+        return "Never observed".to_string();
+    };
+    let seconds = age_ms / 1_000;
+    let age = if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else if seconds < 86_400 {
+        format!("{}h {}m", seconds / 3_600, (seconds % 3_600) / 60)
+    } else {
+        format!("{}d {}h", seconds / 86_400, (seconds % 86_400) / 3_600)
+    };
+    format!("Seen {age} ago")
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn age_labels_distinguish_unknown_and_recent_boards() {
+        assert_eq!(format_seen_age(None), "Never observed");
+        assert_eq!(format_seen_age(Some(0)), "Seen 0s ago");
+        assert_eq!(format_seen_age(Some(12_000)), "Seen 12s ago");
+        assert_eq!(format_seen_age(Some(65_000)), "Seen 1m 5s ago");
+        assert_eq!(format_seen_age(Some(3_660_000)), "Seen 1h 1m ago");
+        assert_eq!(format_seen_age(Some(90_000_000)), "Seen 1d 1h ago");
+    }
+
+    #[test]
+    fn topology_timing_survives_cached_layout_and_old_servers() {
+        let mut node: NetworkTopologyNode = serde_json::from_str(
+            r#"{"id":"board_vb","label":"Valve","kind":"board","status":"offline","group":"board","sender_id":"VB","detail":null}"#,
+        ).unwrap();
+        assert_eq!(node.current_age_ms(1000), None);
+        node.age_ms = Some(12_000);
+        node.last_seen_ms = Some(100);
+        node.received_mono_ms = 1000;
+        assert_eq!(node.clone().current_age_ms(3000), Some(14_000));
+        assert_eq!(node.current_age_ms(900), Some(12_000));
+        assert!(serde_json::to_value(&node).unwrap().get("received_mono_ms").is_none());
     }
 }
 

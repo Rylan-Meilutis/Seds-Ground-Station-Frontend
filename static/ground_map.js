@@ -5409,7 +5409,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     initCompassOnce();
     logMapRuntimeBoundary("initGroundMap:after-compass");
     pushMapTrace("initGroundMap:compass");
-    if (!shouldUseNativeTileTemplate(tilesUrl)) {
+    if (window.__gs26_prefer_raster_map !== true && !shouldUseNativeTileTemplate(tilesUrl)) {
         ensureMapProtocolOnce();
         logMapRuntimeBoundary("initGroundMap:after-protocol-ready");
         pushMapTrace("initGroundMap:protocol-ready");
@@ -5478,6 +5478,17 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     pushMapTrace("initGroundMap:computed-start-state", {
         desiredZoom, clampedZoom, usingNativeTiles: shouldUseNativeTileTemplate(currentTilesUrl),
     });
+
+    if (window.__gs26_prefer_raster_map === true) {
+        if (groundMap) {
+            try { groundMap.remove(); } catch (_) {}
+            groundMap = null;
+            window.__gs26_ground_map = null;
+        }
+        activateRasterFallback("Native ARM Linux 2D compatibility renderer", startCenter[1], startCenter[0], clampedZoom);
+        finishMapFirstPaintGate("native-raster-renderer");
+        return;
+    }
 
     if (usingRasterFallback()) {
         activateRasterFallback(rasterFallbackReason, startCenter[1], startCenter[0], clampedZoom);

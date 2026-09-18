@@ -224,12 +224,26 @@ pub struct NetworkTopologyNode {
     pub group: String,
     pub sender_id: Option<String>,
     #[serde(default)]
+    pub last_seen_ms: Option<u64>,
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+    #[serde(skip, default = "board_status_received_ms")]
+    pub received_mono_ms: i64,
+    #[serde(default)]
     pub endpoints: Vec<String>,
     #[serde(default = "default_true")]
     pub show_in_details: bool,
     pub detail: Option<String>,
     #[serde(default)]
     pub stats: Option<NetworkTopologyStats>,
+}
+
+impl NetworkTopologyNode {
+    pub fn current_age_ms(&self, now_mono_ms: i64) -> Option<u64> {
+        self.age_ms.map(|age| {
+            age.saturating_add(now_mono_ms.saturating_sub(self.received_mono_ms).max(0) as u64)
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]

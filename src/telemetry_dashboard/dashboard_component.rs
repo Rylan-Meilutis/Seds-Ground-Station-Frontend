@@ -2900,7 +2900,8 @@ fn TelemetryDashboardInner() -> Element {
                }}
              }}
              .gs26-tab-toggle {{ display:none !important; }}
-             .gs26-tab-shell .gs26-tab-nav {{ display:flex !important; flex-wrap:nowrap !important; overflow-x:auto; width:100%; max-width:100%; }}
+             .gs26-tab-shell .gs26-tab-nav {{ display:flex !important; flex-wrap:nowrap !important; overflow-x:auto; overflow-y:hidden; width:100%; max-width:100%; scrollbar-width:none; -ms-overflow-style:none; padding-bottom:4px; }}
+             .gs26-tab-shell .gs26-tab-nav::-webkit-scrollbar {{ display:none; width:0; height:0; }}
              .gs26-tab-shell .gs26-tab-nav button {{ width:auto !important; flex:0 0 auto; white-space:nowrap; }}"
                 }
                 if layout_loading_snapshot && layout_snapshot.is_none() {

@@ -249,6 +249,15 @@ fn startup_custom_head() -> String {
     let mut head = String::from(
         r##"<meta name="theme-color" content="#020617"><style>html,body,#main{margin:0;min-height:100%;background:#020617;color:#e5e7eb;color-scheme:dark}</style>"##,
     );
+    let prefer_raster = prefer_native_raster_map(
+        cfg!(any(target_arch = "aarch64", target_arch = "arm")),
+        std::env::var("GS26_MAP_RENDERER").ok().as_deref(),
+    );
+    head.push_str(if prefer_raster {
+        "<script>window.__gs26_prefer_raster_map=true;</script>"
+    } else {
+        "<script>window.__gs26_prefer_raster_map=false;</script>"
+    });
     head.push_str("<style id=\"gs26-maplibre-css\">");
     head.push_str(include_str!("../static/vendor/maplibre-gl/maplibre-gl.css"));
     head.push_str("</style><script id=\"gs26-maplibre-js\">");
@@ -257,6 +266,27 @@ fn startup_custom_head() -> String {
     head.push_str(include_str!("../static/ground_map.js"));
     head.push_str("</script>");
     head
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn prefer_native_raster_map(arm_linux: bool, renderer: Option<&str>) -> bool {
+    match renderer {
+        Some("raster") => true,
+        Some("webgl") => false,
+        _ => arm_linux,
+    }
+}
+
+#[cfg(test)]
+mod native_map_tests {
+    #[test]
+    fn arm_linux_uses_raster_with_explicit_webgl_override() {
+        assert!(super::prefer_native_raster_map(true, None));
+        assert!(!super::prefer_native_raster_map(false, None));
+        assert!(!super::prefer_native_raster_map(true, Some("webgl")));
+        assert!(super::prefer_native_raster_map(false, Some("raster")));
+        assert!(super::prefer_native_raster_map(true, Some("invalid")));
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -387,6 +417,8 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
 
     let client = match reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(skip_tls)
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
     {
         Ok(c) => c,
@@ -435,6 +467,7 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         return build_response(200, content_type.as_deref().or(Some("image/jpeg")), cached);
     }
 
+    debug_log::append(&format!("[protocol] tile completed status={status} bytes={}", bytes.len()));
     build_response(status, content_type.as_deref(), bytes)
 }
 
