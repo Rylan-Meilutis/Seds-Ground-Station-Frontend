@@ -14,6 +14,7 @@ tao = { path = "vendor-tao" }
 ios-event-loop-patch = "Tao 0.34.8 common-mode observers; see vendor-tao/GROUNDSTATION-PATCH.md"
 
 [dependencies]
+time = { version = "0.3.55", features = ["parsing", "macros"] }
 dioxus = { version = "0.7.9", default-features = false }
 dioxus-router = "0.7.9"
 

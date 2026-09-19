@@ -3603,6 +3603,21 @@ fn TelemetryDashboardInner() -> Element {
                                                 "{_main_tab_label(&layout, MainTab::Data)}"
                                             }
                                         },
+                                        MainTab::DataExport => rsx! {
+                                            button {
+                                                key: "{\"main-tab-data-export\"}",
+                                                style: if *active_main_tab.read() == MainTab::DataExport { tab_style_active(&main_tab_accent("data-export", "#f97316")) } else { tab_style_inactive.to_string() },
+                                                onclick: {
+                                                    let mut t = active_main_tab;
+                                                    let mut expanded = tabs_expanded;
+                                                    move |_| {
+                                                        t.set(MainTab::DataExport);
+                                                        expanded.set(false);
+                                                    }
+                                                },
+                                                "{_main_tab_label(&layout, MainTab::DataExport)}"
+                                            }
+                                        },
                                         MainTab::NetworkTopology => rsx! {
                                             button {
                                                 key: "{\"main-tab-network-topology\"}",
@@ -3851,6 +3866,9 @@ fn TelemetryDashboardInner() -> Element {
                             },
                             MainTab::FirmwareUpdate => rsx! {
                                 FirmwareUpdateTab { theme: theme.clone() }
+                            },
+                            MainTab::DataExport => rsx! {
+                                recording_download::RecordingDownloads { theme: theme.clone() }
                             },
                             MainTab::Calibration => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",

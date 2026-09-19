@@ -325,4 +325,5 @@ enum MainTab {
     Warnings,
     Errors,
     Data,
+    DataExport,
 }

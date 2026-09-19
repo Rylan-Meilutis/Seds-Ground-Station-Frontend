@@ -32,6 +32,24 @@ fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
 mod sequence_action_tests {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn nitrogen_and_fill_controls_send_the_expected_websocket_command() {
+        let mut actions = Vec::new();
+        ensure_sequence_actions(&mut actions, &ThemeConfig::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sender = crate::telemetry_dashboard::WsSender { tx };
+        for expected in ["NitrogenTest", "StartFill"] {
+            let button = actions.iter().find(|button| button.cmd == expected).unwrap();
+            sender.send_cmd(&button.cmd).unwrap();
+            let packet: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(packet, serde_json::json!({"cmd": expected}));
+            assert!(rx.try_recv().is_err(), "one activation must send one command");
+        }
+        drop(rx);
+        assert!(sender.send_cmd("StartFill").is_err(), "closed transports must report failure");
+    }
+
     #[test]
     fn all_layouts_retain_fill_nitrogen_and_self_test_without_duplicates() {
         let theme = ThemeConfig::default();

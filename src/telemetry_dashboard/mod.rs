@@ -6,6 +6,7 @@ mod actions_tab;
 mod calibration_tab;
 mod connection_status_tab;
 pub mod data_chart;
+mod accel_display_filter;
 pub mod data_tab;
 mod detailed_tab;
 pub mod errors_tab;

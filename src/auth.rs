@@ -25,6 +25,8 @@ pub struct Permissions {
     pub view_data: bool,
     #[serde(default)]
     pub send_commands: bool,
+    #[serde(default)]
+    pub set_system_time: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

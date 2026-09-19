@@ -346,7 +346,6 @@ pub fn DataTab(
         }
         div {
             style: "padding:8px 0 8px 0; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px; --gs26-data-toggle-background:{theme.tab_shell_background}; --gs26-data-toggle-border:{theme.tab_shell_border}; --gs26-data-toggle-text:{theme.button_text};",
-            super::recording_download::RecordingDownloads { theme: theme.clone() }
 
             div { style: "display:flex; flex-direction:column; gap:6px; width:100%; min-width:0; align-self:stretch;",
 
@@ -1419,6 +1418,9 @@ fn render_chart_group(
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
                 {reseed_note_banner(kind, note, theme, false)}
+            }
+            if let Some(note) = super::data_chart::accel_filter_note(&chart_key) {
+                div { style: "font-size:12px; opacity:0.8; padding:4px 0;", "{note}" }
             }
             div { style: "display:flex; gap:6px; align-items:stretch; width:100%; min-width:0; overflow-x:auto; padding-bottom:12px; {chart_shell_size_style}",
                 if use_per_series_scale {

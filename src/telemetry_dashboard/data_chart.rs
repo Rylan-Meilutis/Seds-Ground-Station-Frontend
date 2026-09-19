@@ -174,6 +174,17 @@ pub fn charts_cache_ingest_row(row: &TelemetryRow) {
     });
 }
 
+pub fn accel_filter_note(key: &str) -> Option<String> {
+    CHARTS_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        let chart = cache.charts.get(&ChartSeriesKey::from_query(key))?;
+        if !chart.preserve_peaks { return None; }
+        let suspicious: usize = chart.accel_filters.values().map(|f| f.suspicious).sum();
+        let invalid: usize = chart.accel_filters.values().map(|f| f.invalid).sum();
+        Some(format!("Acceleration display: causal screening, no look-ahead; peaks preserved. {suspicious} suspect samples retained; {invalid} invalid values omitted. Raw recordings unchanged."))
+    })
+}
+
 pub fn charts_cache_ingest_rows(rows: &[TelemetryRow]) {
     if rows.is_empty() {
         return;
@@ -457,7 +468,25 @@ impl ChartsCache {
 
     fn ingest_rows(&mut self, rows: &[TelemetryRow]) {
         self.generation = self.generation.wrapping_add(1).max(1);
-        for row in rows {
+        // A websocket/UI flush can contain rows in a different order from their
+        // receipt timestamps. Feed the fixed-bucket cache chronologically:
+        // otherwise its freeze rule drops earlier samples in the same batch.
+        // Keep the normal ordered path allocation-free; never modify raw input.
+        let ordered = if rows
+            .windows(2)
+            .any(|pair| telemetry_row_received_ms(&pair[0]) > telemetry_row_received_ms(&pair[1]))
+        {
+            let mut ordered = rows.iter().collect::<Vec<_>>();
+            ordered.sort_by_key(|row| telemetry_row_received_ms(row));
+            Some(ordered)
+        } else {
+            None
+        };
+        let already_ordered = if ordered.is_none() { rows } else { &[] };
+        let ordered_rows = already_ordered
+            .iter()
+            .chain(ordered.iter().flatten().copied());
+        for row in ordered_rows {
             self.store_raw_row_without_prune(row);
             self.note_source_row(row);
             self.ingest_interested_row(row);
@@ -686,6 +715,47 @@ mod tests {
         configure_sender_split_data_types,
     };
     use crate::telemetry_dashboard::types::TelemetryRow;
+
+    #[test]
+    fn accel_batch_order_does_not_drop_samples_or_create_spikes() {
+        let rows: Vec<_> = (0..400)
+            .map(|i| {
+                let timestamp_ms = 1_700_000_000_000 + i * 200;
+                TelemetryRow {
+                    timestamp_ms,
+                    received_timestamp_ms: timestamp_ms,
+                    data_type: "ACCEL_DATA".into(),
+                    data_type_id: Default::default(),
+                    sender_id: "FC".into(),
+                    sender_id_id: Default::default(),
+                    values: vec![Some(0.1), Some(-0.2), Some(9.81)],
+                }
+            })
+            .collect();
+        let key = super::ChartSeriesKey::from_query("ACCEL_DATA@@FC");
+        let mut cache = super::ChartsCache::new();
+        cache.ensure_interested_chart(key);
+        for batch in rows.chunks(10) {
+            let reversed: Vec<_> = batch.iter().rev().cloned().collect();
+            cache.ingest_rows(&reversed);
+            cache.get("ACCEL_DATA@@FC", 1200.0, 260.0);
+        }
+        let chart = &cache.charts[&key];
+        assert_eq!(chart.buckets.len(), rows.len());
+        for bucket in &chart.buckets {
+            assert_eq!(bucket.last, vec![0.1, -0.2, 9.81]);
+        }
+        // A real acceleration event must remain visible, not be flattened by
+        // the batching fix. Raw records and acquisition are never filtered.
+        let mut event = rows.last().unwrap().clone();
+        event.timestamp_ms += 200;
+        event.received_timestamp_ms += 200;
+        event.values[0] = Some(20.0);
+        cache.ingest_row(&event);
+        assert_eq!(cache.charts[&key].buckets.back().unwrap().last[0], 20.0);
+        let buckets = cache.charts[&key].view_buckets(0, i64::MAX / super::BUCKET_MS, 10_000);
+        assert!(buckets.iter().any(|b| b.last[0] == 20.0));
+    }
 
     #[test]
     fn does_not_derive_calibrated_loadcell_chart_rows_from_raw_samples() {
@@ -1093,6 +1163,8 @@ impl Bucket {
 }
 
 struct CachedChart {
+    accel_filters: HashMap<TelemetryTextId, super::accel_display_filter::AccelDisplayFilter>,
+    preserve_peaks: bool,
     buckets: VecDeque<Bucket>,
     newest_bucket_id: i64,
     newest_ts: i64,
@@ -1167,6 +1239,8 @@ fn max_buckets_per_type() -> usize {
 impl CachedChart {
     fn new() -> Self {
         Self {
+            accel_filters: HashMap::new(),
+            preserve_peaks: false,
             buckets: VecDeque::new(),
             newest_bucket_id: 0,
             newest_ts: 0,
@@ -1197,6 +1271,27 @@ impl CachedChart {
     }
 
     fn ingest(&mut self, r: &TelemetryRow) {
+        if r.data_type == "ACCEL_DATA" {
+            self.preserve_peaks = true;
+            let filter = self
+                .accel_filters
+                .entry(r.interned_sender_id())
+                .or_default();
+            if let Some((time, values)) =
+                filter.push(telemetry_row_received_ms(r), r.values.clone())
+            {
+                let mut display = r.clone();
+                display.received_timestamp_ms = time;
+                display.timestamp_ms = time;
+                display.values = values;
+                self.ingest_display(&display);
+            }
+        } else {
+            self.ingest_display(r);
+        }
+    }
+
+    fn ingest_display(&mut self, r: &TelemetryRow) {
         let ch_count = r.values.len();
         if ch_count > self.channel_count {
             self.ensure_channels(ch_count);
@@ -1351,6 +1446,58 @@ impl CachedChart {
         let effective_bucket_ms = bucket_ms.max(BUCKET_MS);
         let start_ts = start_bid.saturating_mul(BUCKET_MS);
         let newest_ts = newest_bid.saturating_mul(BUCKET_MS);
+
+        if self.preserve_peaks && effective_bucket_ms > BUCKET_MS {
+            // Keep first/last and every channel's extrema, in sample order.
+            // At most 2 + 2*channels points per render bucket, not an average.
+            let mut groups: BTreeMap<i64, Vec<&Bucket>> = BTreeMap::new();
+            for bucket in self
+                .buckets
+                .iter()
+                .filter(|b| b.id >= start_bid && b.id <= newest_bid)
+            {
+                groups
+                    .entry(
+                        bucket
+                            .id
+                            .saturating_mul(BUCKET_MS)
+                            .div_euclid(effective_bucket_ms),
+                    )
+                    .or_default()
+                    .push(bucket);
+            }
+            let mut out = Vec::new();
+            for (id, group) in groups {
+                let mut selected = vec![0, group.len() - 1];
+                for ch in 0..self.channel_count {
+                    let valid: Vec<_> = group
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| b.has[ch])
+                        .collect();
+                    if let Some((i, _)) = valid
+                        .iter()
+                        .min_by(|a, b| a.1.last[ch].total_cmp(&b.1.last[ch]))
+                    {
+                        selected.push(*i);
+                    }
+                    if let Some((i, _)) = valid
+                        .iter()
+                        .max_by(|a, b| a.1.last[ch].total_cmp(&b.1.last[ch]))
+                    {
+                        selected.push(*i);
+                    }
+                }
+                selected.sort_unstable();
+                selected.dedup();
+                for index in selected {
+                    let mut bucket = group[index].clone();
+                    bucket.id = id;
+                    out.push(bucket);
+                }
+            }
+            return out;
+        }
 
         if effective_bucket_ms <= BUCKET_MS {
             return self
@@ -1553,8 +1700,9 @@ impl CachedChart {
             let chunk_start_x = left + pw * ((chunk_start_bid - start_view_id) as f32 / total);
             let chunk_end_x = left + pw * ((chunk_end_bid - start_view_id + 1) as f32 / total);
             let chunk_width = (chunk_end_x - chunk_start_x).max(1.0);
-            let smooth_chunk =
-                lod_bucket_ms <= 100 && should_smooth_chunk(chunk_width, chunk_bucket_count);
+            let smooth_chunk = !self.preserve_peaks
+                && lod_bucket_ms <= 100
+                && should_smooth_chunk(chunk_width, chunk_bucket_count);
 
             let mut paths = vec![String::new(); self.channel_count];
             let mut gap_paths = vec![String::new(); self.channel_count];
@@ -1727,8 +1875,9 @@ impl CachedChart {
             let chunk_start_x = left + pw * ((chunk_start_bid - start_view_id) as f32 / total);
             let chunk_end_x = left + pw * ((chunk_end_bid - start_view_id + 1) as f32 / total);
             let chunk_width = (chunk_end_x - chunk_start_x).max(1.0);
-            let smooth_chunk =
-                lod_bucket_ms <= 100 && should_smooth_chunk(chunk_width, chunk_bucket_count);
+            let smooth_chunk = !self.preserve_peaks
+                && lod_bucket_ms <= 100
+                && should_smooth_chunk(chunk_width, chunk_bucket_count);
 
             let mut paths = vec![String::new(); valid_channels.len()];
             let mut gap_paths = vec![String::new(); valid_channels.len()];
@@ -1953,8 +2102,9 @@ impl CachedChart {
             let chunk_start_x = left + pw * ((chunk_start_bid - start_view_id) as f32 / total);
             let chunk_end_x = left + pw * ((chunk_end_bid - start_view_id + 1) as f32 / total);
             let chunk_width = (chunk_end_x - chunk_start_x).max(1.0);
-            let smooth_chunk =
-                lod_bucket_ms <= 100 && should_smooth_chunk(chunk_width, chunk_bucket_count);
+            let smooth_chunk = !self.preserve_peaks
+                && lod_bucket_ms <= 100
+                && should_smooth_chunk(chunk_width, chunk_bucket_count);
 
             let mut paths = vec![String::new(); valid_channels.len()];
             let mut gap_paths = vec![String::new(); valid_channels.len()];

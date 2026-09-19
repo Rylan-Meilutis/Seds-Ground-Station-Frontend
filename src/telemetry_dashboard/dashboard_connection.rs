@@ -19,6 +19,7 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
         MainTab::Warnings => "warnings",
         MainTab::Errors => "errors",
         MainTab::Data => "data",
+        MainTab::DataExport => "data-export",
     }
 }
 
@@ -62,6 +63,7 @@ fn _default_main_tab_label(tab: MainTab) -> String {
         MainTab::Warnings => localized_copy(&lang, "Warnings", "Avisos", "Alertes"),
         MainTab::Errors => localized_copy(&lang, "Errors", "Errores", "Erreurs"),
         MainTab::Data => localized_copy(&lang, "Data", "Datos", "Donnees"),
+        MainTab::DataExport => localized_copy(&lang, "Data Export", "Exportar datos", "Export de donnees"),
     }
 }
 
@@ -111,6 +113,7 @@ fn _main_tab_from_str(s: &str) -> MainTab {
         "warnings" => MainTab::Warnings,
         "errors" => MainTab::Errors,
         "data" => MainTab::Data,
+        "data-export" => MainTab::DataExport,
         _ => MainTab::State,
     }
 }
@@ -204,6 +207,10 @@ fn _available_main_tabs(
         tabs.insert(0, MainTab::Mission);
     }
     tabs.retain(|tab| *tab != MainTab::State);
+    // Older layouts must expose recording export without a server config migration.
+    if !tabs.contains(&MainTab::DataExport) {
+        tabs.push(MainTab::DataExport);
+    }
     tabs.insert(0, MainTab::State);
     tabs
 }

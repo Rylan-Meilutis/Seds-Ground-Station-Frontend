@@ -4,8 +4,21 @@ This repository contains the Dioxus-based frontend for the UBSEDS ground station
 
 ## Data capture downloads
 
+The panel also offers **Start/End (UTC)** for exporting across all saved backend
+recordings automatically. The interval includes start and excludes end; data is
+selected by stored receive timestamps, not database filenames.
+
+**GroundStation system date/time** allows users with the separate
+`set_system_time` permission to set the Linux host clock from their device,
+manually selected UTC, or complete network UTC (RF GPS when available). This
+changes future timestamps for all logs, not only CSV. It requires backend OS
+authorization; it never silently disables NTP. Correct time before active
+operations and sign in again if a large correction expires the session. Old
+incorrect timestamps are not rewritten. The permission is off by default and
+cannot be granted to anonymous users.
+
 In Test Fire, HITL, or normal/main mode, start/stop recording in **Actions**, then
-open **Data → Data capture · CSV downloads**. Refresh, choose a recording, and
+open the **Data Export** tab. Refresh, choose a recording, and
 select **Download CSV**. Browsers save through their download manager; native
 clients save to Downloads (or Documents) and display the path. Active sessions
 export only rows committed when requested; stop recording for the complete capture.
@@ -347,6 +360,7 @@ The current suite covers layout parsing/validation, sender-aware chart series, l
 
 ## Reference Files
 
+- Acceleration graph screening and peak preservation: [`docs/acceleration-display.md`](docs/acceleration-display.md)
 - API reference: [`docs/backend-api.md`](docs/backend-api.md)
 - Streaming notes: [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md)
 - Minimal layout example: [`docs/api-examples/layout.minimal.json`](docs/api-examples/layout.minimal.json)
