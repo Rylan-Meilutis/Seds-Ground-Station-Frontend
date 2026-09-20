@@ -1710,10 +1710,9 @@ impl CachedChart {
             let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; self.channel_count];
             let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; self.channel_count];
 
-            for b in &view_buckets {
-                if b.id < chunk_start_bid || b.id > chunk_end_bid {
-                    continue;
-                }
+            let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
+            let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            for b in &view_buckets[first..end] {
                 let has_any = b.has.iter().any(|v| *v);
                 if !has_any {
                     continue;
@@ -1885,10 +1884,9 @@ impl CachedChart {
             let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
             let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
 
-            for b in &view_buckets {
-                if b.id < chunk_start_bid || b.id > chunk_end_bid {
-                    continue;
-                }
+            let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
+            let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            for b in &view_buckets[first..end] {
                 let rel_bid = b.id - chunk_start_bid;
                 let x = chunk_width * ((rel_bid as f32 + 0.5) / chunk_bucket_count as f32);
 
@@ -2112,10 +2110,9 @@ impl CachedChart {
             let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
             let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
 
-            for b in &view_buckets {
-                if b.id < chunk_start_bid || b.id > chunk_end_bid {
-                    continue;
-                }
+            let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
+            let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            for b in &view_buckets[first..end] {
                 let rel_bid = b.id - chunk_start_bid;
                 let x = chunk_width * ((rel_bid as f32 + 0.5) / chunk_bucket_count as f32);
 

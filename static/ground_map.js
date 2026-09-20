@@ -4785,6 +4785,8 @@ function renderRasterFallbackMap() {
     rasterFallbackZoom = zoom;
     rememberRasterFallbackView();
 
+    let layers = container.__gs26RasterLayers;
+    if (!layers) {
     container.innerHTML = "";
     container.style.position = "relative";
     container.style.overflow = "hidden";
@@ -4816,6 +4818,14 @@ function renderRasterFallbackMap() {
     badge.style.fontWeight = "800";
     badge.style.letterSpacing = "0.04em";
     overlay.appendChild(badge);
+    layers = container.__gs26RasterLayers = {tileLayer, overlay, badge, tiles: new Map()};
+    installRasterFallbackControls(container);
+    }
+    const {tileLayer, overlay, badge} = layers;
+    // Keep decoded tile images alive across telemetry updates and dragging.
+    for (const marker of layers.markers || []) marker.remove();
+    layers.markers = [];
+    const needed = new Set();
 
     const centerWorld = latLonToWorldPointAtZoom(rasterFallbackCenterLat, rasterFallbackCenterLon, zoom);
     const topLeftX = centerWorld.x - (width / 2);
@@ -4832,7 +4842,10 @@ function renderRasterFallbackMap() {
             const wrappedTileX = ((tileX % scale) + scale) % scale;
             const url = resolveTileUrl(zoom, wrappedTileX, tileY);
             if (!url) continue;
-            const img = document.createElement("img");
+            needed.add(url);
+            let img = layers.tiles.get(url);
+            if (!img) {
+            img = document.createElement("img");
             img.src = url;
             img.alt = "";
             img.draggable = false;
@@ -4846,7 +4859,14 @@ function renderRasterFallbackMap() {
             img.style.objectFit = "cover";
             img.style.userSelect = "none";
             tileLayer.appendChild(img);
+            layers.tiles.set(url, img);
+            }
+            img.style.left = `${Math.round((tileX * 256) - topLeftX)}px`;
+            img.style.top = `${Math.round((tileY * 256) - topLeftY)}px`;
         }
+    }
+    for (const [url, img] of layers.tiles) {
+        if (!needed.has(url)) { img.remove(); layers.tiles.delete(url); }
     }
 
     const addMarkerIfVisible = (latLng, label, color) => {
@@ -4856,10 +4876,57 @@ function renderRasterFallbackMap() {
         const top = point.y - topLeftY;
         if (left < -24 || left > width + 24 || top < -24 || top > height + 24) return;
         createRasterFallbackMarker(overlay, label, color, left, top);
+        layers.markers.push(overlay.lastChild);
     };
 
     addMarkerIfVisible(lastRocketLatLng, "🚀", "#fca5a5");
     addMarkerIfVisible(currentUserAnchorLatLng(), "🧍", "#93c5fd");
+}
+
+function installRasterFallbackControls(container) {
+    container.style.touchAction = "none";
+    container.style.cursor = "grab";
+    container.tabIndex = 0;
+    container.setAttribute("aria-label", "Map: drag to pan; scroll or use plus and minus to zoom");
+    let drag = null, frame = null;
+    const redraw = () => {
+        if (frame !== null) return;
+        frame = requestAnimationFrame(() => { frame = null; renderRasterFallbackMap(); });
+    };
+    const zoomBy = (delta) => {
+        rasterFallbackZoom = Math.max(effectiveMinZoom(), Math.min(currentMaxZoom, rasterFallbackZoom + delta));
+        renderRasterFallbackMap();
+    };
+    container.addEventListener("pointerdown", event => {
+        if (event.target?.closest?.("button") || (event.button !== undefined && event.button !== 0)) return;
+        drag = {x:event.clientX,y:event.clientY,center:latLonToWorldPointAtZoom(rasterFallbackCenterLat,rasterFallbackCenterLon,rasterFallbackZoom)};
+        container.setPointerCapture?.(event.pointerId);
+        container.style.cursor = "grabbing";
+    });
+    container.addEventListener("pointermove", event => {
+        if (!drag) return;
+        [rasterFallbackCenterLat,rasterFallbackCenterLon] = worldPointToLatLonAtZoom(
+            drag.center.x-(event.clientX-drag.x),drag.center.y-(event.clientY-drag.y),rasterFallbackZoom);
+        redraw();
+    });
+    const end = () => { drag=null;container.style.cursor="grab"; };
+    container.addEventListener("pointerup", end);
+    container.addEventListener("pointercancel", end);
+    container.addEventListener("lostpointercapture", end);
+    container.addEventListener("wheel", event => {event.preventDefault();if(event.deltaY)zoomBy(event.deltaY<0?1:-1);},{passive:false});
+    container.addEventListener("keydown", event => {
+        if (event.key === "+" || event.key === "=") {event.preventDefault();zoomBy(1);}
+        if (event.key === "-") {event.preventDefault();zoomBy(-1);}
+    });
+    const controls=document.createElement("div");
+    controls.style.cssText="position:absolute;right:10px;top:10px;z-index:3;display:flex;flex-direction:column;gap:4px";
+    for(const [label,delta] of [["Zoom in",1],["Zoom out",-1]]) {
+        const button=document.createElement("button");button.type="button";
+        button.textContent=delta>0?"+":"−";button.setAttribute("aria-label",label);
+        button.style.cssText="width:44px;height:44px;font-size:24px;background:#152238;color:white;border:1px solid #94a3b8;border-radius:4px";
+        button.addEventListener("click",event=>{event.preventDefault();zoomBy(delta);});controls.appendChild(button);
+    }
+    container.appendChild(controls);
 }
 
 function activateRasterFallback(reason, centerLat, centerLon, zoom) {

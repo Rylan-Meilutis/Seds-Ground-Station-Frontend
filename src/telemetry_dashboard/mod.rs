@@ -3,6 +3,7 @@
 // frontend/src/telemetry_dashboard/mod.rs
 
 mod actions_tab;
+mod custom_dashboard;
 mod calibration_tab;
 mod connection_status_tab;
 pub mod data_chart;

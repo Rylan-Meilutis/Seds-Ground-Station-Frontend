@@ -2,6 +2,41 @@
 
 This repository contains the Dioxus-based frontend for the UBSEDS ground station UI.
 
+## Custom State dashboard
+
+Live history uses indexed GPS and channel extrema lookups so those operations
+do not scan the growing rolling buffer on every update. On reconnect/reload,
+history is fetched from GroundStation and its receipt times are aligned using
+the read-only `/api/system/time` endpoint; recorded source timestamps are not
+modified. This prevents a skewed backend clock from making live updates evict
+the restored history. The local offline cache is only a bounded startup preview
+(5,000 rows), not a full recording; full restoration requires the backend.
+
+Regression checks: `cargo test --bin groundstation_frontend` and
+`cargo test --bin groundstation_frontend -- --ignored --nocapture --test-threads=1`
+(the latter includes long-history profiling checks).
+
+Open **State → Customize dashboard** to add, hide, remove, reorder or configure
+telemetry cards. Cards support numbers, bars, gauges, short trends and binary
+state indicators. Choose a telemetry data type, optional board ID, zero-based
+channel index, label, unit and display range (maximum must exceed minimum).
+Layouts are saved locally per user and backend address; they do not synchronize
+between computers. **Restore defaults** restores the standard layout.
+
+Defaults group both loadcells, pressure, fill percentage, valve states and
+fill-system batteries under **Fill System**, and battery/GPS/barometer readings
+under **Avionics**. Missing data remains marked unavailable; readings older than
+10 seconds are marked stale. These displays do not replace safety controls or
+board connection status. Card rendering samples the existing telemetry cache at
+5 Hz and trends retain at most 150 samples; acquisition and CSV data are unchanged.
+
+Crew voice and recording tools open inside the app with a return button, not in
+external browser tabs. The Pi-compatible raster map supports dragging to pan,
+wheel or +/- buttons to zoom, and keyboard +/- when focused. Tiles are reused
+between telemetry updates. 3D views use a reduced-detail wireframe of the actual
+model when WebGL2 is unavailable. Rendering is capped at 30 FPS (12 FPS for the
+software fallback) and pauses when the view is hidden.
+
 ## Data capture downloads
 
 The panel also offers **Start/End (UTC)** for exporting across all saved backend

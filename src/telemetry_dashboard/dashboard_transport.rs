@@ -132,15 +132,68 @@ fn native_ws_connect_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-#[cfg(target_arch = "wasm32")]
+// Live rows use the client's receipt clock, while /api/recent uses the
+// backend's wall clock. Align historical receipt times before merging or a
+// Pi with a skewed clock loses its entire history at the first live packet.
 async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
+    #[derive(Deserialize)]
+    struct HistoryClock { utc_ms: i64 }
+    let before = current_wallclock_ms();
+    let clock = http_get_json::<HistoryClock>("/api/system/time").await;
+    let after = current_wallclock_ms();
+    let mut rows = fetch_recent_rows_raw().await?;
+    match clock {
+        Ok(clock) => align_history_receipt_clock(&mut rows, clock.utc_ms,
+            before.saturating_add(after.saturating_sub(before) / 2)),
+        Err(error) => log!("[seed] backend clock unavailable; retaining original history timestamps: {error}"),
+    }
+    Ok(rows)
+}
+
+fn align_history_receipt_clock(rows: &mut [TelemetryRow], server_ms: i64, client_ms: i64) {
+    let offset = client_ms.saturating_sub(server_ms);
+    for row in rows {
+        row.received_timestamp_ms = telemetry_row_received_ms(row).saturating_add(offset);
+    }
+}
+
+#[cfg(test)]
+mod history_clock_tests {
+    use super::*;
+
+    #[test]
+    fn reload_keeps_ten_minutes_when_backend_clock_is_a_day_behind() {
+        let server_now = 1_700_000_000_000i64;
+        let client_now = server_now + 86_400_000;
+        let mut rows: Vec<TelemetryRow> = (0..=600).map(|second| TelemetryRow {
+            timestamp_ms: server_now - 600_000 + second * 1000,
+            received_timestamp_ms: 0,
+            data_type: "KG1000".into(), sender_id: "DAQ".into(),
+            data_type_id: Default::default(), sender_id_id: Default::default(),
+            values: vec![Some(second as f32)],
+        }).collect();
+        normalize_telemetry_rows_for_runtime(&mut rows);
+        align_history_receipt_clock(&mut rows, server_now, client_now);
+        // The same merge/prune used on reseed must not discard the prefix.
+        let mut live = rows.last().unwrap().clone();
+        live.received_timestamp_ms = client_now + 100;
+        rows.push(live);
+        let merged = compact_rows_for_ui(rows);
+        assert_eq!(merged.len(), 602);
+        assert_eq!(merged[0].received_timestamp_ms, client_now - 600_000);
+        assert_eq!(merged[0].timestamp_ms, server_now - 600_000);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
     let mut rows = http_get_json::<Vec<TelemetryRow>>("/api/recent").await?;
     normalize_telemetry_rows_for_runtime(&mut rows);
     Ok(rows)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
+async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
     use futures_util::StreamExt;
 
     let path = "/api/recent".to_string();

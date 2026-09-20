@@ -215,10 +215,12 @@ fn sync_model_viewer(
         serde_json::to_string(&backend_url("/assets/three/vehicle-renderer.js")).unwrap();
     js_eval(&format!(
         r#"(() => {{
-        if(!document.getElementById('gs26-node-renderer')){{const s=document.createElement('script');s.id='gs26-node-renderer';s.type='module';s.src={renderer};document.head.append(s);}}
         const m=document.getElementById('gs26-vehicle-model-{viewer_id}');if(!m)return;
+        window.__gs26RendererModules ||= new Map();
+        if(!window.__gs26RendererModules.has({renderer}))window.__gs26RendererModules.set({renderer},import({renderer}));
+        window.__gs26RendererModules.get({renderer}).catch(()=>{{m.textContent='3D renderer could not load. Check the GroundStation connection and update the backend.';}});
         if(m.getAttribute('src')!=={src})m.setAttribute('src',{src});
-        m.setAttribute('data-state',{payload});
+        if(m.getAttribute('data-state')!=={payload})m.setAttribute('data-state',{payload});
     }})();"#
     ));
 }

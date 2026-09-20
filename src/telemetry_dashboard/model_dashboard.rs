@@ -68,7 +68,7 @@ pub(super) fn ModelDashboard(
         div {style:"flex:1;min-height:0;overflow:auto;",
             div {style:"min-height:460px;",VehicleTab {theme:theme.clone(),flight_state,rocket_gps,rocket_altitude_m}}
             if crate::auth::can_view_actions() && super::gse_panel::ground_visible(&flight_state.read()) {
-                super::gse_panel::GsePanel {action_policy,abort_only_mode,theme:theme.clone()}
+                super::gse_panel::GsePanel {action_policy,abort_only_mode,theme:theme.clone(),show_model:false}
             }
         }
         div {style:"flex:0 0 auto;display:flex;gap:24px;flex-wrap:wrap;padding:14px 18px;background:#101923;color:#e5edf4;font-variant-numeric:tabular-nums;",
