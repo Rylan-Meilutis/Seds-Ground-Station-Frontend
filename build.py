@@ -1663,6 +1663,7 @@ def build_manual_linux_packages(
                 "Priority: optional",
                 f"Architecture: {deb_arch}",
                 "Maintainer: UBSEDS",
+                "Depends: libwebkit2gtk-4.1-0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav",
                 f"Description: {description}",
                 "",
             ])
