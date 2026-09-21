@@ -39,6 +39,19 @@ software fallback) and pauses when the view is hidden.
 
 ## Data capture downloads
 
+**Data Export** now includes channel graphs and CSV/Excel/PDF reports. Select a
+recording (or all recordings), optionally enter UTC date bounds, and load the
+preview. Select channels and use the start/end sliders to highlight a time window,
+or export the entire loaded span. Preview graphs are downsampled; exported data
+is not. Excel contains charts and data sheets; PDF contains graphs and full selected
+data tables. Reports include recorded regression coefficients/tare/provenance,
+or explicitly labelled inferred/unavailable metadata for older recordings.
+
+Install the backend report libraries with `python3 scripts/setup-report-export.py`
+in GroundStation26. Native clients need no Python libraries and save all formats
+to Downloads/Documents without opening browser tabs. Selection limits and backend
+setup are documented in GroundStation26's `docs/backend/data-capture.md`.
+
 The panel also offers **Start/End (UTC)** for exporting across all saved backend
 recordings automatically. The interval includes start and excludes end; data is
 selected by stored receive timestamps, not database filenames.

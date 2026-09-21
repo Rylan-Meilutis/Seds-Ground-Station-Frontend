@@ -40,7 +40,7 @@ async fn download_csv(id: &str) -> Result<String, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn download_csv_path(path: &str, filename: &str) -> Result<String, String> {
+pub(super) async fn download_csv_path(path: &str, filename: &str) -> Result<String, String> {
     let url = format!("{}{}", UrlConfig::base_http().trim_end_matches('/'), path);
     let token = auth::current_token();
     let script = format!(
@@ -51,7 +51,7 @@ async fn download_csv_path(path: &str, filename: &str) -> Result<String, String>
                 headers: token ? {{Authorization: "Bearer " + token}} : {{}},
                 cache: "no-store"
             }});
-            if (!response.ok) throw new Error("CSV download failed (" + response.status + "): " + await response.text());
+            if (!response.ok) throw new Error("Export failed (" + response.status + "): " + await response.text());
             const blob = await response.blob();
             const address = URL.createObjectURL(blob);
             const link = document.createElement("a");
@@ -61,7 +61,7 @@ async fn download_csv_path(path: &str, filename: &str) -> Result<String, String>
             link.click();
             link.remove();
             setTimeout(() => URL.revokeObjectURL(address), 60000);
-            return "CSV download ready. Check your browser downloads.";
+            return "Export ready. Check your downloads.";
         }})();
     "#,
         token = serde_json::to_string(&token).unwrap(),
@@ -81,7 +81,7 @@ async fn download_csv(id: &str) -> Result<String, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn download_csv_path(path: &str, filename: &str) -> Result<String, String> {
+pub(super) async fn download_csv_path(path: &str, filename: &str) -> Result<String, String> {
     use std::io::Write;
     let base = UrlConfig::base_http();
     let base = if base.is_empty() {
@@ -101,7 +101,7 @@ async fn download_csv_path(path: &str, filename: &str) -> Result<String, String>
     let mut response = request.send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!(
-            "CSV download failed ({}): {}",
+            "Export failed ({}): {}",
             response.status(),
             response.text().await.unwrap_or_default()
         ));
@@ -114,8 +114,11 @@ async fn download_csv_path(path: &str, filename: &str) -> Result<String, String>
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let target = dir.join(format!("{}-{stamp}.csv", filename.trim_end_matches(".csv")));
-    let partial = target.with_extension("csv.part");
+    let name = std::path::Path::new(filename);
+    let stem = name.file_stem().and_then(|s| s.to_str()).unwrap_or("telemetry");
+    let extension = name.extension().and_then(|s| s.to_str()).unwrap_or("csv");
+    let target = dir.join(format!("{stem}-{stamp}.{extension}"));
+    let partial = target.with_extension(format!("{extension}.part"));
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -135,10 +138,10 @@ async fn download_csv_path(path: &str, filename: &str) -> Result<String, String>
         return Err(error);
     }
     std::fs::rename(partial, &target).map_err(|e| e.to_string())?;
-    Ok(format!("Saved CSV to {}", target.display()))
+    Ok(format!("Saved export to {}", target.display()))
 }
 
-fn input_utc_ms(value: &str) -> Result<i64, String> {
+pub(super) fn input_utc_ms(value: &str) -> Result<i64, String> {
     let format = time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]");
     let date = time::PrimitiveDateTime::parse(value, format)
         .map_err(|_| "Choose a valid UTC date and time.".to_string())?;
@@ -273,9 +276,8 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
         });
     });
     rsx! {
-        details { style:"border:1px solid {theme.border};border-radius:10px;padding:10px;color:{theme.text_primary};background:{theme.panel_background};",
-            summary { style:"cursor:pointer;font-weight:700;", "Data capture · CSV downloads" }
-            RangeAndClock {}
+        section { style:"border:1px solid {theme.border};border-radius:10px;padding:10px;color:{theme.text_primary};background:{theme.panel_background};",
+            h2 { "Data Export" }
             p { "Available in Test Fire, HITL, and normal mode. Use the recording actions to start or stop capture, then refresh this list." }
             p { style:"font-size:12px;color:{theme.text_muted};",
                 "Exports every recorded telemetry row, with source identity, receive/source timestamps, raw values and payload bytes. Active recordings download committed rows up to the request; stop recording first for a complete capture."
@@ -283,6 +285,7 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
             div { style:"display:flex;gap:8px;flex-wrap:wrap;",
                 select { aria_label:"Recording to download", value:"{selected}", disabled:loading() || downloading(),
                     onchange:move |e| selected.set(e.value()),
+                    option { value:"", "All local recordings" }
                     if recordings.read().is_empty() { option { value:"", "No recorded sessions yet" } }
                     for recording in recordings.read().iter() {
                         option { value:"{recording.id}",
@@ -304,6 +307,8 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
                     });
                 }, if downloading() { "Downloading…" } else { "Download CSV" } }
             }
+            super::report_studio::ReportStudio { key:selected(), recording:selected() }
+            details { summary { "Legacy CSV / clock settings" } RangeAndClock {} }
             p { role:"status", style:"overflow-wrap:anywhere;", "{status}" }
         }
     }

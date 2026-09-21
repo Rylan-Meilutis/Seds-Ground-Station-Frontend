@@ -74,7 +74,7 @@ pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> R
         Ok::<_, String>((status, body))
     };
     futures_util::pin_mut!(fetch);
-    let timeout_ms = if path == "/api/recent" {
+    let timeout_ms = if path == "/api/recent" || path.starts_with("/api/recordings/report?") {
         300_000
     } else {
         15_000
@@ -104,7 +104,7 @@ pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> R
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_http_timeouts(path: &str) -> (std::time::Duration, std::time::Duration) {
-    if path == "/api/recent" {
+    if path == "/api/recent" || path.starts_with("/api/recordings/report?") {
         let secs = std::env::var("GS_RECENT_HTTP_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())

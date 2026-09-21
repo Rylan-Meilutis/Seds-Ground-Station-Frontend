@@ -4,6 +4,7 @@
 
 mod actions_tab;
 mod custom_dashboard;
+mod report_studio;
 mod calibration_tab;
 mod connection_status_tab;
 pub mod data_chart;

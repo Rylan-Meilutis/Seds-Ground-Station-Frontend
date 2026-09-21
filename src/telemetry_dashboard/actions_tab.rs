@@ -268,6 +268,15 @@ pub fn ActionsTab(
     abort_only_mode: bool,
     theme: ThemeConfig,
 ) -> Element {
+    let mut auto_zero = use_signal(|| None::<bool>);
+    let mut auto_zero_busy = use_signal(|| false);
+    let mut auto_zero_message = use_signal(String::new);
+    use_effect(move || { spawn(async move {
+        match super::http_get_json::<serde_json::Value>("/api/auto_zero").await {
+            Ok(value) => auto_zero.set(value["enabled"].as_bool()),
+            Err(error) => auto_zero_message.set(format!("Automatic zero settings unavailable: {error}")),
+        }
+    }); });
     let mut self_test_confirmed = use_signal(|| false);
     let mut self_test_busy = use_signal(|| false);
     let mut self_test_message = use_signal(String::new);
@@ -377,6 +386,50 @@ pub fn ActionsTab(
             ",
             style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
+            label {
+                input { r#type: "checkbox", checked: auto_zero().unwrap_or(false),
+                    disabled: auto_zero().is_none() || auto_zero_busy() || abort_only_mode,
+                    onchange: move |event| {
+                        let enabled = event.checked();
+                        auto_zero_busy.set(true);
+                        spawn(async move {
+                            match super::http_post_json::<_, serde_json::Value>("/api/auto_zero", &serde_json::json!({"enabled": enabled})).await {
+                                Ok(saved) => { auto_zero.set(saved["enabled"].as_bool()); auto_zero_message.set("Automatic zero setting saved".into()); }
+                                Err(error) => auto_zero_message.set(format!("Setting not changed: {error}")),
+                            }
+                            auto_zero_busy.set(false);
+                        });
+                    }
+                }
+                " Automatically zero loadcells before Fill / during Launch countdown"
+            }
+            small { "Fill: skip capture when 200 recent samples are stable within ±0.8 kg. Otherwise collect 200 fresh samples; isolated outliers are ignored. Off preserves the existing tare. Offsets beyond ±0.8 kg require inspection and manual tare." }
+            if !auto_zero_message().is_empty() { p { "{auto_zero_message}" } }
+            if let Some(cfg) = fill_targets() {
+                label { "Fill percentage and automatic cutoff source: "
+                    select {
+                        value: "{cfg.fill_source}", disabled: fill_targets_busy() || abort_only_mode,
+                        onchange: move |event| {
+                            let Some(mut cfg) = fill_targets() else { return; };
+                            cfg.fill_source = event.value();
+                            fill_targets_busy.set(true);
+                            spawn(async move {
+                                match super::http_post_json::<_, FillTargetsConfig>("/api/fill_targets", &cfg).await {
+                                    Ok(saved) => {
+                                        backend_fill_targets.set(Some(saved.clone()));
+                                        fill_targets.set(Some(saved));
+                                        fill_targets_status.set("Fill source saved".into());
+                                    }
+                                    Err(error) => fill_targets_status.set(format!("Fill source not changed: {error}")),
+                                }
+                                fill_targets_busy.set(false);
+                            });
+                        },
+                        option { value: "kg50", "50 kg loadcell (signed calibrated value)" }
+                        option { value: "kg1000_absolute", "1000 kg loadcell (absolute calibrated value)" }
+                    }
+                }
+            }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "All available actions are available all the time, use with caution as improper use \
                 can and will damage the system."

@@ -129,10 +129,14 @@ pub(crate) struct FluidFillTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct FillTargetsConfig {
+    #[serde(default = "default_fill_source")]
+    pub fill_source: String,
     pub version: u32,
     pub nitrogen: FluidFillTarget,
     pub nitrous: FluidFillTarget,
 }
+
+fn default_fill_source() -> String { "kg50".into() }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
