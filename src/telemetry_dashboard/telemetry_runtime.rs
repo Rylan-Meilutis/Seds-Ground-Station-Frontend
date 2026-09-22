@@ -1468,6 +1468,54 @@ pub(crate) fn fresh_daq_calibration_value(data_type: &str, now_ms: i64) -> Optio
     let key = LatestTelemetryKey::new(intern_telemetry_text(data_type), intern_telemetry_text("DAQ"));
     let latest = LATEST_TELEMETRY.lock().ok()?;
     let row = latest.get(&key)?;
-    if now_ms < row.timestamp_ms || now_ms - row.timestamp_ms > 2000 { return None; }
+    fresh_calibration_sample(row, now_ms)
+}
+
+fn fresh_calibration_sample(row: &LatestTelemetrySample, now_ms: i64) -> Option<f32> {
+    // Live ingestion stamps receipt using the client clock. Source timestamps
+    // may be slightly ahead while network clocks converge; they must not make
+    // a newly received temperature disappear until the browser catches up.
+    let age_ms = now_ms.checked_sub(row.received_timestamp_ms)?;
+    if !(0..=2000).contains(&age_ms) {
+        return None;
+    }
     row.values.first().copied().flatten().filter(|v| v.is_finite())
+}
+
+#[cfg(test)]
+mod calibration_freshness_tests {
+    use super::*;
+
+    fn sample(source_ms: i64, received_ms: i64, value: Option<f32>) -> LatestTelemetrySample {
+        LatestTelemetrySample {
+            timestamp_ms: source_ms,
+            received_timestamp_ms: received_ms,
+            data_type: intern_telemetry_text("DAQ_ADC_TEMPERATURE"),
+            sender_id: intern_telemetry_text("DAQ"),
+            values: Arc::from(vec![value]),
+        }
+    }
+
+    #[test]
+    fn source_clock_skew_does_not_blank_fresh_temperature() {
+        let row = sample(10100, 10000, Some(29.5));
+        for now in [10000, 10001, 10099, 10100, 12000] {
+            assert_eq!(fresh_calibration_sample(&row, now), Some(29.5));
+        }
+        assert_eq!(fresh_calibration_sample(&row, 12001), None);
+    }
+
+    #[test]
+    fn stale_receipt_cannot_be_refreshed_by_a_future_source_timestamp() {
+        let row = sample(90000, 10000, Some(29.5));
+        assert_eq!(fresh_calibration_sample(&row, 12001), None);
+        assert_eq!(fresh_calibration_sample(&row, 9999), None);
+    }
+
+    #[test]
+    fn missing_and_nonfinite_values_are_not_calibration_samples() {
+        for value in [None, Some(f32::NAN), Some(f32::INFINITY)] {
+            assert_eq!(fresh_calibration_sample(&sample(10000, 10000, value), 10000), None);
+        }
+    }
 }
