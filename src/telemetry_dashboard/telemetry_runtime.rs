@@ -1462,3 +1462,12 @@ fn apply_telemetry_history_settings(retention_ms: u64, view_window_ms: u64) {
     charts_cache_request_refit();
     bump_chart_render_epoch();
 }
+
+/// Calibration must not reuse stale display/cache values after a disconnect.
+pub(crate) fn fresh_daq_calibration_value(data_type: &str, now_ms: i64) -> Option<f32> {
+    let key = LatestTelemetryKey::new(intern_telemetry_text(data_type), intern_telemetry_text("DAQ"));
+    let latest = LATEST_TELEMETRY.lock().ok()?;
+    let row = latest.get(&key)?;
+    if now_ms < row.timestamp_ms || now_ms - row.timestamp_ms > 2000 { return None; }
+    row.values.first().copied().flatten().filter(|v| v.is_finite())
+}

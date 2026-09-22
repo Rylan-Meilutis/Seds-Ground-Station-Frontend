@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use super::network_topology_tab::collect_endpoint_rows;
 use super::types::{
     BoardStatusEntry, FlightState, NetworkTopologyMsg, NetworkTopologyNodeKind,
-    NetworkTopologyStatus, display_flight_state,
+    NetworkTopologyStats, NetworkTopologyStatus, display_flight_state,
 };
 use super::{
     AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
@@ -224,6 +224,80 @@ pub fn DetailedTab(
         "Application ↔ Station au sol",
     );
 
+    let traffic_live = ws_connected && topology_age_ms.is_some_and(|age| age <= 3500);
+    let mut router_traffic_cards = Vec::new();
+    if let Some(traffic) = &topology.traffic {
+        let totals = sum_traffic(traffic.sides.iter().map(|side| side.totals));
+        let delta = traffic
+            .sides
+            .iter()
+            .map(|side| side.delta)
+            .collect::<Option<Vec<_>>>()
+            .filter(|sides| !sides.is_empty())
+            .map(|sides| sum_traffic(sides.into_iter()));
+        let mut rows = traffic_rows(totals, delta, traffic.interval_ms, traffic_live);
+        rows.insert(
+            0,
+            (
+                "Scope",
+                "All local router sides (RX / TX relative to Ground Station)".into(),
+            ),
+        );
+        rows.insert(
+            1,
+            (
+                "Measurement",
+                if !traffic_live {
+                    "Stale / disconnected".into()
+                } else if traffic.interval_ms == 0 {
+                    "Waiting for second sample".into()
+                } else {
+                    format!(
+                        "{:.2} s backend sample",
+                        traffic.interval_ms as f64 / 1000.0
+                    )
+                },
+            ),
+        );
+        rows.push((
+            "Byte accounting",
+            "SEDSnet packet bytes; excludes physical-link framing".into(),
+        ));
+        router_traffic_cards.push(("Backend router traffic".to_string(), rows));
+        for side in &traffic.sides {
+            let mut rows = traffic_rows(side.totals, side.delta, traffic.interval_ms, traffic_live);
+            rows.insert(
+                0,
+                (
+                    "Directions",
+                    format!(
+                        "RX {} / TX {}",
+                        if side.ingress_enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        },
+                        if side.egress_enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
+                    ),
+                ),
+            );
+            router_traffic_cards
+                .push((format!("Router side {}: {}", side.side_id, side.name), rows));
+        }
+    } else {
+        router_traffic_cards.push((
+            "Backend router traffic".into(),
+            vec![(
+                "Status",
+                "Unavailable — backend router statistics required".into(),
+            )],
+        ));
+    }
+
     let mut session_rows = vec![
         (
             "Rows per second",
@@ -279,18 +353,23 @@ pub fn DetailedTab(
                 div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
                         &theme,
-                        "Traffic",
+                        "Browser WebSocket traffic",
                         vec![
                             ("Inbound messages", metrics_snapshot.ws_messages_total.to_string()),
                             ("Inbound bytes", human_bytes(metrics_snapshot.ws_bytes_total)),
                             ("Telemetry rows", metrics_snapshot.telemetry_rows_total.to_string()),
                             ("Telemetry batches", metrics_snapshot.telemetry_batches_total.to_string()),
-                            ("Msg rate", format!("{:.1}/s", metrics_snapshot.msgs_per_sec)),
-                            ("Bandwidth", format!("{}/s", human_bytes_f64(metrics_snapshot.bytes_per_sec))),
+                            ("WS messages/s", format!("{:.1}/s", metrics_snapshot.msgs_per_sec)),
+                            ("WS bandwidth", format!("{}/s", human_bytes_f64(metrics_snapshot.bytes_per_sec))),
                             ("Avg bytes/msg", avg_bytes_per_msg.map(|v| format!("{v:.1} B")).unwrap_or_else(|| "--".to_string())),
                             ("Avg rows/batch", avg_rows_per_batch.map(|v| format!("{v:.1}")).unwrap_or_else(|| "--".to_string())),
                         ],
                     )}
+                }
+                for (title, rows) in router_traffic_cards {
+                    div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
+                        {metric_card(&theme, &title, rows)}
+                    }
                 }
                 div { style: "break-inside:avoid; page-break-inside:avoid; margin-bottom:14px; display:inline-block; width:100%; vertical-align:top;",
                     {metric_card(
@@ -777,4 +856,98 @@ fn collect_board_route_rows(
 
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     rows
+}
+
+fn sum_traffic(items: impl Iterator<Item = NetworkTopologyStats>) -> NetworkTopologyStats {
+    items.fold(NetworkTopologyStats::default(), |mut sum, item| {
+        sum.packets_received = sum.packets_received.saturating_add(item.packets_received);
+        sum.packets_sent = sum.packets_sent.saturating_add(item.packets_sent);
+        sum.bytes_received = sum.bytes_received.saturating_add(item.bytes_received);
+        sum.bytes_sent = sum.bytes_sent.saturating_add(item.bytes_sent);
+        sum
+    })
+}
+
+fn traffic_rows(
+    totals: NetworkTopologyStats,
+    delta: Option<NetworkTopologyStats>,
+    interval_ms: u64,
+    live: bool,
+) -> Vec<(&'static str, String)> {
+    let delta = delta.filter(|_| live && interval_ms > 0);
+    let rate = |count: u64| count as f64 * 1000.0 / interval_ms as f64;
+    let avg = |bytes: u64, packets: u64| {
+        if packets > 0 {
+            format!("{:.1} B", bytes as f64 / packets as f64)
+        } else {
+            "--".into()
+        }
+    };
+    vec![
+        (
+            "RX messages/s",
+            delta
+                .map(|d| format!("{:.1}/s", rate(d.packets_received)))
+                .unwrap_or_else(|| "--".into()),
+        ),
+        (
+            "TX messages/s",
+            delta
+                .map(|d| format!("{:.1}/s", rate(d.packets_sent)))
+                .unwrap_or_else(|| "--".into()),
+        ),
+        (
+            "RX data rate",
+            delta
+                .map(|d| format!("{}/s", human_bytes_f64(rate(d.bytes_received))))
+                .unwrap_or_else(|| "--".into()),
+        ),
+        (
+            "TX data rate",
+            delta
+                .map(|d| format!("{}/s", human_bytes_f64(rate(d.bytes_sent))))
+                .unwrap_or_else(|| "--".into()),
+        ),
+        (
+            "RX avg bytes/msg",
+            delta
+                .map(|d| avg(d.bytes_received, d.packets_received))
+                .unwrap_or_else(|| "--".into()),
+        ),
+        (
+            "TX avg bytes/msg",
+            delta
+                .map(|d| avg(d.bytes_sent, d.packets_sent))
+                .unwrap_or_else(|| "--".into()),
+        ),
+        ("RX total messages", totals.packets_received.to_string()),
+        ("TX total messages", totals.packets_sent.to_string()),
+        ("RX total bytes", human_bytes(totals.bytes_received)),
+        ("TX total bytes", human_bytes(totals.bytes_sent)),
+    ]
+}
+
+#[cfg(test)]
+mod traffic_tests {
+    use super::*;
+
+    #[test]
+    fn rates_use_backend_interval_and_stale_values_are_not_live_rates() {
+        let counts = NetworkTopologyStats {
+            packets_received: 3000,
+            packets_sent: 20,
+            bytes_received: 120_000,
+            bytes_sent: 1600,
+        };
+        let rows = traffic_rows(counts, Some(counts), 2000, true);
+        assert_eq!(rows[0].1, "1500.0/s");
+        assert_eq!(rows[1].1, "10.0/s");
+        assert_eq!(rows[4].1, "40.0 B");
+        assert_eq!(rows[5].1, "80.0 B");
+        assert_eq!(traffic_rows(counts, Some(counts), 2000, false)[0].1, "--");
+        assert_eq!(traffic_rows(counts, None, 0, true)[0].1, "--");
+        let idle = traffic_rows(counts, Some(NetworkTopologyStats::default()), 1000, true);
+        assert_eq!(idle[0].1, "0.0/s");
+        assert_eq!(idle[4].1, "--");
+    }
 }
