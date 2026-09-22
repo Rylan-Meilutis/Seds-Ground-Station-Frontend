@@ -49,6 +49,12 @@ struct GenericCalibrationChannel {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct CalibrationFile {
+    #[serde(default)]
+    noise: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    thermal: BTreeMap<String, ThermalCalibration>,
+    #[serde(default)]
+    temperature_captures: BTreeMap<String, Vec<TemperatureCapture>>,
     full_mass_kg: Option<f32>,
     #[serde(default)]
     weights_kg: Vec<f32>,
@@ -59,6 +65,9 @@ struct CalibrationFile {
 impl Default for CalibrationFile {
     fn default() -> Self {
         Self {
+            noise: BTreeMap::new(),
+            thermal: BTreeMap::new(),
+            temperature_captures: BTreeMap::new(),
             full_mass_kg: Some(10.0),
             weights_kg: Vec::new(),
             channels: BTreeMap::new(),
@@ -263,15 +272,25 @@ async fn sleep_ms(millis: u64) {
 async fn capture_average_raw_sample<F>(
     data_type: String,
     samples: usize,
+    calibration: CalibrationFile,
     mut on_progress: F,
-) -> Result<(f32, usize), String>
+) -> Result<(f32, usize, Option<f32>), String>
 where
     F: FnMut(usize, usize),
 {
     let target = samples.clamp(1, 5_000);
     let mut captured_samples = Vec::with_capacity(target);
+    let mut temperatures = Vec::with_capacity(target);
     for idx in 0..target {
-        if let Some(raw) = latest_raw(&data_type) {
+        if matches!(data_type.as_str(), "KG1000" | "KG50") {
+            let temperature = fresh_temperature().ok_or("Fresh ADC temperature required for load-cell calibration")?;
+            let raw = super::fresh_daq_calibration_value(&data_type, now_ms() as i64)
+                .ok_or("Fresh DAQ load-cell readings required")?;
+            let corrected = thermal_raw(&calibration, &data_type, raw, Some(temperature))
+                .ok_or("Invalid thermal calibration")?;
+            captured_samples.push(corrected);
+            temperatures.push(temperature);
+        } else if let Some(raw) = latest_raw(&data_type) {
             captured_samples.push(raw);
         }
         let completed = idx + 1;
@@ -322,7 +341,8 @@ where
             filtered.as_slice()
         };
         let total: f32 = usable.iter().copied().sum();
-        Ok((total / usable.len() as f32, usable.len()))
+        let temperature = (!temperatures.is_empty()).then(|| temperatures.iter().sum::<f32>() / temperatures.len() as f32);
+        Ok((total / usable.len() as f32, usable.len(), temperature))
     }
 }
 
@@ -1278,6 +1298,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let known_kg = use_signal(|| "1.0".to_string());
     let manual_kg = use_signal(|| "1.0".to_string());
     let manual_raw = use_signal(String::new);
+    let mut manual_temperature = use_signal(|| None::<f32>);
     let selected_point = use_signal(|| None::<SelectedCalibrationPoint>);
     let inspected_point_idx = use_signal(|| None::<SelectedCalibrationPoint>);
     let status = use_signal(|| "Loading calibration...".to_string());
@@ -1891,7 +1912,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 div { style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;",
                     div {
                         h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
-                        div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Tune live sensor fits, capture calibration points, and refit without leaving the dashboard." }
+                        div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Live load-cell captures retain ADC temperature and normalize raw values to the saved thermal reference before fitting." }
                         div { style: "margin-top:6px; color:{theme.text_secondary}; font-size:12px;",
                             if can_edit {
                                 "Local edits stay on this page until Save pushes them to the backend. Saved changes sync to other open frontends."
@@ -1951,7 +1972,40 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     }
                 }
 
+            if can_edit {
+                if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                    LongZeroPanel {
+                        sensor: sensor.data_type.clone(),
+                        dirty: *dirty.read(),
+                        on_applied: { let mut cfg = cfg; let mut dirty = dirty; move |updated: CalibrationFile| { cfg.set(Some(updated)); dirty.set(false); } },
+                    }
+                }
+            }
             div { style: "{toolbar_style}",
+                if can_edit && selected_sensor.as_ref().is_some_and(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                    button {
+                        style: "{neutral_button_style}",
+                        disabled: *dirty.read(),
+                        onclick: {
+                            let selected_sensor = selected_sensor.clone();
+                            let mut cfg = cfg;
+                            let mut status = status;
+                            move |_| {
+                                let Some(sensor) = selected_sensor.clone() else { return; };
+                                spawn(async move {
+                                    let body = serde_json::json!({"sensor_id": sensor.data_type});
+                                    match http_post_json::<serde_json::Value, CalibrationFile>("/api/calibration/capture_thermal_zero", &body).await {
+                                        Ok(saved) => { cfg.set(Some(saved)); status.set("Thermal point saved. After fitting, recapture zero and mass points before use.".into()); }
+                                        Err(err) => status.set(format!("Thermal capture failed: {err}")),
+                                    }
+                                });
+                            }
+                        },
+                        "Capture unloaded thermal point"
+                    }
+                    a { href: format!("{}/api/calibration/thermal", UrlConfig::base_http()), target: "_blank", "Long zero capture and noise filter" }
+                    span { "Keep unloaded and thermally settled; capture at two temperatures at least 5 C apart. Save local edits first." }
+                }
                 span { style: "color:{theme.text_secondary};", "Sensors" }
                 for sensor in sensors.iter().cloned() {
                     button {
@@ -2130,7 +2184,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     disabled: !can_edit,
                     oninput: {
                         let mut manual_raw = manual_raw;
-                        move |e| manual_raw.set(e.value())
+                        move |e| { manual_temperature.set(None); manual_raw.set(e.value()); }
                     }
                 }
                 button {
@@ -2168,6 +2222,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 raw,
                                 *preserve_regression_on_zero_change.read(),
                             );
+                            record_temperature_capture(&mut next, &sensor.data_type, kg, raw, *manual_temperature.read());
                             let refit_err = refresh_local_fit_preview(
                                 &mut next,
                                 &selected_channel,
@@ -2212,9 +2267,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             status.set(initial_message);
                             let sensor_label = sensor.label.clone();
                             spawn(async move {
+                                let capture_calibration = cfg.read().clone().unwrap_or_default();
                                 match capture_average_raw_sample(
                                     sensor.data_type.clone(),
                                     effective_capture_sample_count,
+                                    capture_calibration,
                                     |completed, target| {
                                         let progress = format!(
                                             "Capturing samples for {}: {}/{}",
@@ -2226,7 +2283,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 )
                                 .await
                                 {
-                                    Ok((raw, captured)) => {
+                                    Ok((raw, captured, temperature)) => {
+                                        manual_temperature.set(temperature);
                                         manual_raw.set(format_sensor_raw_value(
                                             raw,
                                             Some(&sensor),
@@ -2734,9 +2792,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                         ));
                                         let sensor_label = sensor.label.clone();
                                         spawn(async move {
+                                            let capture_calibration = cfg.read().clone().unwrap_or_default();
                                             match capture_average_raw_sample(
                                                 sensor.data_type.clone(),
                                                 effective_capture_sample_count,
+                                                capture_calibration,
                                                 |completed, target| {
                                                     sequence_dialog_status.set(format!(
                                                         "Capturing samples for {}: {}/{}",
@@ -2746,7 +2806,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             )
                                             .await
                                             {
-                                                Ok((raw, captured)) => {
+                                                Ok((raw, captured, temperature)) => {
                                                     let mut next = cfg.read().clone().unwrap_or_default();
                                                     if let Err(error) = apply_sequence_capture(
                                                         &mut next, &sensor.channel, mode, weight, raw, replace_existing,
@@ -2755,6 +2815,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         sequence_capture_busy.set(false);
                                                         return;
                                                     }
+                                                    record_temperature_capture(&mut next, &sensor.data_type, if mode == CaptureMode::SequenceZero { 0.0 } else { weight }, raw, temperature);
                                                     let refit_err = refresh_local_fit_preview(
                                                         &mut next,
                                                         &sensor.channel,
@@ -2902,7 +2963,7 @@ fn CalibrationLiveMetrics(
         .and_then(|sensor| latest_raw(sensor.data_type.as_str()));
     let calibrated_live = calibration
         .as_ref()
-        .and_then(|cfg| raw_live.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
+        .and_then(|cfg| raw_live.and_then(|raw| thermal_raw(cfg, &channel_key, raw, fresh_temperature())).and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
     let raw_live_s = fmt_fixed(
         raw_live,
         12,
@@ -2911,6 +2972,7 @@ fn CalibrationLiveMetrics(
     let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
 
     rsx! {
+        {metric_card(&theme, "ADC Temperature (C)", fmt_fixed(fresh_temperature(), 0, 2))}
         {metric_card(&theme, "Live Raw", raw_live_s)}
         {metric_card(&theme, "Calibrated Value", calibrated_live_s)}
     }
@@ -2924,6 +2986,115 @@ fn metric_card(theme: &ThemeConfig, label: &str, value: String) -> Element {
                 style: "font-size:14px; color:{theme.text_primary}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; min-width:14ch; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; font-weight:700;",
                 "{value}"
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+struct ThermalCalibration { reference_c: f32, raw_per_c: f32, #[serde(default)] points: Vec<[f32; 2]> }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TemperatureCapture { expected: f32, raw: f32, temperature_c: Option<f32> }
+fn thermal_sensor(channel: &str) -> &str { match channel { "ch1" => "KG1000", "kg50" => "KG50", _ => channel } }
+fn fresh_temperature() -> Option<f32> {
+    super::fresh_daq_calibration_value("DAQ_ADC_TEMPERATURE", now_ms() as i64)
+        .filter(|t| (-40.0..=125.0).contains(t))
+}
+fn thermal_raw(cfg: &CalibrationFile, channel: &str, raw: f32, temperature: Option<f32>) -> Option<f32> {
+    let Some(t) = cfg.thermal.get(thermal_sensor(channel)) else { return Some(raw); };
+    if t.raw_per_c == 0.0 { return Some(raw); }
+    let corrected = raw - t.raw_per_c * (temperature? - t.reference_c);
+    corrected.is_finite().then_some(corrected)
+}
+fn record_temperature_capture(cfg: &mut CalibrationFile, sensor: &str, expected: f32,
+                              corrected_raw: f32, temperature_c: Option<f32>) {
+    if !matches!(sensor, "KG1000" | "KG50") { return; }
+    let drift = cfg.thermal.get(sensor).and_then(|t| temperature_c.map(|v| t.raw_per_c * (v - t.reference_c))).unwrap_or(0.0);
+    let captures = cfg.temperature_captures.entry(sensor.into()).or_default();
+    captures.retain(|p| (p.expected - expected).abs() >= 1e-6);
+    captures.push(TemperatureCapture { expected, raw: corrected_raw + drift, temperature_c });
+}
+
+#[cfg(test)]
+mod thermal_calibration_tests {
+    use super::*;
+    #[test]
+    fn capture_temperature_survives_save_and_raw_is_not_double_corrected() {
+        let mut cfg = CalibrationFile::default();
+        cfg.thermal.insert("KG1000".into(), ThermalCalibration { reference_c: 20., raw_per_c: 0.2, points: vec![] });
+        let corrected = thermal_raw(&cfg, "ch1", 12., Some(30.)).unwrap();
+        assert_eq!(corrected, 10.);
+        assert_eq!(thermal_raw(&cfg, "ch1", 12., None), None);
+        record_temperature_capture(&mut cfg, "KG1000", 0., corrected, Some(30.));
+        let saved: CalibrationFile = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(saved.temperature_captures["KG1000"][0].raw, 12.);
+        assert_eq!(saved.temperature_captures["KG1000"][0].temperature_c, Some(30.));
+        assert_eq!(saved.thermal["KG1000"].raw_per_c, 0.2);
+    }
+}
+
+#[component]
+fn LongZeroPanel(sensor: String, dirty: bool, on_applied: EventHandler<CalibrationFile>) -> Element {
+    let mut status = use_signal(|| serde_json::Value::Null);
+    let mut message = use_signal(String::new);
+    let mut duration = use_signal(|| "1800".to_string());
+    let mut tau = use_signal(|| "100".to_string());
+    let mut known_zero = use_signal(|| false);
+    let mut thermal = use_signal(|| true);
+    use_future(move || async move {
+        loop {
+            if let Ok(value) = http_get_json::<serde_json::Value>("/api/calibration/long_zero").await { status.set(value); }
+            sleep_ms(1000).await;
+        }
+    });
+    let snapshot = status.read().clone();
+    let running = snapshot["running"].as_bool().unwrap_or(false);
+    let id = snapshot["session_id"].as_str().unwrap_or("").to_string();
+    let report = &snapshot["report"];
+    let ready = report["noise_ready"].as_bool().unwrap_or(false) && !running && snapshot["error"].is_null();
+    let progress = format!("{} · {} seconds · {} samples · rejected {} · dropped {}",
+        snapshot["sensor_id"].as_str().unwrap_or("No capture"), snapshot["elapsed_s"], report["samples"], snapshot["rejected_samples"], snapshot["dropped_samples"]);
+    let analysis = format!("Temperature: {}–{} C; drift: {} raw/C; residual noise σ: {} raw; adjacent noise σ: {} raw; remaining trend: {} raw/hour",
+        report["temperature_min_c"],report["temperature_max_c"],report["raw_per_c"],report["residual_sigma_raw"],report["adjacent_noise_sigma_raw"],report["residual_raw_per_hour"]);
+    rsx! {
+        details {
+            summary { "Long unloaded zero capture and noise filter" }
+            p { "Leave the selected load cell unloaded for the whole capture. Data is saved by the backend even if this page closes. Warm-up and cooling improve the drift fit." }
+            label { input { r#type:"checkbox", checked:*known_zero.read(), onchange:move |e|known_zero.set(e.checked()) } "I confirm the load cell will remain unloaded" }
+            label { "Duration (seconds, 60–86400) " input { value:"{duration}", oninput:move|e|duration.set(e.value()) } }
+            button { disabled:running || !*known_zero.read() || dirty,
+                onclick:move |_| {
+                    let body=serde_json::json!({"sensor_id":sensor,"duration_s":duration.read().parse::<u64>().unwrap_or(0),"known_zero":*known_zero.read()});
+                    spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero",&body).await {
+                        Ok(v)=>{status.set(v);message.set("Recording known-zero data. Keep unloaded.".into());},Err(e)=>message.set(e),
+                    }});
+                }, "Start long zero capture"
+            }
+            button { disabled:!running,
+                onclick:{let id=id.clone();move |_| {
+                    let body=serde_json::json!({"session_id":id});
+                    spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero/stop",&body).await {
+                        Ok(v)=>{status.set(v);message.set("Finishing capture and saving analysis…".into());},Err(e)=>message.set(e),
+                    }});
+                }}, "Stop and analyze"
+            }
+            p { "{progress}" }
+            p { "{analysis}" }
+            p { "Saved CSV: " {snapshot["csv_path"].as_str().unwrap_or("").to_string()} }
+            p { "Capture error: " {snapshot["error"].as_str().unwrap_or("none").to_string()} }
+            p { "At least 1000 samples and 60 seconds are needed for noise analysis. Temperature compensation also needs 5 C coverage. A steady warm-up can confound temperature drift with time drift; review the saved analysis and repeat during cooling." }
+            label { input {r#type:"checkbox", checked:*thermal.read(), onchange:move|e|thermal.set(e.checked())} "Apply fitted temperature drift (uncheck for noise-only capture)" }
+            label { "Smoothing time constant (ms, 0 disables) " input {value:"{tau}",oninput:move|e|tau.set(e.value())} }
+            p { "100 ms smoothing reduces rapid noise but delays steps by roughly 300 ms to reach 95%. It does not erase small real loads. The same setting is sent to the DAQ for calibrated SD records; raw data remains unfiltered." }
+            button {disabled:!ready || dirty || (*thermal.read() && !report["thermal_ready"].as_bool().unwrap_or(false)),
+                onclick:move |_| {
+                    let body=serde_json::json!({"session_id":id,"apply_thermal":*thermal.read(),"tau_ms":tau.read().parse::<f32>().unwrap_or(-1.)});
+                    spawn(async move {match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/long_zero/apply",&body).await {
+                        Ok(v)=>{on_applied.call(v);message.set("Zero and filter saved and sent to DAQ. Verify zero and a known mass before use.".into());},Err(e)=>message.set(e),
+                    }});
+                }, "Apply zero and filter calibration"
+            }
+            p { "{message}" }
+            if dirty { p { "Save local calibration edits before starting or applying this capture." } }
         }
     }
 }
