@@ -2003,7 +2003,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         },
                         "Capture unloaded thermal point"
                     }
-                    a { href: format!("{}/api/calibration/thermal", UrlConfig::base_http()), target: "_blank", "Long zero capture and noise filter" }
                     span { "Keep unloaded and thermally settled; capture at two temperatures at least 5 C apart. Save local edits first." }
                 }
                 span { style: "color:{theme.text_secondary};", "Sensors" }
