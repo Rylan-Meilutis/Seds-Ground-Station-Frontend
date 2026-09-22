@@ -1972,39 +1972,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     }
                 }
 
-            if can_edit {
-                if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
-                    LongZeroPanel {
-                        sensor: sensor.data_type.clone(),
-                        dirty: *dirty.read(),
-                        on_applied: { let mut cfg = cfg; let mut dirty = dirty; move |updated: CalibrationFile| { cfg.set(Some(updated)); dirty.set(false); } },
-                    }
-                }
-            }
             div { style: "{toolbar_style}",
-                if can_edit && selected_sensor.as_ref().is_some_and(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
-                    button {
-                        style: "{neutral_button_style}",
-                        disabled: *dirty.read(),
-                        onclick: {
-                            let selected_sensor = selected_sensor.clone();
-                            let mut cfg = cfg;
-                            let mut status = status;
-                            move |_| {
-                                let Some(sensor) = selected_sensor.clone() else { return; };
-                                spawn(async move {
-                                    let body = serde_json::json!({"sensor_id": sensor.data_type});
-                                    match http_post_json::<serde_json::Value, CalibrationFile>("/api/calibration/capture_thermal_zero", &body).await {
-                                        Ok(saved) => { cfg.set(Some(saved)); status.set("Thermal point saved. After fitting, recapture zero and mass points before use.".into()); }
-                                        Err(err) => status.set(format!("Thermal capture failed: {err}")),
-                                    }
-                                });
-                            }
-                        },
-                        "Capture unloaded thermal point"
-                    }
-                    span { "Keep unloaded and thermally settled; capture at two temperatures at least 5 C apart. Save local edits first." }
-                }
                 span { style: "color:{theme.text_secondary};", "Sensors" }
                 for sensor in sensors.iter().cloned() {
                     button {
@@ -2029,10 +1997,56 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     selected_sensor: selected_sensor.clone(),
                     calibration: cfg.read().clone(),
                     channel_key: channel_key.clone(),
-                    dirty: *dirty.read(),
                 }
                 {metric_card(&theme, "Active Fit", fit_type_s.clone())}
             }
+            }
+
+            if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                section { style: "{section_style}",
+                    h2 { style: "margin:0; font-size:16px;", "Temperature compensation — {sensor.label}" }
+                    ThermalCompensationMetrics {
+                        theme: theme.clone(),
+                        selected_sensor: selected_sensor.clone(),
+                        calibration: cfg.read().clone(),
+                        channel_key: channel_key.clone(),
+                        dirty: *dirty.read(),
+                    }
+            if can_edit {
+                if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                    LongZeroPanel {
+                        sensor: sensor.data_type.clone(),
+                        dirty: *dirty.read(),
+                        on_applied: { let mut cfg = cfg; let mut dirty = dirty; move |updated: CalibrationFile| { cfg.set(Some(updated)); dirty.set(false); } },
+                    }
+                }
+            }
+                    div { style: "{toolbar_style}",
+                if can_edit && selected_sensor.as_ref().is_some_and(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                    button {
+                        style: "{neutral_button_style}",
+                        disabled: *dirty.read(),
+                        onclick: {
+                            let selected_sensor = selected_sensor.clone();
+                            let mut cfg = cfg;
+                            let mut status = status;
+                            move |_| {
+                                let Some(sensor) = selected_sensor.clone() else { return; };
+                                spawn(async move {
+                                    let body = serde_json::json!({"sensor_id": sensor.data_type});
+                                    match http_post_json::<serde_json::Value, CalibrationFile>("/api/calibration/capture_thermal_zero", &body).await {
+                                        Ok(saved) => { cfg.set(Some(saved)); status.set("Thermal point saved. After fitting, recapture zero and mass points before use.".into()); }
+                                        Err(err) => status.set(format!("Thermal capture failed: {err}")),
+                                    }
+                                });
+                            }
+                        },
+                        "Capture unloaded thermal point"
+                    }
+                    span { "Keep unloaded and thermally settled; capture at two temperatures at least 5 C apart. Save local edits first." }
+                }
+                    }
+                }
             }
 
             div { style: "{section_style}",
@@ -2956,6 +2970,25 @@ fn CalibrationLiveMetrics(
     selected_sensor: Option<CalibrationSensorSpec>,
     calibration: Option<CalibrationFile>,
     channel_key: String,
+) -> Element {
+    let _ = *TELEMETRY_RENDER_EPOCH.read();
+    let raw = selected_sensor.as_ref().and_then(|sensor| latest_raw(&sensor.data_type));
+    let value = calibration.as_ref().and_then(|cfg| {
+        raw.and_then(|raw| thermal_raw(cfg, &channel_key, raw, fresh_temperature()))
+            .and_then(|raw| eval_fit_key(cfg, &channel_key, raw))
+    });
+    rsx! {
+        {metric_card(&theme, "Live Raw", fmt_fixed(raw, 12, sensor_raw_precision(selected_sensor.as_ref(), 6)))}
+        {metric_card(&theme, "Calibrated Value", fmt_fixed(value, 12, 4))}
+    }
+}
+
+#[component]
+fn ThermalCompensationMetrics(
+    theme: ThemeConfig,
+    selected_sensor: Option<CalibrationSensorSpec>,
+    calibration: Option<CalibrationFile>,
+    channel_key: String,
     dirty: bool,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
@@ -2978,12 +3011,9 @@ fn CalibrationLiveMetrics(
     let weight_change = calibrated_live.zip(before_thermal).map(|(after, before)| after - before);
 
     rsx! {
-        {metric_card(&theme, "Live Raw", fmt_fixed(raw_live, 12, sensor_raw_precision(selected_sensor.as_ref(), 6)))}
-        {metric_card(&theme, "Calibrated Value", fmt_fixed(calibrated_live, 12, 4))}
         if is_loadcell {
             div { style: "grid-column:1 / -1; display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
                 div { style: "grid-column:1 / -1; color:{theme.text_primary};",
-                    strong { "Temperature compensation" }
                     p { "{state}" }
                     if dirty {
                         p { "Preview of unsaved edits. Save to apply these settings to the backend and DAQ." }
