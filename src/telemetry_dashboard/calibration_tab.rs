@@ -2005,6 +2005,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
                 section { style: "{section_style}",
                     h2 { style: "margin:0; font-size:16px;", "Temperature compensation — {sensor.label}" }
+                    ThermalGeometryPreview { theme: theme.clone() }
                     ThermalCompensationMetrics {
                         theme: theme.clone(),
                         selected_sensor: selected_sensor.clone(),
@@ -3109,7 +3110,7 @@ fn ThermalPointCapture(theme: ThemeConfig, sensor: String, dirty: bool, on_appli
             }
             p { style:"margin:0; font-size:13px; color:{theme.text_secondary};", "{reason}" }
             progress { max:"120", value:"{progress}", style:"width:100%; height:6px; accent-color:{theme.info_accent};" }
-            p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "Requires two minutes of stable 10-second means: load range ≤0.05 kg for KG1000 or ≤0.005 kg for KG50, and ADC range ≤0.2 °C. This checks readings; it does not prove thermal equilibrium. Use points at least 5 °C apart and repeat during cooling." }
+            p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "Requires two minutes of stable 10-second means: load range ≤0.05 kg for KG1000 or ≤0.005 kg for KG50, and ADC range ≤0.2 °C. This checks readings; it does not prove thermal equilibrium. Collect at least six settled points across ≥0.25 °C, including intermediate temperatures. The slope updates only when the fit is consistent. Repeat during cooling." }
             label { style:"display:flex; align-items:center; gap:8px; font-size:13px;",
                 input { r#type:"checkbox", checked:*confirmed.read(), onchange:move|e|confirmed.set(e.checked()) }
                 "Loadcell is physically unloaded (taring a load does not count)"
@@ -3120,7 +3121,7 @@ fn ThermalPointCapture(theme: ThemeConfig, sensor: String, dirty: bool, on_appli
                     spawn(async move {
                         let body=serde_json::json!({"sensor_id":sensor});
                         match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/capture_thermal_zero",&body).await {
-                            Ok(saved)=>{on_applied.call(saved);message.set("Settled point saved. After fitting, recapture zero and known-mass points.".into());},
+                            Ok(saved)=>{on_applied.call(saved);message.set("Settled point saved. A consistent fit needs six points across ≥0.25 °C including intermediate temperatures; until then the previous correction is retained. Verify zero and a known mass after fitting.".into());},
                             Err(e)=>message.set(e),
                         }
                         busy.set(false);
@@ -3155,6 +3156,7 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
     let same_sensor=snapshot["sensor_id"].as_str()==Some(sensor.as_str());
     let ready = report["noise_ready"].as_bool().unwrap_or(false) && !running && snapshot["error"].is_null() && same_sensor;
     let thermal_ready=report["thermal_ready"].as_bool().unwrap_or(false);
+    let quality = &report["thermal_quality"];
     let settled_count=report["settled_points"].as_array().map_or(0,Vec::len);
     let temperature=match (report["temperature_min_c"].as_f64(),report["temperature_max_c"].as_f64()) {
         (Some(lo),Some(hi))=>format!("{lo:.2}–{hi:.2} °C"),_=>"—".into()
@@ -3165,7 +3167,7 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
     let disabled_reason=if dirty { "Save local calibration edits before applying." }
         else if running { "Capture is running. Stop and analyze before applying." }
         else if !ready { "Select the captured sensor and finish an error-free capture with ≥1,000 samples over ≥60 seconds." }
-        else if *thermal.read() && !thermal_ready { "Temperature fit needs at least two settled periods ≥5 °C apart. Uncheck temperature drift to apply zero and smoothing only." }
+        else if *thermal.read() && !thermal_ready { "Temperature fit is not ready; see fit quality below. Uncheck temperature drift to apply zero and smoothing only." }
         else { "Ready to apply. Verify zero and a known mass afterward." };
     let control=thermal_control_style(&theme);
     rsx! {
@@ -3205,8 +3207,15 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
                     {metric_card(&theme,"ADC temperature range",temperature)}
                     {metric_card(&theme,"Settled periods",settled_count.to_string())}
                     {metric_card(&theme,"Fitted slope (raw/°C)",slope)}
+                    {metric_card(&theme,"Settled temperature span",quality["span_c"].as_f64().map(|v|format!("{v:.3} °C")).unwrap_or_else(||"—".into()))}
+                    {metric_card(&theme,"Slope repeatability margin",quality["slope_margin"].as_f64().map(|v|format!("±{v:.3e} raw/°C")).unwrap_or_else(||"—".into()))}
                 }
                 p { role:"status", style:"margin:0; font-size:13px; color:{theme.text_secondary};", {report["settling_message"].as_str().unwrap_or("No settling analysis yet").to_string()} }
+                p { role:"status", style:"margin:0; font-size:13px; color:{theme.text_secondary};", {quality["message"].as_str().unwrap_or("Collect six settled periods across at least 0.25 °C, including intermediate temperatures.").to_string()} }
+                p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "Repeatability margin estimates scatter between settled periods; it does not include systematic errors. Longer captures can qualify with a smaller temperature change, but elapsed time alone does not qualify a fit." }
+                if report["temperature_time_correlation"].as_f64().is_some_and(|v| v.abs()>0.9) {
+                    p { style:"margin:0; font-size:13px; color:{theme.warning_text};", "Temperature closely follows elapsed time. Creep or another time-dependent change could look like temperature drift. Repeat during cooling before relying on this correction." }
+                }
                 details {
                     summary { style:"font-size:13px; cursor:pointer;", "Capture quality & saved data" }
                     p { style:"font-size:12px;", {format!("Rejected: {} · Dropped: {}",snapshot["rejected_samples"],snapshot["dropped_samples"])} }
@@ -3230,7 +3239,7 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
                                 spawn(async move {match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/long_zero/apply",&body).await {
                                     Ok(v)=>{on_applied.call(v);message.set("Calibration saved and sent to DAQ. Verify zero and a known mass.".into());},Err(e)=>message.set(e),
                                 }});
-                            }, "Apply zero & filter"
+                            }, if *thermal.read() { "Apply temperature, zero & filter" } else { "Apply zero & filter" }
                         }
                     }
                     p { style:"margin:0; font-size:13px; color:{theme.text_secondary};", "{disabled_reason}" }
@@ -3238,6 +3247,78 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
                 }
                 if !message.read().is_empty() { p { role:"status", style:"margin:0; font-size:13px;", "{message}" } }
             }
+        }
+    }
+}
+
+// Lumped, uniform-temperature steel envelope; an illustrative boundary-condition
+// model, not a source of live cell temperature or signed zero-drift coefficients.
+fn steel_lag_preview(v: [f64; 8]) -> Option<(f64, f64, f64)> {
+    let [diameter_mm, height_mm, mass_kg, heat_capacity, h, initial, ambient, minutes] = v;
+    if v.iter().any(|x| !x.is_finite()) || diameter_mm <= 0. || height_mm <= 0.
+        || mass_kg <= 0. || heat_capacity <= 0. || h <= 0. || minutes < 0.
+        || !(-40.0..=125.0).contains(&initial) || !(-40.0..=125.0).contains(&ambient) {
+        return None;
+    }
+    let radius = diameter_mm / 2000.;
+    let area = 2. * std::f64::consts::PI * radius * (radius + height_mm / 1000.);
+    let tau = mass_kg * heat_capacity / (h * area);
+    let temperature = ambient + (initial - ambient) * (-minutes * 60. / tau).exp();
+    (tau.is_finite() && temperature.is_finite()).then_some((tau / 60., -0.05_f64.ln() * tau / 60., temperature))
+}
+
+#[component]
+fn ThermalGeometryPreview(theme: ThemeConfig) -> Element {
+    let mut values = use_signal(|| ["74", "34", "1.15", "470", "10", "23", "25", "30"].map(str::to_owned));
+    let parsed: Option<Vec<f64>> = values.read().iter().map(|v| v.parse().ok()).collect();
+    let result = parsed.and_then(|v| v.try_into().ok()).and_then(steel_lag_preview);
+    let control = thermal_control_style(&theme);
+    let labels = ["Diameter (mm)", "Height (mm)", "Estimated mass (kg)", "Steel heat capacity (J/kg·K)", "Surface heat transfer (W/m²·K)", "Initial body temperature (°C)", "Ambient temperature (°C)", "Time after change (min)"];
+    rsx! {
+        details { style:"padding:16px; border:1px solid {theme.border_soft}; border-radius:12px;",
+            summary { style:"font-weight:700; cursor:pointer;", "Steel geometry · thermal lag preview" }
+            div { style:"display:grid; gap:12px; margin-top:14px;",
+                p { style:"margin:0; font-size:13px; color:{theme.text_secondary};", "Explore how slowly a steel body might follow an ambient temperature change. Defaults approximate a DYLF-102-sized solid cylinder (74 × 34 mm); mass and material properties are assumptions. Adjust them to match your cell." }
+                div { style:"display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
+                    for (i, label) in labels.iter().enumerate() {
+                        label { style:"display:grid; gap:5px; font-size:12px; color:{theme.text_secondary};", "{label}"
+                            input { style:"{control}; width:100%; box-sizing:border-box;", r#type:"number", step:"any", value:"{values.read()[i]}",
+                                oninput:move |e| values.write()[i] = e.value() }
+                        }
+                    }
+                }
+                if let Some((tau, settled, temperature)) = result {
+                    div { style:"display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
+                        {metric_card(&theme, "63% response time", format!("{tau:.1} min"))}
+                        {metric_card(&theme, "95% response time", format!("{settled:.1} min"))}
+                        {metric_card(&theme, "Predicted body temperature", format!("{temperature:.2} °C"))}
+                    }
+                } else {
+                    p { role:"status", "Enter positive dimensions, mass, heat capacity and heat transfer, a nonnegative time, and temperatures from −40 to 125 °C." }
+                }
+                p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "Illustration only · edits stay in this preview. Assumes a uniform body temperature and a sudden, constant ambient change. Mount conduction, sunlight, internal cutouts and changing airflow are omitted. This does not change telemetry or calibration, determine kg/°C, or prove settling. ADC die temperature is not the ambient input. Use a body-mounted temperature probe to validate the estimate." }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod steel_preview_tests {
+    use super::steel_lag_preview;
+    #[test]
+    fn thermal_response_has_correct_limits_and_mass_scaling() {
+        let v = [74.,34.,1.15,470.,10.,23.,25.,0.];
+        let (tau, t95, initial) = steel_lag_preview(v).unwrap();
+        assert_eq!(initial,23.);
+        assert!((t95/tau - 2.995732).abs()<1e-5);
+        let mut end=v; end[7]=t95;
+        assert!((steel_lag_preview(end).unwrap().2-24.9).abs()<1e-10);
+        end[5]=25.; end[6]=23.;
+        assert!((steel_lag_preview(end).unwrap().2-23.1).abs()<1e-10);
+        let mut doubled=v; doubled[2]*=2.;
+        assert_eq!(steel_lag_preview(doubled).unwrap().0,2.*tau);
+        for (i,value) in [(0,0.),(2,-1.),(4,0.),(5,f64::NAN),(7,-1.)] {
+            let mut invalid=v;invalid[i]=value;assert!(steel_lag_preview(invalid).is_none());
         }
     }
 }
