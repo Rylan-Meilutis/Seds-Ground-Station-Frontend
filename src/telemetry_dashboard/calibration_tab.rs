@@ -2030,6 +2030,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     selected_sensor: selected_sensor.clone(),
                     calibration: cfg.read().clone(),
                     channel_key: channel_key.clone(),
+                    dirty: *dirty.read(),
                 }
                 {metric_card(&theme, "Active Fit", fit_type_s.clone())}
             }
@@ -2956,25 +2957,52 @@ fn CalibrationLiveMetrics(
     selected_sensor: Option<CalibrationSensorSpec>,
     calibration: Option<CalibrationFile>,
     channel_key: String,
+    dirty: bool,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
     let raw_live = selected_sensor
         .as_ref()
         .and_then(|sensor| latest_raw(sensor.data_type.as_str()));
-    let calibrated_live = calibration
-        .as_ref()
-        .and_then(|cfg| raw_live.and_then(|raw| thermal_raw(cfg, &channel_key, raw, fresh_temperature())).and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
-    let raw_live_s = fmt_fixed(
-        raw_live,
-        12,
-        sensor_raw_precision(selected_sensor.as_ref(), 6),
-    );
-    let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
+    let temperature = fresh_temperature();
+    let cfg = calibration.as_ref();
+    let corrected_raw = cfg.and_then(|cfg| raw_live.and_then(|raw| thermal_raw(cfg, &channel_key, raw, temperature)));
+    let calibrated_live = cfg.and_then(|cfg| corrected_raw.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
+    let is_loadcell = selected_sensor.as_ref().is_some_and(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50"));
+    let thermal = cfg.and_then(|cfg| cfg.thermal.get(thermal_sensor(&channel_key)));
+    let enabled = thermal.is_some_and(|t| t.raw_per_c != 0.0);
+    let state = if cfg.is_none() { "Loading calibration" }
+        else if !enabled { "Off — no temperature correction" }
+        else if temperature.is_none() { "Waiting for fresh ADC temperature" }
+        else { "Temperature correction enabled" };
+    let raw_change = corrected_raw.zip(raw_live).map(|(corrected, raw)| corrected - raw);
+    let before_thermal = cfg.and_then(|cfg| raw_live.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
+    let weight_change = calibrated_live.zip(before_thermal).map(|(after, before)| after - before);
 
     rsx! {
-        {metric_card(&theme, "ADC Temperature (C)", fmt_fixed(fresh_temperature(), 0, 2))}
-        {metric_card(&theme, "Live Raw", raw_live_s)}
-        {metric_card(&theme, "Calibrated Value", calibrated_live_s)}
+        {metric_card(&theme, "Live Raw", fmt_fixed(raw_live, 12, sensor_raw_precision(selected_sensor.as_ref(), 6)))}
+        {metric_card(&theme, "Calibrated Value", fmt_fixed(calibrated_live, 12, 4))}
+        if is_loadcell {
+            div { style: "grid-column:1 / -1; display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
+                div { style: "grid-column:1 / -1; color:{theme.text_primary};",
+                    strong { "Temperature compensation" }
+                    p { "{state}" }
+                    if dirty {
+                        p { "Preview of unsaved edits. Save to apply these settings to the backend and DAQ." }
+                    } else {
+                        p { "Using saved calibration settings." }
+                    }
+                    p { "Corrected raw = raw − slope × (ADC temperature − reference). Values below show temperature correction before smoothing. ADC die temperature is not loadcell temperature." }
+                }
+                {metric_card(&theme, "ADC die temperature (°C)", fmt_fixed(temperature, 0, 2))}
+                {metric_card(&theme, "Reference temperature (°C)", fmt_fixed(thermal.map(|t| t.reference_c), 0, 2))}
+                {metric_card(&theme, "Thermal slope (raw/°C)", thermal.map(|t| format!("{:+.6e}", t.raw_per_c)).unwrap_or_else(|| "—".into()))}
+                {metric_card(&theme, "Applied raw change", raw_change.map(|v| format!("{:+.6e}", v)).unwrap_or_else(|| "—".into()))}
+                {metric_card(&theme, "Temperature-corrected raw", fmt_fixed(corrected_raw, 0, 9))}
+                {metric_card(&theme, "Without temperature correction (kg)", fmt_fixed(before_thermal, 0, 4))}
+                {metric_card(&theme, "With temperature correction (kg)", fmt_fixed(calibrated_live, 0, 4))}
+                {metric_card(&theme, "Temperature effect (kg)", weight_change.map(|v| format!("{:+.4}", v)).unwrap_or_else(|| "—".into()))}
+            }
+        }
     }
 }
 
