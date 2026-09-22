@@ -2015,37 +2015,23 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             if can_edit {
                 if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
                     LongZeroPanel {
+                        theme: theme.clone(),
                         sensor: sensor.data_type.clone(),
                         dirty: *dirty.read(),
                         on_applied: { let mut cfg = cfg; let mut dirty = dirty; move |updated: CalibrationFile| { cfg.set(Some(updated)); dirty.set(false); } },
                     }
                 }
             }
-                    div { style: "{toolbar_style}",
-                if can_edit && selected_sensor.as_ref().is_some_and(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
-                    button {
-                        style: "{neutral_button_style}",
-                        disabled: *dirty.read(),
-                        onclick: {
-                            let selected_sensor = selected_sensor.clone();
-                            let mut cfg = cfg;
-                            let mut status = status;
-                            move |_| {
-                                let Some(sensor) = selected_sensor.clone() else { return; };
-                                spawn(async move {
-                                    let body = serde_json::json!({"sensor_id": sensor.data_type});
-                                    match http_post_json::<serde_json::Value, CalibrationFile>("/api/calibration/capture_thermal_zero", &body).await {
-                                        Ok(saved) => { cfg.set(Some(saved)); status.set("Thermal point saved. After fitting, recapture zero and mass points before use.".into()); }
-                                        Err(err) => status.set(format!("Thermal capture failed: {err}")),
-                                    }
-                                });
-                            }
-                        },
-                        "Capture unloaded thermal point"
+                    if can_edit {
+                        ThermalPointCapture {
+                            key: "thermal-point-{sensor.id}",
+                            theme: theme.clone(),
+                            sensor: sensor.data_type.clone(),
+                            dirty: *dirty.read(),
+                            on_applied: { let mut cfg = cfg; move |saved: CalibrationFile| { cfg.set(Some(saved)); } },
+                        }
                     }
-                    span { "Keep unloaded and thermally settled; capture at two temperatures at least 5 C apart. Save local edits first." }
-                }
-                    }
+
                 }
             }
 
@@ -3014,13 +3000,11 @@ fn ThermalCompensationMetrics(
         if is_loadcell {
             div { style: "grid-column:1 / -1; display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
                 div { style: "grid-column:1 / -1; color:{theme.text_primary};",
-                    p { "{state}" }
-                    if dirty {
-                        p { "Preview of unsaved edits. Save to apply these settings to the backend and DAQ." }
-                    } else {
-                        p { "Using saved calibration settings." }
+                    div { style: "display:flex; gap:8px; align-items:center; flex-wrap:wrap;",
+                        span { style: "padding:5px 10px; border-radius:999px; background:{theme.info_background}; color:{theme.info_text}; font-size:12px; font-weight:700;", "{state}" }
+                        span { style: "font-size:12px; color:{theme.text_muted};", if dirty { "Unsaved preview · Save to apply" } else { "Saved settings · before smoothing" } }
                     }
-                    p { "Corrected raw = raw − slope × (ADC temperature − reference). Values below show temperature correction before smoothing. ADC die temperature is not loadcell temperature." }
+                    p { style: "font-size:12px; color:{theme.text_muted}; margin:8px 0 0;", "ADC die temperature is a proxy, not the loadcell temperature. Corrected raw = raw − slope × (temperature − reference)." }
                 }
                 {metric_card(&theme, "ADC die temperature (°C)", fmt_fixed(temperature, 0, 2))}
                 {metric_card(&theme, "Reference temperature (°C)", fmt_fixed(thermal.map(|t| t.reference_c), 0, 2))}
@@ -3089,8 +3073,69 @@ mod thermal_calibration_tests {
     }
 }
 
+fn thermal_control_style(theme: &ThemeConfig) -> String {
+    format!("padding:9px 12px; border:1px solid {}; border-radius:10px; background:{}; color:{}; font:inherit;", theme.border_soft,theme.panel_background_alt,theme.text_primary)
+}
+
 #[component]
-fn LongZeroPanel(sensor: String, dirty: bool, on_applied: EventHandler<CalibrationFile>) -> Element {
+fn ThermalPointCapture(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: EventHandler<CalibrationFile>) -> Element {
+    let mut status = use_signal(|| serde_json::Value::Null);
+    let mut message = use_signal(String::new);
+    let mut confirmed = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let polling_sensor = sensor.clone();
+    use_future(move || {
+        let sensor=polling_sensor.clone();
+        async move {
+            loop {
+                match http_get_json::<serde_json::Value>(&format!("/api/calibration/thermal_settling?sensor_id={sensor}")).await {
+                    Ok(value)=>status.set(value),
+                    Err(e)=>{status.set(serde_json::Value::Null);message.set(format!("Settling status unavailable: {e}"));},
+                }
+                sleep_ms(2000).await;
+            }
+        }
+    });
+    let snapshot=status.read().clone();
+    let ready=snapshot["ready"].as_bool().unwrap_or(false);
+    let reason=snapshot["message"].as_str().unwrap_or("Checking load and temperature stability…");
+    let progress=snapshot["observed_s"].as_u64().unwrap_or(0).min(120);
+    let button=thermal_control_style(&theme);
+    rsx! {
+        div { style: "padding:16px; border:1px solid {theme.border_soft}; border-radius:12px; display:grid; gap:10px;",
+            div { style:"display:flex; justify-content:space-between; gap:12px; align-items:center;",
+                strong { "Settled temperature point" }
+                span { style:"font-size:12px; color:{theme.text_muted};", if ready { "Ready" } else { "Waiting for settling" } }
+            }
+            p { style:"margin:0; font-size:13px; color:{theme.text_secondary};", "{reason}" }
+            progress { max:"120", value:"{progress}", style:"width:100%; height:6px; accent-color:{theme.info_accent};" }
+            p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "Requires two minutes of stable 10-second means: load range ≤0.05 kg for KG1000 or ≤0.005 kg for KG50, and ADC range ≤0.2 °C. This checks readings; it does not prove thermal equilibrium. Use points at least 5 °C apart and repeat during cooling." }
+            label { style:"display:flex; align-items:center; gap:8px; font-size:13px;",
+                input { r#type:"checkbox", checked:*confirmed.read(), onchange:move|e|confirmed.set(e.checked()) }
+                "Loadcell is physically unloaded (taring a load does not count)"
+            }
+            button { style:"{button}", disabled:dirty || *busy.read() || !ready || !*confirmed.read(),
+                onclick:move |_| {
+                    busy.set(true);let sensor=sensor.clone();
+                    spawn(async move {
+                        let body=serde_json::json!({"sensor_id":sensor});
+                        match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/capture_thermal_zero",&body).await {
+                            Ok(saved)=>{on_applied.call(saved);message.set("Settled point saved. After fitting, recapture zero and known-mass points.".into());},
+                            Err(e)=>message.set(e),
+                        }
+                        busy.set(false);
+                    });
+                },
+                if *busy.read() { "Saving…" } else { "Capture settled point" }
+            }
+            if dirty { p { style:"margin:0; font-size:12px; color:{theme.warning_text};", "Save local calibration edits first." } }
+            if !message.read().is_empty() { p { role:"status", style:"margin:0; font-size:13px;", "{message}" } }
+        }
+    }
+}
+
+#[component]
+fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: EventHandler<CalibrationFile>) -> Element {
     let mut status = use_signal(|| serde_json::Value::Null);
     let mut message = use_signal(String::new);
     let mut duration = use_signal(|| "1800".to_string());
@@ -3107,51 +3152,92 @@ fn LongZeroPanel(sensor: String, dirty: bool, on_applied: EventHandler<Calibrati
     let running = snapshot["running"].as_bool().unwrap_or(false);
     let id = snapshot["session_id"].as_str().unwrap_or("").to_string();
     let report = &snapshot["report"];
-    let ready = report["noise_ready"].as_bool().unwrap_or(false) && !running && snapshot["error"].is_null();
-    let progress = format!("{} · {} seconds · {} samples · rejected {} · dropped {}",
-        snapshot["sensor_id"].as_str().unwrap_or("No capture"), snapshot["elapsed_s"], report["samples"], snapshot["rejected_samples"], snapshot["dropped_samples"]);
-    let analysis = format!("Temperature: {}–{} C; drift: {} raw/C; residual noise σ: {} raw; adjacent noise σ: {} raw; remaining trend: {} raw/hour",
-        report["temperature_min_c"],report["temperature_max_c"],report["raw_per_c"],report["residual_sigma_raw"],report["adjacent_noise_sigma_raw"],report["residual_raw_per_hour"]);
+    let same_sensor=snapshot["sensor_id"].as_str()==Some(sensor.as_str());
+    let ready = report["noise_ready"].as_bool().unwrap_or(false) && !running && snapshot["error"].is_null() && same_sensor;
+    let thermal_ready=report["thermal_ready"].as_bool().unwrap_or(false);
+    let settled_count=report["settled_points"].as_array().map_or(0,Vec::len);
+    let temperature=match (report["temperature_min_c"].as_f64(),report["temperature_max_c"].as_f64()) {
+        (Some(lo),Some(hi))=>format!("{lo:.2}–{hi:.2} °C"),_=>"—".into()
+    };
+    let samples=report["samples"].as_u64().unwrap_or(0).to_string();
+    let elapsed=format!("{} s",snapshot["elapsed_s"].as_u64().unwrap_or(0));
+    let slope=if thermal_ready { report["raw_per_c"].as_f64().map(|v|format!("{v:+.4e}")).unwrap_or_else(||"—".into()) } else { "Not ready".into() };
+    let disabled_reason=if dirty { "Save local calibration edits before applying." }
+        else if running { "Capture is running. Stop and analyze before applying." }
+        else if !ready { "Select the captured sensor and finish an error-free capture with ≥1,000 samples over ≥60 seconds." }
+        else if *thermal.read() && !thermal_ready { "Temperature fit needs at least two settled periods ≥5 °C apart. Uncheck temperature drift to apply zero and smoothing only." }
+        else { "Ready to apply. Verify zero and a known mass afterward." };
+    let control=thermal_control_style(&theme);
     rsx! {
-        details {
-            summary { "Long unloaded zero capture and noise filter" }
-            p { "Leave the selected load cell unloaded for the whole capture. Data is saved by the backend even if this page closes. Warm-up and cooling improve the drift fit." }
-            label { input { r#type:"checkbox", checked:*known_zero.read(), onchange:move |e|known_zero.set(e.checked()) } "I confirm the load cell will remain unloaded" }
-            label { "Duration (seconds, 60–86400) " input { value:"{duration}", oninput:move|e|duration.set(e.value()) } }
-            button { disabled:running || !*known_zero.read() || dirty,
-                onclick:move |_| {
-                    let body=serde_json::json!({"sensor_id":sensor,"duration_s":duration.read().parse::<u64>().unwrap_or(0),"known_zero":*known_zero.read()});
-                    spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero",&body).await {
-                        Ok(v)=>{status.set(v);message.set("Recording known-zero data. Keep unloaded.".into());},Err(e)=>message.set(e),
-                    }});
-                }, "Start long zero capture"
+        details { style:"padding:16px; border:1px solid {theme.border_soft}; border-radius:12px;",
+            summary { style:"font-weight:700; cursor:pointer;", "Long zero capture & noise filter" }
+            div { style:"display:grid; gap:14px; margin-top:14px;",
+                p { style:"margin:0; color:{theme.text_secondary}; font-size:13px;", "Keep physically unloaded throughout. Raw data is retained during warming and cooling; thermal fitting uses only settled two-minute periods. Hold at each temperature until the loadcell has settled." }
+                label { style:"display:flex; align-items:center; gap:8px; font-size:13px;",
+                    input { r#type:"checkbox", checked:*known_zero.read(), onchange:move|e|known_zero.set(e.checked()) }
+                    "I confirm the loadcell will remain physically unloaded"
+                }
+                div { style:"display:flex; gap:10px; align-items:end; flex-wrap:wrap;",
+                    label { style:"display:grid; gap:5px; font-size:12px; color:{theme.text_secondary};", "Duration (seconds)"
+                        input { style:"{control}; width:140px;", r#type:"number", min:"60", max:"86400", value:"{duration}", oninput:move|e|duration.set(e.value()) }
+                    }
+                    button { style:"{control}", disabled:running || !*known_zero.read() || dirty,
+                        onclick:move |_| {
+                            let body=serde_json::json!({"sensor_id":sensor,"duration_s":duration.read().parse::<u64>().unwrap_or(0),"known_zero":*known_zero.read()});
+                            spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero",&body).await {
+                                Ok(v)=>{status.set(v);message.set("Recording raw data. Keep unloaded and hold each temperature until settled.".into());},Err(e)=>message.set(e),
+                            }});
+                        }, "Start capture"
+                    }
+                    button { style:"{control}", disabled:!running,
+                        onclick:{let id=id.clone();move |_| {
+                            let body=serde_json::json!({"session_id":id});
+                            spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero/stop",&body).await {
+                                Ok(v)=>{status.set(v);message.set("Finishing capture and saving analysis…".into());},Err(e)=>message.set(e),
+                            }});
+                        }}, "Stop & analyze"
+                    }
+                }
+                div { style:"display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
+                    {metric_card(&theme,"Capture sensor",snapshot["sensor_id"].as_str().unwrap_or("—").into())}
+                    {metric_card(&theme,"Elapsed",elapsed)}
+                    {metric_card(&theme,"Accepted samples",samples)}
+                    {metric_card(&theme,"ADC temperature range",temperature)}
+                    {metric_card(&theme,"Settled periods",settled_count.to_string())}
+                    {metric_card(&theme,"Fitted slope (raw/°C)",slope)}
+                }
+                p { role:"status", style:"margin:0; font-size:13px; color:{theme.text_secondary};", {report["settling_message"].as_str().unwrap_or("No settling analysis yet").to_string()} }
+                details {
+                    summary { style:"font-size:13px; cursor:pointer;", "Capture quality & saved data" }
+                    p { style:"font-size:12px;", {format!("Rejected: {} · Dropped: {}",snapshot["rejected_samples"],snapshot["dropped_samples"])} }
+                    p { style:"font-size:12px; overflow-wrap:anywhere;", "CSV: " {snapshot["csv_path"].as_str().unwrap_or("—").to_string()} }
+                    p { style:"font-size:12px;", "Error: " {snapshot["error"].as_str().unwrap_or("none").to_string()} }
+                    p { style:"font-size:12px;", "Residual noise σ: " {report["residual_sigma_raw"].as_f64().map(|v|format!("{v:.6e} raw")).unwrap_or_else(||"—".into())} }
+                    p { style:"font-size:12px;", "Adjacent noise σ: " {report["adjacent_noise_sigma_raw"].as_f64().map(|v|format!("{v:.6e} raw")).unwrap_or_else(||"—".into())} }
+                }
+                div { style:"border-top:1px solid {theme.border_soft}; padding-top:14px; display:grid; gap:10px;",
+                    label { style:"display:flex; gap:8px; align-items:center; font-size:13px;",
+                        input {r#type:"checkbox",checked:*thermal.read(),onchange:move|e|thermal.set(e.checked())}
+                        "Apply fitted temperature drift"
+                    }
+                    div { style:"display:flex; align-items:end; gap:10px; flex-wrap:wrap;",
+                        label { style:"display:grid; gap:5px; font-size:12px; color:{theme.text_secondary};", "Smoothing time constant (ms)"
+                            input { style:"{control}; width:140px;", r#type:"number",min:"0",max:"2000",value:"{tau}",oninput:move|e|tau.set(e.value()) }
+                        }
+                        button { style:"{control}", disabled:!ready || dirty || (*thermal.read() && !thermal_ready),
+                            onclick:move |_| {
+                                let body=serde_json::json!({"session_id":id,"apply_thermal":*thermal.read(),"tau_ms":tau.read().parse::<f32>().unwrap_or(-1.)});
+                                spawn(async move {match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/long_zero/apply",&body).await {
+                                    Ok(v)=>{on_applied.call(v);message.set("Calibration saved and sent to DAQ. Verify zero and a known mass.".into());},Err(e)=>message.set(e),
+                                }});
+                            }, "Apply zero & filter"
+                        }
+                    }
+                    p { style:"margin:0; font-size:13px; color:{theme.text_secondary};", "{disabled_reason}" }
+                    p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "0 ms disables smoothing. At 100 ms, steps take about 300 ms to reach 95%. Raw recordings remain unfiltered." }
+                }
+                if !message.read().is_empty() { p { role:"status", style:"margin:0; font-size:13px;", "{message}" } }
             }
-            button { disabled:!running,
-                onclick:{let id=id.clone();move |_| {
-                    let body=serde_json::json!({"session_id":id});
-                    spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero/stop",&body).await {
-                        Ok(v)=>{status.set(v);message.set("Finishing capture and saving analysis…".into());},Err(e)=>message.set(e),
-                    }});
-                }}, "Stop and analyze"
-            }
-            p { "{progress}" }
-            p { "{analysis}" }
-            p { "Saved CSV: " {snapshot["csv_path"].as_str().unwrap_or("").to_string()} }
-            p { "Capture error: " {snapshot["error"].as_str().unwrap_or("none").to_string()} }
-            p { "At least 1000 samples and 60 seconds are needed for noise analysis. Temperature compensation also needs 5 C coverage. A steady warm-up can confound temperature drift with time drift; review the saved analysis and repeat during cooling." }
-            label { input {r#type:"checkbox", checked:*thermal.read(), onchange:move|e|thermal.set(e.checked())} "Apply fitted temperature drift (uncheck for noise-only capture)" }
-            label { "Smoothing time constant (ms, 0 disables) " input {value:"{tau}",oninput:move|e|tau.set(e.value())} }
-            p { "100 ms smoothing reduces rapid noise but delays steps by roughly 300 ms to reach 95%. It does not erase small real loads. The same setting is sent to the DAQ for calibrated SD records; raw data remains unfiltered." }
-            button {disabled:!ready || dirty || (*thermal.read() && !report["thermal_ready"].as_bool().unwrap_or(false)),
-                onclick:move |_| {
-                    let body=serde_json::json!({"session_id":id,"apply_thermal":*thermal.read(),"tau_ms":tau.read().parse::<f32>().unwrap_or(-1.)});
-                    spawn(async move {match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/long_zero/apply",&body).await {
-                        Ok(v)=>{on_applied.call(v);message.set("Zero and filter saved and sent to DAQ. Verify zero and a known mass before use.".into());},Err(e)=>message.set(e),
-                    }});
-                }, "Apply zero and filter calibration"
-            }
-            p { "{message}" }
-            if dirty { p { "Save local calibration edits before starting or applying this capture." } }
         }
     }
 }
