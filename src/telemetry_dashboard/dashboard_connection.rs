@@ -13,6 +13,10 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
         MainTab::FirmwareUpdate => "firmware-update",
         MainTab::Calibration => "calibration",
         MainTab::Mission => "mission",
+        MainTab::CrewVoice => "crew-voice",
+        MainTab::StreamManager => "stream-manager",
+        MainTab::MyDashboard => "my-dashboard",
+        MainTab::Media => "media",
         MainTab::Vehicle => "vehicle",
         MainTab::Messages => "messages",
         MainTab::Notifications => "notifications",
@@ -55,6 +59,10 @@ fn _default_main_tab_label(tab: MainTab) -> String {
         MainTab::Mission => {
             localized_copy(&lang, "Mission Live", "Mision en vivo", "Mission en direct")
         }
+        MainTab::StreamManager => localized_copy(&lang, "Stream Manager", "Gestor de transmisión", "Gestion du direct"),
+        MainTab::MyDashboard => localized_copy(&lang, "My Dashboard", "Mi panel", "Mon tableau"),
+        MainTab::CrewVoice => localized_copy(&lang, "Crew Voice", "Voz de tripulación", "Voix équipage"),
+        MainTab::Media => localized_copy(&lang, "Cameras & Recordings", "Cámaras y grabaciones", "Caméras et enregistrements"),
         MainTab::Vehicle => localized_copy(&lang, "Vehicle", "Vehiculo", "Vehicule"),
         MainTab::Messages => localized_copy(&lang, "Messages", "Mensajes", "Messages"),
         MainTab::Notifications => {
@@ -107,6 +115,10 @@ fn _main_tab_from_str(s: &str) -> MainTab {
         "firmware-update" => MainTab::FirmwareUpdate,
         "calibration" => MainTab::Calibration,
         "mission" | "live-stream" => MainTab::Mission,
+        "crew-voice" => MainTab::CrewVoice,
+        "stream-manager" => MainTab::StreamManager,
+        "my-dashboard" => MainTab::MyDashboard,
+        "media" => MainTab::Media,
         "vehicle" => MainTab::Vehicle,
         "messages" => MainTab::Messages,
         "notifications" => MainTab::Notifications,
@@ -165,15 +177,21 @@ fn scoped_main_tab_key() -> String {
     format!("{}_active_tab", dashboard_customization_key())
 }
 
+fn personal_dashboard_customization_key() -> String {
+    let user = auth::current_status().username.unwrap_or_else(|| "anonymous".into());
+    format!("{}_user_{}", dashboard_customization_key(), user)
+}
+
 fn load_dashboard_customization() -> DashboardCustomization {
-    persist::get_string(&dashboard_customization_key())
+    persist::get_string(&personal_dashboard_customization_key())
+        .or_else(|| persist::get_string(&dashboard_customization_key()))
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
 }
 
 fn save_dashboard_customization(value: &DashboardCustomization) {
     if let Ok(raw) = serde_json::to_string(value) {
-        persist::set_string(&dashboard_customization_key(), &raw);
+        persist::set_string(&personal_dashboard_customization_key(), &raw);
     }
 }
 
@@ -206,12 +224,34 @@ fn _available_main_tabs(
     if !tabs.contains(&MainTab::Mission) {
         tabs.insert(0, MainTab::Mission);
     }
+    for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::MyDashboard] {
+        if !tabs.contains(&tab) { tabs.push(tab); }
+    }
     tabs.retain(|tab| *tab != MainTab::State);
+    if auth::can_manage_stream() && !tabs.contains(&MainTab::StreamManager) { tabs.push(MainTab::StreamManager); }
+    tabs.retain(|tab| *tab != MainTab::StreamManager || auth::can_manage_stream());
     // Older layouts must expose recording export without a server config migration.
     if !tabs.contains(&MainTab::DataExport) {
         tabs.push(MainTab::DataExport);
     }
     tabs.insert(0, MainTab::State);
+    tabs
+}
+
+fn open_dashboard_tool(tab: MainTab, mut active: Signal<MainTab>, mut customization: Signal<DashboardCustomization>) {
+    let mut next = customization.read().clone();
+    let id = _main_tab_to_str(tab);
+    if next.hidden.iter().any(|hidden| hidden == id) {
+        next.hidden.retain(|hidden| hidden != id);
+        save_dashboard_customization(&next);
+        customization.set(next);
+    }
+    active.set(tab);
+}
+
+fn _ordered_available_main_tabs(layout: &LayoutConfig, abort_only_mode: bool, calibration: Option<bool>, customization: &DashboardCustomization) -> Vec<MainTab> {
+    let mut tabs = _available_main_tabs(layout, abort_only_mode, calibration);
+    tabs.sort_by_key(|tab| (*tab != MainTab::State, customization.order.iter().position(|id| id == _main_tab_to_str(*tab)).unwrap_or(usize::MAX)));
     tabs
 }
 
@@ -541,3 +581,29 @@ impl WsSender {
 }
 
 static WS_SENDER: GlobalSignal<Option<WsSender>> = Signal::global(|| None::<WsSender>);
+
+#[cfg(test)]
+mod dashboard_customization_tests {
+    use super::*;
+
+    #[test]
+    fn media_tabs_roundtrip_and_customization_hides_optional_tools() {
+        let layout: LayoutConfig = serde_json::from_str(include_str!("../../docs/api-examples/layout.minimal.json")).unwrap();
+        for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::StreamManager, MainTab::MyDashboard] {
+            assert!(_main_tab_from_str(_main_tab_to_str(tab)) == tab);
+        }
+        let customization = DashboardCustomization {
+            order: vec!["my-dashboard".into(), "mission".into()],
+            hidden: vec!["crew-voice".into(), "media".into(), "state".into()],
+        };
+        let tabs = _configured_main_tabs(&layout, false, None, &customization);
+        assert!(tabs[0] == MainTab::State);
+        assert!(tabs[1] == MainTab::MyDashboard);
+        assert!(!tabs.contains(&MainTab::CrewVoice));
+        assert!(!tabs.contains(&MainTab::Media));
+        let editor_tabs = _ordered_available_main_tabs(&layout, false, None, &customization);
+        assert!(editor_tabs[0] == MainTab::State);
+        assert!(editor_tabs[1] == MainTab::MyDashboard);
+        assert!(editor_tabs.contains(&MainTab::Media));
+    }
+}

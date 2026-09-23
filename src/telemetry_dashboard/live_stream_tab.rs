@@ -99,6 +99,9 @@ async fn stream_poll_delay() {
 #[component]
 pub(crate) fn LiveStreamTab(
     theme: ThemeConfig,
+    on_open_voice: EventHandler,
+    on_open_media: EventHandler,
+    #[props(default = false)] manager_mode: bool,
     action_policy: Signal<super::ActionPolicyMsg>,
     abort_only_mode: bool,
     #[props(default = false)] program_only: bool,
@@ -110,8 +113,7 @@ pub(crate) fn LiveStreamTab(
 ) -> Element {
     let mut config = use_signal(|| None::<LiveStreamConfig>);
     let mut status = use_signal(|| "Loading broadcast…".to_string());
-    let mut edit_mode = use_signal(|| false);
-    let mut embedded_tool = use_signal(|| None::<&'static str>);
+    let mut edit_mode = use_signal(|| manager_mode);
     use_future(move || async move {
         loop {
             match http_get_json::<LiveStreamConfig>("/api/live_streams").await {
@@ -140,10 +142,10 @@ pub(crate) fn LiveStreamTab(
         div { class:"gs26-program-shell", style:"color:{theme.text_primary};background:{theme.tab_shell_background};",
             if !program_only {
                 div { class:"gs26-program-header",
-                    strong { "Mission broadcast" }
-                    button { onclick:move |_| embedded_tool.set(Some("/radio")), "Crew voice" }
+                    strong { if manager_mode { "Stream Manager" } else { "Mission broadcast" } }
+                    button { onclick:move |_| on_open_voice.call(()), "Crew voice" }
                     if cfg.can_preview_live {
-                        button { onclick:move |_| embedded_tool.set(Some("/media#recordings-heading")), "Camera recordings" }
+                        button { onclick:move |_| on_open_media.call(()), "Camera recordings" }
                     }
                     if cfg.can_manage_stream {
                         button { onclick:move |_| { let next=!*edit_mode.read();edit_mode.set(next); },
@@ -152,14 +154,7 @@ pub(crate) fn LiveStreamTab(
                     }
                 }
             }
-            if let Some(path) = *embedded_tool.read() {
-                div { style:"position:fixed;inset:12px;z-index:10000;display:flex;flex-direction:column;background:#080d15;border:1px solid #64748b;border-radius:8px;",
-                    button { style:"align-self:flex-end;padding:12px;", onclick:move |_| embedded_tool.set(None), "Close and return to dashboard" }
-                    iframe { src:media_url(path), title:"GroundStation tools", style:"flex:1;min-height:0;width:100%;border:0;", allow:"microphone; autoplay; fullscreen",
-                        "sandbox":"allow-scripts allow-same-origin allow-forms allow-downloads"
-                    }
-                }
-            }
+            if manager_mode && config.read().is_some() && !cfg.can_manage_stream { p { "Stream-management permission is required to use these controls." } }
             if !status.read().is_empty() { p { role:"status", "{status}" } }
             if cfg.can_manage_stream && *edit_mode.read() && !program_only {
                 div {class:"gs26-program-editor",

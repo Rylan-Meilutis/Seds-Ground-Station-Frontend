@@ -29,6 +29,10 @@ fn default_main_tabs() -> Vec<String> {
         "firmware-update".to_string(),
         "calibration".to_string(),
         "mission".to_string(),
+        "crew-voice".to_string(),
+        "stream-manager".to_string(),
+        "my-dashboard".to_string(),
+        "media".to_string(),
         "vehicle".to_string(),
         "notifications".to_string(),
         "warnings".to_string(),
@@ -706,6 +710,10 @@ impl LayoutConfig {
                     | "firmware-update"
                     | "calibration"
                     | "mission"
+                    | "crew-voice"
+                    | "stream-manager"
+                    | "my-dashboard"
+                    | "media"
                     | "live-stream"
                     | "vehicle"
                     | "messages"

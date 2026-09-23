@@ -24,6 +24,7 @@ mod gse_panel;
 pub mod layout;
 mod layout_settings_tab;
 mod live_stream_tab;
+mod media_tool_tab;
 mod messages_tab;
 mod network_topology_tab;
 mod notifications_tab;

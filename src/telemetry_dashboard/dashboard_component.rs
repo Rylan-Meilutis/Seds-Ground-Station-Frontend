@@ -41,6 +41,8 @@ fn TelemetryDashboardInner() -> Element {
     let st_data_tab = use_signal(|| persist::get_or(DATA_TAB_STORAGE_KEY, "GYRO_DATA"));
     let st_base_url = use_signal(|| persist::get_or(BASE_URL_STORAGE_KEY, ""));
     let dashboard_customization = use_signal(load_dashboard_customization);
+    let cards = use_signal(custom_dashboard::load_cards);
+    use_context_provider(|| cards);
     let dashboard_edit_mode = use_signal(|| false);
     let streamer_mode = use_signal(|| persist::get_or(&streamer_mode_key(), "off") == "on");
     let ground_station_view =
@@ -172,13 +174,13 @@ fn TelemetryDashboardInner() -> Element {
     let network_topology = use_signal(NetworkTopologyMsg::default);
     let frontend_network_metrics = use_signal(FrontendNetworkMetrics::default);
     let abort_only_mode = use_signal(|| false);
-    let tabs_expanded = use_signal(|| false);
+    let mut tabs_expanded = use_signal(|| false);
     let header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
     let show_settings_overlay = use_signal(|| false);
     let show_version_overlay = use_signal(|| false);
 
-    let active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
+    let mut active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
 
     {
         let streamer_mode = streamer_mode;
@@ -3322,7 +3324,7 @@ fn TelemetryDashboardInner() -> Element {
                         class: "gs26-header-secondary",
 
                         div {
-                            class: "gs26-tab-shell",
+                            class: "gs26-tab-picker-shell",
                             "data-expanded": if *tabs_expanded.read() { "true" } else { "false" },
                             style: "
                         flex:1 1 100%;
@@ -3342,7 +3344,10 @@ fn TelemetryDashboardInner() -> Element {
                         min-width:0;
                     ",
                             button {
-                                class: "gs26-tab-toggle",
+                                class: "gs26-tab-picker-toggle",
+                                "aria-expanded": tabs_expanded.read().to_string(),
+                                "aria-controls": "dashboard-tab-picker",
+                                style: "padding:8px 12px;margin-right:8px;border-radius:8px;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
                                 onclick: {
                                     let mut tabs_expanded = tabs_expanded;
                                     move |_| {
@@ -3355,14 +3360,15 @@ fn TelemetryDashboardInner() -> Element {
                                 },
                                 {
                                 if *tabs_expanded.read() {
-                                    "Hide tabs".to_string()
+                                    "Close tab picker".to_string()
                                 } else {
-                                    format!("Show tabs ({})", _main_tab_label(&layout, *active_main_tab.read()))
+                                    format!("Choose tab · {}", _main_tab_label(&layout, *active_main_tab.read()))
                                 }
                                 }
                             }
                             button {
-                                class: "gs26-tab-toggle",
+                                class: "gs26-tab-picker-toggle",
+                                style: "padding:8px 12px;margin-right:8px;border-radius:8px;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
                                 title: "Customize tab visibility and order for this Ground Station",
                                 onclick: {
                                     let mut dashboard_edit_mode = dashboard_edit_mode;
@@ -3371,277 +3377,32 @@ fn TelemetryDashboardInner() -> Element {
                                         dashboard_edit_mode.set(next);
                                     }
                                 },
-                                if *dashboard_edit_mode.read() { "Done editing" } else { "Edit layout" }
+                                if *dashboard_edit_mode.read() { "Done editing" } else { "Customize" }
                             }
-                            nav { class: "gs26-tab-nav",
-                                for tab in _configured_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()).into_iter() {
-                                    match tab {
-                                        MainTab::State => rsx! {
-                                            button {
-                                                key: "{\"main-tab-state\"}",
-                                                style: if *active_main_tab.read() == MainTab::State { tab_style_active(&main_tab_accent("state", "#38bdf8")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::State);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::State)}"
-                                            }
-                                        },
-                                        MainTab::ConnectionStatus => rsx! {
-                                            button {
-                                                key: "{\"main-tab-connection-status\"}",
-                                                style: if *active_main_tab.read() == MainTab::ConnectionStatus { tab_style_active(&main_tab_accent("connection-status", "#06b6d4")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::ConnectionStatus);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::ConnectionStatus)}"
-                                            }
-                                        },
-                                        MainTab::Detailed => rsx! {
-                                            button {
-                                                key: "{\"main-tab-detailed\"}",
-                                                style: if *active_main_tab.read() == MainTab::Detailed { tab_style_active(&main_tab_accent("detailed", "#0ea5e9")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::Detailed);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::Detailed)}"
-                                            }
-                                        },
-                                        MainTab::Map => rsx! {
-                                            button {
-                                                key: "{\"main-tab-map\"}",
-                                                style: if *active_main_tab.read() == MainTab::Map { tab_style_active(&main_tab_accent("map", "#22c55e")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::Map);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::Map)}"
-                                            }
-                                        },
-                                        MainTab::Actions => rsx! {
-                                            button {
-                                                key: "{\"main-tab-actions\"}",
-                                                style: if *active_main_tab.read() == MainTab::Actions { tab_style_active(&main_tab_accent("actions", "#a78bfa")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::Actions);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::Actions)}"
-                                            }
-                                        },
-                                        MainTab::FirmwareUpdate => rsx! {
-                                            button {
-                                                key: "{\"main-tab-firmware-update\"}",
-                                                style: if *active_main_tab.read() == MainTab::FirmwareUpdate { tab_style_active(&main_tab_accent("firmware-update", "#22d3ee")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::FirmwareUpdate);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::FirmwareUpdate)}"
-                                            }
-                                        },
-                                        MainTab::Calibration => rsx! {
-                                            button {
-                                                key: "{\"main-tab-calibration\"}",
-                                                style: if *active_main_tab.read() == MainTab::Calibration { tab_style_active(&main_tab_accent("calibration", "#14b8a6")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::Calibration);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::Calibration)}"
-                                            }
-                                        },
-                                        MainTab::Mission => rsx! {
-                                            button {
-                                                key: "{\"main-tab-mission\"}",
-                                                style: if *active_main_tab.read() == MainTab::Mission { tab_style_active(&main_tab_accent("mission", "#ef4444")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| { t.set(MainTab::Mission); tabs_expanded.set(false); }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::Mission)}"
-                                            }
-                                        },
-                                        MainTab::Vehicle => rsx! {
-                                            button {
-                                                key: "{\"main-tab-vehicle\"}",
-                                                style: if *active_main_tab.read() == MainTab::Vehicle { tab_style_active(&main_tab_accent("vehicle", "#38bdf8")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| { t.set(MainTab::Vehicle); tabs_expanded.set(false); }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::Vehicle)}"
-                                            }
-                                        },
-                                        MainTab::Messages => rsx! {
-                                            button {
-                                                key: "{\"main-tab-messages\"}",
-                                                style: if *active_main_tab.read() == MainTab::Messages { tab_style_active(&main_tab_accent("messages", "#2563eb")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::Messages);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::Messages)}"
-                                            }
-                                        },
-                                        MainTab::Notifications => rsx! {
-                                            button {
-                                                key: "{\"main-tab-notifications\"}",
-                                                style: if *active_main_tab.read() == MainTab::Notifications { tab_style_active(&main_tab_accent("notifications", "#3b82f6")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    let notifications = notifications;
-                                                    let dismissed_notifications = dismissed_notifications;
-                                                    let unread_notification_ids = unread_notification_ids;
-                                                    move |_| {
-                                                        t.set(MainTab::Notifications);
-                                                        tabs_expanded.set(false);
-                                                        dismiss_all_active_notifications_local_and_remote(
-                                                            notifications,
-                                                            dismissed_notifications,
-                                                            unread_notification_ids,
-                                                        );
-                                                    }
-                                                },
-                                                span { "{_main_tab_label(&layout, MainTab::Notifications)}" }
-                                                span {
-                                                    "data-active": if has_unread_notifications { "true" } else { "false" },
-                                                    style: "{notifications_tab_icon_style}",
-                                                    "●"
-                                                }
-                                            }
-                                        },
-                                        MainTab::Warnings => rsx! {
-                                            button {
-                                                key: "{\"main-tab-warnings\"}",
-                                                style: if *active_main_tab.read() == MainTab::Warnings { tab_style_active(&main_tab_accent("warnings", "#facc15")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::Warnings);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                span { "{_main_tab_label(&layout, MainTab::Warnings)}" }
-                                                span {
-                                                    "data-active": if has_warnings { "true" } else { "false" },
-                                                    style: "{warnings_tab_icon_style}",
-                                                    "⚠"
-                                                }
-                                            }
-                                        },
-                                        MainTab::Errors => rsx! {
-                                            button {
-                                                key: "{\"main-tab-errors\"}",
-                                                style: if *active_main_tab.read() == MainTab::Errors { tab_style_active(&main_tab_accent("errors", "#ef4444")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::Errors);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                span { "{_main_tab_label(&layout, MainTab::Errors)}" }
-                                                span {
-                                                    "data-active": if has_errors { "true" } else { "false" },
-                                                    style: "{errors_tab_icon_style}",
-                                                    "⛔"
-                                                }
-                                            }
-                                        },
-                                        MainTab::Data => rsx! {
-                                            button {
-                                                key: "{\"main-tab-data\"}",
-                                                style: if *active_main_tab.read() == MainTab::Data { tab_style_active(&main_tab_accent("data", "#f97316")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::Data);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::Data)}"
-                                            }
-                                        },
-                                        MainTab::DataExport => rsx! {
-                                            button {
-                                                key: "{\"main-tab-data-export\"}",
-                                                style: if *active_main_tab.read() == MainTab::DataExport { tab_style_active(&main_tab_accent("data-export", "#f97316")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::DataExport);
-                                                        expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::DataExport)}"
-                                            }
-                                        },
-                                        MainTab::NetworkTopology => rsx! {
-                                            button {
-                                                key: "{\"main-tab-network-topology\"}",
-                                                style: if *active_main_tab.read() == MainTab::NetworkTopology { tab_style_active(&main_tab_accent("network-topology", "#8b5cf6")) } else { tab_style_inactive.to_string() },
-                                                onclick: {
-                                                    let mut t = active_main_tab;
-                                                    let mut tabs_expanded = tabs_expanded;
-                                                    move |_| {
-                                                        t.set(MainTab::NetworkTopology);
-                                                        tabs_expanded.set(false);
-                                                    }
-                                                },
-                                                "{_main_tab_label(&layout, MainTab::NetworkTopology)}"
-                                            }
-                                        },
-                    }
-                }
+                            if *tabs_expanded.read() {
+                                nav { id: "dashboard-tab-picker", "aria-label": "Dashboard tabs",
+                                    style: "display:grid;grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr));gap:8px;width:100%;padding-top:10px;",
+                                    for tab in _configured_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()) {
+                                        button {
+                                            key: "main-tab-{_main_tab_to_str(tab)}",
+                                            "aria-current": if *active_main_tab.read() == tab { "page" } else { "false" },
+                                            style: if *active_main_tab.read() == tab { tab_style_active(&main_tab_accent(_main_tab_to_str(tab), "#38bdf8")) } else { tab_style_inactive.clone() },
+                                            onclick: move |_| { active_main_tab.set(tab); tabs_expanded.set(false); },
+                                            "{_main_tab_label(&layout, tab)}"
+                                            if tab == MainTab::Warnings { span { style:"{warnings_tab_icon_style}", " ⚠" } }
+                                            if tab == MainTab::Errors { span { style:"{errors_tab_icon_style}", " ⛔" } }
+                                            if tab == MainTab::Notifications { span { style:"{notifications_tab_icon_style}", " ●" } }
+                                        }
+                                    }
+                                }
+                            }
                 if *dashboard_edit_mode.read() {
                     div {
-                        style: "flex:1 0 100%; display:flex; flex-direction:column; gap:8px; margin-top:10px; padding:10px; box-sizing:border-box; border:1px dashed {theme.info_accent}; border-radius:12px; background:{theme.info_background};",
+                        style: "flex:1 0 100%; max-height:55vh;overflow:auto;display:flex; flex-direction:column; gap:8px; margin-top:10px; padding:10px; box-sizing:border-box; border:1px dashed {theme.info_accent}; border-radius:12px; background:{theme.info_background};",
                         div { style: "display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;",
                             div {
                                 div { style: "font-size:13px; font-weight:800; color:{theme.info_text};", "Dashboard layout" }
-                                div { style: "font-size:11px; color:{theme.text_muted};", "Changes are saved only for this Ground Station. Backend layout remains the default." }
+                                div { style: "font-size:11px; color:{theme.text_muted};", "Saved for your account and this Ground Station on this device." }
                             }
                             button {
                                 style: "padding:5px 9px; border:1px solid {theme.button_border}; border-radius:9px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
@@ -3653,11 +3414,14 @@ fn TelemetryDashboardInner() -> Element {
                                         dashboard_customization.set(next);
                                     }
                                 },
-                                "Use Ground Station default"
+                                "Reset tab layout"
                             }
                         }
+                        custom_dashboard::HeaderPinSettings {}
+                        button { onclick: { let mut editing = dashboard_edit_mode; move |_| { open_dashboard_tool(MainTab::MyDashboard, active_main_tab, dashboard_customization); editing.set(false); tabs_expanded.set(false); } }, "Edit dashboard cards and content" }
+                        h3 { "Visible tabs and order" }
                         div { style: "display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:6px;",
-                            for (index, tab) in _available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read()).into_iter().enumerate() {
+                            for (index, tab) in _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()).into_iter().enumerate() {
                                 {
                                     let tab_id = _main_tab_to_str(tab).to_string();
                                     let visible = !dashboard_customization.read().hidden.contains(&tab_id);
@@ -3666,7 +3430,8 @@ fn TelemetryDashboardInner() -> Element {
                                             label { style: "display:flex; align-items:center; gap:7px; min-width:0; font-size:12px;",
                                                 input {
                                                     r#type: "checkbox",
-                                                    checked: visible,
+                                                    checked: visible || tab == MainTab::State,
+                                                    disabled: tab == MainTab::State,
                                                     onchange: {
                                                         let mut dashboard_customization = dashboard_customization;
                                                         let tab_id = tab_id.clone();
@@ -3683,17 +3448,16 @@ fn TelemetryDashboardInner() -> Element {
                                             }
                                             button {
                                                 title: "Move earlier",
-                                                disabled: index == 0,
+                                                disabled: index <= 1,
                                                 style: "padding:3px 7px; border:1px solid {theme.button_border}; border-radius:7px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
                                                 onclick: {
                                                     let mut dashboard_customization = dashboard_customization;
-                                                    let available = _available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read());
+                                                    let available = _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read());
                                                     let tab_id = tab_id.clone();
                                                     move |_| {
                                                         let mut next = dashboard_customization.read().clone();
                                                         let mut order = available.iter().map(|tab| _main_tab_to_str(*tab).to_string()).collect::<Vec<_>>();
-                                                        if !next.order.is_empty() { order.sort_by_key(|id| next.order.iter().position(|saved| saved == id).unwrap_or(usize::MAX)); }
-                                                        if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos > 0 { order.swap(pos, pos - 1); }
+                                                        if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos > 1 { order.swap(pos, pos - 1); }
                                                         next.order = order;
                                                         save_dashboard_customization(&next);
                                                         dashboard_customization.set(next);
@@ -3703,15 +3467,15 @@ fn TelemetryDashboardInner() -> Element {
                                             }
                                             button {
                                                 title: "Move later",
+                                                disabled: tab == MainTab::State,
                                                 style: "padding:3px 7px; border:1px solid {theme.button_border}; border-radius:7px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
                                                 onclick: {
                                                     let mut dashboard_customization = dashboard_customization;
-                                                    let available = _available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read());
+                                                    let available = _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read());
                                                     let tab_id = tab_id.clone();
                                                     move |_| {
                                                         let mut next = dashboard_customization.read().clone();
                                                         let mut order = available.iter().map(|tab| _main_tab_to_str(*tab).to_string()).collect::<Vec<_>>();
-                                                        if !next.order.is_empty() { order.sort_by_key(|id| next.order.iter().position(|saved| saved == id).unwrap_or(usize::MAX)); }
                                                         if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos + 1 < order.len() { order.swap(pos, pos + 1); }
                                                         next.order = order;
                                                         save_dashboard_customization(&next);
@@ -3727,7 +3491,6 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
                 }
-        }
     }
 
                         div {
@@ -3759,6 +3522,7 @@ fn TelemetryDashboardInner() -> Element {
                             div { class: "gs26-status-network",
                                 NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
                             }
+                            custom_dashboard::PinnedTelemetry {}
                             div { class: "gs26-status-launch",
                                 LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
                             }
@@ -3767,6 +3531,14 @@ fn TelemetryDashboardInner() -> Element {
 
                     }
                     div { style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
+                        media_tool_tab::MediaToolTab {
+                            id: "gs26-crew-voice", path: "/radio?embedded=1", title: "Crew voice",
+                            visible: !*streamer_mode.read() && *active_main_tab.read() == MainTab::CrewVoice,
+                        }
+                        media_tool_tab::MediaToolTab {
+                            id: "gs26-media", path: "/media?embedded=1", title: "Cameras and recordings",
+                            visible: !*streamer_mode.read() && *active_main_tab.read() == MainTab::Media,
+                        }
                         match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
                             MainTab::State if !*ground_station_view.read() => rsx! {
                                 model_dashboard::ModelDashboard { theme:theme.clone(), action_policy, abort_only_mode:*abort_only_mode.read(), flight_state, rocket_gps, rocket_altitude_m:rocket_gps_altitude_m }
@@ -3879,8 +3651,18 @@ fn TelemetryDashboardInner() -> Element {
                                     }
                                 }
                             },
-                            MainTab::Mission => rsx! {
+                            MainTab::CrewVoice | MainTab::Media => rsx! {},
+                            MainTab::MyDashboard => rsx! {
+                                div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
+                                    custom_dashboard::CustomDashboard { theme:theme.clone() }
+                                }
+                            },
+                            MainTab::Mission | MainTab::StreamManager => rsx! {
                                 LiveStreamTab {
+                                    key: "broadcast-{_main_tab_to_str(*active_main_tab.read())}",
+                                    manager_mode: *active_main_tab.read() == MainTab::StreamManager,
+                                    on_open_voice: move |_| open_dashboard_tool(MainTab::CrewVoice, active_main_tab, dashboard_customization),
+                                    on_open_media: move |_| open_dashboard_tool(MainTab::Media, active_main_tab, dashboard_customization),
                                     theme: theme.clone(),
                                     program_only: *streamer_mode.read(),
                                     action_policy,

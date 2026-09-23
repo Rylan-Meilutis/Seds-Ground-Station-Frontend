@@ -3,7 +3,11 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-struct Card {
+pub(super) struct Card {
+    #[serde(default)]
+    pinned: bool,
+    #[serde(default = "default_precision")]
+    precision: usize,
     label: String,
     section: String,
     data_type: String,
@@ -15,6 +19,7 @@ struct Card {
     max: f32,
     visible: bool,
 }
+fn default_precision() -> usize { 2 }
 fn defaults() -> Vec<Card> {
     let mut cards = Vec::new();
     for (section, label, dt, sender, index, unit, max, display) in [
@@ -170,6 +175,8 @@ fn defaults() -> Vec<Card> {
         ),
     ] {
         cards.push(Card {
+            pinned: false,
+            precision: 2,
             section: section.into(),
             label: label.into(),
             data_type: dt.into(),
@@ -185,10 +192,11 @@ fn defaults() -> Vec<Card> {
     cards
 }
 fn valid(cards: &[Card]) -> bool {
-    !cards.is_empty()
+    cards.iter().filter(|c| c.pinned).count() <= 8
+        && !cards.is_empty()
         && cards.len() <= 32
         && cards.iter().all(|c| {
-            ["Fill System", "Avionics"].contains(&c.section.as_str())
+            !c.section.trim().is_empty() && c.section.len() < 64 && c.precision <= 6
                 && ["number", "bar", "gauge", "trend", "state"].contains(&c.display.as_str())
                 && c.min.is_finite()
                 && c.max.is_finite()
@@ -198,6 +206,7 @@ fn valid(cards: &[Card]) -> bool {
                 && c.data_type.len() < 128
                 && c.label.len() < 128
                 && c.sender.len() < 128
+                && c.unit.len() < 32
         })
 }
 pub(super) fn storage_key() -> String {
@@ -214,17 +223,31 @@ fn save(cards: &[Card]) {
     }
 }
 
+pub(super) fn load_cards() -> Vec<Card> {
+    persist::get_string(&storage_key())
+        .and_then(|raw| serde_json::from_str::<Vec<Card>>(&raw).ok())
+        .filter(|cards| valid(cards))
+        .unwrap_or_else(defaults)
+}
+
 #[component]
 pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
-    let mut cards = use_signal(|| {
-        persist::get_string(&storage_key())
-            .and_then(|raw| serde_json::from_str::<Vec<Card>>(&raw).ok())
-            .filter(|cards| valid(cards))
-            .unwrap_or_else(defaults)
-    });
+    let mut cards = use_context::<Signal<Vec<Card>>>();
     let mut editing = use_signal(|| false);
     let snapshot = cards.read().clone();
-    rsx! {section {style:"color:{theme.text_primary};",
+    let mut sections = Vec::new();
+    for card in &snapshot { if !sections.contains(&card.section) { sections.push(card.section.clone()); } }
+    rsx! {section {class:"gs26-custom-dashboard",style:"color:{theme.text_primary};--card-button-bg:{theme.button_background};--card-button-border:{theme.button_border};--card-button-text:{theme.button_text};",
+        style { {r#"
+            .gs26-custom-dashboard button, .gs26-custom-dashboard input, .gs26-custom-dashboard select {
+                font:inherit; font-size:13px; color:var(--card-button-text); background:var(--card-button-bg);
+                border:1px solid var(--card-button-border); border-radius:7px; padding:7px 10px; max-width:100%; box-sizing:border-box;
+            }
+            .gs26-custom-dashboard button { cursor:pointer; margin:4px 4px 0 0; }
+            .gs26-custom-dashboard button:disabled { opacity:.5; cursor:default; }
+            .gs26-custom-dashboard input:not([type=checkbox]), .gs26-custom-dashboard select { width:100%; }
+            .gs26-custom-dashboard button:focus-visible, .gs26-custom-dashboard input:focus-visible, .gs26-custom-dashboard select:focus-visible { outline:2px solid #38bdf8; outline-offset:2px; }
+        "#} }
         div {style:"display:flex;gap:10px;align-items:center;flex-wrap:wrap;",
             h2 {"My dashboard"}
             button {onclick:move |_| {let next=!*editing.read();editing.set(next);}, if *editing.read(){"Done"}else{"Customize dashboard"}}
@@ -234,11 +257,11 @@ pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
             }
         }
         if *editing.read() {p {"Saved for this user and GroundStation on this device. Choose a source, display, visibility and order. Changes do not affect acquisition or safety controls."}}
-        for section in ["Fill System","Avionics"] {
+        for section in sections {
             h3 {"{section}"}
             div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;",
                 for (index,card) in snapshot.iter().enumerate().filter(|(_,c)|c.section==section && (c.visible || *editing.read())) {
-                    div {key:"{index}-{card.data_type}-{card.sender}-{card.index}",style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
+                    div {key:"card-{index}",style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
                         if *editing.read() {
                             CardEditor {card:card.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
                             button {disabled:index==0,onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index-1);save(&all);cards.set(all);},"Move up"}
@@ -246,6 +269,10 @@ pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
                             button {disabled:snapshot.len()==1,onclick:move |_|{let mut all=cards.read().clone();all.remove(index);save(&all);cards.set(all);},"Remove"}
                         }
                         if card.visible {TelemetryCard {card:card.clone()}}
+                        button { disabled: !card.pinned && snapshot.iter().filter(|c| c.pinned).count() >= 8,
+                            onclick: move |_| { let mut all=cards.read().clone(); all[index].pinned=!all[index].pinned; save(&all); cards.set(all); },
+                            if card.pinned { "Unpin from top bar" } else { "Pin to top bar" }
+                        }
                     }
                 }
             }
@@ -258,7 +285,7 @@ fn CardEditor(card: Card, onchange: EventHandler<Card>) -> Element {
     rsx! {div {style:"display:grid;gap:6px;margin-bottom:10px;",
         label {"Show " input {r#type:"checkbox",checked:card.visible,onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.visible=e.checked();onchange.call(c);}}}}
         label {"Title " input {value:card.label.clone(),oninput:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.label=e.value();onchange.call(c);}}}}
-        label {"Section " select {value:card.section.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.section=e.value();onchange.call(c);}},option {"Fill System"}option {"Avionics"}}}
+        label {"Section " input {value:card.section.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.section=e.value();onchange.call(c);}}}}
         label {"Display " select {value:card.display.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.display=e.value();onchange.call(c);}},
             for kind in ["number","bar","gauge","trend","state"] {option {value:kind,"{kind}"}}
         }}
@@ -266,13 +293,14 @@ fn CardEditor(card: Card, onchange: EventHandler<Card>) -> Element {
         label {"Board ID (blank = any) " input {value:card.sender.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.sender=e.value();onchange.call(c);}}}}
         label {"Channel index " input {r#type:"number",min:"0",max:"127",value:"{card.index}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.index=v;onchange.call(c);}}}}}
         label {"Unit " input {value:card.unit.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.unit=e.value();onchange.call(c);}}}}
+        label {"Decimal places " input {r#type:"number",min:"0",max:"6",value:"{card.precision}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.precision=v;onchange.call(c);}}}}}
         label {"Minimum " input {r#type:"number",value:"{card.min}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.min=v;onchange.call(c);}}}}}
         label {"Maximum " input {r#type:"number",value:"{card.max}",onchange:move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.max=v;onchange.call(c);}}}}
     }}
 }
 
 #[component]
-fn TelemetryCard(card: Card) -> Element {
+fn TelemetryCard(card: Card, #[props(default = false)] compact: bool) -> Element {
     let mut clock = use_signal(|| 0u64);
     // Sampling the existing ingress cache at 5 Hz avoids a DOM update for every
     // DAQ packet. No polling request, extra telemetry subscription or unbounded history.
@@ -313,7 +341,7 @@ fn TelemetryCard(card: Card) -> Element {
                     "Closed / Off".into()
                 }
             } else {
-                format!("{v:.2} {}", card.unit)
+                format!("{v:.precision$} {}", card.unit, precision=card.precision)
             }
         })
         .unwrap_or_else(|| "No data".into());
@@ -345,14 +373,50 @@ fn TelemetryCard(card: Card) -> Element {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    rsx! {div {
+    rsx! {div { style: if compact { "display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;" } else { "" },
         strong {"{card.label}"}
-        div {style:"font-size:24px;font-variant-numeric:tabular-nums;","{text}"}
-        if value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
-        if value.is_some() && card.display=="gauge" {div {role:"img","aria-label":text.clone(),style:"width:70px;height:70px;border-radius:50%;background:conic-gradient(#38bdf8 {fraction*360.0}deg,#334155 0);",div {style:"position:relative;top:12px;left:12px;width:46px;height:46px;border-radius:50%;background:#0f172a;"}}}
-        if card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",polyline {points,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
-        small {style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
+        div {style:if compact {"font-size:13px;font-variant-numeric:tabular-nums;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},"{text}"}
+        if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
+        if !compact && value.is_some() && card.display=="gauge" {div {role:"img","aria-label":text.clone(),style:"width:70px;height:70px;border-radius:50%;background:conic-gradient(#38bdf8 {fraction*360.0}deg,#334155 0);",div {style:"position:relative;top:12px;left:12px;width:46px;height:46px;border-radius:50%;background:#0f172a;"}}}
+        if !compact && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",polyline {points,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
+        if !compact || age.is_none_or(|a| a>10000) { small {style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
             if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago · {card.sender}"}else{"Waiting for telemetry"}
+        }}
+    }}
+}
+
+#[component]
+pub(super) fn PinnedTelemetry() -> Element {
+    let cards = use_context::<Signal<Vec<Card>>>();
+    rsx! {
+        if cards.read().iter().any(|card| card.pinned) {
+            div { style:"grid-column:1 / -1;grid-row:5;display:flex;flex-wrap:wrap;gap:8px 16px;padding:6px 0;font-size:12px;",
+                "aria-label":"Pinned telemetry",
+                for (index, card) in cards.read().iter().enumerate().filter(|(_,card)|card.pinned) {
+                    TelemetryCard {key:"pinned-{index}", card:card.clone(), compact:true}
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub(super) fn HeaderPinSettings() -> Element {
+    let mut cards = use_context::<Signal<Vec<Card>>>();
+    let snapshot = cards.read().clone();
+    let count = snapshot.iter().filter(|card|card.pinned).count();
+    rsx! {section {
+        h3 {"Pin telemetry to the top bar ({count}/8)"}
+        p {"Pinned values remain visible beside the clock and status as you switch tabs. Edit their sources and formatting in My Dashboard."}
+        div {style:"display:flex;gap:8px 16px;flex-wrap:wrap;",
+            for (index, card) in snapshot.iter().enumerate() {
+                label {
+                    input {r#type:"checkbox",checked:card.pinned,disabled:!card.pinned && count>=8,
+                        onchange:move |event:Event<FormData>|{let mut all=cards.read().clone();all[index].pinned=event.checked();if valid(&all){save(&all);cards.set(all);}}
+                    }
+                    " {card.label}"
+                }
+            }
         }
     }}
 }
@@ -360,6 +424,24 @@ fn TelemetryCard(card: Card) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pins_are_bounded_and_legacy_cards_keep_their_defaults() {
+        let mut cards = defaults();
+        for card in cards.iter_mut().take(8) { card.pinned = true; }
+        assert!(valid(&cards));
+        cards[8].pinned = true;
+        assert!(!valid(&cards));
+        let mut legacy = serde_json::to_value(&cards[0]).unwrap();
+        legacy.as_object_mut().unwrap().remove("pinned");
+        legacy.as_object_mut().unwrap().remove("precision");
+        let restored: Card = serde_json::from_value(legacy).unwrap();
+        assert!(!restored.pinned);
+        assert_eq!(restored.precision, 2);
+        cards[8].pinned = false;
+        cards[0].section = "Launch team".into();
+        assert!(valid(&cards));
+    }
+
     #[test]
     fn defaults_cover_fill_and_av_bay_without_mixing_batteries() {
         let cards = defaults();
