@@ -2692,8 +2692,8 @@ fn TelemetryDashboardInner() -> Element {
              }}
              .gs26-title-tab-toggle {{
                display:inline-flex; align-items:center; justify-content:center; gap:6px;
-               min-height:44px; max-width:100%; padding:4px 6px; box-sizing:border-box;
-               border:0; border-radius:6px; background:transparent; color:inherit;
+               min-height:44px; max-width:100%; padding:6px 12px; box-sizing:border-box;
+               border:1px solid {theme.button_border}; border-radius:8px; background:{theme.button_background}; color:inherit;
                font:inherit; cursor:pointer;
              }}
              .gs26-title-tab-toggle:focus-visible {{ outline:2px solid currentColor; outline-offset:2px; }}
@@ -3042,7 +3042,7 @@ fn TelemetryDashboardInner() -> Element {
                                         actions.set(false);
                                     }
                                 },
-                                span { "{_dashboard_title(&layout)}" }
+                                span { "{_main_tab_label(&layout, *active_main_tab.read())}" }
                                 span { "aria-hidden": "true", style: "font-size:12px;flex-shrink:0;", if *tabs_expanded.read() || *dashboard_edit_mode.read() { "▴" } else { "▾" } }
                             }
                         }
@@ -3361,8 +3361,7 @@ fn TelemetryDashboardInner() -> Element {
                                 div {
                                     id: "dashboard-tab-picker-panel",
                                     style:"position:absolute;top:0;left:0;width:min(820px,100%);max-height:70vh;overflow:auto;box-sizing:border-box;padding:10px;border:1px solid {theme.tab_shell_border};border-radius:10px;background:{theme.tab_shell_background};box-shadow:0 12px 32px rgba(0,0,0,0.45);",
-                                    div { style: "display:flex;align-items:center;justify-content:space-between;gap:8px;",
-                                        span { style: "color:{theme.text_secondary};font-size:13px;", "{_main_tab_label(&layout, *active_main_tab.read())}" }
+                                    div { style: "display:flex;align-items:center;justify-content:flex-end;gap:8px;",
                                         button {
                                             style: "min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
                                             onclick: {
@@ -3531,7 +3530,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
                     div { style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                         media_tool_tab::MediaToolTab {
-                            id: "gs26-crew-voice", path: "/radio?embedded=1", title: "Crew voice",
+                            id: "gs26-crew-voice", path: "/radio?embedded=1", title: "Voice chat",
                             visible: !*streamer_mode.read() && *active_main_tab.read() == MainTab::CrewVoice,
                         }
                         media_tool_tab::MediaToolTab {

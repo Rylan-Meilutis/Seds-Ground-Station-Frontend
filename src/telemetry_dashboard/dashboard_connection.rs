@@ -59,7 +59,7 @@ fn _default_main_tab_label(tab: MainTab) -> String {
             localized_copy(&lang, "Mission Live", "Mision en vivo", "Mission en direct")
         }
         MainTab::StreamManager => localized_copy(&lang, "Stream Manager", "Gestor de transmisión", "Gestion du direct"),
-        MainTab::CrewVoice => localized_copy(&lang, "Crew Voice", "Voz de tripulación", "Voix équipage"),
+        MainTab::CrewVoice => localized_copy(&lang, "Voice Chat", "Chat de voz", "Discussion vocale"),
         MainTab::Media => localized_copy(&lang, "Cameras & Recordings", "Cámaras y grabaciones", "Caméras et enregistrements"),
         MainTab::Vehicle => localized_copy(&lang, "Vehicle", "Vehiculo", "Vehicule"),
         MainTab::Messages => localized_copy(&lang, "Messages", "Mensajes", "Messages"),

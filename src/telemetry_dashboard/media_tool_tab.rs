@@ -32,7 +32,7 @@ pub(super) fn MediaToolTab(
     }));
     let src = format!("{}{path}", UrlConfig::base_http().trim_end_matches('/'));
     rsx! {
-        div { style: if visible { "height:100%;width:100%;" } else { "display:none;" },
+        div { style: if visible { "display:block;height:100%;width:100%;" } else { "display:none;height:100%;width:100%;" },
             if *opened.read() {
                 iframe {
                     id, src, title,

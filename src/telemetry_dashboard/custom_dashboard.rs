@@ -282,7 +282,6 @@ pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
             .gs26-custom-dashboard button:focus-visible, .gs26-custom-dashboard input:focus-visible, .gs26-custom-dashboard select:focus-visible { outline:2px solid #38bdf8; outline-offset:2px; }
         "#} }
         div {style:"display:flex;gap:10px;align-items:center;flex-wrap:wrap;",
-            h2 {style:"margin:4px 0;", "Dashboard"}
             button {onclick:move |_| {let next=!*editing.read();editing.set(next);}, if *editing.read(){"Done"}else{"Customize dashboard"}}
             if *editing.read() {
                 button {onclick:move |_|{let next=defaults();save(&next);cards.set(next);},"Restore defaults"}

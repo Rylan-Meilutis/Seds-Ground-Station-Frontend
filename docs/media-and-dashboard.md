@@ -7,7 +7,7 @@ board IDs, channel indices, units, precision, and number/bar/gauge/trend/state
 formats. Add live-camera cards, choose a camera, and set normal, wide, or full-width sizes. Camera previews require operator or stream-management access; offline cameras show an explicit status rather than a model. Up to eight cards can be pinned to the status bar. Pins retain missing
 and stale data indicators. Preferences are local to the user and Ground Station.
 
-**Crew Voice** and **Cameras & Recordings** reuse the dashboard login. Their
+**Voice Chat** and **Cameras & Recordings** reuse the dashboard login. Their
 embedded pages remain mounted after their first visit, so switching dashboard
 tabs does not end voice or camera capture. Hiding voice releases push-to-talk;
 open mic continues until muted or left. Logging out, changing sessions, closing

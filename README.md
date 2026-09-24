@@ -30,7 +30,7 @@ under **Avionics**. Missing data remains marked unavailable; readings older than
 board connection status. Card rendering samples the existing telemetry cache at
 5 Hz and trends retain at most 150 samples; acquisition and CSV data are unchanged.
 
-Crew voice and recording tools open inside the app with a return button, not in
+Voice chat and recording tools open inside the app with a return button, not in
 external browser tabs. The Pi-compatible raster map supports dragging to pan,
 wheel or +/- buttons to zoom, and keyboard +/- when focused. Tiles are reused
 between telemetry updates. 3D views use a reduced-detail wireframe of the actual
@@ -86,8 +86,8 @@ permissions. CSV viewing does not grant permission to operate valves.
 Dashboard opens on a customizable telemetry and live-camera card layout. Use
 **Customize dashboard** to add cards, pick data/camera sources, resize cards, and
 change their sections, order and visibility. Layouts are saved per user and station;
-telemetry values can be pinned to the centered status bar. The dashboard title
-control opens the tab picker without pushing content down. The previous
+telemetry values can be pinned to the centered status bar. The boxed active-tab selector
+opens the tab picker without pushing content down. The previous
 “My Dashboard” tab now maps to Dashboard and retains its saved cards.
 
 The 3D model is confined to the delayed stream: it appears when no cameras are
