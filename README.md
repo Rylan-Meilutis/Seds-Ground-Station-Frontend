@@ -86,7 +86,7 @@ permissions. CSV viewing does not grant permission to operate valves.
 Dashboard opens on a customizable telemetry and live-camera card layout. Use
 **Customize dashboard** to add cards, pick data/camera sources, resize cards, and
 change their sections, order and visibility. Layouts are saved per user and station;
-telemetry values can be pinned to the centered status bar. The compact **Tabs**
+telemetry values can be pinned to the centered status bar. The dashboard title
 control opens the tab picker without pushing content down. The previous
 “My Dashboard” tab now maps to Dashboard and retains its saved cards.
 

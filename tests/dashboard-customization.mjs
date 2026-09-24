@@ -60,7 +60,7 @@ try{
   await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('#gs26-crew-voice')?.contentWindow.received.some(m=>m.visible===false));
   assert.equal(await page.evaluate(()=>document.querySelector('#gs26-crew-voice').contentWindow.instanceMarker),42,'media document persists when hidden');
-  await page.getByRole('button',{name:'Customize',exact:true}).click();
+  await choose();await page.getByRole('button',{name:'Customize',exact:true}).click();
   await page.getByRole('checkbox',{name:'Crew Voice',exact:true}).uncheck();
   await page.getByRole('button',{name:'Done editing',exact:true}).click();
   await choose();assert.equal(await page.getByRole('button',{name:'Crew Voice',exact:true}).count(),0);
@@ -76,6 +76,11 @@ try{
   await page.setViewportSize({width:390,height:844});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'no horizontal page scrolling on mobile');
   const nav=page.locator('#dashboard-tab-picker');assert(await nav.evaluate(el=>el.scrollWidth<=el.clientWidth),'tab picker does not scroll sideways');
+  await page.getByRole('button',{name:'Close tab picker',exact:true}).click();
+  await choose();
+  const titleToggle=page.locator('.gs26-title-tab-toggle');
+  assert((await titleToggle.boundingBox()).height>=44,'mobile title has a full touch target');
+  await page.screenshot({path:'/tmp/gs-dashboard-mobile-menu.png',fullPage:true});
   await page.getByRole('button',{name:'Close tab picker',exact:true}).click();
   await page.locator('iframe[title="Live camera"]').scrollIntoViewIfNeeded();
   await page.screenshot({path:'/tmp/gs-dashboard-mobile.png',fullPage:true});
