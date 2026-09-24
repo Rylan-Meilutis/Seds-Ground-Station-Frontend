@@ -325,7 +325,6 @@ enum MainTab {
     Mission,
     CrewVoice,
     StreamManager,
-    MyDashboard,
     Media,
     Vehicle,
     Messages,

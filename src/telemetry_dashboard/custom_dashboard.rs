@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 pub(super) struct Card {
     #[serde(default)]
     pinned: bool,
+    #[serde(default)]
+    stream_id: String,
+    #[serde(default = "default_width")]
+    width: String,
     #[serde(default = "default_precision")]
     precision: usize,
     label: String,
@@ -19,6 +23,7 @@ pub(super) struct Card {
     max: f32,
     visible: bool,
 }
+fn default_width() -> String { "normal".into() }
 fn default_precision() -> usize { 2 }
 fn defaults() -> Vec<Card> {
     let mut cards = Vec::new();
@@ -176,6 +181,8 @@ fn defaults() -> Vec<Card> {
     ] {
         cards.push(Card {
             pinned: false,
+            stream_id: String::new(),
+            width: default_width(),
             precision: 2,
             section: section.into(),
             label: label.into(),
@@ -197,7 +204,10 @@ fn valid(cards: &[Card]) -> bool {
         && cards.len() <= 32
         && cards.iter().all(|c| {
             !c.section.trim().is_empty() && c.section.len() < 64 && c.precision <= 6
-                && ["number", "bar", "gauge", "trend", "state"].contains(&c.display.as_str())
+                && ["number", "bar", "gauge", "trend", "state", "camera"].contains(&c.display.as_str())
+                && ["normal", "wide", "full"].contains(&c.width.as_str())
+                && c.stream_id.len() <= 64
+                && (c.display != "camera" || !c.pinned)
                 && c.min.is_finite()
                 && c.max.is_finite()
                 && c.max > c.min
@@ -234,11 +244,34 @@ pub(super) fn load_cards() -> Vec<Card> {
 pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
     let mut cards = use_context::<Signal<Vec<Card>>>();
     let mut editing = use_signal(|| false);
+    let mut cameras = use_signal(super::live_stream_tab::LiveStreamConfig::default);
+    let mut camera_error = use_signal(|| "Loading cameras…".to_string());
+    use_future(move || async move {
+        loop {
+            if *editing.peek() || cards.peek().iter().any(|card| card.display == "camera" && card.visible) {
+                match super::http_get_json::<super::live_stream_tab::LiveStreamConfig>("/api/live_streams").await {
+                    Ok(next) => { if *cameras.peek() != next { cameras.set(next); } camera_error.set(String::new()); }
+                    Err(error) => { cameras.set(Default::default()); camera_error.set(format!("Camera service unavailable: {error}")); }
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(2000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    });
     let snapshot = cards.read().clone();
     let mut sections = Vec::new();
-    for card in &snapshot { if !sections.contains(&card.section) { sections.push(card.section.clone()); } }
+    for card in &snapshot { if (card.visible || *editing.read()) && !sections.contains(&card.section) { sections.push(card.section.clone()); } }
     rsx! {section {class:"gs26-custom-dashboard",style:"color:{theme.text_primary};--card-button-bg:{theme.button_background};--card-button-border:{theme.button_border};--card-button-text:{theme.button_text};",
         style { {r#"
+            .gs26-custom-dashboard { container-type:inline-size; }
+            .gs26-card-grid { display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px; }
+            .gs26-dashboard-card { grid-column:span 4; }
+            .gs26-dashboard-card[data-width=wide] { grid-column:span 8; }
+            .gs26-dashboard-card[data-width=full] { grid-column:1 / -1; }
+            @container(max-width:800px) { .gs26-dashboard-card { grid-column:span 6; } .gs26-dashboard-card[data-width=wide] { grid-column:1 / -1; } }
+            @container(max-width:480px) { .gs26-dashboard-card { grid-column:1 / -1; } }
             .gs26-custom-dashboard button, .gs26-custom-dashboard input, .gs26-custom-dashboard select {
                 font:inherit; font-size:13px; color:var(--card-button-text); background:var(--card-button-bg);
                 border:1px solid var(--card-button-border); border-radius:7px; padding:7px 10px; max-width:100%; box-sizing:border-box;
@@ -249,30 +282,35 @@ pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
             .gs26-custom-dashboard button:focus-visible, .gs26-custom-dashboard input:focus-visible, .gs26-custom-dashboard select:focus-visible { outline:2px solid #38bdf8; outline-offset:2px; }
         "#} }
         div {style:"display:flex;gap:10px;align-items:center;flex-wrap:wrap;",
-            h2 {"My dashboard"}
+            h2 {style:"margin:4px 0;", "Dashboard"}
             button {onclick:move |_| {let next=!*editing.read();editing.set(next);}, if *editing.read(){"Done"}else{"Customize dashboard"}}
             if *editing.read() {
                 button {onclick:move |_|{let next=defaults();save(&next);cards.set(next);},"Restore defaults"}
                 button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.label="New telemetry card".into();next.push(card);save(&next);cards.set(next);},"Add card"}
+                button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.label="Live camera".into();card.section="Cameras".into();card.display="camera".into();card.width="wide".into();next.push(card);save(&next);cards.set(next);},"Add camera"}
             }
         }
         if *editing.read() {p {"Saved for this user and GroundStation on this device. Choose a source, display, visibility and order. Changes do not affect acquisition or safety controls."}}
         for section in sections {
             h3 {"{section}"}
-            div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;",
+            div {class:"gs26-card-grid",
                 for (index,card) in snapshot.iter().enumerate().filter(|(_,c)|c.section==section && (c.visible || *editing.read())) {
-                    div {key:"card-{index}",style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
+                    div {key:"card-{index}",class:"gs26-dashboard-card","data-width":card.width.clone(),style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
                         if *editing.read() {
-                            CardEditor {card:card.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
+                            CardEditor {card:card.clone(),cameras:cameras.read().streams.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
                             button {disabled:index==0,onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index-1);save(&all);cards.set(all);},"Move up"}
                             button {disabled:index+1==snapshot.len(),onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index+1);save(&all);cards.set(all);},"Move down"}
                             button {disabled:snapshot.len()==1,onclick:move |_|{let mut all=cards.read().clone();all.remove(index);save(&all);cards.set(all);},"Remove"}
                         }
-                        if card.visible {TelemetryCard {card:card.clone()}}
+                        if card.visible {
+                            if card.display == "camera" { CameraCard {card:card.clone(),config:cameras.read().clone(),error:camera_error.read().clone()} }
+                            else { TelemetryCard {card:card.clone()} }
+                        }
+                        if card.display != "camera" {
                         button { disabled: !card.pinned && snapshot.iter().filter(|c| c.pinned).count() >= 8,
                             onclick: move |_| { let mut all=cards.read().clone(); all[index].pinned=!all[index].pinned; save(&all); cards.set(all); },
                             if card.pinned { "Unpin from top bar" } else { "Pin to top bar" }
-                        }
+                        }}
                     }
                 }
             }
@@ -281,21 +319,44 @@ pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
 }
 
 #[component]
-fn CardEditor(card: Card, onchange: EventHandler<Card>) -> Element {
+fn CameraCard(card: Card, config: super::live_stream_tab::LiveStreamConfig, error: String) -> Element {
+    let feed = config.streams.iter().find(|feed|feed.id == card.stream_id && feed.online);
+    rsx! {section {
+        strong {"{card.label}"}
+        if !error.is_empty() {p {role:"status","{error}"}}
+        else if !config.can_preview_live {p {"Live cameras require operator or stream-management access."}}
+        else if card.stream_id.is_empty() {p {"Choose a camera source in Customize dashboard."}}
+        else if let Some(feed) = feed {
+            iframe {src:super::live_stream_tab::media_url(&feed.url),title:card.label.clone(),allow:"autoplay; fullscreen",style:"display:block;width:100%;aspect-ratio:16 / 9;min-height:180px;border:0;margin-top:8px;background:#080d15;", "sandbox":"allow-scripts allow-same-origin"}
+        } else {p {role:"status","Camera offline — waiting for {card.stream_id}"}}
+    }}
+}
+
+#[component]
+fn CardEditor(card: Card, cameras: Vec<super::live_stream_tab::LiveStreamSpec>, onchange: EventHandler<Card>) -> Element {
     rsx! {div {style:"display:grid;gap:6px;margin-bottom:10px;",
         label {"Show " input {r#type:"checkbox",checked:card.visible,onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.visible=e.checked();onchange.call(c);}}}}
         label {"Title " input {value:card.label.clone(),oninput:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.label=e.value();onchange.call(c);}}}}
         label {"Section " input {value:card.section.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.section=e.value();onchange.call(c);}}}}
-        label {"Display " select {value:card.display.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.display=e.value();onchange.call(c);}},
-            for kind in ["number","bar","gauge","trend","state"] {option {value:kind,"{kind}"}}
+        label {"Display " select {value:card.display.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.display=e.value();if c.display=="camera" {c.pinned=false;}onchange.call(c);}},
+            for kind in ["number","bar","gauge","trend","state","camera"] {option {value:kind,"{kind}"}}
         }}
+        label {"Card width " select {value:card.width.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.width=e.value();onchange.call(c);}},option {value:"normal","Normal"} option {value:"wide","Wide"} option {value:"full","Full width"}}}
+        if card.display == "camera" {
+            label {"Camera source " select {value:card.stream_id.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.stream_id=e.value();onchange.call(c);}},
+                option {value:"","Choose a camera"}
+                if !card.stream_id.is_empty() && !cameras.iter().any(|c|c.id==card.stream_id) {option {value:card.stream_id.clone(),"{card.stream_id} (unavailable)"}}
+                for camera in cameras {option {value:camera.id.clone(),"{camera.label}"}}
+            }}
+        } else {
         label {"Data type " input {value:card.data_type.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.data_type=e.value();onchange.call(c);}}}}
         label {"Board ID (blank = any) " input {value:card.sender.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.sender=e.value();onchange.call(c);}}}}
         label {"Channel index " input {r#type:"number",min:"0",max:"127",value:"{card.index}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.index=v;onchange.call(c);}}}}}
         label {"Unit " input {value:card.unit.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.unit=e.value();onchange.call(c);}}}}
         label {"Decimal places " input {r#type:"number",min:"0",max:"6",value:"{card.precision}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.precision=v;onchange.call(c);}}}}}
         label {"Minimum " input {r#type:"number",value:"{card.min}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.min=v;onchange.call(c);}}}}}
-        label {"Maximum " input {r#type:"number",value:"{card.max}",onchange:move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.max=v;onchange.call(c);}}}}
+        label {"Maximum " input {r#type:"number",value:"{card.max}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.max=v;onchange.call(c);}}}}}
+        }
     }}
 }
 
@@ -373,7 +434,7 @@ fn TelemetryCard(card: Card, #[props(default = false)] compact: bool) -> Element
             .collect::<Vec<_>>()
             .join(" ")
     };
-    rsx! {div { style: if compact { "display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;" } else { "" },
+    rsx! {div { style: if compact { "display:flex;align-items:baseline;justify-content:center;gap:6px;flex-wrap:wrap;" } else { "" },
         strong {"{card.label}"}
         div {style:if compact {"font-size:13px;font-variant-numeric:tabular-nums;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},"{text}"}
         if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
@@ -390,7 +451,7 @@ pub(super) fn PinnedTelemetry() -> Element {
     let cards = use_context::<Signal<Vec<Card>>>();
     rsx! {
         if cards.read().iter().any(|card| card.pinned) {
-            div { style:"grid-column:1 / -1;grid-row:5;display:flex;flex-wrap:wrap;gap:8px 16px;padding:6px 0;font-size:12px;",
+            div { style:"grid-column:1 / -1;grid-row:5;display:flex;flex-wrap:wrap;justify-content:center;align-items:center;text-align:center;gap:8px 16px;padding:6px 0;font-size:12px;",
                 "aria-label":"Pinned telemetry",
                 for (index, card) in cards.read().iter().enumerate().filter(|(_,card)|card.pinned) {
                     TelemetryCard {key:"pinned-{index}", card:card.clone(), compact:true}
@@ -407,9 +468,9 @@ pub(super) fn HeaderPinSettings() -> Element {
     let count = snapshot.iter().filter(|card|card.pinned).count();
     rsx! {section {
         h3 {"Pin telemetry to the top bar ({count}/8)"}
-        p {"Pinned values remain visible beside the clock and status as you switch tabs. Edit their sources and formatting in My Dashboard."}
+        p {"Pinned values remain visible beside the clock and status as you switch tabs. Edit their sources and formatting in Dashboard."}
         div {style:"display:flex;gap:8px 16px;flex-wrap:wrap;",
-            for (index, card) in snapshot.iter().enumerate() {
+            for (index, card) in snapshot.iter().enumerate().filter(|(_,card)|card.display != "camera") {
                 label {
                     input {r#type:"checkbox",checked:card.pinned,disabled:!card.pinned && count>=8,
                         onchange:move |event:Event<FormData>|{let mut all=cards.read().clone();all[index].pinned=event.checked();if valid(&all){save(&all);cards.set(all);}}
@@ -424,6 +485,25 @@ pub(super) fn HeaderPinSettings() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn camera_cards_preserve_source_and_size_without_becoming_telemetry_pins() {
+        let mut cards = defaults();
+        cards[0].display = "camera".into();
+        cards[0].stream_id = "pad-wide".into();
+        cards[0].width = "full".into();
+        assert!(valid(&cards));
+        let restored: Vec<Card> = serde_json::from_str(&serde_json::to_string(&cards).unwrap()).unwrap();
+        assert!(restored == cards);
+        cards[0].pinned = true;
+        assert!(!valid(&cards));
+        let mut legacy = serde_json::to_value(&cards[1]).unwrap();
+        legacy.as_object_mut().unwrap().remove("width");
+        legacy.as_object_mut().unwrap().remove("stream_id");
+        let restored: Card = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.width, "normal");
+        assert!(restored.stream_id.is_empty());
+    }
+
     #[test]
     fn pins_are_bounded_and_legacy_cards_keep_their_defaults() {
         let mut cards = defaults();

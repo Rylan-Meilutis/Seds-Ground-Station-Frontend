@@ -31,7 +31,6 @@ fn default_main_tabs() -> Vec<String> {
         "mission".to_string(),
         "crew-voice".to_string(),
         "stream-manager".to_string(),
-        "my-dashboard".to_string(),
         "media".to_string(),
         "vehicle".to_string(),
         "notifications".to_string(),

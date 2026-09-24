@@ -31,6 +31,7 @@ mod notifications_tab;
 mod recording_download;
 pub(crate) mod prelude;
 mod stream_studio;
+#[cfg(test)]
 mod model_dashboard;
 pub mod types;
 mod vehicle_tab;
@@ -69,7 +70,6 @@ use messages_tab::MessagesTab;
 use network_topology_tab::NetworkTopologyTab;
 use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
-use state_tab::StateTab;
 use types::{
     BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
     TelemetryTextId, display_flight_state, intern_telemetry_text, resolve_telemetry_text,

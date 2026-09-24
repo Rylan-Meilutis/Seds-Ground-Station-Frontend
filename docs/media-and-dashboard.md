@@ -1,10 +1,10 @@
 # Media tabs and personal dashboard
 
 Use **Choose tab** to open the wrapping tab picker. **Customize** controls tab
-visibility and order. The primary Dashboard remains available. **My Dashboard**
+visibility and order. The primary Dashboard remains available. **Dashboard**
 lets each user add, remove and reorder telemetry cards, choose sections, sources,
 board IDs, channel indices, units, precision, and number/bar/gauge/trend/state
-formats. Up to eight cards can be pinned to the status bar. Pins retain missing
+formats. Add live-camera cards, choose a camera, and set normal, wide, or full-width sizes. Camera previews require operator or stream-management access; offline cameras show an explicit status rather than a model. Up to eight cards can be pinned to the status bar. Pins retain missing
 and stale data indicators. Preferences are local to the user and Ground Station.
 
 **Crew Voice** and **Cameras & Recordings** reuse the dashboard login. Their
@@ -18,7 +18,7 @@ may suspend capture when the app itself is backgrounded.
 (`stream_master`, `stream_admin`, or the existing `StreamControl` grant, subject
 to the backend's stream-viewer restriction). It exposes delay, audience crew
 audio, label, layout, featured camera and feed visibility controls. Stream admins
-can assign stream-master roles there. The backend enforces every change.
+can assign stream-master roles there. Choose **3D model** for a model-only program or **Cameras + 3D model** for a mixed grid. Otherwise the model appears only when there are no available cameras; Dashboard never renders the model. The backend enforces every change.
 
 In **Cameras & Recordings**, permitted users choose a camera and select **Start
 sharing camera**. The browser asks for camera permission; video becomes a source

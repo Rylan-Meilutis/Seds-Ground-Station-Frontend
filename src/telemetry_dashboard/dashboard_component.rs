@@ -1919,7 +1919,6 @@ fn TelemetryDashboardInner() -> Element {
     let language_snapshot = language_code.read().clone();
     let theme_preset_value = theme_preset.read().clone();
     let theme = localized_theme(&base_theme, theme_preset_value.as_str());
-    let use_layout_theme_overrides = theme_preset_uses_backend_colors(theme_preset_value.as_str());
     {
         let layout_config = layout_config;
         let theme_preset = theme_preset;
@@ -3322,32 +3321,18 @@ fn TelemetryDashboardInner() -> Element {
                     // Header row 2
                     div {
                         class: "gs26-header-secondary",
+                        style: "row-gap:3px;",
 
                         div {
                             class: "gs26-tab-picker-shell",
                             "data-expanded": if *tabs_expanded.read() { "true" } else { "false" },
-                            style: "
-                        flex:1 1 100%;
-                        width:100%;
-                        max-width:100%;
-                        --gs26-header-menu-background:{theme.button_background};
-                        --gs26-header-menu-border:{theme.button_border};
-                        --gs26-header-menu-text:{theme.button_text};
-                        display:flex;
-                        flex-wrap:wrap;
-                        align-items:center;
-                        padding:0.85rem;
-                        border-radius:0.75rem;
-                        background:{theme.tab_shell_background};
-                        border:1px solid {theme.tab_shell_border};
-                        box-shadow:0 10e0px 25px rgba(0,0,0,0.45);
-                        min-width:0;
-                    ",
+                            style: "position:relative;flex:1 1 100%;width:100%;min-width:0;display:flex;align-items:center;gap:6px;height:22px;",
                             button {
                                 class: "gs26-tab-picker-toggle",
                                 "aria-expanded": tabs_expanded.read().to_string(),
                                 "aria-controls": "dashboard-tab-picker",
-                                style: "padding:8px 12px;margin-right:8px;border-radius:8px;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
+                                "aria-label": if *tabs_expanded.read() { "Close tab picker".to_string() } else { format!("Choose tab · {}", _main_tab_label(&layout, *active_main_tab.read())) },
+                                style: "padding:2px 5px;border-radius:4px;border:0;background:transparent;color:{theme.text_secondary};font-size:12px;line-height:18px;cursor:pointer;",
                                 onclick: {
                                     let mut tabs_expanded = tabs_expanded;
                                     move |_| {
@@ -3358,18 +3343,13 @@ fn TelemetryDashboardInner() -> Element {
                                         tabs_expanded.set(next);
                                     }
                                 },
-                                {
-                                if *tabs_expanded.read() {
-                                    "Close tab picker".to_string()
-                                } else {
-                                    format!("Choose tab · {}", _main_tab_label(&layout, *active_main_tab.read()))
-                                }
-                                }
+                                if *tabs_expanded.read() { "Tabs ▴" } else { "Tabs ▾" }
                             }
                             button {
                                 class: "gs26-tab-picker-toggle",
-                                style: "padding:8px 12px;margin-right:8px;border-radius:8px;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
+                                style: "padding:2px 5px;border-radius:4px;border:0;background:transparent;color:{theme.text_secondary};font-size:12px;line-height:18px;cursor:pointer;",
                                 title: "Customize tab visibility and order for this Ground Station",
+                                "aria-label": if *dashboard_edit_mode.read() { "Done editing" } else { "Customize" },
                                 onclick: {
                                     let mut dashboard_edit_mode = dashboard_edit_mode;
                                     move |_| {
@@ -3377,8 +3357,11 @@ fn TelemetryDashboardInner() -> Element {
                                         dashboard_edit_mode.set(next);
                                     }
                                 },
-                                if *dashboard_edit_mode.read() { "Done editing" } else { "Customize" }
+                                if *dashboard_edit_mode.read() { "Done" } else { "⚙" }
                             }
+                            span { style:"font-size:11px;color:{theme.text_muted};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", "{_main_tab_label(&layout, *active_main_tab.read())}" }
+                            if *tabs_expanded.read() || *dashboard_edit_mode.read() {
+                                div { style:"position:absolute;top:calc(100% + 4px);left:0;z-index:2100;width:min(820px,100%);max-height:70vh;overflow:auto;box-sizing:border-box;padding:10px;border:1px solid {theme.tab_shell_border};border-radius:10px;background:{theme.tab_shell_background};box-shadow:0 12px 32px rgba(0,0,0,0.45);",
                             if *tabs_expanded.read() {
                                 nav { id: "dashboard-tab-picker", "aria-label": "Dashboard tabs",
                                     style: "display:grid;grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr));gap:8px;width:100%;padding-top:10px;",
@@ -3418,7 +3401,7 @@ fn TelemetryDashboardInner() -> Element {
                             }
                         }
                         custom_dashboard::HeaderPinSettings {}
-                        button { onclick: { let mut editing = dashboard_edit_mode; move |_| { open_dashboard_tool(MainTab::MyDashboard, active_main_tab, dashboard_customization); editing.set(false); tabs_expanded.set(false); } }, "Edit dashboard cards and content" }
+                        button { onclick: { let mut editing = dashboard_edit_mode; move |_| { open_dashboard_tool(MainTab::State, active_main_tab, dashboard_customization); editing.set(false); tabs_expanded.set(false); } }, "Edit dashboard cards and content" }
                         h3 { "Visible tabs and order" }
                         div { style: "display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:6px;",
                             for (index, tab) in _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()).into_iter().enumerate() {
@@ -3491,6 +3474,8 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
                 }
+                                }
+                            }
     }
 
                         div {
@@ -3540,28 +3525,13 @@ fn TelemetryDashboardInner() -> Element {
                             visible: !*streamer_mode.read() && *active_main_tab.read() == MainTab::Media,
                         }
                         match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
-                            MainTab::State if !*ground_station_view.read() => rsx! {
-                                model_dashboard::ModelDashboard { theme:theme.clone(), action_policy, abort_only_mode:*abort_only_mode.read(), flight_state, rocket_gps, rocket_altitude_m:rocket_gps_altitude_m }
-                            },
                             MainTab::State => rsx! {
-                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
-                                        StateTab {
-                                            flight_state: flight_state,
-                                            board_status: board_status,
-                                            rocket_gps: rocket_gps,
-                                            user_gps: user_gps,
-                                            fill_targets: fill_targets,
-                                            layout: layout.state_tab.clone(),
-                                            data_layout: layout.data_tab.clone(),
-                                            actions: layout.actions_tab.clone(),
-                                            action_policy: action_policy,
-                                            default_valve_labels: None,
-                                            abort_only_mode: *abort_only_mode.read(),
-                                            state_chart_labels_vertical: *state_chart_labels_vertical.read(),
-                                            theme: theme.clone(),
-                                            use_layout_theme_overrides: use_layout_theme_overrides,
-                                        }
+                                div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
+                                    custom_dashboard::CustomDashboard {theme:theme.clone()}
+                                    if *ground_station_view.read() && auth::can_view_actions() && gse_panel::ground_visible(&flight_state.read()) {
+                                        gse_panel::GsePanel {action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false}
                                     }
+                                }
                             },
                             MainTab::ConnectionStatus => rsx! {
                                 div {
@@ -3652,11 +3622,6 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             },
                             MainTab::CrewVoice | MainTab::Media => rsx! {},
-                            MainTab::MyDashboard => rsx! {
-                                div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
-                                    custom_dashboard::CustomDashboard { theme:theme.clone() }
-                                }
-                            },
                             MainTab::Mission | MainTab::StreamManager => rsx! {
                                 LiveStreamTab {
                                     key: "broadcast-{_main_tab_to_str(*active_main_tab.read())}",

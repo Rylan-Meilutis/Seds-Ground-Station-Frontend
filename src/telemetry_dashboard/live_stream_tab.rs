@@ -75,7 +75,7 @@ fn default_precision() -> usize {
     1
 }
 
-fn media_url(path: &str) -> String {
+pub(super) fn media_url(path: &str) -> String {
     if path.starts_with("http://") || path.starts_with("https://") {
         return path.to_string();
     }
@@ -172,7 +172,7 @@ pub(crate) fn LiveStreamTab(
                                         }
                                     });
                                 }
-                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} }
+                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} option {value:"model","3D model"} option {value:"grid-model","Cameras + 3D model"} }
                         }
                         label { "Featured camera "
                             select { value:cfg.broadcast.featured_stream_id.clone(), onchange:{

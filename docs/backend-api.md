@@ -1024,10 +1024,17 @@ The example is a manager response with a customized two-stat profile. The backen
 profile defaults contain six fields; the matching [viewer response](api-examples/live-streams-viewer.json)
 omits preview URLs. All `EXAMPLE_*_TICKET` values are placeholders, not usable credentials.
 
+`broadcast.layout` accepts `hero` (featured camera), `grid` (cameras), `model`
+(model only), and `grid-model` (cameras plus one model tile). Model choices use the
+same stream-management authorization as other broadcast changes. In camera-only
+layouts a model appears only when there are no available cameras; camera buffering
+does not insert a model. Dashboard live-camera cards use the scoped preview URLs
+and `can_preview_live`, and persist only camera IDs and presentation settings.
+
 `kind` may be `video` (browser-supported media/HLS), `iframe` or `webrtc` (backend-hosted player),
 or `mjpeg`. Multiple online streams become selectable camera angles. When none are online, the
-operator Mission Live hero shows the 3D vehicle. Spectators and Settings → Streamer instead
-embed `program_url`, a delayed HLS program with matching delayed telemetry, banner and camera
+Mission Live program shows the 3D vehicle. The Dashboard itself has no model.
+Mission Live and Settings → Streamer embed `program_url`, a delayed HLS program with matching delayed telemetry, banner and camera
 layout. They buffer rather than falling back to live data. Scoped expiring URLs support media
 elements without bearer headers. The T−/T+ clock appears in the dashboard status bar and Mission
 data banner. The streamer program receives `telemetry.t_clock`, formatted at the delayed snapshot

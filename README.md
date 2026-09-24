@@ -83,12 +83,19 @@ permissions. CSV viewing does not grant permission to operate valves.
 
 ## Dashboard
 
-Dashboard now opens on the single-stage rocket model with aft fins only and a cycling
-backend-defined telemetry bar. **Settings → General → Viewing mode** offers Ground
-Station view (instrument/control dashboard) and Streamer (delayed audience video).
-Any viewer can watch; stream-master/admin roles are needed only to direct broadcasts
-or assign roles. **Exit streamer** returns to Dashboard. Bindings are backend-owned,
-not user-facing settings.
+Dashboard opens on a customizable telemetry and live-camera card layout. Use
+**Customize dashboard** to add cards, pick data/camera sources, resize cards, and
+change their sections, order and visibility. Layouts are saved per user and station;
+telemetry values can be pinned to the centered status bar. The compact **Tabs**
+control opens the tab picker without pushing content down. The previous
+“My Dashboard” tab now maps to Dashboard and retains its saved cards.
+
+The 3D model is confined to the delayed stream: it appears when no cameras are
+available, or when a stream operator selects **3D model** or **Cameras + 3D model**.
+**Settings → General → Viewing mode** can add ground controls beneath dashboard
+cards or enable Streamer (delayed audience video). Live camera cards require
+operator or stream-management access. Viewing the audience stream does not require
+stream-management permission.
 
 See the [current API contract](docs/backend-api.md) and [JSON example index](docs/api-examples/README.md).
 Deploy the matching backend and frontend `dev` versions together; the backend's default

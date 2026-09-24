@@ -15,7 +15,6 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
         MainTab::Mission => "mission",
         MainTab::CrewVoice => "crew-voice",
         MainTab::StreamManager => "stream-manager",
-        MainTab::MyDashboard => "my-dashboard",
         MainTab::Media => "media",
         MainTab::Vehicle => "vehicle",
         MainTab::Messages => "messages",
@@ -60,7 +59,6 @@ fn _default_main_tab_label(tab: MainTab) -> String {
             localized_copy(&lang, "Mission Live", "Mision en vivo", "Mission en direct")
         }
         MainTab::StreamManager => localized_copy(&lang, "Stream Manager", "Gestor de transmisión", "Gestion du direct"),
-        MainTab::MyDashboard => localized_copy(&lang, "My Dashboard", "Mi panel", "Mon tableau"),
         MainTab::CrewVoice => localized_copy(&lang, "Crew Voice", "Voz de tripulación", "Voix équipage"),
         MainTab::Media => localized_copy(&lang, "Cameras & Recordings", "Cámaras y grabaciones", "Caméras et enregistrements"),
         MainTab::Vehicle => localized_copy(&lang, "Vehicle", "Vehiculo", "Vehicule"),
@@ -117,7 +115,7 @@ fn _main_tab_from_str(s: &str) -> MainTab {
         "mission" | "live-stream" => MainTab::Mission,
         "crew-voice" => MainTab::CrewVoice,
         "stream-manager" => MainTab::StreamManager,
-        "my-dashboard" => MainTab::MyDashboard,
+        "my-dashboard" => MainTab::State,
         "media" => MainTab::Media,
         "vehicle" => MainTab::Vehicle,
         "messages" => MainTab::Messages,
@@ -224,7 +222,7 @@ fn _available_main_tabs(
     if !tabs.contains(&MainTab::Mission) {
         tabs.insert(0, MainTab::Mission);
     }
-    for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::MyDashboard] {
+    for tab in [MainTab::CrewVoice, MainTab::Media] {
         if !tabs.contains(&tab) { tabs.push(tab); }
     }
     tabs.retain(|tab| *tab != MainTab::State);
@@ -589,7 +587,7 @@ mod dashboard_customization_tests {
     #[test]
     fn media_tabs_roundtrip_and_customization_hides_optional_tools() {
         let layout: LayoutConfig = serde_json::from_str(include_str!("../../docs/api-examples/layout.minimal.json")).unwrap();
-        for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::StreamManager, MainTab::MyDashboard] {
+        for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::StreamManager] {
             assert!(_main_tab_from_str(_main_tab_to_str(tab)) == tab);
         }
         let customization = DashboardCustomization {
@@ -598,12 +596,12 @@ mod dashboard_customization_tests {
         };
         let tabs = _configured_main_tabs(&layout, false, None, &customization);
         assert!(tabs[0] == MainTab::State);
-        assert!(tabs[1] == MainTab::MyDashboard);
+        assert!(tabs[1] == MainTab::Mission);
         assert!(!tabs.contains(&MainTab::CrewVoice));
         assert!(!tabs.contains(&MainTab::Media));
         let editor_tabs = _ordered_available_main_tabs(&layout, false, None, &customization);
         assert!(editor_tabs[0] == MainTab::State);
-        assert!(editor_tabs[1] == MainTab::MyDashboard);
+        assert!(editor_tabs[1] == MainTab::Mission);
         assert!(editor_tabs.contains(&MainTab::Media));
     }
 }

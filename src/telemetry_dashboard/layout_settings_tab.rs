@@ -985,11 +985,11 @@ pub fn SettingsPage(
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px;",
                 div { style: "{card_style}",
                     div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "Viewing mode" }
-                    div { style: "font-size:13px; color:{theme.text_soft};", "The dashboard opens on the rocket model. Ground Station view restores instruments and controls on this device. Streamer mode shows delayed video and cycling telemetry; no stream-manager role is needed to watch." }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "The dashboard supports custom telemetry and live camera cards. Optionally show ground controls below your cards. Streamer mode shows delayed video and cycling telemetry; no stream-manager role is needed to watch." }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",
                         button { style: if !streamer_mode_enabled { chip_selected.clone() } else { chip_idle.clone() }, onclick: move |_| streamer_mode.set(false), "Dashboard" }
                         button { style: if streamer_mode_enabled { chip_selected.clone() } else { chip_idle.clone() }, onclick: move |_| streamer_mode.set(true), "Streamer" }
-                        label { input { r#type:"checkbox", checked:*ground_station_view.read(), onchange:move |event| {let enabled=event.checked();ground_station_view.set(enabled);persist::set_string(&super::ground_station_view_key(),if enabled {"on"}else{"off"});} } " Ground Station view" }
+                        label { input { r#type:"checkbox", checked:*ground_station_view.read(), onchange:move |event| {let enabled=event.checked();ground_station_view.set(enabled);persist::set_string(&super::ground_station_view_key(),if enabled {"on"}else{"off"});} } " Show ground controls on Dashboard" }
                     }
                 }
                 div { style: "{card_style}",
