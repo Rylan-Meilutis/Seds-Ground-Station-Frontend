@@ -1,6 +1,6 @@
 # Media tabs and personal dashboard
 
-Use **Choose tab** to open the wrapping tab picker. **Customize** controls tab
+Use the boxed active-tab name to open the wrapping tab picker. **Customize** controls tab
 visibility and order. The primary Dashboard remains available. **Dashboard**
 lets each user add, remove and reorder telemetry cards, choose sections, sources,
 board IDs, channel indices, units, precision, and number/bar/gauge/trend/state
@@ -13,6 +13,8 @@ tabs does not end voice or camera capture. Hiding voice releases push-to-talk;
 open mic continues until muted or left. Logging out, changing sessions, closing
 the dashboard, or stopping sharing releases media resources. Operating systems
 may suspend capture when the app itself is backgrounded.
+
+**Mission Live** displays only the broadcast stream. Logged-in users with command permission can open **Checklist** beside the tab selector from any tab. Checkmarks are saved per user and station and do not bypass interlocks.
 
 **Stream Manager** is available to users with stream-management access
 (`stream_master`, `stream_admin`, or the existing `StreamControl` grant, subject
@@ -64,3 +66,5 @@ and `node tests/embedded_media.mjs`. The browser media test uses fake devices an
 a local WebRTC receiver. Set `PLAYWRIGHT_MODULE` and `CHROME_BINARY` if Playwright
 and Chrome are installed outside their default locations. These tests do not
 connect to hardware or start a production Ground Station.
+
+Fill percentage in Telemetry follows the saved fill source from Actions. Its readout and chart appear only under the selected load cell in both Loadcell and DAQ. The percentage comes from backend telemetry, including calibration and source-selection rules.

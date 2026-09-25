@@ -1,5 +1,5 @@
-use super::{UrlConfig, http_get_json, http_post_json, layout::ThemeConfig, types::FlightState};
 use crate::telemetry_dashboard::vehicle_tab::VehicleTelemetryBinding;
+use super::{UrlConfig, http_get_json, http_post_json, layout::ThemeConfig};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -102,14 +102,7 @@ pub(crate) fn LiveStreamTab(
     on_open_voice: EventHandler,
     on_open_media: EventHandler,
     #[props(default = false)] manager_mode: bool,
-    action_policy: Signal<super::ActionPolicyMsg>,
-    abort_only_mode: bool,
     #[props(default = false)] program_only: bool,
-    flight_state: Signal<FlightState>,
-    launch_clock: Signal<Option<super::LaunchClockMsg>>,
-    network_time: Signal<Option<super::NetworkTimeSync>>,
-    rocket_gps: Signal<Option<(f64, f64)>>,
-    rocket_altitude_m: Signal<Option<f64>>,
 ) -> Element {
     let mut config = use_signal(|| None::<LiveStreamConfig>);
     let mut status = use_signal(|| "Loading broadcast…".to_string());
@@ -140,10 +133,10 @@ pub(crate) fn LiveStreamTab(
             @media(max-width:500px) { .gs26-program-player { flex-basis:560px; min-height:560px; } }
         "#} }
         div { class:"gs26-program-shell", style:"color:{theme.text_primary};background:{theme.tab_shell_background};",
-            if !program_only {
+            if manager_mode && !program_only {
                 div { class:"gs26-program-header",
                     strong { if manager_mode { "Stream Manager" } else { "Mission broadcast" } }
-                    button { onclick:move |_| on_open_voice.call(()), "Crew voice" }
+                    button { onclick:move |_| on_open_voice.call(()), "Voice Chat" }
                     if cfg.can_preview_live {
                         button { onclick:move |_| on_open_media.call(()), "Camera recordings" }
                     }
@@ -156,7 +149,7 @@ pub(crate) fn LiveStreamTab(
             }
             if manager_mode && config.read().is_some() && !cfg.can_manage_stream { p { "Stream-management permission is required to use these controls." } }
             if !status.read().is_empty() { p { role:"status", "{status}" } }
-            if cfg.can_manage_stream && *edit_mode.read() && !program_only {
+            if manager_mode && cfg.can_manage_stream && *edit_mode.read() && !program_only {
                 div {class:"gs26-program-editor",
                     super::stream_studio::StreamStudio { broadcast:cfg.broadcast.clone(), program_url:cfg.program_url.clone() }
                     div {style:"display:flex;gap:10px;flex-wrap:wrap;padding:10px 0;",
@@ -212,11 +205,7 @@ pub(crate) fn LiveStreamTab(
             }
             if cfg.program_url.is_empty() {p {"Waiting for the delayed broadcast program…"}}
             else {iframe {class:"gs26-program-player",src:url,title:"Mission broadcast — delayed video, audio and telemetry",allow:"autoplay; fullscreen"}}
-            if !program_only && crate::auth::can_view_actions() && super::gse_panel::ground_visible(&flight_state.read()) {
-                section {style:"margin:16px 0;",h2 {style:"font-size:18px;","Ground setup"}
-                    super::gse_panel::GsePanel {action_policy,abort_only_mode,theme:theme.clone(),show_model:false}
-                }
-            }
+
         }
     }
 }

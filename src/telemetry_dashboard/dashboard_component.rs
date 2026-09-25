@@ -175,6 +175,7 @@ fn TelemetryDashboardInner() -> Element {
     let frontend_network_metrics = use_signal(FrontendNetworkMetrics::default);
     let abort_only_mode = use_signal(|| false);
     let mut tabs_expanded = use_signal(|| false);
+    let mut checklist_expanded = use_signal(|| false);
     let header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
     let show_settings_overlay = use_signal(|| false);
@@ -2688,7 +2689,7 @@ fn TelemetryDashboardInner() -> Element {
                position:relative;
              }}
              .gs26-header-title {{
-               flex:0 1 auto;
+               flex:0 1 auto; display:flex; align-items:center; gap:8px;
              }}
              .gs26-title-tab-toggle {{
                display:inline-flex; align-items:center; justify-content:center; gap:6px;
@@ -2726,6 +2727,7 @@ fn TelemetryDashboardInner() -> Element {
                  grid-column:2;
                  justify-self:center;
                  text-align:center;
+                 justify-content:center;
                  min-width:0;
                  max-width:100%;
                  width:100%;
@@ -3024,7 +3026,7 @@ fn TelemetryDashboardInner() -> Element {
                     position:relative;
                     z-index:2000;
                 ",
-                        h1 {
+                        div {
                             class: "gs26-header-title",
                             style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
                             button {
@@ -3038,12 +3040,34 @@ fn TelemetryDashboardInner() -> Element {
                                     move |_| {
                                         let next = !(*tabs_expanded.read() || *editing.read());
                                         tabs_expanded.set(next);
+                                        checklist_expanded.set(false);
                                         editing.set(false);
                                         actions.set(false);
                                     }
                                 },
                                 span { "{_main_tab_label(&layout, *active_main_tab.read())}" }
                                 span { "aria-hidden": "true", style: "font-size:12px;flex-shrink:0;", if *tabs_expanded.read() || *dashboard_edit_mode.read() { "▴" } else { "▾" } }
+                            }
+                            if auth::current_status().authenticated && !auth::current_status().anonymous && auth::can_view_actions() {
+                                button {
+                                    class: "gs26-title-tab-toggle",
+                                    style: "font-size:13px;flex-shrink:0;",
+                                    "aria-expanded": checklist_expanded.read().to_string(),
+                                    "aria-controls": "ground-checklist-panel",
+                                    onclick: {
+                                        let mut editing = dashboard_edit_mode;
+                                        let mut actions = header_actions_expanded;
+                                        move |_| {
+                                            let next = !*checklist_expanded.read();
+                                            checklist_expanded.set(next);
+                                            tabs_expanded.set(false);
+                                            editing.set(false);
+                                            actions.set(false);
+                                        }
+                                    },
+                                    "Checklist "
+                                    span { "aria-hidden": "true", if *checklist_expanded.read() { "▴" } else { "▾" } }
+                                }
                             }
                         }
 
@@ -3070,6 +3094,7 @@ fn TelemetryDashboardInner() -> Element {
                                             !current
                                         };
                                         header_actions_expanded.set(next);
+                                        checklist_expanded.set(false);
                                         tabs_expanded.set(false);
                                         editing.set(false);
                                     }
@@ -3354,6 +3379,13 @@ fn TelemetryDashboardInner() -> Element {
                         class: "gs26-header-secondary",
                         style: "row-gap:3px;",
 
+                        if *checklist_expanded.read() && auth::current_status().authenticated && !auth::current_status().anonymous && auth::can_view_actions() {
+                            div {
+                                id: "ground-checklist-panel",
+                                style: "position:absolute;top:0;left:0;z-index:2100;width:min(520px,100%);max-height:70vh;overflow:auto;box-sizing:border-box;padding:14px;border:1px solid {theme.tab_shell_border};border-radius:10px;background:{theme.tab_shell_background};box-shadow:0 12px 32px rgba(0,0,0,0.45);",
+                                gse_panel::GroundChecklist { key: "{dashboard_customization_key()}" }
+                            }
+                        }
                         div {
                             class: "gs26-tab-picker-shell",
                             style: "position:absolute;left:0;top:0;width:100%;min-width:0;height:0;z-index:2100;",
@@ -3643,13 +3675,6 @@ fn TelemetryDashboardInner() -> Element {
                                     on_open_media: move |_| open_dashboard_tool(MainTab::Media, active_main_tab, dashboard_customization),
                                     theme: theme.clone(),
                                     program_only: *streamer_mode.read(),
-                                    action_policy,
-                                    abort_only_mode:*abort_only_mode.read(),
-                                    flight_state,
-                                    launch_clock,
-                                    network_time,
-                                    rocket_gps,
-                                    rocket_altitude_m: rocket_gps_altitude_m,
                                 }
                             },
                             MainTab::Vehicle => rsx! {
@@ -3755,6 +3780,7 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::Data => rsx! {
                                 DataTab {
                                     active_tab: active_data_tab,
+                                    fill_targets,
                                     layout: layout.data_tab.clone(),
                                     state_chart_labels_vertical: *state_chart_labels_vertical.read(),
                                     theme: theme.clone(),

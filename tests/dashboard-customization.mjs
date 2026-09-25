@@ -6,15 +6,22 @@ import path from 'node:path';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const root=path.resolve('target/dx/groundstation_frontend/debug/web/public');
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
-const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['stream_master']};
+const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['stream_master'],permissions:{view_data:true,send_commands:true}};
 let cameraOnline=true;
+let fillSource='kg50';
+const dashboardLayout=example('layout.full');
+for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label:id,channels:[],subtabs:[
+  {id:'large',label:'1000 kg',data_type:'KG1000',channels:['Raw'],chart:{enabled:true},chart_groups:[{title:'Fill %',data_type:'LOADCELL_FILL_PERCENT',channels:[0]}],summary_items:[{label:'Fill %',data_type:'LOADCELL_FILL_PERCENT',index:0}]},
+  {id:'small',label:'50 kg',data_type:'KG50',channels:['Raw'],chart:{enabled:true},chart_groups:[],summary_items:[]}
+]});
+
 const server=http.createServer((req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
   if(pathname==='/test-camera') {res.setHeader('Content-Type','text/html');res.end('<p>Live camera fixture</p>');return;}
   if(pathname==='/radio'||pathname==='/media') {res.setHeader('Content-Type','text/html');res.end(`<p>Media tool fixture</p><script>window.received=[];addEventListener('message',e=>{if(e.source===parent)received.push(e.data)})</script>`);return;}
   if(pathname.startsWith('/api/')){
     res.setHeader('Content-Type','application/json');
-    const data=pathname==='/api/auth/session'?session:pathname==='/api/layout'?example('layout.full'):pathname==='/api/live_streams'?{...example('live-streams'),can_manage_stream:session.roles.includes('stream_master'),program_url:'',can_preview_live:session.roles.includes('stream_master'),streams:[{id:'pad-wide',label:'Pad wide',url:'/test-camera?ticket=fixture',online:cameraOnline,kind:'webrtc'}]}:pathname==='/api/vehicle'?{}:[];
+    const data=pathname==='/api/auth/session'?session:pathname==='/api/layout'?dashboardLayout:pathname==='/api/fill_targets'?{version:1,fill_source:fillSource,nitrogen:{target_mass_kg:10,target_pressure_psi:100},nitrous:{target_mass_kg:20,target_pressure_psi:200}}:pathname==='/api/live_streams'?{...example('live-streams'),can_manage_stream:session.roles.includes('stream_master'),program_url:'',can_preview_live:session.roles.includes('stream_master'),streams:[{id:'pad-wide',label:'Pad wide',url:'/test-camera?ticket=fixture',online:cameraOnline,kind:'webrtc'}]}:pathname==='/api/vehicle'?{}:[];
     res.end(JSON.stringify(data));return;
   }
   const relative=pathname==='/'||pathname==='/dashboard'?'index.html':pathname.slice(1);
@@ -36,6 +43,17 @@ try{
   const choose=()=>page.getByRole('button',{name:/Choose tab/}).click();
   assert.equal(await page.locator('model-viewer, gs-vehicle-viewer').count(),0,'Dashboard has no 3D model');
   assert.equal((await page.locator('.gs26-title-tab-toggle span').first().innerText()),'Dashboard');
+  await page.getByRole('button',{name:'Checklist',exact:true}).click();
+  await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).check();
+  await choose();await page.getByRole('button',{name:'Mission Live',exact:true}).click();
+  assert.equal(await page.locator('.gs26-program-header, .gs26-program-editor').count(),0,'Mission Live is stream only');
+  assert.equal(await page.getByText('Ground setup',{exact:true}).count(),0,'no ground controls in stream');
+  assert.equal(await page.locator('#ground-checklist-panel').count(),0,'checklist stays collapsed');
+  await page.getByRole('button',{name:'Checklist',exact:true}).click();
+  assert(await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).isChecked(),'checklist persists across tabs');
+  await page.getByRole('button',{name:'Checklist',exact:true}).click();
+  await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
+
   assert.equal(await page.getByRole('heading',{name:'Dashboard',exact:true}).count(),0,'no duplicate dashboard heading');
   await choose();
   await page.getByRole('button',{name:'Stream Manager',exact:true}).click();
@@ -94,15 +112,21 @@ try{
   const nav=page.locator('#dashboard-tab-picker');assert(await nav.evaluate(el=>el.scrollWidth<=el.clientWidth),'tab picker does not scroll sideways');
   await page.getByRole('button',{name:'Close tab picker',exact:true}).click();
   await choose();
-  const titleToggle=page.locator('.gs26-title-tab-toggle');
+  const titleToggle=page.locator('.gs26-title-tab-toggle').first();
   assert((await titleToggle.boundingBox()).height>=44,'mobile title has a full touch target');
   await page.screenshot({path:'/tmp/gs-dashboard-mobile-menu.png',fullPage:true});
   await page.getByRole('button',{name:'Close tab picker',exact:true}).click();
   await page.locator('iframe[title="Live camera"]').scrollIntoViewIfNeeded();
   await page.screenshot({path:'/tmp/gs-dashboard-mobile.png',fullPage:true});
-  session.roles=[]; session.username='other-user';
+  await page.getByRole('button',{name:'Checklist',exact:true}).click();
+  await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).waitFor({state:'visible'});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'checklist fits mobile');
+  await page.screenshot({path:'/tmp/gs-checklist-mobile.png',fullPage:true});
+  await page.getByRole('button',{name:'Checklist',exact:true}).click();
+  session.roles=[]; session.username='other-user'; session.permissions.send_commands=false;
   await page.reload();await choose();
   assert.equal(await page.getByRole('button',{name:'Stream Manager',exact:true}).count(),0,'manager is permission gated');
+  assert.equal(await page.getByRole('button',{name:'Checklist',exact:true}).count(),0,'checklist is permission gated');
   assert.equal(await page.locator('[aria-label="Pinned telemetry"]').count(),0,'another user starts with their own pins');
   assert.equal(await page.getByRole('button',{name:'Voice Chat',exact:true}).count(),1,'another user has independent tab visibility');
   await page.getByRole('button',{name:'Voice Chat',exact:true}).click();
@@ -112,6 +136,21 @@ try{
   await page.frameLocator('#gs26-media').getByText('Media tool fixture').waitFor({state:'visible'});
   assert((await page.locator('#gs26-media').boundingBox()).height>300,'cameras fill mobile tab');
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'media fits mobile width');
+  for(const source of ['kg50','kg1000_absolute']) {
+    fillSource=source;
+    await page.reload();await choose();await page.getByRole('button',{name:'Telemetry',exact:true}).click();
+    for(const tab of ['LOADCELL','DAQ']) {
+      await page.getByRole('button',{name:/Show data tabs/}).click();
+      await page.getByRole('button',{name:tab,exact:true}).click();
+      for(const cell of ['1000 kg','50 kg']) {
+        await page.getByRole('button',{name:/Show subtabs/}).click();
+        await page.getByRole('button',{name:cell,exact:true}).click();
+        const expected=cell===(source==='kg50'?'50 kg':'1000 kg');
+        if(expected) await page.getByText('Fill %',{exact:true}).first().waitFor({state:'visible'});
+        else assert.equal(await page.getByText('Fill %',{exact:true}).count(),0,`${tab} ${cell} must not show other cell's fill`);
+      }
+    }
+  }
   assert.deepEqual(errors,[]);
-  console.log('PASS: no dashboard model, persistent/resizable camera cards, offline recovery, stream manager permissions, card editing, live pins, per-user persistence, hidden tabs, iframe session handoff/lifetime, desktop and mobile tab picker');
+  console.log('PASS: no dashboard model, persistent/resizable camera cards, offline recovery, stream manager permissions, card editing, live pins, per-user persistence, hidden tabs, iframe session handoff/lifetime, desktop and mobile tab picker, permission-gated checklist, stream-only Mission Live, selected-loadcell fill in Loadcell and DAQ');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

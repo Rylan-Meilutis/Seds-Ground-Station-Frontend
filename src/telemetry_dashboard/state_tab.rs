@@ -1755,65 +1755,18 @@ fn SummaryCard(
 
 fn summary_item_value(
     dt: Option<&str>,
-    flight_state: &str,
+    _flight_state: &str,
     item: &SummaryItem,
-    fill_targets: Option<&FillTargetsConfig>,
+    _fill_targets: Option<&FillTargetsConfig>,
 ) -> Option<f32> {
     let dt = dt?;
-    current_summary_item_value(dt, flight_state, item, fill_targets)
-        .or_else(|| latest_telemetry_value(dt, None, item.index))
-        .or_else(|| fallback_summary_item_value(dt, flight_state, item, fill_targets))
+    // Fill percentage is authoritative telemetry from the selected, calibrated
+    // loadcell. Do not replace it with a KG1000-only client calculation.
+    latest_telemetry_value(dt, None, item.index)
 }
 
 fn loadcell_uses_nitrogen_target(flight_state: &str) -> bool {
     matches!(flight_state, "PreFill" | "FillTest" | "NitrogenFill")
-}
-
-fn loadcell_target_for_flight_state(
-    fill_targets: &FillTargetsConfig,
-    flight_state: &str,
-) -> Option<f32> {
-    let target_mass_kg = if loadcell_uses_nitrogen_target(flight_state) {
-        fill_targets.nitrogen.target_mass_kg
-    } else {
-        fill_targets.nitrous.target_mass_kg
-    };
-    target_mass_kg
-        .is_finite()
-        .then_some(target_mass_kg)
-        .filter(|target| target.abs() > 0.0001)
-}
-
-fn current_summary_item_value(
-    dt: &str,
-    flight_state: &str,
-    item: &SummaryItem,
-    fill_targets: Option<&FillTargetsConfig>,
-) -> Option<f32> {
-    match (dt, item.index) {
-        ("LOADCELL_FILL_PERCENT", 0) => {
-            let mass_kg = latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0)?;
-            let target_mass_kg = loadcell_target_for_flight_state(fill_targets?, flight_state)?;
-            Some(((mass_kg / target_mass_kg) * 100.0).clamp(0.0, 100.0))
-        }
-        _ => None,
-    }
-}
-
-fn fallback_summary_item_value(
-    dt: &str,
-    flight_state: &str,
-    item: &SummaryItem,
-    fill_targets: Option<&FillTargetsConfig>,
-) -> Option<f32> {
-    match (dt, item.index) {
-        ("LOADCELL_FILL_PERCENT", 0) => {
-            let mass_kg = latest_telemetry_value("LOADCELL_WEIGHT_KG", None, 0)?;
-            let full_mass_kg = loadcell_target_for_flight_state(fill_targets?, flight_state)?;
-            Some(((mass_kg / full_mass_kg) * 100.0).clamp(0.0, 100.0))
-        }
-        _ => None,
-    }
 }
 
 fn summary_item_fill_target_source<'a>(

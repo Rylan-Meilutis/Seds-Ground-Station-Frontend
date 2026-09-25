@@ -19,14 +19,14 @@ fn default_pressure_step() -> f32 {
     50.0
 }
 #[component]
-fn GroundChecklist() -> Element {
+pub(super) fn GroundChecklist() -> Element {
     let key = format!("{}_ground_checklist", super::dashboard_customization_key());
     let mut checked = use_signal(|| {
         super::persist::get_string(&key)
             .and_then(|s| serde_json::from_str::<[bool; 4]>(&s).ok())
             .unwrap_or([false; 4])
     });
-    rsx! {details {summary {"Ground checklist"}
+    rsx! {div { "aria-label": "Ground checklist",
         p {style:"font-size:12px;","Operator reminders only; checkmarks do not bypass interlocks or unlock self-test. Reset before each operation."}
         for (i,label) in ["Pressure transducer reading checked","Gas lines and connections inspected","Personnel clear of valves and vent/dump paths","Communications and abort procedure checked"].iter().enumerate() {
             label {style:"display:block;padding:5px;",input {r#type:"checkbox",checked:checked.read()[i],onchange:{let key=key.clone();move |event|{let mut next=*checked.read();next[i]=event.checked();checked.set(next);super::persist::set_string(&key,&serde_json::to_string(&next).unwrap());}}} "{label}"}
@@ -206,7 +206,6 @@ pub(super) fn GsePanel(
                 if let Some(noise)=snapshot.baseline {
                     p {style:"margin:0;font-size:12px;color:{theme.text_muted};","PT baseline {noise.average_psi:.2} psi · range {noise.min_psi:.2}–{noise.max_psi:.2} · noise ±{noise.noise_psi:.2} · {noise.samples} samples"}
                 }
-                GroundChecklist {}
                 details {
                     summary {style:"cursor:pointer;color:{theme.text_muted};font-size:13px;","Nitrogen test settings"}
                     if let Some(cfg)=settings.read().clone() {

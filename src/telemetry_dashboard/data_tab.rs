@@ -191,13 +191,60 @@ fn chart_canvas_identity_key(
     format!("data-chart::{:016x}", hasher.finish())
 }
 
+// Older station layouts attach the shared fill series to KG1000. Relocate the
+// configured readout and chart together, including copies under the DAQ tab.
+fn layout_for_fill_source(mut layout: DataTabLayout, source: Option<&str>) -> DataTabLayout {
+    let selected = match source {
+        Some("kg50") => Some("KG50"),
+        Some("kg1000_absolute") => Some("KG1000"),
+        _ => None,
+    };
+    for tab in &mut layout.tabs {
+        let Some(subtabs) = tab.subtabs.as_mut() else { continue; };
+        let is_loadcell = |subtab: &DataSubtabSpec| matches!(subtab.data_type.as_deref(), Some("KG50" | "KG1000"));
+        let chart = subtabs.iter().filter(|s| is_loadcell(s))
+            .flat_map(|s| s.chart_groups.iter().flatten())
+            .find(|g| g.data_type.as_deref() == Some("LOADCELL_FILL_PERCENT")).cloned();
+        let summary = subtabs.iter().filter(|s| is_loadcell(s))
+            .flat_map(|s| s.summary_items.iter().flatten())
+            .find(|i| i.data_type == "LOADCELL_FILL_PERCENT").cloned();
+        for subtab in subtabs.iter_mut().filter(|s| is_loadcell(s)) {
+            if let Some(groups) = &mut subtab.chart_groups {
+                groups.retain(|g| g.data_type.as_deref() != Some("LOADCELL_FILL_PERCENT"));
+            }
+            if let Some(items) = &mut subtab.summary_items {
+                items.retain(|i| i.data_type != "LOADCELL_FILL_PERCENT");
+            }
+            if selected.is_some() && subtab.data_type.as_deref() == selected {
+                if let Some(chart) = &chart { subtab.chart_groups.get_or_insert_default().push(chart.clone()); }
+                if let Some(summary) = &summary { subtab.summary_items.get_or_insert_default().push(summary.clone()); }
+            }
+        }
+    }
+    layout
+}
+
 #[component]
 pub fn DataTab(
     active_tab: Signal<String>,
     layout: DataTabLayout,
+    fill_targets: Signal<Option<super::FillTargetsConfig>>,
     #[props(default = false)] state_chart_labels_vertical: bool,
     theme: ThemeConfig,
 ) -> Element {
+    // WebSocket snapshots keep this signal current after another operator
+    // changes the source; fetch once if the initial snapshot has not arrived.
+    use_effect(move || {
+        if fill_targets.read().is_none() {
+            spawn(async move {
+                if let Ok(targets) = super::http_get_json::<super::FillTargetsConfig>("/api/fill_targets").await {
+                    let mut fill_targets = fill_targets;
+                    if fill_targets.peek().is_none() { fill_targets.set(Some(targets)); }
+                }
+            });
+        }
+    });
+    let layout = layout_for_fill_source(layout, fill_targets.read().as_ref().map(|cfg| cfg.fill_source.as_str()));
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
     let active_subtabs = use_signal(HashMap::<String, String>::new);
@@ -667,6 +714,37 @@ fn chart_series_for_group(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fill_percentage_follows_selected_loadcell_in_sensor_and_daq_tabs() {
+        let fixture = serde_json::json!({"tabs": (["LOADCELL", "DAQ"].map(|id| serde_json::json!({
+            "id": id, "label": id, "channels": [], "subtabs": [
+                {"id": "large", "label": "1000kg", "data_type": "KG1000",
+                 "chart_groups": [{"title": "Calibrated", "data_type": "LOADCELL_WEIGHT_KG", "channels": [0]},
+                    {"title": "Fill %", "data_type": "LOADCELL_FILL_PERCENT", "channels": [0]}],
+                 "summary_items": [{"label": "Fill %", "data_type": "LOADCELL_FILL_PERCENT", "index": 0}]},
+                {"id": "small", "label": "50kg", "data_type": "KG50",
+                 "chart_groups": [{"title": "Calibrated", "data_type": "LOADCELL_50_WEIGHT_KG", "channels": [0]}],
+                 "summary_items": [{"label": "Mass", "data_type": "LOADCELL_50_WEIGHT_KG", "index": 0}]}
+            ]
+        })))});
+        let original: super::DataTabLayout = serde_json::from_value(fixture).unwrap();
+        for (source, selected) in [(Some("kg50"), Some("KG50")), (Some("kg1000_absolute"), Some("KG1000")), (None, None), (Some("invalid"), None)] {
+            let layout = super::layout_for_fill_source(original.clone(), source);
+            assert_eq!(original.tabs.len(), layout.tabs.len());
+            for tab in &layout.tabs {
+                for subtab in tab.subtabs.as_ref().unwrap() {
+                    let expected = usize::from(selected.is_some() && subtab.data_type.as_deref() == selected);
+                    assert_eq!(subtab.chart_groups.as_ref().unwrap().iter().filter(|g| g.data_type.as_deref() == Some("LOADCELL_FILL_PERCENT")).count(), expected, "{} {} charts", tab.id, subtab.id);
+                    assert_eq!(subtab.summary_items.as_ref().unwrap().iter().filter(|i| i.data_type == "LOADCELL_FILL_PERCENT").count(), expected, "{} {} summaries", tab.id, subtab.id);
+                    assert!(subtab.chart_groups.as_ref().unwrap().iter().any(|g| g.title.as_deref() == Some("Calibrated")));
+                }
+            }
+            assert_eq!(super::layout_for_fill_source(layout.clone(), source), layout, "rerender must not duplicate fill widgets");
+        }
+        let small = super::layout_for_fill_source(original.clone(), Some("kg50"));
+        assert_eq!(super::layout_for_fill_source(small, Some("kg1000_absolute")), super::layout_for_fill_source(original, Some("kg1000_absolute")));
+    }
+
     use super::{
         DataChartGroup, DataSource, DataSummaryItem, chart_groups_have_graph_source,
         chart_series_for_group, data_live_panel_has_telemetry, effective_chart_groups,
