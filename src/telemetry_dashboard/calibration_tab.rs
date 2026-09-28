@@ -49,6 +49,8 @@ struct GenericCalibrationChannel {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct CalibrationFile {
+    #[serde(default = "default_kg50_input")]
+    kg50_input: String,
     #[serde(default)]
     noise: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -62,9 +64,12 @@ struct CalibrationFile {
     channels: BTreeMap<String, GenericCalibrationChannel>,
 }
 
+fn default_kg50_input() -> String { "amp2".into() }
+
 impl Default for CalibrationFile {
     fn default() -> Self {
         Self {
+            kg50_input: default_kg50_input(),
             noise: BTreeMap::new(),
             thermal: BTreeMap::new(),
             temperature_captures: BTreeMap::new(),
@@ -1991,6 +1996,19 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 }
             }
 
+            if selected_sensor.as_ref().is_some_and(|s| s.data_type == "KG50") {
+                super::data_tab::Kg50InputSelector {
+                    theme: theme.clone(),
+                    disabled: !can_edit || *dirty.read() || *sequence_capture_busy.read() || *sequence_dialog_open.read() || *calibration_save_busy.read(),
+                    on_changed: { let mut cfg = cfg; let mut dirty = dirty; let mut status = status; move |value: serde_json::Value| {
+                        if let Ok(updated) = serde_json::from_value::<CalibrationFile>(value) {
+                            save_cached_calibration_file(&updated);
+                            cfg.set(Some(updated)); dirty.set(false); clear_calibration_draft();
+                            status.set("50 kg input changed; its own calibration is now active".into());
+                        }
+                    } },
+                }
+            }
             div { style: "display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
                 CalibrationLiveMetrics {
                     theme: theme.clone(),

@@ -523,6 +523,9 @@ pub fn DataTab(
                     }
                 }
 
+                if selected_subtab_snapshot.as_ref().is_some_and(|s| s.data_type.as_deref() == Some("KG50")) {
+                    Kg50InputSelector { theme: theme.clone() }
+                }
                 div {
                     key: format!(
                         "data-live-{current}-{}",
@@ -2063,5 +2066,72 @@ fn fmt_span(span_min: f32) -> String {
         format!("-{:.0} s", span_min * 60.0)
     } else {
         format!("-{:.1} min", span_min)
+    }
+}
+
+/// Shared by the data and calibration tabs. The backend owns this setting and
+/// drives the DAQ's managed input variable; this is not a local chart remap.
+#[component]
+pub(super) fn Kg50InputSelector(
+    theme: ThemeConfig,
+    #[props(default = false)] disabled: bool,
+    #[props(default)] on_changed: EventHandler<serde_json::Value>,
+) -> Element {
+    let mut input = use_signal(|| None::<String>);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    use_future(move || async move {
+        loop {
+            if !*busy.peek() {
+                if let Ok(cfg) = super::http_get_json::<serde_json::Value>("/api/calibration").await {
+                    if !*busy.peek() {
+                        input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
+                    }
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(2000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    });
+    let selected = input.read().clone().unwrap_or_else(|| "amp2".into());
+    rsx! {
+        section { style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background}; display:flex; flex-direction:column; gap:8px;",
+            label { r#for: "kg50-input", style: "font-weight:700; color:{theme.text_primary};", "50 kg input" }
+            select {
+                id: "kg50-input",
+                value: "{selected}",
+                disabled: disabled || *busy.read() || input.read().is_none(),
+                style: "padding:8px; border-radius:6px; background:{theme.button_background}; color:{theme.text_primary}; border:1px solid {theme.border}; font:inherit; max-width:100%;",
+                onchange: move |event| {
+                    let requested = event.value();
+                    if !matches!(requested.as_str(), "amp2" | "p6_differential") || *busy.peek() { return; }
+                    busy.set(true);
+                    message.set("Saving input selection…".into());
+                    spawn(async move {
+                        let body = serde_json::json!({"input":requested});
+                        match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/kg50_input", &body).await {
+                            Ok(cfg) => {
+                                input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
+                                on_changed.call(cfg);
+                                message.set("Selection saved. Waiting for fresh readings from the selected input.".into());
+                            }
+                            Err(error) => message.set(format!("Input change failed: {error}")),
+                        }
+                        busy.set(false);
+                    });
+                },
+                option { value: "amp2", "Normal · AMP2 / P8" }
+                option { value: "p6_differential", "P6 · pin 3 (+) − pin 4 (−)" }
+            }
+            p { style: "margin:0; font-size:12px; color:{theme.text_muted};", "Selected input uses the fast load-cell scan with a 250 Hz reporting target. Each input keeps its own calibration." }
+            if selected == "p6_differential" {
+                p { style: "margin:0; font-size:12px; color:{theme.text_secondary};", "P6 raw readings are differential volts. Calibrate this input in the Calibration tab before using kilograms. SD records retain differential ADC samples in volts." }
+            }
+            if !message.read().is_empty() {
+                p { role: "status", style: "margin:0; font-size:12px; color:{theme.text_secondary};", "{message}" }
+            }
+        }
     }
 }
