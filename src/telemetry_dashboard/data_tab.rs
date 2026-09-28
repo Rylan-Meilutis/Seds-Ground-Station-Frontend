@@ -124,6 +124,22 @@ thread_local! {
     static DATA_CHART_RENDER_CACHE: RefCell<HashMap<u64, DataChartRenderPayload>> = RefCell::new(HashMap::new());
 }
 
+fn chart_axis_label(value: f32, min: f32, max: f32) -> String {
+    if value != 0.0 && (value.abs() < 0.0001 || value.abs() >= 1e6) {
+        return format!("{value:.3e}");
+    }
+    let span = (max - min).abs();
+    let decimals = if span > 0.0 { (2.0 - span.log10().floor()).clamp(2.0, 9.0) as usize } else { 2 };
+    format!("{value:.decimals$}")
+}
+
+#[cfg(test)]
+#[test]
+fn microvolt_axis_labels_remain_distinct() {
+    assert_ne!(chart_axis_label(0.0000276, 0.0000276, 0.0000278), chart_axis_label(0.0000278, 0.0000276, 0.0000278));
+    assert_eq!(chart_axis_label(10.0, 0.0, 100.0), "10.00");
+}
+
 fn subtab_storage_key(tab_id: &str) -> String {
     format!("{_ACTIVE_SUBTAB_STORAGE_KEY_PREFIX}{tab_id}")
 }
@@ -1404,9 +1420,9 @@ fn render_chart_group(
     let x_left_s = fmt_span(span_min);
     let x_mid_s = fmt_span(span_min * 0.5);
     let y_mid = (y_min + y_max) * 0.5;
-    let y_max_s = format!("{:.2}", y_max);
-    let y_mid_s = format!("{:.2}", y_mid);
-    let y_min_s = format!("{:.2}", y_min);
+    let y_max_s = chart_axis_label(y_max, y_min, y_max);
+    let y_mid_s = chart_axis_label(y_mid, y_min, y_max);
+    let y_min_s = chart_axis_label(y_min, y_min, y_max);
     let x_label_top = view_h - pad_bottom + CHART_X_LABEL_BOTTOM;
     let legend_rows: Vec<(usize, &str)> = legend_labels
         .iter()
@@ -1421,9 +1437,9 @@ fn render_chart_group(
             .filter_map(|(i, scale)| {
                 scale.map(|(series_min, series_max)| {
                     [
-                        (i, format!("{:.2}", series_max)),
-                        (i, format!("{:.2}", (series_min + series_max) * 0.5)),
-                        (i, format!("{:.2}", series_min)),
+                        (i, chart_axis_label(series_max, series_min, series_max)),
+                        (i, chart_axis_label((series_min + series_max) * 0.5, series_min, series_max)),
+                        (i, chart_axis_label(series_min, series_min, series_max)),
                     ]
                 })
             })
@@ -1821,21 +1837,21 @@ fn stacked_scale_label_placements(
             target_y: top_y,
             label_y: top_y,
             rail_column: 0,
-            text: format!("{:.2}", series_max),
+            text: chart_axis_label(*series_max, *series_min, *series_max),
         });
         entries.push(ScaleLabelPlacement {
             series_index,
             target_y: mid_y,
             label_y: mid_y,
             rail_column: 0,
-            text: format!("{:.2}", (series_min + series_max) * 0.5),
+            text: chart_axis_label((series_min + series_max) * 0.5, *series_min, *series_max),
         });
         entries.push(ScaleLabelPlacement {
             series_index,
             target_y: bottom_y,
             label_y: bottom_y,
             rail_column: 0,
-            text: format!("{:.2}", series_min),
+            text: chart_axis_label(*series_min, *series_min, *series_max),
         });
     }
 
@@ -1916,18 +1932,18 @@ where
                 }
             } else {
                 div { style: "{top_row_style}",
-                    for (i, (_, series_max)) in cols.iter().copied() {
-                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_max)} }
+                    for (i, (series_min, series_max)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {chart_axis_label(series_max, series_min, series_max)} }
                     }
                 }
                 div { style: "{mid_row_style}",
                     for (i, (series_min, series_max)) in cols.iter().copied() {
-                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", (series_min + series_max) * 0.5)} }
+                        div { style: "{scale_chip_style(i)}", {chart_axis_label((series_min + series_max) * 0.5, series_min, series_max)} }
                     }
                 }
                 div { style: "{bottom_row_style}",
-                    for (i, (series_min, _)) in cols.iter().copied() {
-                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_min)} }
+                    for (i, (series_min, series_max)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {chart_axis_label(series_min, series_min, series_max)} }
                     }
                 }
             }

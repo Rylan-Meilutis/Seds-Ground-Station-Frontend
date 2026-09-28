@@ -100,7 +100,12 @@ const X_SHRINK_EPS_MS: i64 = 250;
 // Y-range tuning
 const Y_SHRINK_ALPHA: f32 = 0.10; // used only during refit_pending
 const Y_PAD_FRAC: f32 = 0.06;
-const Y_MIN_PAD_ABS: f32 = 0.001;
+// Preserve microvolt-scale input detail. Relative padding also keeps f32
+// endpoints distinct for large values; a fixed millivolt floor hid P6 data.
+const Y_MIN_PAD_ABS: f32 = 1e-12;
+fn y_resolution(min: f32, max: f32) -> f32 {
+    (min.abs().max(max.abs()) * f32::EPSILON * 4.0).max(Y_MIN_PAD_ABS)
+}
 const CHART_INTEREST_TTL_GENERATIONS: u64 = 50_000;
 
 #[allow(dead_code)]
@@ -715,6 +720,22 @@ mod tests {
         configure_sender_split_data_types,
     };
     use crate::telemetry_dashboard::types::TelemetryRow;
+
+    #[test]
+    fn microvolt_chart_range_preserves_detail_and_startup_peaks() {
+        let (mut lo, mut hi) = (0.0000276, 0.0000278);
+        super::CachedChart::stabilize_raw_range(&mut lo, &mut hi);
+        let (lo, hi) = super::CachedChart::apply_padding(lo, hi);
+        assert!(lo < 0.0000276 && hi > 0.0000278);
+        assert!(hi - lo < 0.000001);
+        let (lo, hi) = super::CachedChart::apply_padding(0.0000277, 0.03);
+        assert!(lo < 0.0000277 && hi > 0.03, "Never erase an actual peak");
+        for center in [0.0, 0.0000277, 1000.0] {
+            let (mut lo, mut hi) = (center, center);
+            super::CachedChart::stabilize_raw_range(&mut lo, &mut hi);
+            assert!(lo.is_finite() && hi.is_finite() && lo < hi);
+        }
+    }
 
     #[test]
     fn accel_batch_order_does_not_drop_samples_or_create_spikes() {
@@ -1383,9 +1404,9 @@ impl CachedChart {
             return;
         }
         let range = *max - *min;
-        if range.abs() < 1e-6 {
+        if range.abs() <= y_resolution(*min, *max) {
             let center = *min;
-            let pad = (center.abs() * 0.05).max(Y_MIN_PAD_ABS);
+            let pad = if center == 0.0 { 1e-6 } else { (center.abs() * 0.05).max(Y_MIN_PAD_ABS) };
             *min = center - pad;
             *max = center + pad;
         }
@@ -1394,8 +1415,8 @@ impl CachedChart {
     fn apply_padding(min: f32, max: f32) -> (f32, f32) {
         let mut lo = min;
         let mut hi = max;
-        let r = (hi - lo).abs().max(1e-6);
-        let pad = (r * Y_PAD_FRAC).max(Y_MIN_PAD_ABS);
+        let r = (hi - lo).abs();
+        let pad = (r * Y_PAD_FRAC).max(y_resolution(lo, hi));
         lo -= pad;
         hi += pad;
         (lo, hi)
@@ -1406,7 +1427,7 @@ impl CachedChart {
 
         if !self.disp_min.is_finite()
             || !self.disp_max.is_finite()
-            || (self.disp_max - self.disp_min).abs() < 1e-6
+            || self.disp_max <= self.disp_min
         {
             self.disp_min = raw_min;
             self.disp_max = raw_max;
@@ -1434,8 +1455,8 @@ impl CachedChart {
             }
         }
 
-        if (hi - lo).abs() < 1e-6 {
-            hi = lo + 1.0;
+        if hi <= lo {
+            hi = lo + y_resolution(lo, hi);
         }
 
         self.disp_min = lo;
@@ -1664,8 +1685,9 @@ impl CachedChart {
         if self.refit_pending {
             let span_settled = (self.prev_span_ms - desired_span_ms).abs() <= X_SHRINK_EPS_MS;
             let (pmin, pmax) = Self::apply_padding(self.raw_min, self.raw_max);
+            let epsilon = ((pmax - pmin).abs() * 0.001).max(y_resolution(pmin, pmax));
             let y_settled =
-                (self.disp_min - pmin).abs() < 1e-3 && (self.disp_max - pmax).abs() < 1e-3;
+                (self.disp_min - pmin).abs() < epsilon && (self.disp_max - pmax).abs() < epsilon;
             if span_settled && y_settled {
                 self.refit_pending = false;
             }
