@@ -64,6 +64,23 @@ struct CalibrationFile {
     channels: BTreeMap<String, GenericCalibrationChannel>,
 }
 
+#[derive(Serialize)]
+struct CalibrationSaveRequest {
+    channel: String,
+    calibration: CalibrationFile,
+}
+
+fn apply_manual_linear(cfg: &mut CalibrationFile, channel: &str, slope: f32, offset: f32) -> Result<(), String> {
+    if !slope.is_finite() || slope == 0.0 || !offset.is_finite() {
+        return Err("Enter a finite, nonzero slope and a finite offset".into());
+    }
+    let slot = cfg.channels.entry(channel.into()).or_default();
+    slot.linear = ChannelLinear { m: Some(slope), b: Some(offset) };
+    slot.fit = Some(FitMeta { fit_type: Some("linear".into()), ..Default::default() });
+    slot.zero_raw = None; // Offset already defines zero for this explicit equation.
+    Ok(())
+}
+
 fn default_kg50_input() -> String { "amp2".into() }
 
 impl Default for CalibrationFile {
@@ -1920,7 +1937,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Live load-cell captures retain ADC temperature and normalize raw values to the saved thermal reference before fitting." }
                         div { style: "margin-top:6px; color:{theme.text_secondary}; font-size:12px;",
                             if can_edit {
-                                "Local edits stay on this page until Save pushes them to the backend. Saved changes sync to other open frontends."
+                                "Save updates only the selected sensor. Save edits before switching sensors. Saved changes sync to other open frontends."
                             } else {
                                 "Current calibration data, active regression, and captured points are shown here."
                             }
@@ -1942,16 +1959,19 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     let mut status = status;
                                     let mut dirty = dirty;
                                     let mut calibration_save_busy = calibration_save_busy;
+                                    let selected_sensor = selected_sensor.clone();
                                     move |_| {
                                         if *calibration_save_busy.read() { return; }
                                         let Some(next) = cfg.read().clone() else {
                                             status.set("No calibration data loaded".to_string());
                                             return;
                                         };
-                                        status.set("Saving calibration to backend...".to_string());
+                                        let Some(sensor) = selected_sensor.clone() else { return; };
+                                        let request = CalibrationSaveRequest { channel: sensor.channel, calibration: next.clone() };
+                                        status.set(format!("Saving {} calibration…", sensor.label));
                                         calibration_save_busy.set(true);
                                         spawn(async move {
-                                            match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
+                                            match http_post_json::<CalibrationSaveRequest, CalibrationFile>("/api/calibration", &request).await {
                                                 Ok(mut saved_cfg) => {
                                                     sanitize_calibration_file(&mut saved_cfg);
                                                     save_cached_calibration_file(&saved_cfg);
@@ -1960,7 +1980,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         cfg.set(Some(current));
                                                         dirty.set(false);
                                                         clear_calibration_draft();
-                                                        status.set("Calibration saved".to_string());
+                                                        status.set("Selected sensor saved; other calibrations preserved".to_string());
                                                     } else {
                                                         status.set("Earlier calibration saved; newer local edits are preserved. Save again to publish them.".to_string());
                                                     }
@@ -1982,6 +2002,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 for sensor in sensors.iter().cloned() {
                     button {
                         style: "{sensor_button_style(sensor.id == effective_selected_sensor_id)}",
+                        disabled: *dirty.read() || *sequence_capture_busy.read() || *calibration_save_busy.read(),
                         onclick: {
                             let mut selected_sensor_id = selected_sensor_id;
                             let mut selected_point = selected_point;
@@ -2181,11 +2202,14 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
 
             if can_edit {
+            h3 { style: "margin:8px 0 0; font-size:15px;", "Manual calibration point" }
+            p { style: "margin:0; font-size:12px; color:{theme.text_muted};", "Enter the known weight and raw reading directly, or capture a live reading. Add the point, then Save the selected sensor. P6 raw readings are differential volts." }
             div { style: "{toolbar_style}",
                 input {
                     style: "{input_style}",
+                    aria_label: "Known weight or reference value",
                     r#type: "number",
-                    step: "0.01",
+                    step: "any",
                     placeholder: "Known mass (kg)",
                     value: "{manual_kg.read()}",
                     disabled: !can_edit,
@@ -2199,6 +2223,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     r#type: "number",
                     step: "0.000001",
                     placeholder: "Measured raw sensor value",
+                    aria_label: "Manual raw ADC reading",
                     value: "{manual_raw.read()}",
                     disabled: !can_edit,
                     oninput: {
@@ -2228,6 +2253,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 status.set("Invalid manual raw".to_string());
                                 return;
                             };
+                            if !kg.is_finite() || !raw.is_finite() {
+                                status.set("Weight and raw reading must be finite numbers".into());
+                                return;
+                            }
                             let Some(sensor) = selected_sensor.clone() else {
                                 status.set("No sensor selected".to_string());
                                 return;
@@ -2335,6 +2364,15 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
             }
 
+            if can_edit {
+                if let Some(sensor) = selected_sensor.as_ref() {
+                    ManualLinearCalibration {
+                        key: "manual-linear-{sensor.channel}",
+                        theme: theme.clone(), channel: sensor.channel.clone(),
+                        cfg, dirty, status, fit_mode,
+                    }
+                }
+            }
             if can_edit {
             div { style: "{toolbar_style}",
                 input {
@@ -3338,5 +3376,57 @@ mod steel_preview_tests {
         for (i,value) in [(0,0.),(2,-1.),(4,0.),(5,f64::NAN),(7,-1.)] {
             let mut invalid=v;invalid[i]=value;assert!(steel_lag_preview(invalid).is_none());
         }
+    }
+}
+
+#[component]
+fn ManualLinearCalibration(
+    theme: ThemeConfig, channel: String,
+    mut cfg: Signal<Option<CalibrationFile>>, mut dirty: Signal<bool>,
+    mut status: Signal<String>, mut fit_mode: Signal<String>,
+) -> Element {
+    let mut slope = use_signal(String::new);
+    let mut offset = use_signal(|| "0".to_string());
+    rsx! {
+        details { style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px;",
+            summary { style: "font-weight:700; cursor:pointer;", "Manual slope and offset" }
+            p { style: "font-size:12px; color:{theme.text_muted};", "Output = slope × temperature-corrected raw + offset. Applying replaces this sensor's fit and clears its separate tare; captured points are retained. Save to publish." }
+            div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                input { r#type: "number", step: "any", aria_label: "Calibration slope", placeholder: "Slope", value: "{slope}", oninput: move |e| slope.set(e.value()) }
+                input { r#type: "number", step: "any", aria_label: "Calibration offset", placeholder: "Offset", value: "{offset}", oninput: move |e| offset.set(e.value()) }
+                button { r#type: "button", disabled: cfg.read().is_none(),
+                    onclick: move |_| {
+                        let (Ok(m), Ok(b)) = (slope.read().parse::<f32>(), offset.read().parse::<f32>()) else {
+                            status.set("Enter numeric slope and offset".into()); return;
+                        };
+                        let Some(mut next) = cfg.read().clone() else { return; };
+                        match apply_manual_linear(&mut next, &channel, m, b) {
+                            Ok(()) => { cfg.set(Some(next)); dirty.set(true); fit_mode.set("linear".into()); status.set("Manual coefficients applied locally to this sensor. Save to publish.".into()); }
+                            Err(error) => status.set(error),
+                        }
+                    }, "Apply to selected sensor"
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod manual_linear_tests {
+    use super::*;
+    #[test]
+    fn manual_fit_changes_only_selected_sensor_and_clears_its_old_tare() {
+        let mut cfg = CalibrationFile::default();
+        apply_manual_linear(&mut cfg, "ch1", 100.0, 2.0).unwrap();
+        let other = cfg.channels["ch1"].clone();
+        apply_manual_linear(&mut cfg, "kg50", 200.0, -3.0).unwrap();
+        cfg.channels.get_mut("kg50").unwrap().zero_raw = Some(7.0);
+        apply_manual_linear(&mut cfg, "kg50", 300.0, -4.0).unwrap();
+        assert_eq!(cfg.channels["ch1"], other);
+        assert_eq!(cfg.channels["kg50"].zero_raw, None);
+        assert_eq!(eval_fit_key(&cfg, "kg50", 0.01), Some(-1.0));
+        let before = cfg.clone();
+        assert!(apply_manual_linear(&mut cfg, "kg50", f32::NAN, 0.0).is_err());
+        assert_eq!(cfg, before);
     }
 }
