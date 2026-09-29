@@ -57,8 +57,25 @@ fn send_session(id: &str, token: Option<&str>, visible: bool) {
         r#"
         const frame = document.getElementById({id});
         if (frame?.contentWindow) {{
-            const origin = new URL(frame.src, location.href).origin;
-            frame.contentWindow.postMessage({payload}, origin);
+            // Keep one retry loop per mounted iframe. The first load message
+            // can precede the child module listener, especially in webviews.
+            // Reusing this bridge avoids creating a new Dioxus eval every tick.
+            if (!frame.gs26SessionBridge) {{
+                const bridge = {{payload: null}};
+                bridge.send = () => {{
+                    if (!frame.isConnected) {{
+                        clearInterval(bridge.timer);
+                        bridge.payload = null;
+                        return;
+                    }}
+                    const origin = new URL(frame.src, location.href).origin;
+                    frame.contentWindow?.postMessage(bridge.payload, origin);
+                }};
+                bridge.timer = setInterval(bridge.send, 500);
+                frame.gs26SessionBridge = bridge;
+            }}
+            frame.gs26SessionBridge.payload = {payload};
+            frame.gs26SessionBridge.send();
         }}
     "#
     ));

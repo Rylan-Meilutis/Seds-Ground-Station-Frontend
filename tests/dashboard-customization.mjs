@@ -18,7 +18,7 @@ for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label
 const server=http.createServer((req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
   if(pathname==='/test-camera') {res.setHeader('Content-Type','text/html');res.end('<p>Live camera fixture</p>');return;}
-  if(pathname==='/radio'||pathname==='/media') {res.setHeader('Content-Type','text/html');res.end(`<p>Media tool fixture</p><script>window.received=[];addEventListener('message',e=>{if(e.source===parent)received.push(e.data)})</script>`);return;}
+  if(pathname==='/radio'||pathname==='/media') {res.setHeader('Content-Type','text/html');res.end(`<p>Media tool fixture</p><script>window.received=[];setTimeout(()=>addEventListener('message',e=>{if(e.source===parent)received.push(e.data)}),900)</script>`);return;}
   if(pathname.startsWith('/api/')){
     res.setHeader('Content-Type','application/json');
     const data=pathname==='/api/auth/session'?session:pathname==='/api/layout'?dashboardLayout:pathname==='/api/fill_targets'?{version:1,fill_source:fillSource,nitrogen:{target_mass_kg:10,target_pressure_psi:100},nitrous:{target_mass_kg:20,target_pressure_psi:200}}:pathname==='/api/live_streams'?{...example('live-streams'),can_manage_stream:session.roles.includes('stream_master'),program_url:'',can_preview_live:session.roles.includes('stream_master'),streams:[{id:'pad-wide',label:'Pad wide',url:'/test-camera?ticket=fixture',online:cameraOnline,kind:'webrtc'}]}:pathname==='/api/vehicle'?{}:[];
@@ -32,7 +32,7 @@ const server=http.createServer((req,res)=>{
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`;
-const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY});
+const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY || (process.platform==='darwin' && fs.existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined)});
 try{
   const context=await browser.newContext({viewport:{width:1440,height:1000}});
   await context.addInitScript(({session,origin})=>{if(!localStorage.getItem('auth_session_v1'))localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
@@ -123,6 +123,19 @@ try{
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'checklist fits mobile');
   await page.screenshot({path:'/tmp/gs-checklist-mobile.png',fullPage:true});
   await page.getByRole('button',{name:'Checklist',exact:true}).click();
+  await page.setViewportSize({width:320,height:568});
+  const checklist=page.getByRole('button',{name:'Checklist',exact:true});
+  const checklistBox=await checklist.boundingBox();
+  assert(checklistBox.x>=0 && checklistBox.x+checklistBox.width<=320,'checklist is not clipped at 320px');
+  await checklist.click();await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).waitFor({state:'visible'});
+  await checklist.click();
+  await choose();await page.getByRole('button',{name:'Data Export',exact:true}).click();
+  const exportPanel=page.locator('.gs26-export-scroll');
+  assert(await exportPanel.evaluate(el=>el.scrollHeight>el.clientHeight),'export content exceeds viewport');
+  await page.getByText('Legacy CSV / clock settings',{exact:true}).scrollIntoViewIfNeeded();
+  assert(await exportPanel.evaluate(el=>el.scrollTop>0),'export scroll reaches lower controls');
+  await page.screenshot({path:'/tmp/gs-export-mobile.png',fullPage:true});
+  await page.setViewportSize({width:390,height:844});
   session.roles=[]; session.username='other-user'; session.permissions.send_commands=false;
   await page.reload();await choose();
   assert.equal(await page.getByRole('button',{name:'Stream Manager',exact:true}).count(),0,'manager is permission gated');

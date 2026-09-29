@@ -2687,6 +2687,7 @@ fn TelemetryDashboardInner() -> Element {
              }}
              .gs26-header-row {{
                position:relative;
+               flex-shrink:0;
              }}
              .gs26-header-title {{
                flex:0 1 auto; display:flex; align-items:center; gap:8px;
@@ -2706,6 +2707,7 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-header-abort-mobile {{ display:none; }}
              .gs26-header-secondary {{
                position:relative;
+               flex-shrink:0;
                display:flex;
                align-items:center;
                gap:12px;
@@ -2724,7 +2726,9 @@ fn TelemetryDashboardInner() -> Element {
                  margin-bottom:8px !important;
                }}
                .gs26-header-title {{
-                 grid-column:2;
+                 grid-column:1 / -1;
+                 grid-row:2;
+                 flex-wrap:wrap;
                  justify-self:center;
                  text-align:center;
                  justify-content:center;
@@ -2732,7 +2736,7 @@ fn TelemetryDashboardInner() -> Element {
                  max-width:100%;
                  width:100%;
                  box-sizing:border-box;
-                 padding:0 3.9rem;
+                 padding:0;
                  font-size:clamp(10px, 3.4vw, 14px) !important;
                  line-height:0.95;
                  white-space:nowrap;
@@ -2741,9 +2745,10 @@ fn TelemetryDashboardInner() -> Element {
                  pointer-events:auto;
                }}
                .gs26-header-actions-shell {{
-                 grid-column:1 / 4;
-                 position:absolute;
-                 inset:0;
+                 grid-column:1 / -1;
+                 grid-row:1;
+                 position:relative;
+                 min-height:44px;
                  display:flex;
                  align-items:center;
                  justify-content:space-between;
@@ -3655,7 +3660,9 @@ fn TelemetryDashboardInner() -> Element {
                                 FirmwareUpdateTab { theme: theme.clone() }
                             },
                             MainTab::DataExport => rsx! {
-                                recording_download::RecordingDownloads { theme: theme.clone() }
+                                div { class: "gs26-export-scroll", style: "height:100%;min-height:0;min-width:0;overflow:auto;box-sizing:border-box;overscroll-behavior:contain;",
+                                    recording_download::RecordingDownloads { theme: theme.clone() }
+                                }
                             },
                             MainTab::Calibration => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
