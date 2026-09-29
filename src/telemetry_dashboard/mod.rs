@@ -238,6 +238,7 @@ fn normalize_live_telemetry_row_for_client_clock(
     mut row: TelemetryRow,
     now_ms: i64,
 ) -> Option<TelemetryRow> {
+    if !graph_row_allowed(row.timestamp_ms) { return None; }
     row.received_timestamp_ms = now_ms;
     row.refresh_interned_ids();
     if live_telemetry_row_is_fresh(&row, now_ms) {
@@ -452,6 +453,10 @@ static BUILTIN_THEME_CATALOG: Lazy<layout::ThemePresetCatalog> = Lazy::new(|| {
 static WS_RAW: GlobalSignal<Option<web_sys::WebSocket>> = Signal::global(|| None);
 // Force re-seed of graphs/history from backend.
 static SEED_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+static GRAPH_HISTORY_GENERATION: AtomicU64 = AtomicU64::new(0);
+static GRAPH_SERVER_FLOOR_MS: AtomicI64 = AtomicI64::new(0);
+static GRAPH_CLIENT_FLOOR_MS: AtomicI64 = AtomicI64::new(0);
+static GRAPH_CLOCK_OFFSET_MS: AtomicI64 = AtomicI64::new(0);
 static FRONTEND_DATA_CLEAR_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static LAUNCH_TMINUS_DISPLAY_MIN_MS: AtomicI64 = AtomicI64::new(i64::MAX);
 static LAUNCH_TMINUS_ZERO_LATCHED: AtomicBool = AtomicBool::new(false);
@@ -1155,6 +1160,7 @@ fn note_ws_connected_and_restore_data_flow(
     notification_history: &mut Signal<Vec<PersistentNotification>>,
     unread_notification_ids: &mut Signal<Vec<u64>>,
 ) {
+    load_graph_history_floor();
     let was_connected = frontend_network_metrics_snapshot().ws_connected;
     LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
     note_ws_connection_state(true, ws_url, None, epoch);

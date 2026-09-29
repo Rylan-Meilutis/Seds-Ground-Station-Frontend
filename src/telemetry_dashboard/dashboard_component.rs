@@ -3196,6 +3196,12 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
                         div { class: "gs26-header-actions-list",
+                            button {
+                                title: "Clear every graph and exclude earlier data from future resyncs. Recordings are kept.",
+                                style: "padding:0.45rem 0.85rem;border-radius:0.75rem;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
+                                onclick: move |_| { clear_current_dashboard_data_without_reseed(); },
+                                "Clear all graphs"
+                            }
                             if show_disable_actions {
                             button {
                                 style: if *abort_only_mode.read() {

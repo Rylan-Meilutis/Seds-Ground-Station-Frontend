@@ -1377,6 +1377,7 @@ fn persist_cached_telemetry_snapshot_if_due(force: bool) {
 }
 
 fn restore_cached_telemetry_rows_if_needed() -> usize {
+    load_graph_history_floor();
     if !data_cache_enabled() {
         persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
         return 0;
@@ -1399,6 +1400,8 @@ fn restore_cached_telemetry_rows_if_needed() -> usize {
         return 0;
     }
     let mut rows = cache.rows;
+    let floor = GRAPH_CLIENT_FLOOR_MS.load(Ordering::Relaxed);
+    if floor != 0 { rows.retain(|row| telemetry_row_received_ms(row) > floor); }
     if rows.is_empty() {
         return 0;
     }

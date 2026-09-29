@@ -1,6 +1,7 @@
 #[derive(Deserialize, Debug)]
 #[serde(tag = "ty", content = "data")]
 enum WsInMsg {
+    CalibrationChanged,
     Telemetry(TelemetryRow),
     TelemetryBatch(Vec<TelemetryRow>),
     FlightState(FlightStateMsg),
