@@ -285,7 +285,16 @@ pub fn ActionsTab(
     use_future(move || async move {
         loop {
             let next = match super::http_get_json::<serde_json::Value>("/api/gse/status").await {
-                Ok(status) => match status.get("request_gate") {
+                Ok(status) => {
+                    if !*self_test_busy.read() {
+                        if let Some(confirmed) = status["dry_self_test_confirmed"].as_bool() {
+                            if *self_test_confirmed.read() && !confirmed {
+                                self_test_message.set("Confirmation consumed by the last run. Confirm isolation again before retrying self-test.".into());
+                            }
+                            self_test_confirmed.set(confirmed);
+                        }
+                    }
+                    match status.get("request_gate") {
                     Some(gate) => format!(
                         "Backend gate: mode={} · state={} · prelaunch={} · valve interlock={} · {} · {}",
                         if gate["hitl_mode"].as_bool() == Some(true) { "HITL" } else { "sequenced" },
@@ -296,6 +305,7 @@ pub fn ActionsTab(
                         status["configuration_error"].as_str().unwrap_or("Pressure configuration valid"),
                     ),
                     None => "Backend does not expose request-gate diagnostics; rebuild/restart it from current dev.".into(),
+                }
                 },
                 Err(error) => format!("Cannot read backend GSE gate: {error}"),
             };
