@@ -133,8 +133,7 @@ pub(super) fn GsePanel(
     action_policy: Signal<ActionPolicyMsg>,
     abort_only_mode: bool,
     theme: ThemeConfig,
-    #[props(default = true)]
-    show_model: bool,
+    #[props(default = true)] show_model: bool,
 ) -> Element {
     let mut settings = use_signal(|| None::<Settings>);
     let mut status = use_signal(Status::default);
@@ -225,6 +224,77 @@ pub(super) fn GsePanel(
                 }
                 if !message.read().is_empty() {p {role:"status",style:"margin:0;color:{theme.text_muted};font-size:12px;","{message}"}}
             }
+        }
+    }
+}
+
+/// Keep the required baseline limit beside the action that needs it.
+#[component]
+pub(super) fn SelfTestPtOffset(disabled: bool, theme: ThemeConfig) -> Element {
+    let mut value = use_signal(String::new);
+    let mut message = use_signal(String::new);
+    let mut busy = use_signal(|| true);
+    use_future(move || async move {
+        match http_get_json::<Settings>("/api/gse/config").await {
+            Ok(cfg) => {
+                value.set(
+                    cfg.maximum_zero_offset_psi
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
+                message.set(if cfg.maximum_zero_offset_psi.is_some() {
+                    "Saved empty-tank PT limit loaded.".into()
+                } else {
+                    "Enter and save this limit before unlocking self-test.".into()
+                });
+            }
+            Err(err) => message.set(format!("Could not load PT limit: {err}. Save will retry.")),
+        }
+        busy.set(false);
+    });
+    rsx! {
+        div { style:"display:grid;gap:8px;padding:12px;border:1px solid {theme.border};border-radius:10px;min-width:0;",
+            label { style:"display:grid;gap:6px;font-size:13px;",
+                "Maximum acceptable empty-tank PT offset (psi)"
+                input {
+                    r#type:"number", min:"0", step:"any", placeholder:"Required",
+                    style:"width:100%;min-width:0;box-sizing:border-box;",
+                    value:"{value}", disabled:disabled || *busy.read(),
+                    oninput:move |event| {value.set(event.value());message.set("Unsaved PT limit.".into());}
+                }
+            }
+            p { style:"margin:0;font-size:12px;color:{theme.text_muted};",
+                "Allowed pressure reading above or below zero with an empty, depressurized tank. This is a test acceptance limit, not a calibration offset."
+            }
+            button {
+                disabled:disabled || *busy.read(),
+                onclick:move |_| {
+                    let limit = match value.read().trim().parse::<f32>() {
+                        Ok(v) if v.is_finite() && v >= 0.0 => v,
+                        _ => {message.set("Enter a finite, nonnegative PT limit in psi.".into());return;}
+                    };
+                    busy.set(true);
+                    spawn(async move {
+                        // Read immediately before saving so other GSE settings and
+                        // the current dry-test confirmation are preserved.
+                        let result = async {
+                            let mut cfg = http_get_json::<Settings>("/api/gse/config").await?;
+                            cfg.maximum_zero_offset_psi = Some(limit);
+                            http_post_json::<Settings,Settings>("/api/gse/config", &cfg).await
+                        }.await;
+                        match result {
+                            Ok(cfg) => {
+                                value.set(cfg.maximum_zero_offset_psi.map(|v| v.to_string()).unwrap_or_default());
+                                message.set("PT limit saved. Backend self-test interlocks still apply.".into());
+                            }
+                            Err(err) => message.set(format!("PT limit was not saved: {err}")),
+                        }
+                        busy.set(false);
+                    });
+                },
+                if *busy.read() {"Please wait…"} else {"Save PT limit"}
+            }
+            p { role:"status", style:"margin:0;font-size:12px;", "{message}" }
         }
     }
 }

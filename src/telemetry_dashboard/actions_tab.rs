@@ -467,6 +467,7 @@ pub fn ActionsTab(
                             ActionLayoutRow::Heading(label) => rsx! {
                                 h3 {style:"margin:12px 0 0;color:{theme.text_muted};font-size:12px;letter-spacing:.08em;text-transform:uppercase;","{label}"}
                                 if *label=="GSE sequence actions" {
+                                    super::gse_panel::SelfTestPtOffset {disabled:abort_only_mode || *self_test_busy.read() || !auth::can_send_command("ValveSelfTest"),theme:theme.clone()}
                                     label {input {r#type:"checkbox",checked:*self_test_confirmed.read(),disabled:*self_test_busy.read()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:move |event| {
                                         let confirmed=event.checked();self_test_confirmed.set(false);self_test_busy.set(true);
                                         spawn(async move {match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":confirmed})).await {
