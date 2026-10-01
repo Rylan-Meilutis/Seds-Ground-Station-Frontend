@@ -100,7 +100,7 @@ fn btn_style(
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
     };
-    let height = if illuminate_enabled { "7rem" } else { "4rem" };
+    let height = if illuminate_enabled { "3.5rem" } else { "2.75rem" };
     let animation = action_animation_style(enabled, blink, actuated);
     let ready_glow = if enabled && illuminate_enabled {
         format!("box-shadow:0 0 14px {border};")
@@ -108,8 +108,8 @@ fn btn_style(
         String::new()
     };
     format!(
-        "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; min-width:0; height:{height}; box-sizing:border-box; overflow:hidden; \
-         display:flex; align-items:center; justify-content:space-between; gap:0.75rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
+        "padding:0.35rem 0.65rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; min-width:0; height:{height}; box-sizing:border-box; overflow:hidden; \
+         display:flex; align-items:center; justify-content:space-between; gap:0.4rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
          font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation} {ready_glow}"
     )
 }
@@ -579,7 +579,7 @@ pub fn ActionsTab(
                                                         span { style: "min-width:0; flex:1 1 auto;",
                                                             span {title:"{action.label}",style:"display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;white-space:normal;line-height:1.25;", "{action.label}"}
                                                             if action.group == "GSE sequence actions" {
-                                                                span {title:disabled_reason.unwrap_or(""),style:"display:block;height:3.9em;overflow:hidden;margin-top:4px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;", "{reason_text}"}
+                                                                span {title:disabled_reason.unwrap_or(""),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;", "{reason_text}"}
                                                             }
                                                         }
                                                             span {
