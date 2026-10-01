@@ -1637,7 +1637,7 @@ fn action_style(
         String::new()
     };
     format!(
-        "padding:0.6rem 0.9rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
+        "padding:0.35rem 0.65rem; height:2.75rem; min-height:2.75rem; max-height:2.75rem; flex-shrink:0; box-sizing:border-box; overflow:hidden; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
          display:flex; align-items:center; justify-content:space-between; gap:0.75rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
          font-weight:700; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation} {ready_glow}"
     )
