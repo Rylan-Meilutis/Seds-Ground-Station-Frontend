@@ -100,6 +100,7 @@ fn btn_style(
     } else {
         "0 4px 12px rgba(0,0,0,0.16)"
     };
+    let height = if illuminate_enabled { "7rem" } else { "4rem" };
     let animation = action_animation_style(enabled, blink, actuated);
     let ready_glow = if enabled && illuminate_enabled {
         format!("box-shadow:0 0 14px {border};")
@@ -107,7 +108,7 @@ fn btn_style(
         String::new()
     };
     format!(
-        "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
+        "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; min-width:0; height:{height}; box-sizing:border-box; overflow:hidden; \
          display:flex; align-items:center; justify-content:space-between; gap:0.75rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
          font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation} {ready_glow}"
     )
@@ -487,7 +488,7 @@ pub fn ActionsTab(
                                 div {
                                     style: "
                                         display:grid;
-                                        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                                        grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
                                         gap:12px;
                                         align-items:stretch;
                                         width:100%;
@@ -529,6 +530,8 @@ pub fn ActionsTab(
                                                 } else {
                                                     Some("Confirm dry valve self-test first")
                                                 };
+                                                let reason_text = disabled_reason.unwrap_or("");
+                                                let badge_visibility = if enabled { "hidden" } else { "visible" };
                                                 let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
                                                 let actuated = merged_actuated(
                                                     action.cmd.as_str(),
@@ -563,17 +566,17 @@ pub fn ActionsTab(
                                                                 }
                                                             }
                                                         },
-                                                        span { style: "min-width:0; flex:1 1 auto;", "{action.label}"
-                                                            if let Some(reason) = disabled_reason {
-                                                                span {style:"display:block;margin-top:4px;font-size:11px;font-weight:400;white-space:normal;", "{reason}"}
+                                                        span { style: "min-width:0; flex:1 1 auto;",
+                                                            span {title:"{action.label}",style:"display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;white-space:normal;line-height:1.25;", "{action.label}"}
+                                                            if action.group == "GSE sequence actions" {
+                                                                span {title:disabled_reason.unwrap_or(""),style:"display:block;height:3.9em;overflow:hidden;margin-top:4px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;", "{reason_text}"}
                                                             }
                                                         }
-                                                        if !enabled {
                                                             span {
-                                                                style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
+                                                                "aria-hidden": enabled,
+                                                                style: "visibility:{badge_visibility};flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
                                                                 "{translate_text(\"Disabled\")}"
                                                             }
-                                                        }
                                                     }
                                                 }
                                             }
