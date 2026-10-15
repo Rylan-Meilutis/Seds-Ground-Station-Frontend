@@ -106,8 +106,6 @@ fn write_cached_tile(base: &str, z: u32, x: u32, y: u32, bytes: &[u8]) {
 fn init_android_platform_tls_verifier() {
     use ::jni::JavaVM;
     use ::jni::objects::JObject;
-    use ::jni021::JavaVM as JavaVM021;
-    use ::jni021::objects::JObject as JObject021;
 
     let ctx = ndk_context::android_context();
     let vm = match unsafe { JavaVM::from_raw(ctx.vm().cast()) } {
@@ -121,19 +119,6 @@ fn init_android_platform_tls_verifier() {
     }) {
         Ok(_) => debug_log::append("[startup] android TLS verifier initialized"),
         Err(e) => debug_log::append(&format!("[startup] android TLS verifier init failed: {e}")),
-    }
-
-    match (|| -> ::jni021::errors::Result<()> {
-        let vm = unsafe { JavaVM021::from_raw(ctx.vm().cast()) }?;
-        let mut env = vm.attach_current_thread()?;
-        let context = unsafe { JObject021::from_raw(ctx.context().cast()) };
-        rustls_platform_verifier_reqwest::android::init_with_env(&mut env, context)?;
-        Ok(())
-    })() {
-        Ok(_) => debug_log::append("[startup] android reqwest TLS verifier initialized"),
-        Err(e) => debug_log::append(&format!(
-            "[startup] android reqwest TLS verifier init failed: {e}"
-        )),
     }
 }
 
@@ -467,7 +452,10 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         return build_response(200, content_type.as_deref().or(Some("image/jpeg")), cached);
     }
 
-    debug_log::append(&format!("[protocol] tile completed status={status} bytes={}", bytes.len()));
+    debug_log::append(&format!(
+        "[protocol] tile completed status={status} bytes={}",
+        bytes.len()
+    ));
     build_response(status, content_type.as_deref(), bytes)
 }
 
