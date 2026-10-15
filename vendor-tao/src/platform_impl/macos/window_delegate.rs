@@ -3,21 +3,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-  f64,
   ffi::CStr,
   os::raw::c_void,
   sync::{Arc, Weak},
 };
 
 use objc2::{
-  msg_send,
+  msg_send, ClassType,
   rc::Retained,
   runtime::{AnyClass as Class, AnyObject as Object, ClassBuilder as ClassDecl, Sel},
 };
 use objc2_app_kit::{
-  self as appkit, NSApplicationPresentationOptions, NSPasteboard, NSView, NSWindow,
+  NSApplicationPresentationOptions, NSPasteboard, NSView, NSWindow,
 };
-use objc2_foundation::{ns_string, NSArray, NSAutoreleasePool, NSString, NSUInteger};
+use objc2_foundation::{ns_string, NSArray, NSAutoreleasePool, NSURL, NSUInteger};
 use once_cell::sync::Lazy;
 
 use crate::{
@@ -420,15 +419,15 @@ extern "C" fn dragging_entered(this: &Object, _: Sel, sender: id) -> BOOL {
   use std::path::PathBuf;
 
   let pb: Retained<NSPasteboard> = unsafe { msg_send![sender, draggingPasteboard] };
-  let filenames =
-    unsafe { NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) }.unwrap();
+  let classes = NSArray::from_slice(&[NSURL::class()]);
+  let Some(urls) = (unsafe { pb.readObjectsForClasses_options(&classes, None) }) else { return NO; };
 
-  for file in unsafe { Retained::cast_unchecked::<NSArray>(filenames) } {
-    let file = unsafe { Retained::cast_unchecked::<NSString>(file) };
-
-    unsafe {
-      let f = NSString::UTF8String(&file);
-      let path = CStr::from_ptr(f).to_string_lossy().into_owned();
+  for object in urls {
+    // AppKit returns instances of the requested NSURL class.
+    let file = unsafe { Retained::cast_unchecked::<NSURL>(object) };
+    if !file.isFileURL() { continue; }
+    if let Some(path) = file.path() {
+      let path = path.to_string();
 
       with_state(this, |state| {
         state.emit_event(WindowEvent::HoveredFile(PathBuf::from(path)));
@@ -454,15 +453,15 @@ extern "C" fn perform_drag_operation(this: &Object, _: Sel, sender: id) -> BOOL 
   use std::path::PathBuf;
 
   let pb: Retained<NSPasteboard> = unsafe { msg_send![sender, draggingPasteboard] };
-  let filenames =
-    unsafe { NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) }.unwrap();
+  let classes = NSArray::from_slice(&[NSURL::class()]);
+  let Some(urls) = (unsafe { pb.readObjectsForClasses_options(&classes, None) }) else { return NO; };
 
-  for file in unsafe { Retained::cast_unchecked::<NSArray>(filenames) } {
-    let file = unsafe { Retained::cast_unchecked::<NSString>(file) };
-
-    unsafe {
-      let f = NSString::UTF8String(&file);
-      let path = CStr::from_ptr(f).to_string_lossy().into_owned();
+  for object in urls {
+    // AppKit returns instances of the requested NSURL class.
+    let file = unsafe { Retained::cast_unchecked::<NSURL>(object) };
+    if !file.isFileURL() { continue; }
+    if let Some(path) = file.path() {
+      let path = path.to_string();
 
       with_state(this, |state| {
         state.emit_event(WindowEvent::DroppedFile(PathBuf::from(path)));

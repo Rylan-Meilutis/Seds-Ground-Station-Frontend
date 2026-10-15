@@ -137,7 +137,7 @@ extern "C" fn application_will_terminate(_: &Object, _: Sel, _: id) {
 extern "C" fn application_open_urls(_: &Object, _: Sel, _: id, urls: &NSArray<NSURL>) {
   trace!("Trigger `application:openURLs:`");
 
-  let urls = unsafe {
+  let urls = {
     (0..urls.count())
       .flat_map(|i| url::Url::parse(&urls.objectAtIndex(i).absoluteString().unwrap().to_string()))
       .collect::<Vec<_>>()

@@ -1,7 +1,10 @@
 # GroundStation iOS scroll-update patch
 
 Source: crates.io Tao 0.34.8, retaining upstream licenses and source.
-Only src/platform_impl/ios/event_loop.rs is changed.
+The original functional patch changes src/platform_impl/ios/event_loop.rs.
+Additional macOS maintenance removes unused private helpers/state, uses typed
+NSEvent/NSWindow constants and NSURL pasteboard reads, and removes unnecessary
+unsafe blocks. The public windowing API and iOS tracking-mode behavior remain.
 
 The three control-flow observers use common modes, like Tao's existing event
 source and wakeup timer, so UITrackingRunLoopMode does not starve user events

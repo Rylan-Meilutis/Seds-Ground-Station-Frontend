@@ -29,10 +29,9 @@ mod messages_tab;
 mod network_topology_tab;
 mod notifications_tab;
 mod recording_download;
+mod recovery_status;
 pub(crate) mod prelude;
 mod stream_studio;
-#[cfg(test)]
-mod model_dashboard;
 pub mod types;
 mod vehicle_tab;
 pub mod version_page;
@@ -41,7 +40,6 @@ pub mod version_page;
 mod gps_apple;
 
 pub mod map_tab;
-pub mod state_tab;
 pub mod warnings_tab;
 
 use crate::app::Route;
@@ -415,10 +413,10 @@ fn old_connection_cleanup_cannot_remove_restarted_dashboard_pump() {
     // Installing the replacement drops the old sender and wakes the retiring
     // receiver. Its cleanup runs after the new channel has been installed.
     slot.replace(DashboardRuntimePump { generation: 2, sender: new_tx });
-    assert!(old_rx.try_next().unwrap().is_none());
+    assert!(matches!(old_rx.try_recv(), Err(futures_channel::mpsc::TryRecvError::Closed)));
     assert!(!retire_dashboard_runtime_pump(&mut slot, 1));
     slot.as_ref().unwrap().sender.unbounded_send(DashboardRuntimeEvent::Pump).unwrap();
-    assert!(matches!(new_rx.try_next().unwrap(), Some(DashboardRuntimeEvent::Pump)));
+    assert!(matches!(new_rx.try_recv(), Ok(DashboardRuntimeEvent::Pump)));
     assert!(retire_dashboard_runtime_pump(&mut slot, 2));
     assert!(slot.is_none());
 }

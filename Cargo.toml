@@ -9,6 +9,7 @@ repository = "https://github.com/Rylan-Meilutis/Seds-Ground-Station-Frontend"
 
 [patch.crates-io]
 tao = { path = "vendor-tao" }
+block = { path = "vendor-block" }
 
 [package.metadata.groundstation]
 ios-event-loop-patch = "Tao 0.34.8 common-mode observers; see vendor-tao/GROUNDSTATION-PATCH.md"

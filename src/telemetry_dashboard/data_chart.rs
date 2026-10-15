@@ -11,7 +11,6 @@
 //   charts_cache_reset_and_ingest(rows)
 //   charts_cache_ingest_row(row)
 //   charts_cache_get(data_type, width, height) -> ([d;8], y_min, y_max, span_min)
-//   charts_cache_get_channel_minmax(data_type, width, height) -> (mins, maxs)
 //
 // Y-axis:
 // - Expand immediately (never clip)
@@ -412,24 +411,6 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
             .collect::<Vec<_>>();
 
         (Rc::new(chunks), Rc::new(series_scales), span_min)
-    })
-}
-
-pub fn charts_cache_get_channel_minmax(
-    data_type: &str,
-    width: f32,
-    height: f32,
-) -> (Vec<Option<f32>>, Vec<Option<f32>>) {
-    CHARTS_CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        let chart_key = ChartSeriesKey::from_query(data_type);
-        c.ensure_interested_chart(chart_key);
-        if let Some(ch) = c.charts.get_mut(&chart_key) {
-            ch.build_if_needed(width, height);
-            (ch.chan_min.clone(), ch.chan_max.clone())
-        } else {
-            (Vec::new(), Vec::new())
-        }
     })
 }
 

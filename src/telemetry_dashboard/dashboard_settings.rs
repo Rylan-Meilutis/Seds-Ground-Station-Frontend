@@ -789,10 +789,6 @@ pub(crate) fn builtin_theme_presets() -> &'static [layout::ThemePresetDefinition
     &BUILTIN_THEME_CATALOG.presets
 }
 
-pub(crate) fn theme_preset_uses_backend_colors(preset: &str) -> bool {
-    matches!(preset, "backend" | "layout")
-}
-
 fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
     let raw = value.trim().trim_start_matches('#');
     match raw.len() {

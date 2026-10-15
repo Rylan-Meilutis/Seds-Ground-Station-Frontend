@@ -3571,6 +3571,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
 
                     }
+                    recovery_status::RecoveryStatus {}
                     div { style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                         media_tool_tab::MediaToolTab {
                             id: "gs26-crew-voice", path: "/radio?embedded=1", title: "Voice chat",
