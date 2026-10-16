@@ -24,7 +24,7 @@ pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> El
     let admin = auth::current_status()
         .roles
         .iter()
-        .any(|r| r == "stream_admin");
+        .any(|r| r == "stream_admin" || r == "admin");
     use_future(move || async move {
         if admin {
             match http_get_json::<Vec<Account>>("/api/stream-roles").await {

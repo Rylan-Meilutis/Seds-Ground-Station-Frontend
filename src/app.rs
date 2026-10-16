@@ -15,7 +15,9 @@ use dioxus_router::{Routable, Router, use_navigator};
 #[allow(unused_imports)]
 use crate::telemetry_dashboard::{self, UrlConfig};
 
+#[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
 const INLINE_MAPLIBRE_CSS: &str = include_str!("../static/vendor/maplibre-gl/maplibre-gl.css");
+#[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
 const INLINE_MAPLIBRE_JS: &str = include_str!("../static/vendor/maplibre-gl/maplibre-gl.js");
 const INLINE_GROUND_MAP_JS: &str = include_str!("../static/ground_map.js");
 

@@ -63,9 +63,8 @@ test('tab navigation hides overlay scrollbars without disabling scrolling', () =
     assert.match(source, /gs26-tab-nav::-webkit-scrollbar[^\n]+display:none/);
 });
 
-test('mission tools stay in the application without popup or top-navigation permission',()=>{
-    const source=fs.readFileSync(path.join(__dirname,'../src/telemetry_dashboard/live_stream_tab.rs'),'utf8');
-    assert.doesNotMatch(source,/target:\s*"_blank"/);
-    assert.match(source,/embedded_tool\.set\(Some\("\/radio"\)\)/);
-    assert.match(source,/"sandbox":"allow-scripts allow-same-origin allow-forms allow-downloads"/);
+test('embedded media grants scripts/forms/downloads without popup or top-navigation authority',()=>{
+    const source=fs.readFileSync(path.join(__dirname,'../src/telemetry_dashboard/media_tool_tab.rs'),'utf8');
+    assert.match(source,/"sandbox"\s*:\s*"allow-scripts allow-same-origin allow-forms allow-downloads"/);
+    assert.doesNotMatch(source,/allow-popups|allow-top-navigation/);
 });

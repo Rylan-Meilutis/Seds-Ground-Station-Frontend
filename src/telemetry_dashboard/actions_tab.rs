@@ -40,14 +40,23 @@ mod sequence_action_tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sender = crate::telemetry_dashboard::WsSender { tx };
         for expected in ["NitrogenTest", "StartFill"] {
-            let button = actions.iter().find(|button| button.cmd == expected).unwrap();
+            let button = actions
+                .iter()
+                .find(|button| button.cmd == expected)
+                .unwrap();
             sender.send_cmd(&button.cmd).unwrap();
             let packet: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
             assert_eq!(packet, serde_json::json!({"cmd": expected}));
-            assert!(rx.try_recv().is_err(), "one activation must send one command");
+            assert!(
+                rx.try_recv().is_err(),
+                "one activation must send one command"
+            );
         }
         drop(rx);
-        assert!(sender.send_cmd("StartFill").is_err(), "closed transports must report failure");
+        assert!(
+            sender.send_cmd("StartFill").is_err(),
+            "closed transports must report failure"
+        );
     }
 
     #[test]
@@ -56,7 +65,13 @@ mod sequence_action_tests {
         let mut actions = Vec::new();
         ensure_sequence_actions(&mut actions, &theme);
         assert_eq!(actions.len(), 5);
-        for cmd in ["StartFill", "PauseFill", "CancelFill", "NitrogenTest", "ValveSelfTest"] {
+        for cmd in [
+            "StartFill",
+            "PauseFill",
+            "CancelFill",
+            "NitrogenTest",
+            "ValveSelfTest",
+        ] {
             assert!(actions.iter().any(|action| action.cmd == cmd));
         }
         actions[0].label = "Custom self-test label".into();
@@ -271,20 +286,26 @@ pub fn ActionsTab(
     let mut auto_zero = use_signal(|| None::<bool>);
     let mut auto_zero_busy = use_signal(|| false);
     let mut auto_zero_message = use_signal(String::new);
-    use_effect(move || { spawn(async move {
-        match super::http_get_json::<serde_json::Value>("/api/auto_zero").await {
-            Ok(value) => auto_zero.set(value["enabled"].as_bool()),
-            Err(error) => auto_zero_message.set(format!("Automatic zero settings unavailable: {error}")),
-        }
-    }); });
+    use_effect(move || {
+        spawn(async move {
+            match super::http_get_json::<serde_json::Value>("/api/auto_zero").await {
+                Ok(value) => auto_zero.set(value["enabled"].as_bool()),
+                Err(error) => {
+                    auto_zero_message.set(format!("Automatic zero settings unavailable: {error}"))
+                }
+            }
+        });
+    });
     let mut self_test_confirmed = use_signal(|| false);
     let mut self_test_busy = use_signal(|| false);
     let mut self_test_message = use_signal(String::new);
     let mut gse_request_gate = use_signal(String::new);
+    let mut operational_status = use_signal(|| serde_json::Value::Null);
     use_future(move || async move {
         loop {
             let next = match super::http_get_json::<serde_json::Value>("/api/gse/status").await {
                 Ok(status) => {
+                    operational_status.set(status.clone());
                     if !*self_test_busy.read() {
                         if let Some(confirmed) = status["dry_self_test_confirmed"].as_bool() {
                             if *self_test_confirmed.read() && !confirmed {
@@ -305,10 +326,15 @@ pub fn ActionsTab(
                     ),
                     None => "Backend does not expose request-gate diagnostics; rebuild/restart it from current dev.".into(),
                 }
-                },
-                Err(error) => format!("Cannot read backend GSE gate: {error}"),
+                }
+                Err(error) => {
+                    operational_status.set(serde_json::json!({"unavailable":true}));
+                    format!("Cannot read backend GSE gate: {error}")
+                }
             };
-            if *gse_request_gate.read() != next { gse_request_gate.set(next); }
+            if *gse_request_gate.read() != next {
+                gse_request_gate.set(next);
+            }
             #[cfg(target_arch = "wasm32")]
             gloo_timers::future::TimeoutFuture::new(1000).await;
             #[cfg(not(target_arch = "wasm32"))]
@@ -396,6 +422,10 @@ pub fn ActionsTab(
             ",
             style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
+            if operational_status.read()["unavailable"].as_bool()==Some(true) {
+                p {role:"alert","Sequence and panel status unavailable"}
+            }
+            super::gse_panel::PhysicalPanelStatus {status:operational_status}
             label {
                 input { r#type: "checkbox", checked: auto_zero().unwrap_or(false),
                     disabled: auto_zero().is_none() || auto_zero_busy() || abort_only_mode,
@@ -411,12 +441,15 @@ pub fn ActionsTab(
                         });
                     }
                 }
-                " Automatically zero loadcells before Fill / during Launch countdown"
+                " Auto-zero before fill and launch"
             }
-            small { "Fill: skip capture when 200 recent samples are stable within ±0.8 kg. Otherwise collect 200 fresh samples; isolated outliers are ignored. Off preserves the existing tare. Offsets beyond ±0.8 kg require inspection and manual tare." }
+            super::gse_panel::ControlHelp {title:"automatic zero",paragraphs:vec![
+                "Fill uses 200 recent samples when stable within ±0.8 kg. Otherwise it captures 200 fresh samples and ignores isolated outliers.".into(),
+                "Turning this off preserves the existing tare. Offsets beyond ±0.8 kg require inspection and manual tare.".into()
+            ]}
             if !auto_zero_message().is_empty() { p { "{auto_zero_message}" } }
             if let Some(cfg) = fill_targets() {
-                label { "Fill percentage and automatic cutoff source: "
+                label { "Fill cutoff source: "
                     select {
                         value: "{cfg.fill_source}", disabled: fill_targets_busy() || abort_only_mode,
                         onchange: move |event| {
@@ -441,8 +474,10 @@ pub fn ActionsTab(
                 }
             }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
-                "All available actions are available all the time, use with caution as improper use \
-                can and will damage the system."
+                "Controls follow backend permissions and interlocks."
+            }
+            if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {
+                div {role:"alert",style:"padding:8px 10px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};","{error}"}
             }
             if abort_only_mode {
                 div {
@@ -485,7 +520,8 @@ pub fn ActionsTab(
                                         }self_test_busy.set(false);});
                                     }} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
                                     p {role:"status","{self_test_message}"}
-                                    p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}
+                                    super::gse_panel::QualificationStatus {status:operational_status,disabled:abort_only_mode}
+                                    details {summary {"Sequence diagnostics"} p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}}
                                 }
                             },
                             ActionLayoutRow::Spacer => rsx! {

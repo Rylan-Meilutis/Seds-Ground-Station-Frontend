@@ -19,6 +19,24 @@ fn default_pressure_step() -> f32 {
     50.0
 }
 #[component]
+pub(super) fn ControlHelp(title: String, paragraphs: Vec<String>) -> Element {
+    let mut open = use_signal(|| false);
+    rsx! {
+        button { r#type:"button",style:"min-height:44px;align-self:start;",onclick:move |_|open.set(true),"About {title}" }
+        if open() {
+            div {style:"position:fixed;inset:0;z-index:6100;background:#000b;display:grid;place-items:center;padding:16px;",
+                onkeydown:move |event| {if event.key()==Key::Escape {open.set(false);}},
+                div {role:"dialog","aria-modal":"true","aria-label":"{title}",
+                    style:"background:#122231;color:#edf3fa;border:1px solid #526579;border-radius:14px;padding:20px;width:min(100%,480px);max-height:80dvh;overflow:auto;box-sizing:border-box;display:grid;gap:12px;",
+                    h3 {style:"margin:0;","{title}"}
+                    for paragraph in paragraphs {p {style:"margin:0;line-height:1.5;","{paragraph}"}}
+                    button {r#type:"button",autofocus:true,style:"min-height:44px;",onclick:move |_|open.set(false),"Close help"}
+                }
+            }
+        }
+    }
+}
+#[component]
 pub(super) fn GroundChecklist() -> Element {
     let key = format!("{}_ground_checklist", super::dashboard_customization_key());
     let mut checked = use_signal(|| {
@@ -90,7 +108,7 @@ struct Status {
     #[serde(default)]
     valves: [Option<bool>; 5],
 }
-async fn delay() {
+pub(super) async fn delay() {
     #[cfg(target_arch = "wasm32")]
     gloo_timers::future::TimeoutFuture::new(500).await;
     #[cfg(not(target_arch = "wasm32"))]
@@ -263,9 +281,10 @@ pub(super) fn SelfTestPtOffset(disabled: bool, theme: ThemeConfig) -> Element {
                     oninput:move |event| {value.set(event.value());message.set("Unsaved PT limit.".into());}
                 }
             }
-            p { style:"margin:0;font-size:12px;color:{theme.text_muted};",
-                "Allowed pressure reading above or below zero with an empty, depressurized tank. This is a test acceptance limit, not a calibration offset."
-            }
+            ControlHelp {title:"empty-tank pressure limit",paragraphs:vec![
+                "Allowed pressure reading above or below zero with an empty, depressurized tank.".into(),
+                "This is a test acceptance limit, not a calibration offset. Save it before starting the valve self-test.".into()
+            ]}
             button {
                 disabled:disabled || *busy.read(),
                 onclick:move |_| {
@@ -295,6 +314,109 @@ pub(super) fn SelfTestPtOffset(disabled: bool, theme: ThemeConfig) -> Element {
                 if *busy.read() {"Please wait…"} else {"Save PT limit"}
             }
             p { role:"status", style:"margin:0;font-size:12px;", "{message}" }
+        }
+    }
+}
+
+/// Historical checks and live connectivity are deliberately displayed separately.
+#[component]
+pub(super) fn PhysicalPanelStatus(status: Signal<serde_json::Value>) -> Element {
+    let value = status.read();
+    let Some(panel) = value.get("physical_panel") else {
+        return rsx! {};
+    };
+    let controls = panel["controls"].as_array().cloned().unwrap_or_default();
+    let key = if panel["key_enabled"].as_bool() == Some(true) {
+        "Enabled"
+    } else {
+        "Locked"
+    };
+    rsx! {
+        details {class:"gs26-physical-panel",
+            summary {style:"cursor:pointer;min-height:44px;display:flex;align-items:center;","Physical panel · {key}"}
+            div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));gap:8px;",
+                for control in controls {
+                    {let enabled=control["enabled"].as_bool()==Some(true);
+                    let active=control["actuated"].as_bool();
+                    let blink=serde_json::from_value::<super::BlinkMode>(control["blink"].clone()).unwrap_or(super::BlinkMode::None);
+                    let animation=super::blink::action_animation_style(enabled,blink,active);
+                    let blinking=enabled && control["blink"].as_str().is_some_and(|s|s!="none");
+                    let state=if !enabled {"Locked"}else if blinking {"Blinking"}else if active==Some(true) {"Active"}else {"Ready"};
+                    let color=if !enabled {"#8390a0"}else if active==Some(true) {"#62d99c"}else {"#77bcff"};
+                    rsx! {
+                        div {style:"border:1px solid #526579;border-radius:8px;padding:10px;display:grid;gap:5px;min-width:0;",
+                            strong {"{control[\"physical\"].as_str().unwrap_or(\"Control\")}"}
+                            span {style:"overflow-wrap:anywhere;","{control[\"action\"].as_str().unwrap_or(\"Unknown\")}"}
+                            span {style:"color:{color};font-size:12px;{animation}","● {state}"}
+                        }
+                    }}
+                }
+            }
+            ControlHelp {title:"physical panel feedback",paragraphs:vec![
+                "Each tile shows the physical button label, its current mapped action and the backend's requested indicator state.".into(),
+                "This mirrors the panel mapping; it does not measure physical lamps or prove valve movement. Use fresh board confirmations for valve state.".into()
+            ]}
+        }
+    }
+}
+
+#[component]
+pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: bool) -> Element {
+    let mut confirm = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    let value = status.read().clone();
+    let Some(qualification) = value.get("qualification") else {
+        return rsx! {};
+    };
+    let fault = qualification["fault"].as_str().map(str::to_string);
+    let stable = value["topology_stable"].as_bool() == Some(true);
+    let can_reset = !disabled
+        && !*busy.read()
+        && auth::can_send_command("ValveSelfTest")
+        && value["request_gate"]["flight_state"]
+            .as_str()
+            .is_some_and(|s| matches!(s, "Startup" | "Idle"));
+    let qd_label = value["qd"].as_str().unwrap_or("Waiting for QD").to_string();
+    rsx! {
+        section {"aria-label":"Operational qualification",class:"gs26-qualification",
+            style:"padding:12px;border:1px solid #526579;border-radius:10px;display:grid;gap:12px;",
+            strong {"Operation checks"}
+            div {style:"display:flex;gap:10px;flex-wrap:wrap;",
+                for (key,label) in [("self_test","Valve test"),("nitrogen_test","Nitrogen test"),("fill_target","Fill target")] {
+                    span {style:"padding:6px 10px;border-radius:8px;background:#172b3a;color:#edf3fa;",
+                        if qualification[key].as_bool()==Some(true) {"✓ {label}"}else{"○ {label}"}
+                    }
+                }
+            }
+            if !stable {p {role:"status",style:"margin:0;color:#e6b85c;","Waiting for stable fill-system connections"}}
+            if let Some(fault)=fault {p {role:"alert",style:"margin:0;color:#ff8f8f;","Safety fault: {fault}. Recover to Idle and reset checks."}}
+            if let Some(error)=value["storage_error"].as_str() {p {role:"alert","Checks cannot be saved: {error}"}}
+            if value["launch_queued"].as_bool()==Some(true) {p {role:"status","Launch queued · {qd_label}"}}
+            button {style:"min-height:48px;justify-self:start;",disabled:!can_reset,onclick:move |_|confirm.set(true),"Reset operation checks"}
+            p {role:"status",style:"margin:0;","{message}"}
+            if *confirm.read() {
+                div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
+                    div {role:"dialog","aria-modal":"true","aria-label":"Reset operation checks",
+                        style:"background:#122231;color:#edf3fa;border:1px solid #526579;border-radius:14px;padding:20px;max-width:420px;display:grid;gap:16px;",
+                        h3 {style:"margin:0;","Reset operation checks?"}
+                        p {style:"margin:0;","Valve test, nitrogen test and fill qualification will be cleared. Outputs will not be actuated."}
+                        div {style:"display:flex;gap:12px;flex-wrap:wrap;",
+                            button {style:"min-height:48px;",disabled:*busy.read(),onclick:move |_|confirm.set(false),"Cancel"}
+                            button {style:"min-height:48px;",disabled:*busy.read(),onclick:move |_| {
+                                busy.set(true);
+                                spawn(async move {
+                                    match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/qualification/reset",&serde_json::json!({})).await {
+                                        Ok(_)=>{message.set("Operation checks reset".into());confirm.set(false);},
+                                        Err(error)=>message.set(error),
+                                    }
+                                    busy.set(false);
+                                });
+                            },"Confirm reset"}
+                        }
+                    }
+                }
+            }
         }
     }
 }

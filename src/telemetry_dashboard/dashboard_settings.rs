@@ -1241,6 +1241,15 @@ fn LaunchClockBadge(
     network_time: Signal<Option<NetworkTimeSync>>,
 ) -> Element {
     let fallback_tplus_anchor_ms = use_signal(|| None::<i64>);
+    let mut queued = use_signal(||false);
+    use_future(move ||async move {
+        loop {
+            let pending = http_get_json::<serde_json::Value>("/api/gse/status").await
+                .ok().is_some_and(|status|status["launch_queued"].as_bool()==Some(true));
+            queued.set(pending);
+            gse_panel::delay().await;
+        }
+    });
     {
         let launch_clock = launch_clock;
         let network_time = network_time;
@@ -1350,7 +1359,9 @@ fn LaunchClockBadge(
     };
 
     rsx! {
-        span { class: "gs26-launch-clock",
+        style {{"@keyframes gs26-queued-clock {50% {opacity:.35}} .gs26-launch-queued {animation:gs26-queued-clock 1s steps(2,start) infinite} @media(prefers-reduced-motion:reduce){.gs26-launch-queued{animation:none;outline:2px solid #e6b85c}}"}}
+        span { class: if *queued.read() {"gs26-launch-clock gs26-launch-queued"}else{"gs26-launch-clock"},
+            title:if *queued.read() {"Launch queued for QD acknowledgement and settling"}else{"Launch clock"},
             span { "({label}:" }
             span {
                 class: "gs26-launch-clock-value",

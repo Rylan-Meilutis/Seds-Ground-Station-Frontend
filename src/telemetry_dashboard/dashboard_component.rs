@@ -28,6 +28,8 @@ pub fn TelemetryDashboard() -> Element {
 /// Inner dashboard component that owns the live UI state and background tasks.
 fn TelemetryDashboardInner() -> Element {
     // Always valid; becomes “real” once outer publishes it.
+    let mut antenna_aiming = use_signal(|| false);
+    let mut admin_open = use_signal(||false);
     let alive = dashboard_alive();
     let _restored_cached_rows = use_signal(restore_cached_telemetry_rows_if_needed);
     let frontend_data_clear_epoch = frontend_data_clear_epoch();
@@ -2522,6 +2524,26 @@ fn TelemetryDashboardInner() -> Element {
         }
     };
 
+    // Keep hooks stable, but unmount all normal data views while aiming.
+    if *antenna_aiming.read() {
+        return rsx! { antenna_aiming::AntennaAiming {on_exit: move |_| antenna_aiming.set(false)} };
+    }
+
+    if *admin_open.read() {
+        return rsx! {admin_console::AdminConsole {
+            on_exit:move |_|admin_open.set(false),
+            on_navigate:move |page:String| {
+                let mut dashboard_edit_mode = dashboard_edit_mode;
+                admin_open.set(false);
+                match page.as_str() {
+                    "stream"=>active_main_tab.set(MainTab::StreamManager),
+                    "voice"=>active_main_tab.set(MainTab::CrewVoice),
+                    "views"=>{active_main_tab.set(MainTab::State);dashboard_edit_mode.set(true);},
+                    _=>{},
+                }
+            }
+        }};
+    }
     // MAIN UI
     rsx! {
             gps::GpsDriver {
@@ -2822,6 +2844,10 @@ fn TelemetryDashboardInner() -> Element {
                }}
              }}
              @media (max-width: 720px), (max-height: 780px) {{
+               .gs26-header-row button, .gs26-header-secondary button {{
+                 min-height:44px !important;
+                 min-width:44px;
+               }}
                .gs26-dashboard-shell {{
                  padding:5px 7px 7px 7px !important;
                }}
@@ -3008,7 +3034,7 @@ fn TelemetryDashboardInner() -> Element {
                                     "Connecting to GroundStation…"
                                 }
                             }
-                            button { onclick: move |_| reconnect_and_reload_ui(), "Reconnect now" }
+                            button { style:"min-height:44px;min-width:44px;flex-shrink:0;", onclick: move |_| reconnect_and_reload_ui(), "Reconnect now" }
                         }
                     }
                     if *streamer_mode.read() {
@@ -3034,6 +3060,10 @@ fn TelemetryDashboardInner() -> Element {
                         div {
                             class: "gs26-header-title",
                             style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
+                            button {class: "gs26-title-tab-toggle", style: "min-height:48px;", onclick: move |_| antenna_aiming.set(true), "Aim antenna"}
+                            if auth::current_status().roles.iter().any(|role|role=="admin") {
+                                button {class:"gs26-title-tab-toggle",style:"min-height:48px;",onclick:move |_|admin_open.set(true),"Admin"}
+                            }
                             button {
                                 class: "gs26-title-tab-toggle",
                                 "aria-expanded": (*tabs_expanded.read() || *dashboard_edit_mode.read()).to_string(),
@@ -3887,7 +3917,7 @@ fn send_cmd(cmd: &str) {
     };
     if let Some(message) = confirmation {
         let cmd = cmd.to_string();
-        let script = format!("window.confirm({})", serde_json::to_string(message).unwrap());
+        let script = format!("return window.confirm({});", serde_json::to_string(message).unwrap());
         spawn(async move {
             if dioxus::document::eval(&script).join::<bool>().await.unwrap_or(false) {
                 send_confirmed_cmd(&cmd);
@@ -3905,13 +3935,18 @@ fn send_confirmed_cmd(cmd: &str) {
         log!("[CMD] blocked cmd='{cmd}'");
         return;
     }
-    if let Some(sender) = WS_SENDER.read().clone()
-        && let Err(e) = sender.send_cmd(cmd)
-    {
-        log!("[CMD] ws send failed for '{cmd}': {e}");
-    } else {
-        log!("[CMD] dispatched cmd='{cmd}'");
-        schedule_action_policy_resync();
+    let sender = WS_SENDER.read().clone();
+    match sender.map_or_else(|| Err("disconnected".into()), |sender| sender.send_cmd(cmd)) {
+        Ok(()) => {
+            *COMMAND_SEND_ERROR.write() = None;
+            log!("[CMD] dispatched cmd='{cmd}'");
+            schedule_action_policy_resync();
+        }
+        Err(error) => {
+            log!("[CMD] send failed for '{cmd}': {error}");
+            *COMMAND_SEND_ERROR.write() = Some(format!("Command not sent: {error}"));
+            clear_command_feedback_latches();
+        }
     }
 }
 

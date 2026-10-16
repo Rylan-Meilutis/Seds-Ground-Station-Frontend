@@ -3,6 +3,7 @@
 // frontend/src/telemetry_dashboard/mod.rs
 
 mod actions_tab;
+mod admin_console;
 mod custom_dashboard;
 mod report_studio;
 mod calibration_tab;
@@ -40,6 +41,8 @@ pub mod version_page;
 mod gps_apple;
 
 pub mod map_tab;
+mod antenna_math;
+mod antenna_aiming;
 pub mod warnings_tab;
 
 use crate::app::Route;

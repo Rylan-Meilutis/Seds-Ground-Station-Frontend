@@ -562,6 +562,9 @@ impl WsSender {
 
         #[cfg(target_arch = "wasm32")]
         {
+            if self.ws.ready_state() != web_sys::WebSocket::OPEN {
+                return Err("connection is not open".into());
+            }
             self.ws
                 .send_with_str(&msg)
                 .map_err(|_| "ws send failed".to_string())?;
@@ -579,6 +582,7 @@ impl WsSender {
 }
 
 static WS_SENDER: GlobalSignal<Option<WsSender>> = Signal::global(|| None::<WsSender>);
+pub(super) static COMMAND_SEND_ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
 
 #[cfg(test)]
 mod dashboard_customization_tests {

@@ -170,7 +170,7 @@ pub fn can_edit_calibration() -> bool {
 pub fn can_manage_stream() -> bool {
     let status = current_status();
     if status.roles.iter().any(|r| r == "stream_viewer")
-        && !status.roles.iter().any(|r| r == "stream_admin")
+        && !status.roles.iter().any(|r| r == "stream_admin" || r == "admin")
     {
         return false;
     }
@@ -178,7 +178,7 @@ pub fn can_manage_stream() -> bool {
         && (status
             .roles
             .iter()
-            .any(|r| r == "stream_master" || r == "stream_admin")
+            .any(|r| r == "stream_master" || r == "stream_admin" || r == "admin")
             || status
                 .allowed_commands
                 .iter()
