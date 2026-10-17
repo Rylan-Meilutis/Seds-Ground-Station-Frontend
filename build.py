@@ -82,6 +82,10 @@ def _workspace_root(frontend_dir: Path) -> Path:
 
 
 def _target_root(frontend_dir: Path) -> Path:
+    configured = os.environ.get("CARGO_TARGET_DIR")
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else frontend_dir / path
     return _workspace_root(frontend_dir) / "target"
 
 
@@ -5267,6 +5271,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("Usage:")
     print(f"  {build_script}                         # default: clean Android build")
     print(f"  {build_script} frontend_web|web [debug] [max_size] [existing] [log=<path>]")
+    print(f"  {build_script} --target list|<name>|all|all,sims [--docker] [--release|--debug] [--no-sign] [--dry-run]")
     print(f"  {build_script} ios|ios_sim|macos|windows|android|candroid|linux [debug] [existing] [no_sign] [log=<path>]")
     print(f"  {build_script} android [apk|aab] [debug] [existing] [no_sign] [log=<path>]")
     print("")
@@ -5343,6 +5348,9 @@ def print_usage(exit_code: int = 1) -> None:
 
 def main() -> None:
     raw_args = [a.strip() for a in sys.argv[1:]]
+    from scripts.build_targets import handle_target_args
+    if handle_target_args(raw_args, _resolve_frontend_dir(), build_frontend, package_ios_ipa_with_script):
+        return
     if not raw_args:
         raw_args = ["candroid"]
     elif any(a in {"-h", "--help", "help"} for a in raw_args):

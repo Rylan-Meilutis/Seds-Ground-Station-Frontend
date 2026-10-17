@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::network_topology_tab::collect_endpoint_rows;
 use super::types::{
-    BoardStatusEntry, FlightState, NetworkTopologyMsg, NetworkTopologyNodeKind,
+    FlightState, NetworkTopologyMsg, NetworkTopologyNodeKind,
     NetworkTopologyStats, NetworkTopologyStatus, display_flight_state,
 };
 use super::{
@@ -19,7 +19,6 @@ use crate::telemetry_dashboard::map_tab::{format_elevation, format_precise_dista
 pub fn DetailedTab(
     metrics: Signal<FrontendNetworkMetrics>,
     ws_connected: bool,
-    board_status: Signal<Vec<BoardStatusEntry>>,
     network_topology: Signal<NetworkTopologyMsg>,
     flight_state: Signal<FlightState>,
     rocket_gps: Signal<Option<(f64, f64)>>,
@@ -34,7 +33,6 @@ pub fn DetailedTab(
     cache_stats: Vec<(String, String)>,
     theme: ThemeConfig,
 ) -> Element {
-    let board_age_now_ms = super::connection_status_tab::use_board_age_clock();
     use_effect(move || {
         js_eval(
             r#"
@@ -84,14 +82,10 @@ pub fn DetailedTab(
         );
     });
     let metrics_snapshot = metrics.read().clone();
+    let stream_connected = ws_connected;
     let ws_connected = metrics_snapshot.ws_connected || ws_connected;
-    let boards = board_status.read().clone();
-    let seen_boards = boards
-        .iter()
-        .filter(|board| board.seen)
-        .cloned()
-        .collect::<Vec<_>>();
     let topology = network_topology.read().clone();
+    let seen_boards = &topology.health;
     let network_time_snapshot = *network_time.read();
     let visible_topology_nodes = visible_topology_nodes(&topology.nodes);
     let visible_topology_links = collapse_visible_links(&topology.nodes, &topology.links);
@@ -140,11 +134,11 @@ pub fn DetailedTab(
         .count();
     let max_board_age_ms = seen_boards
         .iter()
-        .filter_map(|board| board.current_age_ms(board_age_now_ms))
+        .map(|board| board.age_ms)
         .max();
     let min_board_age_ms = seen_boards
         .iter()
-        .filter_map(|board| board.current_age_ms(board_age_now_ms))
+        .map(|board| board.age_ms)
         .min();
     let avg_bytes_per_msg = if metrics_snapshot.ws_messages_total > 0 {
         Some(metrics_snapshot.ws_bytes_total as f64 / metrics_snapshot.ws_messages_total as f64)
@@ -445,38 +439,11 @@ pub fn DetailedTab(
 
             div { style: "display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(min(100%, 340px), 1fr)); align-items:start; width:100%;",
                 div { style: "display:flex; flex-direction:column; gap:14px; min-width:0;",
-                    div { style: "{section_style(&theme)}",
-                    h3 { style: "{section_title_style(&theme)}", "Board Latency Detail" }
-                    div { style: "width:100%; overflow-x:auto;",
-                    table { style: "{table_style()}",
-                        thead {
-                            tr {
-                                th { style: "{th_style(&theme)}", "Board" }
-                                th { style: "{th_style(&theme)}", "Sender" }
-                                th { style: "{th_style(&theme)}", "Seen" }
-                                th { style: "{th_style(&theme)}", "Age" }
-                                th { style: "{th_style(&theme)}", "Last Seen" }
-                            }
-                        }
-                        tbody {
-                            for board in seen_boards.iter() {
-                                tr {
-                                    td { style: "{td_style(&theme)}", "{board.display_name()}" }
-                                    td { style: "{td_style_mono(&theme)}", "{board.sender_id}" }
-                                    td { style: "{td_style(&theme)}", "yes" }
-                                    td { style: "{td_style_mono(&theme)}", "{opt_i64_ms(board.current_age_ms(board_age_now_ms).map(|v| v.min(i64::MAX as u64) as i64))}" }
-                                    td { style: "{td_style_mono(&theme)}", "{board.last_seen_ms.map(|ts| format_timestamp_ms_clock(ts as i64)).unwrap_or_else(|| \"--\".to_string())}" }
-                                }
-                            }
-                            if seen_boards.is_empty() {
-                                tr {
-                                    td { style: "{td_style(&theme)}", colspan: "5", "No boards have been observed yet." }
-                                }
-                            }
-                        }
+                    super::network_health::NetworkHealthSection {
+                        rows: topology.health.clone(), ws_connected: stream_connected,
+                        generated_ms: topology.generated_ms,
+                        simulated: topology.simulated, theme: theme.clone(),
                     }
-                    }
-                }
                     div { style: "{section_style(&theme)}",
                     h3 { style: "{section_title_style(&theme)}", "Board Routes" }
                     div { style: "width:100%; overflow-x:auto;",

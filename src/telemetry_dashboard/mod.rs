@@ -12,6 +12,7 @@ pub mod data_chart;
 mod accel_display_filter;
 pub mod data_tab;
 mod detailed_tab;
+mod network_health;
 pub mod errors_tab;
 mod firmware_update_tab;
 mod gps;

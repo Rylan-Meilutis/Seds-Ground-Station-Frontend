@@ -420,3 +420,18 @@ The current suite covers layout parsing/validation, sender-aware chart series, l
 - Streaming notes: [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md)
 - Minimal layout example: [`docs/api-examples/layout.minimal.json`](docs/api-examples/layout.minimal.json)
 - WebSocket examples: [`docs/api-examples/websocket-messages.json`](docs/api-examples/websocket-messages.json)
+
+### Explicit targets and Docker builds
+
+```sh
+python3 build.py --target list
+python3 build.py --target web,linux-arm64 --docker --release
+python3 build.py --target android --docker --package-type apk
+python3 build.py --target all --no-sign
+python3 build.py --target all,sims --docker --no-sign
+python3 build.py --target web,linux --docker --dry-run
+```
+
+`all` selects every listed device/desktop/web target; `all,sims` adds iOS and Android simulator builds. Builds run sequentially, retain per-target output in `artifacts/<target>`, and report failures together. These are builds, not simulator launches or device installs.
+
+Docker provides reproducible web, Linux x86-64/ARM64 and Android builders using `Dockerfile.builder`. Docker Buildx and cross-architecture emulation are required when the builder architecture differs from the host. Native macOS/iOS targets require macOS and Xcode; Windows requires a Windows worker with MSVC/WebView2 tooling. Those targets use the native worker even with `--docker`; unsupported host targets fail explicitly, so `all` across every OS requires the corresponding workers. `--no-sign` leaves iOS as an unsigned app bundle. `--docker-image` selects an existing compatible Linux/Android builder. Signing credentials are not copied into images.

@@ -3638,7 +3638,6 @@ fn TelemetryDashboardInner() -> Element {
                                 DetailedTab {
                                     metrics: frontend_network_metrics,
                                     ws_connected: *WS_CONNECTED_SIGNAL.read(),
-                                    board_status: board_status,
                                     network_topology: network_topology,
                                     flight_state: flight_state,
                                     rocket_gps: rocket_gps,
