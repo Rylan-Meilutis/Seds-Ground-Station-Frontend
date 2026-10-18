@@ -23,6 +23,26 @@ class TargetTests(unittest.TestCase):
         self.assertIn("type=bind,source=/tmp/UI with spaces,target=/work", commands[1])
         self.assertNotIn("--docker", commands[1][commands[1].index("build.py")+1:])
         self.assertIn("CARGO_TARGET_DIR=/work/target/docker/linux-arm64", commands[1])
+    def test_web_builder_uses_native_architecture(self):
+        args = targets.parse_args(["--docker", "--target", "web"])
+        for host, expected in [("arm64", "arm64"), ("aarch64", "arm64"), ("x86_64", "amd64")]:
+            with self.subTest(host=host), patch.object(targets.platform, "machine", return_value=host):
+                commands = targets.docker_commands(Path("/tmp"), "web", args)
+                self.assertIn("linux/" + expected, commands[0])
+                self.assertIn("linux/" + expected, commands[1])
+                self.assertIn("seds-gs-ui-builder:base-" + expected, commands[1])
+
+    def test_container_login_shell_preserves_inherited_rust_tools(self):
+        import os
+        spec = importlib.util.spec_from_file_location("frontend_build_env", Path(__file__).parents[1] / "build.py")
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        with patch.dict(os.environ, {"PATH": "/usr/local/cargo/bin:/usr/bin", "CARGO_HOME": "/opt/cargo"}), patch.object(build, "is_container", return_value=True), patch.object(build, "_bash_login_path", return_value="/usr/bin:/bin"), patch.object(build, "_npm_global_bin_dir", return_value=None):
+            env = build._dx_bundle_env(Path("/tmp"))
+        self.assertIn("/usr/local/cargo/bin", env["PATH"].split(os.pathsep))
+        self.assertIn("/opt/cargo/bin", env["PATH"].split(os.pathsep))
+        self.assertEqual(env["NO_DOWNLOADS"], "1")
+
     def test_list_does_not_build(self):
         builder = Mock()
         self.assertTrue(targets.handle_target_args(["--target", "list"], Path("/tmp"), builder, Mock()))

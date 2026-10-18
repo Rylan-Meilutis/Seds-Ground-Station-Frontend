@@ -64,11 +64,13 @@ def parse_args(argv):
 
 def docker_commands(root, name, args):
     target = TARGETS[name]
-    image = args.docker_image or f"seds-gs-ui-builder:{target.docker}-{target.container_arch}"
+    # Wasm output is architecture independent; avoid emulating the build tools.
+    arch = ("arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64") if target.platform == "web" else target.container_arch
+    image = args.docker_image or f"seds-gs-ui-builder:{target.docker}-{arch}"
     commands = []
     if not args.docker_image:
-        commands.append(["docker", "buildx", "build", "--load", "--platform", f"linux/{target.container_arch}", "--target", target.docker, "-f", str(root / "Dockerfile.builder"), "-t", image, str(root)])
-    commands.append(["docker", "run", "--rm", "--platform", f"linux/{target.container_arch}",
+        commands.append(["docker", "buildx", "build", "--load", "--platform", f"linux/{arch}", "--target", target.docker, "-f", str(root / "Dockerfile.builder"), "-t", image, str(root)])
+    commands.append(["docker", "run", "--rm", "--platform", f"linux/{arch}",
         "--user", f"{getattr(os, 'getuid', lambda: 1000)()}:{getattr(os, 'getgid', lambda: 1000)()}",
         "--mount", f"type=bind,source={root},target=/work", "--workdir", "/work",
         "--env", "HOME=/tmp/ui-home", "--env", "CARGO_HOME=/opt/cargo",

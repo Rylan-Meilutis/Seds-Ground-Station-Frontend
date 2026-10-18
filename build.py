@@ -3943,7 +3943,7 @@ def _prune_stale_hashed_assets(frontend_dir: Path) -> None:
 def _dx_bundle_env(frontend_dir: Path) -> dict[str, str]:
     """
     Construct an environment that:
-      - in containers: uses PATH from `bash -lc` so we match profile scripts
+      - preserves inherited tool paths and appends container login-shell paths
       - forces Dioxus CLI to *not download tools* (NO_DOWNLOADS=1)
       - points dx/wasm toolchains at your already-installed wasm-opt
     """
@@ -3952,10 +3952,10 @@ def _dx_bundle_env(frontend_dir: Path) -> dict[str, str]:
     if is_container():
         bash_path = _bash_login_path(frontend_dir)
         if bash_path:
-            base_path = bash_path
+            base_path = os.pathsep.join([base_path, bash_path])
 
     extra_paths = [
-        str(Path.home() / ".cargo" / "bin"),
+        str(Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))) / "bin"),
         str(frontend_dir / "node_modules" / ".bin"),
         "/usr/local/sbin",
         "/usr/local/bin",
