@@ -435,3 +435,24 @@ python3 build.py --target web,linux --docker --dry-run
 `all` selects every listed device/desktop/web target; `all,sims` adds iOS and Android simulator builds. Builds run sequentially, retain per-target output in `artifacts/<target>`, and report failures together. These are builds, not simulator launches or device installs.
 
 Docker provides reproducible web, Linux x86-64/ARM64 and Android builders using `Dockerfile.builder`. Web builds use the host architecture because their Wasm output is architecture independent. Docker Buildx and cross-architecture emulation are required when the builder architecture differs from the host. Native macOS/iOS targets require macOS and Xcode; Windows requires a Windows worker with MSVC/WebView2 tooling. Those targets use the native worker even with `--docker`; unsupported host targets fail explicitly, so `all` across every OS requires the corresponding workers. `--no-sign` leaves iOS as an unsigned app bundle. `--docker-image` selects an existing compatible Linux/Android builder. Signing credentials are not copied into images.
+
+### Final signed releases
+
+```bash
+python3 build.py --target macos --final
+python3 build.py --target ios --final
+python3 build.py --target android --final --package-type aab
+```
+
+`--final` requires a release build and conflicts with `--debug` and `--no-sign`.
+macOS signs with Developer ID, submits to Apple notarization, staples the ticket,
+and verifies Gatekeeper acceptance. `NOTARY_PROFILE` overrides selection; otherwise
+an explicitly configured Apple ID/team/password is used, or the sole stored
+notarytool profile is detected from Keychain attributes (no password enumeration).
+If several profiles exist, select one explicitly. iOS creates and verifies a
+distribution-signed IPA with its matching profile. Android requires the release
+keystore and signs/verifies the selected APK or AAB, including after Docker builds;
+signing happens on the host and passwords are passed through the child environment.
+Simulator targets skip final signing. Other targets build normally. Existing
+platform signing defaults remain available without `--final`; the flag additionally
+requires the complete distribution workflow. It does not upload to app stores.

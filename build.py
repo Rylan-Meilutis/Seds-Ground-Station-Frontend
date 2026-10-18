@@ -98,7 +98,8 @@ def _append_log(line: str) -> None:
 
 def _cmd_to_str(cmd: object) -> str:
     if isinstance(cmd, (list, tuple)):
-        return " ".join(str(x) for x in cmd)
+        parts = [str(x) for x in cmd]
+        return " ".join("<redacted>" if i and parts[i - 1] == "--password" else x for i, x in enumerate(parts))
     return str(cmd)
 
 
@@ -248,7 +249,7 @@ def _contextual_failure_hints(cmd_s: str, text: str) -> list[str]:
 
 def run(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> None:
     cmd = [str(part) for part in cmd]
-    cmd_line = f"Running: {' '.join(cmd)} (cwd={cwd})"
+    cmd_line = f"Running: {_cmd_to_str(cmd)} (cwd={cwd})"
     print(cmd_line)
     _append_log(cmd_line + "\n")
     merged = os.environ.copy()
@@ -295,7 +296,7 @@ def run_filtered(
         line_filter: Optional[Callable[[str], list[str]]] = None,
 ) -> None:
     cmd = [str(part) for part in cmd]
-    cmd_line = f"Running: {' '.join(cmd)} (cwd={cwd})"
+    cmd_line = f"Running: {_cmd_to_str(cmd)} (cwd={cwd})"
     print(cmd_line)
     _append_log(cmd_line + "\n")
     merged = os.environ.copy()
@@ -361,7 +362,7 @@ def run_filtered(
 
 def run_capture(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> str:
     cmd = [str(part) for part in cmd]
-    print(f"Running: {' '.join(cmd)} (cwd={cwd})")
+    print(f"Running: {_cmd_to_str(cmd)} (cwd={cwd})")
     out = subprocess.check_output(cmd, cwd=cwd, env=(os.environ | (env or {})))
     return out.decode("utf-8", errors="replace")
 
@@ -3297,6 +3298,81 @@ def verify_macos_distribution(frontend_dir: Path, target: Path) -> None:
         run(["spctl", "--assess", "--type", "execute", "-vv", str(target)], cwd=frontend_dir)
 
 
+def _notarization_auth(frontend_dir: Path) -> list[str]:
+    profile = os.environ.get("NOTARY_PROFILE", "").strip()
+    if profile:
+        return ["--keychain-profile", profile]
+    apple_id = os.environ.get("NOTARY_APPLE_ID", "").strip()
+    team_id = os.environ.get("NOTARY_TEAM_ID", "").strip()
+    password = os.environ.get("NOTARY_PASSWORD", "").strip()
+    if apple_id and team_id and password:
+        return ["--apple-id", apple_id, "--team-id", team_id, "--password", password]
+    if apple_id or team_id or password:
+        raise RuntimeError("Set all of NOTARY_APPLE_ID, NOTARY_TEAM_ID and NOTARY_PASSWORD, or use NOTARY_PROFILE.")
+    # Query attributes only, never credential data. Includes the data-protection
+    # Keychain used by notarytool as well as legacy file-based keychains.
+    result = subprocess.run(["xcrun", "swift", str(_workspace_root(frontend_dir) / "scripts/notary_profiles.swift")],
+                            cwd=frontend_dir, capture_output=True, text=True, check=True)
+    profiles = sorted(set(json.loads(result.stdout)))
+    if len(profiles) == 1:
+        print("Using the sole stored notarization profile.")
+        return ["--keychain-profile", profiles[0]]
+    if profiles:
+        raise RuntimeError("Multiple notarization profiles found; select one using NOTARY_PROFILE.")
+    raise RuntimeError("No notarization profile found. Store credentials with xcrun notarytool store-credentials, or set NOTARY_PROFILE.")
+
+
+def _require_android_release_settings(frontend_dir: Path) -> dict[str, str]:
+    settings = _android_signing_settings(frontend_dir)
+    if not Path(settings["ANDROID_KEYSTORE_PATH"]).is_file():
+        raise RuntimeError("--final requires an Android release keystore (ANDROID_KEYSTORE_PATH).")
+    missing = [key for key in ("ANDROID_KEY_ALIAS", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_PASSWORD") if not settings[key]]
+    if missing:
+        raise RuntimeError("--final requires Android release signing credentials: " + ", ".join(missing))
+    return settings
+
+
+def _finalize_android_release(frontend_dir: Path, package_type: str) -> None:
+    settings = _require_android_release_settings(frontend_dir)
+    source = dist_dir(frontend_dir) / f"{ANDROID_APP_NAME}.{package_type}"
+    if not source.is_file():
+        raise FileNotFoundError(f"Android artifact not found: {source}")
+    # Passwords are referenced through the child environment, never command text.
+    env = {"GS_ANDROID_STORE_PASSWORD": settings["ANDROID_KEYSTORE_PASSWORD"],
+           "GS_ANDROID_KEY_PASSWORD": settings["ANDROID_KEY_PASSWORD"], "LC_ALL": "C"}
+    with tempfile.TemporaryDirectory(prefix="final-sign-", dir=source.parent) as temp:
+        signed = Path(temp) / source.name
+        if package_type == "apk":
+            sdk = _detect_android_sdk_root()
+            candidates = sorted((sdk / "build-tools").glob("*/apksigner")) if sdk else []
+            signer = shutil.which("apksigner") or (str(candidates[-1]) if candidates else None)
+            if not signer:
+                raise RuntimeError("Android SDK apksigner is required for --final APK signing.")
+            run([signer, "sign", "--ks", settings["ANDROID_KEYSTORE_PATH"], "--ks-key-alias", settings["ANDROID_KEY_ALIAS"],
+                 "--ks-pass", "env:GS_ANDROID_STORE_PASSWORD", "--key-pass", "env:GS_ANDROID_KEY_PASSWORD",
+                 "--out", str(signed), str(source)], cwd=frontend_dir, env=env)
+            run([signer, "verify", "--verbose", str(signed)], cwd=frontend_dir, env=env)
+        else:
+            run(["jarsigner", "-keystore", settings["ANDROID_KEYSTORE_PATH"], "-storetype", settings["ANDROID_KEYSTORE_TYPE"],
+                 "-storepass:env", "GS_ANDROID_STORE_PASSWORD", "-keypass:env", "GS_ANDROID_KEY_PASSWORD",
+                 "-signedjar", str(signed), str(source), settings["ANDROID_KEY_ALIAS"]], cwd=frontend_dir, env=env)
+            verification = run_capture(["jarsigner", "-verify", str(signed)], cwd=frontend_dir, env=env)
+            if "jar verified." not in verification or "unsigned entries" in verification:
+                raise RuntimeError("Android bundle signature verification failed.")
+        signed.replace(source)
+
+
+def finalize_release(frontend_dir: Path, platform_name: str, package_type: str, *, prepare: bool) -> None:
+    if prepare:
+        if platform_name == "macos": _notarization_auth(frontend_dir)
+        elif platform_name == "android": _require_android_release_settings(frontend_dir)
+        elif platform_name == "ios": ios_distribution_mobileprovision_path(frontend_dir)
+        return
+    if platform_name == "macos": notarize_macos(frontend_dir)
+    elif platform_name == "android": _finalize_android_release(frontend_dir, package_type)
+    # Physical iOS builds already package and verify their distribution IPA.
+
+
 def notarize_macos(frontend_dir: Path) -> None:
     if platform.system() != "Darwin":
         print("Error: macOS notarization requires macOS.", file=sys.stderr)
@@ -3315,24 +3391,13 @@ def notarize_macos(frontend_dir: Path) -> None:
         identity = _pick_codesign_identity(frontend_dir, cert_regex, cert_pick)
         sign_macos_dmg(frontend_dir, target, identity)
 
-    profile = os.environ.get("NOTARY_PROFILE", "").strip()
-    apple_id = os.environ.get("NOTARY_APPLE_ID", "").strip()
-    team_id = os.environ.get("NOTARY_TEAM_ID", "").strip()
-    password = os.environ.get("NOTARY_PASSWORD", "").strip()
-
-    auth_args: list[str]
-    if profile:
-        auth_args = ["--keychain-profile", profile]
-    elif apple_id and team_id and password:
-        auth_args = ["--apple-id", apple_id, "--team-id", team_id, "--password", password]
-    else:
-        raise RuntimeError(
-            "Missing notarization credentials. Set NOTARY_PROFILE or "
-            "NOTARY_APPLE_ID + NOTARY_TEAM_ID + NOTARY_PASSWORD."
-        )
+    auth_args = _notarization_auth(frontend_dir)
 
     print(f"Notarizing macOS artifact: {target.name}")
-    run(["xcrun", "notarytool", "submit", str(target), "--wait", *auth_args], cwd=frontend_dir)
+    try:
+        run(["xcrun", "notarytool", "submit", str(target), "--wait", *auth_args], cwd=frontend_dir)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Notarization submission failed (exit {error.returncode}).") from None
     run(["xcrun", "stapler", "staple", str(target)], cwd=frontend_dir)
     verify_macos_distribution(frontend_dir, target)
 
@@ -5271,7 +5336,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("Usage:")
     print(f"  {build_script}                         # default: clean Android build")
     print(f"  {build_script} frontend_web|web [debug] [max_size] [existing] [log=<path>]")
-    print(f"  {build_script} --target list|<name>|all|all,sims [--docker] [--release|--debug] [--no-sign] [--dry-run]")
+    print(f"  {build_script} --target list|<name>|all|all,sims [--docker] [--release|--debug] [--final|--no-sign] [--dry-run]")
     print(f"  {build_script} ios|ios_sim|macos|windows|android|candroid|linux [debug] [existing] [no_sign] [log=<path>]")
     print(f"  {build_script} android [apk|aab] [debug] [existing] [no_sign] [log=<path>]")
     print("")
@@ -5325,7 +5390,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("  IOS_DEVELOPMENT_MOBILEPROVISION=...   # physical-device deploy provisioning profile")
     print("  IOS_DISTRIBUTION_MOBILEPROVISION=...  # distribution IPA provisioning profile")
     print("  MACOS_ENTITLEMENTS=...            # optional entitlements file for macOS codesign")
-    print("  NOTARY_PROFILE=...                # notarytool keychain profile")
+    print("  NOTARY_PROFILE=...                # optional if exactly one stored profile exists")
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")
     print("  NOTARY_TEAM_ID=...                # notarytool team ID")
     print("  NOTARY_PASSWORD=...               # notarytool app-specific password")
@@ -5349,7 +5414,7 @@ def print_usage(exit_code: int = 1) -> None:
 def main() -> None:
     raw_args = [a.strip() for a in sys.argv[1:]]
     from scripts.build_targets import handle_target_args
-    if handle_target_args(raw_args, _resolve_frontend_dir(), build_frontend, package_ios_ipa_with_script):
+    if handle_target_args(raw_args, _resolve_frontend_dir(), build_frontend, package_ios_ipa_with_script, finalize_release):
         return
     if not raw_args:
         raw_args = ["candroid"]

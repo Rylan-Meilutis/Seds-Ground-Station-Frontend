@@ -53,11 +53,13 @@ def parse_args(argv):
     p.add_argument("--docker-image", help="Use an existing compatible builder image instead of building the supplied Dockerfile.")
     p.add_argument("--release", action="store_true", help="Optimized build (the default).")
     p.add_argument("--debug", action="store_true", help="Build debug artifacts.")
+    p.add_argument("--final", action="store_true", help="Finalize release artifacts: macOS notarization, iOS distribution IPA, Android release-key signing. No store uploads.")
     p.add_argument("--no-sign", action="store_true", help="Skip Apple signing; iOS produces an unsigned app bundle.")
     p.add_argument("--max-size", action="store_true", help="Use maximum-size optimization from the existing builder.")
     p.add_argument("--package-type", choices=("apk", "aab"), default="apk", help="Android package format (default: apk).")
     p.add_argument("--dry-run", action="store_true", help="Print build plans without modifying files or starting containers.")
     args = p.parse_args(argv)
+    if args.final and (args.debug or args.no_sign): p.error("--final cannot be combined with --debug or --no-sign")
     if args.debug and args.release: p.error("choose --debug or --release")
     if args.docker_image and not args.docker: p.error("--docker-image requires --docker")
     return args
@@ -91,8 +93,10 @@ def native_requirement(target):
         if not target.triple.startswith(host): return "requires the matching Linux architecture; add --docker (with Docker emulation enabled)"
     return None
 
-def handle_target_args(argv, root, build_frontend, package_ios):
-    if not any(a in {"--docker", "--list-targets", "--target"} or a.startswith("--target=") for a in argv): return False
+def handle_target_args(argv, root, build_frontend, package_ios, finalize_release=None):
+    if "--final" in argv and argv and argv[0] in TARGETS:
+        argv = ["--target", argv[0], *argv[1:]]
+    if not any(a in {"--docker", "--list-targets", "--target", "--final"} or a.startswith("--target=") for a in argv): return False
     if argv and argv[0] == "build": argv = argv[1:]
     args = parse_args(argv)
     if args.list_targets or args.target == "list":
@@ -114,6 +118,10 @@ def handle_target_args(argv, root, build_frontend, package_ios):
             failures.append(name)
             continue
         try:
+            final = args.final and not target.simulator and target.platform in {"macos", "ios", "android"}
+            if final and not args.dry_run:
+                if finalize_release is None: raise RuntimeError("Release finalizer is unavailable")
+                finalize_release(root, target.platform, args.package_type, prepare=True)
             if container:
                 for command in docker_commands(root, name, args):
                     print(shlex.join(command), flush=True)
@@ -127,11 +135,15 @@ def handle_target_args(argv, root, build_frontend, package_ios):
                     sign_macos=not args.no_sign)
                 if target.platform == "ios" and not target.simulator and not args.no_sign:
                     package_ios(root, sign_kind="distribution", debug_mode=args.debug)
+            if final:
+                if args.dry_run: print(f"Finalize {target.platform}: distribution signing/verification" + (" + notarization/stapling/Gatekeeper" if target.platform == "macos" else ""))
+                else: finalize_release(root, target.platform, args.package_type, prepare=False)
+            if not args.dry_run:
                 artifact = root / "artifacts" / name
                 artifact.mkdir(parents=True, exist_ok=True)
                 if (root / "dist").exists(): shutil.copytree(root / "dist", artifact / "dist", dirs_exist_ok=True)
                 print(f"Artifacts: {artifact}")
-        except (OSError, subprocess.CalledProcessError, SystemExit) as error:
+        except (OSError, RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
             print(f"FAILED {name}: {error}", file=sys.stderr)
             failures.append(name)
     if failures: raise SystemExit("Targets failed/unavailable: " + ", ".join(failures))
