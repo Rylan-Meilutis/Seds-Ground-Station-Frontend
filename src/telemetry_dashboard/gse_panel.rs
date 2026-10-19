@@ -420,3 +420,38 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
         }
     }
 }
+
+/// Remains available while aborted, including when normal sequence controls lock.
+#[component]
+pub(super) fn ClearGseAbort() -> Element {
+    let mut confirming = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    rsx! {
+        div { style: "display:grid;gap:8px;justify-items:start;",
+            button {
+                r#type:"button",
+                disabled: *busy.read() || !auth::can_send_command("ValveSelfTest"),
+                onclick: move |_| confirming.set(true),
+                "Clear GSE abort"
+            }
+            if *confirming.read() {
+                p { style:"margin:0;max-width:48ch;", "Confirm the system is safe. This returns GroundStation to Idle and resets operation checks. No outputs are commanded. Fully power-cycle locally aborted boards separately." }
+                div { style:"display:flex;gap:8px;flex-wrap:wrap;",
+                    button { r#type:"button", disabled:*busy.read(), onclick:move |_| {
+                        busy.set(true);
+                        spawn(async move {
+                            match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/abort/clear", &serde_json::json!({})).await {
+                                Ok(_) => {confirming.set(false);message.set("GSE abort cleared. Repeat operation checks before filling.".into());},
+                                Err(error) => message.set(error),
+                            }
+                            busy.set(false);
+                        });
+                    }, "Confirm clear abort" }
+                    button {r#type:"button",disabled:*busy.read(),onclick:move |_|confirming.set(false),"Cancel"}
+                }
+            }
+            if !message.read().is_empty() {p {role:"status",style:"margin:0;","{message}"}}
+        }
+    }
+}

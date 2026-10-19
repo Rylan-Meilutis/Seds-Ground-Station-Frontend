@@ -3631,6 +3631,9 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::State => rsx! {
                                 div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
                                     custom_dashboard::CustomDashboard {theme:theme.clone()}
+                                    if *ground_station_view.read() && auth::can_view_actions() && flight_state.read().as_str() == "Aborted" {
+                                        gse_panel::ClearGseAbort {}
+                                    }
                                     if *ground_station_view.read() && auth::can_view_actions() && gse_panel::ground_visible(&flight_state.read()) {
                                         gse_panel::GsePanel {action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false}
                                     }
