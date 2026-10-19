@@ -189,7 +189,42 @@ pub fn AntennaAiming(on_exit: EventHandler<()>) -> Element {
         .and_then(|a| a.elevation_deg)
         .zip(measured.and_then(|m| m.elevation_deg))
         .and_then(|(a, m)| number(&pitch_trim.read()).map(|trim| a - m - trim));
-    let hpos = 50.0 + horizontal.unwrap_or(0.0).clamp(-45.0, 45.0) / 45.0 * 42.0;
+    let aligned = horizontal.is_some_and(|v| v.abs() < 2.0);
+    let angle = horizontal.unwrap_or(0.0).to_radians();
+    let orbit_x = 140.0 + angle.sin() * 90.0;
+    let orbit_y = 140.0 - angle.cos() * 90.0;
+    let turn = if aligned {
+        "aligned"
+    } else if horizontal.is_none() {
+        "waiting"
+    } else if horizontal.unwrap_or(0.0) > 0.0 {
+        "right"
+    } else {
+        "left"
+    };
+    let map_range = aim.map(|a| geometry::map_range_m(a.distance_m));
+    let map_point = aim
+        .zip(horizontal)
+        .zip(map_range)
+        .map(|((a, error), range)| geometry::heading_up_point(a.distance_m, error, range));
+    let north_angle = measured
+        .and_then(|m| m.bearing_deg)
+        .zip(number(&heading_trim.read()))
+        .map(|(heading, trim)| -(heading + trim));
+    let coordinates = source
+        .as_ref()
+        .filter(|_| aim.is_some())
+        .map(|f| format!("{:.5}, {:.5}", f.latitude, f.longitude))
+        .unwrap_or_else(|| "No GPS fix".into());
+    let range_label = map_range
+        .map(|v| {
+            if v >= 1000.0 {
+                format!("{:.1} km", v / 1000.0)
+            } else {
+                format!("{v:.0} m")
+            }
+        })
+        .unwrap_or_else(|| "—".into());
     let vpos = 50.0 - vertical.unwrap_or(0.0).clamp(-45.0, 45.0) / 45.0 * 42.0;
     let bearing = degrees(aim.and_then(|a| a.bearing_deg));
     let elevation = degrees(aim.and_then(|a| a.elevation_deg));
@@ -227,20 +262,54 @@ pub fn AntennaAiming(on_exit: EventHandler<()>) -> Element {
     rsx! {
         style { {include_str!("antenna_aiming.css")} }
         main {class:"antenna-aim", "aria-label":"Antenna alignment",
-            header { h1 {"Antenna alignment"} button {onclick:move |_|on_exit.call(()),"Exit aiming"} }
+            header { div { span {class:"aim-eyebrow","ANTENNA"} h1 {"Find your alignment"} } button {onclick:move |_|on_exit.call(()),"Exit aiming"} }
             div {class:"aim-options",
                 label {"GPS origin" select {value:origin.read().clone(),onchange:move |e|origin.set(e.value()),option {value:"device","This device"} option {value:"gs","GroundStation"} option {value:"rrls","RRLS"}}}
                 label {"Aim at" select {value:target.read().clone(),onchange:move |e|target.set(e.value()),option {value:"rocket","Rocket"} option {value:"rrls","RRLS"} option {value:"gs","GroundStation"}}}
                 button {onclick:move |_|{document::eval(include_str!("antenna_sensor.js"));},"Enable compass & device GPS"}
             }
-            div {class:"aim-summary",span {"Bearing {bearing}"} span {"Elevation {elevation}"} span {"Distance {distance}"} span {"Origin: {source_label}"}}
+            div {class:"aim-summary",div {span {"Distance"} strong {"{distance}"}} div {span {"Bearing"} strong {"{bearing}"}} div {span {"Elevation"} strong {"{elevation}"}} }
             div {class:"aim-axes",
-                section {class:"aim-axis", "aria-label":"Horizontal alignment",h2 {"Horizontal"} p {"{hlabel}"}
-                    div {class:"aim-track horizontal",span {class:"aim-center"} if horizontal.is_some(){span {class:"aim-rocket",style:"left:{hpos}%;top:50%;","🚀"}}else{span {class:"aim-missing","—"}}}
+                section {class:"aim-axis aim-rotation", "data-alignment":turn, "aria-label":"Horizontal alignment",
+                    div {class:"aim-axis-title", h2 {"Rotate"} span {class:"aim-state", if aligned {"Aligned"} else if horizontal.is_some() {"Turn to target"} else {"Waiting"}} }
+                    div {class:"aim-track horizontal",
+                        svg {view_box:"0 0 280 280",role:"img","aria-label":"Rotate until the rocket enters the alignment zone",
+                            circle {class:"aim-orbit",cx:"140",cy:"140",r:"90"}
+                            path {class:"aim-guide",d:"M 109 55 A 90 90 0 0 1 171 55"}
+                            circle {class:"aim-destination",cx:"140",cy:"50",r:"26"}
+                            rect {class:"aim-phone",x:"119",y:"106",width:"42",height:"72",rx:"10"}
+                            path {class:"aim-phone-detail",d:"M 133 115 H 147 M 135 168 H 145"}
+                            if horizontal.is_some() {
+                                g {class:"aim-orbit-target",style:"transform:translate({orbit_x}px,{orbit_y}px);",
+                                    circle {r:"21"} text {class:"aim-rocket",x:"0",y:"1",dominant_baseline:"middle",text_anchor:"middle","🚀"}
+                                }
+                                if !aligned {path {class:"aim-turn-arrow",d:if turn=="right" {"M 204 120 A 70 70 0 0 1 201 170 M 201 170 l -2 -16 M 201 170 l 14 -7"}else{"M 76 120 A 70 70 0 0 0 79 170 M 79 170 l 2 -16 M 79 170 l -14 -7"}}}
+                            } else { text {class:"aim-wait-symbol",x:"140",y:"58",text_anchor:"middle","·"} }
+                        }
+                    }
+                    p {class:"aim-instruction",role:"status","{hlabel}"}
                 }
-                section {class:"aim-axis", "aria-label":"Vertical alignment",h2 {"Vertical"} p {"{vlabel}"}
+                section {class:"aim-axis aim-elevation", "data-aligned":vertical.is_some_and(|v|v.abs()<2.0).to_string(), "aria-label":"Vertical alignment",h2 {"Tilt"} p {class:"aim-instruction","{vlabel}"}
                     div {class:"aim-track vertical",span {class:"aim-center"} if vertical.is_some(){span {class:"aim-rocket",style:"left:50%;top:{vpos}%;","🚀"}}else{span {class:"aim-missing","—"}}}
                 }
+            }
+            section {class:"aim-map-card", "aria-label":"Heading-up GPS map",
+                div {class:"aim-map-heading",h2 {"Nearby target"} span {"Forward ↑"}}
+                svg {class:"aim-mini-map",view_box:"0 0 280 280",role:"img","aria-label":"GPS map centered on your selected origin; up is forward",
+                    defs {pattern {id:"aim-map-grid",width:"28",height:"28",pattern_units:"userSpaceOnUse",path {d:"M 28 0 H 0 V 28",fill:"none",stroke:"#233c48",stroke_width:"1"}}}
+                    rect {width:"280",height:"280",fill:"url(#aim-map-grid)"}
+                    circle {class:"aim-map-range",cx:"140",cy:"140",r:"100"} circle {class:"aim-map-range",cx:"140",cy:"140",r:"50"}
+                    if let Some((x,y))=map_point {
+                        line {class:"aim-map-route",x1:"140",y1:"140",x2:"{x}",y2:"{y}"}
+                        g {class:"aim-map-target",style:"transform:translate({x}px,{y}px);",circle {r:"15"} text {text_anchor:"middle",dominant_baseline:"middle",y:"1","🚀"}}
+                    }
+                    if let Some(rotation)=north_angle {g {transform:"rotate({rotation} 140 140)",text {class:"aim-map-north",x:"140",y:"20",text_anchor:"middle","N"}}}
+                    circle {class:"aim-map-user-halo",cx:"140",cy:"140",r:"15"}
+                    path {class:"aim-map-user",d:"M 140 129 L 148 149 L 140 145 L 132 149 Z"}
+                }
+                if map_point.is_none() {p {class:"aim-map-wait", "Waiting for GPS / heading"}}
+                div {class:"aim-map-caption",span {"{source_label}"} span {"Radius {range_label}"}}
+                small {"{coordinates}"}
             }
             if let Some(r)=current.rssi.filter(|_|backend_fresh){div {class:"aim-summary",span {{format!("Signal {:.1} {} · {}",r.value,r.unit,r.source)}} if let Some((_,value))=best_rssi.read().as_ref(){span {"Best {value:.1}"}} button {onclick:move |_|best_rssi.set(None),"Reset signal peak"}}}
             if !sensor.error.is_empty(){p {role:"status","{sensor.error}"}}

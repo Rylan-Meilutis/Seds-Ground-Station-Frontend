@@ -257,6 +257,7 @@ pub fn app_shell_theme() -> layout::ThemeConfig {
 #[cfg(not(target_arch = "wasm32"))]
 #[component]
 pub fn NativeSettingsPage() -> Element {
+    let mut aiming = use_signal(|| false);
     let distance_units_metric = use_signal(|| {
         persist::get_string(MAP_DISTANCE_UNITS_STORAGE_KEY)
             .map(|v| v == "metric")
@@ -730,8 +731,12 @@ pub fn NativeSettingsPage() -> Element {
         }
     };
 
+    if *aiming.read() {
+        return rsx! {antenna_aiming::AntennaAiming {on_exit: move |_| aiming.set(false)}};
+    }
     rsx! {
         SettingsPage {
+            on_open_antenna: move |_| aiming.set(true),
             distance_units_metric,
             map_header_distance_visible,
             map_header_altitude_visible,
@@ -945,6 +950,7 @@ pub(crate) fn apply_window_theme(theme: &layout::ThemeConfig) {
               '--gs26-text-muted': {text_muted:?},
               '--gs26-text-secondary': {text_secondary:?},
               '--gs26-button-background': {button_background:?},
+              '--gs26-button-border': {button_border:?},
               '--gs26-button-text': {button_text:?},
             }};
             const targets = [document.documentElement, document.body, document.getElementById('main')];
@@ -967,6 +973,7 @@ pub(crate) fn apply_window_theme(theme: &layout::ThemeConfig) {
         text_muted = theme.text_muted,
         text_secondary = theme.text_secondary,
         button_background = theme.button_background,
+        button_border = theme.button_border,
         button_text = theme.button_text,
     ));
 }

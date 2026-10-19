@@ -40,7 +40,7 @@ Delayed streamer views continue using delayed program values, not live samples.
 
 This document describes the backend contract that the frontend currently expects.
 
-Verified against frontend version `0.3.1`, app build `36`, and the current Dioxus `0.7.9` codebase.
+This reference targets the current frontend and backend. Dependency versions are recorded in `Cargo.toml` and `Cargo.lock`.
 
 It has also been checked against the current `../groundstation26` backend implementation in:
 

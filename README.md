@@ -110,7 +110,7 @@ Current release:
 
 - Frontend version: `0.3.1`
 - App build: `36`
-- Dioxus line: `0.7.9`
+- Dioxus line: `0.7.10`
 - Targets: web, macOS desktop, Windows desktop, Linux desktop, Android, iOS
 
 Backend compatibility note:
@@ -231,7 +231,7 @@ Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph e
 Web:
 
 ```bash
-cargo install dioxus-cli --version 0.7.9
+cargo install dioxus-cli --version 0.7.10
 dx serve
 ```
 
@@ -243,7 +243,7 @@ python3 build.py web
 
 Running `python3 build.py` with no arguments now performs the default clean Android build. Use `python3 build.py --help` for the full build helper usage.
 
-The codebase is currently pinned to Dioxus `0.7.9`. Use the matching `0.7.9` CLI when possible; the helper also contains guards for patch-level CLI/runtime skew.
+The codebase is currently pinned to Dioxus `0.7.10`. Use the matching `0.7.10` CLI when possible; the helper also contains guards for patch-level CLI/runtime skew.
 
 ## Android Build Notes
 

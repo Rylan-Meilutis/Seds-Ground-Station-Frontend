@@ -11,6 +11,12 @@ try {
  assert.equal(await page.getByText('Unhealthy',{exact:true}).count(),1);
  const sensor=page.locator('article').filter({hasText:'New-runtime-sensor-with-long-name'});
  assert.match(await sensor.innerText(), /Disconnects\s+3\s+Reconnects\s+2/);
+ const valve=page.locator('article').filter({hasText:'VB'});
+ await valve.locator('summary').click();
+ assert.match(await valve.innerText(),/Reported uptime/);
+ assert.match(await valve.innerText(),/Diagnostic report stale/);
+ assert.match(await valve.innerText(),/SD accepted \/ writer-processed \/ flushed: 12345 \/ 12000 \/ 11000/);
+ assert.match(await valve.innerText(),/CAN receive drops: 17/);
  for (const width of [320,390,844,1280]) {
   await page.setViewportSize({width,height:844});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'no horizontal overflow at '+width);

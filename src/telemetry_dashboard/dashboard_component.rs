@@ -2394,6 +2394,7 @@ fn TelemetryDashboardInner() -> Element {
                             }
                         }
                         SettingsPage {
+                            on_open_antenna: move |_| { let mut overlay = show_settings_overlay; overlay.set(false); antenna_aiming.set(true); },
                             distance_units_metric: distance_units_metric,
                             map_header_distance_visible: map_header_distance_visible,
                             map_header_altitude_visible: map_header_altitude_visible,
@@ -2526,7 +2527,7 @@ fn TelemetryDashboardInner() -> Element {
 
     // Keep hooks stable, but unmount all normal data views while aiming.
     if *antenna_aiming.read() {
-        return rsx! { antenna_aiming::AntennaAiming {on_exit: move |_| antenna_aiming.set(false)} };
+        return rsx! { antenna_aiming::AntennaAiming {on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
     }
 
     if *admin_open.read() {
@@ -2546,6 +2547,7 @@ fn TelemetryDashboardInner() -> Element {
     }
     // MAIN UI
     rsx! {
+            style { {include_str!("controls.css")} }
             gps::GpsDriver {
                 user_gps: user_gps,
                 user_altitude_m: Some(user_gps_altitude_m),
@@ -3006,6 +3008,11 @@ fn TelemetryDashboardInner() -> Element {
                     "data-streamer": if *streamer_mode.read() { "true" } else { "false" },
 
                     style: "
+                --gs-control-bg:{theme.button_background};
+                --gs-control-border:{theme.button_border};
+                --gs-control-text:{theme.button_text};
+                --gs-field-bg:{theme.panel_background_alt};
+                --gs-field-text:{theme.text_primary};
                 height:var(--gs26-app-height);
                 padding:clamp(8px, 2.5vw, 24px);
                 color:var(--gs26-app-text);
@@ -3023,6 +3030,16 @@ fn TelemetryDashboardInner() -> Element {
                 overflow:hidden;
             ",
 
+                    if !*streamer_mode.read() {
+                        navigation_rail::NavigationRail {
+                            items:_configured_main_tabs(&layout,*abort_only_mode.read(),*calibration_has_sensors.read(),&dashboard_customization.read()).into_iter().map(|tab|navigation_rail::NavigationItem{id:_main_tab_to_str(tab).into(),label:_main_tab_label(&layout,tab)}).collect(),
+                            active:_main_tab_to_str(*active_main_tab.read()).to_string(),
+                            connected:*WS_CONNECTED_SIGNAL.read(),
+                            title:layout.branding.app_name.clone().unwrap_or_else(||"GroundStation".into()),
+                            on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);checklist_expanded.set(false);},
+                            on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);},
+                        }
+                    }
                     if !*WS_CONNECTED_SIGNAL.read() {
                         div {
                             role: "alert",
@@ -3060,7 +3077,6 @@ fn TelemetryDashboardInner() -> Element {
                         div {
                             class: "gs26-header-title",
                             style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
-                            button {class: "gs26-title-tab-toggle", style: "min-height:48px;", onclick: move |_| antenna_aiming.set(true), "Aim antenna"}
                             if auth::current_status().roles.iter().any(|role|role=="admin") {
                                 button {class:"gs26-title-tab-toggle",style:"min-height:48px;",onclick:move |_|admin_open.set(true),"Admin"}
                             }
@@ -3272,11 +3288,11 @@ fn TelemetryDashboardInner() -> Element {
                             }
                             }
 
-                            {reload_button}
                             {settings_button}
-                            {auth_button}
-                            {version_button}
-                            {connect_button}
+                            details {class:"gs26-utility-menu",
+                                summary {"Tools"}
+                                div {{reload_button}{auth_button}{version_button}{connect_button}}
+                            }
 
                             {
                                 let abort_control = action_policy
@@ -3445,7 +3461,7 @@ fn TelemetryDashboardInner() -> Element {
                                                     tabs_expanded.set(false);
                                                 }
                                             },
-                                            if *dashboard_edit_mode.read() { "Done editing" } else { "Customize" }
+                                            if *dashboard_edit_mode.read() { "Done editing" } else { "Organize tabs" }
                                         }
                                     }
                             if *tabs_expanded.read() {
@@ -3470,7 +3486,7 @@ fn TelemetryDashboardInner() -> Element {
                         style: "flex:1 0 100%; max-height:55vh;overflow:auto;display:flex; flex-direction:column; gap:8px; margin-top:10px; padding:10px; box-sizing:border-box; border:1px dashed {theme.info_accent}; border-radius:12px; background:{theme.info_background};",
                         div { style: "display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;",
                             div {
-                                div { style: "font-size:13px; font-weight:800; color:{theme.info_text};", "Dashboard layout" }
+                                div { style: "font-size:13px; font-weight:800; color:{theme.info_text};", "Tabs and header" }
                                 div { style: "font-size:11px; color:{theme.text_muted};", "Saved for your account and this Ground Station on this device." }
                             }
                             button {

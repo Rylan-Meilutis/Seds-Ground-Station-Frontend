@@ -1224,11 +1224,6 @@ fn DataGraphPanel(
     if charts_enabled || fullscreen {
         let _ = *CHART_RENDER_EPOCH.read();
     }
-    let chart_groups_grid_style = if chart_groups.len() >= 2 {
-        "display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; width:100%; align-items:start;"
-    } else {
-        "display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; width:100%; align-items:start;"
-    };
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     let on_toggle_fullscreen = move |_: Event<MouseData>| {
@@ -1268,9 +1263,11 @@ fn DataGraphPanel(
 
                 if *show_chart.read() {
                     div { style: "width:100%;",
-                        div { class: "gs26-data-graph-groups", style: "{chart_groups_grid_style}",
-                        for group in chart_groups.iter() {
-                            {render_chart_group(
+                        div { class:"gs26-data-graph-groups",
+            {let panels=chart_groups.iter().enumerate().map(|(index,group)| {
+                let title=group.title.clone().unwrap_or_else(||format!("Chart {}",index+1));
+                let id=format!("{}:{:?}:{}",chart_key_for_group(group,&chart_key),group.channels,title);
+                super::info_panels::InfoPanel::new(&id,&title,"Charts",render_chart_group(
                                 group,
                                 &chart_key,
                                 &labels,
@@ -1286,9 +1283,10 @@ fn DataGraphPanel(
                                 &x_pct,
                                 &y_pct,
                                 &theme,
-                            )}
-                        }
-                        }
+                            ))
+            }).collect();
+            rsx! {super::info_panels::InfoPanels {key:"data-{chart_key}",page:format!("data-{chart_key}"),panels,wide:true}}}
+        }
                     }
                 }
             }
@@ -1312,9 +1310,11 @@ fn DataGraphPanel(
 
                         div {
                             style: "flex:1; min-height:0; width:100%; overflow-y:auto;",
-                            div { class: "gs26-data-graph-groups-fullscreen", style: "{chart_groups_grid_style}",
-                            for group in chart_groups.iter() {
-                                {render_chart_group(
+                            div { class:"gs26-data-graph-groups-fullscreen",
+            {let panels=chart_groups.iter().enumerate().map(|(index,group)| {
+                let title=group.title.clone().unwrap_or_else(||format!("Chart {}",index+1));
+                let id=format!("{}:{:?}:{}",chart_key_for_group(group,&chart_key),group.channels,title);
+                super::info_panels::InfoPanel::new(&id,&title,"Charts",render_chart_group(
                                     group,
                                     &chart_key,
                                     &labels,
@@ -1330,9 +1330,10 @@ fn DataGraphPanel(
                                     &x_pct,
                                     &y_pct,
                                     &theme,
-                                )}
-                            }
-                            }
+                                ))
+            }).collect();
+            rsx! {super::info_panels::InfoPanels {key:"data-{chart_key}",page:format!("data-{chart_key}"),panels,wide:true}}}
+        }
                         }
                     }
                 }

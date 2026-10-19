@@ -1,11 +1,15 @@
 use super::*;
 
-const WS_DISCONNECT_NOTIFICATION_PREFIX: &str = "WebSocket disconnected.\nURL:";
+const WS_DISCONNECT_NOTIFICATION_PREFIX: &str = "GroundStation connection lost. Reconnecting…";
+const LEGACY_WS_DISCONNECT_PREFIX: &str = "WebSocket disconnected.\nURL:";
 
 fn is_ws_disconnect_notification(notification: &PersistentNotification) -> bool {
     notification
         .message
         .starts_with(WS_DISCONNECT_NOTIFICATION_PREFIX)
+        || notification
+            .message
+            .starts_with(LEGACY_WS_DISCONNECT_PREFIX)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,6 +145,11 @@ pub(super) fn note_ws_connection_notification(
     ws_url: &str,
     reason: &str,
 ) {
+    // The connection banner handles initial startup; notify once only after
+    // an established station connection is lost.
+    if !DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
+        return;
+    }
     if notifications
         .read()
         .iter()
@@ -157,14 +166,15 @@ pub(super) fn note_ws_connection_notification(
         *slot = Some(redact_ws_url_for_display(ws_url));
     }
 
+    debug_log::append(&format!(
+        "[network] disconnected: {} · {}",
+        redact_ws_url_for_display(ws_url),
+        reason.trim()
+    ));
     let item = PersistentNotification {
         id: now_ms as u64,
         timestamp_ms: now_ms,
-        message: format!(
-            "WebSocket disconnected.\nURL: {}\nReason: {}",
-            redact_ws_url_for_display(ws_url),
-            reason.trim()
-        ),
+        message: WS_DISCONNECT_NOTIFICATION_PREFIX.to_string(),
         persistent: false,
         action_label: None,
         action_cmd: None,

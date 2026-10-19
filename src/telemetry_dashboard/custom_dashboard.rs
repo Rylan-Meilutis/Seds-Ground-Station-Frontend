@@ -294,7 +294,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
             h3 {"{section}"}
             div {class:"gs26-card-grid",
                 for (index,card) in snapshot.iter().enumerate().filter(|(_,c)|c.section==section && (c.visible || *editing.read())) {
-                    div {key:"card-{index}",class:"gs26-dashboard-card","data-width":card.width.clone(),style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
+                    div {key:"card-{index}",class:"gs26-dashboard-card","data-width":card.width.clone(),"data-display":card.display.clone(),style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
                         if *editing.read() {
                             CardEditor {card:card.clone(),cameras:cameras.read().streams.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
                             button {disabled:index==0,onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index-1);save(&all);cards.set(all);},"Move up"}
@@ -305,7 +305,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
                             if card.display == "camera" { CameraCard {card:card.clone(),config:cameras.read().clone(),error:camera_error.read().clone()} }
                             else { TelemetryCard {card:card.clone()} }
                         }
-                        if card.display != "camera" {
+                        if *editing.read() && card.display != "camera" {
                         button { disabled: !card.pinned && snapshot.iter().filter(|c| c.pinned).count() >= 8,
                             onclick: move |_| { let mut all=cards.read().clone(); all[index].pinned=!all[index].pinned; save(&all); cards.set(all); },
                             if card.pinned { "Unpin from top bar" } else { "Pin to top bar" }
@@ -321,7 +321,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig) -> Element {
 fn CameraCard(card: Card, config: super::live_stream_tab::LiveStreamConfig, error: String) -> Element {
     let feed = config.streams.iter().find(|feed|feed.id == card.stream_id && feed.online);
     rsx! {section {
-        strong {"{card.label}"}
+        strong {class:"gs26-card-label","{card.label}"}
         if !error.is_empty() {p {role:"status","{error}"}}
         else if !config.can_preview_live {p {"Live cameras require operator or stream-management access."}}
         else if card.stream_id.is_empty() {p {"Choose a camera source in Customize dashboard."}}
@@ -404,7 +404,7 @@ fn TelemetryCard(card: Card, #[props(default = false)] compact: bool) -> Element
                 format!("{v:.precision$} {}", card.unit, precision=card.precision)
             }
         })
-        .unwrap_or_else(|| "No data".into());
+        .unwrap_or_else(|| "—".into());
     let fraction = value
         .map(|v| ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0))
         .unwrap_or(0.0);
@@ -426,7 +426,7 @@ fn TelemetryCard(card: Card, #[props(default = false)] compact: bool) -> Element
             .map(|(i, v)| {
                 format!(
                     "{},{}",
-                    i as f32 * 260.0 / 149.0,
+                    i as f32 * 260.0 / h.1.len().saturating_sub(1).max(1) as f32,
                     60.0 - ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0) * 60.0
                 )
             })
@@ -434,13 +434,13 @@ fn TelemetryCard(card: Card, #[props(default = false)] compact: bool) -> Element
             .join(" ")
     };
     rsx! {div { style: if compact { "display:flex;align-items:baseline;justify-content:center;gap:6px;flex-wrap:wrap;" } else { "" },
-        strong {"{card.label}"}
-        div {style:if compact {"font-size:13px;font-variant-numeric:tabular-nums;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},"{text}"}
+        strong {class:"gs26-card-label","{card.label}"}
+        div {class:"gs26-card-value",style:if compact {"font-size:13px;font-variant-numeric:tabular-nums;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},"{text}"}
         if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
         if !compact && value.is_some() && card.display=="gauge" {div {role:"img","aria-label":text.clone(),style:"width:70px;height:70px;border-radius:50%;background:conic-gradient(#38bdf8 {fraction*360.0}deg,#334155 0);",div {style:"position:relative;top:12px;left:12px;width:46px;height:46px;border-radius:50%;background:#0f172a;"}}}
-        if !compact && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",polyline {points,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
-        if !compact || age.is_none_or(|a| a>10000) { small {style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
-            if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago · {card.sender}"}else{"Waiting for telemetry"}
+        if !compact && value.is_some() && history.borrow().1.len() >= 2 && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",polyline {points,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
+        if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
+            if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago" if !card.sender.is_empty() {" · {card.sender}"}}else{"Waiting for telemetry"}
         }}
     }}
 }

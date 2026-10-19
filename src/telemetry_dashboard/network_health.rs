@@ -64,6 +64,30 @@ pub fn NetworkHealthSection(
                             details { style: "margin-top:12px; font-size:0.85rem;",
                                 summary { style: "min-height:44px; display:flex; align-items:center; cursor:pointer;", "Health details" }
                                 p { "Observed for {duration(row.observed_ms)} · Offline {duration(row.offline_ms)} · Receive observations {row.rx_observations}" }
+                                if let Some(report) = &row.diagnostics {
+                                    {let report_age = report.received_age_ms.saturating_add(elapsed);
+                                     let uptime_ms = report.uptime_ticks.saturating_mul(1000) / u64::from(report.uptime_frequency_hz.max(1));
+                                     rsx! {
+                                        p { "Reported uptime {duration(uptime_ms)} · {report.uptime_frequency_hz} ticks/s" }
+                                        if report_age > 15_000 { p { role: "status", "Diagnostic report stale · {duration(report_age)} ago" } }
+                                        p { "Reset flags: {report.reset_flags:#010x} · Watchdog pending: {report.watchdog_missing_mask:#x}" }
+                                        if let (Some(live),Some(peak),Some(region))=(report.heap_live_bytes,report.heap_peak_bytes,report.heap_region_bytes) {
+                                            p { "Allocator live / peak / region: {live} / {peak} / {region} bytes" }
+                                        }
+                                        if let Some(failures)=report.allocation_failures { p { "Allocation failures: {failures}" } }
+                                        p { "Memory admission refusals: {report.admission_refusals}" }
+                                        if let Some(drops)=report.can_rx_drops { p { "CAN receive drops: {drops}" } }
+                                        if let Some(drops)=report.can_tx_rejected { p { "CAN transmit refusals: {drops}" } }
+                                        if let Some(drops)=report.uart_rx_drops { p { "UART receive drops: {drops}" } }
+                                        if let Some(peak)=report.tx_queue_high_water { p { "Transmit queue peak: {peak}" } }
+                                        if let (Some(accepted),Some(processed),Some(rejected),Some(flushed))=(report.sd_accepted_records,report.sd_processed_records,report.sd_rejected_records,report.sd_flushed_records) {
+                                            p { "SD accepted / writer-processed / flushed: {accepted} / {processed} / {flushed}" }
+                                            p { "SD rejected records: {rejected} · Write errors: {report.sd_write_errors.unwrap_or(0)}" }
+                                        }
+                                        if let Some(overruns)=report.adc_overruns { p { "ADC queue overruns: {overruns}" } }
+                                        p { "Diagnostic send refusals: {report.diagnostic_send_failures}" }
+                                     }}
+                                } else { p { "Internal diagnostics unavailable from this firmware." } }
                             }
                         }
                      }}

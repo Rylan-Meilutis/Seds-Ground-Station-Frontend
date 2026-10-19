@@ -33,6 +33,7 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
         return rsx!{main {p {"Application administrator required"}button {onclick:move |_|on_exit.call(()),"Back to dashboard"}}};
     }
     rsx!{
+        style {{include_str!("controls.css")}}
         style {{include_str!("admin_console.css")}}
         main {class:"gs26-admin","aria-label":"Administration",
             header {h1 {"Administration"}button {onclick:move |_|on_exit.call(()),"Exit admin"}}

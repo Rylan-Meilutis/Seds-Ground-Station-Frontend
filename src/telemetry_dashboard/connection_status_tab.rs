@@ -131,87 +131,100 @@ pub fn ConnectionStatusTab(
         latency_fullscreen.set(next);
     };
 
+    let mut panels = Vec::new();
+    for (idx, section) in layout.sections.iter().enumerate() {
+        let (id, default_title) = match section.kind {
+            ConnectionSectionKind::BoardStatus => ("boards", "Board status"),
+            ConnectionSectionKind::Latency => ("latency", "Packet intervals"),
+        };
+        let title = section
+            .title
+            .clone()
+            .unwrap_or_else(|| default_title.into());
+        let content = match section.kind {
+            ConnectionSectionKind::BoardStatus => rsx! {
+                div { style: {
+                        let top_margin = if idx == 0 { "" } else { "margin-top:16px;" };
+                        format!(
+                            "padding:14px; border:1px solid {}; border-radius:14px; background:{};{}",
+                            theme.border,
+                            theme.panel_background,
+                            top_margin
+                        )
+                    },
+                    div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
+                        div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Board Status\".to_string()))}" }
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
+                                onclick: toggle_board,
+                                {if *show_board.read() { translate_text("Collapse") } else { translate_text("Expand") }}
+                            }
+                            button {
+                                style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
+                                onclick: toggle_board_fullscreen,
+                                "{translate_text(\"Fullscreen\")}"
+                            }
+                        }
+                    }
+                    if *show_board.read() {
+                        {render_board_table(&merged_boards, board_age_now_ms, ws_connected, &theme)}
+                    }
+                }
+            },
+            ConnectionSectionKind::Latency => rsx! {
+                div { style: {
+                        let top_margin = if idx == 0 { "" } else { "margin-top:16px;" };
+                        format!(
+                            "padding:14px; border:1px solid {}; border-radius:14px; background:{};{}",
+                            theme.border,
+                            theme.panel_background,
+                            top_margin
+                        )
+                    },
+                    div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
+                        div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Packet Interval (ms)\".to_string()))}" }
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
+                                onclick: toggle_latency,
+                                {if *show_latency.read() { translate_text("Collapse") } else { translate_text("Expand") }}
+                            }
+                            button {
+                                style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
+                                onclick: toggle_latency_fullscreen,
+                                "{translate_text(\"Fullscreen\")}"
+                            }
+                        }
+                    }
+
+                    if *show_latency.read() {
+                        div { style: latency_list_style(),
+                            for entry in merged_boards.iter() {
+                                div { style: latency_card_style(&theme),
+                                    div { style: "font-size:12px; color:{theme.text_muted}; margin-bottom:6px;",
+                                        "{entry.display_name()} ({entry.sender_id})"
+                                    }
+                                    {render_latency_chart(
+                                        history.read().get(&entry.sender_id),
+                                        LATENCY_CHART_HEIGHT_PX as f64,
+                                        &theme,
+                                    )}
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        };
+        panels.push(super::info_panels::InfoPanel::new(
+            id, &title, "Overview", content,
+        ));
+    }
     rsx! {
         div { style: "padding:16px; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
             h2 { style: "margin:0 0 12px 0; color:{theme.text_primary};", "{title}" }
-            for (idx, section) in layout.sections.iter().enumerate() {
-                match section.kind {
-                    ConnectionSectionKind::BoardStatus => rsx! {
-                        div { style: {
-                                let top_margin = if idx == 0 { "" } else { "margin-top:16px;" };
-                                format!(
-                                    "padding:14px; border:1px solid {}; border-radius:14px; background:{};{}",
-                                    theme.border,
-                                    theme.panel_background,
-                                    top_margin
-                                )
-                            },
-                            div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
-                                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Board Status\".to_string()))}" }
-                                div { style: "display:flex; gap:8px; flex-wrap:wrap;",
-                                    button {
-                                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
-                                        onclick: toggle_board,
-                                        {if *show_board.read() { translate_text("Collapse") } else { translate_text("Expand") }}
-                                    }
-                                    button {
-                                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
-                                        onclick: toggle_board_fullscreen,
-                                        "{translate_text(\"Fullscreen\")}"
-                                    }
-                                }
-                            }
-                            if *show_board.read() {
-                                {render_board_table(&merged_boards, board_age_now_ms, ws_connected, &theme)}
-                            }
-                        }
-                    },
-                    ConnectionSectionKind::Latency => rsx! {
-                        div { style: {
-                                let top_margin = if idx == 0 { "" } else { "margin-top:16px;" };
-                                format!(
-                                    "padding:14px; border:1px solid {}; border-radius:14px; background:{};{}",
-                                    theme.border,
-                                    theme.panel_background,
-                                    top_margin
-                                )
-                            },
-                            div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
-                                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Packet Interval (ms)\".to_string()))}" }
-                                div { style: "display:flex; gap:8px; flex-wrap:wrap;",
-                                    button {
-                                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
-                                        onclick: toggle_latency,
-                                        {if *show_latency.read() { translate_text("Collapse") } else { translate_text("Expand") }}
-                                    }
-                                    button {
-                                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
-                                        onclick: toggle_latency_fullscreen,
-                                        "{translate_text(\"Fullscreen\")}"
-                                    }
-                                }
-                            }
-
-                            if *show_latency.read() {
-                                div { style: latency_list_style(),
-                                    for entry in merged_boards.iter() {
-                                        div { style: latency_card_style(&theme),
-                                            div { style: "font-size:12px; color:{theme.text_muted}; margin-bottom:6px;",
-                                                "{entry.display_name()} ({entry.sender_id})"
-                                            }
-                                            {render_latency_chart(
-                                                history.read().get(&entry.sender_id),
-                                                LATENCY_CHART_HEIGHT_PX as f64,
-                                                &theme,
-                                            )}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                }
-            }
+            super::info_panels::InfoPanels {page:"connections",panels,wide:true}
         }
 
         if *board_fullscreen.read() {

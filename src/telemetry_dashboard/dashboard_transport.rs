@@ -137,7 +137,9 @@ fn native_ws_connect_timeout() -> std::time::Duration {
 // Pi with a skewed clock loses its entire history at the first live packet.
 async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
     #[derive(Deserialize)]
-    struct HistoryClock { utc_ms: i64 }
+    struct HistoryClock {
+        utc_ms: i64,
+    }
     let before = current_wallclock_ms();
     let clock = http_get_json::<HistoryClock>("/api/system/time").await;
     let after = current_wallclock_ms();
@@ -148,8 +150,10 @@ async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
             let client_ms = before.saturating_add(after.saturating_sub(before) / 2);
             GRAPH_CLOCK_OFFSET_MS.store(client_ms.saturating_sub(clock.utc_ms), Ordering::Relaxed);
             align_history_receipt_clock(&mut rows, clock.utc_ms, client_ms);
-        },
-        Err(error) => log!("[seed] backend clock unavailable; retaining original history timestamps: {error}"),
+        }
+        Err(error) => {
+            log!("[seed] backend clock unavailable; retaining original history timestamps: {error}")
+        }
     }
     Ok(rows)
 }
@@ -169,13 +173,17 @@ mod history_clock_tests {
     fn reload_keeps_ten_minutes_when_backend_clock_is_a_day_behind() {
         let server_now = 1_700_000_000_000i64;
         let client_now = server_now + 86_400_000;
-        let mut rows: Vec<TelemetryRow> = (0..=600).map(|second| TelemetryRow {
-            timestamp_ms: server_now - 600_000 + second * 1000,
-            received_timestamp_ms: 0,
-            data_type: "KG1000".into(), sender_id: "DAQ".into(),
-            data_type_id: Default::default(), sender_id_id: Default::default(),
-            values: vec![Some(second as f32)],
-        }).collect();
+        let mut rows: Vec<TelemetryRow> = (0..=600)
+            .map(|second| TelemetryRow {
+                timestamp_ms: server_now - 600_000 + second * 1000,
+                received_timestamp_ms: 0,
+                data_type: "KG1000".into(),
+                sender_id: "DAQ".into(),
+                data_type_id: Default::default(),
+                sender_id_id: Default::default(),
+                values: vec![Some(second as f32)],
+            })
+            .collect();
         normalize_telemetry_rows_for_runtime(&mut rows);
         align_history_receipt_clock(&mut rows, server_now, client_now);
         // The same merge/prune used on reseed must not discard the prefix.
@@ -997,7 +1005,9 @@ async fn seed_from_db(
     );
     match fetch_recent_rows_for_reseed().await {
         Ok(mut list) => {
-            if !alive.load(Ordering::Relaxed) || graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed) {
+            if !alive.load(Ordering::Relaxed)
+                || graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed)
+            {
                 return Ok(());
             }
 
@@ -1026,7 +1036,9 @@ async fn seed_from_db(
             for chunk in list.chunks(RESEED_INGEST_CHUNK) {
                 data_chart::charts_cache_reseed_ingest_rows(chunk);
                 cooperative_yield().await;
-                if graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed) { return Ok(()); }
+                if graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
             }
 
             // Replay queued rows into reseed cache as a second safety net.
@@ -1041,7 +1053,7 @@ async fn seed_from_db(
 
             // Replay live rows received during reseed build.
             let reseed_live_rows = if let Ok(mut v) = RESEED_LIVE_BUFFER.lock() {
-                std::mem::take(&mut *v)
+                v.take_rows()
             } else {
                 Vec::new()
             };
@@ -1055,7 +1067,9 @@ async fn seed_from_db(
 
             // Atomically swap the prepared reseed cache in. Empty /api/recent
             // means empty history and should clear stale offline data.
-            if graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed) { return Ok(()); }
+            if graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed) {
+                return Ok(());
+            }
             charts_cache_finish_reseed_build();
             charts_cache_request_refit();
             log!("[seed] applying reseed rows={}", list.len());
@@ -2055,7 +2069,9 @@ fn handle_ws_message(
     match msg {
         WsInMsg::CalibrationChanged => {
             GRAPH_HISTORY_GENERATION.fetch_add(1, Ordering::Relaxed);
-            if let Ok(mut queue) = TELEMETRY_QUEUE.lock() { queue.clear(); }
+            if let Ok(mut queue) = TELEMETRY_QUEUE.lock() {
+                queue.clear();
+            }
             bump_seed_epoch();
         }
         WsInMsg::Telemetry(row) => {
@@ -2199,7 +2215,10 @@ fn handle_ws_message(
         }
 
         WsInMsg::NetworkTime(t) => {
-            GRAPH_CLOCK_OFFSET_MS.store(current_wallclock_ms().saturating_sub(t.timestamp_ms), Ordering::Relaxed);
+            GRAPH_CLOCK_OFFSET_MS.store(
+                current_wallclock_ms().saturating_sub(t.timestamp_ms),
+                Ordering::Relaxed,
+            );
             let next = NetworkTimeSync {
                 network_ms: t.timestamp_ms,
                 received_mono_ms: monotonic_now_ms(),

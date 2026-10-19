@@ -3403,8 +3403,7 @@ def notarize_macos(frontend_dir: Path) -> None:
 
 
 def _prebuild_frontend_for_container(frontend_dir: Path) -> None:
-    # IMPORTANT: do NOT run dx bundle here (you asked not to “install another version of dioxus” or do slow tooling
-    # work)
+    # Prime Cargo dependencies without launching a second Dioxus bundle build.
     print("Container detected → priming cargo for frontend before dx bundle")
     run(["cargo", "fetch"], cwd=frontend_dir)
 

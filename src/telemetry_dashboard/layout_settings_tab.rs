@@ -116,6 +116,7 @@ pub fn SettingsPage(
     storage_breakdown: Vec<(String, String)>,
     measured_cache_bytes: u64,
     theme: ThemeConfig,
+    on_open_antenna: EventHandler<()>,
     on_clear_data_cache: EventHandler<()>,
     on_clear_current_data: EventHandler<()>,
     on_clear_data_and_map_cache: EventHandler<()>,
@@ -946,7 +947,8 @@ pub fn SettingsPage(
     });
 
     rsx! {
-        div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
+        style { {include_str!("controls.css")} }
+        div { class:"gs26-settings", style: "--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};--gs-field-bg:{theme.panel_background_alt};--gs-field-text:{theme.text_primary};padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
             h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "{title}" }
             div { style: "{settings_tab_bar_style}",
                 button {
@@ -982,7 +984,12 @@ pub fn SettingsPage(
             }
 
             if active_settings_tab.read().as_str() == "general" {
-            div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px;",
+            div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap:12px;",
+                div { style: "{card_style}",
+                    h3 { style:"margin:0;font-size:15px;", "Antenna alignment" }
+                    p { style:"margin:0;color:{theme.text_soft};font-size:14px;", "Aim toward the rocket, RRLS or GroundStation." }
+                    button { class:"gs26-settings-aim", style:"{chip_idle}", onclick:move |_| on_open_antenna.call(()), "Aim antenna" }
+                }
                 div { style: "{card_style}",
                     div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "Viewing mode" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "The dashboard supports custom telemetry and live camera cards. Optionally show ground controls below your cards. Streamer mode shows delayed video and cycling telemetry; no stream-manager role is needed to watch." }
@@ -1139,7 +1146,7 @@ pub fn SettingsPage(
                         div { style: "display:flex; flex-direction:column; gap:6px;",
                             div { style: "font-size:13px; color:{theme.text_muted};", "{manual_lat_title}" }
                             input {
-                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:min(100%, 18rem);",
                                 value: "{manual_user_lat_value}",
                                 placeholder: "31.000000",
                                 oninput: {
@@ -1151,7 +1158,7 @@ pub fn SettingsPage(
                         div { style: "display:flex; flex-direction:column; gap:6px;",
                             div { style: "font-size:13px; color:{theme.text_muted};", "{manual_lon_title}" }
                             input {
-                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:min(100%, 18rem);",
                                 value: "{manual_user_lon_value}",
                                 placeholder: "-99.000000",
                                 oninput: {
@@ -1184,7 +1191,7 @@ pub fn SettingsPage(
                     div { style: "display:flex; flex-direction:column; gap:6px; max-width:260px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{manual_heading_title}" }
                         input {
-                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:min(100%, 18rem);",
                             value: "{manual_user_heading_value}",
                             placeholder: "0.0",
                             oninput: {

@@ -70,14 +70,39 @@ try{
   await page.waitForTimeout(1000);
   if (!(await page.getByRole('button',{name:/Choose tab/}).count())) console.error('Startup:', await page.locator('body').innerText(), errors);
   const choose=()=>page.getByRole('button',{name:/Choose tab/}).click();
+  assert(await page.getByRole('navigation',{name:'Mission navigation'}).isVisible(),'desktop has persistent mission navigation');
+  await page.getByRole('navigation',{name:'Mission navigation'}).getByRole('link',{name:'Dashboard',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'Admin',exact:true}).count(),0,'stream manager is not a user administrator');
+  assert.equal(await page.getByRole('button',{name:'Aim antenna',exact:true}).count(),0,'aiming is not a main-screen action');
+  await page.getByRole('button',{name:/^Settings$/i}).click();
   await page.getByRole('button',{name:'Aim antenna',exact:true}).click();
-  await page.getByRole('heading',{name:'Antenna alignment',exact:true}).waitFor();
+  await page.getByRole('heading',{name:'Find your alignment',exact:true}).waitFor();
   assert.equal(await page.locator('.gs26-dashboard-card').count(),0,'aiming unmounts ordinary data cards');
   assert.equal(await page.locator('#gs26-media, #gs26-crew-voice').count(),0,'aiming unmounts media views');
   await page.getByRole('button',{name:'Exit aiming',exact:true}).click();
+  await page.getByRole('button',{name:'Aim antenna',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Close',exact:true}).click();
   await page.getByRole('button',{name:'Customize dashboard',exact:true}).waitFor();
+  await page.screenshot({path:'/tmp/gs-mission-overview-desktop.png',fullPage:true});
   assert.equal(await page.locator('.antenna-aim').count(),0,'exit restores the dashboard');
+  await choose();await page.getByRole('button',{name:/^Detailed/}).click();
+  await page.getByRole('navigation',{name:'Information categories'}).waitFor();
+  await page.getByRole('button',{name:'Arrange panels',exact:true}).click();
+  const firstPanel=await page.locator('.gs26-panel-editor-row').first().innerText();
+  await page.getByRole('button',{name:'Move Board timing up',exact:true}).click();
+  assert.match(await page.locator('.gs26-panel-editor-row').first().innerText(),/Board timing/);
+  await page.getByRole('button',{name:'Done arranging',exact:true}).click();
+  assert.equal(await page.locator('.gs26-info-panel').first().getAttribute('data-panel-id'),'timing');
+  await page.reload();await page.getByRole('navigation',{name:'Information categories'}).waitFor();
+  assert.equal(await page.locator('.gs26-info-panel').first().getAttribute('data-panel-id'),'timing','panel order persists across reload');
+  await page.getByRole('button',{name:'Network',exact:true}).click();
+  await page.getByRole('heading',{name:'Network health',exact:true}).waitFor();
+  for(const width of [320,390,844,1440]) {
+    await page.setViewportSize({width,height:900});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Detailed Info has no horizontal overflow');
+    await page.screenshot({path:`/tmp/gs-ui-detailed-${width}.png`,fullPage:true});
+  }
+  await page.setViewportSize({width:1440,height:1000});
   gseStatus={phase:'idle',message:'Ready',dry_self_test_confirmed:false,configuration_error:null,
     qualification:{self_test:true,nitrogen_test:true,fill_target:false,fault:null},topology_stable:true,
     request_gate:{hitl_mode:false,flight_state:'Idle',prelaunch:true,button_interlock_satisfied:true},launch_queued:false,qd:'NotStarted'};
@@ -145,9 +170,9 @@ try{
   await page.getByRole('heading',{name:'Broadcast studio'}).waitFor();
   assert.equal((await page.locator('.gs26-title-tab-toggle span').first().innerText()),'Stream Manager');
   await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
+  await page.getByRole('button',{name:'Customize dashboard',exact:true}).click();
   await page.getByRole('button',{name:'Pin to top bar',exact:true}).first().click();
   await page.locator('[aria-label="Pinned telemetry"]').getByText('50 kg loadcell',{exact:true}).waitFor();
-  await page.getByRole('button',{name:'Customize dashboard',exact:true}).click();
   await page.getByLabel('Title',{exact:true}).first().fill('Pinned load');
   await page.getByRole('button',{name:'Add camera',exact:true}).click();
   await page.getByLabel(/^Camera source/).selectOption('pad-wide');
@@ -166,6 +191,7 @@ try{
   assert.deepEqual((await page.locator('#gs26-crew-voice').getAttribute('sandbox')).split(/\s+/).sort(),
     ['allow-downloads','allow-forms','allow-same-origin','allow-scripts']);
   assert.equal(context.pages().length,1,'opening crew voice stays inside the application');
+  assert(await page.evaluate(()=>document.querySelector('#gs26-crew-voice').contentWindow.received.some(m=>m.theme?.['--gs26-app-background'])),'embedded voice receives the selected app theme');
   await page.evaluate(()=>document.querySelector('#gs26-crew-voice').contentWindow.instanceMarker=42);
   await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('#gs26-crew-voice')?.contentWindow.received?.some(m=>m.visible===false));
@@ -182,7 +208,7 @@ try{
   await page.frameLocator('#gs26-media').getByText('Media tool fixture').waitFor({state:'visible'});
   assert.equal(await page.evaluate(()=>document.querySelector('#gs26-media').contentWindow.instanceMarker),43,'camera document persists when reopened');
   await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
-  await choose();await page.getByRole('button',{name:'Customize',exact:true}).click();
+  await choose();await page.getByRole('button',{name:'Organize tabs',exact:true}).click();
   await page.getByRole('checkbox',{name:'Voice Chat',exact:true}).uncheck();
   await page.getByRole('button',{name:'Done editing',exact:true}).click();
   await choose();assert.equal(await page.getByRole('button',{name:'Voice Chat',exact:true}).count(),0);
@@ -244,7 +270,7 @@ try{
   assert.equal(await page.getByLabel('Temporary password',{exact:true}).inputValue(),'');
   await page.setViewportSize({width:320,height:780});
   assert(await page.locator('.gs26-admin').evaluate(n=>n.scrollWidth<=n.clientWidth),'admin fits narrow screens');
-  assert((await page.getByRole('button',{name:'Exit admin',exact:true}).boundingBox()).height>=48);
+  assert.equal((await page.getByRole('button',{name:'Exit admin',exact:true}).boundingBox()).height,44,'admin uses the shared button height');
   await page.getByRole('button',{name:'Broadcast studio',exact:true}).click();
   await page.getByRole('heading',{name:'Broadcast studio',exact:true}).waitFor();
   await page.getByRole('button',{name:'Admin',exact:true}).click();
@@ -288,10 +314,11 @@ try{
   gseStatus={phase:'idle',message:'Isolated test',dry_self_test_confirmed:false,configuration_error:null,request_gate:{hitl_mode:true,flight_state:'Startup',prelaunch:true,button_interlock_satisfied:true}};
   const commandContext=await browser.newContext({viewport:{width:1280,height:900}});
   await commandContext.addInitScript(({session,origin})=>localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]})),{session,origin});
-  const requests=[];
+  const requests=[];let commandSocket;
   // Keep the debug bundle's hot-reload socket inert in this static fixture.
   await commandContext.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
   await commandContext.routeWebSocket(url=>url.pathname==='/ws'&&url.searchParams.get('token')==='ui-token',socket=>{
+    commandSocket=socket;
     socket.onMessage(message=>requests.push(JSON.parse(String(message)).cmd));
     const timer=setInterval(()=>socket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy})),500);
     socket.onClose(()=>clearInterval(timer));
@@ -326,6 +353,23 @@ try{
     assert.equal(requests.length,count,`${cmd} cancellation sends no request`);
   }
   assert.equal(await commandPage.getByRole('alert').filter({hasText:'Command not sent:'}).count(),0);
+  await commandPage.getByRole('navigation',{name:'Mission navigation'}).getByRole('link',{name:'Dashboard',exact:true}).click();
+  const liveRows=[
+    ['LOADCELL_50_WEIGHT_KG','DAQ',[12.34]],['LOADCELL_WEIGHT_KG','DAQ',[987.65]],
+    ['FUEL_TANK_PRESSURE','VB',[720.5]],['LOADCELL_FILL_PERCENT','DAQ',[82.25]],
+    ['BATTERY_VOLTAGE','GB',[14.05]],['BATTERY_VOLTAGE','VB',[16.24]],
+    ['VALVE_STATE','VB',[0,1,1,0,0,0,0,0]]
+  ];
+  for(const width of [1280,844,390,320]) {
+    await commandPage.setViewportSize({width,height:900});
+    const now=Date.now();commandSocket.send(JSON.stringify({ty:'TelemetryBatch',data:liveRows.map(([data_type,sender_id,values])=>({data_type,sender_id,values,timestamp_ms:now,received_timestamp_ms:now}))}));
+    for(const [label,value] of [['50 kg loadcell','12.34 kg'],['1000 kg loadcell','987.65 kg'],['Fill box battery','14.05 V'],['Valve board battery','16.24 V'],['Vent','Open / On'],['Nitrogen','Closed / Off'],['Nitrous','Closed / Off']]) {
+      const card=commandPage.locator('.gs26-dashboard-card').filter({has:commandPage.getByText(label,{exact:true})});
+      await card.getByText(value,{exact:true}).waitFor();
+    }
+    assert(await commandPage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'live overview fits '+width);
+    await commandPage.screenshot({path:`/tmp/gs-live-overview-${width}.png`,fullPage:true});
+  }
   await commandContext.close();
   assert.deepEqual(errors,[]);
   console.log('PASS: no dashboard model, persistent/resizable camera cards, offline recovery, stream manager permissions, card editing, live pins, per-user persistence, hidden tabs, iframe session handoff/lifetime, desktop and mobile tab picker, permission-gated checklist, stream-only Mission Live, selected-loadcell fill in Loadcell and DAQ, all 55 command buttons, recovery confirmation acceptance and cancellation');

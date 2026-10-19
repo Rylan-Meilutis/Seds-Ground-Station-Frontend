@@ -2,17 +2,17 @@
 
 // frontend/src/telemetry_dashboard/mod.rs
 
+mod accel_display_filter;
 mod actions_tab;
 mod admin_console;
-mod custom_dashboard;
-mod report_studio;
 mod calibration_tab;
 mod connection_status_tab;
+mod custom_dashboard;
 pub mod data_chart;
-mod accel_display_filter;
 pub mod data_tab;
 mod detailed_tab;
-mod network_health;
+mod info_panels;
+mod navigation_rail;
 pub mod errors_tab;
 mod firmware_update_tab;
 mod gps;
@@ -28,11 +28,14 @@ mod layout_settings_tab;
 mod live_stream_tab;
 mod media_tool_tab;
 mod messages_tab;
+mod network_health;
 mod network_topology_tab;
 mod notifications_tab;
+pub(crate) mod prelude;
 mod recording_download;
 mod recovery_status;
-pub(crate) mod prelude;
+mod report_studio;
+mod reseed_buffer;
 mod stream_studio;
 pub mod types;
 mod vehicle_tab;
@@ -41,9 +44,9 @@ pub mod version_page;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod gps_apple;
 
-pub mod map_tab;
-mod antenna_math;
 mod antenna_aiming;
+mod antenna_math;
+pub mod map_tab;
 pub mod warnings_tab;
 
 use crate::app::Route;
@@ -96,7 +99,8 @@ use once_cell::sync::Lazy;
 static TELEMETRY_QUEUE: Lazy<Mutex<VecDeque<TelemetryRow>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
 static RESEED_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-static RESEED_LIVE_BUFFER: Lazy<Mutex<Vec<TelemetryRow>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static RESEED_LIVE_BUFFER: Lazy<Mutex<reseed_buffer::ReseedBuffer>> =
+    Lazy::new(|| Mutex::new(reseed_buffer::ReseedBuffer::default()));
 static RESEED_HISTORY_BRIDGE: Lazy<Mutex<Vec<TelemetryRow>>> = Lazy::new(|| Mutex::new(Vec::new()));
 static RESEED_STATUS: AtomicU8 = AtomicU8::new(0);
 static RESEED_STATUS_TOKEN: AtomicU64 = AtomicU64::new(0);
@@ -240,7 +244,9 @@ fn normalize_live_telemetry_row_for_client_clock(
     mut row: TelemetryRow,
     now_ms: i64,
 ) -> Option<TelemetryRow> {
-    if !graph_row_allowed(row.timestamp_ms) { return None; }
+    if !graph_row_allowed(row.timestamp_ms) {
+        return None;
+    }
     row.received_timestamp_ms = now_ms;
     row.refresh_interned_ids();
     if live_telemetry_row_is_fresh(&row, now_ms) {
@@ -401,7 +407,10 @@ static DASHBOARD_RUNTIME_TX: Lazy<Mutex<Option<DashboardRuntimePump>>> =
     Lazy::new(|| Mutex::new(None));
 
 fn retire_dashboard_runtime_pump(slot: &mut Option<DashboardRuntimePump>, generation: u64) -> bool {
-    if slot.as_ref().is_some_and(|pump| pump.generation == generation) {
+    if slot
+        .as_ref()
+        .is_some_and(|pump| pump.generation == generation)
+    {
         slot.take();
         true
     } else {
@@ -413,13 +422,26 @@ fn retire_dashboard_runtime_pump(slot: &mut Option<DashboardRuntimePump>, genera
 fn old_connection_cleanup_cannot_remove_restarted_dashboard_pump() {
     let (old_tx, mut old_rx) = futures_channel::mpsc::unbounded();
     let (new_tx, mut new_rx) = futures_channel::mpsc::unbounded();
-    let mut slot = Some(DashboardRuntimePump { generation: 1, sender: old_tx });
+    let mut slot = Some(DashboardRuntimePump {
+        generation: 1,
+        sender: old_tx,
+    });
     // Installing the replacement drops the old sender and wakes the retiring
     // receiver. Its cleanup runs after the new channel has been installed.
-    slot.replace(DashboardRuntimePump { generation: 2, sender: new_tx });
-    assert!(matches!(old_rx.try_recv(), Err(futures_channel::mpsc::TryRecvError::Closed)));
+    slot.replace(DashboardRuntimePump {
+        generation: 2,
+        sender: new_tx,
+    });
+    assert!(matches!(
+        old_rx.try_recv(),
+        Err(futures_channel::mpsc::TryRecvError::Closed)
+    ));
     assert!(!retire_dashboard_runtime_pump(&mut slot, 1));
-    slot.as_ref().unwrap().sender.unbounded_send(DashboardRuntimeEvent::Pump).unwrap();
+    slot.as_ref()
+        .unwrap()
+        .sender
+        .unbounded_send(DashboardRuntimeEvent::Pump)
+        .unwrap();
     assert!(matches!(new_rx.try_recv(), Ok(DashboardRuntimeEvent::Pump)));
     assert!(retire_dashboard_runtime_pump(&mut slot, 2));
     assert!(slot.is_none());
@@ -714,7 +736,11 @@ fn schedule_dashboard_runtime_pump() {
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().cloned())
-        .is_some_and(|pump| pump.sender.unbounded_send(DashboardRuntimeEvent::Pump).is_ok());
+        .is_some_and(|pump| {
+            pump.sender
+                .unbounded_send(DashboardRuntimeEvent::Pump)
+                .is_ok()
+        });
 
     if !sent {
         DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
@@ -874,7 +900,18 @@ fn set_reseed_status_running() {
 }
 
 fn set_reseed_status_ok(_rows: usize) {
-    set_reseed_status(2, Some("Past data loaded.".to_string()));
+    let dropped = RESEED_LIVE_BUFFER
+        .lock()
+        .map(|buffer| buffer.dropped())
+        .unwrap_or(0);
+    let detail = if dropped == 0 {
+        "Past data loaded.".to_string()
+    } else {
+        format!(
+            "Past data loaded; {dropped} live display rows omitted during slow reload. Recordings are unchanged."
+        )
+    };
+    set_reseed_status(2, Some(detail));
     let token = RESEED_STATUS_TOKEN.load(Ordering::Relaxed);
     spawn(async move {
         #[cfg(target_arch = "wasm32")]

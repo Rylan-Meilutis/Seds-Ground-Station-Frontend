@@ -33,13 +33,20 @@ pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> El
             }
         }
     });
-    rsx! {section {style:"width:100%;padding:16px;box-sizing:border-box;border:1px solid #344454;border-radius:12px;background:#101923;color:#e4ebf0;",
+    rsx! {section {class:"gs26-stream-studio",style:"width:100%;padding:16px;box-sizing:border-box;border:1px solid #344454;border-radius:12px;background:#101923;color:#e4ebf0;",
       h3 {style:"margin:0 0 12px;","Broadcast studio"}
       p {style:"font-size:12px;color:#a9b7c4;","The broadcast below is the same buffered program for everyone. Camera changes, telemetry and crew comms use its delayed timeline."}
       div {style:"display:flex;align-items:center;gap:12px;flex-wrap:wrap;",
        label {"Mission label " input {value:"{label}",disabled:*busy.read(),oninput:move|e|label.set(e.value())}}
        label {"Audience delay (3–60 seconds) " input {r#type:"number",min:"3",max:"60",value:"{delay}",disabled:*busy.read(),oninput:move|e|{if let Ok(v)=e.value().parse(){delay.set(v);}}}}
-       label { input {r#type:"checkbox",checked:*comms_audio.read(),disabled:*busy.read(),onchange:move|e|comms_audio.set(e.checked())} " Include crew audio in audience stream (delayed)" }
+
+      }
+      fieldset {class:"gs26-audience-audio",
+       legend {"Audience audio"}
+       label { input {r#type:"checkbox",checked:*comms_audio.read(),disabled:*busy.read(),"aria-describedby":"audience-audio-help",onchange:move|e|comms_audio.set(e.checked())} " Include crew voice (VC)" }
+       p {id:"audience-audio-help","Voice follows the audience delay. Viewers can listen without joining the call."}
+      }
+      div {
        button {disabled:*busy.read()||!(3..=60).contains(&*delay.read()),onclick:move |_|{
          let mut next=broadcast.clone();next.delay_seconds=*delay.read();next.label=label.read().clone();next.comms_audio_enabled=*comms_audio.read();busy.set(true);
          spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(_)=>message.set("Broadcast settings saved. Crew audio follows the audience delay.".into()),Err(e)=>message.set(e)}busy.set(false);});

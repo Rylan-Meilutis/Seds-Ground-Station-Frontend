@@ -186,3 +186,39 @@ mod tests {
         assert!(back_camera_direction(f64::INFINITY, 0.0, 0.0).is_none());
     }
 }
+
+/// A readable 1/2/5 map radius, keeping the destination inside the viewport.
+pub fn map_range_m(distance_m: f64) -> f64 {
+    let needed = (distance_m.max(0.0) * 1.2).max(25.0);
+    let decade = 10.0_f64.powf(needed.log10().floor());
+    [1.0, 2.0, 5.0, 10.0]
+        .into_iter()
+        .find(|step| step * decade >= needed)
+        .unwrap_or(10.0)
+        * decade
+}
+/// Relative GPS map: the selected origin stays centered and forward stays up.
+pub fn heading_up_point(distance_m: f64, error_deg: f64, range_m: f64) -> (f64, f64) {
+    let radius = (distance_m / range_m).clamp(0.0, 1.0) * 100.0;
+    let angle = error_deg.to_radians();
+    (140.0 + angle.sin() * radius, 140.0 - angle.cos() * radius)
+}
+#[cfg(test)]
+mod heading_map_tests {
+    use super::*;
+    #[test]
+    fn forward_and_right_follow_heading() {
+        assert_eq!(heading_up_point(100.0, 0.0, 100.0), (140.0, 40.0));
+        let (x, y) = heading_up_point(100.0, 90.0, 100.0);
+        assert!((x - 240.0).abs() < 1e-8 && (y - 140.0).abs() < 1e-8);
+        let (x, y) = heading_up_point(100.0, -90.0, 100.0);
+        assert!((x - 40.0).abs() < 1e-8 && (y - 140.0).abs() < 1e-8);
+    }
+    #[test]
+    fn map_radius_keeps_near_and_far_targets_visible() {
+        for distance in [0.0, 1.0, 25.0, 100.0, 1113.0, 100000.0] {
+            let range = map_range_m(distance);
+            assert!(range >= 25.0 && range >= distance * 1.2);
+        }
+    }
+}

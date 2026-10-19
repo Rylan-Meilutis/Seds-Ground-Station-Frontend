@@ -69,7 +69,13 @@ fn send_session(id: &str, token: Option<&str>, visible: bool) {
                         return;
                     }}
                     const origin = new URL(frame.src, location.href).origin;
-                    frame.contentWindow?.postMessage(bridge.payload, origin);
+                    const style = getComputedStyle(document.documentElement);
+                    const theme = {{}};
+                    for (const name of ['--gs26-app-background','--gs26-app-text','--gs26-panel-background','--gs26-panel-alt-background','--gs26-border','--gs26-text-muted','--gs26-button-background','--gs26-button-border','--gs26-button-text']) {{
+                        const value=style.getPropertyValue(name).trim();
+                        if(value) theme[name]=value;
+                    }}
+                    frame.contentWindow?.postMessage({{...bridge.payload,theme}}, origin);
                 }};
                 bridge.timer = setInterval(bridge.send, 500);
                 frame.gs26SessionBridge = bridge;
