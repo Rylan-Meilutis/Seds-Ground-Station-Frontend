@@ -430,6 +430,7 @@ try{
   const warn=(timestamp,message)=>{for(const socket of alertSockets)socket.send(JSON.stringify({ty:'Warning',data:{timestamp_ms:timestamp,message}}));};
   warn(warningTime,'Isolated warning fixture');
   for(const client of [commandPage,observer])await client.locator('.gs26-status-value').getByText('Attention',{exact:true}).waitFor();
+  for(const client of [commandPage,observer])await client.locator('.gs26-status-count').filter({hasText:'Warnings: 1'}).waitFor();
   alertAckFailure=true;
   await commandPage.getByRole('button',{name:'Clear warnings',exact:true}).click();
   await commandPage.getByRole('alert').getByText('Could not clear warnings. Please retry.',{exact:true}).waitFor();
@@ -437,6 +438,7 @@ try{
   alertAckFailure=false;
   await commandPage.getByRole('button',{name:'Clear warnings',exact:true}).click();
   for(const client of [commandPage,observer])await client.locator('.gs26-status-value').getByText('Nominal',{exact:true}).waitFor();
+  for(const client of [commandPage,observer])assert.equal(await client.locator('.gs26-status-count').filter({hasText:'Warnings:'}).count(),0,'acknowledged warning history must not leave a badge');
   assert.equal(alertAckRequests.length,2);
   assert(alertAckRequests.every(request=>request.warning_timestamp_ms===warningTime&&request.error_timestamp_ms===0),'warning clearing must not acknowledge errors');
   warn(warningTime+1,'A new warning must remain active');

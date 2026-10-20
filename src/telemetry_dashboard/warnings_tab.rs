@@ -74,3 +74,23 @@ pub(super) fn ClearWarningsButton(latest_warning_ts: i64, mut ack_warning_ts: Si
         if !error.read().is_empty() {small {role:"alert",title:error.read().clone(),"Could not clear warnings. Please retry."}}
     }}
 }
+
+/// Header badge excludes acknowledged history, including later DB reseeds.
+pub(super) fn unacknowledged_warning_count(warnings: &[AlertMsg], cutoff_ms: i64) -> usize {
+    warnings.iter().filter(|w| w.timestamp_ms > cutoff_ms).count()
+}
+
+#[cfg(test)]
+mod badge_tests {
+    use super::*;
+    #[test]
+    fn cleared_history_does_not_reappear_in_badge_and_new_warnings_do() {
+        let warning = |timestamp_ms| AlertMsg { timestamp_ms, message: "fixture".into() };
+        let rows = vec![warning(90), warning(100), warning(110)];
+        assert_eq!(unacknowledged_warning_count(&rows, 0), 3);
+        assert_eq!(unacknowledged_warning_count(&rows, 100), 1);
+        assert_eq!(unacknowledged_warning_count(&rows, 110), 0);
+        assert_eq!(unacknowledged_warning_count(&[warning(90),warning(100)],110),0);
+        assert_eq!(unacknowledged_warning_count(&[warning(90),warning(111)],110),1);
+    }
+}

@@ -1682,7 +1682,8 @@ fn TelemetryDashboardInner() -> Element {
             count.to_string()
         }
     };
-    let warn_count_label = format_capped_alert_count(warn_count);
+    let unacked_warning_count = warnings_tab::unacknowledged_warning_count(&warnings.read(), *ack_warning_ts.read());
+    let warn_count_label = format_capped_alert_count(unacked_warning_count);
     let err_count_label = format_capped_alert_count(err_count);
 
     let latest_warning_ts = warnings
@@ -3574,6 +3575,7 @@ fn TelemetryDashboardInner() -> Element {
                                     style: "{errors_status_style}",
                                     {format!("{}: {}", translate_text("Errors"), err_count_label)}
                                 }
+                                if active_warning_alert {
                                 button {
                                     onclick:move |_|active_main_tab.set(MainTab::Warnings),
                                     "data-alert":if active_warning_alert {"warning"}else{"none"},
@@ -3582,6 +3584,7 @@ fn TelemetryDashboardInner() -> Element {
                                     "data-active": if has_warnings { "true" } else { "false" },
                                     style: "{warnings_status_style}",
                                     {format!("{}: {}", translate_text("Warnings"), warn_count_label)}
+                                }
                                 }
                                 if active_warning_alert {
                                     warnings_tab::ClearWarningsButton {latest_warning_ts,ack_warning_ts}
