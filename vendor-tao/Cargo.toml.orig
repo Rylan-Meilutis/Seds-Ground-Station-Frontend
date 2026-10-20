@@ -151,6 +151,7 @@ core-graphics = "0.25"
 dispatch2 = "0.3"
 
 [target."cfg(any(target_os = \"linux\", target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\"))".dependencies]
+async-channel = "2.5"
 gtk = "0.18"
 gdkx11-sys = { version = "0.18", optional = true }
 gdkwayland-sys = "0.18.0"
