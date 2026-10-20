@@ -29,6 +29,7 @@ pub fn TelemetryDashboard() -> Element {
 fn TelemetryDashboardInner() -> Element {
     // Always valid; becomes “real” once outer publishes it.
     let mut antenna_aiming = use_signal(|| false);
+    let mut stream_camera_tool = use_signal(|| false);
     let mut admin_open = use_signal(||false);
     let alive = dashboard_alive();
     let _restored_cached_rows = use_signal(restore_cached_telemetry_rows_if_needed);
@@ -2525,9 +2526,45 @@ fn TelemetryDashboardInner() -> Element {
         }
     };
 
+    let surface_session=auth::current_status();
+    let surface_viewer=surface_session.roles.iter().any(|r|r=="stream_viewer") && !auth::can_manage_stream() && !auth::can_view_actions();
+    let surface_stream=*streamer_mode.read() || surface_viewer || matches!(*active_main_tab.read(),MainTab::Mission|MainTab::StreamManager);
+    let surface_manager=surface_stream && !surface_viewer && !*streamer_mode.read() && *active_main_tab.read()==MainTab::StreamManager;
+    let media_visible=!*antenna_aiming.read() && !*admin_open.read() && ((surface_manager && *stream_camera_tool.read()) || (!surface_stream && *active_main_tab.read()==MainTab::Media));
+    let voice_visible=!*antenna_aiming.read() && !*admin_open.read() && !surface_stream && *active_main_tab.read()==MainTab::CrewVoice;
+    let view=(|| -> Element {
     // Keep hooks stable, but unmount all normal data views while aiming.
     if *antenna_aiming.read() {
         return rsx! { antenna_aiming::AntennaAiming {on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
+    }
+
+    // Dedicated media devices must not mount dashboard alerts, warnings or controls.
+    let stream_roles = auth::current_status();
+    let viewer_only = stream_roles.roles.iter().any(|r| r == "stream_viewer")
+        && !auth::can_manage_stream() && !auth::can_view_actions();
+    let dedicated_stream = *streamer_mode.read() || viewer_only
+        || matches!(*active_main_tab.read(), MainTab::Mission | MainTab::StreamManager);
+    if dedicated_stream {
+        let managing = !viewer_only && !*streamer_mode.read() && *active_main_tab.read() == MainTab::StreamManager;
+        return rsx! {
+            div {style:"height:var(--gs26-app-height,100dvh);font-family:system-ui,sans-serif;display:flex;flex-direction:column;background:{theme.tab_shell_background};color:{theme.text_primary};",
+                if viewer_only {div {style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:.7;",{auth_button}}}
+                if !viewer_only {
+                    button {r#type:"button",style:"align-self:end;min-height:44px;margin:8px;padding:8px 16px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_| {
+                        let mut mode=streamer_mode;mode.set(false);active_main_tab.set(MainTab::State);
+                    },"Exit stream mode"}
+                }
+                div {style:"flex:1;min-height:0;",
+                    if managing && *stream_camera_tool.read() {
+                        button {r#type:"button",style:"min-height:44px;padding:8px 12px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_|stream_camera_tool.set(false),"Back to stream controls"}
+                        div {id:"gs26-media-slot",style:"height:calc(100% - 44px);min-height:0;"}
+                    } else {
+                        LiveStreamTab {manager_mode:managing,program_only:!managing,dedicated:true,theme:theme.clone(),
+                            on_open_voice:move |_|{},on_open_media:move |_|stream_camera_tool.set(true)}
+                    }
+                }
+            }
+        };
     }
 
     if *admin_open.read() {
@@ -3609,7 +3646,7 @@ fn TelemetryDashboardInner() -> Element {
                             div { class: "gs26-status-network",
                                 NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
                             }
-                            custom_dashboard::PinnedTelemetry {}
+                            custom_dashboard::PinnedTelemetry {phase:flight_state.read().clone(),test_fire_mode:layout.test_fire_mode}
                             div { class: "gs26-status-launch",
                                 LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
                             }
@@ -3619,22 +3656,16 @@ fn TelemetryDashboardInner() -> Element {
                     }
                     recovery_status::RecoveryStatus {}
                     div { style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
-                        media_tool_tab::MediaToolTab {
-                            id: "gs26-crew-voice", path: "/radio?embedded=1", title: "Voice chat",
-                            visible: !*streamer_mode.read() && *active_main_tab.read() == MainTab::CrewVoice,
-                        }
-                        media_tool_tab::MediaToolTab {
-                            id: "gs26-media", path: "/media?embedded=1", title: "Cameras and recordings",
-                            visible: !*streamer_mode.read() && *active_main_tab.read() == MainTab::Media,
-                        }
+                        div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
+                        div {id:"gs26-media-slot",style:if media_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                         match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
                             MainTab::State => rsx! {
                                 div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
-                                    custom_dashboard::CustomDashboard {theme:theme.clone()}
+                                    custom_dashboard::CustomDashboard {theme:theme.clone(),phase:flight_state.read().clone(),test_fire_mode:layout.test_fire_mode}
                                     if *ground_station_view.read() && auth::can_view_actions() && flight_state.read().as_str() == "Aborted" {
                                         gse_panel::ClearGseAbort {}
                                     }
-                                    if *ground_station_view.read() && auth::can_view_actions() && gse_panel::ground_visible(&flight_state.read()) {
+                                    if *ground_station_view.read() && auth::can_view_actions() && (layout.test_fire_mode || gse_panel::ground_visible(&flight_state.read())) {
                                         gse_panel::GsePanel {action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false}
                                     }
                                 }
@@ -3925,6 +3956,8 @@ fn TelemetryDashboardInner() -> Element {
                 {settings_overlay}
                 {version_overlay}
             }
+    })();
+    rsx! {media_tool_tab::MediaSurface {media_visible,voice_visible,{view}}}
 }
 
 fn send_cmd(cmd: &str) {

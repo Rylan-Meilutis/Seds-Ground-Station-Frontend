@@ -8,6 +8,7 @@ const root=path.resolve('target/dx/groundstation_frontend/debug/web/public');
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
 const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['stream_master'],permissions:{view_data:true,send_commands:true}};
 let cameraOnline=true;
+let broadcastState=example('live-streams').broadcast;
 let fillSource='kg50';
 let gseStatus=null, qualificationResets=0,gseUnavailable=false;
 let actionPolicy=example('action-policy');
@@ -48,9 +49,16 @@ const server=http.createServer(async(req,res)=>{
     qualificationResets++;gseStatus.qualification={self_test:false,nitrogen_test:false,fill_target:false,fault:null};
     res.setHeader('Content-Type','application/json');res.end('{"reset":true}');return;
   }
+  if(pathname==='/api/live_streams/control') {
+    let body='';for await(const data of req)body+=data;
+    const next=JSON.parse(body);assert.equal(next.revision,broadcastState.revision);
+    next.revision++;
+    if(next.replay && !next.replay.id){next.replay.id='fixture-replay';next.replay.started_at_ms=Date.now();next.replay.source_end_ms=Date.now()-10000;}
+    broadcastState=next;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(next));return;
+  }
   if(pathname.startsWith('/api/')){
     res.setHeader('Content-Type','application/json');
-    const data=pathname==='/api/auth/session'?session:pathname==='/api/layout'?dashboardLayout:pathname==='/api/fill_targets'?{version:1,fill_source:fillSource,nitrogen:{target_mass_kg:10,target_pressure_psi:100},nitrous:{target_mass_kg:20,target_pressure_psi:200}}:pathname==='/api/live_streams'?{...example('live-streams'),can_manage_stream:session.roles.some(role=>['stream_master','stream_admin','admin'].includes(role)),program_url:'',can_preview_live:session.roles.some(role=>['stream_master','stream_admin','admin'].includes(role)),streams:[{id:'pad-wide',label:'Pad wide',url:'/test-camera?ticket=fixture',online:cameraOnline,kind:'webrtc'}]}:pathname==='/api/vehicle'?{}:[];
+    const data=pathname==='/api/auth/session'?session:pathname==='/api/layout'?dashboardLayout:pathname==='/api/fill_targets'?{version:1,fill_source:fillSource,nitrogen:{target_mass_kg:10,target_pressure_psi:100},nitrous:{target_mass_kg:20,target_pressure_psi:200}}:pathname==='/api/live_streams'?{...example('live-streams'),broadcast:broadcastState,can_manage_stream:session.roles.some(role=>['stream_master','stream_admin','admin'].includes(role)),program_url:'',can_preview_live:session.roles.some(role=>['stream_master','stream_admin','admin'].includes(role)),streams:[{id:'pad-wide',label:'Pad wide',url:'/test-camera?ticket=fixture',online:cameraOnline,kind:'webrtc'}]}:pathname==='/api/vehicle'?{}:[];
     res.end(JSON.stringify(data));return;
   }
   const relative=pathname==='/'||pathname==='/dashboard'?'index.html':pathname.slice(1);
@@ -159,6 +167,9 @@ try{
   assert.equal(await page.locator('.gs26-program-header, .gs26-program-editor').count(),0,'Mission Live is stream only');
   assert.equal(await page.getByText('Ground setup',{exact:true}).count(),0,'no ground controls in stream');
   assert.equal(await page.locator('#ground-checklist-panel').count(),0,'checklist stays collapsed');
+  assert.equal(await page.locator('.gs26-status-shell, .gs26-navigation-rail').count(),0,'viewer is dedicated with no dashboard status');
+  assert.equal(await page.getByText('GroundStation disconnected. Reconnecting automatically; displayed data may be stale.',{exact:true}).count(),0,'viewer has no mission warnings');
+  await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
   await page.getByRole('button',{name:'Checklist',exact:true}).click();
   assert(await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).isChecked(),'checklist persists across tabs');
   await page.getByRole('button',{name:'Checklist',exact:true}).click();
@@ -168,8 +179,18 @@ try{
   await choose();
   await page.getByRole('button',{name:'Stream Manager',exact:true}).click();
   await page.getByRole('heading',{name:'Broadcast studio'}).waitFor();
-  assert.equal((await page.locator('.gs26-title-tab-toggle span').first().innerText()),'Stream Manager');
-  await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
+  await page.getByRole('heading',{name:'Instant replay'}).waitFor();
+  await page.getByLabel('Last seconds',{exact:true}).fill('20');
+  await page.getByLabel('Playback',{exact:true}).selectOption('0.25');
+  await page.getByRole('button',{name:'Play replay',exact:true}).click();
+  await page.getByText('Replay on air',{exact:true}).waitFor();
+  await page.screenshot({path:'/tmp/gs-stream-manager-replay.png',fullPage:true});
+  assert.equal(broadcastState.replay.duration_seconds,20);assert.equal(broadcastState.replay.speed,0.25);
+  await page.getByRole('button',{name:'Return to live',exact:true}).click();
+  await page.getByText('Live program restored',{exact:true}).waitFor();assert.equal(broadcastState.replay,null);
+
+  assert.equal(await page.locator('.gs26-status-shell').count(),0,'operator is dedicated with no dashboard status');
+  await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
   await page.getByRole('button',{name:'Customize dashboard',exact:true}).click();
   await page.getByRole('button',{name:'Pin to top bar',exact:true}).first().click();
   await page.locator('[aria-label="Pinned telemetry"]').getByText('50 kg loadcell',{exact:true}).waitFor();
@@ -207,6 +228,17 @@ try{
   await choose();await page.getByRole('button',{name:'Cameras & Recordings',exact:true}).click();
   await page.frameLocator('#gs26-media').getByText('Media tool fixture').waitFor({state:'visible'});
   assert.equal(await page.evaluate(()=>document.querySelector('#gs26-media').contentWindow.instanceMarker),43,'camera document persists when reopened');
+  await choose();await page.getByRole('button',{name:'Stream Manager',exact:true}).click();
+  await page.getByRole('heading',{name:'Broadcast studio',exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>document.querySelector('#gs26-media').contentWindow.instanceMarker),43,'camera source survives entering exclusive operator mode');
+  assert.equal(await page.evaluate(()=>document.querySelector('#gs26-crew-voice').contentWindow.instanceMarker),42,'voice session survives exclusive operator mode');
+  assert.equal(await page.locator('#gs26-media').isVisible(),false);
+  await page.getByRole('button',{name:'Camera recordings',exact:true}).click();
+  await page.frameLocator('#gs26-media').getByText('Media tool fixture').waitFor({state:'visible'});
+  assert.equal(await page.evaluate(()=>document.querySelector('#gs26-media').contentWindow.instanceMarker),43,'operator camera management reuses the active source document');
+  await page.getByRole('button',{name:'Back to stream controls',exact:true}).click();
+  await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
+
   await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
   await choose();await page.getByRole('button',{name:'Organize tabs',exact:true}).click();
   await page.getByRole('checkbox',{name:'Voice Chat',exact:true}).uncheck();
@@ -273,6 +305,7 @@ try{
   assert.equal((await page.getByRole('button',{name:'Exit admin',exact:true}).boundingBox()).height,44,'admin uses the shared button height');
   await page.getByRole('button',{name:'Broadcast studio',exact:true}).click();
   await page.getByRole('heading',{name:'Broadcast studio',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
   await page.getByRole('button',{name:'Admin',exact:true}).click();
   await page.getByRole('button',{name:'Exit admin',exact:true}).click();
   session.roles=[]; session.username='other-user'; session.permissions.send_commands=false;
@@ -314,6 +347,8 @@ try{
   gseStatus={phase:'idle',message:'Isolated test',dry_self_test_confirmed:false,configuration_error:null,request_gate:{hitl_mode:true,flight_state:'Startup',prelaunch:true,button_interlock_satisfied:true}};
   const commandContext=await browser.newContext({viewport:{width:1280,height:900}});
   await commandContext.addInitScript(({session,origin})=>localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]})),{session,origin});
+  // New Playwright's WebSocket mock uses URL.parse, absent in older system Chrome.
+  await commandContext.addInitScript(()=>{if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base);}catch{return null;}};});
   const requests=[];let commandSocket;
   // Keep the debug bundle's hot-reload socket inert in this static fixture.
   await commandContext.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
@@ -371,6 +406,12 @@ try{
     await commandPage.screenshot({path:`/tmp/gs-live-overview-${width}.png`,fullPage:true});
   }
   await commandContext.close();
+  session.roles=['stream_viewer'];session.permissions.send_commands=false;
+  await page.reload();
+  await page.getByText('Waiting for the delayed broadcast program…',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'viewer role mounts no mission navigation');
+  assert.equal(await page.locator('.gs26-status-shell,.gs26-program-editor').count(),0,'viewer has no mission status or operator controls');
+  assert.equal(await page.getByRole('button',{name:'Exit stream mode',exact:true}).count(),0,'viewer role cannot return to mission controls');
   assert.deepEqual(errors,[]);
   console.log('PASS: no dashboard model, persistent/resizable camera cards, offline recovery, stream manager permissions, card editing, live pins, per-user persistence, hidden tabs, iframe session handoff/lifetime, desktop and mobile tab picker, permission-gated checklist, stream-only Mission Live, selected-loadcell fill in Loadcell and DAQ, all 55 command buttons, recovery confirmation acceptance and cancellation');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

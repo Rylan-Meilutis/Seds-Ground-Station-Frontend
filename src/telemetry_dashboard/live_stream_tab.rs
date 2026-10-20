@@ -39,7 +39,14 @@ pub(crate) struct BroadcastState {
     pub layout: String,
     #[serde(default)]
     pub revision: u64,
+    #[serde(default)]
+    pub replay: Option<ReplayPlan>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ReplayCamera {pub id:String,pub x:f32,pub y:f32,pub zoom:f32}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ReplayPlan {pub id:String,pub duration_seconds:u32,pub speed:f32,pub cameras:Vec<ReplayCamera>,pub started_at_ms:u64,pub source_end_ms:u64}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct LiveStreamSpec {
@@ -103,6 +110,7 @@ pub(crate) fn LiveStreamTab(
     on_open_media: EventHandler,
     #[props(default = false)] manager_mode: bool,
     #[props(default = false)] program_only: bool,
+    #[props(default = false)] dedicated: bool,
 ) -> Element {
     let mut config = use_signal(|| None::<LiveStreamConfig>);
     let mut status = use_signal(|| "Loading broadcast…".to_string());
@@ -128,15 +136,38 @@ pub(crate) fn LiveStreamTab(
             .gs26-program-shell { height:100%; min-height:0; min-width:0; display:flex; flex-direction:column; overflow:auto; padding:8px; box-sizing:border-box; }
             .gs26-program-header { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:4px 0 10px; }
             .gs26-program-header a { color:inherit; }
+            .gs26-program-shell button,.gs26-program-shell input,.gs26-program-shell select {font:inherit;min-height:44px;max-width:100%;box-sizing:border-box;border:1px solid #526579;border-radius:10px;padding:8px 12px;background:#172b3a;color:inherit;}
+            .gs26-program-shell label {display:flex;flex-direction:column;gap:6px;min-width:0;font-size:14px;}
+            .gs26-program-shell input:not([type=checkbox]),.gs26-program-shell select {width:min(100%,16rem);}
+            .gs26-program-shell input[type=range] {width:140px;}
+            .gs26-program-shell button:disabled {opacity:.5;}
+            .gs26-program-shell input[type=checkbox] {min-height:18px;width:18px;height:18px;padding:0;flex:0 0 auto;}
+            .gs26-program-shell label:has(> input[type=checkbox]) {flex-direction:row;align-items:center;min-height:44px;}
+            .gs26-program-shell fieldset {border:1px solid #344454;border-radius:10px;margin:0;padding:12px;min-width:0;}
+            .gs26-program-workspace > p {align-self:center;justify-self:center;padding:20px;color:#a9b7c4;font-size:14px;}
+
+            .gs26-program-shell[data-program-only=true] {padding:0;overflow:hidden;}
+            .gs26-program-shell[data-program-only=true] .gs26-program-player {min-height:0;flex:1;}
+
             .gs26-program-player { width:100%; flex:1 0 420px; min-height:420px; border:0; background:#080d15; }
             .gs26-program-editor { padding:10px 0; }
+            .gs26-program-workspace {display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;}
+            .gs26-program-workspace[data-manager=true] {display:grid;grid-template-columns:minmax(280px,380px) minmax(0,1fr);gap:12px;overflow:hidden;}
+            .gs26-program-workspace[data-manager=true] > .gs26-program-editor {overflow:auto;min-height:0;padding:0;}
+            .gs26-program-workspace[data-manager=true] > .gs26-program-player {height:100%;min-height:0;}
+            @media(max-width:800px) {
+                .gs26-program-workspace[data-manager=true] {display:flex;overflow:auto;}
+                .gs26-program-workspace[data-manager=true] > .gs26-program-editor {overflow:visible;}
+                .gs26-program-workspace[data-manager=true] > .gs26-program-player {order:-1;flex:0 0 36vh;min-height:180px;position:sticky;top:0;z-index:2;}
+            }
+
             @media(max-width:500px) { .gs26-program-player { flex-basis:560px; min-height:560px; } }
         "#} }
-        div { class:"gs26-program-shell", style:"color:{theme.text_primary};background:{theme.tab_shell_background};",
+        div { class:"gs26-program-shell", "data-program-only":program_only.to_string(), style:"color:{theme.text_primary};background:{theme.tab_shell_background};",
             if manager_mode && !program_only {
                 div { class:"gs26-program-header",
                     strong { if manager_mode { "Stream Manager" } else { "Mission broadcast" } }
-                    button { onclick:move |_| on_open_voice.call(()), "Voice Chat" }
+                    if !dedicated {button { onclick:move |_| on_open_voice.call(()), "Voice Chat" }}
                     if cfg.can_preview_live {
                         button { onclick:move |_| on_open_media.call(()), "Camera recordings" }
                     }
@@ -149,9 +180,11 @@ pub(crate) fn LiveStreamTab(
             }
             if manager_mode && config.read().is_some() && !cfg.can_manage_stream { p { "Stream-management permission is required to use these controls." } }
             if !status.read().is_empty() { p { role:"status", "{status}" } }
+            div {class:"gs26-program-workspace","data-manager":(manager_mode && cfg.can_manage_stream && *edit_mode.read() && !program_only).to_string(),
             if manager_mode && cfg.can_manage_stream && *edit_mode.read() && !program_only {
                 div {class:"gs26-program-editor",
                     super::stream_studio::StreamStudio { broadcast:cfg.broadcast.clone(), program_url:cfg.program_url.clone() }
+                    super::stream_studio::ReplayControls {broadcast:cfg.broadcast.clone(),streams:cfg.streams.clone()}
                     div {style:"display:flex;gap:10px;flex-wrap:wrap;padding:10px 0;",
                         label { "Camera layout "
                             select { value:cfg.broadcast.layout.clone(), onchange:{
@@ -206,6 +239,7 @@ pub(crate) fn LiveStreamTab(
             if cfg.program_url.is_empty() {p {"Waiting for the delayed broadcast program…"}}
             else {iframe {class:"gs26-program-player",src:url,title:"Mission broadcast — delayed video, audio and telemetry",allow:"autoplay; fullscreen"}}
 
+            }
         }
     }
 }

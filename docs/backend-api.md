@@ -1353,3 +1353,39 @@ Normalized charts reserve space for every horizontal per-series scale label.
 On narrow screens the chart panel scrolls horizontally, preserving a minimum
 160 px plot width instead of clipping labels or collapsing the plot. Both scale
 label orientations retain an explicit chart height. No backend contract changes.
+
+### Dedicated stream devices and replay
+
+Mission/stream viewer mode mounts only the program player; stream-manager mode
+mounts only broadcast management and preview. Neither shows mission warnings,
+notifications, status widgets or GSE controls. A stream-viewer-only account stays
+in the player and can sign out. Other users can exit stream mode.
+
+`POST /api/live_streams/control` accepts `replay: null` to return live, or a replay
+object alongside the existing broadcast fields and current `revision`:
+
+```json
+{"id":"","duration_seconds":20,"speed":0.25,"cameras":[{"id":"pad-wide","x":50,"y":50,"zoom":1}],"started_at_ms":0,"source_end_ms":0}
+```
+
+The server fills replay ID and timestamps. Select 1–8 cameras, 1–20 seconds and
+speed 1, 0.5 or 0.25. Camera order is display order. Pan is 0–100%; zoom is 1–3.
+Replay is taken from the audience timeline, independently of the live layout.
+Camera selection may include a camera hidden from the live program. Retaining
+an active replay ID lets the operator reorder/reframe its captured cameras
+without resetting time; duration/speed/new source changes require a new replay.
+Playback automatically returns live. Crew voice is muted during replay;
+selected camera sound follows playback speed. Viewer accounts cannot control it.
+
+Source telemetry snapshots are retained with each replay so slow motion does not age them out of the live ring (up to 128 snapshots per clip). Missing historical telemetry stays unavailable rather than showing current values.
+
+Encoded clips are frozen on station disk (256 MiB per clip; two retained clips,
+plus one in-progress capture), preserving footage while live HLS advances.
+Insufficient/discontinuous footage is rejected. Failed capture does not publish
+a new program. Clip access requires a camera-scoped ticket or authorized session.
+A service restart returns to the live program rather than resuming old replay.
+
+The layout response includes `test_fire_mode`, set by the backend build mode.
+Flight dashboards/programs hide GSE fill data from Launch onward. Test-fire
+retains it and shows calibrated 1000 kg load-cell thrust in newtons (kg × 9.80665).
+Recorded/calibrated sensor values remain in their original units.

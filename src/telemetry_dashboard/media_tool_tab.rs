@@ -86,3 +86,43 @@ fn send_session(id: &str, token: Option<&str>, visible: bool) {
     "#
     ));
 }
+
+/// Camera/voice documents outlive dashboard, aiming and stream-only surfaces.
+#[component]
+pub(super) fn MediaSurface(media_visible: bool, voice_visible: bool, children: Element) -> Element {
+    rsx! {
+        div {style:"display:contents;",
+            MediaHost {host:"gs26-camera-host",slot:"gs26-media-slot",visible:media_visible,
+                MediaToolTab {id:"gs26-media",path:"/media?embedded=1",title:"Cameras and recordings",visible:media_visible}
+            }
+            MediaHost {host:"gs26-voice-host",slot:"gs26-voice-slot",visible:voice_visible,
+                MediaToolTab {id:"gs26-crew-voice",path:"/radio?embedded=1",title:"Voice chat",visible:voice_visible}
+            }
+            {children}
+        }
+    }
+}
+#[component]
+fn MediaHost(host: &'static str, slot: &'static str, visible: bool, children: Element) -> Element {
+    rsx! {div {id:host,"data-visible":visible.to_string(),style:"position:fixed;display:none;z-index:50;",onmounted:move |_|bind_slot(host,slot),{children}}}
+}
+fn bind_slot(host: &str, slot: &str) {
+
+        let host=serde_json::to_string(host).unwrap();let slot=serde_json::to_string(slot).unwrap();
+        document::eval(&format!(r#"
+            const host=document.getElementById({host});
+            if(host && !host.gs26SlotBridge) {{
+                const layout=()=>{{
+                    if(!host.isConnected) {{clearInterval(timer);removeEventListener('resize',layout);removeEventListener('scroll',layout,true);return;}}
+                    const slot=host.dataset.visible==='true'?document.getElementById({slot}):null;
+                    if(!slot){{host.style.display='none';return;}}
+                    const r=slot.getBoundingClientRect();host.style.display=r.width&&r.height?'block':'none';
+                    const key=[r.left,r.top,r.width,r.height].join(',');
+                    if(key!==host.gs26Bounds){{Object.assign(host.style,{{left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'}});host.gs26Bounds=key;}}
+                }};
+                const timer=setInterval(layout,250);addEventListener('resize',layout);addEventListener('scroll',layout,true);
+                host.gs26SlotBridge=true;layout();
+            }}
+        "#));
+
+}

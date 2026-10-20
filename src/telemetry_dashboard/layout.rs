@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutConfig {
+    #[serde(default)]
+    pub test_fire_mode: bool,
     pub version: u32,
     #[serde(default)]
     pub branding: BrandingConfig,
