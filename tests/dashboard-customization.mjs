@@ -78,10 +78,15 @@ try{
   await page.waitForTimeout(1000);
   if (!(await page.getByRole('button',{name:/Choose tab/}).count())) console.error('Startup:', await page.locator('body').innerText(), errors);
   const choose=()=>page.getByRole('button',{name:/Choose tab/}).click();
+  const openAdmin=async()=>{
+    const button=page.getByRole('button',{name:'Admin',exact:true});
+    if(!await button.isVisible())await page.getByRole('button',{name:'Menu',exact:true}).click();
+    await button.click();
+  };
   assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'tab preference excludes sidebar');
   assert.equal(await page.getByRole('button',{name:'Admin',exact:true}).count(),0,'stream manager is not a user administrator');
   assert.equal(await page.getByRole('button',{name:'Aim antenna',exact:true}).count(),0,'aiming is not a main-screen action');
-  await page.getByRole('link',{name:'Settings',exact:true}).click();
+  await page.getByRole('link',{name:'Settings',exact:true}).or(page.getByRole('button',{name:/^Settings$/i})).click();
   await page.getByRole('button',{name:'Aim antenna',exact:true}).click();
   await page.getByRole('heading',{name:'Find your alignment',exact:true}).waitFor();
   assert.equal(await page.locator('.gs26-dashboard-card').count(),0,'aiming unmounts ordinary data cards');
@@ -268,13 +273,14 @@ try{
   await page.screenshot({path:'/tmp/gs-export-mobile.png',fullPage:true});
   await page.setViewportSize({width:390,height:844});
   session.roles=['admin'];await page.reload();
-  await page.getByRole('button',{name:'Admin',exact:true}).click();
+  await page.getByRole('button',{name:'Menu',exact:true}).click();
+  await openAdmin();
   await page.getByRole('heading',{name:'Administration',exact:true}).waitFor();
   await page.getByLabel('Transmit voice',{exact:true}).check();
   await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
   await page.getByText('Account saved',{exact:true}).waitFor();
   assert.equal(adminAccounts[0].permissions.voice_transmit,true);
-  assert.equal(adminAccounts[0].permissions.send_commands,false,'voice/admin roles never imply hardware commands');
+  assert.equal(adminAccounts[0].permissions.send_commands,false,'stored explicit grants remain separate from inherited admin authority');
   await page.getByLabel('Disable account',{exact:true}).check();
   await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
   await page.getByText(/Keep at least one enabled/).waitFor();
@@ -290,7 +296,7 @@ try{
   await page.getByRole('button',{name:'Broadcast studio',exact:true}).click();
   await page.getByRole('heading',{name:'Broadcast studio',exact:true}).waitFor();
   await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
-  await page.getByRole('button',{name:'Admin',exact:true}).click();
+  await openAdmin();
   await page.getByRole('button',{name:'Exit admin',exact:true}).click();
   session.roles=[]; session.username='other-user'; session.permissions.send_commands=false;
 
@@ -371,7 +377,8 @@ try{
     assert.equal(requests.length,count,`${cmd} cancellation sends no request`);
   }
   assert.equal(await commandPage.getByRole('alert').filter({hasText:'Command not sent:'}).count(),0);
-  await commandPage.getByRole('navigation',{name:'Mission navigation'}).getByRole('link',{name:'Dashboard',exact:true}).click();
+  await commandPage.getByRole('button',{name:/Choose tab/}).click();
+  await commandPage.getByRole('button',{name:'Dashboard',exact:true}).click();
   const liveRows=[
     ['LOADCELL_50_WEIGHT_KG','DAQ',[12.34]],['LOADCELL_WEIGHT_KG','DAQ',[987.65]],
     ['FUEL_TANK_PRESSURE','VB',[720.5]],['LOADCELL_FILL_PERCENT','DAQ',[82.25]],
