@@ -59,8 +59,7 @@ pub(super) fn NavigationRail(
     error_alert: bool,
 ) -> Element {
     rsx! {
-     aside {class:"gs26-navigation-rail", "data-collapsed":collapsed.to_string(),
-      div {class:"gs26-navigation-brand",span {class:"gs26-navigation-mark","S"} div {strong {"{title}"} small {"Mission control"}}}
+     aside {class:"gs26-navigation-rail","aria-label":"{title} pages", "data-collapsed":collapsed.to_string(),
       button {class:"gs26-rail-toggle",title:if collapsed {"Expand sidebar"}else{"Collapse sidebar"},"aria-label":if collapsed {"Expand sidebar"}else{"Collapse sidebar"},"aria-expanded":(!collapsed).to_string(),onclick:move |_|on_toggle.call(()),
        svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:if collapsed {"M9 5l7 7-7 7"}else{"M15 5l-7 7 7 7"}}}
       }

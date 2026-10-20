@@ -81,7 +81,7 @@ try{
   assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'tab preference excludes sidebar');
   assert.equal(await page.getByRole('button',{name:'Admin',exact:true}).count(),0,'stream manager is not a user administrator');
   assert.equal(await page.getByRole('button',{name:'Aim antenna',exact:true}).count(),0,'aiming is not a main-screen action');
-  await page.getByRole('button',{name:/^Settings$/i}).click();
+  await page.getByRole('link',{name:'Settings',exact:true}).click();
   await page.getByRole('button',{name:'Aim antenna',exact:true}).click();
   await page.getByRole('heading',{name:'Find your alignment',exact:true}).waitFor();
   assert.equal(await page.locator('.gs26-dashboard-card').count(),0,'aiming unmounts ordinary data cards');

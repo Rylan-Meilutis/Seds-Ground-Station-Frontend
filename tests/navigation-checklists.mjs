@@ -98,10 +98,30 @@ try {
  assert.equal(await page.getByRole('button',{name:/Choose tab/}).isVisible(),false,'desktop sidebar excludes tab picker');
  await page.getByRole('button',{name:'Expand sidebar',exact:true}).click();
  await page.getByRole('button',{name:'Collapse sidebar',exact:true}).click();
- assert.equal(await page.locator('.gs26-navigation-rail').evaluate(e=>e.getBoundingClientRect().width),72);
+ assert.equal(await page.locator('.gs26-navigation-rail').evaluate(e=>e.getBoundingClientRect().width),64);
  await page.reload();await page.getByRole('button',{name:'Expand sidebar',exact:true}).click();
  const icons=await rail.locator('a svg path').evaluateAll(items=>items.map(i=>i.getAttribute('d')));assert.equal(new Set(icons).size,icons.length,'page icons are distinct');
- await page.getByRole('button',{name:/^Settings$/i}).click();
+ await page.setViewportSize({width:390,height:844});
+ const content=page.locator('.gs26-page-content');
+ const beforeWidth=await content.evaluate(e=>e.getBoundingClientRect().width);
+ await page.getByRole('button',{name:'Hide navigation sidebar'}).click();
+ await page.getByRole('button',{name:'Show navigation sidebar'}).click();
+ const bounds=await page.locator('.gs26-navigation-rail, .gs26-page-content').evaluateAll(nodes=>nodes.map(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width}}));
+ assert(bounds[0].right<=bounds[1].left,'sidebar occupies its own column');
+ assert(await page.locator('.gs26-header-row').evaluate(e=>e.getBoundingClientRect().height<=52),'mobile header stays in one compact row');
+ assert.equal(await page.locator('.gs26-navigation-mark').count(),0,'no redundant S badge');
+ await page.screenshot({path:'/tmp/gs-mobile-sidebar-reflow.png',fullPage:true});
+ await page.getByRole('button',{name:'Hide navigation sidebar'}).click();
+ assert(await content.evaluate(e=>e.getBoundingClientRect().width)>bounds[1].width,'hiding the sidebar restores page width');
+ await page.setViewportSize({width:844,height:1000});
+ for(const name of ['Show navigation sidebar','Hide navigation sidebar']) {
+  await page.getByRole('button',{name}).click();
+  const b=await page.locator('.gs26-navigation-rail').boundingBox();
+  assert(b&&b.width>=60,'tablet collapsed and expanded navigation remain available');
+  assert(b.x+b.width<=await content.evaluate(e=>e.getBoundingClientRect().left),'tablet navigation never overlays content');
+ }
+ await page.setViewportSize({width:1440,height:1000});
+ assert.equal(await page.getByRole('button',{name:/^Settings$/i}).count(),0,'sidebar has only one Settings entry'); await page.getByRole('link',{name:'Settings',exact:true}).click();
  await page.getByLabel('Navigation',{exact:true}).selectOption('tabs');
  await page.getByRole('button',{name:'Close',exact:true}).click();
  assert.equal(await rail.count(),0);await page.getByRole('button',{name:/Choose tab/}).waitFor();
@@ -134,6 +154,12 @@ try {
  await page.getByRole('alert').filter({hasText:'Simulated warning for UI validation'}).waitFor();
  assert.equal(await page.locator('.gs26-dashboard-shell').evaluate(e=>getComputedStyle(e).boxShadow),'none','page frame does not blink');
  assert.equal(await page.locator('.gs26-status-count[data-alert=warning]').evaluate(e=>getComputedStyle(e).animationName),'gs26-button-warning');
+ const pulseColors=await page.locator('.gs26-status-count[data-alert=warning]').evaluate(element=>{
+   const animation=element.getAnimations()[0];animation.pause();
+   const colors=[0,160,320,480,640,800].map(time=>{animation.currentTime=time;return getComputedStyle(element).backgroundColor;});
+   animation.play();return colors;
+ });
+ assert(new Set(pulseColors).size>3,'warning pulse must interpolate smoothly rather than jump between two colors');
  await page.getByRole('button',{name:'Dismiss warning notification'}).click();
  assert.deepEqual(errors,[]);console.log('PASS: exclusive navigation settings, sidebar collapse persistence, distinct icons, shared checklist updates, admin templates, stale-edit protection, mobile layouts, button-only warning pulses and notification');
  await context.close();

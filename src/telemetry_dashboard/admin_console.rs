@@ -67,7 +67,7 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
                             }
                             label {"New password (optional)" input {r#type:"password",value:account.password.clone().unwrap_or_default(),minlength:"12",maxlength:"128",autocomplete:"new-password",disabled:*busy.read(),oninput:move|e|accounts.write()[index].password=Some(e.value())}}
                             label {"Allowed commands" input {value:account.command_access.allowed_commands.join(", "),disabled:*busy.read(),oninput:move|e|accounts.write()[index].command_access.allowed_commands=e.value().split(',').map(str::trim).filter(|s|!s.is_empty()).map(str::to_string).collect()}}
-                            p {"An empty list permits all commands only when hardware-command permission is enabled. Stream and admin roles do not grant hardware-command access."}
+                            p {"Application admins inherit all permissions. Other accounts need explicit command access; an empty command list allows all commands."}
                         }
                         button {disabled:*busy.read(),onclick:move |_|{
                             let account=accounts.read()[index].clone();busy.set(true);

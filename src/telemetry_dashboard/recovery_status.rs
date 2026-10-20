@@ -34,5 +34,5 @@ pub(super) fn RecoveryStatus() -> Element {
         _ if state.relay_requested => "GroundStation · direct uplink · RRLS unavailable",
         _ => "GroundStation · direct AV-bay path",
     };
-    rsx! {div {role:"status",style:"flex:0 0 auto;padding:5px 12px;font-size:12px;border-bottom:1px solid #435165;", "{label} · queue drops {state.dropped_frames}"}}
+    rsx! {div {class:"gs26-recovery-status",role:"status",style:"flex:0 0 auto;padding:5px 12px;font-size:12px;border-bottom:1px solid #435165;", "{label} · queue drops {state.dropped_frames}"}}
 }

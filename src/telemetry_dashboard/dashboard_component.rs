@@ -180,7 +180,7 @@ fn TelemetryDashboardInner() -> Element {
     let mut tabs_expanded = use_signal(|| false);
     let mut rail_collapsed = use_signal(|| persist::get_string("navigation-rail-collapsed").as_deref()!=Some("false"));
     let mut warning_toast_dismissed = use_signal(|| 0i64);
-    let header_actions_expanded = use_signal(|| false);
+    let mut header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
     let show_settings_overlay = use_signal(|| false);
     let show_version_overlay = use_signal(|| false);
@@ -1684,7 +1684,6 @@ fn TelemetryDashboardInner() -> Element {
     };
     let warn_count_label = format_capped_alert_count(warn_count);
     let err_count_label = format_capped_alert_count(err_count);
-    let alert_pulse_high_signal = use_signal(|| true);
 
     let latest_warning_ts = warnings
         .read()
@@ -1708,50 +1707,11 @@ fn TelemetryDashboardInner() -> Element {
     let has_unacked_errors = latest_error_ts > *ack_error_ts.read();
     let active_error_alert = has_unacked_errors && has_errors;
     let active_warning_alert = has_unacked_warnings && has_warnings;
-    let alert_pulse_high = *alert_pulse_high_signal.read();
-
-    {
-        let alive = alive.clone();
-        let mut alert_pulse_high_signal = alert_pulse_high_signal;
-        use_effect(move || {
-            let alive = alive.clone();
-            let epoch = *WS_EPOCH.read();
-            spawn(async move {
-                while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                    #[cfg(target_arch = "wasm32")]
-                    gloo_timers::future::TimeoutFuture::new(600).await;
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-
-                    if !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
-                        break;
-                    }
-
-                    let next = !*alert_pulse_high_signal.read();
-                    alert_pulse_high_signal.set(next);
-                }
-            });
-        });
-    }
-
     let border_style = "1px solid transparent";
     let app_alert_effect = "none";
     let app_alert_animation = "";
-    let warnings_tab_icon_opacity = if alert_pulse_high {
-        "1"
-    } else if has_unacked_warnings && has_warnings {
-        "0.28"
-    } else {
-        "1"
-    };
-    let errors_tab_icon_opacity = if alert_pulse_high {
-        "1"
-    } else if has_unacked_errors && has_errors {
-        "0.28"
-    } else {
-        "1"
-    };
+    let warnings_tab_icon_opacity = "1";
+    let errors_tab_icon_opacity = "1";
     let warnings_tab_icon_style = if active_warning_alert {
         format!(
             "margin-left:6px; width:1.2em; display:inline-flex; justify-content:center; color:#facc15; opacity:{warnings_tab_icon_opacity};"
@@ -2580,7 +2540,6 @@ fn TelemetryDashboardInner() -> Element {
     // MAIN UI
     rsx! {
             style { {include_str!("controls.css")} }
-            style { {include_str!("navigation_rail.css")} }
             gps::GpsDriver {
                 user_gps: user_gps,
                 user_altitude_m: Some(user_gps_altitude_m),
@@ -3065,6 +3024,7 @@ fn TelemetryDashboardInner() -> Element {
                 overflow:hidden;
             ",
 
+                    style {{include_str!("navigation_rail.css")}}
                     if !*streamer_mode.read() && *navigation_rail::SIDEBAR_NAVIGATION.read() {
                         navigation_rail::NavigationRail {
                             items:_configured_main_tabs(&layout,*abort_only_mode.read(),*calibration_has_sensors.read(),&dashboard_customization.read()).into_iter().map(|tab|navigation_rail::NavigationItem{id:_main_tab_to_str(tab).into(),label:_main_tab_label(&layout,tab)}).collect(),
@@ -3081,7 +3041,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
                     if !*WS_CONNECTED_SIGNAL.read() {
                         div {
-                            role: "alert",
+                            role: "alert",class:"gs26-connection-notice",
                             style: "flex-shrink:0;padding:10px 14px;margin-bottom:8px;border:1px solid currentColor;border-radius:8px;display:flex;gap:12px;align-items:center;justify-content:space-between;",
                             span {
                                 if DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
@@ -3117,10 +3077,10 @@ fn TelemetryDashboardInner() -> Element {
                             class: "gs26-header-title",
                             style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
                             if auth::current_status().roles.iter().any(|role|role=="admin") {
-                                button {class:"gs26-title-tab-toggle",style:"min-height:48px;",onclick:move |_|admin_open.set(true),"Admin"}
+                                button {class:"gs26-title-tab-toggle gs26-admin-shortcut",onclick:move |_|admin_open.set(true),"Admin"}
                             }
                             if *navigation_rail::SIDEBAR_NAVIGATION.read() {
-                                button {class:"gs26-mobile-sidebar-toggle","aria-label":"Open navigation sidebar","aria-expanded":(!*rail_collapsed.read()).to_string(),onclick:move |_|rail_collapsed.set(false),"☰"}
+                                button {class:"gs26-mobile-sidebar-toggle",title:if *rail_collapsed.read(){"Show pages"}else{"Hide pages"},"aria-label":if *rail_collapsed.read(){"Show navigation sidebar"}else{"Hide navigation sidebar"},"aria-expanded":(!*rail_collapsed.read()).to_string(),onclick:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next{"true"}else{"false"});},svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:"M3 4h18v16H3z M9 4v16 M5 8h2 M5 12h2 M5 16h2"}}}
                             }
                             span {class:"gs26-desktop-tab-title", "{_main_tab_label(&layout, *active_main_tab.read())}"}
                             button {
@@ -3264,6 +3224,9 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
                         div { class: "gs26-header-actions-list",
+                            if auth::current_status().roles.iter().any(|role|role=="admin") {
+                                button {class:"gs26-admin-menu",onclick:move |_|{admin_open.set(true);header_actions_expanded.set(false);},"Admin"}
+                            }
                             button {
                                 title: "Clear every graph and exclude earlier data from future resyncs. Recordings are kept.",
                                 style: "padding:0.45rem 0.85rem;border-radius:0.75rem;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
@@ -3310,7 +3273,7 @@ fn TelemetryDashboardInner() -> Element {
                             }
                             }
 
-                            {settings_button}
+                            if !*navigation_rail::SIDEBAR_NAVIGATION.read() { {settings_button} }
                             details {class:"gs26-utility-menu",
                                 summary {"Tools"}
                                 div {{reload_button}{auth_button}{version_button}{connect_button}}
@@ -3640,7 +3603,7 @@ fn TelemetryDashboardInner() -> Element {
 
                     }
                     recovery_status::RecoveryStatus {}
-                    div { style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
+                    div {class:"gs26-page-content", style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                         div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                         div {id:"gs26-media-slot",style:if media_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                         match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {

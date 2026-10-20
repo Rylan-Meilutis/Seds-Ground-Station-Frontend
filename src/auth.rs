@@ -146,7 +146,13 @@ pub fn current_status() -> SessionStatus {
         .unwrap_or_default()
 }
 
+pub fn is_admin() -> bool {
+    let status=current_status();
+    status.authenticated && !status.anonymous && status.roles.iter().any(|role|role=="admin")
+}
+
 pub fn can_send_command(cmd: &str) -> bool {
+    if is_admin(){return true;}
     let status = current_status();
     if !status.permissions.send_commands {
         return false;
@@ -155,15 +161,15 @@ pub fn can_send_command(cmd: &str) -> bool {
 }
 
 pub fn can_view_actions() -> bool {
-    current_status().permissions.send_commands
+    is_admin() || current_status().permissions.send_commands
 }
 
 pub fn can_view_calibration() -> bool {
-    current_status().can_view_calibration.unwrap_or(false)
+    is_admin() || current_status().can_view_calibration.unwrap_or(false)
 }
 
 pub fn can_edit_calibration() -> bool {
-    current_status().can_edit_calibration.unwrap_or(false)
+    is_admin() || current_status().can_edit_calibration.unwrap_or(false)
 }
 
 #[allow(dead_code)]
