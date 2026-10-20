@@ -4,6 +4,7 @@
 /// Converts a dashboard tab enum into its persisted string id.
 fn _main_tab_to_str(tab: MainTab) -> &'static str {
     match tab {
+        MainTab::Checklists => "checklists",
         MainTab::State => "state",
         MainTab::ConnectionStatus => "connection-status",
         MainTab::Detailed => "detailed",
@@ -30,6 +31,7 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
 fn _default_main_tab_label(tab: MainTab) -> String {
     let lang = current_language();
     match tab {
+        MainTab::Checklists => localized_copy(&lang, "Checklists", "Listas de verificación", "Listes de contrôle"),
         MainTab::State => localized_copy(&lang, "Dashboard", "Panel", "Tableau"),
         MainTab::ConnectionStatus => localized_copy(
             &lang,
@@ -104,6 +106,7 @@ fn _dashboard_title(layout: &LayoutConfig) -> String {
 /// Converts a persisted tab id back into the corresponding enum.
 fn _main_tab_from_str(s: &str) -> MainTab {
     match s {
+        "checklists" => MainTab::Checklists,
         "state" => MainTab::State,
         "connection-status" => MainTab::ConnectionStatus,
         "detailed" => MainTab::Detailed,
@@ -222,7 +225,7 @@ fn _available_main_tabs(
     if !tabs.contains(&MainTab::Mission) {
         tabs.insert(0, MainTab::Mission);
     }
-    for tab in [MainTab::CrewVoice, MainTab::Media] {
+    for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::Checklists] {
         if !tabs.contains(&tab) { tabs.push(tab); }
     }
     tabs.retain(|tab| *tab != MainTab::State);

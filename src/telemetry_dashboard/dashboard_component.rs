@@ -178,7 +178,8 @@ fn TelemetryDashboardInner() -> Element {
     let frontend_network_metrics = use_signal(FrontendNetworkMetrics::default);
     let abort_only_mode = use_signal(|| false);
     let mut tabs_expanded = use_signal(|| false);
-    let mut checklist_expanded = use_signal(|| false);
+    let mut rail_collapsed = use_signal(|| persist::get_string("navigation-rail-collapsed").as_deref()!=Some("false"));
+    let mut warning_toast_dismissed = use_signal(|| 0i64);
     let header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
     let show_settings_overlay = use_signal(|| false);
@@ -1735,13 +1736,7 @@ fn TelemetryDashboardInner() -> Element {
     }
 
     let border_style = "1px solid transparent";
-    let app_alert_effect = if active_error_alert && alert_pulse_high {
-        "inset 0 0 0 2px #ef4444"
-    } else if active_warning_alert && !active_error_alert && alert_pulse_high {
-        "inset 0 0 0 2px #facc15"
-    } else {
-        "none"
-    };
+    let app_alert_effect = "none";
     let app_alert_animation = "";
     let warnings_tab_icon_opacity = if alert_pulse_high {
         "1"
@@ -2585,6 +2580,7 @@ fn TelemetryDashboardInner() -> Element {
     // MAIN UI
     rsx! {
             style { {include_str!("controls.css")} }
+            style { {include_str!("navigation_rail.css")} }
             gps::GpsDriver {
                 user_gps: user_gps,
                 user_altitude_m: Some(user_gps_altitude_m),
@@ -3042,6 +3038,8 @@ fn TelemetryDashboardInner() -> Element {
                 } else if let Some(layout) = layout_snapshot {
                 div {
                     class: "gs26-dashboard-shell",
+                    "data-navigation":if *navigation_rail::SIDEBAR_NAVIGATION.read() {"sidebar"}else{"tabs"},
+                    "data-rail-collapsed":rail_collapsed.read().to_string(),
                     "data-streamer": if *streamer_mode.read() { "true" } else { "false" },
 
                     style: "
@@ -3067,13 +3065,17 @@ fn TelemetryDashboardInner() -> Element {
                 overflow:hidden;
             ",
 
-                    if !*streamer_mode.read() {
+                    if !*streamer_mode.read() && *navigation_rail::SIDEBAR_NAVIGATION.read() {
                         navigation_rail::NavigationRail {
                             items:_configured_main_tabs(&layout,*abort_only_mode.read(),*calibration_has_sensors.read(),&dashboard_customization.read()).into_iter().map(|tab|navigation_rail::NavigationItem{id:_main_tab_to_str(tab).into(),label:_main_tab_label(&layout,tab)}).collect(),
+                            collapsed:*rail_collapsed.read(),
+                            on_toggle:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next {"true"}else{"false"});},
+                            warning_alert:active_warning_alert,
+                            error_alert:active_error_alert,
                             active:_main_tab_to_str(*active_main_tab.read()).to_string(),
                             connected:*WS_CONNECTED_SIGNAL.read(),
                             title:layout.branding.app_name.clone().unwrap_or_else(||"GroundStation".into()),
-                            on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);checklist_expanded.set(false);},
+                            on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);},
                             on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);},
                         }
                     }
@@ -3117,8 +3119,12 @@ fn TelemetryDashboardInner() -> Element {
                             if auth::current_status().roles.iter().any(|role|role=="admin") {
                                 button {class:"gs26-title-tab-toggle",style:"min-height:48px;",onclick:move |_|admin_open.set(true),"Admin"}
                             }
+                            if *navigation_rail::SIDEBAR_NAVIGATION.read() {
+                                button {class:"gs26-mobile-sidebar-toggle","aria-label":"Open navigation sidebar","aria-expanded":(!*rail_collapsed.read()).to_string(),onclick:move |_|rail_collapsed.set(false),"☰"}
+                            }
+                            span {class:"gs26-desktop-tab-title", "{_main_tab_label(&layout, *active_main_tab.read())}"}
                             button {
-                                class: "gs26-title-tab-toggle",
+                                class: "gs26-title-tab-toggle gs26-mobile-tab-picker",
                                 "aria-expanded": (*tabs_expanded.read() || *dashboard_edit_mode.read()).to_string(),
                                 "aria-controls": "dashboard-tab-picker-panel",
                                 "aria-label": if *tabs_expanded.read() || *dashboard_edit_mode.read() { "Close tab picker".to_string() } else { format!("Choose tab · {}", _main_tab_label(&layout, *active_main_tab.read())) },
@@ -3128,34 +3134,13 @@ fn TelemetryDashboardInner() -> Element {
                                     move |_| {
                                         let next = !(*tabs_expanded.read() || *editing.read());
                                         tabs_expanded.set(next);
-                                        checklist_expanded.set(false);
+
                                         editing.set(false);
                                         actions.set(false);
                                     }
                                 },
                                 span { "{_main_tab_label(&layout, *active_main_tab.read())}" }
                                 span { "aria-hidden": "true", style: "font-size:12px;flex-shrink:0;", if *tabs_expanded.read() || *dashboard_edit_mode.read() { "▴" } else { "▾" } }
-                            }
-                            if auth::current_status().authenticated && !auth::current_status().anonymous && auth::can_view_actions() {
-                                button {
-                                    class: "gs26-title-tab-toggle",
-                                    style: "font-size:13px;flex-shrink:0;",
-                                    "aria-expanded": checklist_expanded.read().to_string(),
-                                    "aria-controls": "ground-checklist-panel",
-                                    onclick: {
-                                        let mut editing = dashboard_edit_mode;
-                                        let mut actions = header_actions_expanded;
-                                        move |_| {
-                                            let next = !*checklist_expanded.read();
-                                            checklist_expanded.set(next);
-                                            tabs_expanded.set(false);
-                                            editing.set(false);
-                                            actions.set(false);
-                                        }
-                                    },
-                                    "Checklist "
-                                    span { "aria-hidden": "true", if *checklist_expanded.read() { "▴" } else { "▾" } }
-                                }
                             }
                         }
 
@@ -3182,7 +3167,7 @@ fn TelemetryDashboardInner() -> Element {
                                             !current
                                         };
                                         header_actions_expanded.set(next);
-                                        checklist_expanded.set(false);
+
                                         tabs_expanded.set(false);
                                         editing.set(false);
                                     }
@@ -3473,13 +3458,6 @@ fn TelemetryDashboardInner() -> Element {
                         class: "gs26-header-secondary",
                         style: "row-gap:3px;",
 
-                        if *checklist_expanded.read() && auth::current_status().authenticated && !auth::current_status().anonymous && auth::can_view_actions() {
-                            div {
-                                id: "ground-checklist-panel",
-                                style: "position:absolute;top:0;left:0;z-index:2100;width:min(520px,100%);max-height:70vh;overflow:auto;box-sizing:border-box;padding:14px;border:1px solid {theme.tab_shell_border};border-radius:10px;background:{theme.tab_shell_background};box-shadow:0 12px 32px rgba(0,0,0,0.45);",
-                                gse_panel::GroundChecklist { key: "{dashboard_customization_key()}" }
-                            }
-                        }
                         div {
                             class: "gs26-tab-picker-shell",
                             style: "position:absolute;left:0;top:0;width:100%;min-width:0;height:0;z-index:2100;",
@@ -3507,6 +3485,7 @@ fn TelemetryDashboardInner() -> Element {
                                     for tab in _configured_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()) {
                                         button {
                                             key: "main-tab-{_main_tab_to_str(tab)}",
+                                            "data-alert":if tab==MainTab::Warnings && active_warning_alert {"warning"}else if tab==MainTab::Errors && active_error_alert {"error"}else{"none"},
                                             "aria-current": if *active_main_tab.read() == tab { "page" } else { "false" },
                                             style: if *active_main_tab.read() == tab { tab_style_active(&main_tab_accent(_main_tab_to_str(tab), "#38bdf8")) } else { tab_style_inactive.clone() },
                                             onclick: move |_| { active_main_tab.set(tab); tabs_expanded.set(false); },
@@ -3623,14 +3602,20 @@ fn TelemetryDashboardInner() -> Element {
                             div { class: "gs26-status-row",
                                 span { style: "color:{theme.text_soft};", {localized_copy(&language_snapshot, "Status:", "Estado:", "Statut:")} }
                                 span { class: "gs26-status-value", style: "{status_label_style}", "{status_label}" }
-                                span {
+                                button {
+                                    onclick:move |_|active_main_tab.set(MainTab::Errors),
+                                    "data-alert":if active_error_alert {"error"}else{"none"},
                                     class: "gs26-status-count",
+                                    disabled:!has_errors,
                                     "data-active": if has_errors { "true" } else { "false" },
                                     style: "{errors_status_style}",
                                     {format!("{}: {}", translate_text("Errors"), err_count_label)}
                                 }
-                                span {
+                                button {
+                                    onclick:move |_|active_main_tab.set(MainTab::Warnings),
+                                    "data-alert":if active_warning_alert {"warning"}else{"none"},
                                     class: "gs26-status-count",
+                                    disabled:!has_warnings,
                                     "data-active": if has_warnings { "true" } else { "false" },
                                     style: "{warnings_status_style}",
                                     {format!("{}: {}", translate_text("Warnings"), warn_count_label)}
@@ -3659,6 +3644,7 @@ fn TelemetryDashboardInner() -> Element {
                         div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                         div {id:"gs26-media-slot",style:if media_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                         match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
+                            MainTab::Checklists => rsx! {checklists::ChecklistsTab {theme:theme.clone()}},
                             MainTab::State => rsx! {
                                 div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
                                     custom_dashboard::CustomDashboard {theme:theme.clone(),phase:flight_state.read().clone(),test_fire_mode:layout.test_fire_mode}
@@ -3882,6 +3868,13 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
                 }
+                }
+                if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && *active_main_tab.read()!=MainTab::Warnings {
+                    aside {role:"alert",class:"gs26-warning-toast",style:"position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
+                        div {style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
+                        button {onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
+                        button {"aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
+                    }
                 }
                 if *active_main_tab.read() != MainTab::Notifications && !notifications.read().is_empty() {
                     div {

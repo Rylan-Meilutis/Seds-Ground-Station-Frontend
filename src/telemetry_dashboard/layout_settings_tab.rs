@@ -1050,6 +1050,14 @@ pub fn SettingsPage(
 
                 div { style: "{card_style}",
                     div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_appearance}" }
+                    label {style:"display:flex;align-items:center;gap:12px;flex-wrap:wrap;",
+                        span {"Navigation"}
+                        select {"aria-label":"Navigation",style:"width:auto;min-height:44px;max-width:100%;",value:if *super::navigation_rail::SIDEBAR_NAVIGATION.read() {"sidebar"}else{"tabs"},onchange:move |event| {
+                            let sidebar=event.value()=="sidebar";
+                            *super::navigation_rail::SIDEBAR_NAVIGATION.write()=sidebar;
+                            persist::set_string("navigation-style",if sidebar {"sidebar"}else{"tabs"});
+                        }, option {value:"sidebar","Sidebar"} option {value:"tabs","Tab dropdown"}}
+                    }
                     div { style: "font-size:13px; color:{theme.text_muted};", "{theme_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{theme_desc}" }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",

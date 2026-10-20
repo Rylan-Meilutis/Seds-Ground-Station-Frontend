@@ -315,6 +315,7 @@ struct AlertDto {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MainTab {
+    Checklists,
     State,
     ConnectionStatus,
     Detailed,

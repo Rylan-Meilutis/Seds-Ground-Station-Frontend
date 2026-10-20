@@ -72,14 +72,13 @@ const origin=`http://127.0.0.1:${server.address().port}`;
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY || (process.platform==='darwin' && fs.existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined)});
 try{
   const context=await browser.newContext({viewport:{width:1440,height:1000}});
-  await context.addInitScript(({session,origin})=>{if(!localStorage.getItem('auth_session_v1'))localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
+  await context.addInitScript(({session,origin})=>{localStorage.setItem('navigation-style','tabs');if(!localStorage.getItem('auth_session_v1'))localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
   const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(origin);
   await page.waitForTimeout(1000);
   if (!(await page.getByRole('button',{name:/Choose tab/}).count())) console.error('Startup:', await page.locator('body').innerText(), errors);
   const choose=()=>page.getByRole('button',{name:/Choose tab/}).click();
-  assert(await page.getByRole('navigation',{name:'Mission navigation'}).isVisible(),'desktop has persistent mission navigation');
-  await page.getByRole('navigation',{name:'Mission navigation'}).getByRole('link',{name:'Dashboard',exact:true}).click();
+  assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'tab preference excludes sidebar');
   assert.equal(await page.getByRole('button',{name:'Admin',exact:true}).count(),0,'stream manager is not a user administrator');
   assert.equal(await page.getByRole('button',{name:'Aim antenna',exact:true}).count(),0,'aiming is not a main-screen action');
   await page.getByRole('button',{name:/^Settings$/i}).click();
@@ -161,8 +160,6 @@ try{
 
   assert.equal(await page.locator('model-viewer, gs-vehicle-viewer').count(),0,'Dashboard has no 3D model');
   assert.equal((await page.locator('.gs26-title-tab-toggle span').first().innerText()),'Dashboard');
-  await page.getByRole('button',{name:'Checklist',exact:true}).click();
-  await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).check();
   await choose();await page.getByRole('button',{name:'Mission Live',exact:true}).click();
   assert.equal(await page.locator('.gs26-program-header, .gs26-program-editor').count(),0,'Mission Live is stream only');
   assert.equal(await page.getByText('Ground setup',{exact:true}).count(),0,'no ground controls in stream');
@@ -170,9 +167,6 @@ try{
   assert.equal(await page.locator('.gs26-status-shell, .gs26-navigation-rail').count(),0,'viewer is dedicated with no dashboard status');
   assert.equal(await page.getByText('GroundStation disconnected. Reconnecting automatically; displayed data may be stale.',{exact:true}).count(),0,'viewer has no mission warnings');
   await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
-  await page.getByRole('button',{name:'Checklist',exact:true}).click();
-  assert(await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).isChecked(),'checklist persists across tabs');
-  await page.getByRole('button',{name:'Checklist',exact:true}).click();
   await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
 
   assert.equal(await page.getByRole('heading',{name:'Dashboard',exact:true}).count(),0,'no duplicate dashboard heading');
@@ -265,17 +259,7 @@ try{
   await page.getByRole('button',{name:'Close tab picker',exact:true}).click();
   await page.locator('iframe[title="Live camera"]').scrollIntoViewIfNeeded();
   await page.screenshot({path:'/tmp/gs-dashboard-mobile.png',fullPage:true});
-  await page.getByRole('button',{name:'Checklist',exact:true}).click();
-  await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).waitFor({state:'visible'});
-  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'checklist fits mobile');
-  await page.screenshot({path:'/tmp/gs-checklist-mobile.png',fullPage:true});
-  await page.getByRole('button',{name:'Checklist',exact:true}).click();
   await page.setViewportSize({width:320,height:568});
-  const checklist=page.getByRole('button',{name:'Checklist',exact:true});
-  const checklistBox=await checklist.boundingBox();
-  assert(checklistBox.x>=0 && checklistBox.x+checklistBox.width<=320,'checklist is not clipped at 320px');
-  await checklist.click();await page.getByRole('checkbox',{name:'Pressure transducer reading checked'}).waitFor({state:'visible'});
-  await checklist.click();
   await choose();await page.getByRole('button',{name:'Data Export',exact:true}).click();
   const exportPanel=page.locator('.gs26-export-scroll');
   assert(await exportPanel.evaluate(el=>el.scrollHeight>el.clientHeight),'export content exceeds viewport');
@@ -313,7 +297,6 @@ try{
   await page.reload();await choose();
   assert.equal(await page.getByRole('button',{name:'Stream Manager',exact:true}).count(),0,'manager is permission gated');
   assert.equal(await page.getByRole('button',{name:'Admin',exact:true}).count(),0,'admin area is permission gated');
-  assert.equal(await page.getByRole('button',{name:'Checklist',exact:true}).count(),0,'checklist is permission gated');
   assert.equal(await page.locator('[aria-label="Pinned telemetry"]').count(),0,'another user starts with their own pins');
   assert.equal(await page.getByRole('button',{name:'Voice Chat',exact:true}).count(),1,'another user has independent tab visibility');
   await page.getByRole('button',{name:'Voice Chat',exact:true}).click();
@@ -346,7 +329,7 @@ try{
   session.permissions.send_commands=true;
   gseStatus={phase:'idle',message:'Isolated test',dry_self_test_confirmed:false,configuration_error:null,request_gate:{hitl_mode:true,flight_state:'Startup',prelaunch:true,button_interlock_satisfied:true}};
   const commandContext=await browser.newContext({viewport:{width:1280,height:900}});
-  await commandContext.addInitScript(({session,origin})=>localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]})),{session,origin});
+  await commandContext.addInitScript(({session,origin})=>{localStorage.setItem('navigation-style','tabs');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
   // New Playwright's WebSocket mock uses URL.parse, absent in older system Chrome.
   await commandContext.addInitScript(()=>{if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base);}catch{return null;}};});
   const requests=[];let commandSocket;
@@ -413,5 +396,5 @@ try{
   assert.equal(await page.locator('.gs26-status-shell,.gs26-program-editor').count(),0,'viewer has no mission status or operator controls');
   assert.equal(await page.getByRole('button',{name:'Exit stream mode',exact:true}).count(),0,'viewer role cannot return to mission controls');
   assert.deepEqual(errors,[]);
-  console.log('PASS: no dashboard model, persistent/resizable camera cards, offline recovery, stream manager permissions, card editing, live pins, per-user persistence, hidden tabs, iframe session handoff/lifetime, desktop and mobile tab picker, permission-gated checklist, stream-only Mission Live, selected-loadcell fill in Loadcell and DAQ, all 55 command buttons, recovery confirmation acceptance and cancellation');
+  console.log('PASS: no dashboard model, persistent/resizable camera cards, offline recovery, stream manager permissions, card editing, live pins, per-user persistence, hidden tabs, iframe session handoff/lifetime, desktop and mobile tab picker, shared checklist tab (tested separately), stream-only Mission Live, selected-loadcell fill in Loadcell and DAQ, all 55 command buttons, recovery confirmation acceptance and cancellation');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
