@@ -1058,6 +1058,7 @@ pub fn SettingsPage(
                             persist::set_string("navigation-style",if sidebar {"sidebar"}else{"tabs"});
                         }, option {value:"sidebar","Sidebar"} option {value:"tabs","Tab dropdown"}}
                     }
+                    super::custom_dashboard::HeaderPinSettings {}
                     div { style: "font-size:13px; color:{theme.text_muted};", "{theme_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{theme_desc}" }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",

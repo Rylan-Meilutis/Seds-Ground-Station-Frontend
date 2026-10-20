@@ -9,6 +9,7 @@ const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,
 const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['stream_master'],permissions:{view_data:true,send_commands:true}};
 let cameraOnline=true;
 let broadcastState=example('live-streams').broadcast;
+const alertSockets=new Set(); const alertAckRequests=[]; let alertAckFailure=false;
 let fillSource='kg50';
 let gseStatus=null, qualificationResets=0,gseUnavailable=false;
 let actionPolicy=example('action-policy');
@@ -42,6 +43,14 @@ const server=http.createServer(async(req,res)=>{
     let body='';for await(const data of req)body+=data;gseStatus.dry_self_test_confirmed=JSON.parse(body).confirmed;
     res.setHeader('Content-Type','application/json');res.end('{}');return;
   }
+  if(pathname==='/api/alerts/ack') {
+    let raw=''; for await(const part of req)raw+=part;
+    const body=JSON.parse(raw);alertAckRequests.push(body);
+    if(alertAckFailure){res.statusCode=503;res.end('fixture unavailable');return;}
+    const state={warning_ack_timestamp_ms:body.warning_timestamp_ms,error_ack_timestamp_ms:body.error_timestamp_ms};
+    for(const socket of alertSockets)socket.send(JSON.stringify({ty:'AlertAckState',data:state}));
+    res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;
+  }
   if(pathname==='/api/action_policy'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(actionPolicy));return;}
   if(pathname==='/api/gse/status' && gseStatus){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(gseStatus));return;}
   if(pathname==='/api/gse/qualification/reset'){
@@ -72,7 +81,7 @@ const origin=`http://127.0.0.1:${server.address().port}`;
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY || (process.platform==='darwin' && fs.existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined)});
 try{
   const context=await browser.newContext({viewport:{width:1440,height:1000}});
-  await context.addInitScript(({session,origin})=>{localStorage.setItem('navigation-style','tabs');if(!localStorage.getItem('auth_session_v1'))localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
+  await context.addInitScript(({session,origin})=>{if(!localStorage.getItem('navigation-style'))localStorage.setItem('navigation-style','tabs');if(!localStorage.getItem('auth_session_v1'))localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
   const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(origin);
   await page.waitForTimeout(1000);
@@ -335,17 +344,17 @@ try{
   session.permissions.send_commands=true;
   gseStatus={phase:'idle',message:'Isolated test',dry_self_test_confirmed:false,configuration_error:null,request_gate:{hitl_mode:true,flight_state:'Startup',prelaunch:true,button_interlock_satisfied:true}};
   const commandContext=await browser.newContext({viewport:{width:1280,height:900}});
-  await commandContext.addInitScript(({session,origin})=>{localStorage.setItem('navigation-style','tabs');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
+  await commandContext.addInitScript(({session,origin})=>{if(!localStorage.getItem('navigation-style'))localStorage.setItem('navigation-style','tabs');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
   // New Playwright's WebSocket mock uses URL.parse, absent in older system Chrome.
   await commandContext.addInitScript(()=>{if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base);}catch{return null;}};});
   const requests=[];let commandSocket;
   // Keep the debug bundle's hot-reload socket inert in this static fixture.
   await commandContext.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
   await commandContext.routeWebSocket(url=>url.pathname==='/ws'&&url.searchParams.get('token')==='ui-token',socket=>{
-    commandSocket=socket;
+    commandSocket=socket;alertSockets.add(socket);
     socket.onMessage(message=>requests.push(JSON.parse(String(message)).cmd));
     const timer=setInterval(()=>socket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy})),500);
-    socket.onClose(()=>clearInterval(timer));
+    socket.onClose(()=>{clearInterval(timer);alertSockets.delete(socket);});
   });
   const commandPage=await commandContext.newPage();
   commandPage.on('console',message=>{if(message.type()==='error')fs.appendFileSync('/tmp/gs-command-inventory-console.log',message.text()+'\n');});
@@ -395,6 +404,49 @@ try{
     assert(await commandPage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'live overview fits '+width);
     await commandPage.screenshot({path:`/tmp/gs-live-overview-${width}.png`,fullPage:true});
   }
+  await commandPage.getByRole('button',{name:'Customize dashboard',exact:true}).click();
+  await commandPage.getByRole('button',{name:'Pin to top bar',exact:true}).first().click();
+  await commandPage.getByRole('button',{name:'Done',exact:true}).click();
+  const cardCount=await commandPage.locator('.gs26-dashboard-card').count();
+  for (const phase of ['Launch','Ascent','Recovery']) {
+    commandSocket.send(JSON.stringify({ty:'FlightState',data:{state:phase}}));
+    await commandPage.locator('.gs26-status-flight').getByText(phase,{exact:true}).waitFor();
+    assert.equal(await commandPage.locator('.gs26-dashboard-card').count(),cardCount,'Dashboard stays stable in '+phase);
+    await commandPage.locator('[aria-label="Pinned telemetry"]').getByText('50 kg loadcell',{exact:true}).waitFor();
+  }
+  await commandPage.setViewportSize({width:1280,height:900});
+  await commandPage.getByRole('button',{name:/^Settings$/i}).click();
+  await commandPage.getByLabel('Navigation',{exact:true}).selectOption('sidebar');
+  await commandPage.getByRole('button',{name:'Close',exact:true}).click();
+  await commandPage.locator('.gs26-navigation-rail').getByRole('link',{name:'Settings',exact:true}).click();
+  await commandPage.getByRole('heading',{name:/Pin telemetry to the top bar/}).waitFor();
+  await commandPage.getByRole('checkbox',{name:'1000 kg loadcell',exact:true}).check();
+  await commandPage.getByRole('button',{name:'Close',exact:true}).click();
+  await commandPage.locator('[aria-label="Pinned telemetry"]').getByText('1000 kg loadcell',{exact:true}).waitFor();
+  const observer=await commandContext.newPage();
+  await observer.goto(origin+'/dashboard');
+  await observer.locator('.gs26-status-value').waitFor();
+  const warningTime=Date.now();
+  const warn=(timestamp,message)=>{for(const socket of alertSockets)socket.send(JSON.stringify({ty:'Warning',data:{timestamp_ms:timestamp,message}}));};
+  warn(warningTime,'Isolated warning fixture');
+  for(const client of [commandPage,observer])await client.locator('.gs26-status-value').getByText('Attention',{exact:true}).waitFor();
+  alertAckFailure=true;
+  await commandPage.getByRole('button',{name:'Clear warnings',exact:true}).click();
+  await commandPage.getByRole('alert').getByText('Could not clear warnings. Please retry.',{exact:true}).waitFor();
+  assert.equal(await commandPage.locator('.gs26-status-value').innerText(),'Attention','a failed request must not clear warning state');
+  alertAckFailure=false;
+  await commandPage.getByRole('button',{name:'Clear warnings',exact:true}).click();
+  for(const client of [commandPage,observer])await client.locator('.gs26-status-value').getByText('Nominal',{exact:true}).waitFor();
+  assert.equal(alertAckRequests.length,2);
+  assert(alertAckRequests.every(request=>request.warning_timestamp_ms===warningTime&&request.error_timestamp_ms===0),'warning clearing must not acknowledge errors');
+  warn(warningTime+1,'A new warning must remain active');
+  for(const client of [commandPage,observer])await client.getByRole('button',{name:'Clear warnings',exact:true}).waitFor();
+  for(const socket of alertSockets)socket.send(JSON.stringify({ty:'Error',data:{timestamp_ms:warningTime+2,message:'Independent error fixture'}}));
+  await commandPage.getByRole('button',{name:'Clear warnings',exact:true}).click();
+  await commandPage.getByRole('button',{name:'Clear warnings',exact:true}).waitFor({state:'detached'});
+  assert.equal(await commandPage.locator('.gs26-status-value').innerText(),'Attention','clearing warnings must not clear independent errors');
+  assert(alertAckRequests.every(request=>request.error_timestamp_ms===0));
+  await observer.close();
   await commandContext.close();
   session.roles=['stream_viewer'];session.permissions.send_commands=false;
   await page.reload();
@@ -403,5 +455,5 @@ try{
   assert.equal(await page.locator('.gs26-status-shell,.gs26-program-editor').count(),0,'viewer has no mission status or operator controls');
   assert.equal(await page.getByRole('button',{name:'Exit stream mode',exact:true}).count(),0,'viewer role cannot return to mission controls');
   assert.deepEqual(errors,[]);
-  console.log('PASS: no dashboard model, persistent/resizable camera cards, offline recovery, stream manager permissions, card editing, live pins, per-user persistence, hidden tabs, iframe session handoff/lifetime, desktop and mobile tab picker, shared checklist tab (tested separately), stream-only Mission Live, selected-loadcell fill in Loadcell and DAQ, all 55 command buttons, recovery confirmation acceptance and cancellation');
+  console.log('PASS: no dashboard model, persistent/resizable camera cards, offline recovery, stream manager permissions, card editing, live pins, per-user persistence, hidden tabs, iframe session handoff/lifetime, desktop and mobile tab picker, shared checklist tab (tested separately), stream-only Mission Live, selected-loadcell fill in Loadcell and DAQ, all 55 command buttons, recovery confirmation acceptance and cancellation, phase-independent Dashboard and pins, sidebar pin settings, shared warning clearing and error preservation');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

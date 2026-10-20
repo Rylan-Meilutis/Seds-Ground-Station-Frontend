@@ -1737,12 +1737,12 @@ fn TelemetryDashboardInner() -> Element {
     } else {
         "display:none;".to_string()
     };
-    let status_label = if !has_warnings && !has_errors {
+    let status_label = if !active_warning_alert && !active_error_alert {
         translate_text("Nominal")
     } else {
         translate_text("Attention")
     };
-    let status_label_style = if !has_warnings && !has_errors {
+    let status_label_style = if !active_warning_alert && !active_error_alert {
         "display:inline-flex; align-items:center; min-width:12ch; color:#22c55e; font-weight:600; flex:0 0 auto;"
     } else {
         "display:inline-flex; align-items:center; min-width:12ch; color:#e5e7eb; font-weight:600; flex:0 0 auto;"
@@ -3583,6 +3583,9 @@ fn TelemetryDashboardInner() -> Element {
                                     style: "{warnings_status_style}",
                                     {format!("{}: {}", translate_text("Warnings"), warn_count_label)}
                                 }
+                                if active_warning_alert {
+                                    warnings_tab::ClearWarningsButton {latest_warning_ts,ack_warning_ts}
+                                }
                             }
                             div { class: "gs26-status-flight", style: "color:{theme.info_text};",
                                 span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"Flight state\", \"Estado de vuelo\", \"Etat de vol\")}: " }
@@ -3594,7 +3597,7 @@ fn TelemetryDashboardInner() -> Element {
                             div { class: "gs26-status-network",
                                 NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
                             }
-                            custom_dashboard::PinnedTelemetry {phase:flight_state.read().clone(),test_fire_mode:layout.test_fire_mode}
+                            custom_dashboard::PinnedTelemetry {test_fire_mode:layout.test_fire_mode}
                             div { class: "gs26-status-launch",
                                 LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
                             }
@@ -3610,7 +3613,7 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::Checklists => rsx! {checklists::ChecklistsTab {theme:theme.clone()}},
                             MainTab::State => rsx! {
                                 div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
-                                    custom_dashboard::CustomDashboard {theme:theme.clone(),phase:flight_state.read().clone(),test_fire_mode:layout.test_fire_mode}
+                                    custom_dashboard::CustomDashboard {theme:theme.clone(),test_fire_mode:layout.test_fire_mode}
                                     if *ground_station_view.read() && auth::can_view_actions() && flight_state.read().as_str() == "Aborted" {
                                         gse_panel::ClearGseAbort {}
                                     }
@@ -3760,31 +3763,9 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::Warnings => rsx! {
                                 div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     WarningsTab {
-                                        warnings: warnings,
-                                        ack_timestamp_ms: *ack_warning_ts.read(),
+                                        warnings,
+                                        ack_warning_ts,
                                         theme: theme.clone(),
-                                        on_ack: {
-                                            let mut ack_warning_ts = ack_warning_ts;
-                                            let mut ack_error_ts = ack_error_ts;
-                                            let latest_warning_ts = latest_warning_ts;
-                                            let latest_error_ts = latest_error_ts;
-                                            let remote_alert_acks_enabled = remote_alert_acks_enabled;
-                                            move |_| {
-                                                if *remote_alert_acks_enabled.read() {
-                                                    ack_warning_ts.set(latest_warning_ts);
-                                                    ack_error_ts.set(latest_error_ts);
-                                                    spawn(async move {
-                                                        let _ = post_remote_alert_ack(
-                                                            latest_warning_ts,
-                                                            latest_error_ts,
-                                                        )
-                                                        .await;
-                                                    });
-                                                } else {
-                                                    ack_warning_ts.set(latest_warning_ts);
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             },

@@ -240,14 +240,6 @@ pub(super) fn load_cards() -> Vec<Card> {
         .unwrap_or_else(defaults)
 }
 
-fn card_in_phase(card: &Card, phase: &str, test_fire: bool) -> bool {
-    if test_fire { return true; }
-    let launched = matches!(phase,"Launch"|"Ascent"|"Coast"|"Apogee"|"ParachuteDeploy"|"Descent"|"Landed"|"Recovery");
-    let fill = card.section.eq_ignore_ascii_case("Fill System")
-        || matches!(card.data_type.as_str(),"KG50"|"KG1000"|"LOADCELL_WEIGHT_KG"|"LOADCELL_50_WEIGHT_KG"|"LOADCELL_FILL_PERCENT"|"FUEL_TANK_PRESSURE"|"PRESSURE_TRANSDUCER_CALIBRATED"|"VALVE_STATE")
-        || matches!(card.sender.as_str(),"VB"|"AB"|"GB"|"DAQ");
-    !(launched && fill)
-}
 fn display_card(mut card: Card, test_fire: bool) -> Card {
     if test_fire && card.data_type == "LOADCELL_WEIGHT_KG" {
         card.label = "Thrust".into(); card.unit="N".into(); card.max *= 9.80665; card.min *= 9.80665;
@@ -256,7 +248,7 @@ fn display_card(mut card: Card, test_fire: bool) -> Card {
 }
 
 #[component]
-pub(super) fn CustomDashboard(theme: ThemeConfig, #[props(default)] phase: String, #[props(default)] test_fire_mode: bool) -> Element {
+pub(super) fn CustomDashboard(theme: ThemeConfig, #[props(default)] test_fire_mode: bool) -> Element {
     let mut cards = use_context::<Signal<Vec<Card>>>();
     let mut editing = use_signal(|| false);
     let mut cameras = use_signal(super::live_stream_tab::LiveStreamConfig::default);
@@ -277,7 +269,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, #[props(default)] phase: Strin
     });
     let snapshot = cards.read().clone();
     let mut sections = Vec::new();
-    for card in &snapshot { if card_in_phase(card,&phase,test_fire_mode) && (card.visible || *editing.read()) && !sections.contains(&card.section) { sections.push(card.section.clone()); } }
+    for card in &snapshot { if (card.visible || *editing.read()) && !sections.contains(&card.section) { sections.push(card.section.clone()); } }
     rsx! {section {class:"gs26-custom-dashboard",style:"color:{theme.text_primary};--card-button-bg:{theme.button_background};--card-button-border:{theme.button_border};--card-button-text:{theme.button_text};",
         style { {r#"
             .gs26-custom-dashboard { container-type:inline-size; }
@@ -308,7 +300,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, #[props(default)] phase: Strin
         for section in sections {
             h3 {"{section}"}
             div {class:"gs26-card-grid",
-                for (index,card) in snapshot.iter().enumerate().filter(|(_,c)|c.section==section && card_in_phase(c,&phase,test_fire_mode) && (c.visible || *editing.read())) {
+                for (index,card) in snapshot.iter().enumerate().filter(|(_,c)|c.section==section && (c.visible || *editing.read())) {
                     div {key:"card-{index}",class:"gs26-dashboard-card","data-width":card.width.clone(),"data-display":card.display.clone(),style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
                         if *editing.read() {
                             CardEditor {card:card.clone(),cameras:cameras.read().streams.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
@@ -461,13 +453,13 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default = f
 }
 
 #[component]
-pub(super) fn PinnedTelemetry(#[props(default)] phase: String, #[props(default)] test_fire_mode: bool) -> Element {
+pub(super) fn PinnedTelemetry(#[props(default)] test_fire_mode: bool) -> Element {
     let cards = use_context::<Signal<Vec<Card>>>();
     rsx! {
-        if cards.read().iter().any(|card| card.pinned && card_in_phase(card,&phase,test_fire_mode)) {
+        if cards.read().iter().any(|card| card.pinned) {
             div { style:"grid-column:1 / -1;grid-row:5;display:flex;flex-wrap:wrap;justify-content:center;align-items:center;text-align:center;gap:8px 16px;padding:6px 0;font-size:12px;",
                 "aria-label":"Pinned telemetry",
-                for (index, card) in cards.read().iter().enumerate().filter(|(_,card)|card.pinned && card_in_phase(card,&phase,test_fire_mode)) {
+                for (index, card) in cards.read().iter().enumerate().filter(|(_,card)|card.pinned) {
                     TelemetryCard {key:"pinned-{index}", card:display_card(card.clone(),test_fire_mode), compact:true, thrust:test_fire_mode && card.data_type=="LOADCELL_WEIGHT_KG"}
                 }
             }
@@ -573,14 +565,7 @@ mod tests {
 mod phase_tests {
     use super::*;
     #[test]
-    fn flight_hides_fill_from_launch_but_test_fire_keeps_thrust() {
-        for card in defaults().iter().filter(|c|c.section=="Fill System") {
-            assert!(card_in_phase(card,"Armed",false));
-            for phase in ["Launch","Ascent","Coast","Apogee","ParachuteDeploy","Descent","Landed","Recovery"] {
-                assert!(!card_in_phase(card,phase,false));
-                assert!(card_in_phase(card,phase,true));
-            }
-        }
+    fn test_fire_formats_thrust_without_hiding_dashboard_cards() {
         let thrust=display_card(defaults().into_iter().find(|c|c.data_type=="LOADCELL_WEIGHT_KG").unwrap(),true);
         assert_eq!(thrust.label,"Thrust");assert_eq!(thrust.unit,"N");
     }

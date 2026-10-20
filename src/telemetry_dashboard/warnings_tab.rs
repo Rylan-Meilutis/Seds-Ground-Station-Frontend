@@ -3,32 +3,18 @@ use super::{AlertMsg, format_timestamp_ms_clock, prelude::*};
 #[component]
 pub fn WarningsTab(
     warnings: Signal<Vec<AlertMsg>>,
-    ack_timestamp_ms: i64,
+    ack_warning_ts: Signal<i64>,
     theme: ThemeConfig,
-    on_ack: EventHandler<()>,
 ) -> Element {
-    let has_warnings = !warnings.read().is_empty();
-    let ack_button_style = format!(
-        "padding:0.25rem 0.65rem; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.75rem; cursor:{}; opacity:{};",
-        theme.button_border,
-        theme.button_background,
-        theme.button_text,
-        if has_warnings { "pointer" } else { "default" },
-        if has_warnings { "1" } else { "0.45" },
-    );
+    let latest_warning_ts = warnings.read().iter().map(|w| w.timestamp_ms).max().unwrap_or(0);
+    let ack_timestamp_ms = *ack_warning_ts.read();
 
     rsx! {
         div { style: "padding:4px 0 0 0; color:{theme.text_primary}; height:100%; box-sizing:border-box;",
             div { style: "display:flex; align-items:center; gap:10px; margin:0 0 8px 0;",
                 h2 { style: "margin:0; color:{theme.text_primary}; flex:1;", "{translate_text(\"Warnings\")}" }
-                button {
-                    disabled: !has_warnings,
-                    style: "{ack_button_style}",
-                    onclick: move |_| {
-                        on_ack.call(());
-                    },
-                    "{translate_text(\"Acknowledge\")}"
-                }
+                ClearWarningsButton { latest_warning_ts, ack_warning_ts }
+
             }
 
             div { style: "display:flex; flex-direction:column; gap:6px;",
@@ -61,4 +47,30 @@ pub fn WarningsTab(
             }
         }
     }
+}
+
+/// Acknowledge a fixed warning cutoff on the station. New warnings arriving
+/// during the request remain active; errors and flight state are untouched.
+#[component]
+pub(super) fn ClearWarningsButton(latest_warning_ts: i64, mut ack_warning_ts: Signal<i64>) -> Element {
+    let mut pending = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    rsx! { div {style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap;",
+        button {
+            disabled:*pending.read() || latest_warning_ts <= *ack_warning_ts.read(),
+            onclick:move |_| {
+                if *pending.read() || latest_warning_ts <= *ack_warning_ts.read() { return; }
+                pending.set(true); error.set(String::new());
+                spawn(async move {
+                    match super::post_remote_alert_ack(latest_warning_ts, 0).await {
+                        Ok(()) => { let cutoff=(*ack_warning_ts.read()).max(latest_warning_ts); ack_warning_ts.set(cutoff); }
+                        Err(reason) => error.set(reason),
+                    }
+                    pending.set(false);
+                });
+            },
+            if *pending.read() {"Clearing…"} else {"Clear warnings"}
+        }
+        if !error.read().is_empty() {small {role:"alert",title:error.read().clone(),"Could not clear warnings. Please retry."}}
+    }}
 }
