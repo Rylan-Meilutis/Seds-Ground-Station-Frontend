@@ -20,3 +20,10 @@ Also test modal presentation during scrolling for nested run-loop regressions.
 An iOS compile check alone does not validate this behavior. Re-evaluate this patch
 on every Tao/Dioxus update and remove it once the upstream dependency handles
 tracking mode.
+
+## Linux build diagnostics
+
+The two legacy GLib channel constructors locally allow `deprecated`, preserving
+Tao's existing GLib Sender/Receiver window and X11 event delivery. Other compiler
+warnings remain enabled. Remove these allowances when the Linux channel plumbing
+is migrated with upstream Tao.

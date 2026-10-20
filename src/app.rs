@@ -19,6 +19,7 @@ use crate::telemetry_dashboard::{self, UrlConfig};
 const INLINE_MAPLIBRE_CSS: &str = include_str!("../static/vendor/maplibre-gl/maplibre-gl.css");
 #[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
 const INLINE_MAPLIBRE_JS: &str = include_str!("../static/vendor/maplibre-gl/maplibre-gl.js");
+#[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
 const INLINE_GROUND_MAP_JS: &str = include_str!("../static/ground_map.js");
 
 // -------------------------
