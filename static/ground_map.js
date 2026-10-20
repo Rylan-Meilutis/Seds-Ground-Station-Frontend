@@ -222,7 +222,7 @@ const TILE_CACHE_MAX_TILE_BYTES = 2 * 1024 * 1024;
 const TILE_CACHE_DEFAULT_BUDGET_BYTES = 500 * 1024 * 1024;
 const TILE_PREFETCH_ESTIMATED_TILE_BYTES = 96 * 1024;
 const TILE_MISSING_CACHE_TTL_MS = 5 * 60 * 1000;
-const TRANSPARENT_TILE_BYTES = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3, 2, 0, 239, 191, 167, 219, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,]);
+const TRANSPARENT_TILE_BYTES = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0, 1, 122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]);
 const MAP_FIRST_PAINT_GATE_TIMEOUT_MS = 180;
 const MAP_FIRST_PAINT_FADE_MS = 45;
 const MAP_MAIN_THREAD_WATCHDOG_INTERVAL_MS = 250;
@@ -791,6 +791,43 @@ function tileMemoryKey(cacheName, url) {
     return `${cacheName}\n${tileCacheRequestKey(url)}`;
 }
 
+function isRasterTileData(data) {
+    if (!data || data.byteLength < 3) return false;
+    const b = new Uint8Array(data);
+    return (b[0] === 255 && b[1] === 216 && b[2] === 255)
+        || (b.length >= 8 && b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71 && b[4] === 13 && b[5] === 10 && b[6] === 26 && b[7] === 10)
+        || (b.length >= 12 && b[0] === 82 && b[1] === 73 && b[2] === 70 && b[3] === 70 && b[8] === 87 && b[9] === 69 && b[10] === 66 && b[11] === 80);
+}
+
+async function fetchRasterTile(cacheName, url) {
+    const response = await fetch(url);
+    if (response.status === 204 || !response.ok) {
+        if ([204, 404, 410].includes(response.status)) rememberMissingTile(cacheName, url, response.status);
+        throw new Error(`tile fetch failed: ${response.status}`);
+    }
+    // Validate before returning the response to any cache/prefetch branch.
+    // An HTML fallback, SVG, or empty 200 response is not a raster tile.
+    if (!isRasterTileData(await response.clone().arrayBuffer())) {
+        rememberMissingTile(cacheName, url, response.status);
+        throw new Error("tile fetch failed: response is not a PNG, JPEG or WebP image");
+    }
+    return response;
+}
+
+async function readValidatedCachedTile(cacheName, url, cached) {
+    if (cached && cached.ok && cached.status !== 204) {
+        const data = await cached.arrayBuffer();
+        if (isRasterTileData(data)) return data;
+    }
+    if (cached) {
+        await runBrowserTileCacheOp(async () => {
+            const cache = await openTileCache(cacheName);
+            if (cache) await cache.delete(tileCacheRequestKey(url));
+        });
+    }
+    return null;
+}
+
 function transparentTileFallbackArrayBuffer() {
     return TRANSPARENT_TILE_BYTES.slice().buffer;
 }
@@ -852,7 +889,7 @@ function hasTileMemoryCache(cacheName, url) {
 
 function writeTileMemoryCache(cacheName, url, data) {
     if (!tileCacheEnabled()) return;
-    if (!data || typeof data.byteLength !== "number") return;
+    if (!isRasterTileData(data)) return;
     if (data.byteLength > TILE_CACHE_MAX_TILE_BYTES) return;
     if (TILE_MEMORY_CACHE_MAX_BYTES <= 0) return;
     const key = tileMemoryKey(cacheName, url);
@@ -1427,8 +1464,7 @@ async function readPersistentTileArrayBuffer(cacheName, url) {
             const cache = await openTileCache(cacheName);
             return await cache.match(tileCacheRequestKey(url), {ignoreVary: true});
         });
-        if (!cached || !cached.ok) return null;
-        return await cached.arrayBuffer();
+        return await readValidatedCachedTile(cacheName, url, cached);
     } catch (e) {
         if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache read failed", url, e);
         return null;
@@ -1444,7 +1480,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
 
     if (!tileCacheEnabled() || !tileCacheSupported()) {
         await yieldBrowserTileWork();
-        const response = await fetch(url);
+        const response = await fetchRasterTile(cacheName, url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
                 rememberMissingTile(cacheName, url, response.status);
@@ -1463,7 +1499,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     if (options.skipCacheLookup === true) {
         const data = await runInflightTileFetch(cacheName, url, async () => {
             await yieldBrowserTileWork();
-            const response = await fetch(url);
+            const response = await fetchRasterTile(cacheName, url);
             if (!response.ok) {
                 if (response.status === 404 || response.status === 410) {
                     rememberMissingTile(cacheName, url, response.status);
@@ -1503,7 +1539,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     const cache = await runBrowserTileCacheOp(async () => await openTileCache(cacheName));
     if (!cache) {
         await yieldBrowserTileWork();
-        const response = await fetch(url);
+        const response = await fetchRasterTile(cacheName, url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
                 rememberMissingTile(cacheName, url, response.status);
@@ -1515,11 +1551,11 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     }
     const cacheKey = tileCacheRequestKey(url);
     const cached = await runBrowserTileCacheOp(async () => await cache.match(cacheKey, {ignoreVary: true}));
-    if (cached && cached.ok) {
-        const data = await cached.arrayBuffer();
-        writeTileMemoryCache(cacheName, url, data);
+    const cachedData = await readValidatedCachedTile(cacheName, url, cached);
+    if (cachedData) {
+        writeTileMemoryCache(cacheName, url, cachedData);
         forgetMissingTile(cacheName, url);
-        return cloneTileArrayBuffer(data);
+        return cloneTileArrayBuffer(cachedData);
     }
 
     if (options.cacheOnly === true) {
@@ -1528,7 +1564,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
 
     const data = await runInflightTileFetch(cacheName, url, async () => {
         await yieldBrowserTileWork();
-        const response = await fetch(url);
+        const response = await fetchRasterTile(cacheName, url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
                 rememberMissingTile(cacheName, url, response.status);
@@ -1574,14 +1610,14 @@ async function prefetchTileToPersistentCache(cacheName, url) {
     if (!cache) return;
     const cacheKey = tileCacheRequestKey(url);
     const cached = await runBrowserTileCacheOp(async () => await cache.match(cacheKey, {ignoreVary: true}));
-    if (cached && cached.ok) {
+    if (await readValidatedCachedTile(cacheName, url, cached)) {
         forgetMissingTile(cacheName, url);
         return;
     }
 
     await runInflightTileFetch(cacheName, url, async () => {
         await yieldBrowserTileWork();
-        const response = await fetch(url);
+        const response = await fetchRasterTile(cacheName, url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
                 rememberMissingTile(cacheName, url, response.status);
@@ -3039,6 +3075,36 @@ function ensureMarkerStylesOnce() {
     const style = document.createElement("style");
     style.id = "gs26-marker-styles";
     style.textContent = `
+    #ground-map .maplibregl-ctrl-group,
+    #ground-map .gs26-map-zoom-controls {
+      background: var(--gs26-panel-background, #142033);
+      border: 1px solid var(--gs26-border, #46566e);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 3px 12px #0003;
+    }
+    #ground-map .maplibregl-ctrl-group button,
+    #ground-map .gs26-map-zoom-controls button {
+      display: grid; place-items: center; box-sizing: border-box;
+      width: 44px; min-width: 44px; height: 44px; min-height: 44px;
+      padding: 0; margin: 0; border: 0; border-radius: 0;
+      background: var(--gs26-button-background, #1e293b);
+      color: var(--gs26-button-text, #e2e8f0);
+      font: 500 25px/1 system-ui, sans-serif;
+      cursor: pointer; touch-action: manipulation;
+    }
+    #ground-map .maplibregl-ctrl-group button + button,
+    #ground-map .gs26-map-zoom-controls button + button { border-top: 1px solid var(--gs26-border, #46566e); }
+    #ground-map .maplibregl-ctrl-group button:hover:not(:disabled),
+    #ground-map .gs26-map-zoom-controls button:hover:not(:disabled) { filter: brightness(1.15); }
+    #ground-map .maplibregl-ctrl-group button:focus-visible,
+    #ground-map .gs26-map-zoom-controls button:focus-visible { outline: 2px solid #60a5fa; outline-offset: -3px; }
+    #ground-map .maplibregl-ctrl-group button:disabled,
+    #ground-map .gs26-map-zoom-controls button:disabled { opacity: .4; cursor: default; }
+    #ground-map .maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon,
+    #ground-map .maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon { background-image: none; display: grid; place-items: center; }
+    #ground-map .maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon::before { content: "+"; }
+    #ground-map .maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon::before { content: "−"; }
     .gs26-map-center-control {
       position: relative;
     }
@@ -4919,11 +4985,12 @@ function installRasterFallbackControls(container) {
         if (event.key === "-") {event.preventDefault();zoomBy(-1);}
     });
     const controls=document.createElement("div");
-    controls.style.cssText="position:absolute;right:10px;top:10px;z-index:3;display:flex;flex-direction:column;gap:4px";
+    controls.className="gs26-map-zoom-controls";
+    controls.style.cssText="position:absolute;right:10px;top:10px;z-index:3;display:flex;flex-direction:column";
     for(const [label,delta] of [["Zoom in",1],["Zoom out",-1]]) {
         const button=document.createElement("button");button.type="button";
         button.textContent=delta>0?"+":"−";button.setAttribute("aria-label",label);
-        button.style.cssText="width:44px;height:44px;font-size:24px;background:#152238;color:white;border:1px solid #94a3b8;border-radius:4px";
+        button.title=label;
         button.addEventListener("click",event=>{event.preventDefault();zoomBy(delta);});controls.appendChild(button);
     }
     container.appendChild(controls);

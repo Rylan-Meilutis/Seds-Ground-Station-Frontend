@@ -3575,10 +3575,13 @@ def _ensure_wasm_bindgen_cli(frontend_dir: Path, env: Optional[dict[str, str]]) 
     if installed_version == required and installed_path is not None:
         return installed_path
 
+    # Pin the tool to the application's wasm-bindgen ABI, but resolve its own
+    # transitive dependencies afresh. Published CLI lockfiles can contain yanked
+    # crates (for example der 0.8.0); --locked would keep installing those.
     if installed_path is None:
         print(f"wasm-bindgen-cli not found; installing required version {required}")
         run(
-            ["cargo", "install", "--locked", "wasm-bindgen-cli", "--version", required],
+            ["cargo", "install", "wasm-bindgen-cli", "--version", f"={required}"],
             cwd=_workspace_root(frontend_dir),
             env=env,
         )
@@ -3588,7 +3591,7 @@ def _ensure_wasm_bindgen_cli(frontend_dir: Path, env: Optional[dict[str, str]]) 
             f"want {required}); reinstalling"
         )
         run(
-            ["cargo", "install", "--locked", "wasm-bindgen-cli", "--version", required, "--force"],
+            ["cargo", "install", "wasm-bindgen-cli", "--version", f"={required}", "--force"],
             cwd=_workspace_root(frontend_dir),
             env=env,
         )
@@ -3596,6 +3599,9 @@ def _ensure_wasm_bindgen_cli(frontend_dir: Path, env: Optional[dict[str, str]]) 
     refreshed_path = _find_wasm_bindgen((env or {}).get("PATH", os.environ.get("PATH", "")))
     if refreshed_path is None:
         raise RuntimeError("wasm-bindgen-cli install completed but `wasm-bindgen` is still not on PATH")
+    actual = _wasm_bindgen_cli_version(refreshed_path, frontend_dir, env)
+    if actual != required:
+        raise RuntimeError(f"wasm-bindgen-cli install produced {actual or 'an unknown version'}; expected {required}")
     return refreshed_path
 
 
