@@ -49,7 +49,6 @@ fn icon(id: &str) -> &'static str {
 pub(super) fn NavigationRail(
     items: Vec<NavigationItem>,
     active: String,
-    connected: bool,
     title: String,
     on_navigate: EventHandler<String>,
     on_settings: EventHandler<()>,
@@ -78,7 +77,7 @@ pub(super) fn NavigationRail(
         }
        }
       }
-      footer {span {class:"gs26-navigation-connection","data-connected":connected.to_string(),i {} if connected {"Station connected"}else{"Reconnecting"}}
+      footer {
        a {href:"#",onclick:move|e|{e.prevent_default();on_settings.call(());},title:"Settings","aria-label":"Settings",svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:"M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1z"}} span {"Settings"}}
       }
      }

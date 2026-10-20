@@ -36,11 +36,9 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
         style {{include_str!("controls.css")}}
         style {{include_str!("admin_console.css")}}
         main {class:"gs26-admin","aria-label":"Administration",
-            header {h1 {"Administration"}button {onclick:move |_|on_exit.call(()),"Exit admin"}}
+            header {h1 {"Administration"}button {onclick:move |_|on_exit.call(()),"Back to settings"}}
             nav {"aria-label":"Administration tools",
-                button {onclick:move |_|on_navigate.call("stream".into()),"Broadcast studio"}
                 button {onclick:move |_|on_navigate.call("views".into()),"Dashboard views"}
-                button {onclick:move |_|on_navigate.call("voice".into()),"Voice chat"}
             }
             p {role:"status","{message}"}
             section {h2 {"Users & access"}
@@ -49,17 +47,20 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
                     article {key:"{account.username}",
                         h3 {"{account.username}"}
                         div {class:"admin-permissions",
+                            label {input {r#type:"checkbox",checked:account.roles.iter().any(|role|role=="admin"),disabled:*busy.read()||status.username.as_deref().is_some_and(|name|name.eq_ignore_ascii_case(&account.username)),onchange:move|e|{
+                                let mut accounts=accounts.write();let roles=&mut accounts[index].roles;roles.retain(|role|role!="admin");if e.checked(){roles.push("admin".into());}
+                            }}"Application administrator"}
                             label {input {r#type:"checkbox",checked:account.permissions.view_data,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.view_data=e.checked()}"View data"}
                             label {input {r#type:"checkbox",checked:account.permissions.send_commands,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.send_commands=e.checked()}"Send hardware commands"}
                             label {input {r#type:"checkbox",checked:account.permissions.voice_transmit,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.voice_transmit=e.checked()}"Transmit voice"}
                             label {input {r#type:"checkbox",checked:account.permissions.set_system_time,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.set_system_time=e.checked()}"Set system time"}
                             label {input {r#type:"checkbox",checked:account.calibration_access.view,disabled:*busy.read(),onchange:move|e|accounts.write()[index].calibration_access.view=e.checked()}"View calibration"}
                             label {input {r#type:"checkbox",checked:account.calibration_access.edit,disabled:*busy.read(),onchange:move|e|accounts.write()[index].calibration_access.edit=e.checked()}"Edit calibration"}
-                            label {input {r#type:"checkbox",checked:account.disabled,disabled:*busy.read(),onchange:move|e|accounts.write()[index].disabled=e.checked()}"Disable account"}
+                            label {input {r#type:"checkbox",checked:account.disabled,disabled:*busy.read()||status.username.as_deref().is_some_and(|name|name.eq_ignore_ascii_case(&account.username)),onchange:move|e|accounts.write()[index].disabled=e.checked()}"Disable account"}
                         }
                         details {summary {"Roles & command limits"}
                             div {class:"admin-permissions",
-                                for (role,label) in [("admin","Application administrator"),("stream_admin","Stream administrator"),("stream_master","Stream manager")] {
+                                for (role,label) in [("stream_admin","Stream administrator"),("stream_master","Stream manager")] {
                                     label {input {r#type:"checkbox",checked:account.roles.iter().any(|value|value==role),disabled:*busy.read(),onchange:move|e|{
                                         let mut accounts=accounts.write();let roles=&mut accounts[index].roles;roles.retain(|value|value!=role);if e.checked(){roles.push(role.into());}
                                     }}"{label}"}

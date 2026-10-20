@@ -180,7 +180,7 @@ fn TelemetryDashboardInner() -> Element {
     let mut tabs_expanded = use_signal(|| false);
     let mut rail_collapsed = use_signal(|| persist::get_string("navigation-rail-collapsed").as_deref()!=Some("false"));
     let mut warning_toast_dismissed = use_signal(|| 0i64);
-    let mut header_actions_expanded = use_signal(|| false);
+    let header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
     let show_settings_overlay = use_signal(|| false);
     let show_version_overlay = use_signal(|| false);
@@ -2350,6 +2350,12 @@ fn TelemetryDashboardInner() -> Element {
                                 "{close_button_label}"
                             }
                         }
+                        if auth::current_status().roles.iter().any(|role|role=="admin") {
+                            section { class:"gs26-settings-administration",
+                                h2 { "Administration" }
+                                button { onclick:move |_|{let mut overlay=show_settings_overlay;overlay.set(false);admin_open.set(true);}, "Manage users & access" }
+                            }
+                        }
                         SettingsPage {
                             on_open_antenna: move |_| { let mut overlay = show_settings_overlay; overlay.set(false); antenna_aiming.set(true); },
                             distance_units_metric: distance_units_metric,
@@ -2525,13 +2531,11 @@ fn TelemetryDashboardInner() -> Element {
 
     if *admin_open.read() {
         return rsx! {admin_console::AdminConsole {
-            on_exit:move |_|admin_open.set(false),
+            on_exit:move |_|{admin_open.set(false);let mut overlay=show_settings_overlay;overlay.set(true);},
             on_navigate:move |page:String| {
                 let mut dashboard_edit_mode = dashboard_edit_mode;
                 admin_open.set(false);
                 match page.as_str() {
-                    "stream"=>active_main_tab.set(MainTab::StreamManager),
-                    "voice"=>active_main_tab.set(MainTab::CrewVoice),
                     "views"=>{active_main_tab.set(MainTab::State);dashboard_edit_mode.set(true);},
                     _=>{},
                 }
@@ -3034,7 +3038,6 @@ fn TelemetryDashboardInner() -> Element {
                             warning_alert:active_warning_alert,
                             error_alert:active_error_alert,
                             active:_main_tab_to_str(*active_main_tab.read()).to_string(),
-                            connected:*WS_CONNECTED_SIGNAL.read(),
                             title:layout.branding.app_name.clone().unwrap_or_else(||"GroundStation".into()),
                             on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);},
                             on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);},
@@ -3077,9 +3080,6 @@ fn TelemetryDashboardInner() -> Element {
                         div {
                             class: "gs26-header-title",
                             style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
-                            if auth::current_status().roles.iter().any(|role|role=="admin") {
-                                button {class:"gs26-title-tab-toggle gs26-admin-shortcut",onclick:move |_|admin_open.set(true),"Admin"}
-                            }
                             if *navigation_rail::SIDEBAR_NAVIGATION.read() {
                                 button {class:"gs26-mobile-sidebar-toggle",title:if *rail_collapsed.read(){"Show pages"}else{"Hide pages"},"aria-label":if *rail_collapsed.read(){"Show navigation sidebar"}else{"Hide navigation sidebar"},"aria-expanded":(!*rail_collapsed.read()).to_string(),onclick:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next{"true"}else{"false"});},svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:"M3 4h18v16H3z M9 4v16 M5 8h2 M5 12h2 M5 16h2"}}}
                             }
@@ -3225,9 +3225,6 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
                         div { class: "gs26-header-actions-list",
-                            if auth::current_status().roles.iter().any(|role|role=="admin") {
-                                button {class:"gs26-admin-menu",onclick:move |_|{admin_open.set(true);header_actions_expanded.set(false);},"Admin"}
-                            }
                             button {
                                 title: "Clear every graph and exclude earlier data from future resyncs. Recordings are kept.",
                                 style: "padding:0.45rem 0.85rem;border-radius:0.75rem;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",

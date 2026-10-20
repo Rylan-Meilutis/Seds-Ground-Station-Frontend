@@ -88,9 +88,10 @@ try{
   if (!(await page.getByRole('button',{name:/Choose tab/}).count())) console.error('Startup:', await page.locator('body').innerText(), errors);
   const choose=()=>page.getByRole('button',{name:/Choose tab/}).click();
   const openAdmin=async()=>{
-    const button=page.getByRole('button',{name:'Admin',exact:true});
-    if(!await button.isVisible())await page.getByRole('button',{name:'Menu',exact:true}).click();
-    await button.click();
+    const settings=page.getByRole('link',{name:'Settings',exact:true}).or(page.getByRole('button',{name:/^Settings$/i}));
+    if(!await settings.isVisible())await page.getByRole('button',{name:'Menu',exact:true}).click();
+    await settings.click();
+    await page.getByRole('button',{name:'Manage users & access',exact:true}).click();
   };
   assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'tab preference excludes sidebar');
   assert.equal(await page.getByRole('button',{name:'Admin',exact:true}).count(),0,'stream manager is not a user administrator');
@@ -285,6 +286,16 @@ try{
   await page.getByRole('button',{name:'Menu',exact:true}).click();
   await openAdmin();
   await page.getByRole('heading',{name:'Administration',exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'Broadcast studio',exact:true}).count(),0,'admin has no stream redirect');
+  assert.equal(await page.getByRole('button',{name:'Voice chat',exact:true}).count(),0,'admin has no voice redirect');
+  await page.getByLabel('Application administrator',{exact:true}).uncheck();
+  await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
+  await page.getByText('Account saved',{exact:true}).waitFor();
+  assert(!adminAccounts[0].roles.includes('admin'));
+  await page.getByLabel('Application administrator',{exact:true}).check();
+  await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
+  await page.getByText('Account saved',{exact:true}).waitFor();
+  assert(adminAccounts[0].roles.includes('admin'));
   await page.getByLabel('Transmit voice',{exact:true}).check();
   await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
   await page.getByText('Account saved',{exact:true}).waitFor();
@@ -301,12 +312,16 @@ try{
   assert.equal(await page.getByLabel('Temporary password',{exact:true}).inputValue(),'');
   await page.setViewportSize({width:320,height:780});
   assert(await page.locator('.gs26-admin').evaluate(n=>n.scrollWidth<=n.clientWidth),'admin fits narrow screens');
-  assert.equal((await page.getByRole('button',{name:'Exit admin',exact:true}).boundingBox()).height,44,'admin uses the shared button height');
-  await page.getByRole('button',{name:'Broadcast studio',exact:true}).click();
-  await page.getByRole('heading',{name:'Broadcast studio',exact:true}).waitFor();
-  await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
+  assert.equal((await page.getByRole('button',{name:'Back to settings',exact:true}).boundingBox()).height,44,'admin uses the shared button height');
+  await page.getByRole('button',{name:'Back to settings',exact:true}).click();
+  await page.getByRole('button',{name:'Close',exact:true}).click();
+  adminAccounts.push({...structuredClone(adminAccounts[0]),username:'ui-test'});
   await openAdmin();
-  await page.getByRole('button',{name:'Exit admin',exact:true}).click();
+  const ownAccount=page.locator('.gs26-admin article').filter({has:page.getByRole('heading',{name:'ui-test',exact:true})});
+  assert(await ownAccount.getByLabel('Application administrator',{exact:true}).isDisabled(),'cannot edit own admin role');
+  assert(await ownAccount.getByLabel('Disable account',{exact:true}).isDisabled(),'cannot disable own account');
+  await page.getByRole('button',{name:'Back to settings',exact:true}).click();
+  await page.getByRole('button',{name:'Close',exact:true}).click();
   session.roles=[]; session.username='other-user'; session.permissions.send_commands=false;
 
   await page.reload();await choose();

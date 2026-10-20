@@ -100,6 +100,10 @@ try {
  await page.getByRole('button',{name:'Collapse sidebar',exact:true}).click();
  assert.equal(await page.locator('.gs26-navigation-rail').evaluate(e=>e.getBoundingClientRect().width),64);
  await page.reload();await page.getByRole('button',{name:'Expand sidebar',exact:true}).click();
+ assert.equal(await page.getByText('Station connected',{exact:true}).count(),0,'sidebar excludes redundant connection label');
+ const toggle=await page.getByRole('button',{name:'Collapse sidebar',exact:true}).boundingBox();
+ const railBounds=await page.locator('.gs26-navigation-rail').boundingBox();
+ assert(toggle.x-railBounds.x<12,'collapse control is left aligned');
  const icons=await rail.locator('a svg path').evaluateAll(items=>items.map(i=>i.getAttribute('d')));assert.equal(new Set(icons).size,icons.length,'page icons are distinct');
  await page.setViewportSize({width:390,height:844});
  const content=page.locator('.gs26-page-content');
