@@ -75,6 +75,8 @@ rustls = "0.23"
 rustls-platform-verifier = "0.7.1"
 futures-util = "0.3.34"
 url = "2.5.8"
+ring = "0.17.14"
+if-addrs = "0.15.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]

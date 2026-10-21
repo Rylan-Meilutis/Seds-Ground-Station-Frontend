@@ -323,10 +323,12 @@ impl UrlConfig {
 
     /// Returns the current HTTP base URL, including platform-specific defaults.
     pub fn base_http() -> String {
-        // load from storage key if present
+        // Track the live signal even when an address is saved, so a verified
+        // native handover also refreshes the auth gate and station branding.
+        let live_base = BASE_URL.read().clone();
         let base = persist::get_string(BASE_URL_STORAGE_KEY)
             .map(normalize_base_url)
-            .unwrap_or_else(|| BASE_URL.read().clone());
+            .unwrap_or(live_base);
 
         #[cfg(target_arch = "wasm32")]
         if base.is_empty()

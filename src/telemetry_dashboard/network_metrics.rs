@@ -1,12 +1,14 @@
 use super::*;
 
 const WS_DISCONNECT_NOTIFICATION_PREFIX: &str = "GroundStation connection lost. Reconnecting…";
+const RRLS_DISCONNECT_NOTIFICATION_PREFIX: &str = "RRLS connection lost. Reconnecting…";
 const LEGACY_WS_DISCONNECT_PREFIX: &str = "WebSocket disconnected.\nURL:";
 
 fn is_ws_disconnect_notification(notification: &PersistentNotification) -> bool {
     notification
         .message
         .starts_with(WS_DISCONNECT_NOTIFICATION_PREFIX)
+        || notification.message.starts_with(RRLS_DISCONNECT_NOTIFICATION_PREFIX)
         || notification
             .message
             .starts_with(LEGACY_WS_DISCONNECT_PREFIX)
@@ -85,7 +87,7 @@ pub(super) fn frontend_network_metrics_snapshot() -> FrontendNetworkMetrics {
 }
 
 /// Redacts authentication tokens from a WebSocket URL before it is shown in the UI.
-fn redact_ws_url_for_display(ws_url: &str) -> String {
+pub(super) fn redact_ws_url_for_display(ws_url: &str) -> String {
     if let Some((prefix, query)) = ws_url.split_once('?') {
         let redacted_query = query
             .split('&')
@@ -174,7 +176,7 @@ pub(super) fn note_ws_connection_notification(
     let item = PersistentNotification {
         id: now_ms as u64,
         timestamp_ms: now_ms,
-        message: WS_DISCONNECT_NOTIFICATION_PREFIX.to_string(),
+        message: format!("{} connection lost. Reconnecting…", auth::station_name()),
         persistent: false,
         action_label: None,
         action_cmd: None,

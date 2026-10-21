@@ -67,7 +67,7 @@ pub fn Connect() -> Element {
 
                 div {
                     style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px;",
-                    h1 { style: "margin:0; font-size:20px;", "{APP_DISPLAY_NAME}" }
+                    h1 { style: "margin:0; font-size:20px;", {auth::station_app_name()} }
                     div {
                         style: "display:flex; gap:10px; flex-wrap:wrap;",
                         button {
@@ -96,7 +96,7 @@ pub fn Connect() -> Element {
                         }
                     ),
                     p { style: "margin:0 0 16px 0; color:{theme.text_muted};",
-                        "Enter the Ground Station host and port. Example: ",
+                        "Enter the station host and port. Example: ",
                         code { "your-ground-station-url.com" }
                     }
 
@@ -206,7 +206,7 @@ pub fn Connect() -> Element {
                                 );
                                 if UrlConfig::_stored_base_url().as_deref() != Some(u_norm.as_str()) {
                                     test_status.set(
-                                        "Failed to save the Ground Station URL on this device. The app stayed disconnected."
+                                        "Failed to save the station address on this device. The app stayed disconnected."
                                             .to_string(),
                                     );
                                     return;
@@ -274,7 +274,7 @@ pub fn Connect() -> Element {
                                         theme.border, theme.info_background, theme.success_text
                                     ),
                                     div { style: "font-weight:700; margin-bottom:4px;", "All Connection Tests Passed" }
-                                    div { style: "font-size:13px;", "Ground Station HTTP routes and WebSocket handshake are reachable." }
+                                    div { style: "font-size:13px;", "Station HTTP routes and WebSocket handshake are reachable." }
                                 }
                             } else {
                                 div {
@@ -441,7 +441,7 @@ pub fn Connect() -> Element {
                             UrlConfig::_set_skip_tls_verify_for_base(&u_norm, skip_tls_verify);
                             if UrlConfig::_stored_base_url().as_deref() != Some(u_norm.as_str()) {
                                 test_status.set(
-                                    "Failed to save the Ground Station URL on this device. The app stayed disconnected."
+                                    "Failed to save the station address on this device. The app stayed disconnected."
                                         .to_string(),
                                 );
                                 return;

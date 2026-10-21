@@ -186,6 +186,19 @@ fn TelemetryDashboardInner() -> Element {
     let show_version_overlay = use_signal(|| false);
 
     let mut active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
+    let mut return_main_tab = use_signal(|| {
+        let current = _main_tab_from_str(st_main_tab.read().as_str());
+        if matches!(current, MainTab::Mission | MainTab::StreamManager) {
+            _main_tab_from_str(&persist::get_or(&format!("{}-return", scoped_main_tab_key()), "state"))
+        } else { current }
+    });
+    use_effect(move || {
+        let current = *active_main_tab.read();
+        if !*streamer_mode.read() && !matches!(current, MainTab::Mission | MainTab::StreamManager) {
+            return_main_tab.set(current);
+            persist::set_string(&format!("{}-return", scoped_main_tab_key()), _main_tab_to_str(current));
+        }
+    });
 
     {
         let streamer_mode = streamer_mode;
@@ -2513,7 +2526,7 @@ fn TelemetryDashboardInner() -> Element {
                 if viewer_only {div {style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:.7;",{auth_button}}}
                 if !viewer_only {
                     button {r#type:"button",style:"align-self:end;min-height:44px;margin:8px;padding:8px 16px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_| {
-                        let mut mode=streamer_mode;mode.set(false);active_main_tab.set(MainTab::State);
+                        let mut mode=streamer_mode;mode.set(false);active_main_tab.set(*return_main_tab.read());
                     },"Exit stream mode"}
                 }
                 div {style:"flex:1;min-height:0;",
@@ -3049,9 +3062,9 @@ fn TelemetryDashboardInner() -> Element {
                             style: "flex-shrink:0;padding:10px 14px;margin-bottom:8px;border:1px solid currentColor;border-radius:8px;display:flex;gap:12px;align-items:center;justify-content:space-between;",
                             span {
                                 if DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
-                                    "GroundStation disconnected. Reconnecting automatically; displayed data may be stale."
+                                    {format!("{} disconnected. Reconnecting automatically; displayed data may be stale.", auth::station_name())}
                                 } else {
-                                    "Connecting to GroundStation…"
+                                    {format!("Connecting to {}…", auth::station_name())}
                                 }
                             }
                             button { style:"min-height:44px;min-width:44px;flex-shrink:0;", onclick: move |_| reconnect_and_reload_ui(), "Reconnect now" }
@@ -3059,7 +3072,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
                     if *streamer_mode.read() {
                         button { title:"Exit streamer mode", style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:0.65;border:1px solid #526071;border-radius:8px;background:#101923;color:white;padding:6px;cursor:pointer;",
-                            onclick:move |_| {let mut streamer_mode=streamer_mode;streamer_mode.set(false);let mut active_main_tab=active_main_tab;active_main_tab.set(MainTab::State);}, "Exit streamer"
+                            onclick:move |_| {let mut streamer_mode=streamer_mode;streamer_mode.set(false);let mut active_main_tab=active_main_tab;active_main_tab.set(*return_main_tab.read());}, "Exit streamer"
                         }
                     }
                     if !*streamer_mode.read() {

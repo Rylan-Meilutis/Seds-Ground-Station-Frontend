@@ -159,6 +159,7 @@ pub fn App() -> Element {
             ensure_document_inline_style("gs26-maplibre-css", INLINE_MAPLIBRE_CSS);
             ensure_document_inline_script("gs26-maplibre-js", INLINE_MAPLIBRE_JS);
             ensure_document_inline_script("gs26-ground-map-js", INLINE_GROUND_MAP_JS);
+            ensure_document_inline_script("gs26-station-discovery-js", include_str!("../static/station_discovery.js"));
         });
     }
 
@@ -247,7 +248,7 @@ fn LoginCard(
     let mut submit_login = move || {
         let base = UrlConfig::base_http();
         if base.trim().is_empty() {
-            status.set("Configure the Ground Station URL first.".to_string());
+            status.set("Configure the station address first.".to_string());
             return;
         }
         let username_value = username();
@@ -312,7 +313,7 @@ fn LoginCard(
                     if base.trim().is_empty() {
                         div {
                             style: shell_warning_style(&theme),
-                            "Configure the Ground Station URL before logging in."
+                            "Configure the station address before logging in."
                         }
                     }
 
@@ -452,7 +453,7 @@ pub fn Login() -> Element {
                 div {
                     style: shell_card_style(&shell_theme(), "min(520px, 92vw)"),
                     h1 { style: "margin:0 0 10px 0; font-size:20px;", "Connect First" }
-                    p { style: "margin:0 0 16px 0; color:{shell_theme().text_muted};", "Configure and connect to a Ground Station before signing in." }
+                    p { style: "margin:0 0 16px 0; color:{shell_theme().text_muted};", "Configure and connect to a station before signing in." }
                     button {
                         style: shell_button_style(&shell_theme()),
                         onclick: move |_| {
@@ -473,7 +474,7 @@ pub fn Login() -> Element {
         rsx! {
             LoginOverlay {
                 title: "Sign In".to_string(),
-                subtitle: "Authenticate with the Ground Station to view protected data or send commands.".to_string(),
+                subtitle: "Sign in to this station to view protected data or send commands.".to_string(),
                 back_route: Some(Route::Dashboard {}),
                 on_success_route: authenticated_route(),
             }
@@ -482,7 +483,7 @@ pub fn Login() -> Element {
         rsx! {
             LoginCard {
                 title: "Sign In".to_string(),
-                subtitle: "Authenticate with the Ground Station to view protected data or send commands.".to_string(),
+                subtitle: "Sign in to this station to view protected data or send commands.".to_string(),
                 back_route: Some(connect_route()),
                 on_success_route: authenticated_route(),
             }
@@ -557,7 +558,7 @@ pub fn Version() -> Element {
                 style: shell_card_style(&theme, "min(900px, 100%)"),
                 div {
                     style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;",
-                    h1 { style: "margin:0; font-size:20px;", "{APP_DISPLAY_NAME}" }
+                    h1 { style: "margin:0; font-size:20px;", {auth::station_app_name()} }
                     button {
                         style: shell_button_style(&theme),
                         onclick: back_action,
@@ -587,7 +588,7 @@ pub fn Dashboard() -> Element {
                     div {
                         style: shell_card_style(&theme, "min(560px, 92vw)"),
                         h1 { style: "margin:0 0 12px 0; font-size:18px;", "Not connected" }
-                        p { style: "margin:0 0 16px 0; color:{theme.text_muted};", "Please configure the Ground Station URL on the Connect screen." }
+                        p { style: "margin:0 0 16px 0; color:{theme.text_muted};", "Please configure the station address on the Connect screen." }
                         button {
                             style: shell_button_style(&theme),
                             onclick: move |_| {
@@ -634,7 +635,7 @@ pub fn Dashboard() -> Element {
         });
     });
 
-    match auth_state.read().as_ref() {
+    let content = match auth_state.read().as_ref() {
         #[cfg(not(target_arch = "wasm32"))]
         None if can_render_dashboard_while_auth_check_runs => {
             rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
@@ -644,7 +645,7 @@ pub fn Dashboard() -> Element {
                 div {
                     style: format!("padding:20px; border:1px solid {}; border-radius:16px; background:{}; min-width:min(560px, 92vw);", shell_theme().border_strong, shell_theme().panel_background),
                     h1 { style: "margin:0 0 10px 0; font-size:22px;", "Checking session..." }
-                    p { style: format!("margin:0 0 16px 0; color:{};", shell_theme().text_muted), "Contacting the Ground Station session endpoint." }
+                    p { style: format!("margin:0 0 16px 0; color:{};", shell_theme().text_muted), "Contacting the station…" }
                     div { style: "display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap;",
                         button {
                             style: shell_button_style(&shell_theme()),
@@ -666,7 +667,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginCard {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This station requires a login. Sign in to continue.".to_string(),
                         back_route: Some(connect_route()),
                         on_success_route: authenticated_route(),
                     }
@@ -677,7 +678,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginOverlay {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This station requires a login. Sign in to continue.".to_string(),
                         back_route: Some(Route::Dashboard {}),
                         on_success_route: authenticated_route(),
                     }
@@ -686,7 +687,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginCard {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This station requires a login. Sign in to continue.".to_string(),
                         back_route: Some(connect_route()),
                         on_success_route: authenticated_route(),
                     }
@@ -694,7 +695,7 @@ pub fn Dashboard() -> Element {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        Some(Err(_err)) if has_cached_layout_for_base || has_completed_connect_flow => {
+        Some(Err(_err)) if can_render_dashboard_while_auth_check_runs => {
             rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
         }
         Some(Err(err)) => rsx! {
@@ -710,5 +711,7 @@ pub fn Dashboard() -> Element {
                 },
             }
         },
-    }
+    };
+    let station_name = auth::station_app_name();
+    rsx! { document::Title { "{station_name}" } {content} }
 }

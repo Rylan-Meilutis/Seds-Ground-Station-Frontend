@@ -1259,6 +1259,8 @@ async fn connect_ws_supervisor(
     }
 
     log!("[WS] supervisor starting connection (epoch={epoch})");
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut last_station_sweep = std::time::Instant::now() - std::time::Duration::from_secs(5);
 
     loop {
         if !alive.load(Ordering::Relaxed) {
@@ -1370,6 +1372,25 @@ async fn connect_ws_supervisor(
             log!("[WS] connect error: {e}");
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if last_station_sweep.elapsed() >= std::time::Duration::from_secs(5) {
+            last_station_sweep = std::time::Instant::now();
+            if let Some(mut session) = auth::current_session() {
+                if let Some((base,status)) = crate::native_station::find(&session,UrlConfig::_skip_tls_verify()).await {
+                    if alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+                        let skip_tls = UrlConfig::_skip_tls_verify();
+                        UrlConfig::_set_skip_tls_verify_for_base(&base,skip_tls);
+                        auth::init_from_storage(&base);
+                        session.session = status;
+                        auth::set_current_session(session);
+                        UrlConfig::set_base_url_and_persist(base);
+                        clear_and_reconnect_after_connect();
+                        break;
+                    }
+                }
+            }
+        }
+
         let reconnect_delay_ms = if dashboard_page_visible() { 250 } else { 1_500 };
 
         #[cfg(target_arch = "wasm32")]
@@ -1433,7 +1454,7 @@ async fn connect_ws_once_wasm(
     let base_ws = UrlConfig::base_ws();
     let ws_url = auth_ws_url(&base_ws);
 
-    log!("[WS] connecting to {ws_url} (epoch={epoch})");
+    log!("[WS] connecting to {} (epoch={epoch})", network_metrics::redact_ws_url_for_display(&ws_url));
 
     let ws = WebSocket::new(&ws_url).map_err(|_| "failed to create websocket".to_string())?;
     let last_activity_ms = std::rc::Rc::new(std::cell::Cell::new(monotonic_now_ms()));
@@ -1714,7 +1735,7 @@ async fn connect_ws_once_native(
     let base_ws = UrlConfig::base_ws();
     let ws_url = auth_ws_url(&base_ws);
 
-    log!("[WS] connecting to {ws_url} (epoch={epoch})");
+    log!("[WS] connecting to {} (epoch={epoch})", network_metrics::redact_ws_url_for_display(&ws_url));
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     *WS_SENDER.write() = Some(WsSender { tx });

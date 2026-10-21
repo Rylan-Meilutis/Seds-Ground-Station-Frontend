@@ -29,8 +29,43 @@ pub struct Permissions {
     pub set_system_time: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationPeer {
+    pub id: String,
+    pub role: String,
+    #[serde(default)]
+    pub urls: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationPairing {
+    pub installation_id: String,
+    pub station_id: String,
+    pub verify_key: String,
+    pub peers: Vec<StationPeer>,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn configure_browser_discovery(pairing: Option<&StationPairing>) {
+    let _ = js_sys::eval(include_str!("../static/station_discovery.js"));
+    if let Some(pairing) = pairing {
+        if let Ok(json) = serde_json::to_string(pairing) {
+            let _ = js_sys::eval(&format!("window.GS26StationDiscovery.configure({json})"));
+        }
+    } else {
+        let _ = js_sys::eval(
+            "window.GS26StationDiscovery.stop();localStorage.removeItem('gs26-paired-station-discovery')",
+        );
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionStatus {
+    #[serde(default)]
+    pub station_name: Option<String>,
+    #[serde(default)]
+    pub station_role: Option<String>,
+    #[serde(default)]
+    pub station_pairing: Option<StationPairing>,
     #[serde(default)]
     pub roles: Vec<String>,
     #[serde(default)]
@@ -119,6 +154,11 @@ struct LoginRequestOwned {
 
 pub fn init_from_storage(base: &str) {
     let host_scope = host_scope_for_base(base);
+    // Rendering the same connection must not restore an older saved login over
+    // a fresh session or clear the connected station's identity.
+    if CURRENT_HOST_SCOPE.lock().ok().as_deref() == Some(&Some(host_scope.clone())) {
+        return;
+    }
     let restored = read_storage_session(&host_scope);
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
         *slot = restored.clone();
@@ -146,13 +186,30 @@ pub fn current_status() -> SessionStatus {
         .unwrap_or_default()
 }
 
+pub fn station_app_name() -> &'static str {
+    if current_status().station_role.as_deref() == Some("rrls") {
+        "RRLS"
+    } else {
+        crate::app::APP_DISPLAY_NAME
+    }
+}
+
+pub fn station_name() -> String {
+    match current_status().station_role.as_deref() {
+        Some("rrls") => "RRLS".into(),
+        _ => "GroundStation".into(),
+    }
+}
+
 pub fn is_admin() -> bool {
-    let status=current_status();
-    status.authenticated && !status.anonymous && status.roles.iter().any(|role|role=="admin")
+    let status = current_status();
+    status.authenticated && !status.anonymous && status.roles.iter().any(|role| role == "admin")
 }
 
 pub fn can_send_command(cmd: &str) -> bool {
-    if is_admin(){return true;}
+    if is_admin() {
+        return true;
+    }
     let status = current_status();
     if !status.permissions.send_commands {
         return false;
@@ -176,7 +233,10 @@ pub fn can_edit_calibration() -> bool {
 pub fn can_manage_stream() -> bool {
     let status = current_status();
     if status.roles.iter().any(|r| r == "stream_viewer")
-        && !status.roles.iter().any(|r| r == "stream_admin" || r == "admin")
+        && !status
+            .roles
+            .iter()
+            .any(|r| r == "stream_admin" || r == "admin")
     {
         return false;
     }
@@ -219,14 +279,25 @@ pub fn set_logged_out_status(status: SessionStatus) {
 }
 
 pub fn clear_current_session() {
+    let old_token = current_token();
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
         *slot = None;
     }
     if let Ok(mut status) = CURRENT_STATUS.lock() {
-        *status = SessionStatus::default();
+        *status = SessionStatus {
+            station_name: status.station_name.clone(),
+            station_role: status.station_role.clone(),
+            station_pairing: status.station_pairing.clone(),
+            ..SessionStatus::default()
+        };
     }
     clear_storage_session_for_host(&host_scope);
+    if let Some(token) = old_token.filter(|t| t.starts_with("paired1.")) {
+        let mut store = read_storage_store();
+        store.entries.retain(|entry| entry.session.token != token);
+        write_storage_store(&store);
+    }
 }
 
 pub fn clear_all_stored_sessions() {
@@ -247,6 +318,8 @@ pub async fn fetch_session_status(
     let text = auth_request_get(&url, skip_tls_verify, true, true).await?;
     let status = serde_json::from_str::<SessionStatus>(&text)
         .map_err(|e| format!("invalid auth JSON: {e}"))?;
+    #[cfg(target_arch = "wasm32")]
+    configure_browser_discovery(status.station_pairing.as_ref());
     if let Ok(mut slot) = CURRENT_STATUS.lock() {
         *slot = status.clone();
     }
@@ -272,10 +345,9 @@ pub(crate) fn build_native_http_client(
 ) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(skip_tls_verify)
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect_timeout)
         .timeout(timeout)
-        // Keep native HTTPS aligned with the successful WebSocket/upgrade path.
-        // Some proxies behave differently for reqwest+rustrls over HTTP/2.
         .http1_only()
         .build()
         .map_err(|e| format_native_auth_error(&format!("{e:?}"), skip_tls_verify))

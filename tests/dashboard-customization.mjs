@@ -465,6 +465,26 @@ try{
   assert(alertAckRequests.every(request=>request.error_timestamp_ms===0));
   await observer.close();
   await commandContext.close();
+  session.roles=['admin'];session.username='ui-test';session.permissions.send_commands=true;await page.reload();
+  // Dedicated navigation restores the actual last tab, including after reload.
+  await choose();await page.getByRole('button',{name:/^Detailed/}).click();
+  await page.getByRole('navigation',{name:'Information categories'}).waitFor();
+  await choose();await page.getByRole('button',{name:'Stream Manager',exact:true}).click();
+  await page.getByRole('heading',{name:'Broadcast studio'}).waitFor();
+  await page.reload();await page.getByRole('heading',{name:'Broadcast studio'}).waitFor();
+  await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
+  await page.getByRole('navigation',{name:'Information categories'}).waitFor();
+  await choose();await page.getByRole('button',{name:'Mission Live',exact:true}).click();
+  await page.getByRole('button',{name:'Exit stream mode',exact:true}).click();
+  await page.getByRole('navigation',{name:'Information categories'}).waitFor();
+  // A stale remembered primary session must not overwrite live RRLS identity.
+  session.station_name='RRLS';session.station_role='rrls';
+  await page.reload();await page.waitForFunction(()=>document.title==='RRLS');
+  await choose();await page.getByRole('button',{name:'Dashboard',exact:true}).click();
+  assert.equal(await page.title(),'RRLS');
+  assert.match(await page.locator('.gs26-connection-notice').innerText(),/RRLS/,'connection labels follow the actual server identity');
+  session.station_name='GroundStation';session.station_role='primary';
+  await page.reload();await page.waitForFunction(()=>document.title==='UBSEDS GS');
   session.roles=['stream_viewer'];session.permissions.send_commands=false;
   await page.reload();
   await page.getByText('Waiting for the delayed broadcast program…',{exact:true}).waitFor();
