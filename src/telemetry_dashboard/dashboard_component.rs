@@ -3287,7 +3287,15 @@ fn TelemetryDashboardInner() -> Element {
                             if !*navigation_rail::SIDEBAR_NAVIGATION.read() { {settings_button} }
                             details {class:"gs26-utility-menu",
                                 summary {"Tools"}
-                                div {{reload_button}{auth_button}{version_button}{connect_button}}
+                                div {
+                                    button {
+                                        r#type:"button",
+                                        title:"Clear every graph and exclude earlier data from future resyncs. Recordings are kept.",
+                                        onclick:move |_| { clear_current_dashboard_data_without_reseed(); },
+                                        "Clear all graphs"
+                                    }
+                                    {reload_button}{auth_button}{version_button}{connect_button}
+                                }
                             }
 
                             {

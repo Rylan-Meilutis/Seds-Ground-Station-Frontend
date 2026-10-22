@@ -19,10 +19,10 @@ fn default_pressure_step() -> f32 {
     50.0
 }
 #[component]
-pub(super) fn ControlHelp(title: String, paragraphs: Vec<String>) -> Element {
+pub(super) fn ControlHelp(title: String, paragraphs: Vec<String>, #[props(default = false)] compact: bool) -> Element {
     let mut open = use_signal(|| false);
     rsx! {
-        button { r#type:"button",style:"min-height:44px;align-self:start;",onclick:move |_|open.set(true),"About {title}" }
+        button { r#type:"button",style:if compact {"min-height:44px;width:auto;justify-self:start;padding:6px 10px;background:transparent;border-color:transparent;font-size:13px;text-decoration:underline;text-underline-offset:3px;"} else {"min-height:44px;align-self:start;"},onclick:move |_|open.set(true),"About {title}" }
         if open() {
             div {style:"position:fixed;inset:0;z-index:6100;background:#000b;display:grid;place-items:center;padding:16px;",
                 onkeydown:move |event| {if event.key()==Key::Escape {open.set(false);}},
@@ -255,21 +255,22 @@ pub(super) fn SelfTestPtOffset(disabled: bool, theme: ThemeConfig) -> Element {
         busy.set(false);
     });
     rsx! {
-        div { style:"display:grid;gap:8px;padding:12px;border:1px solid {theme.border};border-radius:10px;min-width:0;",
-            label { style:"display:grid;gap:6px;font-size:13px;",
+        div { class:"gs26-pt-limit", style:"display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;padding:12px;border:1px solid {theme.border};border-radius:10px;min-width:0;width:100%;max-width:32rem;box-sizing:border-box;",
+            label { style:"display:grid;gap:6px;font-size:13px;grid-column:1/-1;",
                 "Maximum acceptable empty-tank PT offset (psi)"
                 input {
                     r#type:"number", min:"0", step:"any", placeholder:"Required",
-                    style:"width:100%;min-width:0;box-sizing:border-box;",
+                    style:"width:8rem;max-width:100%;min-width:0;box-sizing:border-box;",
                     value:"{value}", disabled:disabled || *busy.read(),
                     oninput:move |event| {value.set(event.value());message.set("Unsaved PT limit.".into());}
                 }
             }
-            ControlHelp {title:"empty-tank pressure limit",paragraphs:vec![
+            ControlHelp {compact:true,title:"empty-tank pressure limit",paragraphs:vec![
                 "Allowed pressure reading above or below zero with an empty, depressurized tank.".into(),
                 "This is a test acceptance limit, not a calibration offset. Save it before starting the valve self-test.".into()
             ]}
             button {
+                style:"width:auto;min-height:44px;justify-self:end;",
                 disabled:disabled || *busy.read(),
                 onclick:move |_| {
                     let limit = match value.read().trim().parse::<f32>() {
@@ -288,7 +289,7 @@ pub(super) fn SelfTestPtOffset(disabled: bool, theme: ThemeConfig) -> Element {
                         match result {
                             Ok(cfg) => {
                                 value.set(cfg.maximum_zero_offset_psi.map(|v| v.to_string()).unwrap_or_default());
-                                message.set("PT limit saved. Backend self-test interlocks still apply.".into());
+                                message.set("PT limit saved.".into());
                             }
                             Err(err) => message.set(format!("PT limit was not saved: {err}")),
                         }
@@ -297,7 +298,7 @@ pub(super) fn SelfTestPtOffset(disabled: bool, theme: ThemeConfig) -> Element {
                 },
                 if *busy.read() {"Please wait…"} else {"Save PT limit"}
             }
-            p { role:"status", style:"margin:0;font-size:12px;", "{message}" }
+            p { role:"status", style:"margin:0;font-size:12px;grid-column:1/-1;", "{message}" }
         }
     }
 }

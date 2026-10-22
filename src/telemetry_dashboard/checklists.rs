@@ -7,6 +7,10 @@ struct Item {
     id: String,
     text: String,
     checked: bool,
+    #[serde(default)]
+    complete_on: Option<String>,
+    #[serde(default)]
+    completion_source: Option<String>,
     completed_by: Option<String>,
     completed_at_ms: Option<i64>,
 }
@@ -67,8 +71,13 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
         }
     });
     let current = {
-        let snapshot=document.read();
-        snapshot.checklists.iter().find(|c|c.id==*selected.read()).or_else(||snapshot.checklists.first()).cloned()
+        let snapshot = document.read();
+        snapshot
+            .checklists
+            .iter()
+            .find(|c| c.id == *selected.read())
+            .or_else(|| snapshot.checklists.first())
+            .cloned()
     };
     let missing = document
         .read()
@@ -79,7 +88,7 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
     rsx! {
      style {{include_str!("checklists.css")}}
      main {class:"gs26-checklists",style:"color:{theme.text_primary};--checklist-panel:{theme.panel_background};--checklist-border:{theme.button_border};","aria-label":"Shared checklists",
-      header {div {h2 {"Checklists"}p {role:"status",if !*loaded.read(){"Connecting to GroundStation…"}else if document.read().enforce_before_launch{if missing==0{"Required checklists complete"}else{"{missing} required checklists incomplete — launch locked"}}else{"Shared progress · launch enforcement off"}}}
+      header {div {h2 {"Checklists"}p {role:"status",if !*loaded.read(){{format!("Connecting to {}…", crate::auth::station_name())}}else if document.read().enforce_before_launch{if missing==0{"Required checklists complete"}else{"{missing} required checklists incomplete — launch locked"}}else{"Shared progress · launch enforcement off"}}}
        if admin && draft.read().is_none(){button {disabled:!*loaded.read(),onclick:move |_|{draft.set(Some(document.read().clone()));message.set(String::new());},"Manage checklists"}}
       }
       if !message.read().is_empty(){p {role:"status","{message}"}}
@@ -87,7 +96,7 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
        section {class:"gs26-checklist-editor","aria-label":"Checklist administration",
         h3 {"Checklist administration"}
         label {input {r#type:"checkbox",checked:edit.enforce_before_launch,disabled:*busy.read(),onchange:move|e|{if let Some(d)=draft.write().as_mut(){d.enforce_before_launch=e.checked();}}}"Require selected checklists before launch"}
-        p {"Text changes reset that item's completion. Checkmarks never bypass hardware interlocks."}
+        p {"Changing text or its test link resets completion. Manual checks do not run valves or bypass interlocks."}
         for (index,list) in edit.checklists.iter().enumerate(){
          article {key:"{list.id}",
           label {"Checklist name" input {value:list.title.clone(),maxlength:"120",disabled:*busy.read(),oninput:move|e|{if let Some(d)=draft.write().as_mut(){d.checklists[index].title=e.value();}}}}
@@ -95,6 +104,14 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
           for (item_index,item) in list.items.iter().enumerate(){
            div {class:"gs26-checklist-edit-item",key:"{item.id}",
             input {"aria-label":"Checklist item",value:item.text.clone(),maxlength:"500",disabled:*busy.read(),oninput:move|e|{if let Some(d)=draft.write().as_mut(){d.checklists[index].items[item_index].text=e.value();}}}
+            label {"Complete after"
+             select {"aria-label":"Complete after",value:item.complete_on.clone().unwrap_or_default(),disabled:*busy.read(),onchange:move |e|{if let Some(d)=draft.write().as_mut(){let value=e.value();d.checklists[index].items[item_index].complete_on=(!value.is_empty()).then_some(value);}},
+              option {value:"","Manual check"}
+              option {value:"valve_self_test","Valve self-test passes"}
+              option {value:"nitrogen_test","Nitrogen test passes"}
+              option {value:"fill_target","Fill target reached"}
+             }
+            }
             button {disabled:*busy.read(),onclick:move |_|{if let Some(d)=draft.write().as_mut(){d.checklists[index].items.remove(item_index);}},"Remove item"}
            }
           }
@@ -129,11 +146,16 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
               let request=Check{checklist_id:list_id.clone(),item_id:item_id.clone(),checked:event.checked()};busy.set(true);
               spawn(async move{match http_post_json::<Check,Document>("/api/checklists/check",&request).await{Ok(value)=>{if value.revision>=document.read().revision{document.set(value);}message.set(String::new());},Err(error)=>message.set(error)}busy.set(false);});
              }}
-             div {span {"{item.text}"}if let Some(actor)=&item.completed_by{small {"Completed by {actor}"}}}
+             div {span {"{item.text}"}
+              if item.completion_source.as_deref()==Some("automated_sequence"){small {"Test passed · saved automatically"}}
+              else if item.completion_source.as_deref()==Some("manual_override"){if let Some(actor)=&item.completed_by{small {"Manual override by {actor}"}}}
+              else if let Some(actor)=&item.completed_by{small {"Completed by {actor}"}}
+              if !item.checked && item.complete_on.is_some(){small {"Linked test completes this item automatically. A manual check records an override."}}
+             }
             }
            }}
           }
-          p {class:"gs26-checklist-note","Progress is saved by GroundStation and shared with signed-in devices."}
+          p {class:"gs26-checklist-note",{format!("Progress is saved by {} and shared with signed-in devices.", crate::auth::station_name())}}
          }
         }
        }

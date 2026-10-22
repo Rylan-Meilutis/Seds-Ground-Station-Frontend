@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const root=path.resolve('target/dx/groundstation_frontend/debug/web/public');
+const root=path.resolve(process.env.GS_UI_BUNDLE || 'target/dx/groundstation_frontend/debug/web/public');
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
 const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['admin'],permissions:{view_data:true,send_commands:true}};
 let lists={revision:0,enforce_before_launch:false,checklists:[{id:'setup',title:'Setup',required_before_launch:true,items:[{id:'pressure',text:'Pressure checked',checked:false,completed_by:null,completed_at_ms:null}]},{id:'recovery',title:'Recovery',required_before_launch:false,items:[{id:'recover',text:'Recovery area clear',checked:false,completed_by:null,completed_at_ms:null}]}]};
@@ -27,7 +27,7 @@ const server=http.createServer(async(req,res)=>{
     if(req.method==='POST') {
       assert.equal(req.headers.authorization,'Bearer ui-token');
       let body='';for await(const data of req)body+=data;const request=JSON.parse(body);
-      if(pathname.endsWith('/check')) {const item=lists.checklists.find(c=>c.id===request.checklist_id).items.find(i=>i.id===request.item_id);item.checked=request.checked;item.completed_by=request.checked?'ui-test':null;}
+      if(pathname.endsWith('/check')) {const item=lists.checklists.find(c=>c.id===request.checklist_id).items.find(i=>i.id===request.item_id);item.checked=request.checked;item.completed_by=request.checked?'ui-test':null;item.completion_source=request.checked?(item.complete_on?'manual_override':'operator'):null;}
       else {if(request.revision!==lists.revision){res.statusCode=409;res.end('Checklists changed on another device; reload before saving');return;}lists=request;}
       lists.revision++;
     }
@@ -149,6 +149,28 @@ try {
  await second.getByRole('checkbox',{name:'Pressure checked'}).check();
  await page.getByRole('button',{name:'Save changes',exact:true}).click();await page.getByText(/Checklists changed on another device; reload before saving/).waitFor();
  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+ // Wait for the second client's accepted change before opening a fresh template.
+ await page.waitForFunction(()=>document.querySelector('.gs26-checklist-item input')?.checked===true);
+ // Bind a real checklist template to a sequence and observe asynchronous server completion.
+ await page.getByRole('button',{name:'Manage checklists'}).click();
+ await page.getByLabel('Complete after',{exact:true}).first().selectOption('valve_self_test');
+ for(const width of [320,390,844,1440]){
+  await page.setViewportSize({width,height:900});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'automation editor fits viewport');
+ }
+ await page.getByRole('button',{name:'Save changes',exact:true}).click();
+ await page.getByText('Checklists saved',{exact:true}).waitFor();
+ assert.equal(lists.checklists[0].items[0].complete_on,'valve_self_test');
+ const item=lists.checklists[0].items[0];
+ item.checked=true;item.completed_by='automated:valve_self_test';item.completed_at_ms=Date.now();item.completion_source='automated_sequence';lists.revision++;
+ await page.getByText('Test passed · saved automatically',{exact:true}).waitFor();
+ await second.getByText('Test passed · saved automatically',{exact:true}).waitFor();
+ await page.getByRole('checkbox',{name:/^Pressure checked/}).uncheck();
+ await page.reload();
+ await page.getByRole('checkbox',{name:/^Pressure checked/}).waitFor();
+ assert.equal(await page.getByRole('checkbox',{name:/^Pressure checked/}).isChecked(),false,'reload preserves operator clear');
+ await page.getByRole('checkbox',{name:/^Pressure checked/}).check();
+ await page.getByText('Manual override by ui-test',{exact:true}).waitFor();
  for(const width of [320,390,844,1440]){
   await page.setViewportSize({width,height:900});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'checklists fit viewport');
