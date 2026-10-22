@@ -1137,9 +1137,8 @@ function shouldUseNativeTileTemplate(tilesUrl) {
     if (isAndroidPlatform() && /^https:\/\/gs26\.local\/tiles\//i.test(url)) {
         return true;
     }
-    if (isBrowserHostedMapRuntime() && /^https?:\/\//i.test(url)) {
-        return true;
-    }
+    // Browser HTTP tiles must use the validating protocol too: proxies and
+    // missing static assets can return an HTML/SVG body with HTTP 200.
     return /^gs26:\/\//i.test(url) && !isIosPlatform() && !tileCacheEnabled();
 }
 

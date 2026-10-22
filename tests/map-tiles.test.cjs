@@ -39,3 +39,12 @@ test('invalid legacy cached tiles are evicted individually',async()=>{
  assert((await vm.runInContext("readValidatedCachedTile('cache','https://example.test/good.jpg',cached)",c)).byteLength>0);
  assert.equal(deleted.length,1);
 });
+
+test('browser HTTP tile sources use the validating protocol',()=>{
+ const c=runtime();
+ c.window.location={protocol:'https:'};
+ for(const url of ['https://station.test/tiles/{z}/{x}/{y}.jpg','http://station.test/tiles/{z}/{x}/{y}.jpg']) {
+  c.url=url;
+  assert.equal(vm.runInContext('shouldUseNativeTileTemplate(url)',c),false);
+ }
+});
