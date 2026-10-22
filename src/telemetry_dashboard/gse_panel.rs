@@ -19,7 +19,11 @@ fn default_pressure_step() -> f32 {
     50.0
 }
 #[component]
-pub(super) fn ControlHelp(title: String, paragraphs: Vec<String>, #[props(default = false)] compact: bool) -> Element {
+pub(super) fn ControlHelp(
+    title: String,
+    paragraphs: Vec<String>,
+    #[props(default = false)] compact: bool,
+) -> Element {
     let mut open = use_signal(|| false);
     rsx! {
         button { r#type:"button",style:if compact {"min-height:44px;width:auto;justify-self:start;padding:6px 10px;background:transparent;border-color:transparent;font-size:13px;text-decoration:underline;text-underline-offset:3px;"} else {"min-height:44px;align-self:start;"},onclick:move |_|open.set(true),"About {title}" }
@@ -85,6 +89,8 @@ struct Status {
     phase: String,
     message: String,
     nitrogen_passed: bool,
+    #[serde(default)]
+    nitrogen_overridden: bool,
     self_test_locked: bool,
     current_step_psi: f32,
     pressure_psi: Option<f32>,
@@ -183,7 +189,7 @@ pub(super) fn GsePanel(
                 div { h3 {style:"margin:0;font-weight:600;letter-spacing:.02em;","Reconfigure GSE"}
                     p {style:"margin:6px 0 0;color:{theme.text_muted};font-size:12px;","Nitrogen · Nitrous · Fill manifold · Launch tower"}
                 }
-                span {style:"font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{theme.text_muted};",if snapshot.nitrogen_passed {"Fill unlocked"}else{"Fill locked"}}
+                span {style:"font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{theme.text_muted};",if snapshot.nitrogen_overridden {"Fill unlocked · override"}else if snapshot.nitrogen_passed {"Fill unlocked"}else{"Fill locked"}}
             }
             if show_model {
             div {style:"height:360px;background:radial-gradient(ellipse at center,#202b34,#0b1016);",
@@ -348,6 +354,8 @@ pub(super) fn PhysicalPanelStatus(status: Signal<serde_json::Value>) -> Element 
 #[component]
 pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: bool) -> Element {
     let mut confirm = use_signal(|| false);
+    let mut override_open = use_signal(|| false);
+    let mut override_reason = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
     let value = status.read().clone();
@@ -362,24 +370,70 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
         && value["request_gate"]["flight_state"]
             .as_str()
             .is_some_and(|s| matches!(s, "Startup" | "Idle"));
+    let mission_stage = value["mission_stage"]
+        .as_str()
+        .unwrap_or("idle")
+        .to_string();
+    let override_actor = qualification["nitrogen_override"]["operator"]
+        .as_str()
+        .map(str::to_string);
+    let can_override = can_reset
+        && auth::can_send_command("NitrogenTest")
+        && stable
+        && fault.is_none()
+        && value["storage_error"].is_null()
+        && mission_stage == "idle"
+        && qualification["self_test"].as_bool() == Some(true)
+        && qualification["nitrogen_test"].as_bool() != Some(true)
+        && override_actor.is_none();
     let qd_label = value["qd"].as_str().unwrap_or("Waiting for QD").to_string();
     rsx! {
         section {"aria-label":"Operational qualification",class:"gs26-qualification",
             style:"padding:12px;border:1px solid #526579;border-radius:10px;display:grid;gap:12px;",
+            div {"aria-label":"Mission workflow",style:"display:flex;gap:8px;flex-wrap:wrap;",
+                for (key,label) in [("idle","Idle"),("fill","Fill"),("armed","Armed"),("fire","Fire")] {
+                    span {"aria-current":if mission_stage==key {"step"}else{"false"},style:if mission_stage==key {"padding:6px 10px;border-radius:8px;background:#69b4ce;color:#071018;font-weight:700;"}else{"padding:6px 10px;border-radius:8px;background:#172b3a;color:#a6b5c8;"},"{label}"}
+                }
+            }
             strong {"Operation checks"}
             div {style:"display:flex;gap:10px;flex-wrap:wrap;",
                 for (key,label) in [("self_test","Valve test"),("nitrogen_test","Nitrogen test"),("fill_target","Fill target")] {
                     span {style:"padding:6px 10px;border-radius:8px;background:#172b3a;color:#edf3fa;",
-                        if qualification[key].as_bool()==Some(true) {"✓ {label}"}else{"○ {label}"}
+                        if key=="nitrogen_test" && override_actor.is_some() {"⚠ Cold flow overridden"}else if qualification[key].as_bool()==Some(true) {"✓ {label}"}else{"○ {label}"}
                     }
                 }
             }
+            if let Some(actor)=override_actor {p {style:"margin:0;color:#e6b85c;","Cold-flow override by {actor}"}}
+            if can_override {button {style:"min-height:44px;justify-self:start;",onclick:move |_|{override_open.set(true);override_reason.set(String::new());},"Override cold-flow requirement"}}
             if !stable {p {role:"status",style:"margin:0;color:#e6b85c;","Waiting for stable fill-system connections"}}
             if let Some(fault)=fault {p {role:"alert",style:"margin:0;color:#ff8f8f;","Safety fault: {fault}. Recover to Idle and reset checks."}}
             if let Some(error)=value["storage_error"].as_str() {p {role:"alert","Checks cannot be saved: {error}"}}
             if value["launch_queued"].as_bool()==Some(true) {p {role:"status","Launch queued · {qd_label}"}}
-            button {style:"min-height:48px;justify-self:start;",disabled:!can_reset,onclick:move |_|confirm.set(true),"Reset operation checks"}
+            button {style:"min-height:44px;justify-self:start;",disabled:!can_reset,onclick:move |_|confirm.set(true),"Reset operation checks"}
             p {role:"status",style:"margin:0;","{message}"}
+            if *override_open.read() {
+                div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
+                    div {role:"dialog","aria-modal":"true","aria-label":"Override nitrogen cold flow",
+                        style:"background:#122231;color:#edf3fa;border:1px solid #526579;border-radius:14px;padding:20px;width:min(100%,420px);box-sizing:border-box;display:grid;gap:16px;",
+                        h3 {style:"margin:0;","Override cold-flow requirement?"}
+                        p {style:"margin:0;","This records an operator override, not a passed test. Fresh pressure, valve and connection checks still apply."}
+                        label {"Reason" textarea {"aria-label":"Cold-flow override reason",maxlength:"500",value:override_reason(),oninput:move |event|override_reason.set(event.value()),style:"width:100%;min-height:88px;box-sizing:border-box;"}}
+                        div {style:"display:flex;gap:12px;flex-wrap:wrap;",
+                            button {disabled:*busy.read(),onclick:move |_|override_open.set(false),"Cancel override"}
+                            button {disabled:*busy.read()||override_reason.read().trim().is_empty(),onclick:move |_|{
+                                let reason=override_reason.read().trim().to_string();busy.set(true);
+                                spawn(async move {
+                                    match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/cold-flow/override",&serde_json::json!({"reason":reason})).await {
+                                        Ok(_)=>{message.set("Cold-flow override saved".into());override_open.set(false);},
+                                        Err(error)=>message.set(error),
+                                    }
+                                    busy.set(false);
+                                });
+                            },"Confirm override"}
+                        }
+                    }
+                }
+            }
             if *confirm.read() {
                 div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
                     div {role:"dialog","aria-modal":"true","aria-label":"Reset operation checks",
@@ -387,8 +441,8 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
                         h3 {style:"margin:0;","Reset operation checks?"}
                         p {style:"margin:0;","Valve test, nitrogen test and fill qualification will be cleared. Outputs will not be actuated."}
                         div {style:"display:flex;gap:12px;flex-wrap:wrap;",
-                            button {style:"min-height:48px;",disabled:*busy.read(),onclick:move |_|confirm.set(false),"Cancel"}
-                            button {style:"min-height:48px;",disabled:*busy.read(),onclick:move |_| {
+                            button {style:"min-height:44px;",disabled:*busy.read(),onclick:move |_|confirm.set(false),"Cancel"}
+                            button {style:"min-height:44px;",disabled:*busy.read(),onclick:move |_| {
                                 busy.set(true);
                                 spawn(async move {
                                     match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/qualification/reset",&serde_json::json!({})).await {
