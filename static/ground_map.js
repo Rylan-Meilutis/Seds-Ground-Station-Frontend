@@ -24,8 +24,7 @@ let configuredMaxDisplayZoom = null;
 let currentMaxNativeZoom = null;
 let currentMaxZoom = null;
 let currentMinZoom = null;
-let pendingRuntimeMinZoom = null;
-let runtimeMinZoomTimer = null;
+
 let lastRocketLatLng = null;
 let lastUserLatLng = null;
 let prefetchRocketLatLng = null;
@@ -53,6 +52,7 @@ let tileMemoryCacheBytes = 0;
 let tilePersistentClearPromise = null;
 let browserTileCacheQueue = Promise.resolve();
 const tileMissingCache = new Map();
+let missingTileRefreshTimer = null;
 const tileFetchInflight = new Map();
 let transparentTileArrayBufferPromise = null;
 let wheelRotateFrame = null;
@@ -1173,20 +1173,34 @@ function raiseRuntimeMinZoom(minZoom) {
     updateZoomControlAppearance();
 }
 
-function handleMissingTileCoord(coord) {
-    if (!coord || !Number.isFinite(coord.z)) return;
-    const zoom = groundMap && typeof groundMap.getZoom === "function" ? Number(groundMap.getZoom()) : NaN;
-    if (!Number.isFinite(zoom) || zoom > coord.z + 0.25) return;
-    const nextMin = Math.max(DEFAULT_SAFE_MIN_ZOOM, Math.floor(coord.z + 1));
-    if (Number.isFinite(currentMinZoom) && currentMinZoom >= nextMin) return;
-    pendingRuntimeMinZoom = Number.isFinite(pendingRuntimeMinZoom) ? Math.max(pendingRuntimeMinZoom, nextMin) : nextMin;
-    if (runtimeMinZoomTimer != null) return;
-    runtimeMinZoomTimer = setTimeout(safeMapCallback("runtime min zoom timer", () => {
-        runtimeMinZoomTimer = null;
-        const target = pendingRuntimeMinZoom;
-        pendingRuntimeMinZoom = null;
-        raiseRuntimeMinZoom(target);
-    }), 0);
+// An absent tile says nothing about the minimum usable zoom. Keep navigation
+// enabled while an offline map download is incomplete, and retry visible gaps.
+function refreshMissingMapTiles() {
+    tileMissingCache.clear();
+    if (rasterFallbackActive) {
+        const container = document.getElementById("ground-map");
+        const layers = container && container.__gs26RasterLayers;
+        if (layers) for (const [url, img] of layers.tiles) {
+            if (img.complete && img.naturalWidth === 0) { img.remove(); layers.tiles.delete(url); }
+        }
+        if (container) renderRasterFallbackMap();
+    } else if (groundMap) {
+        const source = groundMap.getSource(TILE_SOURCE_ID);
+        if (source && typeof source.setTiles === "function") {
+            source.setTiles([shouldUseNativeTileTemplate(currentTilesUrl) ? currentTilesUrl : tileProtocolTemplate()]);
+        }
+    }
+}
+
+function scheduleMissingTileRefresh() {
+    if (missingTileRefreshTimer != null) return;
+    missingTileRefreshTimer = setTimeout(safeMapCallback("missing map tile refresh", () => {
+        missingTileRefreshTimer = null;
+        const container = document.getElementById("ground-map");
+        if (!container || container.clientWidth === 0) return;
+        if (document.hidden) { scheduleMissingTileRefresh(); return; }
+        refreshMissingMapTiles();
+    }), 15000);
 }
 
 function normalizeTileCoord(z, x, y) {
@@ -1374,7 +1388,7 @@ function ensureMapProtocolOnce() {
             }
             cacheName = tileCacheName(currentTilesUrl);
             if (isKnownMissingTile(cacheName, url)) {
-                handleMissingTileCoord(coords);
+                scheduleMissingTileRefresh();
                 return {data: await transparentTileArrayBuffer()};
             }
             const cacheLookupOptions = mapFirstPaintGateActive ? {timeoutMs: STARTUP_TILE_CACHE_LOOKUP_BUDGET_MS} : undefined;
@@ -1397,7 +1411,7 @@ function ensureMapProtocolOnce() {
                     return {data: cached};
                 }
                 rememberMissingTile(cacheName, url, 0);
-                handleMissingTileCoord(coords);
+                scheduleMissingTileRefresh();
                 maybeFinishMapFirstPaintFromTile(coords);
             } catch (fallbackError) {
                 reportMapRuntimeError("tile protocol fallback failed", fallbackError);
@@ -4911,6 +4925,7 @@ function renderRasterFallbackMap() {
             let img = layers.tiles.get(url);
             if (!img) {
             img = document.createElement("img");
+            img.onerror = scheduleMissingTileRefresh;
             img.src = url;
             img.alt = "";
             img.draggable = false;
@@ -5473,11 +5488,10 @@ function resetMapObjects(options = {}) {
         clearTimeout(tileZoomDiscoveryTimer);
         tileZoomDiscoveryTimer = null;
     }
-    if (runtimeMinZoomTimer != null) {
-        clearTimeout(runtimeMinZoomTimer);
-        runtimeMinZoomTimer = null;
+    if (missingTileRefreshTimer != null) {
+        clearTimeout(missingTileRefreshTimer);
+        missingTileRefreshTimer = null;
     }
-    pendingRuntimeMinZoom = null;
     if (mapFirstPaintTimer != null) {
         clearTimeout(mapFirstPaintTimer);
         mapFirstPaintTimer = null;

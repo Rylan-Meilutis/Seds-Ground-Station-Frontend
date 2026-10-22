@@ -48,3 +48,11 @@ test('browser HTTP tile sources use the validating protocol',()=>{
   assert.equal(vm.runInContext('shouldUseNativeTileTemplate(url)',c),false);
  }
 });
+
+test('missing-tile retry is bounded and preserves the navigation range',()=>{
+ const c=runtime();const callbacks=[];c.setTimeout=fn=>{callbacks.push(fn);return callbacks.length;};
+ c.document.getElementById=()=>({clientWidth:800});c.reset=[];
+ vm.runInContext("currentMinZoom=5;currentTilesUrl='https://station.test/tiles/{z}/{x}/{y}.jpg';groundMap={getSource:()=>({setTiles:tiles=>reset.push(tiles)})};scheduleMissingTileRefresh();scheduleMissingTileRefresh();",c);
+ assert.equal(callbacks.length,1);callbacks[0]();
+ assert.equal(vm.runInContext('effectiveMinZoom()',c),5);assert.equal(c.reset.length,1);
+});

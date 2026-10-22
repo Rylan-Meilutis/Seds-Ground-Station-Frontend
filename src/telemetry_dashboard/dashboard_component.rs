@@ -2364,8 +2364,9 @@ fn TelemetryDashboardInner() -> Element {
                             }
                         }
                         if auth::current_status().roles.iter().any(|role|role=="admin") {
-                            section { class:"gs26-settings-administration",
-                                h2 { "Administration" }
+                            section { class:"gs26-settings gs26-settings-administration",
+                                style:"--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:16px;",
+                                h2 { style:"font-size:16px;margin:0;", "Administration" }
                                 button { onclick:move |_|{let mut overlay=show_settings_overlay;overlay.set(false);admin_open.set(true);}, "Manage users & access" }
                             }
                         }
@@ -3238,12 +3239,6 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
                         div { class: "gs26-header-actions-list",
-                            button {
-                                title: "Clear every graph and exclude earlier data from future resyncs. Recordings are kept.",
-                                style: "padding:0.45rem 0.85rem;border-radius:0.75rem;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
-                                onclick: move |_| { clear_current_dashboard_data_without_reseed(); },
-                                "Clear all graphs"
-                            }
                             if show_disable_actions {
                             button {
                                 style: if *abort_only_mode.read() {
