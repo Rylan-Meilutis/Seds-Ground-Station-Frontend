@@ -138,6 +138,7 @@ fn sync_model_viewer(
     config: &VehicleVisualizationConfig,
     frame: &super::vehicle_replay::Frame,
     replay_seconds: f64,
+    gps_sender: &str,
 ) {
     let phase = frame.phase().unwrap_or_else(|| "Unknown".into());
     let roll = config.attitude.roll.as_ref().and_then(|b| value(b, frame));
@@ -164,28 +165,9 @@ fn sync_model_viewer(
             result
         })
         .collect();
-    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch.unwrap_or(0.0),yaw.unwrap_or(0.0),roll.unwrap_or(0.0)],"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds}).to_string();
+    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch,yaw,roll],"gps":frame.gps_for(gps_sender).map(|(lat,lon,alt)|[lat,lon,alt]),"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds}).to_string();
     let payload = serde_json::to_string(&payload).unwrap();
-    let ground = super::gse_panel::ground_visible(&phase) && !config.ground_model_url.is_empty();
-    let src = serde_json::to_string(&backend_url(if ground {
-        &config.ground_model_url
-    } else {
-        &config.model_url
-    }))
-    .unwrap();
-    let payload = if ground {
-        let clip = match phase.as_str() {
-            "NitrogenFill" => "nitrogen-test",
-            "NitrousFill" => "nitrous-fill",
-            _ => "",
-        };
-        serde_json::to_string(
-            &serde_json::json!({"motions":[],"attitude":[0,0,0],"clip":clip,"replay_time_seconds":replay_seconds}).to_string(),
-        )
-        .unwrap()
-    } else {
-        payload
-    };
+    let src = serde_json::to_string(&backend_url(&config.model_url)).unwrap();
     let renderer =
         serde_json::to_string(&backend_url("/assets/three/vehicle-renderer.js")).unwrap();
     js_eval(&format!(
@@ -256,8 +238,12 @@ fn percent_component(value: &str) -> String {
     out
 }
 fn replay_types(cfg: &VehicleVisualizationConfig) -> Vec<String> {
-    let mut types =
-        std::collections::BTreeSet::from(["FLIGHT_STATE".to_owned(), "GPS_DATA".to_owned()]);
+    let mut types = std::collections::BTreeSet::from([
+        "FLIGHT_STATE".to_owned(),
+        "GPS_DATA".to_owned(),
+        "GPS".to_owned(),
+        "ROCKET_GPS".to_owned(),
+    ]);
     let mut add = |binding: &Option<VehicleTelemetryBinding>| {
         if let Some(binding) = binding {
             types.insert(binding.data_type.clone());
@@ -319,7 +305,9 @@ async fn saved_get<T: serde::de::DeserializeOwned>(origin: &str, path: &str) -> 
 }
 #[component]
 pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
-    use super::vehicle_replay::{Buffer, Frame, Index, Page, Recording, Snapshot, advance};
+    use super::vehicle_replay::{
+        Buffer, Frame, Index, Page, Recording, Snapshot, Trajectory, advance,
+    };
     let mut station = use_signal(UrlConfig::base_http);
     let mut config = use_resource(move || {
         let origin = station.read().clone();
@@ -350,6 +338,36 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
             )
             .await?;
             Ok::<_, String>(Some((origin, id, value)))
+        }
+    });
+    let mut trajectory = use_resource(move || {
+        let saved = snapshot
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|r| r.clone());
+        let id = selected.read().clone();
+        let origin = station.read().clone();
+        async move {
+            let Some((saved_origin, recording, saved)) = saved else {
+                return Ok(None);
+            };
+            if recording != id || saved_origin != origin {
+                return Ok(None);
+            }
+            let track = saved_get::<Trajectory>(
+                &origin,
+                &format!(
+                    "/api/recordings/{}/replay/trajectory?upper_id={}",
+                    percent_component(&id),
+                    saved.upper_id
+                ),
+            )
+            .await?;
+            if track.upper_id != saved.upper_id || track.points.len() > 8192 {
+                return Err("Invalid saved trajectory snapshot".into());
+            }
+            Ok::<_, String>(Some((origin, id, saved.upper_id, track)))
         }
     });
     let chunk = use_memo(move || (*position.read() / 10000.).floor() as i64);
@@ -493,6 +511,27 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
         }
     });
     let viewer_id = use_hook(|| VIEWER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    use_effect(move || {
+        let id = selected.read().clone();
+        let origin = station.read().clone();
+        let upper = snapshot
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|r| r.as_ref())
+            .map(|(_, _, s)| s.upper_id);
+        let saved_track = trajectory
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|r| r.as_ref())
+            .filter(|(o, i, u, _)| o == &origin && i == &id && Some(*u) == upper)
+            .map(|(_, _, _, track)| track.clone());
+        let payload = serde_json::to_string(&serde_json::to_string(&saved_track).unwrap()).unwrap();
+        js_eval(&format!(
+            "(()=>{{const m=document.getElementById('gs26-vehicle-model-{viewer_id}');if(m)m.setAttribute('data-track',{payload});}})();"
+        ));
+    });
     let viewer_html = format!(
         r#"<gs-vehicle-viewer id="gs26-vehicle-model-{viewer_id}" style="display:block;width:100%;height:100%;position:relative" aria-label="Saved rocket telemetry replay"></gs-vehicle-viewer>"#
     );
@@ -535,7 +574,19 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
     let roll = cfg.attitude.roll.as_ref().and_then(|b| value(b, &frame));
     let pitch = cfg.attitude.pitch.as_ref().and_then(|b| value(b, &frame));
     let yaw = cfg.attitude.yaw.as_ref().and_then(|b| value(b, &frame));
-    let gps = frame.gps();
+    let gps_sender = trajectory
+        .read()
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|r| r.as_ref())
+        .filter(|(o, i, u, _)| {
+            o == &UrlConfig::base_http()
+                && i == &*selected.read()
+                && saved.as_ref().is_some_and(|(_, _, s)| s.upper_id == *u)
+        })
+        .and_then(|(_, _, _, t)| t.source_sender_id.clone())
+        .unwrap_or_else(|| "FC".into());
+    let gps = frame.gps_for(&gps_sender);
     let error = recordings
         .read()
         .as_ref()
@@ -561,6 +612,13 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                 .as_ref()
                 .and_then(|r| r.as_ref().err())
                 .cloned()
+        })
+        .or_else(|| {
+            trajectory
+                .read()
+                .as_ref()
+                .and_then(|r| r.as_ref().err())
+                .map(|e| format!("Saved trajectory: {e}"))
         });
     let mut show_error = use_signal(|| false);
     use_effect(move || {
@@ -599,7 +657,17 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                 data,
                 at_ms: saved.start_ms.unwrap_or(0).saturating_add(at as i64),
             };
-            sync_model_viewer(viewer_id, &cfg, &frame, at / 1000.);
+            let gps_sender = trajectory
+                .read()
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .and_then(|r| r.as_ref())
+                .filter(|(o, i, u, _)| {
+                    o == &UrlConfig::base_http() && i == &id && *u == saved.upper_id
+                })
+                .and_then(|(_, _, _, t)| t.source_sender_id.clone())
+                .unwrap_or_else(|| "FC".into());
+            sync_model_viewer(viewer_id, &cfg, &frame, at / 1000., &gps_sender);
         }
     });
     let button = format!(
@@ -616,7 +684,7 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                     option {value:"","Select a saved recording"}
                     if let Some(Ok(items))=recordings.read().as_ref(){for item in items{option {value:"{item.id}","{item.id}" if item.active{" (snapshot)"}}}}
                 }
-                button {style:"{button}",onclick:move |_|{playing.set(false);config.restart();recordings.restart();snapshot.restart();buffer.restart();},"Reload"}
+                button {style:"{button}",onclick:move |_|{playing.set(false);config.restart();recordings.restart();snapshot.restart();buffer.restart();trajectory.restart();},"Reload"}
                 if error.is_some(){button {style:"{button}",onclick:move |_|show_error.set(true),"Details"}}
             }
             div {style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;",
@@ -633,6 +701,19 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                 span {"Saved data · {phase}"}
                 if roll.is_none() || pitch.is_none() || yaw.is_none(){span {"Attitude unavailable"}}
                 if error.is_some(){span {"Replay unavailable"}}else if !available && !selected.read().is_empty(){span {"Loading saved samples…"}}
+            }
+            div {role:"group",aria_label:"Replay camera",style:"display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;",
+                for (action,label) in [("follow","Follow rocket"),("overview","Flight path"),("reset","Reset view"),("zoom-in","Zoom in"),("zoom-out","Zoom out")] {
+                    button {style:"{button}",onclick:move |_|js_eval(&format!("document.getElementById('gs26-vehicle-model-{viewer_id}')?.cameraAction?.('{action}');")),"{label}"}
+                }
+                details {style:"flex-basis:100%;",summary {style:"cursor:pointer;min-height:44px;display:flex;align-items:center;","Camera controls"}
+                    div {style:"display:flex;gap:6px;flex-wrap:wrap;",
+                        for (action,label) in [("pan-left","Pan left"),("pan-right","Pan right"),("pan-up","Pan up"),("pan-down","Pan down"),("rise","Move higher"),("descend","Move lower")] {
+                            button {style:"{button}",onclick:move |_|js_eval(&format!("document.getElementById('gs26-vehicle-model-{viewer_id}')?.cameraAction?.('{action}');")),"{label}"}
+                        }
+                    }
+                    p {style:"max-width:40rem;font-size:13px;","Drag to orbit. Shift-drag or two fingers pan; pinch or scroll zooms. Focus the scene: arrow keys orbit, W/A/S/D pan, Q/E move vertically, F follows and R resets. Ground is a curved Earth reference, not recorded terrain."}
+                }
             }
             div {style:"position:relative;min-height:360px;height:55vh;border:1px solid {theme.border_soft};border-radius:14px;background:{theme.panel_background};overflow:hidden;",
                 div {style:if available{"height:100%;visibility:visible"}else{"height:100%;visibility:hidden"},dangerous_inner_html:viewer_html}

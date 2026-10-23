@@ -14,6 +14,26 @@ pub struct Snapshot {
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
 }
+/// Bounded trajectory from the same frozen saved-recording snapshot.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TrajectoryPoint {
+    pub timestamp_ms: i64,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub altitude_m: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub break_before: Option<bool>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Trajectory {
+    pub upper_id: i64,
+    pub points: Vec<TrajectoryPoint>,
+    pub truncated: bool,
+    #[serde(default)]
+    pub sampled: bool,
+    #[serde(default)]
+    pub source_sender_id: Option<String>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Sample {
     pub id: i64,
@@ -107,12 +127,13 @@ impl Frame {
             .phase
             .clone()
     }
-    pub fn gps(&self) -> Option<(f64, f64, f64)> {
-        let row = self
-            .data
-            .as_ref()?
-            .latest("GPS_DATA", Some("FC"), self.at_ms)?;
-        if self.at_ms.saturating_sub(row.timestamp_ms) > 5000 {
+    pub fn gps_for(&self, sender: &str) -> Option<(f64, f64, f64)> {
+        let index = self.data.as_ref()?;
+        let row = ["GPS_DATA", "GPS", "ROCKET_GPS"]
+            .into_iter()
+            .filter_map(|kind| index.latest(kind, Some(sender), self.at_ms))
+            .max_by_key(|row| (row.timestamp_ms, row.id))?;
+        if row.timestamp_ms < 0 || self.at_ms.saturating_sub(row.timestamp_ms) > 5000 {
             return None;
         }
         let lat = row.values.first().copied().flatten()? as f64;
@@ -122,8 +143,9 @@ impl Frame {
             && lon.is_finite()
             && alt.is_finite()
             && lat.abs() <= 90.
-            && lon.abs() <= 180.)
-            .then_some((lat, lon, alt))
+            && lon.abs() <= 180.
+            && (-20_000.0..=10_000_000.0).contains(&alt))
+        .then_some((lat, lon, alt))
     }
 }
 #[derive(Clone, PartialEq)]
@@ -236,5 +258,78 @@ mod tests {
         assert_eq!(advance(4900., 50., 4., 5000.), 5000.);
         assert_eq!(advance(100., -50., 1., 5000.), 100.);
         assert_eq!(advance(0., 1e12, 1., 5000.), 1000.);
+    }
+    #[test]
+    fn gps_pose_uses_selected_recorded_sender_and_rejects_stale_or_invalid_values() {
+        let mut rf = sample(1, 1000, 0.);
+        rf.data_type = "GPS_DATA".into();
+        rf.sender_id = "RF".into();
+        rf.values = vec![Some(45.), Some(-73.), Some(10000.)];
+        let mut fc = rf.clone();
+        fc.id = 2;
+        fc.sender_id = "FC".into();
+        fc.values[2] = Some(200.);
+        let frame = Frame {
+            data: Some(Rc::new(Index::new(vec![rf.clone(), fc]))),
+            at_ms: 1000,
+        };
+        assert_eq!(frame.gps_for("RF"), Some((45., -73., 10000.)));
+        assert_eq!(frame.gps_for("FC"), Some((45., -73., 200.)));
+        assert_eq!(
+            Frame {
+                at_ms: 6001,
+                ..frame
+            }
+            .gps_for("RF"),
+            None
+        );
+        rf.values[2] = Some(10000001.);
+        assert_eq!(
+            Frame {
+                data: Some(Rc::new(Index::new(vec![rf]))),
+                at_ms: 1000
+            }
+            .gps_for("RF"),
+            None
+        );
+    }
+    #[test]
+    fn saved_trajectory_contract_preserves_source_and_gap_metadata() {
+        let track:Trajectory=serde_json::from_str(r#"{"upper_id":42,"points":[{"timestamp_ms":1000,"latitude":45,"longitude":-73,"altitude_m":10000,"break_before":true}],"truncated":false,"sampled":true,"source_sender_id":"RF"}"#).unwrap();
+        assert_eq!(track.source_sender_id.as_deref(), Some("RF"));
+        assert_eq!(track.points[0].break_before, Some(true));
+        assert!(track.sampled);
+        assert!(serde_json::from_str::<Trajectory>(r#"{"upper_id":42,"points":[{"timestamp_ms":1000,"latitude":null,"longitude":-73,"altitude_m":10000}],"truncated":false}"#).is_err());
+    }
+
+    #[test]
+    fn saved_gps_aliases_use_newest_sample_from_the_selected_sender_only() {
+        let mut old = sample(1, 1000, 0.);
+        old.data_type = "GPS_DATA".into();
+        old.sender_id = "RF".into();
+        old.values = vec![Some(45.), Some(-73.), Some(100.)];
+        let mut legacy = old.clone();
+        legacy.id = 2;
+        legacy.timestamp_ms = 2000;
+        legacy.data_type = "ROCKET_GPS".into();
+        legacy.values[2] = Some(200.);
+        let mut other = legacy.clone();
+        other.id = 3;
+        other.timestamp_ms = 3000;
+        other.sender_id = "FC".into();
+        other.values[2] = Some(300.);
+        let frame = Frame {
+            data: Some(Rc::new(Index::new(vec![old, legacy, other]))),
+            at_ms: 3000,
+        };
+        assert_eq!(frame.gps_for("RF"), Some((45., -73., 200.)));
+        assert_eq!(
+            Frame {
+                at_ms: 1500,
+                ..frame
+            }
+            .gps_for("RF"),
+            Some((45., -73., 100.))
+        );
     }
 }

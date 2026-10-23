@@ -29,7 +29,26 @@ const _ACTIVE_SUBTAB_STORAGE_KEY_PREFIX: &str = "gs26_active_data_subtab::";
 const DATA_TAB_RESPONSIVE_CSS: &str = r#"
 .gs26-data-tab-shell, .gs26-data-subtab-shell { min-width: 0; width:100%; align-self:stretch; box-sizing:border-box; }
 .gs26-data-tab-toggle, .gs26-data-subtab-toggle { display:none; }
+.gs26-data-subtab-shell {
+  margin-top:6px;
+  padding:12px 10px 10px;
+  border-top:1px solid var(--gs26-data-toggle-border);
+  background:var(--gs26-data-toggle-background);
+  border-radius:0 0 10px 10px;
+}
+.gs26-data-tab-nav button, .gs26-data-subtab-nav button {
+  min-height:44px;
+  touch-action:manipulation;
+}
+.gs26-data-subtab-nav button { border-radius:8px !important; font-size:13px !important; padding:9px 12px !important; }
+.gs26-data-subtab-nav button[aria-pressed="true"] { font-weight:700; }
+.gs26-data-tab-nav button:focus-visible, .gs26-data-subtab-nav button:focus-visible,
+.gs26-data-tab-toggle:focus-visible, .gs26-data-subtab-toggle:focus-visible {
+  outline:2px solid currentColor;
+  outline-offset:3px;
+}
 .gs26-data-tab-nav, .gs26-data-subtab-nav { display:flex; gap:6px; flex-wrap:wrap; align-items:center; min-width:0; width:100%; box-sizing:border-box; }
+.gs26-data-subtab-nav { gap:8px; }
 .gs26-data-tab-nav button, .gs26-data-subtab-nav button,
 .gs26-data-tab-toggle, .gs26-data-subtab-toggle {
   box-sizing:border-box;
@@ -57,6 +76,7 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
     background:var(--gs26-data-toggle-background);
     color:var(--gs26-data-toggle-text);
     font:inherit;
+    min-height:44px;
     font-size:0.82rem;
     font-weight:800;
     line-height:1.12;
@@ -80,7 +100,7 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
   }
   .gs26-data-tab-nav button, .gs26-data-subtab-nav button {
     width:100%;
-    min-height:2.15rem;
+    min-height:44px;
   }
 }
 @media (max-width: 980px) {
@@ -430,9 +450,10 @@ pub fn DataTab(
                         },
                         "{data_tabs_toggle_label}"
                     }
-                div { class: "gs26-data-tab-nav",
+                div { class: "gs26-data-tab-nav", role: "group", "aria-label": "Data categories",
                     for t in types.iter().take(32) {
                         button {
+                            "aria-pressed": t.id == current,
                             style: if t.id == current {
                                 {
                                     let accent = theme
@@ -494,9 +515,10 @@ pub fn DataTab(
                             },
                             "{data_subtabs_toggle_label}"
                         }
-                    div { class: "gs26-data-subtab-nav",
+                    div { class: "gs26-data-subtab-nav", role: "group", "aria-label": "Data views",
                         for subtab in current_subtabs.iter() {
                             button {
+                                "aria-pressed": selected_subtab.as_ref().is_some_and(|active| active.id == subtab.id),
                                 style: if selected_subtab.as_ref().is_some_and(|active| active.id == subtab.id) {
                                     {
                                         let accent = theme

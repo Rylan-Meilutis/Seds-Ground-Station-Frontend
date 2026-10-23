@@ -1,5 +1,5 @@
 // Build with `dx build --platform web`, then run `node tests/saved-vehicle-replay.mjs`.
-// Requires Playwright/Chromium; GS_BACKEND_ROOT supplies the real bundled 3D assets.
+// Requires Playwright/Chromium; GS_REPLAY_RENDERING_ROOT can select external 3D assets.
 // This fixture never connects to a station or dispatches hardware commands.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,7 +7,7 @@ import http from 'node:http';
 import path from 'node:path';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const root=path.resolve(process.env.GS_FRONTEND_PUBLIC || 'target/dx/groundstation_frontend/debug/web/public');
-const backend=path.resolve(process.env.GS_BACKEND_ROOT || '../GroundStation26/backend');
+const rendering=path.resolve(process.env.GS_REPLAY_RENDERING_ROOT || 'station_ui/rendering');
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
 const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['admin'],permissions:{view_data:true,send_commands:true}};
 const dashboardLayout=example('layout.full');dashboardLayout.main_tabs.push('vehicle');
@@ -16,9 +16,10 @@ const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
   if(pathname==='/api/vehicle_visualization') {const cfg=example('vehicle-visualization');cfg.ground_model_url='';cfg.attitude.roll={data_type:'ROLL',sender_id:'FC',index:0,scale:1,offset:0};res.setHeader('Content-Type','application/json');res.end(JSON.stringify(cfg));return;}
   if(pathname==='/api/recordings') {res.setHeader('Content-Type','application/json');res.end(JSON.stringify([{id:'groundstation_recording_1.db',bytes:1000,active:false},{id:'groundstation_recording_2.db',bytes:1000,active:true}]));return;}
+  if(pathname.endsWith('/replay/trajectory')) {res.setHeader('Content-Type','application/json');res.end(JSON.stringify({upper_id:10,points:[],truncated:false}));return;}
   if(pathname.endsWith('/replay')) {res.setHeader('Content-Type','application/json');res.end(JSON.stringify({upper_id:10,start_ms:1000,end_ms:41000}));return;}
   if(pathname.endsWith('/replay/window')) {windowRequests++;if(failWindow){res.statusCode=503;res.end('Saved recording temporarily unavailable');return;}const second=pathname.includes('groundstation_recording_2.db');const url=new URL(req.url,'http://localhost');const start=Number(url.searchParams.get('start_ms')),end=Number(url.searchParams.get('end_ms'));const rows=[{id:1,timestamp_ms:1000,source_timestamp_ms:null,sender_id:'FC',data_type:'ROLL',values:[second?77:10]},{id:2,timestamp_ms:1000,source_timestamp_ms:null,sender_id:'FC',data_type:'FLIGHT_STATE',values:[0],phase:'Idle'},{id:3,timestamp_ms:2000,source_timestamp_ms:null,sender_id:'FC',data_type:'ROLL',values:[20]},{id:4,timestamp_ms:2000,source_timestamp_ms:null,sender_id:'FC',data_type:'FLIGHT_STATE',values:[1],phase:'Ascent'},{id:5,timestamp_ms:31000,source_timestamp_ms:null,sender_id:'FC',data_type:'ROLL',values:[30]}];const seeds=[];for(const type of ['ROLL','FLIGHT_STATE']){const row=rows.filter(r=>r.data_type===type&&r.timestamp_ms<start).at(-1);if(row)seeds.push(row);}res.setHeader('Content-Type','application/json');res.end(JSON.stringify({upper_id:10,next_id:10,has_more:false,rows:rows.filter(r=>r.timestamp_ms>=start&&r.timestamp_ms<=end),seeds}));return;}
-  if(pathname.startsWith('/assets/three/')||pathname.startsWith('/assets/models/')) {const file=path.resolve(backend,pathname.slice(1));if(file.startsWith(backend+path.sep)&&fs.existsSync(file)){res.setHeader('Content-Type',pathname.endsWith('.js')?'text/javascript':'model/gltf-binary');res.end(fs.readFileSync(file));return;}}
+  if(pathname.startsWith('/assets/three/')||pathname.startsWith('/assets/models/')) {const file=path.resolve(rendering,pathname.slice('/assets/'.length));if(file.startsWith(rendering+path.sep)&&fs.existsSync(file)){res.setHeader('Content-Type',pathname.endsWith('.js')?'text/javascript':'model/gltf-binary');res.end(fs.readFileSync(file));return;}}
   if(pathname.startsWith('/api/')){
     res.setHeader('Content-Type','application/json');
     const data=pathname==='/api/auth/session'?session:pathname==='/api/layout'?dashboardLayout:[];
