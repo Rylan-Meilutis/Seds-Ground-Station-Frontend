@@ -226,11 +226,10 @@ pub(super) fn storage_key() -> String {
     format!("{}_cards_v1_{}", super::dashboard_customization_key(), user)
 }
 fn save(cards: &[Card]) {
-    if valid(cards) {
-        if let Ok(json) = serde_json::to_string(cards) {
+    if valid(cards)
+        && let Ok(json) = serde_json::to_string(cards) {
             persist::set_string(&storage_key(), &json);
         }
-    }
 }
 
 pub(super) fn load_cards() -> Vec<Card> {
@@ -314,7 +313,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, #[props(default)] test_fire_mo
                         }
                         if *editing.read() && card.display != "camera" {
                         button { disabled: !card.pinned && snapshot.iter().filter(|c| c.pinned).count() >= 8,
-                            onclick: move |_| { let mut all=cards.read().clone(); all[index].pinned=!all[index].pinned; save(&all); cards.set(all); },
+                            onclick: move |_| { let mut all=cards.read().clone(); all[index].pinned = !all[index].pinned; save(&all); cards.set(all); },
                             if card.pinned { "Unpin from top bar" } else { "Pin to top bar" }
                         }}
                     }
@@ -419,15 +418,14 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default = f
         use_hook(|| std::rc::Rc::new(std::cell::RefCell::new((None::<i64>, Vec::<f32>::new()))));
     let points = {
         let mut h = history.borrow_mut();
-        if let (Some(row), Some(v)) = (&row, value) {
-            if h.0 != Some(row.received_timestamp_ms) {
+        if let (Some(row), Some(v)) = (&row, value)
+            && h.0 != Some(row.received_timestamp_ms) {
                 h.0 = Some(row.received_timestamp_ms);
                 h.1.push(v);
                 if h.1.len() > 150 {
                     h.1.remove(0);
                 }
             }
-        }
         h.1.iter()
             .enumerate()
             .map(|(i, v)| {

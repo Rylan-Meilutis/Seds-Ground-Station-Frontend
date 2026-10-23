@@ -57,10 +57,10 @@ fn sweep(nonce: &str, trust: &Pairing) -> Vec<String> {
     let mut destinations = vec!["255.255.255.255:49363".parse::<SocketAddr>().unwrap()];
     if let Ok(interfaces) = if_addrs::get_if_addrs() {
         for i in interfaces {
-            if let if_addrs::IfAddr::V4(v) = i.addr {
-                if let Some(ip) = v.broadcast {
-                    destinations.push(SocketAddr::new(ip.into(), 49363));
-                }
+            if let if_addrs::IfAddr::V4(v) = i.addr
+                && let Some(ip) = v.broadcast
+            {
+                destinations.push(SocketAddr::new(ip.into(), 49363));
             }
         }
     }

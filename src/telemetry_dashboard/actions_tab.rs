@@ -306,14 +306,13 @@ pub fn ActionsTab(
             let next = match super::http_get_json::<serde_json::Value>("/api/gse/status").await {
                 Ok(status) => {
                     operational_status.set(status.clone());
-                    if !*self_test_busy.read() {
-                        if let Some(confirmed) = status["dry_self_test_confirmed"].as_bool() {
+                    if !*self_test_busy.read()
+                        && let Some(confirmed) = status["dry_self_test_confirmed"].as_bool() {
                             if *self_test_confirmed.read() && !confirmed {
                                 self_test_message.set("Confirmation consumed by the last run. Confirm isolation again before retrying self-test.".into());
                             }
                             self_test_confirmed.set(confirmed);
                         }
-                    }
                     match status.get("request_gate") {
                     Some(gate) => format!(
                         "Backend gate: mode={} · state={} · prelaunch={} · valve interlock={} · {} · {}",

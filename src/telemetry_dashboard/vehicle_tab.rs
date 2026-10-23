@@ -136,13 +136,13 @@ fn model_animation(config: &VehicleVisualizationConfig, phase: &str) -> Option<S
 fn sync_model_viewer(
     viewer_id: usize,
     config: &VehicleVisualizationConfig,
-    phase: &str,
-    roll: Option<f32>,
-    pitch: Option<f32>,
-    yaw: Option<f32>,
     frame: &super::vehicle_replay::Frame,
     replay_seconds: f64,
 ) {
+    let phase = frame.phase().unwrap_or_else(|| "Unknown".into());
+    let roll = config.attitude.roll.as_ref().and_then(|b| value(b, frame));
+    let pitch = config.attitude.pitch.as_ref().and_then(|b| value(b, frame));
+    let yaw = config.attitude.yaw.as_ref().and_then(|b| value(b, frame));
     if config.model_url.trim().is_empty() {
         return;
     }
@@ -155,7 +155,7 @@ fn sync_model_viewer(
             } else {
                 m.phase_values
                     .iter()
-                    .find(|(name, _)| normalized_phase(name) == normalized_phase(phase))
+                    .find(|(name, _)| normalized_phase(name) == normalized_phase(&phase))
                     .map(|(_, v)| *v)
                     .or_else(|| m.phase_values.get("*").copied())
             };
@@ -164,9 +164,9 @@ fn sync_model_viewer(
             result
         })
         .collect();
-    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch.unwrap_or(0.0),yaw.unwrap_or(0.0),roll.unwrap_or(0.0)],"clip":model_animation(config,phase),"replay_time_seconds":replay_seconds}).to_string();
+    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch.unwrap_or(0.0),yaw.unwrap_or(0.0),roll.unwrap_or(0.0)],"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds}).to_string();
     let payload = serde_json::to_string(&payload).unwrap();
-    let ground = super::gse_panel::ground_visible(phase) && !config.ground_model_url.is_empty();
+    let ground = super::gse_panel::ground_visible(&phase) && !config.ground_model_url.is_empty();
     let src = serde_json::to_string(&backend_url(if ground {
         &config.ground_model_url
     } else {
@@ -174,7 +174,7 @@ fn sync_model_viewer(
     }))
     .unwrap();
     let payload = if ground {
-        let clip = match phase {
+        let clip = match phase.as_str() {
             "NitrogenFill" => "nitrogen-test",
             "NitrousFill" => "nitrous-fill",
             _ => "",
@@ -599,17 +599,7 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                 data,
                 at_ms: saved.start_ms.unwrap_or(0).saturating_add(at as i64),
             };
-            let phase = frame.phase().unwrap_or_else(|| "Unknown".into());
-            sync_model_viewer(
-                viewer_id,
-                &cfg,
-                &phase,
-                cfg.attitude.roll.as_ref().and_then(|b| value(b, &frame)),
-                cfg.attitude.pitch.as_ref().and_then(|b| value(b, &frame)),
-                cfg.attitude.yaw.as_ref().and_then(|b| value(b, &frame)),
-                &frame,
-                at / 1000.,
-            );
+            sync_model_viewer(viewer_id, &cfg, &frame, at / 1000.);
         }
     });
     let button = format!(

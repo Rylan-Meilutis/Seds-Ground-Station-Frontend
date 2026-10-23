@@ -78,6 +78,8 @@ try {
  await page.waitForTimeout(500);
  const paused=await model.evaluate(m=>m.mixer.time);await page.waitForTimeout(250);assert.equal(await model.evaluate(m=>m.mixer.time),paused,'paused saved animations stay paused');
  assert.equal(await model.evaluate(m=>m.mixer.time),0,'record switch rewinds artwork');
+ const rendered=await model.evaluate(m=>m.renderer.info.render.frame);await page.waitForTimeout(250);assert.equal(await model.evaluate(m=>m.renderer.info.render.frame),rendered,'paused replay does not keep rendering identical frames');
+ assert.deepEqual(await model.evaluate(m=>m.model.position.toArray()),[0,0,0],'centering uses a separate pivot and preserves animation root transforms');
 
  console.log('renderer',await model.evaluate(m=>({software:m.software,loaded:m.dataset.loaded,canvas:[m.renderer.domElement.width,m.renderer.domElement.height],bounds:[m.clientWidth,m.clientHeight],model:!!m.model,draws:m.renderer.info?.render,status:m.status?.textContent,visible:m.root.visible,children:m.model?.children.length})));
 

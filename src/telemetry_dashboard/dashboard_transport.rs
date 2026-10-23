@@ -1375,19 +1375,18 @@ async fn connect_ws_supervisor(
         #[cfg(not(target_arch = "wasm32"))]
         if last_station_sweep.elapsed() >= std::time::Duration::from_secs(5) {
             last_station_sweep = std::time::Instant::now();
-            if let Some(mut session) = auth::current_session() {
-                if let Some((base,status)) = crate::native_station::find(&session,UrlConfig::_skip_tls_verify()).await {
-                    if alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
-                        let skip_tls = UrlConfig::_skip_tls_verify();
-                        UrlConfig::_set_skip_tls_verify_for_base(&base,skip_tls);
-                        auth::init_from_storage(&base);
-                        session.session = status;
-                        auth::set_current_session(session);
-                        UrlConfig::set_base_url_and_persist(base);
-                        clear_and_reconnect_after_connect();
-                        break;
-                    }
-                }
+            if let Some(mut session) = auth::current_session()
+                && let Some((base,status)) = crate::native_station::find(&session,UrlConfig::_skip_tls_verify()).await
+                && alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch
+            {
+                let skip_tls = UrlConfig::_skip_tls_verify();
+                UrlConfig::_set_skip_tls_verify_for_base(&base,skip_tls);
+                auth::init_from_storage(&base);
+                session.session = status;
+                auth::set_current_session(session);
+                UrlConfig::set_base_url_and_persist(base);
+                clear_and_reconnect_after_connect();
+                break;
             }
         }
 
@@ -1489,11 +1488,10 @@ async fn connect_ws_once_wasm(
                 return;
             }
             last_activity_ms.set(monotonic_now_ms());
-            if let Some(s) = e.data().as_string() {
-                if !queue_live_telemetry_from_ws_message(&s) {
+            if let Some(s) = e.data().as_string()
+                && !queue_live_telemetry_from_ws_message(&s) {
                     queue_ws_message_event(epoch, s);
                 }
-            }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     }

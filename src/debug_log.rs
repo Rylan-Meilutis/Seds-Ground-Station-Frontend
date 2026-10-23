@@ -167,10 +167,10 @@ fn read_log_artifact_bytes(id: &str) -> Result<Vec<u8>, String> {
 pub(crate) fn list_log_artifacts() -> Vec<LogArtifact> {
     #[cfg(target_arch = "wasm32")]
     {
-        return vec![LogArtifact {
+        vec![LogArtifact {
             id: "browser-storage".to_string(),
             label: "browser-storage.log".to_string(),
-        }];
+        }]
     }
 
     #[cfg(not(target_arch = "wasm32"))]

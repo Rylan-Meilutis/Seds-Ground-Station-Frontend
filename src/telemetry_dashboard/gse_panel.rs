@@ -155,11 +155,10 @@ pub(super) fn GsePanel(
         loop {
             match http_get_json::<Status>("/api/gse/status").await {
                 Ok(next) => {
-                    if !["idle", "passed", "cancelled", "fault"].contains(&next.phase.as_str()) {
-                        if let Some(cfg) = settings.write().as_mut() {
+                    if !["idle", "passed", "cancelled", "fault"].contains(&next.phase.as_str())
+                        && let Some(cfg) = settings.write().as_mut() {
                             cfg.dry_self_test_confirmed = false;
                         }
-                    }
                     status.set(next);
                     online.set(true);
                 }
@@ -217,8 +216,8 @@ pub(super) fn GsePanel(
                     summary {style:"cursor:pointer;color:{theme.text_muted};font-size:13px;","Nitrogen test settings"}
                     if let Some(cfg)=settings.read().clone() {
                         div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;padding-top:16px;",
-                            label {"Pressure step (psi)" input {r#type:"number",min:"0.1",step:"0.1",value:"{cfg.pressure_step_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse(){if let Some(c)=settings.write().as_mut(){c.pressure_step_psi=v;}}}}}
-                            label {"Nitrogen maximum pressure (psi)" input {r#type:"number",value:"{cfg.nitrogen_target_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse(){if let Some(c)=settings.write().as_mut(){c.nitrogen_target_psi=v;}}}}}
+                            label {"Pressure step (psi)" input {r#type:"number",min:"0.1",step:"0.1",value:"{cfg.pressure_step_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse()&& let Some(c)=settings.write().as_mut(){c.pressure_step_psi=v;}}}}
+                            label {"Nitrogen maximum pressure (psi)" input {r#type:"number",value:"{cfg.nitrogen_target_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse()&& let Some(c)=settings.write().as_mut(){c.nitrogen_target_psi=v;}}}}
                             p {"Automatic failure limit: nitrogen target +100 psi; nitrous fill target +50 psi. A lower hardware ceiling takes precedence."}
                             label {"Maximum acceptable empty-tank PT offset (psi, required)" input {r#type:"number",min:"0",step:"0.1",value:cfg.maximum_zero_offset_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.maximum_zero_offset_psi=e.value().parse().ok();}}}}
                             label {"Hardware pressure ceiling (psi, optional lower limit)" input {r#type:"number",min:"0.1",step:"0.1",value:cfg.pressure_ceiling_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.pressure_ceiling_psi=e.value().parse().ok();}}}}

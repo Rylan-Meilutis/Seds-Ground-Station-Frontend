@@ -84,7 +84,7 @@ pub(super) fn ReportStudio(recording: String) -> Element {
     let mut status = use_signal(String::new);
     let mut format = use_signal(|| "csv".to_string());
     let load_recording = recording.clone();
-    let mut load = move |_| {
+    let load = move |_| {
         let window = if from.read().is_empty() && to.read().is_empty() {
             None
         } else {
@@ -121,7 +121,7 @@ pub(super) fn ReportStudio(recording: String) -> Element {
         h3 {"Preview and export"}
         p {"Select a recording above, then load its graphs. Preview retains peaks but is downsampled; downloads contain the selected recorded samples without display filtering or recalibration."}
         div {label {"Optional from (UTC) " input {r#type:"datetime-local",value:from(),oninput:move |e|from.set(e.value())}} label {"to (UTC, exclusive) " input {r#type:"datetime-local",value:to(),oninput:move |e|to.set(e.value())}}}
-        button {disabled:busy(),onclick:move |e|load(e),"Load / refresh graphs"}
+        button {disabled:busy(),onclick:load,"Load / refresh graphs"}
         if let Some(data)=preview.read().as_ref() {
             p {"{data.recorded_rows} recorded rows · {utc(data.start_ms)} to {utc(data.end_ms)}"}
             label {input {r#type:"checkbox",checked:all_time(),onchange:move |e|all_time.set(e.checked())} "Export entire loaded time span"}

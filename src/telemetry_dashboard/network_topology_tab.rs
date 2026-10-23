@@ -1350,34 +1350,6 @@ fn format_seen_age(age_ms: Option<u64>) -> String {
     format!("Seen {age} ago")
 }
 
-#[cfg(test)]
-mod timing_tests {
-    use super::*;
-
-    #[test]
-    fn age_labels_distinguish_unknown_and_recent_boards() {
-        assert_eq!(format_seen_age(None), "Never observed");
-        assert_eq!(format_seen_age(Some(0)), "Seen 0s ago");
-        assert_eq!(format_seen_age(Some(12_000)), "Seen 12s ago");
-        assert_eq!(format_seen_age(Some(65_000)), "Seen 1m 5s ago");
-        assert_eq!(format_seen_age(Some(3_660_000)), "Seen 1h 1m ago");
-        assert_eq!(format_seen_age(Some(90_000_000)), "Seen 1d 1h ago");
-    }
-
-    #[test]
-    fn topology_timing_survives_cached_layout_and_old_servers() {
-        let mut node: NetworkTopologyNode = serde_json::from_str(
-            r#"{"id":"board_vb","label":"Valve","kind":"board","status":"offline","group":"board","sender_id":"VB","detail":null}"#,
-        ).unwrap();
-        assert_eq!(node.current_age_ms(1000), None);
-        node.age_ms = Some(12_000);
-        node.last_seen_ms = Some(100);
-        node.received_mono_ms = 1000;
-        assert_eq!(node.clone().current_age_ms(3000), Some(14_000));
-        assert_eq!(node.current_age_ms(900), Some(12_000));
-        assert!(serde_json::to_value(&node).unwrap().get("received_mono_ms").is_none());
-    }
-}
 
 fn placement_for(id: &str, placements: &HashMap<String, NodePlacement>) -> Option<NodePlacement> {
     placements.get(id).copied()
@@ -2168,5 +2140,34 @@ fn compute_graph_layout(
         width,
         height,
         placements,
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn age_labels_distinguish_unknown_and_recent_boards() {
+        assert_eq!(format_seen_age(None), "Never observed");
+        assert_eq!(format_seen_age(Some(0)), "Seen 0s ago");
+        assert_eq!(format_seen_age(Some(12_000)), "Seen 12s ago");
+        assert_eq!(format_seen_age(Some(65_000)), "Seen 1m 5s ago");
+        assert_eq!(format_seen_age(Some(3_660_000)), "Seen 1h 1m ago");
+        assert_eq!(format_seen_age(Some(90_000_000)), "Seen 1d 1h ago");
+    }
+
+    #[test]
+    fn topology_timing_survives_cached_layout_and_old_servers() {
+        let mut node: NetworkTopologyNode = serde_json::from_str(
+            r#"{"id":"board_vb","label":"Valve","kind":"board","status":"offline","group":"board","sender_id":"VB","detail":null}"#,
+        ).unwrap();
+        assert_eq!(node.current_age_ms(1000), None);
+        node.age_ms = Some(12_000);
+        node.last_seen_ms = Some(100);
+        node.received_mono_ms = 1000;
+        assert_eq!(node.clone().current_age_ms(3000), Some(14_000));
+        assert_eq!(node.current_age_ms(900), Some(12_000));
+        assert!(serde_json::to_value(&node).unwrap().get("received_mono_ms").is_none());
     }
 }

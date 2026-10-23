@@ -556,7 +556,7 @@ impl ChartsCache {
             .iter()
             .filter_map(|(key, until)| {
                 if *until < generation {
-                    Some(key.clone())
+                    Some(*key)
                 } else {
                     None
                 }

@@ -264,17 +264,6 @@ fn prefer_native_raster_map(arm_linux: bool, renderer: Option<&str>) -> bool {
     }
 }
 
-#[cfg(test)]
-mod native_map_tests {
-    #[test]
-    fn arm_linux_uses_raster_with_explicit_webgl_override() {
-        assert!(super::prefer_native_raster_map(true, None));
-        assert!(!super::prefer_native_raster_map(false, None));
-        assert!(!super::prefer_native_raster_map(true, Some("webgl")));
-        assert!(super::prefer_native_raster_map(false, Some("raster")));
-        assert!(super::prefer_native_raster_map(true, Some("invalid")));
-    }
-}
 
 #[cfg(target_os = "android")]
 fn startup_custom_head() -> String {
@@ -472,4 +461,16 @@ fn _handle_gs26_protocol_async(request: HttpRequest<Vec<u8>>, responder: Request
                 debug_log::append("[protocol] panic while responding to request");
             }
         });
+}
+
+#[cfg(test)]
+mod native_map_tests {
+    #[test]
+    fn arm_linux_uses_raster_with_explicit_webgl_override() {
+        assert!(super::prefer_native_raster_map(true, None));
+        assert!(!super::prefer_native_raster_map(false, None));
+        assert!(!super::prefer_native_raster_map(true, Some("webgl")));
+        assert!(super::prefer_native_raster_map(false, Some("raster")));
+        assert!(super::prefer_native_raster_map(true, Some("invalid")));
+    }
 }

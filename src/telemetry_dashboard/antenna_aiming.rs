@@ -21,12 +21,11 @@ impl Fix {
             "ellipsoid" => AltitudeReference::Ellipsoid,
             _ => AltitudeReference::Unknown,
         };
-        if datum == AltitudeReference::Ellipsoid {
-            if let Some(offset) = geoid {
+        if datum == AltitudeReference::Ellipsoid
+            && let Some(offset) = geoid {
                 altitude = altitude.map(|v| v - offset);
                 datum = AltitudeReference::MeanSeaLevel;
             }
-        }
         Position {
             latitude: self.latitude,
             longitude: self.longitude,

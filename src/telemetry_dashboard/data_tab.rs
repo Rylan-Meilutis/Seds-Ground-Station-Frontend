@@ -1,3 +1,4 @@
+type SummaryCardValues = (String, Option<String>, Option<String>, String, &'static str);
 use super::layout::{
     BooleanLabels, ChartSeriesSpec, DataChartGroup, DataChartScaleMode, DataSubtabSpec,
     DataSummaryItem, DataTabLayout, DataTabSpec, ThemeConfig, ValueFormatKind, ValueFormatter,
@@ -1085,7 +1086,7 @@ fn DataSummarySection(
 
     if !summary_items.is_empty() {
         let grid_style = summary_grid_style(summary_items.len());
-        let summary_cards: Vec<(String, Option<String>, Option<String>, String, &'static str)> =
+        let summary_cards: Vec<SummaryCardValues> =
             summary_items
                 .iter()
                 .enumerate()
@@ -1138,7 +1139,7 @@ fn DataSummarySection(
     let vals = &row.values;
     let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
     let grid_style = summary_grid_style(visible_label_count);
-    let row_cards: Vec<(String, Option<String>, Option<String>, String, &'static str)> = labels
+    let row_cards: Vec<SummaryCardValues> = labels
         .iter()
         .enumerate()
         .filter(|(_, label)| !label.is_empty())
@@ -2099,13 +2100,11 @@ pub(super) fn Kg50InputSelector(
     let mut message = use_signal(String::new);
     use_future(move || async move {
         loop {
-            if !*busy.peek() {
-                if let Ok(cfg) = super::http_get_json::<serde_json::Value>("/api/calibration").await {
-                    if !*busy.peek() {
+            if !*busy.peek()
+                && let Ok(cfg) = super::http_get_json::<serde_json::Value>("/api/calibration").await
+                    && !*busy.peek() {
                         input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
                     }
-                }
-            }
             #[cfg(target_arch = "wasm32")]
             gloo_timers::future::TimeoutFuture::new(2000).await;
             #[cfg(not(target_arch = "wasm32"))]

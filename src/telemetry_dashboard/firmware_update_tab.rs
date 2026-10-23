@@ -66,7 +66,7 @@ fn firmware_url(path: &str) -> Result<String, String> {
             .location()
             .origin()
             .map_err(|_| "failed to read browser origin".to_string())?;
-        return Ok(format!("{origin}{path}"));
+        Ok(format!("{origin}{path}"))
     }
     #[cfg(not(target_arch = "wasm32"))]
     Ok(format!("http://localhost:3000{path}"))

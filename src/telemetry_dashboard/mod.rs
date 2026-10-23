@@ -565,7 +565,7 @@ fn telemetry_rows_per_drain_budget_for(
     }
 
     let rows_per_sec = rows_per_sec.max(1.0);
-    let elapsed_ms = elapsed_ms.max(TELEMETRY_RENDER_MIN_INTERVAL_MS).min(1_000) as f64;
+    let elapsed_ms = elapsed_ms.clamp(TELEMETRY_RENDER_MIN_INTERVAL_MS, 1_000) as f64;
     let baseline = (rows_per_sec * elapsed_ms / 1000.0).ceil() as usize;
     let target_backlog =
         (rows_per_sec * TELEMETRY_QUEUE_TARGET_LATENCY_MS / 1000.0).ceil() as usize;

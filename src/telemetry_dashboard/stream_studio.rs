@@ -48,7 +48,7 @@ pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> El
       }
       div {
        button {disabled:*busy.read()||!(3..=60).contains(&*delay.read()),onclick:move |_|{
-         let mut next=broadcast.clone();next.delay_seconds=*delay.read();next.label=label.read().clone();next.comms_audio_enabled=*comms_audio.read();busy.set(true);
+         let mut next=broadcast.clone();next.delay_seconds = *delay.read();next.label=label.read().clone();next.comms_audio_enabled = *comms_audio.read();busy.set(true);
          spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(_)=>message.set("Broadcast settings saved. Crew audio follows the audience delay.".into()),Err(e)=>message.set(e)}busy.set(false);});
        },"Apply broadcast settings"}
       }

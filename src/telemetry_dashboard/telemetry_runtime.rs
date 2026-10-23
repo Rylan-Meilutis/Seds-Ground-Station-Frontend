@@ -1,3 +1,4 @@
+type RocketPositionUpdate = (Option<(f64, f64)>, Option<f64>);
 // Live telemetry runtime.
 //
 // This include keeps the high-rate data path out of the dashboard component:
@@ -423,7 +424,7 @@ fn note_sender_telemetry_activity_batch(rows: &[TelemetryRow]) {
 fn ingest_telemetry_rows_into_runtime_caches_with_chart_mode(
     rows: Vec<TelemetryRow>,
     charts_live_enabled: bool,
-) -> Option<(Option<(f64, f64)>, Option<f64>)> {
+) -> Option<RocketPositionUpdate> {
     if rows.is_empty() {
         return None;
     }
@@ -448,7 +449,7 @@ fn ingest_telemetry_rows_into_runtime_caches_with_chart_mode(
 #[cfg(test)]
 fn ingest_telemetry_rows_profile_only(
     rows: Vec<TelemetryRow>,
-) -> Option<(Option<(f64, f64)>, Option<f64>)> {
+) -> Option<RocketPositionUpdate> {
     if rows.is_empty() {
         return None;
     }

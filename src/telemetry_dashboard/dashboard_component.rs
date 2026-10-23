@@ -1436,7 +1436,7 @@ fn TelemetryDashboardInner() -> Element {
                         bump_chart_render_epoch();
                     }
 
-                    let active_tab = active_main_tab.read().clone();
+                    let active_tab = *active_main_tab.read();
                     let page_visible = dashboard_page_visible();
                     if telemetry_queue_has_rows() {
                         TELEMETRY_RENDER_DIRTY.store(true, Ordering::Release);
@@ -1486,12 +1486,11 @@ fn TelemetryDashboardInner() -> Element {
                     }
                 }
 
-                if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock() {
-                    if retire_dashboard_runtime_pump(&mut slot, generation) {
+                if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock()
+                    && retire_dashboard_runtime_pump(&mut slot, generation) {
                         DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
                         DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED.store(false, Ordering::Release);
                     }
-                }
             });
         });
     }
@@ -2218,15 +2217,7 @@ fn TelemetryDashboardInner() -> Element {
     let layout_snapshot = layout_config.read().clone();
     let layout_error_snapshot = layout_error.read().clone();
     let layout_error_dismissed_snapshot = layout_error_dismissed.read().clone();
-    let layout_cached_error_banner = layout_error_snapshot.clone().and_then(|msg| {
-        if layout_snapshot.is_some()
-            && layout_error_dismissed_snapshot.as_deref() != Some(msg.as_str())
-        {
-            Some(msg)
-        } else {
-            None
-        }
-    });
+    let layout_cached_error_banner = layout_error_snapshot.clone().filter(|msg| layout_snapshot.is_some() && layout_error_dismissed_snapshot.as_deref() != Some(msg.as_str()));
     let layout_loading_snapshot = *layout_loading.read();
     let version_overlay_open = *show_version_overlay.read();
     let version_overlay: Element = {
@@ -2549,10 +2540,7 @@ fn TelemetryDashboardInner() -> Element {
             on_navigate:move |page:String| {
                 let mut dashboard_edit_mode = dashboard_edit_mode;
                 admin_open.set(false);
-                match page.as_str() {
-                    "views"=>{active_main_tab.set(MainTab::State);dashboard_edit_mode.set(true);},
-                    _=>{},
-                }
+                if page.as_str() == "views" {active_main_tab.set(MainTab::State);dashboard_edit_mode.set(true);}
             }
         }};
     }
