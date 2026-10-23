@@ -23,3 +23,7 @@ Groundstation_26.mobileprovision
 .gradle-user-home/
 /Groundstation_dev.mobileprovision
 /UBSEDS_GroundStation.mobileprovision
+
+# Browser dependencies and their licenses are source-controlled station assets.
+!/station_ui/vendor/
+!/station_ui/vendor/**
