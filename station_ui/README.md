@@ -22,3 +22,11 @@ test server from GroundStation; see its `docs/backend/crew-voice.md`. Set
 port. Chromium's fake audio-output stream keeps the actual audio graph running
 on a headless host without a sound device; PCM relay/worklet assertions remain
 active.
+
+Regenerate replay GLBs with `node scripts/build_gse_models.mjs` from the frontend
+checkout, or pass `--output-dir PATH` for a separate build directory. Verify them
+with `node tests/station-model-structure.cjs` and the software-renderer test.
+The legacy CDP broadcast/animation fixtures are also frontend-owned; their
+loopback-only server setup remains documented by GroundStation. The obsolete
+live-3D streamer fixture is superseded by `station-program_browser.mjs`, which
+requires live2D artwork and rejects live3D asset requests.
