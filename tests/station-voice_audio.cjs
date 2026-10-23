@@ -1,4 +1,4 @@
-// Run with node tests/voice_audio.cjs. No microphone, network, or receiver required.
+// Run with node tests/station-voice_audio.cjs. No microphone, network, or receiver required.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
