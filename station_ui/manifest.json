@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "exports": [
+    {
+      "name": "MEDIA_HTML",
+      "path": "station_ui/pages/media.html",
+      "kind": "text"
+    },
+    {
+      "name": "VOICE_HTML",
+      "path": "station_ui/pages/voice.html",
+      "kind": "text"
+    },
+    {
+      "name": "PROGRAM_HTML",
+      "path": "station_ui/pages/program.html",
+      "kind": "text"
+    },
+    {
+      "name": "PLAYER_HTML",
+      "path": "station_ui/pages/player.html",
+      "kind": "text"
+    },
+    {
+      "name": "VOICE_JS",
+      "path": "station_ui/scripts/voice.js",
+      "kind": "text"
+    },
+    {
+      "name": "VOICE_WORKLET_JS",
+      "path": "station_ui/scripts/voice-worklet.js",
+      "kind": "text"
+    },
+    {
+      "name": "MEDIA_LOGIN_JS",
+      "path": "station_ui/scripts/media-login.js",
+      "kind": "text"
+    },
+    {
+      "name": "PROGRAM_ART_JS",
+      "path": "station_ui/scripts/program-art.js",
+      "kind": "text"
+    },
+    {
+      "name": "PROGRAM_AUDIO_JS",
+      "path": "station_ui/scripts/program-audio.js",
+      "kind": "text"
+    },
+    {
+      "name": "HLS_JS",
+      "path": "station_ui/vendor/hls.min.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "MODEL_VIEWER_JS",
+      "path": "station_ui/vendor/model-viewer.min.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "VEHICLE_RENDERER_JS",
+      "path": "station_ui/rendering/three/vehicle-renderer.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "SOFTWARE_RENDERER_JS",
+      "path": "station_ui/rendering/three/software-renderer.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "THREE_MODULE_JS",
+      "path": "station_ui/rendering/three/three.module.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "THREE_CORE_JS",
+      "path": "station_ui/rendering/three/three.core.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "GLTF_LOADER_JS",
+      "path": "station_ui/rendering/three/GLTFLoader.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "BUFFER_GEOMETRY_UTILS_JS",
+      "path": "station_ui/rendering/three/BufferGeometryUtils.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "GSE_SITE_MODEL",
+      "path": "station_ui/rendering/models/gse-site.glb",
+      "kind": "bytes"
+    },
+    {
+      "name": "VEHICLE_MODEL",
+      "path": "station_ui/rendering/models/vehicle.glb",
+      "kind": "bytes"
+    }
+  ]
+}

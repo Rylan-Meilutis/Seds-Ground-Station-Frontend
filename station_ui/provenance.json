@@ -1,0 +1,94 @@
+{
+  "groundstation_commit": "07be28a",
+  "scope": "Byte-preserving relocation of browser UI and original third-party license files; backend auth/routes stay in Rust.",
+  "files": {
+    "station_ui/pages/media.html": {
+      "original": "backend/src/media.html",
+      "sha256": "7cc3a16fc95cfae55bcffbef51d98ccbad80481f6739d4c4ab189bdf4b39f8e6"
+    },
+    "station_ui/pages/voice.html": {
+      "original": "backend/src/voice.html",
+      "sha256": "407209e7bf4a8f6ceb9e2a887ffb29f0bb35b5eecc6521b0566c450cd9bdff39"
+    },
+    "station_ui/pages/program.html": {
+      "original": "backend/src/media/program.html",
+      "sha256": "07e6c63072cf7cd41d8828d54d9df03517fd401a9a2d235e3f625e940261e41d"
+    },
+    "station_ui/pages/player.html": {
+      "original": "backend/src/media/player.html",
+      "sha256": "90bf7cf3882306c331546fc2a476b5ac2bcc218470d353c7c7371c5a8977c113"
+    },
+    "station_ui/scripts/voice.js": {
+      "original": "backend/src/voice.js",
+      "sha256": "8f0d7ee9a12617b4f6199f123df507ee1bcc608cffdbc2d7857b8230c4323221"
+    },
+    "station_ui/scripts/voice-worklet.js": {
+      "original": "backend/src/voice-worklet.js",
+      "sha256": "afb9b58ddbba192bb9194bdd3b1ddc3f353b06d9ed3e332d0a6af40565a84312"
+    },
+    "station_ui/scripts/media-login.js": {
+      "original": "backend/src/media-login.js",
+      "sha256": "c4b55219820ab4c5fafa7ed8810daa54aef50d5a13972c40995d4dd17ddc04b4"
+    },
+    "station_ui/scripts/program-art.js": {
+      "original": "backend/src/media/program-art.js",
+      "sha256": "68fbdf913e0bd2a7ffab836ae7d86fbce9c36698efa77699ffc596477f6a6ee0"
+    },
+    "station_ui/scripts/program-audio.js": {
+      "original": "backend/src/media/program-audio.js",
+      "sha256": "e11f6adcbf027443f5ea7548ef61f98dbed5126289870ca538fb076280cfd4c6"
+    },
+    "station_ui/vendor/hls.min.js": {
+      "original": "backend/assets/hls.min.js",
+      "sha256": "7c47cd97d7a6e7b98d9623dd8ed9a6d45af4be4085e0c2001cd7175c2b4cfb07"
+    },
+    "station_ui/vendor/model-viewer.min.js": {
+      "original": "backend/assets/model-viewer.min.js",
+      "sha256": "283b0672384614b4847636c306fc93fe4b1fcadc76d668b4e47f0ca76bcf033b"
+    },
+    "station_ui/vendor/hls.LICENSE": {
+      "original": "backend/assets/hls.LICENSE",
+      "sha256": "ca8773cf798c7ed997d4dd7c8e23c348699f8d5b7462636694cc14de6cda12db"
+    },
+    "station_ui/vendor/model-viewer.LICENSE": {
+      "original": "backend/assets/model-viewer.LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "station_ui/rendering/three/vehicle-renderer.js": {
+      "original": "backend/assets/three/vehicle-renderer.js",
+      "sha256": "ec9a731a139756e495ff2475b6fbdd7bc985dc3c4c6825d477817572158c8b9e"
+    },
+    "station_ui/rendering/three/software-renderer.js": {
+      "original": "backend/assets/three/software-renderer.js",
+      "sha256": "f3d9b76a0415ce14ba8932aec193179d878ba2dd0c693a53e672dd3868358bb4"
+    },
+    "station_ui/rendering/three/three.module.js": {
+      "original": "backend/assets/three/three.module.js",
+      "sha256": "c8211c69345d2e9949dc7a8ac969380497aa0600a5a8ac6a459c8cd02dd9cb8a"
+    },
+    "station_ui/rendering/three/three.core.js": {
+      "original": "backend/assets/three/three.core.js",
+      "sha256": "eb077d2417f61d3e6d9264c317cabc4ea35769ed6b0ab533067292a550784c20"
+    },
+    "station_ui/rendering/three/GLTFLoader.js": {
+      "original": "backend/assets/three/GLTFLoader.js",
+      "sha256": "2904f2823e23d5bc1d64512bf4c0d777ac44d728d47c34a9e3d48ce8ef6b761d"
+    },
+    "station_ui/rendering/three/BufferGeometryUtils.js": {
+      "original": "backend/assets/three/BufferGeometryUtils.js",
+      "sha256": "248b3e8420bd3de805ca01845c1b0cc62aa2766f3c56bdcead265e306f8e715c"
+    },
+    "station_ui/rendering/three/LICENSE": {
+      "original": "backend/assets/three/LICENSE",
+      "sha256": "bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601"
+    },
+    "station_ui/rendering/models/gse-site.glb": {
+      "original": "backend/assets/models/gse-site.glb",
+      "sha256": "aed1b4065d0e62daeaf4906e53f8c8a1c5eedad14e163e9038cb20ea7b9b7c7e"
+    },
+    "station_ui/rendering/models/vehicle.glb": {
+      "original": "backend/assets/models/vehicle.glb",
+      "sha256": "698b4acec1f54d49f94b360c04a57e98a722212ade9c8671698398919796158f"
+    }
+  }
+}
