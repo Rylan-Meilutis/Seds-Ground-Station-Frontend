@@ -39,6 +39,7 @@ mod report_studio;
 mod reseed_buffer;
 mod stream_studio;
 pub mod types;
+mod vehicle_replay;
 mod vehicle_tab;
 pub mod version_page;
 

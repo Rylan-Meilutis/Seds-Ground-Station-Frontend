@@ -63,7 +63,7 @@ fn _default_main_tab_label(tab: MainTab) -> String {
         MainTab::StreamManager => localized_copy(&lang, "Stream Manager", "Gestor de transmisión", "Gestion du direct"),
         MainTab::CrewVoice => localized_copy(&lang, "Voice Chat", "Chat de voz", "Discussion vocale"),
         MainTab::Media => localized_copy(&lang, "Cameras & Recordings", "Cámaras y grabaciones", "Caméras et enregistrements"),
-        MainTab::Vehicle => localized_copy(&lang, "Vehicle", "Vehiculo", "Vehicule"),
+        MainTab::Vehicle => localized_copy(&lang, "3D replay", "Repetición 3D", "Relecture 3D"),
         MainTab::Messages => localized_copy(&lang, "Messages", "Mensajes", "Messages"),
         MainTab::Notifications => {
             localized_copy(&lang, "Notifications", "Notificaciones", "Notifications")
@@ -204,7 +204,7 @@ fn _available_main_tabs(
     let mut tabs = Vec::new();
     for id in &layout.main_tabs {
         let tab = _main_tab_from_str(id);
-        if tab == MainTab::Vehicle || !_layout_main_tab_enabled(layout, tab) || tabs.contains(&tab)
+        if !_layout_main_tab_enabled(layout, tab) || tabs.contains(&tab)
         {
             continue;
         }
@@ -225,7 +225,7 @@ fn _available_main_tabs(
     if !tabs.contains(&MainTab::Mission) {
         tabs.insert(0, MainTab::Mission);
     }
-    for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::Checklists] {
+    for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::Vehicle, MainTab::Checklists] {
         if !tabs.contains(&tab) { tabs.push(tab); }
     }
     tabs.retain(|tab| *tab != MainTab::State);

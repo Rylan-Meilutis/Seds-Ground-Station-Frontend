@@ -3741,9 +3741,6 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::Vehicle => rsx! {
                                 VehicleTab {
                                     theme: theme.clone(),
-                                    flight_state,
-                                    rocket_gps,
-                                    rocket_altitude_m: rocket_gps_altitude_m,
                                 }
                             },
                             MainTab::Messages => rsx! {

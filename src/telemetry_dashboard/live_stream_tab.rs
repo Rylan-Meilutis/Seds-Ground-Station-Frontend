@@ -198,7 +198,7 @@ pub(crate) fn LiveStreamTab(
                                         }
                                     });
                                 }
-                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} option {value:"model","3D model"} option {value:"grid-model","Cameras + 3D model"} }
+                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} option {value:"model","Rocket graphic"} option {value:"grid-model","Cameras + graphic"} }
                         }
                         label { "Featured camera "
                             select { value:cfg.broadcast.featured_stream_id.clone(), onchange:{

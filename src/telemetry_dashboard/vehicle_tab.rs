@@ -1,7 +1,4 @@
-use super::{
-    TELEMETRY_RENDER_EPOCH, UrlConfig, http_get_json, js_eval, latest_telemetry_value,
-    layout::ThemeConfig, types::FlightState,
-};
+use super::{UrlConfig, http_get_json, js_eval, layout::ThemeConfig};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -101,32 +98,8 @@ fn default_scale() -> f32 {
     1.0
 }
 
-fn visual_now_ms() -> i64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now() as i64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64
-    }
-}
-pub(super) fn value(binding: &VehicleTelemetryBinding) -> Option<f32> {
-    let row = super::latest_telemetry_row(&binding.data_type, binding.sender_id.as_deref())?;
-    let age = visual_now_ms().saturating_sub(row.received_timestamp_ms);
-    if !(0..=5000).contains(&age) {
-        return None;
-    }
-    latest_telemetry_value(
-        &binding.data_type,
-        binding.sender_id.as_deref(),
-        binding.index,
-    )
-    .map(|value| value * binding.scale + binding.offset)
-    .filter(|value| value.is_finite())
+fn value(binding: &VehicleTelemetryBinding, frame: &super::vehicle_replay::Frame) -> Option<f32> {
+    frame.value(binding, false)
 }
 
 fn backend_url(path: &str) -> String {
@@ -167,6 +140,8 @@ fn sync_model_viewer(
     roll: Option<f32>,
     pitch: Option<f32>,
     yaw: Option<f32>,
+    frame: &super::vehicle_replay::Frame,
+    replay_seconds: f64,
 ) {
     if config.model_url.trim().is_empty() {
         return;
@@ -176,7 +151,7 @@ fn sync_model_viewer(
         .iter()
         .map(|m| {
             let v = if let Some(binding) = &m.binding {
-                value(binding)
+                value(binding, frame)
             } else {
                 m.phase_values
                     .iter()
@@ -189,7 +164,7 @@ fn sync_model_viewer(
             result
         })
         .collect();
-    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch.unwrap_or(0.0),yaw.unwrap_or(0.0),roll.unwrap_or(0.0)],"clip":model_animation(config,phase)}).to_string();
+    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch.unwrap_or(0.0),yaw.unwrap_or(0.0),roll.unwrap_or(0.0)],"clip":model_animation(config,phase),"replay_time_seconds":replay_seconds}).to_string();
     let payload = serde_json::to_string(&payload).unwrap();
     let ground = super::gse_panel::ground_visible(phase) && !config.ground_model_url.is_empty();
     let src = serde_json::to_string(&backend_url(if ground {
@@ -205,7 +180,7 @@ fn sync_model_viewer(
             _ => "",
         };
         serde_json::to_string(
-            &serde_json::json!({"motions":[],"attitude":[0,0,0],"clip":clip}).to_string(),
+            &serde_json::json!({"motions":[],"attitude":[0,0,0],"clip":clip,"replay_time_seconds":replay_seconds}).to_string(),
         )
         .unwrap()
     } else {
@@ -238,8 +213,16 @@ fn component_kind_label(kind: &str) -> &'static str {
     }
 }
 
-fn component_readout(component: &VehicleComponentConfig) -> (Option<f32>, String, f32, bool) {
-    let raw = component.binding.as_ref().and_then(value);
+fn component_readout(
+    component: &VehicleComponentConfig,
+    frame: &super::vehicle_replay::Frame,
+) -> (Option<f32>, String, f32, bool) {
+    let raw = component.binding.as_ref().and_then(|binding| {
+        frame.value(
+            binding,
+            matches!(component.kind.as_str(), "parachute" | "link"),
+        )
+    });
     let min = component.min.unwrap_or(0.0);
     let max = component.max.unwrap_or(100.0);
     let fraction = raw
@@ -258,162 +241,433 @@ fn component_readout(component: &VehicleComponentConfig) -> (Option<f32>, String
     (raw, display, fraction, active)
 }
 
+fn percent_component(value: &str) -> String {
+    const HEX: &[u8] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 15) as usize] as char);
+        }
+    }
+    out
+}
+fn replay_types(cfg: &VehicleVisualizationConfig) -> Vec<String> {
+    let mut types =
+        std::collections::BTreeSet::from(["FLIGHT_STATE".to_owned(), "GPS_DATA".to_owned()]);
+    let mut add = |binding: &Option<VehicleTelemetryBinding>| {
+        if let Some(binding) = binding {
+            types.insert(binding.data_type.clone());
+        }
+    };
+    for b in [&cfg.attitude.roll, &cfg.attitude.pitch, &cfg.attitude.yaw] {
+        add(b);
+    }
+    for motion in &cfg.motions {
+        add(&motion.binding);
+    }
+    for stage in &cfg.stages {
+        add(&stage.separation);
+        for component in &stage.components {
+            add(&component.binding);
+        }
+    }
+    for component in &cfg.ground_systems {
+        add(&component.binding);
+    }
+    types.into_iter().collect()
+}
+fn playback_clock_ms() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        let global = js_sys::global();
+        if let Ok(performance) = js_sys::Reflect::get(&global, &"performance".into())
+            && let Ok(now) = js_sys::Reflect::get(&performance, &"now".into())
+            && let Some(now) = now.dyn_ref::<js_sys::Function>()
+            && let Ok(value) = now.call0(&performance)
+            && let Some(value) = value.as_f64()
+        {
+            return value;
+        }
+        js_sys::Date::now()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_secs_f64()
+            * 1000.
+    }
+}
+// A native application may switch stations while a paginated request is in flight.
+// Never combine records, configuration or pages fetched from different servers.
+async fn saved_get<T: serde::de::DeserializeOwned>(origin: &str, path: &str) -> Result<T, String> {
+    if UrlConfig::base_http() != origin {
+        return Err("Station changed; select a saved recording again".into());
+    }
+    let result = http_get_json::<T>(path).await;
+    if UrlConfig::base_http() != origin {
+        return Err("Station changed; select a saved recording again".into());
+    }
+    result
+}
 #[component]
-pub(crate) fn VehicleTab(
-    theme: ThemeConfig,
-    flight_state: Signal<FlightState>,
-    rocket_gps: Signal<Option<(f64, f64)>>,
-    rocket_altitude_m: Signal<Option<f64>>,
-) -> Element {
-    let config = use_signal(|| None::<VehicleVisualizationConfig>);
-    let viewer_id = use_hook(|| VIEWER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-    let viewer_html = format!(
-        r#"<gs-vehicle-viewer id="gs26-vehicle-model-{viewer_id}" style="display:block;width:100%;height:100%;position:relative" aria-label="Rocket and prelaunch ground equipment"></gs-vehicle-viewer>"#
-    );
-    let mut model_tick = use_signal(|| 0u64);
-    use_future(move || async move {
-        loop {
-            #[cfg(target_arch = "wasm32")]
-            gloo_timers::future::TimeoutFuture::new(500).await;
-            #[cfg(not(target_arch = "wasm32"))]
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let next = *model_tick.read() + 1;
-            model_tick.set(next);
+pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
+    use super::vehicle_replay::{Buffer, Frame, Index, Page, Recording, Snapshot, advance};
+    let mut station = use_signal(UrlConfig::base_http);
+    let mut config = use_resource(move || {
+        let origin = station.read().clone();
+        async move {
+            saved_get::<VehicleVisualizationConfig>(&origin, "/api/vehicle_visualization").await
         }
     });
-    let load_status = use_signal(|| "Loading vehicle configuration…".to_string());
-
-    {
-        let mut config = config;
-        let mut load_status = load_status;
-        use_effect(move || {
-            spawn(async move {
-                match http_get_json::<VehicleVisualizationConfig>("/api/vehicle_visualization").await {
-                    Ok(next) => {
-                        load_status.set("Live model connected".to_string());
-                        config.set(Some(next));
-                    }
-                    Err(error) => load_status.set(format!(
-                        "Vehicle model configuration unavailable: {error}. Showing live fallback telemetry."
-                    )),
-                }
-            });
-        });
-    }
-
-    let _ = *TELEMETRY_RENDER_EPOCH.read();
-    let phase = flight_state.read().clone();
-    let cfg = config.read().clone().unwrap_or_default();
-    let title = if cfg.title.trim().is_empty() {
-        "Vehicle".to_string()
-    } else {
-        cfg.title.clone()
-    };
-    let position = *rocket_gps.read();
-    let altitude = *rocket_altitude_m.read();
-    let roll = cfg.attitude.roll.as_ref().and_then(value);
-    let pitch = cfg.attitude.pitch.as_ref().and_then(value);
-    let yaw = cfg.attitude.yaw.as_ref().and_then(value);
-    let chute_visible = matches!(
-        normalized_phase(&phase).as_str(),
-        value if value.contains("drogue") || value.contains("parachute") || value.contains("descent") || value.contains("recovery")
-    );
-
-    {
-        use_effect(move || {
-            let _ = *TELEMETRY_RENDER_EPOCH.read();
-            let _ = *model_tick.read();
-            let phase = flight_state.read();
-            if let Some(cfg) = config.read().as_ref() {
-                sync_model_viewer(
-                    viewer_id,
-                    cfg,
-                    &phase,
-                    cfg.attitude.roll.as_ref().and_then(value),
-                    cfg.attitude.pitch.as_ref().and_then(value),
-                    cfg.attitude.yaw.as_ref().and_then(value),
+    let mut recordings = use_resource(move || {
+        let origin = station.read().clone();
+        async move { saved_get::<Vec<Recording>>(&origin, "/api/recordings").await }
+    });
+    let mut selected = use_signal(String::new);
+    let mut position = use_signal(|| 0f64);
+    let mut seek_preview = use_signal(|| None::<f64>);
+    let mut playing = use_signal(|| false);
+    let mut speed = use_signal(|| 1f64);
+    let mut loaded = use_signal(|| (String::new(), -1i64));
+    let mut snapshot = use_resource(move || {
+        let id = selected.read().clone();
+        let origin = station.read().clone();
+        async move {
+            if id.is_empty() {
+                return Ok(None);
+            }
+            let value = saved_get::<Snapshot>(
+                &origin,
+                &format!("/api/recordings/{}/replay", percent_component(&id)),
+            )
+            .await?;
+            Ok::<_, String>(Some((origin, id, value)))
+        }
+    });
+    let chunk = use_memo(move || (*position.read() / 10000.).floor() as i64);
+    let mut buffer = use_resource(move || {
+        let saved = snapshot
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|r| r.clone());
+        let cfg = config
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .cloned();
+        let id = selected.read().clone();
+        let chunk = *chunk.read();
+        let origin = station.read().clone();
+        async move {
+            let (Some((saved_origin, recording, saved)), Some(cfg)) = (saved, cfg) else {
+                return Ok(None);
+            };
+            if recording != id || saved_origin != origin {
+                return Ok(None);
+            }
+            let (Some(first), Some(last)) = (saved.start_ms, saved.end_ms) else {
+                return Ok(None);
+            };
+            let types = replay_types(&cfg);
+            if types.len() > 32 {
+                return Err("Replay configuration uses too many data types".into());
+            }
+            let start = first
+                .saturating_add(chunk.saturating_mul(10000))
+                .saturating_sub(5000)
+                .max(first);
+            let end = start.saturating_add(25000).min(last);
+            let encoded = serde_json::to_string(&types).map_err(|e| e.to_string())?;
+            let mut after = 0;
+            let mut samples = Vec::new();
+            for _ in 0..32 {
+                let url = format!(
+                    "/api/recordings/{}/replay/window?upper_id={}&after_id={after}&start_ms={start}&end_ms={end}&types={}",
+                    percent_component(&id),
+                    saved.upper_id,
+                    percent_component(&encoded)
                 );
+                let page = saved_get::<Page>(&origin, &url).await?;
+                if page.upper_id != saved.upper_id || (page.has_more && page.next_id <= after) {
+                    return Err("Invalid saved replay cursor".into());
+                }
+                samples.extend(page.seeds);
+                samples.extend(page.rows);
+                if samples.len() > 16384 {
+                    return Err("Saved replay window is too large".into());
+                }
+                if !page.has_more {
+                    return Ok(Some(Buffer {
+                        origin,
+                        recording: id,
+                        upper_id: saved.upper_id,
+                        start_ms: start,
+                        end_ms: end,
+                        data: std::rc::Rc::new(Index::new(samples)),
+                    }));
+                }
+                after = page.next_id;
             }
+            Err::<Option<Buffer>, String>("Saved replay window is too large".into())
+        }
+    });
+    use_effect(move || {
+        let saved = snapshot
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|r| r.clone());
+        if let Some((origin, id, saved)) = saved {
+            let key = (id.clone(), saved.upper_id);
+            if origin == UrlConfig::base_http() && id == *selected.read() && key != *loaded.read() {
+                loaded.set(key);
+                playing.set(false);
+                position.set(0.);
+            }
+        }
+    });
+    use_future(move || async move {
+        let mut previous = playback_clock_ms();
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(50).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let now = playback_clock_ms();
+            let elapsed = now - previous;
+            previous = now;
+            let origin = UrlConfig::base_http();
+            if origin != *station.read() {
+                playing.set(false);
+                selected.set(String::new());
+                position.set(0.);
+                seek_preview.set(None);
+                station.set(origin);
+                continue;
+            }
+            if !*playing.read() {
+                continue;
+            }
+            let saved = snapshot
+                .read()
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .and_then(|r| r.clone());
+            if let Some((origin, id, saved)) = saved {
+                if origin != UrlConfig::base_http() || id != *selected.read() {
+                    continue;
+                }
+                if let (Some(first), Some(last)) = (saved.start_ms, saved.end_ms) {
+                    let duration = last.saturating_sub(first).max(0) as f64;
+                    let next = advance(*position.read(), elapsed, *speed.read(), duration);
+                    let ready = buffer
+                        .read()
+                        .as_ref()
+                        .and_then(|r| r.as_ref().ok())
+                        .and_then(|r| r.as_ref())
+                        .is_some_and(|b| {
+                            b.contains(
+                                &origin,
+                                &id,
+                                saved.upper_id,
+                                first.saturating_add(next as i64),
+                            )
+                        });
+                    if ready {
+                        position.set(next);
+                        if next >= duration {
+                            playing.set(false);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let viewer_id = use_hook(|| VIEWER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let viewer_html = format!(
+        r#"<gs-vehicle-viewer id="gs26-vehicle-model-{viewer_id}" style="display:block;width:100%;height:100%;position:relative" aria-label="Saved rocket telemetry replay"></gs-vehicle-viewer>"#
+    );
+    let cfg = config
+        .read()
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .cloned()
+        .unwrap_or_default();
+    let saved = snapshot
+        .read()
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|r| r.clone())
+        .filter(|(origin, id, _)| origin == &UrlConfig::base_http() && id == &*selected.read());
+    let first = saved.as_ref().and_then(|(_, _, s)| s.start_ms).unwrap_or(0);
+    let duration = saved
+        .as_ref()
+        .and_then(|(_, _, s)| s.end_ms)
+        .map(|last| last.saturating_sub(first).max(0) as f64)
+        .unwrap_or(0.);
+    let seek_position = seek_preview.read().unwrap_or(*position.read());
+    let absolute = first.saturating_add(*position.read() as i64);
+    let data = buffer
+        .read()
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|r| r.as_ref())
+        .filter(|b| {
+            saved
+                .as_ref()
+                .is_some_and(|(origin, id, s)| b.contains(origin, id, s.upper_id, absolute))
+        })
+        .map(|b| b.data.clone());
+    let frame = Frame {
+        data,
+        at_ms: absolute,
+    };
+    let phase = frame.phase().unwrap_or_else(|| "Unknown".into());
+    let roll = cfg.attitude.roll.as_ref().and_then(|b| value(b, &frame));
+    let pitch = cfg.attitude.pitch.as_ref().and_then(|b| value(b, &frame));
+    let yaw = cfg.attitude.yaw.as_ref().and_then(|b| value(b, &frame));
+    let gps = frame.gps();
+    let error = recordings
+        .read()
+        .as_ref()
+        .and_then(|r| r.as_ref().err())
+        .cloned()
+        .or_else(|| {
+            snapshot
+                .read()
+                .as_ref()
+                .and_then(|r| r.as_ref().err())
+                .cloned()
+        })
+        .or_else(|| {
+            buffer
+                .read()
+                .as_ref()
+                .and_then(|r| r.as_ref().err())
+                .cloned()
+        })
+        .or_else(|| {
+            config
+                .read()
+                .as_ref()
+                .and_then(|r| r.as_ref().err())
+                .cloned()
         });
-    }
-
+    let mut show_error = use_signal(|| false);
+    use_effect(move || {
+        let saved = snapshot
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|r| r.clone());
+        let cfg = config
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .cloned();
+        let at = *position.read();
+        let id = selected.read().clone();
+        let data = buffer
+            .read()
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|r| r.as_ref())
+            .filter(|b| {
+                saved.as_ref().is_some_and(|(origin, recording, s)| {
+                    origin == &UrlConfig::base_http()
+                        && recording == &id
+                        && b.contains(
+                            origin,
+                            &id,
+                            s.upper_id,
+                            s.start_ms.unwrap_or(0).saturating_add(at as i64),
+                        )
+                })
+            })
+            .map(|b| b.data.clone());
+        if let (Some(cfg), Some((_, _, saved))) = (cfg, saved) {
+            let frame = Frame {
+                data,
+                at_ms: saved.start_ms.unwrap_or(0).saturating_add(at as i64),
+            };
+            let phase = frame.phase().unwrap_or_else(|| "Unknown".into());
+            sync_model_viewer(
+                viewer_id,
+                &cfg,
+                &phase,
+                cfg.attitude.roll.as_ref().and_then(|b| value(b, &frame)),
+                cfg.attitude.pitch.as_ref().and_then(|b| value(b, &frame)),
+                cfg.attitude.yaw.as_ref().and_then(|b| value(b, &frame)),
+                &frame,
+                at / 1000.,
+            );
+        }
+    });
+    let button = format!(
+        "min-height:44px;padding:8px 14px;border-radius:10px;border:1px solid {};background:{};color:{};font:inherit;cursor:pointer;",
+        theme.border_soft, theme.panel_background_alt, theme.text_primary
+    );
+    let available = frame.data.is_some();
     rsx! {
-        style { {r#"
-            @keyframes gs26-chute-breathe { 0%,100% { transform:scale(.96) translateY(2px); } 50% { transform:scale(1.04) translateY(-2px); } }
-            @keyframes gs26-thrust { 0%,100% { transform:scaleY(.72); opacity:.68; } 50% { transform:scaleY(1.08); opacity:1; } }
-            .gs26-vehicle-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
-            .gs26-vehicle-grid:has(.gs26-vehicle-details > *) { grid-template-columns:minmax(300px,1.8fr) minmax(220px,1fr); }
-            .gs26-vehicle-stage { transition:transform .65s ease, opacity .4s ease; }
-            @media(max-width:700px) { .gs26-vehicle-grid:has(.gs26-vehicle-details > *) { grid-template-columns:1fr; } }
-            @media(prefers-reduced-motion:reduce) { .gs26-vehicle-stage, .gs26-vehicle-motion { animation:none!important; transition:none!important; } }
-        "#} }
-        div { class:"gs26-vehicle-shell", style: "height:100%; overflow-y:auto; padding:12px; box-sizing:border-box; color:{theme.text_primary}; background:{theme.tab_shell_background};",
-            div { class:"gs26-vehicle-header", style: "display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px;",
-                div {
-                    h2 { style: "margin:0; font-size:20px;", "{title}" }
-                    div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Live position, configuration, propulsion, control surfaces, recovery, and ground operations." }
+        div {class:"gs26-vehicle-shell",style:"height:100%;overflow-y:auto;padding:12px;box-sizing:border-box;color:{theme.text_primary};background:{theme.tab_shell_background};",
+            h2 {"3D replay"}
+            div {style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;",
+                label {r#for:"replay-recording","Recording"}
+                select {id:"replay-recording",style:"{button}width:min(100%,480px);max-width:100%;",value:"{selected}",onchange:move|event|{playing.set(false);seek_preview.set(None);position.set(0.);selected.set(event.value());},
+                    option {value:"","Select a saved recording"}
+                    if let Some(Ok(items))=recordings.read().as_ref(){for item in items{option {value:"{item.id}","{item.id}" if item.active{" (snapshot)"}}}}
                 }
-                div { role: "status", "aria-atomic": "true", style: "padding:7px 10px; border:1px solid {theme.border}; border-radius:999px; color:{theme.text_secondary}; font-size:12px;", "{load_status.read()}" }
+                button {style:"{button}",onclick:move |_|{playing.set(false);config.restart();recordings.restart();snapshot.restart();buffer.restart();},"Reload"}
+                if error.is_some(){button {style:"{button}",onclick:move |_|show_error.set(true),"Details"}}
             }
-            div { class: "gs26-vehicle-grid",
-                div { style: "min-height:460px; position:relative; overflow:hidden; border:1px solid {theme.tab_shell_border}; border-radius:18px; background:radial-gradient(circle at 50% 42%, {theme.panel_background_alt}, {theme.panel_background} 68%);",
-                    if !cfg.model_url.trim().is_empty() {
-                        div { style: "position:absolute; inset:0;", dangerous_inner_html: "{viewer_html}" }
-                    } else {
-                        div { style: "height:100%; min-height:460px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0; padding:36px; box-sizing:border-box;",
-                            if chute_visible {
-                                div { class: "gs26-vehicle-motion", style: "width:150px; height:58px; margin-bottom:18px; border-radius:90px 90px 12px 12px; border:3px solid {theme.info_accent}; background:linear-gradient(135deg,{theme.info_background},{theme.panel_background_alt}); animation:gs26-chute-breathe 1.4s ease-in-out infinite;" }
-                            }
-                            for (index, stage) in cfg.stages.iter().enumerate() {
-                                {
-                                    let separated = stage.separation.as_ref().and_then(value).is_some_and(|v| v >= 0.5);
-                                    let offset = if separated { (index as i32 + 1) * 18 } else { 0 };
-                                    rsx! {
-                                        div { class: "gs26-vehicle-stage", style: "width:108px; min-height:92px; display:flex; align-items:center; justify-content:center; border:2px solid {theme.info_accent}; border-radius:14px 14px 5px 5px; background:linear-gradient(90deg,{theme.panel_background_alt},{theme.info_background},{theme.panel_background_alt}); transform:translateY({offset}px); box-shadow:0 8px 30px rgba(0,0,0,.28);",
-                                            span { style: "font-size:12px; font-weight:800; text-align:center;", "{stage.label}" }
-                                        }
-                                    }
-                                }
-                            }
-                            if cfg.stages.is_empty() {
-                                div { style: "width:96px; height:250px; clip-path:polygon(50% 0,88% 18%,88% 82%,100% 100%,65% 91%,35% 91%,0 100%,12% 82%,12% 18%); background:linear-gradient(90deg,{theme.border_strong},{theme.text_secondary},{theme.border_strong});" }
-                            }
-                        }
-                    }
-                    div { style: "position:absolute; left:12px; top:12px; display:flex; flex-direction:column; gap:6px;",
-                        span { style: "padding:6px 9px; border-radius:999px; background:{theme.overlay_background}; border:1px solid {theme.border}; font-size:12px; font-weight:800;", "{phase}" }
-                        span { style: "padding:6px 9px; border-radius:999px; background:{theme.overlay_background}; border:1px solid {theme.border}; font-size:11px;", {format!("ROLL {}  PITCH {}  YAW {}", roll.map(|v| format!("{v:.1}°")).unwrap_or_else(|| "--".into()), pitch.map(|v| format!("{v:.1}°")).unwrap_or_else(|| "--".into()), yaw.map(|v| format!("{v:.1}°")).unwrap_or_else(|| "--".into()))} }
-                    }
-                    div { style: "position:absolute; left:12px; right:12px; bottom:12px; display:grid; grid-template-columns:repeat(3,1fr); gap:6px;",
-                        {position_card(&theme, "Latitude", position.map(|v| format!("{:.6}°", v.0)).unwrap_or_else(|| "--".into()))}
-                        {position_card(&theme, "Longitude", position.map(|v| format!("{:.6}°", v.1)).unwrap_or_else(|| "--".into()))}
-                        {position_card(&theme, "Altitude", altitude.map(|v| format!("{v:.1} m")).unwrap_or_else(|| "--".into()))}
-                    }
+            div {style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;",
+                button {style:"{button}",disabled:!available || duration<=0.,onclick:move |_|{if *position.read()>=duration{position.set(0.);}let next=!*playing.read();playing.set(next);},if *playing.read(){"Pause"}else{"Play"}}
+                button {style:"{button}",disabled:saved.is_none(),onclick:move |_|{playing.set(false);position.set(0.);},"Rewind"}
+                label {r#for:"replay-speed","Speed"}
+                select {id:"replay-speed",style:"{button}",value:"{speed}",onchange:move |event|{if let Ok(value)=event.value().parse::<f64>(){speed.set(value.clamp(0.25,4.));}},
+                    option {value:"0.25","0.25×"}option {value:"0.5","0.5×"}option {value:"1","1×"}option {value:"2","2×"}option {value:"4","4×"}
                 }
-                div { class:"gs26-vehicle-details", style: "display:flex; flex-direction:column; gap:10px;",
-                    for stage in cfg.stages.iter().filter(|stage| !stage.components.is_empty() || stage.separation.is_some()) {
-                        div { style: "padding:12px; border:1px solid {theme.tab_shell_border}; border-radius:16px; background:{theme.panel_background};",
-                            div { style: "display:flex; justify-content:space-between; gap:8px; margin-bottom:9px;",
-                                strong { "{stage.label}" }
-                                span { style: "color:{theme.text_muted}; font-size:11px;", if stage.separation.as_ref().and_then(value).is_some_and(|v| v >= 0.5) { "SEPARATED" } else { "ATTACHED" } }
-                            }
-                            div { style: "display:grid; gap:7px;",
-                                for component in stage.components.iter() {
-                                    {component_row(&theme, component)}
-                                }
-                            }
-                        }
-                    }
-                    if !cfg.ground_systems.is_empty() && super::gse_panel::ground_visible(&phase) {
-                        div { style: "padding:12px; border:1px solid {theme.tab_shell_border}; border-radius:16px; background:{theme.panel_background};",
-                            strong { "Ground operations" }
-                            div { style: "display:grid; gap:7px; margin-top:9px;",
-                                for component in cfg.ground_systems.iter() { {component_row(&theme, component)} }
-                            }
-                        }
-                    }
+                span {style:"font-variant-numeric:tabular-nums;color:{theme.text_muted};",{format!("{:.1} / {:.1} s",*position.read()/1000.,duration/1000.)}}
+            }
+            input {r#type:"range",aria_label:"Saved replay position",min:"0",max:"{duration}",step:"1",value:"{seek_position}",disabled:saved.is_none(),style:"width:100%;min-height:44px;",oninput:move |event|{playing.set(false);if let Ok(value)=event.value().parse::<f64>(){seek_preview.set(Some(value.clamp(0.,duration)));}},onchange:move |event|{if let Ok(value)=event.value().parse::<f64>(){position.set(value.clamp(0.,duration));}seek_preview.set(None);}}
+            div {style:"display:flex;gap:10px;flex-wrap:wrap;margin:8px 0;color:{theme.text_muted};",
+                span {"Saved data · {phase}"}
+                if roll.is_none() || pitch.is_none() || yaw.is_none(){span {"Attitude unavailable"}}
+                if error.is_some(){span {"Replay unavailable"}}else if !available && !selected.read().is_empty(){span {"Loading saved samples…"}}
+            }
+            div {style:"position:relative;min-height:360px;height:55vh;border:1px solid {theme.border_soft};border-radius:14px;background:{theme.panel_background};overflow:hidden;",
+                div {style:if available{"height:100%;visibility:visible"}else{"height:100%;visibility:hidden"},dangerous_inner_html:viewer_html}
+                div {style:"position:absolute;left:12px;top:12px;right:12px;pointer-events:none;font:12px ui-monospace,monospace;",{format!("Roll {} · Pitch {} · Yaw {}",roll.map(|v|format!("{v:.1}°")).unwrap_or_else(||"—".into()),pitch.map(|v|format!("{v:.1}°")).unwrap_or_else(||"—".into()),yaw.map(|v|format!("{v:.1}°")).unwrap_or_else(||"—".into()))}}
+                div {style:"position:absolute;left:12px;right:12px;bottom:12px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;",
+                    {position_card(&theme,"Latitude",gps.map(|v|format!("{:.6}°",v.0)).unwrap_or_else(||"—".into()))}
+                    {position_card(&theme,"Longitude",gps.map(|v|format!("{:.6}°",v.1)).unwrap_or_else(||"—".into()))}
+                    {position_card(&theme,"Altitude",gps.map(|v|format!("{:.1} m",v.2)).unwrap_or_else(||"—".into()))}
                 }
             }
+            div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:10px;margin-top:12px;",
+                for stage in &cfg.stages {if !stage.components.is_empty() || stage.separation.is_some(){
+                    div {style:"padding:12px;border:1px solid {theme.border_soft};border-radius:12px;",
+                        strong {"{stage.label}"}
+                        span {style:"margin-left:8px;color:{theme.text_muted};",{stage.separation.as_ref().and_then(|b|frame.value(b,true)).map(|v|if v>=0.5{"Separated"}else{"Attached"}).unwrap_or("No saved state")}}
+                        for component in &stage.components{{component_row(&theme,component,&frame)}}
+                    }
+                }}
+            }
+            if *show_error.read(){div {role:"dialog",aria_modal:"true",aria_label:"Replay details",style:"position:fixed;inset:0;background:rgba(0,0,0,.7);display:grid;place-items:center;z-index:10000;padding:16px;",
+                div {style:"max-width:560px;padding:20px;border-radius:14px;background:{theme.panel_background};color:{theme.text_primary};",
+                    h3 {"Saved replay"}p {style:"white-space:pre-wrap;overflow-wrap:anywhere;","{error.clone().unwrap_or_default()}"}
+                    button {style:"{button}",onclick:move |_|show_error.set(false),"Close"}
+                }
+            }}
         }
     }
 }
@@ -427,15 +681,19 @@ fn position_card(theme: &ThemeConfig, label: &str, value: String) -> Element {
     }
 }
 
-fn component_row(theme: &ThemeConfig, component: &VehicleComponentConfig) -> Element {
-    let (raw, display, fraction, active) = component_readout(component);
+fn component_row(
+    theme: &ThemeConfig,
+    component: &VehicleComponentConfig,
+    frame: &super::vehicle_replay::Frame,
+) -> Element {
+    let (raw, display, fraction, active) = component_readout(component, frame);
     let width = format!("{:.1}%", fraction * 100.0);
     let status = if raw.is_none() {
         "NO DATA"
     } else if matches!(component.kind.as_str(), "motor" | "parachute" | "link") {
         if active { "ACTIVE" } else { "STANDBY" }
     } else {
-        "LIVE"
+        "RECORDED"
     };
     let status_color = if raw.is_none() {
         theme.text_muted.as_str()
@@ -466,6 +724,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recording_paths_and_filter_json_are_encoded_as_one_url_component() {
+        assert_eq!(percent_component("a/b ?#é"), "a%2Fb%20%3F%23%C3%A9");
+        assert_eq!(
+            percent_component(r#"["ROLL","GPS_DATA"]"#),
+            "%5B%22ROLL%22%2C%22GPS_DATA%22%5D"
+        );
+    }
+
+    #[test]
     fn parses_documented_vehicle_configuration() {
         let config: VehicleVisualizationConfig = serde_json::from_str(include_str!(
             "../../docs/api-examples/vehicle-visualization.json"
@@ -486,7 +753,8 @@ mod tests {
             max: Some(20.0),
             ..Default::default()
         };
-        let (_, _, fraction, active) = component_readout(&component);
+        let (_, _, fraction, active) =
+            component_readout(&component, &super::super::vehicle_replay::Frame::default());
         assert_eq!(fraction, 0.0);
         assert!(!active);
     }
