@@ -119,7 +119,7 @@ pub fn AntennaAiming(on_exit: EventHandler<()>) -> Element {
     });
     use_future(move || async move {
         loop {
-            let result = document::eval(include_str!("antenna_sensor_snapshot.js"))
+            let result = document::eval(include_str!("../../assets/browser/antenna_sensor_snapshot.js"))
                 .recv::<Sensors>()
                 .await;
             sensors.set(result.unwrap_or_default());
@@ -265,7 +265,7 @@ pub fn AntennaAiming(on_exit: EventHandler<()>) -> Element {
             div {class:"aim-options",
                 label {"GPS origin" select {value:origin.read().clone(),onchange:move |e|origin.set(e.value()),option {value:"device","This device"} option {value:"gs","GroundStation"} option {value:"rrls","RRLS"}}}
                 label {"Aim at" select {value:target.read().clone(),onchange:move |e|target.set(e.value()),option {value:"rocket","Rocket"} option {value:"rrls","RRLS"} option {value:"gs","GroundStation"}}}
-                button {onclick:move |_|{document::eval(include_str!("antenna_sensor.js"));},"Enable compass & device GPS"}
+                button {onclick:move |_|{document::eval(include_str!("../../assets/browser/antenna_sensor.js"));},"Enable compass & device GPS"}
             }
             div {class:"aim-summary",div {span {"Distance"} strong {"{distance}"}} div {span {"Bearing"} strong {"{bearing}"}} div {span {"Elevation"} strong {"{elevation}"}} }
             div {class:"aim-axes",

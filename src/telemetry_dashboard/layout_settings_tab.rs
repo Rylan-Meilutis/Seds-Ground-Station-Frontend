@@ -984,6 +984,9 @@ pub fn SettingsPage(
             }
 
             if active_settings_tab.read().as_str() == "general" {
+            if crate::auth::can_view_calibration() {
+                super::paired_calibration::PairedCalibrationSettings { theme:theme.clone() }
+            }
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap:12px;",
                 div { style: "{card_style}",
                     h3 { style:"margin:0;font-size:15px;", "Antenna alignment" }
