@@ -6,7 +6,7 @@ mod accel_display_filter;
 mod actions_tab;
 mod admin_console;
 mod calibration_tab;
-mod paired_calibration;
+mod paired_settings;
 mod connection_status_tab;
 mod custom_dashboard;
 pub mod data_chart;

@@ -217,6 +217,10 @@ pub fn can_send_command(cmd: &str) -> bool {
     status.allowed_commands.is_empty() || status.allowed_commands.iter().any(|item| item == cmd)
 }
 
+pub fn can_view_data() -> bool {
+    is_admin() || current_status().permissions.view_data
+}
+
 pub fn can_view_actions() -> bool {
     is_admin() || current_status().permissions.send_commands
 }

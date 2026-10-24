@@ -1,5 +1,4 @@
-//! Paired calibration conflicts stay in Settings; choosing a revision never
-//! starts a sequence or changes a board's abort/qualification latch.
+//! Review paired calibration and saved mission settings with per-document access.
 use super::{http_get_json, http_post_json, layout::ThemeConfig};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -54,8 +53,48 @@ fn label(key: &str) -> &str {
         "calibration/kg50" => "50 kg load cell",
         "calibration/iadc" => "Tank pressure",
         "calibration/full_mass_kg" => "Full-mass reference",
-        _ => "Calibration",
+        "mission/fill_targets" => "Fill targets",
+        "mission/gse_limits" => "Sequence limits",
+        "mission/saved_flight_setup" => "Saved flight setup",
+        "mission/auto_zero_preference" => "Automatic zeroing",
+        _ => "Saved settings",
     }
+}
+fn is_calibration(key: &str) -> bool {
+    matches!(
+        key,
+        "calibration/ch1" | "calibration/kg50" | "calibration/iadc" | "calibration/full_mass_kg"
+    )
+}
+fn is_mission(key: &str) -> bool {
+    matches!(
+        key,
+        "mission/fill_targets"
+            | "mission/gse_limits"
+            | "mission/saved_flight_setup"
+            | "mission/auto_zero_preference"
+    )
+}
+fn can_resolve(key: &str, calibration_edit: bool, send_commands: bool) -> bool {
+    (is_calibration(key) && calibration_edit) || (is_mission(key) && send_commands)
+}
+fn can_view(key: &str, calibration_view: bool) -> bool {
+    is_mission(key) || (is_calibration(key) && calibration_view)
+}
+fn short(value: &str) -> String {
+    let mut chars = value.chars();
+    let mut text: String = chars.by_ref().take(80).collect();
+    if chars.next().is_some() {
+        text.push('…');
+    }
+    text
+}
+fn number(value: &Value, decimals: usize, suffix: &str) -> String {
+    value
+        .as_f64()
+        .filter(|n| n.is_finite())
+        .map(|n| format!("{n:.decimals$}{suffix}"))
+        .unwrap_or_else(|| "Default".into())
 }
 fn station_label(id: &str) -> String {
     match id.to_ascii_lowercase().as_str() {
@@ -88,6 +127,99 @@ fn origin(document: &Document, index: usize) -> String {
     }
 }
 fn summary(key: &str, value: &Value) -> Vec<(String, String)> {
+    match key {
+        "mission/fill_targets" => {
+            return vec![
+                (
+                    "Input".into(),
+                    if value["fill_source"] == "kg1000_absolute" {
+                        "1000 kg · absolute"
+                    } else {
+                        "50 kg"
+                    }
+                    .into(),
+                ),
+                (
+                    "Nitrous".into(),
+                    format!(
+                        "{} · {}",
+                        number(&value["nitrous"]["target_mass_kg"], 2, " kg"),
+                        number(&value["nitrous"]["target_pressure_psi"], 0, " psi")
+                    ),
+                ),
+                (
+                    "Nitrogen".into(),
+                    format!(
+                        "{} · {}",
+                        number(&value["nitrogen"]["target_mass_kg"], 2, " kg"),
+                        number(&value["nitrogen"]["target_pressure_psi"], 0, " psi")
+                    ),
+                ),
+            ];
+        }
+        "mission/gse_limits" => {
+            return vec![
+                (
+                    "Nitrogen target".into(),
+                    number(&value["nitrogen_target_psi"], 1, " psi"),
+                ),
+                (
+                    "Pressure step".into(),
+                    number(&value["pressure_step_psi"], 1, " psi"),
+                ),
+                (
+                    "Pressure ceiling".into(),
+                    number(&value["pressure_ceiling_psi"], 1, " psi"),
+                ),
+                (
+                    "Empty-tank offset".into(),
+                    number(&value["maximum_zero_offset_psi"], 1, " psi"),
+                ),
+            ];
+        }
+        "mission/auto_zero_preference" => {
+            return vec![(
+                "Automatic zeroing".into(),
+                if value["enabled"] == true {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                }
+                .into(),
+            )];
+        }
+        "mission/saved_flight_setup" => {
+            let selected = value["selected_profile_id"].as_str().unwrap_or("");
+            let profiles = value["profiles"].as_array();
+            let profile = profiles.and_then(|profiles| {
+                profiles
+                    .iter()
+                    .find(|profile| profile["id"].as_str() == Some(selected))
+            });
+            return vec![
+                (
+                    "Profile".into(),
+                    short(
+                        profile
+                            .and_then(|profile| profile["label"].as_str())
+                            .unwrap_or(selected),
+                    ),
+                ),
+                (
+                    "Wind level".into(),
+                    profile
+                        .and_then(|profile| profile["wind_level"].as_u64())
+                        .map(|level| level.to_string())
+                        .unwrap_or_else(|| "Not set".into()),
+                ),
+                (
+                    "Saved profiles".into(),
+                    profiles.map_or(0, Vec::len).to_string(),
+                ),
+            ];
+        }
+        _ => {}
+    }
     if key == "calibration/full_mass_kg" {
         return vec![(
             "Mass".into(),
@@ -137,7 +269,7 @@ async fn sleep() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 }
 #[component]
-pub(super) fn PairedCalibrationSettings(theme: ThemeConfig) -> Element {
+pub(super) fn PairedSettings(theme: ThemeConfig) -> Element {
     let mut status = use_signal(Status::default);
     let mut documents = use_signal(BTreeMap::<String, Document>::new);
     let mut message = use_signal(String::new);
@@ -146,7 +278,7 @@ pub(super) fn PairedCalibrationSettings(theme: ThemeConfig) -> Element {
     let mut details = use_signal(|| None::<(String, Value)>);
     use_future(move || async move {
         loop {
-            if !crate::auth::can_view_calibration() {
+            if !crate::auth::can_view_data() {
                 break;
             }
             match http_get_json::<Status>("/api/mission-settings").await {
@@ -159,7 +291,7 @@ pub(super) fn PairedCalibrationSettings(theme: ThemeConfig) -> Element {
                         .await
                         {
                             Ok(items) => documents.set(items),
-                            Err(_) => poll_error.set("Could not load calibration conflicts".into()),
+                            Err(_) => poll_error.set("Could not load settings conflicts".into()),
                         }
                     } else {
                         documents.set(BTreeMap::new());
@@ -167,13 +299,15 @@ pub(super) fn PairedCalibrationSettings(theme: ThemeConfig) -> Element {
                     status.set(current);
                 }
                 Err(_) => {
-                    poll_error.set("Shared calibration is unavailable on this station".into());
+                    poll_error.set("Shared settings are unavailable on this station".into());
                 }
             }
             sleep().await;
         }
     });
-    let can_edit = crate::auth::can_edit_calibration();
+    let calibration_edit = crate::auth::can_edit_calibration();
+    let calibration_view = crate::auth::can_view_calibration();
+    let send_commands = crate::auth::can_view_actions();
     let state = status.read().clone();
     let entries = documents.read().clone();
     let detail = details.read().clone();
@@ -182,23 +316,23 @@ pub(super) fn PairedCalibrationSettings(theme: ThemeConfig) -> Element {
         theme.text_primary, theme.text_soft, theme.border, theme.panel_background
     );
     rsx! {
-        style {{include_str!("paired_calibration.css")}}
-        section {class:"gs26-paired-calibration",style,"aria-label":"Paired calibration",
-            header {h3 {"Paired calibration"}
+        style {{include_str!("paired_settings.css")}}
+        section {class:"gs26-paired-settings",style,"aria-label":"Paired settings",
+            header {h3 {"Paired settings"}
                 span {class:"paired-state",
                     if !state.enabled {"Not configured"} else if state.link_available {"Connected"} else {"Waiting for peer"}
                 }
             }
-            if !state.enabled {p {"Pair GroundStation and RRLS to share calibration."}}
+            if !state.enabled {p {"Pair GroundStation and RRLS to share saved settings."}}
             if state.pending>0 {p {"{state.pending} incoming changes pending"}}
-            if state.waiting_for_idle {p {"Return to Idle and clear qualification to apply pending calibration."}}
-            if state.error.is_some() {p {"Synchronization paused. Local calibration is retained."}}
+            if state.waiting_for_idle {p {"Return to Idle and clear qualification to apply pending settings."}}
+            if state.error.is_some() {p {"Synchronization paused. Local settings are retained."}}
             if !poll_error.read().is_empty() {p {role:"status","{poll_error}"}}
             if !message.read().is_empty() {p {role:"status","{message}"}}
-            for (key,document) in entries {
+            for (key,document) in entries.into_iter().filter(|(key, _)| can_view(key, calibration_view)) {
                 article {key:"{key}",class:"paired-conflict",
                     h4 {"{label(&key)}"}
-                    p {"Choose the calibration to keep."}
+                    p {"Choose the version to keep."}
                     div {class:"paired-versions",
                         for (index,head) in document.heads.iter().enumerate() {
                             {
@@ -211,19 +345,19 @@ pub(super) fn PairedCalibrationSettings(theme: ThemeConfig) -> Element {
                                     strong {"{source}"}
                                     dl {for (name,value) in rows {dt {"{name}"}dd {"{value}"}}}
                                     div {class:"paired-actions",
-                                        if can_edit {button {disabled:*busy.read()||request.is_none(),onclick:move |_| {
+                                        if can_resolve(&key, calibration_edit, send_commands) {button {disabled:*busy.read()||request.is_none(),onclick:move |_| {
                                             let Some(request)=request.as_ref() else {return};
                                             let request=Resolution {key:request.key.clone(),expected:request.expected.clone(),value:request.value.clone()};
                                             busy.set(true);message.set(String::new());
                                             spawn(async move {
                                                 match http_post_json::<_,Resolved>("/api/mission-settings/resolve",&request).await {
-                                                    Ok(reply) if reply.resolved=>message.set("Choice saved. Calibration applies when safe.".into()),
-                                                    _=>message.set("Calibration changed elsewhere. Review the latest versions.".into()),
+                                                    Ok(reply) if reply.resolved=>message.set("Choice saved. Settings apply when safe.".into()),
+                                                    _=>message.set("Settings changed elsewhere. Review the latest versions.".into()),
                                                 }
                                                 busy.set(false);
                                             });
                                         },"Use {source}"}}
-                                        button {class:"paired-info","aria-label":"Inspect calibration values",onclick:move |_|details.set(Some((detail_title.clone(),detail_value.clone()))),"Details"}
+                                        button {class:"paired-info","aria-label":"Inspect saved values",onclick:move |_|details.set(Some((detail_title.clone(),detail_value.clone()))),"Details"}
                                     }
                                 }}
                             }
@@ -233,7 +367,7 @@ pub(super) fn PairedCalibrationSettings(theme: ThemeConfig) -> Element {
             }
             if let Some((title,value))=detail {
                 div {class:"paired-modal-shade",role:"presentation",
-                    section {class:"paired-modal",role:"dialog","aria-modal":"true","aria-label":"Calibration values",
+                    section {class:"paired-modal",role:"dialog","aria-modal":"true","aria-label":"Saved values",
                         onkeydown:move |event| {if event.key()==Key::Escape {details.set(None);}},
                         header {h3 {"{title}"}button {autofocus:true,onclick:move |_|details.set(None),"Close"}}
                         pre {"{serde_json::to_string_pretty(&value).unwrap_or_default()}"}
@@ -259,6 +393,59 @@ mod tests {
                     value: json!(21.0),
                 },
             ],
+        }
+    }
+    #[test]
+    fn causal_heads_preserve_exact_numeric_values_through_json() {
+        for bits in 0x3d000000..0x3d001000u32 {
+            let number = serde_json::to_value(f32::from_bits(bits)).unwrap();
+            let document = Document {
+                heads: vec![Revision {
+                    clock: BTreeMap::from([("gs".into(), 2), ("rrls".into(), 1)]),
+                    value: number,
+                }],
+            };
+            let encoded = serde_json::to_string(&document).unwrap();
+            let decoded: Document = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, document, "bit pattern {bits}");
+        }
+    }
+    #[test]
+    fn mission_permissions_do_not_grant_calibration_access_or_reverse() {
+        assert!(can_resolve("mission/fill_targets", false, true));
+        assert!(!can_resolve("mission/fill_targets", true, false));
+        assert!(can_resolve("calibration/ch1", true, false));
+        assert!(!can_resolve("calibration/ch1", false, true));
+        assert!(!can_view("calibration/ch1", false));
+        assert!(can_view("mission/gse_limits", false));
+        assert!(!can_resolve("mission/unknown", true, true));
+        assert!(!can_view("unknown", true));
+    }
+    #[test]
+    fn mission_summaries_show_saved_settings_instead_of_calibration_fields() {
+        let fill = summary(
+            "mission/fill_targets",
+            &json!({"fill_source":"kg1000_absolute", "nitrous":{"target_mass_kg":21.,"target_pressure_psi":745.}, "nitrogen":{"target_mass_kg":10.,"target_pressure_psi":120.}}),
+        );
+        assert!(fill.contains(&("Nitrous".into(), "21.00 kg · 745 psi".into())));
+        let limits = summary(
+            "mission/gse_limits",
+            &json!({"nitrogen_target_psi":120.,"pressure_step_psi":20.,"pressure_ceiling_psi":null,"maximum_zero_offset_psi":20.}),
+        );
+        assert!(limits.contains(&("Pressure ceiling".into(), "Default".into())));
+        let setup = summary(
+            "mission/saved_flight_setup",
+            &json!({"selected_profile_id":"wind2","profiles":[{"id":"wind2","label":"Wind 2","wind_level":2}]}),
+        );
+        assert!(setup.contains(&("Profile".into(), "Wind 2".into())));
+        assert_eq!(
+            summary("mission/auto_zero_preference", &json!({"enabled":true})),
+            vec![("Automatic zeroing".into(), "Enabled".into())]
+        );
+        assert!(short(&"😀".repeat(100)).chars().count() <= 81);
+        for rows in [fill, limits, setup] {
+            assert!(rows.len() <= 4);
+            assert!(!rows.iter().any(|(name, _)| name == "Fit"));
         }
     }
     #[test]
