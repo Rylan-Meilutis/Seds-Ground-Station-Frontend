@@ -198,6 +198,8 @@ pub(crate) fn list_log_artifacts() -> Vec<LogArtifact> {
 }
 
 pub(crate) fn append(message: &str) {
+    let redacted = crate::log_redaction::redact_urls(message);
+    let message = redacted.as_ref();
     let line = formatted_log_line(message);
 
     #[cfg(target_arch = "wasm32")]

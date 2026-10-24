@@ -3,6 +3,7 @@ mod auth;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_station;
 mod debug_log;
+mod log_redaction;
 mod native_storage;
 mod telemetry_dashboard;
 

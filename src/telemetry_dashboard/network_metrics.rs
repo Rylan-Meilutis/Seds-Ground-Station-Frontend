@@ -71,7 +71,7 @@ impl Default for FrontendNetworkMetrics {
 pub(super) fn reset_frontend_network_metrics_state() {
     if let Ok(mut metrics) = FRONTEND_NETWORK_METRICS_STATE.lock() {
         *metrics = FrontendNetworkMetrics {
-            base_http: UrlConfig::base_http(),
+            base_http: crate::log_redaction::redact_urls_owned(&UrlConfig::base_http()),
             ..FrontendNetworkMetrics::default()
         };
     }
@@ -88,25 +88,7 @@ pub(super) fn frontend_network_metrics_snapshot() -> FrontendNetworkMetrics {
 
 /// Redacts authentication tokens from a WebSocket URL before it is shown in the UI.
 pub(super) fn redact_ws_url_for_display(ws_url: &str) -> String {
-    if let Some((prefix, query)) = ws_url.split_once('?') {
-        let redacted_query = query
-            .split('&')
-            .map(|part| {
-                if let Some((key, _)) = part.split_once('=') {
-                    if key == "token" {
-                        return format!("{key}=<redacted>");
-                    }
-                } else if part == "token" {
-                    return "token=<redacted>".to_string();
-                }
-                part.to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("&");
-        format!("{prefix}?{redacted_query}")
-    } else {
-        ws_url.to_string()
-    }
+    crate::log_redaction::redact_urls_owned(ws_url)
 }
 
 /// Records a WebSocket connection or disconnection transition for the dashboard diagnostics.
@@ -127,7 +109,7 @@ pub(super) fn note_ws_connection_state(
         let was_connected = next.ws_connected;
         next.ws_connected = connected;
         next.ws_url = redact_ws_url_for_display(&ws_url);
-        next.base_http = UrlConfig::base_http();
+        next.base_http = crate::log_redaction::redact_urls_owned(&UrlConfig::base_http());
         next.ws_epoch = epoch;
         if connected {
             next.last_connect_wall_ms = Some(current_wallclock_ms());
@@ -135,7 +117,7 @@ pub(super) fn note_ws_connection_state(
             next.ws_disconnects_total = next.ws_disconnects_total.saturating_add(1);
         }
         if let Some(reason) = reason {
-            next.last_disconnect_reason = Some(reason);
+            next.last_disconnect_reason = Some(crate::log_redaction::redact_urls_owned(&reason));
         }
     }
 }
@@ -298,7 +280,7 @@ pub(super) fn note_http_rtt_ms(rtt_ms: f64) {
         return;
     }
     if let Ok(mut next) = FRONTEND_NETWORK_METRICS_STATE.lock() {
-        next.base_http = UrlConfig::base_http();
+        next.base_http = crate::log_redaction::redact_urls_owned(&UrlConfig::base_http());
         next.http_rtt_ms = Some(rtt_ms);
         next.http_rtt_ema_ms = Some(match next.http_rtt_ema_ms {
             Some(prev) => prev * 0.82 + rtt_ms * 0.18,
