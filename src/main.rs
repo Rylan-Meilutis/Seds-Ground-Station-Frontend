@@ -207,7 +207,7 @@ fn load_desktop_window_icon() -> Option<dioxus_desktop::tao::window::Icon> {
 fn startup_custom_head() -> String {
     String::from(
         r##"
-<meta name="theme-color" content="#020617">
+<meta charset="utf-8"><meta name="theme-color" content="#020617">
 <style>
 html {
     background: #020617;
@@ -235,7 +235,7 @@ fn startup_custom_head() -> String {
     // document has loaded. Put the self-contained map runtime in the initial document
     // head so Debian/Ubuntu (including Raspberry Pi) initializes MapLibre reliably.
     let mut head = String::from(
-        r##"<meta name="theme-color" content="#020617"><style>html,body,#main{margin:0;min-height:100%;background:#020617;color:#e5e7eb;color-scheme:dark}</style>"##,
+        r##"<meta charset="utf-8"><meta name="theme-color" content="#020617"><style>html,body,#main{margin:0;min-height:100%;background:#020617;color:#e5e7eb;color-scheme:dark}</style>"##,
     );
     let prefer_raster = prefer_native_raster_map(
         cfg!(any(target_arch = "aarch64", target_arch = "arm")),
@@ -296,7 +296,7 @@ fn startup_custom_head() -> String {
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 fn startup_custom_head_base() -> &'static str {
     r##"
-<meta name="theme-color" content="#020617">
+<meta charset="utf-8"><meta name="theme-color" content="#020617">
 <style>
 html {
     background: #020617;
@@ -466,6 +466,18 @@ fn _handle_gs26_protocol_async(request: HttpRequest<Vec<u8>>, responder: Request
 
 #[cfg(test)]
 mod native_map_tests {
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_document_declares_utf8_before_inline_assets() {
+        let head = super::startup_custom_head();
+        assert!(head.trim_start().starts_with("<meta charset=\"utf-8\">"));
+        let charset = head.find("<meta charset=\"utf-8\">").unwrap();
+        assert!(charset < 1024, "HTML encoding must be declared early");
+        if let Some(script) = head.find("<script") {
+            assert!(charset < script, "inline assets must be decoded as UTF-8");
+        }
+    }
+
     #[test]
     fn arm_linux_uses_raster_with_explicit_webgl_override() {
         assert!(super::prefer_native_raster_map(true, None));
