@@ -10,7 +10,7 @@ let browser;
 try {
   if(process.env.GS_PROGRAM_TEST_MEDIA) cpSync(process.env.GS_PROGRAM_TEST_MEDIA,dir,{recursive:true});
   else execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=size=640x360:rate=10','-t','120','-an','-c:v','libx264','-preset','ultrafast','-profile:v','baseline','-pix_fmt','yuv420p','-g','10','-keyint_min','10','-sc_threshold','0','-f','hls','-hls_time','1','-hls_list_size','0','-hls_segment_type','fmp4','-hls_segment_filename',join(dir,'seg%d.m4s'),join(dir,'index.m3u8')]);
-  browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY,args:['--autoplay-policy=no-user-gesture-required']});
+  browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY,args:['--disable-audio-output','--autoplay-policy=no-user-gesture-required']});
   const page=await browser.newPage({viewport:{width:360,height:800}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   const start=Date.now()-20000;
@@ -50,6 +50,8 @@ try {
   await page.goto('http://localhost/program?ticket=synthetic');
   await page.waitForFunction(()=>[...document.querySelectorAll('video')].some(v=>v.style.opacity==='1'&&v.readyState>=2),{},{timeout:20000});
   assert.equal(await page.locator('video').count(),1,'hero only decodes one camera');
+  const unmute=page.getByRole('button',{name:'Unmute stream',exact:true});
+  if(await unmute.isVisible())await unmute.click();
   await page.waitForFunction(()=>audioFrames>3);
   assert.equal(await page.getByRole('button',{name:'Enable crew audio',exact:true}).count(),0);
   await page.getByRole('button',{name:'Mute stream',exact:true}).click();

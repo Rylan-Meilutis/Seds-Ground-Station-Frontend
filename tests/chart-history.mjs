@@ -69,6 +69,10 @@ try {
   holdRecent=true; broadcast({ty:'CalibrationChanged'});
   for(let i=0;i<100&&!heldResponse;i++)await page.waitForTimeout(50);
   assert(heldResponse,'test must interrupt an in-flight history fetch');
+  const tools=page.locator('.gs26-utility-menu > summary');
+  if(!await tools.isVisible())await page.getByRole('button',{name:'Menu',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'Clear all graphs',exact:true}).isVisible(),false,'clear graphs is inside Tools only');
+  await tools.click();
   await page.getByRole('button',{name:'Clear all graphs',exact:true}).click();
   const floor=await page.evaluate(()=>Object.entries(localStorage).filter(([k])=>k.includes('graph_history_floor_v1:')).map(([,v])=>JSON.parse(v))[0]);
   assert(floor[0]>old,'clear persists backend timestamp boundary');
