@@ -24,10 +24,10 @@ try {
  m.cameraAction('follow');checks.followRestoresTarget=m.follow&&m.target.distanceTo(m.root.position)<1e-6;
  const distance=m.distance;m.cameraAction('zoom-out');checks.zoom=m.distance>distance;
  m.cameraAction('rise');checks.verticalMotion=!m.follow&&m.target.y>m.root.position.y;
- m.cameraAction('overview');checks.overview=m.distance>9000&&!m.follow;
- m.cameraAction('reset');checks.reset=m.follow&&m.distance===m.modelDistance;
+ m.cameraAction('overview');await new Promise(r=>setTimeout(r,100));checks.overview=m.distance>9000&&!m.follow;checks.positionMarker=m.dataset.positionMarkerVisible==='true'&&m.positionMarkerLabel.textContent==='Recorded rocket'&&m.root.scale.toArray().every(v=>v===1);
+ m.cameraAction('reset');await new Promise(r=>setTimeout(r,100));checks.reset=m.follow&&m.distance===m.modelDistance&&m.dataset.positionMarkerVisible==='false';
  m.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true,cancelable:true}));checks.keyboard=Math.abs(m.theta-.45)<1e-6;
- m.setAttribute('data-state',JSON.stringify({replay_time_seconds:2,attitude:[15,20,5],gps:null,motions:[]}));await new Promise(r=>setTimeout(r,150));checks.referenceAttitudeWithoutGps=m.root.visible&&!m.ground.visible&&!m.trajectory.visible&&m.root.position.length()===0&&m.dataset.positionAvailable==='false'&&m.status.textContent.includes('Reference attitude mode');
+ m.setAttribute('data-state',JSON.stringify({replay_time_seconds:2,attitude:[15,20,5],gps:null,motions:[]}));await new Promise(r=>setTimeout(r,150));checks.markerHiddenWithoutSavedGps=m.dataset.positionMarkerVisible==='false';checks.referenceAttitudeWithoutGps=m.root.visible&&!m.ground.visible&&!m.trajectory.visible&&m.root.position.length()===0&&m.dataset.positionAvailable==='false'&&m.status.textContent.includes('Reference attitude mode');
  m.setAttribute('data-state',JSON.stringify({replay_time_seconds:2,attitude:[15,20,5],gps:[45.004,-72.998,10000],motions:[]}));await new Promise(r=>setTimeout(r,150));checks.restoredPosition=m.root.visible;
  m.renderer.render(m.scene,m.camera);const canvas=m.renderer.domElement,gl=m.renderer.getContext?.();let pixels;
  if(gl){pixels=new Uint8Array(canvas.width*canvas.height*4);gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);}else pixels=m.renderer.context.getImageData(0,0,canvas.width,canvas.height).data;

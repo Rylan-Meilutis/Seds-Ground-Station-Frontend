@@ -7,7 +7,11 @@ class VehicleViewer extends HTMLElement {
  static observedAttributes=['src','data-state','data-track'];
  connectedCallback(){
   if(this.renderer)return;
-  this.tabIndex=0;this.setAttribute('role','group');this.setAttribute('aria-description','Drag to orbit; shift-drag or two fingers to pan; pinch or scroll to zoom. Arrow keys orbit, W A S D pan, Q E rise or descend, F follows, R resets.');this.style.display='block';this.style.touchAction='none';this.status=document.createElement('div');this.status.style.cssText='position:absolute;top:42px;left:12px;right:12px;pointer-events:none;color:#b9cad7;font:12px system-ui;z-index:2';this.append(this.status);
+  this.tabIndex=0;this.setAttribute('role','group');this.setAttribute('aria-description','Drag to orbit; shift-drag or two fingers to pan; pinch or scroll to zoom. Arrow keys orbit, W A S D pan, Q E rise or descend, F follows, R resets.');this.style.display='block';this.style.touchAction='none';this.status=document.createElement('div');this.status.className='gs-vehicle-reference-note';this.status.setAttribute('role','note');this.status.style.cssText='position:absolute;top:64px;left:12px;max-width:calc(100% - 24px);width:max-content;box-sizing:border-box;padding:6px 8px;border-radius:7px;background:#142534e8;pointer-events:none;color:#cfdfec;font:12px/1.4 system-ui;z-index:2';this.append(this.status);
+  this.positionMarker=document.createElement('div');this.positionMarker.className='gs-recorded-position-marker';this.positionMarker.setAttribute('role','note');this.positionMarker.setAttribute('aria-label','Recorded rocket position marker; physical model scale unchanged');this.positionMarker.style.cssText='display:none;position:absolute;width:0;height:0;z-index:3;pointer-events:none';
+  const dot=document.createElement('span');dot.style.cssText='position:absolute;left:-5px;top:-5px;width:10px;height:10px;box-sizing:border-box;border:2px solid #d7f6ff;border-radius:50%;box-shadow:0 0 0 2px #142534cc';this.positionMarker.append(dot);
+  this.positionMarkerLabel=document.createElement('span');this.positionMarkerLabel.textContent='Recorded rocket';this.positionMarkerLabel.style.cssText='position:absolute;top:-12px;width:max-content;max-width:150px;padding:4px 6px;border-radius:6px;background:#142534ed;color:#d7f6ff;font:600 12px/1.4 system-ui;white-space:nowrap';this.positionMarker.append(this.positionMarkerLabel);this.append(this.positionMarker);this.markerPoint=new T.Vector3();this.overview=false;
+
   this.software=false;this.dirty=true;
   try{this.renderer=new T.WebGLRenderer({alpha:true,antialias:false,logarithmicDepthBuffer:true});}catch{
    try{this.renderer=new SoftwareRenderer();this.software=true;}catch{this.status.textContent='3D unavailable: neither WebGL2 nor Canvas2D is available';return;}
@@ -16,7 +20,7 @@ class VehicleViewer extends HTMLElement {
   this.renderer.domElement.addEventListener('webglcontextrestored',()=>{this.dirty=true;});this.append(this.renderer.domElement);this.scene=new T.Scene();this.skyColor=new T.Color(0x779bb6);this.referenceColor=new T.Color(0x111d2b);this.scene.background=this.referenceColor;this.root=new T.Group();this.scene.add(this.root);
   this.scene.add(new T.HemisphereLight(0xffffff,0x34404b,2.8));const light=new T.DirectionalLight(0xffffff,3);light.position.set(6,10,8);this.scene.add(light);
   this.camera=new T.PerspectiveCamera(48,1,.05,20000000);this.theta=.6;this.phi=1.2;this.distance=14;this.center=new T.Vector3();this.target=new T.Vector3();this.follow=true;this.pointers=new Map();
-  this.resize=new ResizeObserver(()=>{const w=this.clientWidth,h=this.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h);this.dirty=true;this.camera.aspect=w/h;this.camera.updateProjectionMatrix();});this.resize.observe(this);
+  this.resize=new ResizeObserver(()=>{const w=this.clientWidth,h=this.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h);this.status.style.top=w<=440?'100px':'64px';this.dirty=true;this.camera.aspect=w/h;this.camera.updateProjectionMatrix();});this.resize.observe(this);
   this.oncontextmenu=e=>e.preventDefault();
   this.onpointerdown=e=>{if(e.target!==this.renderer.domElement)return;this.focus({preventScroll:true});this.setPointerCapture(e.pointerId);this.pointers.set(e.pointerId,[e.clientX,e.clientY]);this.dragPan=e.button===2||e.shiftKey;};
   this.onpointerup=this.onpointercancel=e=>{this.pointers.delete(e.pointerId);};
@@ -44,8 +48,8 @@ class VehicleViewer extends HTMLElement {
   this.target.addScaledVector(right,-dx*scale).addScaledVector(up,dy*scale);this.follow=false;this.dirty=true;
  }
  cameraAction(action){
-  if(action==='follow'||action==='reset'){this.follow=true;this.target.copy(this.root.position);if(action==='reset'){this.theta=.6;this.phi=1.28;this.distance=this.modelDistance||14;}}
-  if(action==='overview'&&this.positionAvailable&&this.trackPositions?.length){const box=new T.Box3();for(let i=0;i<this.trackPositions.length;i+=3)box.expandByPoint(new T.Vector3(...this.trackPositions.slice(i,i+3)));box.getCenter(this.target);this.distance=Math.max(box.getSize(new T.Vector3()).length()*1.6,this.modelDistance||14);this.phi=1.28;this.follow=false;}
+  if(action==='follow'||action==='reset'){this.overview=false;this.follow=true;this.target.copy(this.root.position);if(action==='reset'){this.theta=.6;this.phi=1.28;this.distance=this.modelDistance||14;}}
+  if(action==='overview'&&this.positionAvailable&&this.trackPositions?.length){this.overview=true;const box=new T.Box3();for(let i=0;i<this.trackPositions.length;i+=3)box.expandByPoint(new T.Vector3(...this.trackPositions.slice(i,i+3)));box.getCenter(this.target);this.distance=Math.max(box.getSize(new T.Vector3()).length()*1.6,this.modelDistance||14);this.phi=1.28;this.follow=false;}
   if(action==='zoom-in')this.distance=Math.max(.3,this.distance/1.4);
   if(action==='zoom-out')this.distance=Math.min(10000000,this.distance*1.4);
   if(action==='left')this.theta-=.15;if(action==='right')this.theta+=.15;
@@ -54,7 +58,16 @@ class VehicleViewer extends HTMLElement {
   if(action==='rise'||action==='descend'){this.target.y+=(action==='rise'?1:-1)*this.distance*.12;this.follow=false;}
   this.dataset.cameraMode=this.follow?'follow':'free';this.dirty=true;
  }
- clearFlightScene(){for(const object of [this.ground,this.trajectory])if(object){this.scene.remove(object);object.geometry.dispose();object.material.dispose();}this.ground=this.trajectory=null;this.origin=null;this.trackPositions=[];this.trackTimes=[];}
+ updatePositionMarker(){
+  let visible=false;
+  if(this.overview&&!this.follow&&this.positionAvailable&&Number.isFinite(this.state?.replay_time_seconds)){
+   const point=this.markerPoint.copy(this.root.position).project(this.camera),x=(point.x+1)*this.clientWidth/2,y=(1-point.y)*this.clientHeight/2;
+   visible=Number.isFinite(x)&&Number.isFinite(y)&&point.z>=-1&&point.z<=1&&x>=6&&x<=this.clientWidth-6&&y>=6&&y<=this.clientHeight-30;
+   if(visible){this.positionMarker.style.left=x+'px';this.positionMarker.style.top=y+'px';this.positionMarkerLabel.style.top=Math.max(-12,(this.clientWidth<=440?150:110)-y)+'px';this.positionMarkerLabel.style.left=x>this.clientWidth/2?'auto':'12px';this.positionMarkerLabel.style.right=x>this.clientWidth/2?'12px':'auto';}
+  }
+  this.positionMarker.style.display=visible?'block':'none';this.dataset.positionMarkerVisible=String(visible);
+ }
+ clearFlightScene(){this.overview=false;if(this.positionMarker)this.positionMarker.style.display='none';this.dataset.positionMarkerVisible='false';for(const object of [this.ground,this.trajectory])if(object){this.scene.remove(object);object.geometry.dispose();object.material.dispose();}this.ground=this.trajectory=null;this.origin=null;this.trackPositions=[];this.trackTimes=[];}
  updateFlightScene(state){
   if(this.trackChanged){this.clearFlightScene();this.trackChanged=false;this.follow=true;this.theta=.6;this.phi=1.28;this.distance=this.modelDistance||14;const first=this.track?.points?.find(p=>validGps([p.latitude,p.longitude,p.altitude_m]));if(first){this.origin=[first.latitude,first.longitude,first.altitude_m];const path=recordedPath(this.track.points,this.origin);this.trackPositions=path.positions;this.trackTimes=path.times;const geometry=new T.BufferGeometry();geometry.setAttribute('position',new T.Float32BufferAttribute(this.trackPositions,3));this.trajectory=new T.LineSegments(geometry,new T.LineBasicMaterial({color:0x9de5ff,transparent:true,opacity:.85}));this.scene.add(this.trajectory);this.createGround();}}
   const time=Number.isFinite(state.replay_timestamp_ms)?state.replay_timestamp_ms:(this.track?.points?.[0]?.timestamp_ms||0)+(state.replay_time_seconds||0)*1000;
@@ -110,8 +123,8 @@ class VehicleViewer extends HTMLElement {
   this.updateFlightScene(state);
   const a=state.attitude||[null,null,null];this.root.rotation.set(...a.map(v=>T.MathUtils.degToRad(Number.isFinite(v)?v:0)));this.dataset.attitudeAvailable=String(a.every(Number.isFinite));if(!a.every(Number.isFinite))this.status.textContent=[this.status.textContent,'Attitude unavailable · reference orientation'].filter(Boolean).join(' · ');
   const note=!this.origin?'Reference attitude mode · no saved GPS track':!validGps(state.gps)?'Reference attitude mode · no fresh saved GPS':'Reference Earth surface · terrain unavailable'+(this.track?.sampled||this.track?.truncated?' · sampled path':'');this.status.textContent=[this.status.textContent,note].filter(Boolean).join(' · ');
-  const distance=this.viewDistance(),far=Math.max(20000000,distance*2);if(this.camera.far!==far){this.camera.far=far;this.camera.updateProjectionMatrix();}this.camera.position.set(this.target.x+distance*Math.sin(this.phi)*Math.sin(this.theta),this.target.y+distance*Math.cos(this.phi),this.target.z+distance*Math.sin(this.phi)*Math.cos(this.theta));this.camera.lookAt(this.target);this.renderer.render(this.scene,this.camera);this.dirty=false;
+  const distance=this.viewDistance(),far=Math.max(20000000,distance*2);if(this.camera.far!==far){this.camera.far=far;this.camera.updateProjectionMatrix();}this.camera.position.set(this.target.x+distance*Math.sin(this.phi)*Math.sin(this.theta),this.target.y+distance*Math.cos(this.phi),this.target.z+distance*Math.sin(this.phi)*Math.cos(this.theta));this.camera.lookAt(this.target);this.renderer.render(this.scene,this.camera);this.updatePositionMarker();this.dirty=false;
  }
- disconnectedCallback(){this.generation++;this.resize?.disconnect();this.renderer?.setAnimationLoop(null);this.disposeModel();this.clearFlightScene();this.pointers?.clear();this.renderer?.dispose();this.renderer?.domElement.remove();this.status?.remove();this.renderer=null;}
+ disconnectedCallback(){this.generation++;this.resize?.disconnect();this.renderer?.setAnimationLoop(null);this.disposeModel();this.clearFlightScene();this.pointers?.clear();this.renderer?.dispose();this.renderer?.domElement.remove();this.status?.remove();this.positionMarker?.remove();this.renderer=null;}
 }
 if(!customElements.get('gs-vehicle-viewer'))customElements.define('gs-vehicle-viewer',VehicleViewer);
