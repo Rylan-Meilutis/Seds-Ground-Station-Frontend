@@ -5,7 +5,7 @@ import http from 'node:http';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const root=path.resolve('target/dx/groundstation_frontend/debug/web/public');
+const root=path.resolve(process.env.GS_UI_BUNDLE || 'target/dx/groundstation_frontend/debug/web/public');
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
 const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['stream_master'],permissions:{view_data:true,send_commands:true}};
 let recentRows=[]; let recentHits=0; let holdRecent=false; let heldResponse; const sockets=new Set(); let cameraOnline=true;
