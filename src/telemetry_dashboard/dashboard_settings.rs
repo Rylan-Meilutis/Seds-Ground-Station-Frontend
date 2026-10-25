@@ -323,7 +323,8 @@ pub fn NativeSettingsPage() -> Element {
             .clamp(1, 5_000)
     });
     let streamer_mode = use_signal(|| persist::get_or(&streamer_mode_key(), "off") == "on");
-    let ground_station_view = use_signal(|| persist::get_or(&ground_station_view_key(), "off") == "on");
+    let ground_station_view =
+        use_signal(|| persist::get_or(&ground_station_view_key(), "off") == "on");
 
     {
         let streamer_mode = streamer_mode;
@@ -1047,6 +1048,23 @@ fn launch_clock_tplus_anchor_ms(
     fallback_anchor_ms
 }
 
+/// An unanchored duration is a server-held elapsed sample. Explicit models
+/// must not advance it using the client's wall clock between updates.
+fn launch_clock_tplus_elapsed_ms(
+    clock: &LaunchClockMsg,
+    now_ms: Option<i64>,
+    fallback_anchor_ms: Option<i64>,
+) -> Option<i64> {
+    if clock.anchor_timestamp_ms.is_none()
+        && let Some(elapsed) = clock.duration_ms
+    {
+        return Some(elapsed.max(0));
+    }
+    let now_ms = now_ms?;
+    let anchor = launch_clock_tplus_anchor_ms(clock, now_ms, fallback_anchor_ms).unwrap_or(now_ms);
+    Some(now_ms.saturating_sub(anchor))
+}
+
 fn monotonic_tminus_display_ms(clock: &LaunchClockMsg, now_ms: Option<i64>) -> Option<i64> {
     let remaining = match now_ms {
         Some(now_ms) => launch_clock_tminus_remaining_ms(clock, now_ms)?,
@@ -1248,11 +1266,13 @@ fn LaunchClockBadge(
     network_time: Signal<Option<NetworkTimeSync>>,
 ) -> Element {
     let fallback_tplus_anchor_ms = use_signal(|| None::<i64>);
-    let mut queued = use_signal(||false);
-    use_future(move ||async move {
+    let mut queued = use_signal(|| false);
+    use_future(move || async move {
         loop {
-            let pending = http_get_json::<serde_json::Value>("/api/gse/status").await
-                .ok().is_some_and(|status|status["launch_queued"].as_bool()==Some(true));
+            let pending = http_get_json::<serde_json::Value>("/api/gse/status")
+                .await
+                .ok()
+                .is_some_and(|status| status["launch_queued"].as_bool() == Some(true));
             queued.set(pending);
             gse_panel::delay().await;
         }
@@ -1287,9 +1307,11 @@ fn LaunchClockBadge(
                     }
                     LaunchClockKind::TPlus => {
                         reset_tminus_display_latch();
+                        let held =
+                            clock.anchor_timestamp_ms.is_none() && clock.duration_ms.is_some();
                         let backend_anchor = now_ms
                             .and_then(|now_ms| launch_clock_tplus_anchor_ms(&clock, now_ms, None));
-                        if backend_anchor.is_some() {
+                        if held || backend_anchor.is_some() {
                             if fallback_anchor.is_some() {
                                 fallback_tplus_anchor_ms.set(None);
                             }
@@ -1330,12 +1352,14 @@ fn LaunchClockBadge(
             LaunchClockKind::TMinus => format_launch_clock_delta(
                 monotonic_tminus_display_ms(clock, Some(now_ms)).unwrap_or(0),
             ),
-            LaunchClockKind::TPlus => {
-                let anchor_ms =
-                    launch_clock_tplus_anchor_ms(clock, now_ms, *fallback_tplus_anchor_ms.read())
-                        .unwrap_or(now_ms);
-                format_launch_clock_delta(now_ms.saturating_sub(anchor_ms))
-            }
+            LaunchClockKind::TPlus => format_launch_clock_delta(
+                launch_clock_tplus_elapsed_ms(
+                    clock,
+                    Some(now_ms),
+                    *fallback_tplus_anchor_ms.read(),
+                )
+                .unwrap_or(0),
+            ),
         },
         (Some(clock), None) => match clock.kind {
             LaunchClockKind::Idle | LaunchClockKind::TMinus if tminus_zero_latched => {
@@ -1346,7 +1370,9 @@ fn LaunchClockBadge(
                 .and_then(|_| monotonic_tminus_display_ms(clock, None))
                 .map(format_launch_clock_delta)
                 .unwrap_or_else(|| "--:--.-".to_string()),
-            LaunchClockKind::TPlus => "--:--.-".to_string(),
+            LaunchClockKind::TPlus => launch_clock_tplus_elapsed_ms(clock, None, None)
+                .map(format_launch_clock_delta)
+                .unwrap_or_else(|| "--:--.-".to_string()),
             LaunchClockKind::Idle => format_launch_clock_delta(
                 clock
                     .duration_ms
@@ -1377,5 +1403,61 @@ fn LaunchClockBadge(
             }
             span { ")" }
         }
+    }
+}
+
+#[cfg(test)]
+mod sampled_procedure_clock_tests {
+    use super::*;
+    #[test]
+    fn held_model_samples_ignore_wall_progress_and_missing_wall_sync() {
+        let minus = LaunchClockMsg {
+            kind: LaunchClockKind::TMinus,
+            anchor_timestamp_ms: None,
+            duration_ms: Some(9167),
+        };
+        assert_eq!(
+            launch_clock_tminus_remaining_ms(&minus, 1_792_000_000_000),
+            Some(9167)
+        );
+        assert_eq!(
+            launch_clock_tminus_remaining_ms(&minus, 1_792_100_000_000),
+            Some(9167)
+        );
+        let plus = LaunchClockMsg {
+            kind: LaunchClockKind::TPlus,
+            anchor_timestamp_ms: None,
+            duration_ms: Some(2500),
+        };
+        assert_eq!(
+            launch_clock_tplus_elapsed_ms(&plus, Some(1_792_000_000_000), Some(10)),
+            Some(2500)
+        );
+        assert_eq!(
+            launch_clock_tplus_elapsed_ms(&plus, Some(1_792_100_000_000), None),
+            Some(2500)
+        );
+        assert_eq!(launch_clock_tplus_elapsed_ms(&plus, None, None), Some(2500));
+    }
+    #[test]
+    fn ordinary_anchored_clock_and_fallback_are_unchanged() {
+        let plus = LaunchClockMsg {
+            kind: LaunchClockKind::TPlus,
+            anchor_timestamp_ms: Some(100_000),
+            duration_ms: None,
+        };
+        assert_eq!(
+            launch_clock_tplus_elapsed_ms(&plus, Some(105_000), None),
+            Some(5000)
+        );
+        assert_eq!(launch_clock_tplus_elapsed_ms(&plus, None, None), None);
+        let missing = LaunchClockMsg {
+            anchor_timestamp_ms: None,
+            ..plus
+        };
+        assert_eq!(
+            launch_clock_tplus_elapsed_ms(&missing, Some(105_000), Some(101_000)),
+            Some(4000)
+        );
     }
 }
