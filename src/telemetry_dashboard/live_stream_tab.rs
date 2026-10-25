@@ -1,5 +1,5 @@
+use super::{http_get_json, http_post_json, layout::ThemeConfig, UrlConfig};
 use crate::telemetry_dashboard::vehicle_tab::VehicleTelemetryBinding;
-use super::{UrlConfig, http_get_json, http_post_json, layout::ThemeConfig};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -41,12 +41,64 @@ pub(crate) struct BroadcastState {
     pub revision: u64,
     #[serde(default)]
     pub replay: Option<ReplayPlan>,
+    #[serde(default)]
+    pub commentary_audio_enabled: bool,
+    #[serde(default)]
+    pub interview: InterviewScene,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rundown: Option<super::stream_rundown::Rundown>,
+    #[serde(default)]
+    pub recorded_replay: Option<RecordedReplayPlan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct ReplayCamera {pub id:String,pub x:f32,pub y:f32,pub zoom:f32}
+pub(crate) struct RecordedReplayPlan {
+    pub recording_id: String,
+    pub upper_id: i64,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub position_ms: u64,
+    pub anchor_server_ms: u64,
+    pub speed: f64,
+    pub paused: bool,
+    pub loop_playback: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct ReplayPlan {pub id:String,pub duration_seconds:u32,pub speed:f32,pub cameras:Vec<ReplayCamera>,pub started_at_ms:u64,pub source_end_ms:u64}
+#[serde(default)]
+pub(crate) struct InterviewScene {
+    pub main_stream_id: String,
+    pub pip_stream_id: String,
+    pub main_audio: bool,
+    pub pip_audio: bool,
+}
+impl Default for InterviewScene {
+    fn default() -> Self {
+        Self {
+            main_stream_id: String::new(),
+            pip_stream_id: String::new(),
+            main_audio: true,
+            pip_audio: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ReplayCamera {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
+    pub zoom: f32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ReplayPlan {
+    pub id: String,
+    pub duration_seconds: u32,
+    pub speed: f32,
+    pub cameras: Vec<ReplayCamera>,
+    pub started_at_ms: u64,
+    pub source_end_ms: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct LiveStreamSpec {
@@ -183,7 +235,7 @@ pub(crate) fn LiveStreamTab(
             div {class:"gs26-program-workspace","data-manager":(manager_mode && cfg.can_manage_stream && *edit_mode.read() && !program_only).to_string(),
             if manager_mode && cfg.can_manage_stream && *edit_mode.read() && !program_only {
                 div {class:"gs26-program-editor",
-                    super::stream_studio::StreamStudio { broadcast:cfg.broadcast.clone(), program_url:cfg.program_url.clone() }
+                    super::stream_studio::StreamStudio { broadcast:cfg.broadcast.clone(), program_url:cfg.program_url.clone(), streams:cfg.streams.clone() }
                     super::stream_studio::ReplayControls {broadcast:cfg.broadcast.clone(),streams:cfg.streams.clone()}
                     div {style:"display:flex;gap:10px;flex-wrap:wrap;padding:10px 0;",
                         label { "Camera layout "
@@ -198,7 +250,7 @@ pub(crate) fn LiveStreamTab(
                                         }
                                     });
                                 }
-                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} option {value:"model","Rocket graphic"} option {value:"grid-model","Cameras + graphic"} }
+                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} option {value:"model","Rocket graphic"} option {value:"grid-model","Cameras + graphic"} option {value:"interview","Interview + picture-in-picture"} option {value:"map","Recovery map"} option {value:"recorded-replay","Recorded vehicle replay"} }
                         }
                         label { "Featured camera "
                             select { value:cfg.broadcast.featured_stream_id.clone(), onchange:{

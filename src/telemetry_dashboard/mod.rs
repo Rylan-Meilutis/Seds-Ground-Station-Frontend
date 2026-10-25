@@ -42,6 +42,8 @@ mod recovery_status;
 mod report_studio;
 mod reseed_buffer;
 mod stream_studio;
+mod recorded_replay_controls;
+mod stream_rundown;
 pub mod types;
 mod vehicle_replay;
 mod vehicle_tab;

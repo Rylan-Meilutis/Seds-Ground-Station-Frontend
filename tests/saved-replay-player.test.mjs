@@ -1,0 +1,35 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const source=fs.readFileSync(new URL('../station_ui/rendering/three/saved-replay-player.js',import.meta.url),'utf8').replace("import './vehicle-renderer.js';",'');
+const {latestSaved,savedValue,replayPosition,savedFrame,SavedReplayPlayer}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+const plan={recording_id:'one.db',upper_id:10,start_ms:1000,end_ms:11000,position_ms:2000,anchor_server_ms:50000,speed:1,paused:false,loop_playback:false};
+assert.equal(replayPosition(plan,51000),3000);assert.equal(replayPosition(plan,49000),2000);
+assert.equal(replayPosition({...plan,paused:true},90000),2000);
+assert.equal(replayPosition({...plan,speed:4},52000),10000);
+assert.equal(replayPosition({...plan,speed:4,loop_playback:true},53000),4000);
+const row=(id,t,type,values,sender='FC',phase)=>({id,timestamp_ms:t,data_type:type,values,sender_id:sender,phase});
+const rows=[row(1,1000,'ROLL',[10]),row(2,2000,'ROLL',[90]),row(3,1000,'GPS_DATA',[43,-78,300],'RF'),row(4,2000,'GPS_DATA',[44,-77,9000],'RF'),row(5,1000,'FLIGHT_STATE',[1],'FC','Ascent')];
+assert.equal(latestSaved(rows,'ROLL','FC',1500).values[0],10);
+assert.equal(savedValue(rows,{data_type:'ROLL',sender_id:'FC',index:0,scale:2,offset:1},1500),21);
+assert.equal(savedValue(rows,{data_type:'ROLL',sender_id:'FC',index:0},9000),null);
+const cfg={attitude:{roll:{data_type:'ROLL',sender_id:'FC',index:0}},motions:[],phase_animations:{ascent:'motor'}};
+const frame=savedFrame(rows,cfg,1500,1000,'RF');assert.deepEqual(frame.gps,[43,-78,300]);assert.deepEqual(frame.attitude,[null,null,10]);assert.equal(frame.clip,'motor');assert.equal(frame.replay_timestamp_ms,1500);
+assert.equal(savedFrame(rows,cfg,999,1000,'RF').gps,null);assert.equal(savedFrame(rows,cfg,9000,1000,'RF').gps,null);
+const viewer={attributes:{},setAttribute(k,v){this.attributes[k]=v;}},requests=[];let now=0,fail=false;
+const fetcher=async url=>{requests.push(url);if(fail)throw Error('offline');const kind=new URL(url,'http://test').pathname.split('/').at(-1);
+ if(kind==='state')return{ok:true,json:async()=>({plan,config:cfg,server_now_ms:50000})};
+ if(kind==='trajectory')return{ok:true,json:async()=>({recording_id:'one.db',upper_id:10,source_sender_id:'RF',points:[],truncated:false})};
+ return{ok:true,json:async()=>({recording_id:'one.db',upper_id:10,next_id:10,has_more:false,rows,seeds:[]})};
+};
+const player=new SavedReplayPlayer(viewer,{fetcher,clock:()=>now,automatic:false,ticket:'narrow-fixture'});
+await player.poll();await new Promise(r=>setTimeout(r,0));player.frame();
+assert.equal(JSON.parse(viewer.attributes['data-state']).replay_timestamp_ms,3000);
+assert(requests.every(url=>url.includes('ticket=narrow-fixture')));assert(requests.every(url=>!url.includes('/ws')&&!url.includes('/api/recent')));
+const before=JSON.stringify(viewer.attributes);fail=true;await player.poll();now=9000;player.frame();assert.equal(JSON.stringify(viewer.attributes),before,'failed connection freezes savedscene instead ofinventingnewflight');
+player.stop();assert.equal(viewer.attributes['data-track'],'null');
+// A same-upper-id recording switch cannot accept a stale response from the old recording.
+let release;const stale=new SavedReplayPlayer(viewer,{automatic:false,clock:()=>0,fetcher:async()=>({ok:true,json:()=>new Promise(r=>release=r)})});
+stale.state={plan,config:cfg};const pending=stale.loadWindow(1000);await new Promise(r=>setImmediate(r));stale.generation++;stale.state={plan:{...plan,recording_id:'two.db'},config:cfg};release({recording_id:'one.db',upper_id:10,next_id:10,has_more:false,rows,seeds:[]});await pending;assert.equal(stale.buffer,undefined);stale.stop();
+// Invalid selection responses are rejected and do not cause a50ms retry storm.
+let failedRequests=0;const bounded=new SavedReplayPlayer(viewer,{automatic:false,clock:()=>now,fetcher:async()=>{failedRequests++;throw Error('offline');}});bounded.state={plan,config:cfg};await bounded.loadWindow(1000);await bounded.loadWindow(1000);assert.equal(failedRequests,1);now+=2000;await bounded.loadWindow(1000);assert.equal(failedRequests,2);bounded.stop();
+console.log('PASS recorded clock/seek/loop, nofuture/livevalues, sourceisolation, stalegenerationrejection andboundedretries');

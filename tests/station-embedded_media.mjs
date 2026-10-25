@@ -6,7 +6,7 @@ import path from 'node:path';
 const {chromium} = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const source = process.env.GS_MEDIA_SOURCE || path.resolve('station_ui');
 const requests = [];
-let permitted = true, receiver;
+let permitted = true, receiver, publishCount=0;
 const server = http.createServer(async (req, res) => {
   requests.push({url:req.url, auth:req.headers.authorization, method:req.method});
   const url = new URL(req.url, 'http://localhost');
@@ -21,6 +21,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/video/publish' && req.method === 'POST') {
     let body=''; for await (const data of req) body+=data;
     if (!permitted) {res.statusCode=403;res.end('Permission denied');return;}
+    publishCount++;if(publishCount===1)assert.doesNotMatch(body,/m=audio/,'camera microphone is off by default');else assert.match(body,/m=audio/,'explicit interview microphone is included');
     assert.match(body, /H264\/90000/i); assert.doesNotMatch(body, /VP8\/90000/i);
     const answer = await receiver.evaluate(async sdp => {
       window.pc?.close(); window.pc = new RTCPeerConnection({iceServers:[]});
@@ -82,7 +83,7 @@ try {
   await mediaFrame.evaluate(()=>window.postMessage({type:'gs26-session',token:'attacker',visible:true},location.origin));
   await page.evaluate(()=>document.querySelectorAll('iframe').forEach(f=>f.style.display='block'));
   await media.locator('#publish-stop').click();assert.equal(await media.locator('#publish-preview').isVisible(),false);
-  await media.locator('#publish-start').click();await media.getByText('Sharing camera with the Ground Station',{exact:true}).waitFor({timeout:20000});
+  await media.locator('#publish-audio').check();await media.locator('#publish-start').click();await media.getByText('Sharing camera with the Ground Station',{exact:true}).waitFor({timeout:20000});
   permitted=false;
   await media.locator('#publish-preview').waitFor({state:'hidden',timeout:10000});
   assert.equal(await media.locator('#publisher').isVisible(),true);

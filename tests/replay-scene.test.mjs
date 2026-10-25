@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const source=process.env.GS_REPLAY_SCENE_SOURCE||new URL('../station_ui/rendering/three/replay-scene.js',import.meta.url);
-const {gpsToLocal,recordedSegments,EARTH_RADIUS_M}=await import('data:text/javascript;base64,'+fs.readFileSync(source).toString('base64'));
+const {gpsToLocal,recordedSegments,recordedPath,visibleSegmentCount,EARTH_RADIUS_M}=await import('data:text/javascript;base64,'+fs.readFileSync(source).toString('base64'));
 const near=(a,b,tolerance=.001)=>assert(Math.abs(a-b)<tolerance,`${a} != ${b}`);
 assert.deepEqual(gpsToLocal([0,0,0],[0,0,0]),[0,0,0]);
 near(gpsToLocal([0,0,10000],[0,0,0])[1],10000);
@@ -26,3 +26,11 @@ for(const altitude of [1000,10000,100000])for(const phi of [1.2,1.28]){
  assert(horizonDepression>=lookDepression-halfFov&&horizonDepression<=lookDepression+halfFov,'default/reference camera contains horizon at apogee');
 }
 console.log('PASS saved GPS axes, altitude, dateline, invalid data and trajectory gap boundaries');
+
+const path=recordedPath([p(1000,0),p(2000,100),p(3000,1000),p(4000,900)],[0,0,0]);
+assert.deepEqual(path.times,[2000,3000,4000]);
+assert.equal(visibleSegmentCount(path.times,999),0);
+assert.equal(visibleSegmentCount(path.times,2500),1);
+assert.equal(visibleSegmentCount(path.times,4000),3);
+assert.equal(visibleSegmentCount(path.times,2000),1,'seekrewindhidefuturepath');
+console.log('PASS progressive recorded trail uses bounded prebuilt geometry andsavedtime');

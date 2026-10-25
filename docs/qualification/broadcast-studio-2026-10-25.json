@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-25",
+  "branch": "dev",
+  "physical_devices": false,
+  "backend": {"full_tests_passed": 489, "ignored_existing": 3, "media_subset_passed": 31, "media_ignored_existing": 1, "voice_subset_passed": 8},
+  "frontend": {"native_tests_passed": 136, "ignored_existing": 7, "wasm_release_build": "passed"},
+  "browser": {
+    "studio-audio-browser.mjs": "passed real AudioWorklet with oscillator capture; no automatic capture; programme-only commentary, receive-only VC monitor, exclusive explicit PTT, no radio routing or monitor recapture, release/resume and auth cleanup",
+    "station-program_browser.mjs": "passed generated HLS playback, camera replay, interview main/PiP with independent audio, phase scene override/categorical cycling/test-fire thrust, grids, delay change, camera/server loss",
+    "program-map-browser.mjs": "passed real MapLibre offline generated PNG tiles, saved/manual/stale/unavailable canonical positions, no geolocation and GPU cleanup",
+    "stream-rundown-browser.mjs": "passed actual Wasm stage/timing/scene/custom metric/order/phase assignment/save/reload/409 with isolated backend",
+    "station-embedded_media.mjs": "passed fake-camera WebRTC, microphone off by default and explicit interview audio SDP, shared login, PTT/open mic, hidden persistence, stop/revoke/logout",
+    "widths": [320, 390, 844, 1280]
+  },
+  "not_validated": ["physical microphones/cameras", "live MediaMTX interview audio codec conversion", "real radio throughput", "native iOS/Android permission dialogs", "physical output sequences"]
+}

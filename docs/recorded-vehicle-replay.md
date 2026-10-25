@@ -3,7 +3,7 @@
 Open **3D replay**, select a recording, then use Play, Rewind, the timeline and
 0.25×–4× speed. Selecting an active recording freezes its current row boundary;
 Reload explicitly selects a new snapshot. Missing recorded channels remain
-unavailable. The live dashboard and audience program use cameras and 2D artwork.
+unavailable. The live dashboard uses cameras and 2D artwork. A stream operator can explicitly select a recorded-flight scene for the audience program; this never represents live attitude or position.
 
 Replay reads the selected database through authenticated, read-only APIs:
 
@@ -67,3 +67,43 @@ GLB in an isolated local fixture to exercise high-altitude placement, reference
 ground, trajectory, camera controls, reference-attitude mode during missing GPS and narrow layouts.
 Set `GS_REPLAY_WEBGL=1` to require an explicit Chrome SwiftShader WebGL run;
 otherwise the fixture reports the renderer actually selected by the browser.
+
+
+## Audience recorded-flight scene
+
+Stream Studio offers a **Recorded flight replay** panel. Select a saved recording,
+then Show 3D replay. Playback, pause, seek, quarter-to-four-times speed and looping
+are persisted by the server. Rewind pauses at the beginning. Stop restores the
+ordinary program layout. A competing operator's newer revision is preserved;
+stale controls require a refresh rather than silently overwriting it.
+
+Selection freezes the recording's row boundary. **Refresh saved snapshot** includes
+newly saved rows while preserving the current absolute replay time. It never
+reads live telemetry. Saved FC phases trim playback to the latest recorded ascent
+through recovery plus five seconds when available. Recordings without flight
+phases use their full saved range. Overlapping wall-clock epochs are rejected
+rather than combining different flights.
+
+The audience scene displays **RECORDED FLIGHT · REPLAY**, its saved timestamp,
+and reference-ground qualification. The trajectory appears progressively up to
+that timestamp, never revealing future saved path segments. The geometry is
+allocated once per snapshot and clipped by draw range. Follow, path overview,
+drag orbit, keyboard pan and touch pinch remain available while paused.
+
+Audience requests use a narrow program media capability, not a login token.
+Only the currently selected recording and frozen row boundary are readable;
+window sizes remain bounded. Uploaded models receive a separate model-scoped
+capability. A disconnected scene freezes and reports its status rather than
+switching to current telemetry.
+
+Additional regressions:
+
+- `node tests/saved-replay-player.test.mjs` checks replay timing, source freshness,
+  recording changes and bounded retries.
+- `node tests/program-recorded-replay-browser.mjs` exercises the real audience
+  page and bundled renderer at desktop, 390px and 320px widths.
+
+Linux Chromium WebGL tests cover the actual scene, including a synthetic 9 km
+apogee, visible ground and horizon, drag orbit, touch pinch, progressive trajectory,
+pause and recording switches. These checks do not replace physical Raspberry Pi,
+iOS or Android GPU testing. Ground is an Earth-radius reference, not terrain.

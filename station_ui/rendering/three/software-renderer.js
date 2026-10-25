@@ -29,7 +29,7 @@ export class SoftwareRenderer {
    }
   }
   ctx.stroke();
-  scene.traverseVisible(node=>{if(!node.isLineSegments)return;const positions=node.geometry.attributes.position,a=new Vector3(),b=new Vector3();ctx.strokeStyle='#9de5ff';ctx.lineWidth=1.5;ctx.beginPath();for(let i=0;i+1<positions.count;i+=2){a.fromBufferAttribute(positions,i).applyMatrix4(node.matrixWorld).project(camera);b.fromBufferAttribute(positions,i+1).applyMatrix4(node.matrixWorld).project(camera);if([a,b].some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)||p.z< -1||p.z>1))continue;ctx.moveTo((a.x+1)*w/2,(1-a.y)*h/2);ctx.lineTo((b.x+1)*w/2,(1-b.y)*h/2);}ctx.stroke();});
+  scene.traverseVisible(node=>{if(!node.isLineSegments)return;const positions=node.geometry.attributes.position,a=new Vector3(),b=new Vector3();ctx.strokeStyle='#9de5ff';ctx.lineWidth=1.5;ctx.beginPath();for(let i=node.geometry.drawRange?.start||0;i+1<Math.min(positions.count,(node.geometry.drawRange?.start||0)+(node.geometry.drawRange?.count??Infinity));i+=2){a.fromBufferAttribute(positions,i).applyMatrix4(node.matrixWorld).project(camera);b.fromBufferAttribute(positions,i+1).applyMatrix4(node.matrixWorld).project(camera);if([a,b].some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)||p.z< -1||p.z>1))continue;ctx.moveTo((a.x+1)*w/2,(1-a.y)*h/2);ctx.lineTo((b.x+1)*w/2,(1-b.y)*h/2);}ctx.stroke();});
  }
  dispose(){this.setAnimationLoop(null);}
 }

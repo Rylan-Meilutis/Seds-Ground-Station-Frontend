@@ -14,9 +14,15 @@ struct Grant {
     stream_master: bool,
 }
 #[component]
-pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> Element {
+pub(super) fn StreamStudio(
+    broadcast: BroadcastState,
+    program_url: String,
+    streams: Vec<super::live_stream_tab::LiveStreamSpec>,
+) -> Element {
     let mut delay = use_signal(|| broadcast.delay_seconds);
     let mut comms_audio = use_signal(|| broadcast.comms_audio_enabled);
+    let mut commentary_audio = use_signal(|| broadcast.commentary_audio_enabled);
+    let mut audio_desk = use_signal(|| false);
     let mut label = use_signal(|| broadcast.label.clone());
     let mut message = use_signal(String::new);
     let mut busy = use_signal(|| false);
@@ -34,6 +40,7 @@ pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> El
         }
     });
     rsx! {section {class:"gs26-stream-studio",style:"width:100%;padding:16px;box-sizing:border-box;border:1px solid #344454;border-radius:12px;background:#101923;color:#e4ebf0;",
+      style {{include_str!("stream_studio.css")}}
       h3 {style:"margin:0 0 12px;","Broadcast studio"}
       p {style:"font-size:12px;color:#a9b7c4;","The broadcast below is the same buffered program for everyone. Camera changes, telemetry and crew comms use its delayed timeline."}
       div {style:"display:flex;align-items:center;gap:12px;flex-wrap:wrap;",
@@ -44,14 +51,20 @@ pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> El
       fieldset {class:"gs26-audience-audio",
        legend {"Audience audio"}
        label { input {r#type:"checkbox",checked:*comms_audio.read(),disabled:*busy.read(),"aria-describedby":"audience-audio-help",onchange:move|e|comms_audio.set(e.checked())} " Include crew voice (VC)" }
+       label {input {r#type:"checkbox",checked:commentary_audio(),disabled:busy(),onchange:move|e|commentary_audio.set(e.checked())}" Include programme commentary microphones"}
        p {id:"audience-audio-help","Voice follows the audience delay. Viewers can listen without joining the call."}
       }
       div {
        button {disabled:*busy.read()||!(3..=60).contains(&*delay.read()),onclick:move |_|{
-         let mut next=broadcast.clone();next.delay_seconds = *delay.read();next.label=label.read().clone();next.comms_audio_enabled = *comms_audio.read();busy.set(true);
+         let mut next=broadcast.clone();next.delay_seconds = *delay.read();next.label=label.read().clone();next.comms_audio_enabled = *comms_audio.read();next.commentary_audio_enabled=commentary_audio();busy.set(true);
          spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(_)=>message.set("Broadcast settings saved. Crew audio follows the audience delay.".into()),Err(e)=>message.set(e)}busy.set(false);});
        },"Apply broadcast settings"}
       }
+      div {class:"gs26-studio-actions",button {aria_expanded:audio_desk().to_string(),onclick:move|_|audio_desk.toggle(),if audio_desk(){"Close audio desk"}else{"Open audio desk"}}}
+      if audio_desk(){div {style:"height:360px;min-height:300px;",super::media_tool_tab::MediaToolTab {id:"gs26-studio-audio",path:"/studio-audio?embedded=1",title:"Broadcast audio desk",visible:true}}}
+      InterviewEditor {broadcast:broadcast.clone(),streams}
+      super::stream_rundown::RundownEditor {broadcast:broadcast.clone()}
+      super::recorded_replay_controls::RecordedReplayControls {broadcast:broadcast.clone()}
       if admin {details {summary {"Stream manager roles"}
        p {"Assigning stream master grants broadcast control only, not valve or rocket commands. Stream administrators retain management access."}
        for account in accounts.read().iter() {
@@ -70,23 +83,75 @@ pub(super) fn StreamStudio(broadcast: BroadcastState, program_url: String) -> El
 }
 
 fn freshest_broadcast(current: &BroadcastState, saved: &Option<BroadcastState>) -> BroadcastState {
-    saved.as_ref().filter(|s|s.revision>current.revision).unwrap_or(current).clone()
+    saved
+        .as_ref()
+        .filter(|s| s.revision > current.revision)
+        .unwrap_or(current)
+        .clone()
 }
-async fn save_replay(mut request: BroadcastState, plan: Option<super::live_stream_tab::ReplayPlan>, mut busy: Signal<bool>, mut message: Signal<String>, mut saved: Signal<Option<BroadcastState>>, mut draft: Signal<super::live_stream_tab::ReplayPlan>) {
-    request.replay=plan;busy.set(true);message.set("Preparing buffered cameras…".into());
-    match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
-        Ok(value)=>{if let Some(plan)=&value.replay{draft.set(plan.clone());}message.set(if value.replay.is_some(){"Replay on air"}else{"Live program restored"}.into());saved.set(Some(value));},
-        Err(e)=>message.set(e),
+async fn save_replay(
+    mut request: BroadcastState,
+    plan: Option<super::live_stream_tab::ReplayPlan>,
+    mut busy: Signal<bool>,
+    mut message: Signal<String>,
+    mut saved: Signal<Option<BroadcastState>>,
+    mut draft: Signal<super::live_stream_tab::ReplayPlan>,
+) {
+    request.replay = plan;
+    busy.set(true);
+    message.set("Preparing buffered cameras…".into());
+    match http_post_json::<BroadcastState, BroadcastState>("/api/live_streams/control", &request)
+        .await
+    {
+        Ok(value) => {
+            if let Some(plan) = &value.replay {
+                draft.set(plan.clone());
+            }
+            message.set(
+                if value.replay.is_some() {
+                    "Replay on air"
+                } else {
+                    "Live program restored"
+                }
+                .into(),
+            );
+            saved.set(Some(value));
+        }
+        Err(e) => message.set(e),
     }
     busy.set(false);
 }
 #[component]
-pub(super) fn ReplayControls(broadcast: BroadcastState, streams: Vec<super::live_stream_tab::LiveStreamSpec>) -> Element {
-    use super::live_stream_tab::{ReplayPlan,ReplayCamera};
-    let mut draft=use_signal(||broadcast.replay.clone().unwrap_or(ReplayPlan{id:String::new(),duration_seconds:10,speed:0.5,cameras:streams.first().map(|s|vec![ReplayCamera{id:s.id.clone(),x:50.,y:50.,zoom:1.}]).unwrap_or_default(),started_at_ms:0,source_end_ms:0}));
-    let busy=use_signal(||false);let message=use_signal(String::new);let saved=use_signal(||None::<BroadcastState>);
-    let current=freshest_broadcast(&broadcast,&saved.read());
-    let can_apply=current.replay.is_some();
+pub(super) fn ReplayControls(
+    broadcast: BroadcastState,
+    streams: Vec<super::live_stream_tab::LiveStreamSpec>,
+) -> Element {
+    use super::live_stream_tab::{ReplayCamera, ReplayPlan};
+    let mut draft = use_signal(|| {
+        broadcast.replay.clone().unwrap_or(ReplayPlan {
+            id: String::new(),
+            duration_seconds: 10,
+            speed: 0.5,
+            cameras: streams
+                .first()
+                .map(|s| {
+                    vec![ReplayCamera {
+                        id: s.id.clone(),
+                        x: 50.,
+                        y: 50.,
+                        zoom: 1.,
+                    }]
+                })
+                .unwrap_or_default(),
+            started_at_ms: 0,
+            source_end_ms: 0,
+        })
+    });
+    let busy = use_signal(|| false);
+    let message = use_signal(String::new);
+    let saved = use_signal(|| None::<BroadcastState>);
+    let current = freshest_broadcast(&broadcast, &saved.read());
+    let can_apply = current.replay.is_some();
     rsx! {
         section {class:"gs26-replay-controls",style:"padding:16px;border:1px solid #344454;border-radius:12px;display:grid;gap:12px;",
             h3 {style:"margin:0;","Instant replay"}
@@ -130,8 +195,63 @@ mod replay_tests {
     use super::*;
     #[test]
     fn stale_control_response_cannot_replace_newer_broadcast() {
-        let current=BroadcastState{revision:4,..Default::default()};
-        assert_eq!(freshest_broadcast(&current,&Some(BroadcastState{revision:3,..Default::default()})).revision,4);
-        assert_eq!(freshest_broadcast(&current,&Some(BroadcastState{revision:5,..Default::default()})).revision,5);
+        let current = BroadcastState {
+            revision: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            freshest_broadcast(
+                &current,
+                &Some(BroadcastState {
+                    revision: 3,
+                    ..Default::default()
+                })
+            )
+            .revision,
+            4
+        );
+        assert_eq!(
+            freshest_broadcast(
+                &current,
+                &Some(BroadcastState {
+                    revision: 5,
+                    ..Default::default()
+                })
+            )
+            .revision,
+            5
+        );
     }
+}
+
+#[component]
+fn InterviewEditor(
+    broadcast: BroadcastState,
+    streams: Vec<super::live_stream_tab::LiveStreamSpec>,
+) -> Element {
+    let mut base = use_signal(|| broadcast.clone());
+    let mut main = use_signal(|| broadcast.interview.main_stream_id.clone());
+    let mut pip = use_signal(|| broadcast.interview.pip_stream_id.clone());
+    let mut main_audio = use_signal(|| broadcast.interview.main_audio);
+    let mut pip_audio = use_signal(|| broadcast.interview.pip_audio);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    rsx! {details {class:"gs26-interview-editor",summary {"Interview scene"}
+        p {class:"gs26-studio-help","Choose a camera/participant feed for the main view and another feed for the corner. Share a browser camera from Cameras to add a participant."}
+        div {class:"gs26-studio-fields",
+            label {"Interview camera / participant" select {value:main(),onchange:move|e|main.set(e.value()),option {value:"","Choose feed"}for s in &streams {option {value:s.id.clone(),"{s.label}"}}}}
+            label {"Picture-in-picture camera" select {value:pip(),onchange:move|e|pip.set(e.value()),option {value:"","Choose feed"}for s in &streams {option {value:s.id.clone(),"{s.label}"}}}}
+        }
+        label {input {r#type:"checkbox",checked:main_audio(),onchange:move|e|main_audio.set(e.checked())}" Include interview-feed audio"}
+        label {input {r#type:"checkbox",checked:pip_audio(),onchange:move|e|pip_audio.set(e.checked())}" Include picture-in-picture audio"}
+        p {class:"gs26-studio-help","Feed audio, commentary and crew-voice inclusion are separate choices. Use headphones when monitoring comms."}
+        div {class:"gs26-studio-actions",
+            button {disabled:busy()||main().is_empty()||pip().is_empty()||main()==pip(),onclick:move|_|{
+                let mut request=base();request.layout="interview".into();request.interview=super::live_stream_tab::InterviewScene{main_stream_id:main(),pip_stream_id:pip(),main_audio:main_audio(),pip_audio:pip_audio()};busy.set(true);
+                spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await{Ok(saved)=>{base.set(saved);message.set("Interview scene saved and selected".into());},Err(e)=>message.set(e)}busy.set(false);});
+            },"Take interview on air"}
+            button {disabled:busy(),onclick:move|_|{busy.set(true);spawn(async move{match http_get_json::<super::live_stream_tab::LiveStreamConfig>("/api/live_streams").await{Ok(cfg)=>{main.set(cfg.broadcast.interview.main_stream_id.clone());pip.set(cfg.broadcast.interview.pip_stream_id.clone());main_audio.set(cfg.broadcast.interview.main_audio);pip_audio.set(cfg.broadcast.interview.pip_audio);base.set(cfg.broadcast);message.set("Interview settings reloaded".into());},Err(e)=>message.set(e)}busy.set(false);});},"Reload interview settings"}
+        }
+        if !message().is_empty(){p {role:"status","{message}"}}
+    }}
 }

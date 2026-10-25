@@ -165,7 +165,7 @@ fn sync_model_viewer(
             result
         })
         .collect();
-    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch,yaw,roll],"gps":frame.gps_for(gps_sender).map(|(lat,lon,alt)|[lat,lon,alt]),"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds}).to_string();
+    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch,yaw,roll],"gps":frame.gps_for(gps_sender).map(|(lat,lon,alt)|[lat,lon,alt]),"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds,"replay_timestamp_ms":frame.at_ms}).to_string();
     let payload = serde_json::to_string(&payload).unwrap();
     let src = serde_json::to_string(&backend_url(&config.model_url)).unwrap();
     let renderer =

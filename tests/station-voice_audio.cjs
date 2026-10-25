@@ -26,3 +26,15 @@ for(let i=0;i<100;i++)audio.port.onmessage({data:{type:'audio',id:1,buffer:packe
 assert(audio.peers.get(1).count<=3200,'jitter buffer must be bounded');
 audio.port.onmessage({data:{type:'remove',id:1}});assert.equal(audio.peers.size,0);
 console.log('PASS: resampling, PCM framing, PTT mute, gain, playback, speaker volume, and bounded jitter buffer');
+
+// A microphone destination switch must discard a partial packet and tag all
+// subsequent PCM so the host cannot send an old commentary frame into VC.
+const switched = new Processor();
+switched.port.onmessage({data:{type:'settings',transmit:true,gain:1,volume:0,capture_id:1}});
+for(let i=0;i<3;i++)switched.process([[new Float32Array(128).fill(.1)]],[[new Float32Array(128)]]);
+assert.equal(switched.messages.filter(m=>m.type==='pcm').length,0);
+switched.port.onmessage({data:{type:'settings',transmit:true,gain:1,volume:0,capture_id:2}});
+for(let i=0;i<8;i++)switched.process([[new Float32Array(128).fill(.5)]],[[new Float32Array(128)]]);
+const changed=switched.messages.filter(m=>m.type==='pcm');assert.equal(changed.length,1);assert.equal(changed[0].capture_id,2);
+assert.equal(new DataView(changed[0].buffer).getInt16(0,true),16384,'old destination partial samples cannot cross the boundary');
+console.log('PASS: destination epochs reset partial microphone packets and tag completed PCM');

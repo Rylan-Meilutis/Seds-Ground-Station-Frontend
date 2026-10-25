@@ -6,7 +6,7 @@ import {spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 const source=path.resolve('station_ui/rendering');
-const html=String.raw`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;background:#101722;color:#eee;font:14px system-ui}gs-vehicle-viewer{height:80vh;width:100%;position:relative;display:block}#result{padding:12px}</style><gs-vehicle-viewer src="/vehicle.glb" aria-label="Saved flight scene"></gs-vehicle-viewer><pre id="result">Loading saved scene fixture…</pre><script type="module">
+const html=String.raw`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;background:#101722;color:#eee;font:14px system-ui}gs-vehicle-viewer{height:80vh;width:100%;position:relative;display:block}#result{padding:12px;box-sizing:border-box;white-space:pre-wrap;overflow-wrap:anywhere}</style><gs-vehicle-viewer src="/vehicle.glb" aria-label="Saved flight scene"></gs-vehicle-viewer><pre id="result">Loading saved scene fixture…</pre><script type="module">
 const checks={},finish=()=>{document.querySelector('#result').textContent=JSON.stringify(checks,null,2);document.body.dataset.pass=String(Object.values(checks).every(Boolean));document.body.dataset.viewport=String(innerWidth);};
 try {
  await import('/vehicle-renderer.js');
@@ -16,8 +16,10 @@ try {
  await new Promise((resolve,reject)=>{const timer=setInterval(()=>{if(m.dataset.loaded==='true'&&m.ground&&m.lastFrame){clearInterval(timer);resolve();}},40);setTimeout(()=>{clearInterval(timer);reject(Error(m.status?.textContent||'Scene timed out'));},12000);});
  checks.sceneLoaded=!!m.model&&!!m.ground&&!!m.trajectory;
  checks.highAltitudePose=m.root.position.y>9000;
- checks.recordedPath=m.trajectory.geometry.attributes.position.count===6;
+ checks.recordedPath=m.trajectory.geometry.attributes.position.count===6;checks.progressiveTrail=m.trajectory.geometry.drawRange.count===4;
  checks.followTarget=m.target.distanceTo(m.root.position)<1e-6;
+ m.setAttribute('data-state',JSON.stringify({replay_time_seconds:1,replay_timestamp_ms:1000,attitude:[15,20,5],gps:[45.002,-72.999,4000],motions:[]}));await new Promise(r=>setTimeout(r,100));checks.ascentFollow=m.target.distanceTo(m.root.position)<1e-6&&m.root.position.y>3000&&m.trajectory.geometry.drawRange.count===2;
+ m.setAttribute('data-state',JSON.stringify({replay_time_seconds:2,replay_timestamp_ms:2000,attitude:[15,20,5],gps:[45.004,-72.998,10000],motions:[]}));await new Promise(r=>setTimeout(r,100));
  m.cameraAction('pan-left');checks.panDetachesFollow=!m.follow&&m.target.distanceTo(m.root.position)>0;
  m.cameraAction('follow');checks.followRestoresTarget=m.follow&&m.target.distanceTo(m.root.position)<1e-6;
  const distance=m.distance;m.cameraAction('zoom-out');checks.zoom=m.distance>distance;
@@ -49,7 +51,7 @@ const server=http.createServer((req,res)=>{
 });
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const profile=fs.mkdtempSync(path.join(os.tmpdir(),'gs-replay-scene-')); 
-const chrome=spawn(process.env.CHROME_BINARY||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',['--headless','--no-first-run','--disable-background-networking','--disable-component-update','--disable-sync','--disable-extensions',...(process.env.GS_REPLAY_WEBGL==='1'?['--use-gl=angle','--use-angle=swiftshader','--ignore-gpu-blocklist','--enable-webgl','--enable-unsafe-swiftshader']:[]),'--remote-debugging-port=0','--remote-allow-origins=*','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']});
+const chrome=spawn(process.env.CHROME_BINARY||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',['--headless','--no-sandbox','--no-first-run','--disable-background-networking','--disable-component-update','--disable-sync','--disable-extensions',...(process.env.GS_REPLAY_WEBGL==='1'?['--use-gl=angle','--use-angle=swiftshader','--ignore-gpu-blocklist','--enable-webgl','--enable-unsafe-swiftshader']:[]),'--remote-debugging-port=0','--remote-allow-origins=*','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']});
 let stderr='';chrome.stderr.on('data',d=>stderr=(stderr+d).slice(-65536));let ws;let next=0;const pending=new Map(),events=[];
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 try{
@@ -61,7 +63,7 @@ try{
  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const {resolve,reject}=pending.get(m.id)||{};pending.delete(m.id);m.error?reject?.(Error(JSON.stringify(m.error))):resolve?.(m.result);}else events.push(m);};
  const call=(method,params={})=>new Promise((resolve,reject)=>{const id=++next;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}));});
  await call('Runtime.enable');await call('Page.enable');
- for(const width of [1280,390]){
+ for(const width of [1280,390,320]){
   await call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width<500});
   await call('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/`});
   let result;
@@ -70,6 +72,20 @@ try{
   if(process.env.GS_REPLAY_SCREENSHOT_DIR){const screenshot=await call('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(process.env.GS_REPLAY_SCREENSHOT_DIR,`replay-scene-cdp-${width}.png`),Buffer.from(screenshot.data,'base64'));}
   if(status.pass!=='true'){console.log('Runtime errors:',JSON.stringify(events.filter(e=>e.method==='Runtime.exceptionThrown')));throw Error('Scene failed');}
   assert.equal(status.width,width,'actual viewport width');if(process.env.GS_REPLAY_WEBGL==='1')assert.equal(status.renderer,'webgl','Explicit SwiftShader run must exercise WebGL');
+  const value=expression=>call('Runtime.evaluate',{expression,returnByValue:true}).then(r=>r.result.value);
+  const before=await value('document.querySelector("gs-vehicle-viewer").theta');
+  await call('Input.dispatchMouseEvent',{type:'mousePressed',x:100,y:200,button:'left',clickCount:1});
+  await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:145,y:220,button:'left',buttons:1});
+  await call('Input.dispatchMouseEvent',{type:'mouseReleased',x:145,y:220,button:'left',clickCount:1});
+  assert.notEqual(await value('document.querySelector("gs-vehicle-viewer").theta'),before,'real pointer drag orbits recordedrocket');
+  if(width<500){
+   const distance=await value('document.querySelector("gs-vehicle-viewer").distance');
+   await call('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:100,y:220},{x:220,y:220}]});
+   await call('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:80,y:230},{x:240,y:230}]});
+   await call('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+   assert.notEqual(await value('document.querySelector("gs-vehicle-viewer").distance'),distance,'twofingerpinchchangesview');
+  }
+
  }
  console.log('PASS isolated actual renderer at desktop/mobile widths');
 }catch(error){console.log('Chrome log:',stderr.slice(-2000));throw error;}

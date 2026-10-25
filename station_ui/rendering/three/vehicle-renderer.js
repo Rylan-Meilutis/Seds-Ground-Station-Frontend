@@ -1,7 +1,7 @@
 import * as T from './three.module.js';
 import {GLTFLoader} from './GLTFLoader.js';
 import {SoftwareRenderer} from './software-renderer.js';
-import {EARTH_RADIUS_M, validGps, gpsToLocal, recordedSegments} from './replay-scene.js';
+import {EARTH_RADIUS_M, validGps, gpsToLocal, recordedPath, visibleSegmentCount} from './replay-scene.js';
 // Explicit named-node transforms; no dependence on model-viewer's private scene graph.
 class VehicleViewer extends HTMLElement {
  static observedAttributes=['src','data-state','data-track'];
@@ -54,9 +54,11 @@ class VehicleViewer extends HTMLElement {
   if(action==='rise'||action==='descend'){this.target.y+=(action==='rise'?1:-1)*this.distance*.12;this.follow=false;}
   this.dataset.cameraMode=this.follow?'follow':'free';this.dirty=true;
  }
- clearFlightScene(){for(const object of [this.ground,this.trajectory])if(object){this.scene.remove(object);object.geometry.dispose();object.material.dispose();}this.ground=this.trajectory=null;this.origin=null;this.trackPositions=[];}
+ clearFlightScene(){for(const object of [this.ground,this.trajectory])if(object){this.scene.remove(object);object.geometry.dispose();object.material.dispose();}this.ground=this.trajectory=null;this.origin=null;this.trackPositions=[];this.trackTimes=[];}
  updateFlightScene(state){
-  if(this.trackChanged){this.clearFlightScene();this.trackChanged=false;this.follow=true;this.theta=.6;this.phi=1.28;this.distance=this.modelDistance||14;const first=this.track?.points?.find(p=>validGps([p.latitude,p.longitude,p.altitude_m]));if(first){this.origin=[first.latitude,first.longitude,first.altitude_m];this.trackPositions=recordedSegments(this.track.points,this.origin);const geometry=new T.BufferGeometry();geometry.setAttribute('position',new T.Float32BufferAttribute(this.trackPositions,3));this.trajectory=new T.LineSegments(geometry,new T.LineBasicMaterial({color:0x9de5ff,transparent:true,opacity:.85}));this.scene.add(this.trajectory);this.createGround();}}
+  if(this.trackChanged){this.clearFlightScene();this.trackChanged=false;this.follow=true;this.theta=.6;this.phi=1.28;this.distance=this.modelDistance||14;const first=this.track?.points?.find(p=>validGps([p.latitude,p.longitude,p.altitude_m]));if(first){this.origin=[first.latitude,first.longitude,first.altitude_m];const path=recordedPath(this.track.points,this.origin);this.trackPositions=path.positions;this.trackTimes=path.times;const geometry=new T.BufferGeometry();geometry.setAttribute('position',new T.Float32BufferAttribute(this.trackPositions,3));this.trajectory=new T.LineSegments(geometry,new T.LineBasicMaterial({color:0x9de5ff,transparent:true,opacity:.85}));this.scene.add(this.trajectory);this.createGround();}}
+  const time=Number.isFinite(state.replay_timestamp_ms)?state.replay_timestamp_ms:(this.track?.points?.[0]?.timestamp_ms||0)+(state.replay_time_seconds||0)*1000;
+  if(this.trajectory){const count=visibleSegmentCount(this.trackTimes||[],time)*2;this.trajectory.geometry.setDrawRange(0,count);this.dataset.trailSegments=String(count/2);}
   const position=this.origin?gpsToLocal(state.gps,this.origin):null;
   const available=!!position;
   if(this.positionAvailable!==available){this.follow=true;this.distance=this.modelDistance||14;this.theta=.6;this.phi=1.28;this.positionAvailable=available;}
@@ -106,7 +108,7 @@ class VehicleViewer extends HTMLElement {
   this.driven=modified;
   this.status.textContent=missing?missing+' mapped model node(s) missing':unknown?unknown+' component(s): no telemetry':this.software?'Compatibility preview: reduced-detail model':'';
   this.updateFlightScene(state);
-  const a=state.attitude||[null,null,null];this.root.rotation.set(...a.map(v=>T.MathUtils.degToRad(Number.isFinite(v)?v:0)));
+  const a=state.attitude||[null,null,null];this.root.rotation.set(...a.map(v=>T.MathUtils.degToRad(Number.isFinite(v)?v:0)));this.dataset.attitudeAvailable=String(a.every(Number.isFinite));if(!a.every(Number.isFinite))this.status.textContent=[this.status.textContent,'Attitude unavailable · reference orientation'].filter(Boolean).join(' · ');
   const note=!this.origin?'Reference attitude mode · no saved GPS track':!validGps(state.gps)?'Reference attitude mode · no fresh saved GPS':'Reference Earth surface · terrain unavailable'+(this.track?.sampled||this.track?.truncated?' · sampled path':'');this.status.textContent=[this.status.textContent,note].filter(Boolean).join(' · ');
   const distance=this.viewDistance(),far=Math.max(20000000,distance*2);if(this.camera.far!==far){this.camera.far=far;this.camera.updateProjectionMatrix();}this.camera.position.set(this.target.x+distance*Math.sin(this.phi)*Math.sin(this.theta),this.target.y+distance*Math.cos(this.phi),this.target.z+distance*Math.sin(this.phi)*Math.cos(this.theta));this.camera.lookAt(this.target);this.renderer.render(this.scene,this.camera);this.dirty=false;
  }

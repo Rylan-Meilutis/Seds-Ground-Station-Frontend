@@ -2,9 +2,9 @@
 class CrewAudio extends AudioWorkletProcessor {
   constructor() {
     super(); this.transmit=false; this.gain=1; this.volume=1; this.peers=new Map();
-    this.samples=new Int16Array(320); this.used=0; this.phase=0; this.sum=0; this.n=0; this.meter=0;
+    this.captureId=0; this.samples=new Int16Array(320); this.used=0; this.phase=0; this.sum=0; this.n=0; this.meter=0;
     this.port.onmessage=({data:m})=>{
-      if(m.type==='settings') { this.transmit=m.transmit; this.gain=m.gain; this.volume=m.volume; if(!this.transmit){this.used=0;this.phase=0;this.sum=0;this.n=0;} }
+      if(m.type==='settings') { if(Number.isSafeInteger(m.capture_id)&&m.capture_id!==this.captureId){this.captureId=m.capture_id;this.used=0;this.phase=0;this.sum=0;this.n=0;} this.transmit=m.transmit; this.gain=m.gain; this.volume=m.volume; if(!this.transmit){this.used=0;this.phase=0;this.sum=0;this.n=0;} }
       if(m.type==='remove') this.peers.delete(m.id);
       if(m.type==='reset') this.peers.clear();
       if(m.type==='audio') {
@@ -24,7 +24,7 @@ class CrewAudio extends AudioWorkletProcessor {
         if(this.phase>=sampleRate) {
           this.phase-=sampleRate;const sample=this.sum/this.n;this.sum=0;this.n=0;
           this.samples[this.used++]=Math.round(sample*(sample<0?32768:32767));
-          if(this.used===320){const buffer=this.samples.buffer;this.port.postMessage({type:'pcm',buffer},[buffer]);this.samples=new Int16Array(320);this.used=0;}
+          if(this.used===320){const buffer=this.samples.buffer;this.port.postMessage({type:'pcm',capture_id:this.captureId,buffer},[buffer]);this.samples=new Int16Array(320);this.used=0;}
         }
       }
       let mixed=0;

@@ -14,13 +14,20 @@ export function gpsToLocal(p,origin) {
  return [-Math.sin(b)*dx+Math.cos(b)*dy,Math.cos(a)*Math.cos(b)*dx+Math.cos(a)*Math.sin(b)*dy+Math.sin(a)*dz,
   Math.sin(a)*Math.cos(b)*dx+Math.sin(a)*Math.sin(b)*dy-Math.cos(a)*dz];
 }
-export function recordedSegments(points,origin,maxGapMs=5000) {
- const segments=[];let previous=null;
+export function recordedPath(points,origin,maxGapMs=5000) {
+ const positions=[],times=[];let previous=null;
  for(const row of (Array.isArray(points)?points:[]).slice(0,8192)) {
   const gps=[row.latitude,row.longitude,row.altitude_m],position=gpsToLocal(gps,origin);
   if(!position||!Number.isFinite(row.timestamp_ms)){previous=null;continue;}
-  if(previous&&row.timestamp_ms>previous.time&&row.break_before!==true&&(typeof row.break_before==='boolean'||row.timestamp_ms-previous.time<=maxGapMs))segments.push(...previous.position,...position);
+  if(previous&&row.timestamp_ms>previous.time&&row.break_before!==true&&(typeof row.break_before==='boolean'||row.timestamp_ms-previous.time<=maxGapMs)){
+   positions.push(...previous.position,...position);times.push(row.timestamp_ms);
+  }
   previous={position,time:row.timestamp_ms};
  }
- return segments;
+ return {positions,times};
+}
+export function recordedSegments(points,origin,maxGapMs=5000) {return recordedPath(points,origin,maxGapMs).positions;}
+export function visibleSegmentCount(times,at) {
+ if(!Number.isFinite(at))return 0;
+ let lo=0,hi=times.length;while(lo<hi){const mid=(lo+hi)>>>1;if(times[mid]<=at)lo=mid+1;else hi=mid;}return lo;
 }
