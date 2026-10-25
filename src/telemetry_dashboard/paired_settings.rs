@@ -57,6 +57,7 @@ fn label(key: &str) -> &str {
         "mission/gse_limits" => "Sequence limits",
         "mission/saved_flight_setup" => "Saved flight setup",
         "mission/auto_zero_preference" => "Automatic zeroing",
+        "mission/saved_station_positions" => "Saved station positions",
         _ => "Saved settings",
     }
 }
@@ -73,9 +74,13 @@ fn is_mission(key: &str) -> bool {
             | "mission/gse_limits"
             | "mission/saved_flight_setup"
             | "mission/auto_zero_preference"
+            | "mission/saved_station_positions"
     )
 }
-fn can_resolve(key: &str, calibration_edit: bool, send_commands: bool) -> bool {
+fn can_resolve(key: &str, calibration_edit: bool, send_commands: bool, admin: bool) -> bool {
+    if key == "mission/saved_station_positions" {
+        return admin;
+    }
     (is_calibration(key) && calibration_edit) || (is_mission(key) && send_commands)
 }
 fn can_view(key: &str, calibration_view: bool) -> bool {
@@ -187,6 +192,21 @@ fn summary(key: &str, value: &Value) -> Vec<(String, String)> {
                 }
                 .into(),
             )];
+        }
+        "mission/saved_station_positions" => {
+            return [("ground_station", "GroundStation"), ("rrls", "RRLS")]
+                .into_iter()
+                .map(|(key, label)| {
+                    let coordinate = &value[key];
+                    let text = coordinate["latitude"]
+                        .as_f64()
+                        .zip(coordinate["longitude"].as_f64())
+                        .filter(|(lat, lon)| lat.is_finite() && lon.is_finite())
+                        .map(|(lat, lon)| format!("{lat:.6}, {lon:.6}"))
+                        .unwrap_or_else(|| "Not saved".into());
+                    (label.into(), text)
+                })
+                .collect();
         }
         "mission/saved_flight_setup" => {
             let selected = value["selected_profile_id"].as_str().unwrap_or("");
@@ -308,6 +328,7 @@ pub(super) fn PairedSettings(theme: ThemeConfig) -> Element {
     let calibration_edit = crate::auth::can_edit_calibration();
     let calibration_view = crate::auth::can_view_calibration();
     let send_commands = crate::auth::can_view_actions();
+    let admin = crate::auth::is_admin();
     let state = status.read().clone();
     let entries = documents.read().clone();
     let detail = details.read().clone();
@@ -345,7 +366,7 @@ pub(super) fn PairedSettings(theme: ThemeConfig) -> Element {
                                     strong {"{source}"}
                                     dl {for (name,value) in rows {dt {"{name}"}dd {"{value}"}}}
                                     div {class:"paired-actions",
-                                        if can_resolve(&key, calibration_edit, send_commands) {button {disabled:*busy.read()||request.is_none(),onclick:move |_| {
+                                        if can_resolve(&key, calibration_edit, send_commands, admin) {button {disabled:*busy.read()||request.is_none(),onclick:move |_| {
                                             let Some(request)=request.as_ref() else {return};
                                             let request=Resolution {key:request.key.clone(),expected:request.expected.clone(),value:request.value.clone()};
                                             busy.set(true);message.set(String::new());
@@ -412,13 +433,38 @@ mod tests {
     }
     #[test]
     fn mission_permissions_do_not_grant_calibration_access_or_reverse() {
-        assert!(can_resolve("mission/fill_targets", false, true));
-        assert!(!can_resolve("mission/fill_targets", true, false));
-        assert!(can_resolve("calibration/ch1", true, false));
-        assert!(!can_resolve("calibration/ch1", false, true));
+        assert!(can_resolve("mission/fill_targets", false, true, false));
+        assert!(!can_resolve("mission/fill_targets", true, false, false));
+        assert!(can_resolve("calibration/ch1", true, false, false));
+        assert!(!can_resolve("calibration/ch1", false, true, false));
         assert!(!can_view("calibration/ch1", false));
         assert!(can_view("mission/gse_limits", false));
-        assert!(!can_resolve("mission/unknown", true, true));
+        assert!(!can_resolve("mission/unknown", true, true, true));
+        assert!(can_view("mission/saved_station_positions", false));
+        assert!(!can_resolve(
+            "mission/saved_station_positions",
+            true,
+            true,
+            false
+        ));
+        assert!(can_resolve(
+            "mission/saved_station_positions",
+            false,
+            false,
+            true
+        ));
+        assert_eq!(
+            summary(
+                "mission/saved_station_positions",
+                &json!({
+                    "ground_station":{"latitude":43.0,"longitude":-78.8},"rrls":null
+                })
+            ),
+            vec![
+                ("GroundStation".into(), "43.000000, -78.800000".into()),
+                ("RRLS".into(), "Not saved".into())
+            ]
+        );
         assert!(!can_view("unknown", true));
     }
     #[test]
