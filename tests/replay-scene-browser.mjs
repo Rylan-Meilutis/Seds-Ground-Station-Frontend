@@ -11,7 +11,7 @@ const checks={},finish=()=>{document.querySelector('#result').textContent=JSON.s
 try {
  await import('/vehicle-renderer.js');
  const m=document.querySelector('gs-vehicle-viewer');
- m.setAttribute('data-track',JSON.stringify({upper_id:42,truncated:false,points:[{timestamp_ms:0,latitude:45,longitude:-73,altitude_m:300},{timestamp_ms:1000,latitude:45.002,longitude:-72.999,altitude_m:4000},{timestamp_ms:2000,latitude:45.004,longitude:-72.998,altitude_m:10000},{timestamp_ms:3000,latitude:45.006,longitude:-72.997,altitude_m:8000}]}));
+ m.setAttribute('data-track',JSON.stringify({recording_id:'fixture.db',source_sender_id:'RF',upper_id:42,truncated:false,points:[{timestamp_ms:0,latitude:45,longitude:-73,altitude_m:300},{timestamp_ms:1000,latitude:45.002,longitude:-72.999,altitude_m:4000},{timestamp_ms:2000,latitude:45.004,longitude:-72.998,altitude_m:10000},{timestamp_ms:3000,latitude:45.006,longitude:-72.997,altitude_m:8000}]}));
  m.setAttribute('data-state',JSON.stringify({replay_time_seconds:2,attitude:[15,20,5],gps:[45.004,-72.998,10000],motions:[]}));
  await new Promise((resolve,reject)=>{const timer=setInterval(()=>{if(m.dataset.loaded==='true'&&m.ground&&m.lastFrame){clearInterval(timer);resolve();}},40);setTimeout(()=>{clearInterval(timer);reject(Error(m.status?.textContent||'Scene timed out'));},12000);});
  checks.sceneLoaded=!!m.model&&!!m.ground&&!!m.trajectory;
@@ -25,6 +25,11 @@ try {
  const distance=m.distance;m.cameraAction('zoom-out');checks.zoom=m.distance>distance;
  m.cameraAction('rise');checks.verticalMotion=!m.follow&&m.target.y>m.root.position.y;
  m.cameraAction('overview');await new Promise(r=>setTimeout(r,100));checks.overview=m.distance>9000&&!m.follow;checks.positionMarker=m.dataset.positionMarkerVisible==='true'&&m.positionMarkerLabel.textContent==='Recorded rocket'&&m.root.scale.toArray().every(v=>v===1);
+ const cameraState=()=>JSON.stringify({follow:m.follow,overview:m.overview,theta:m.theta,phi:m.phi,distance:m.distance,target:m.target.toArray(),position:m.camera.position.toArray()});
+ m.cameraAction('pan-left');m.cameraAction('left');m.cameraAction('zoom-in');await new Promise(r=>setTimeout(r,100));const freeView=cameraState();
+ const growingTrack=JSON.parse(m.getAttribute('data-track'));growingTrack.upper_id++;growingTrack.points.push({timestamp_ms:4000,latitude:45.008,longitude:-72.996,altitude_m:6000});m.setAttribute('data-track',JSON.stringify(growingTrack));await new Promise(r=>setTimeout(r,100));checks.compatibleGrowthPreservesFreeCamera=cameraState()===freeView;
+ growingTrack.source_sender_id='FC';m.setAttribute('data-track',JSON.stringify(growingTrack));await new Promise(r=>setTimeout(r,100));checks.changedGpsSourceResetsCamera=m.follow&&m.theta===.6&&m.target.distanceTo(m.root.position)<1e-6;
+ m.cameraAction('pan-left');growingTrack.upper_id++;growingTrack.points[0].latitude=44;m.setAttribute('data-track',JSON.stringify(growingTrack));await new Promise(r=>setTimeout(r,100));checks.changedOriginResetsCamera=m.follow&&m.origin[0]===44&&m.target.distanceTo(m.root.position)<1e-6;
  m.cameraAction('reset');await new Promise(r=>setTimeout(r,100));checks.reset=m.follow&&m.distance===m.modelDistance&&m.dataset.positionMarkerVisible==='false';
  m.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true,cancelable:true}));checks.keyboard=Math.abs(m.theta-.45)<1e-6;
  m.setAttribute('data-state',JSON.stringify({replay_time_seconds:2,attitude:[15,20,5],gps:null,motions:[]}));await new Promise(r=>setTimeout(r,150));checks.markerHiddenWithoutSavedGps=m.dataset.positionMarkerVisible==='false';checks.referenceAttitudeWithoutGps=m.root.visible&&!m.ground.visible&&!m.trajectory.visible&&m.root.position.length()===0&&m.dataset.positionAvailable==='false'&&m.status.textContent.includes('Reference attitude mode');

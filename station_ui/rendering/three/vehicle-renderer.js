@@ -69,7 +69,16 @@ class VehicleViewer extends HTMLElement {
  }
  clearFlightScene(){this.overview=false;if(this.positionMarker)this.positionMarker.style.display='none';this.dataset.positionMarkerVisible='false';for(const object of [this.ground,this.trajectory])if(object){this.scene.remove(object);object.geometry.dispose();object.material.dispose();}this.ground=this.trajectory=null;this.origin=null;this.trackPositions=[];this.trackTimes=[];}
  updateFlightScene(state){
-  if(this.trackChanged){this.clearFlightScene();this.trackChanged=false;this.follow=true;this.theta=.6;this.phi=1.28;this.distance=this.modelDistance||14;const first=this.track?.points?.find(p=>validGps([p.latitude,p.longitude,p.altitude_m]));if(first){this.origin=[first.latitude,first.longitude,first.altitude_m];const path=recordedPath(this.track.points,this.origin);this.trackPositions=path.positions;this.trackTimes=path.times;const geometry=new T.BufferGeometry();geometry.setAttribute('position',new T.Float32BufferAttribute(this.trackPositions,3));this.trajectory=new T.LineSegments(geometry,new T.LineBasicMaterial({color:0x9de5ff,transparent:true,opacity:.85}));this.scene.add(this.trajectory);this.createGround();}}
+  if(this.trackChanged){
+   const first=this.track?.points?.find(p=>validGps([p.latitude,p.longitude,p.altitude_m])),origin=first?[first.latitude,first.longitude,first.altitude_m]:null;
+   // Only retain local camera coordinates when the saved flight reference frame is identical.
+   const prior=this.renderedTrack;
+   const compatible=!!(origin&&this.origin&&prior&&this.track?.recording_id&&this.track.recording_id===prior.recording_id&&this.track.source_sender_id===prior.source_sender_id&&this.track.upper_id>=prior.upper_id&&origin.every((v,i)=>v===this.origin[i]));
+   const camera=compatible?{follow:this.follow,overview:this.overview,theta:this.theta,phi:this.phi,distance:this.distance,target:this.target.clone()}:null;
+   this.clearFlightScene();this.renderedTrack=this.track;this.trackChanged=false;
+   if(camera){Object.assign(this,{follow:camera.follow,overview:camera.overview,theta:camera.theta,phi:camera.phi,distance:camera.distance});this.target.copy(camera.target);}
+   else{this.follow=true;this.theta=.6;this.phi=1.28;this.distance=this.modelDistance||14;this.positionAvailable=undefined;}
+   if(first){this.origin=origin;const path=recordedPath(this.track.points,this.origin);this.trackPositions=path.positions;this.trackTimes=path.times;const geometry=new T.BufferGeometry();geometry.setAttribute('position',new T.Float32BufferAttribute(this.trackPositions,3));this.trajectory=new T.LineSegments(geometry,new T.LineBasicMaterial({color:0x9de5ff,transparent:true,opacity:.85}));this.scene.add(this.trajectory);this.createGround();}}
   const time=Number.isFinite(state.replay_timestamp_ms)?state.replay_timestamp_ms:(this.track?.points?.[0]?.timestamp_ms||0)+(state.replay_time_seconds||0)*1000;
   if(this.trajectory){const count=visibleSegmentCount(this.trackTimes||[],time)*2;this.trajectory.geometry.setDrawRange(0,count);this.dataset.trailSegments=String(count/2);}
   const position=this.origin?gpsToLocal(state.gps,this.origin):null;

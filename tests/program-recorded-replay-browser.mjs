@@ -71,16 +71,24 @@ try{
   const angle=await value('document.querySelector("gs-vehicle-viewer").theta');await call('Input.dispatchMouseEvent',{type:'mousePressed',x:100,y:200,button:'left',clickCount:1});await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:145,y:220,button:'left',buttons:1});await call('Input.dispatchMouseEvent',{type:'mouseReleased',x:145,y:220,button:'left',clickCount:1});assert.notEqual(await value('document.querySelector("gs-vehicle-viewer").theta'),angle);
   console.log('PASS programme recordedapogee/follow/trail/drag/pause/fit',width);
  }
+ const cameraTransform='JSON.stringify((v=>({follow:v.follow,theta:v.theta,phi:v.phi,distance:v.distance,target:v.target.toArray(),position:v.camera.position.toArray()}))(document.querySelector("gs-vehicle-viewer")))';
+ await value('(()=>{const v=document.querySelector("gs-vehicle-viewer");v.cameraAction("pan-left");v.cameraAction("zoom-out");v.cameraAction("left");})()');await sleep(150);
+ const freeCamera=await value(cameraTransform);
  plan={...plan,upper_id:11,end_ms:12000,follow_saved:true};
  await until('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-track"))?.upper_id===11&&JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms===3000');
  assert.equal(await value('document.querySelector("gs-vehicle-viewer").root.position.y>9000'),true,'growing saved snapshot preserves paused recorded pose');
- console.log('PASS programme growing saved snapshot retains playback and follow camera');
+ await sleep(150);assert.equal(await value(cameraTransform),freeCamera,'snapshot growth preserves free orbit, pan, zoom and actual camera transform');
+ await value('document.querySelector("gs-vehicle-viewer").cameraAction("follow")');
+ plan={...plan,upper_id:12,end_ms:13000,position_ms:3000};
+ await until('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-track"))?.upper_id===12&&JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms===4000');await sleep(150);
+ assert.equal(await value('(()=>{const v=document.querySelector("gs-vehicle-viewer");return v.follow&&v.target.distanceTo(v.root.position)<1e-6})()'),true,'follow continues tracking the newly selected saved rocket pose');
+ console.log('PASS programme growing saved snapshot retains free/follow camera, pan, zoom and playback');
  plan={...plan,position_ms:0,speed:4,anchor_server_ms:now(),paused:false,loop_playback:true};
  await until('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms!==3000');
  await sleep(700);const at=await value('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms');assert(at>=1000&&at<=11000,'acceleratedloop stayswithinrecordedbounds');
  plan={...plan,recording_id:'groundstation_recording_2.db',position_ms:2000,paused:true};
  await until('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).gps?.[0]<41');
- assert.equal(await value('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-track")).recording_id'),plan.recording_id);
+ assert.equal(await value('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-track")).recording_id'),plan.recording_id);await sleep(150);assert.equal(await value('document.querySelector("gs-vehicle-viewer").origin[0]'),40,'new recording resets its coordinate frame');
  fail=true;await until('document.querySelector(".time").textContent.includes("unavailable")');const frozen=await value('document.querySelector("gs-vehicle-viewer").getAttribute("data-state")');await sleep(250);assert.equal(await value('document.querySelector("gs-vehicle-viewer").getAttribute("data-state")'),frozen);
  assert(requests.every(r=>r.method==='GET'&&r.path.startsWith('/api/media-assets/recorded-vehicle/')),'programme never sendscommands orrequests livecache');assert.equal(events.filter(e=>e.method==='Network.webSocketCreated').length,0);assert.equal(events.filter(e=>e.method==='Runtime.exceptionThrown').length,0);
  console.log('PASS programme recordedclock/loop/recordingswitch/failurefreeze/no livecache oroutputs');

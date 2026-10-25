@@ -30,33 +30,38 @@ export function savedFrame(rows,config,at,start,gpsSender){
 }
 export class SavedReplayPlayer {
  constructor(viewer,{ticket='',fetcher=fetch,status=()=>{},clock=()=>performance.now(),automatic=true}={}){
-  this.viewer=viewer;this.ticket=ticket;this.fetcher=fetcher.bind(globalThis);this.status=status;this.clock=clock;this.stopped=false;this.rows=[];this.generation=0;this.abort=new AbortController();
+  this.viewer=viewer;this.ticket=ticket;this.fetcher=fetcher.bind(globalThis);this.status=status;this.clock=clock;this.stopped=false;this.rows=[];this.generation=0;this.abort=new AbortController();this.dataAbort=new AbortController();
   if(automatic){this.poll();this.pollTimer=setInterval(()=>this.poll(),1000);this.frameTimer=setInterval(()=>this.frame(),50);}
  }
  url(kind,params={}){const q=new URLSearchParams({...params,...(this.ticket?{ticket:this.ticket}:{})});return '/api/media-assets/recorded-vehicle/'+kind+'?'+q;}
- async json(kind,params={}){const r=await this.fetcher(this.url(kind,params),{signal:this.abort.signal,credentials:'same-origin',cache:'no-store'});if(!r.ok)throw Error('Saved replay unavailable');return r.json();}
+ async json(kind,params={},signal=this.abort.signal){const r=await this.fetcher(this.url(kind,params),{signal,credentials:'same-origin',cache:'no-store'});if(!r.ok)throw Error('Saved replay unavailable');return r.json();}
  async poll(){if(this.stopped||this.polling)return;this.polling=true;
   try{const state=await this.json('state');if(this.stopped)return;const p=state.plan;
    if(!p||!Number.isSafeInteger(p.upper_id)||!Number.isSafeInteger(p.start_ms)||!Number.isSafeInteger(p.end_ms)||p.start_ms<0||p.end_ms>8640000000000000||p.end_ms<p.start_ms||!Number.isFinite(p.speed)||p.speed<.25||p.speed>4)throw Error('Invalid saved replay');
    const identity=JSON.stringify([p.recording_id,p.upper_id,p.start_ms,p.end_ms,state.config]);
-   if(identity!==this.identity){this.identity=identity;this.generation++;this.rows=[];this.buffer=null;this.chunk=null;this.track=null;this.nextTrackRetry=0;this.nextWindowRetry=0;this.viewer.setAttribute('data-track','null');this.viewer.setAttribute('data-state','{}');this.viewer.setAttribute('src',state.config?.model_url||'/assets/models/vehicle.glb');
-    }
-   this.state=state;this.receivedAt=this.clock();this.failed=false;if(!this.track&&this.clock()>=(this.nextTrackRetry||0))this.loadTrack(this.generation);this.frame();
+   if(identity!==this.identity){
+    // Snapshot growth replaces buffers in the background; a new selection clears the old flight.
+    const old=this.state,prior=old?.plan;
+    const growth=prior&&p.recording_id===prior.recording_id&&p.start_ms===prior.start_ms&&p.upper_id>=prior.upper_id&&p.end_ms>=prior.end_ms&&JSON.stringify(state.config)===JSON.stringify(old.config);
+    this.identity=identity;this.generation++;this.dataAbort.abort();this.dataAbort=new AbortController();this.loading=false;this.trackLoading=false;this.chunk=null;this.nextTrackRetry=0;this.nextWindowRetry=0;this.trackNeedsRefresh=true;
+    if(!growth){this.rows=[];this.buffer=null;this.track=null;this.viewer.setAttribute('data-track','null');this.viewer.setAttribute('data-state','{}');this.viewer.setAttribute('src',state.config?.model_url||'/assets/models/vehicle.glb');}
+   }
+   this.state=state;this.receivedAt=this.clock();this.failed=false;if(this.trackNeedsRefresh&&this.clock()>=(this.nextTrackRetry||0))this.loadTrack(this.generation);this.frame();
   }catch(e){if(!this.stopped){this.failed=true;this.status('Recorded replay unavailable');}}
   finally{this.polling=false;}
  }
- async loadTrack(generation){if(this.trackLoading)return;this.trackLoading=true;try{const p=this.state?.plan;if(!p)return;const track=await this.json('trajectory',{recording_id:p.recording_id,upper_id:p.upper_id});if(this.stopped||generation!==this.generation)return;if(track.recording_id!==p.recording_id||track.upper_id!==p.upper_id||!Array.isArray(track.points)||track.points.length>8192)throw Error('Invalid saved trajectory');this.track=track;this.viewer.setAttribute('data-track',JSON.stringify(track));}catch(e){if(generation===this.generation&&!this.stopped){this.nextTrackRetry=this.clock()+2000;this.status('Saved trajectory unavailable');}}finally{this.trackLoading=false;}}
- async loadWindow(at){if(this.loading||!this.state||this.clock()<(this.nextWindowRetry||0))return;const p=this.state.plan,generation=this.generation,chunk=Math.floor((at-p.start_ms)/10000);this.loading=true;
+ async loadTrack(generation){if(this.trackLoading)return;this.trackLoading=generation+1;try{const p=this.state?.plan;if(!p)return;const track=await this.json('trajectory',{recording_id:p.recording_id,upper_id:p.upper_id},this.dataAbort.signal);if(this.stopped||generation!==this.generation)return;if(track.recording_id!==p.recording_id||track.upper_id!==p.upper_id||!Array.isArray(track.points)||track.points.length>8192)throw Error('Invalid saved trajectory');this.track=track;this.trackNeedsRefresh=false;this.viewer.setAttribute('data-track',JSON.stringify(track));}catch(e){if(generation===this.generation&&!this.stopped){this.nextTrackRetry=this.clock()+2000;this.status('Saved trajectory unavailable');}}finally{if(generation===this.generation)this.trackLoading=false;}}
+ async loadWindow(at){if(this.loading||!this.state||this.clock()<(this.nextWindowRetry||0))return;const p=this.state.plan,generation=this.generation,chunk=Math.floor((at-p.start_ms)/10000);this.loading=generation+1;
   const start=Math.max(p.start_ms,p.start_ms+chunk*10000-5000),end=Math.min(p.end_ms,start+25000);
   try{let after=0,rows=[];for(let i=0;i<32;i++){
-    const page=await this.json('window',{recording_id:p.recording_id,upper_id:p.upper_id,after_id:after,start_ms:start,end_ms:end});
+    const page=await this.json('window',{recording_id:p.recording_id,upper_id:p.upper_id,after_id:after,start_ms:start,end_ms:end},this.dataAbort.signal);
     if(this.stopped||generation!==this.generation)return;
     if(page.recording_id!==p.recording_id||page.upper_id!==p.upper_id||!Array.isArray(page.rows)||!Array.isArray(page.seeds)||(page.has_more&&page.next_id<=after))throw Error('Invalid saved cursor');
     rows.push(...page.seeds,...page.rows);if(rows.length>16384)throw Error('Saved replay window too large');
     if(!page.has_more){this.rows=rows;this.buffer={start,end};this.chunk=chunk;return;}after=page.next_id;
    }throw Error('Saved replay window too large');
   }catch(e){if(!this.stopped&&generation===this.generation){this.nextWindowRetry=this.clock()+2000;this.status('Saved samples unavailable');}}
-  finally{this.loading=false;}
+  finally{if(generation===this.generation)this.loading=false;}
  }
  frame(){if(this.stopped||this.failed||!this.state)return;const p=this.state.plan;
   const at=p.start_ms+replayPosition(p,this.state.server_now_ms+Math.max(0,this.clock()-this.receivedAt));
@@ -65,5 +70,5 @@ export class SavedReplayPlayer {
   const frame=savedFrame(this.rows,this.state.config||{},at,p.start_ms,this.track?.source_sender_id||'FC');
   this.viewer.setAttribute('data-state',JSON.stringify(frame));this.status((p.paused?'Paused · ':'')+new Date(at).toISOString().replace('T',' ').replace('Z',' UTC')+' · '+frame.phase);
  }
- stop(){this.stopped=true;this.generation++;clearInterval(this.pollTimer);clearInterval(this.frameTimer);this.abort.abort();this.viewer.setAttribute('data-track','null');this.viewer.setAttribute('data-state','{}');this.rows=[];this.buffer=null;}
+ stop(){this.stopped=true;this.generation++;clearInterval(this.pollTimer);clearInterval(this.frameTimer);this.abort.abort();this.dataAbort.abort();this.viewer.setAttribute('data-track','null');this.viewer.setAttribute('data-state','{}');this.rows=[];this.buffer=null;}
 }

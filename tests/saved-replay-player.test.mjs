@@ -33,3 +33,26 @@ stale.state={plan,config:cfg};const pending=stale.loadWindow(1000);await new Pro
 // Invalid selection responses are rejected and do not cause a50ms retry storm.
 let failedRequests=0;const bounded=new SavedReplayPlayer(viewer,{automatic:false,clock:()=>now,fetcher:async()=>{failedRequests++;throw Error('offline');}});bounded.state={plan,config:cfg};await bounded.loadWindow(1000);await bounded.loadWindow(1000);assert.equal(failedRequests,1);now+=2000;await bounded.loadWindow(1000);assert.equal(failedRequests,2);bounded.stop();
 console.log('PASS recorded clock/seek/loop, nofuture/livevalues, sourceisolation, stalegenerationrejection andboundedretries');
+// Growing snapshots retain the last valid frame while bounded replacement fetches run.
+let selected={...plan,paused:true},releases=[],signals=[];
+const retained={attributes:{},setAttribute(k,v){this.attributes[k]=v;}};
+const growing=new SavedReplayPlayer(retained,{automatic:false,clock:()=>0,fetcher:async(url,options)=>{
+ const u=new URL(url,'http://test'),kind=u.pathname.split('/').at(-1),upper=Number(u.searchParams.get('upper_id'));
+ if(kind==='state')return{ok:true,json:async()=>({plan:selected,config:cfg,server_now_ms:50000})};
+ if(upper===10)return{ok:true,json:async()=>kind==='trajectory'?{recording_id:'one.db',upper_id:upper,source_sender_id:'RF',points:[]}:{recording_id:'one.db',upper_id:upper,next_id:upper,has_more:false,rows,seeds:[]}};
+ signals.push(options.signal);
+ return{ok:true,json:()=>new Promise(resolve=>releases.push({upper,kind,resolve}))};
+}});
+await growing.poll();await new Promise(r=>setImmediate(r));growing.frame();
+const validFrame=retained.attributes['data-state'],validTrack=retained.attributes['data-track'];
+selected={...selected,upper_id:11,end_ms:12000};await growing.poll();await new Promise(r=>setImmediate(r));
+assert.equal(retained.attributes['data-state'],validFrame);assert.equal(retained.attributes['data-track'],validTrack);
+selected={...selected,upper_id:12,end_ms:13000};await growing.poll();await new Promise(r=>setImmediate(r));
+assert(signals.slice(0,2).every(s=>s.aborted),'superseded snapshot requests are aborted');
+const resolveSnapshot=upper=>{for(const r of releases.filter(r=>r.upper===upper))r.resolve(r.kind==='trajectory'?{recording_id:'one.db',upper_id:upper,source_sender_id:'RF',points:[]}:{recording_id:'one.db',upper_id:upper,next_id:upper,has_more:false,rows,seeds:[]});};
+resolveSnapshot(11);await new Promise(r=>setImmediate(r));
+assert(growing.loading&&growing.trackLoading,'late superseded completion cannot release newer in-flight guards');
+assert.equal(retained.attributes['data-track'],validTrack,'late superseded trajectory cannot replace the valid view');
+resolveSnapshot(12);await new Promise(r=>setImmediate(r));growing.frame();
+assert.equal(JSON.parse(retained.attributes['data-track']).upper_id,12);assert.equal(growing.loading,false);assert.equal(growing.trackLoading,false);growing.stop();
+console.log('PASS snapshot growth retains valid view and aborts/rejects stale trajectory/window generations');
