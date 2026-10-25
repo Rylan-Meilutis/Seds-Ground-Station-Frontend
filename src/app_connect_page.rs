@@ -383,6 +383,12 @@ pub fn Connect() -> Element {
                     button {
                         style: shell_button_alt_style(&theme),
                         disabled: testing(),
+                        onclick: move |_| { let _ = nav.replace(Route::Preview {}); },
+                        "Explore offline"
+                    }
+                    button {
+                        style: shell_button_alt_style(&theme),
+                        disabled: testing(),
                         onclick: move |_| {
                             let u_norm = compose_base_url_for_connect(&scheme_edit(), &host_edit());
                             if u_norm.is_empty() {

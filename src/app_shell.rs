@@ -110,14 +110,14 @@ fn shell_card_style(theme: &ThemeConfig, width: &str) -> String {
 
 fn shell_button_style(theme: &ThemeConfig) -> String {
     format!(
-        "padding:10px 14px; border-radius:12px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer;",
+        "min-height:44px; padding:10px 14px; border-radius:12px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer;",
         theme.button_border, theme.button_background, theme.button_text
     )
 }
 
 fn shell_button_alt_style(theme: &ThemeConfig) -> String {
     format!(
-        "padding:10px 14px; border-radius:12px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer;",
+        "min-height:44px; padding:10px 14px; border-radius:12px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer;",
         theme.tab_shell_border, theme.panel_background_alt, theme.text_primary
     )
 }

@@ -228,6 +228,11 @@ Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph e
 
 ## Running The Frontend
 
+Native clients can use **Explore offline** from connection setup or a failed
+connection to learn the sample UI without a station. Example data is labelled,
+outputs are disabled, and practice choices never change real station state. See
+[Disconnected native preview](docs/offline-preview.md).
+
 Web:
 
 ```bash

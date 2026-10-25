@@ -31,6 +31,8 @@ mod live_stream_tab;
 mod media_tool_tab;
 mod messages_tab;
 mod network_health;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod offline_preview;
 mod network_topology_tab;
 mod notifications_tab;
 pub(crate) mod prelude;

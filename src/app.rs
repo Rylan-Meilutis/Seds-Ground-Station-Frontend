@@ -92,6 +92,10 @@ pub enum Route {
     #[route("/connect")]
     Connect {},
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[route("/preview")]
+    Preview {},
+
     #[route("/version")]
     Version {},
 
@@ -378,6 +382,16 @@ fn LoginCard(
 fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element {
     let theme = shell_theme();
     let nav = use_navigator();
+    #[cfg(not(target_arch = "wasm32"))]
+    let explore_button = rsx! {
+        button {
+            style: shell_button_alt_style(&theme),
+            onclick: move |_| { let _ = nav.replace(Route::Preview {}); },
+            "Explore offline"
+        }
+    };
+    #[cfg(target_arch = "wasm32")]
+    let explore_button = rsx! {};
     rsx! {
         div {
             style: shell_page_style(&theme),
@@ -393,6 +407,7 @@ fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element 
                         },
                         "Back to Connect"
                     }
+                    {explore_button}
                     button {
                         style: shell_button_alt_style(&theme),
                         onclick: move |_| {
@@ -714,4 +729,16 @@ pub fn Dashboard() -> Element {
     };
     let station_name = auth::station_app_name();
     rsx! { document::Title { "{station_name}" } {content} }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[component]
+fn Preview() -> Element {
+    let nav = use_navigator();
+    rsx! {
+        telemetry_dashboard::offline_preview::OfflinePreview {
+            theme: shell_theme(),
+            on_exit: move |_| { let _ = nav.replace(connect_route()); },
+        }
+    }
 }
