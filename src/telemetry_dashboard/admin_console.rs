@@ -40,6 +40,7 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
             nav {"aria-label":"Administration tools",
                 button {onclick:move |_|on_navigate.call("views".into()),"Dashboard views"}
             }
+            super::station_positions_admin::StationPositionsAdmin {}
             p {role:"status","{message}"}
             section {h2 {"Users & access"}
                 if !*loaded.read(){p {"Loading accounts…"}}

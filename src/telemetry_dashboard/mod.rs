@@ -5,6 +5,7 @@
 mod accel_display_filter;
 mod actions_tab;
 mod admin_console;
+mod station_positions_admin;
 mod calibration_tab;
 mod paired_settings;
 mod connection_status_tab;
