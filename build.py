@@ -5399,6 +5399,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")
     print("  NOTARY_TEAM_ID=...                # notarytool team ID")
     print("  NOTARY_PASSWORD=...               # notarytool app-specific password")
+    print("  python3 build.py --prepare-browser-assets  # verify/fetch browser dependencies without compiling UI")
     print("  GS_WASM_BINDGEN_CLI_VERSION=...   # force wasm-bindgen-cli version")
     print("  GS26_WINDOWS_TARGET=...           # override windows Rust target")
     print("  GS26_MACOS_TARGET=...             # override macOS Rust target")
@@ -5418,6 +5419,9 @@ def print_usage(exit_code: int = 1) -> None:
 
 def main() -> None:
     raw_args = [a.strip() for a in sys.argv[1:]]
+    if "--prepare-browser-assets" in raw_args:
+        from scripts.browser_assets import main as prepare_browser_assets
+        raise SystemExit(prepare_browser_assets([arg for arg in raw_args if arg != "--prepare-browser-assets"]))
     from scripts.build_targets import handle_target_args
     if handle_target_args(raw_args, _resolve_frontend_dir(), build_frontend, package_ios_ipa_with_script, finalize_release):
         return

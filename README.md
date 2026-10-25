@@ -461,3 +461,30 @@ signing happens on the host and passwords are passed through the child environme
 Simulator targets skip final signing. Other targets build normally. Existing
 platform signing defaults remain available without `--final`; the flag additionally
 requires the complete distribution workflow. It does not upload to app stores.
+
+### Prepare browser dependencies without a UI build
+
+`python3 build.py --prepare-browser-assets` verifies or fetches the generated
+MapLibre files used by both the UI and the backend asset catalog. It does not
+install Rust tools, compile the UI, sign packages or select a platform. Frontend
+Cargo builds and backend-only GroundStation Cargo builds call the same stager.
+Python 3.10 or newer is required; `GS_PYTHON` can select its executable for Cargo.
+
+MapLibre remains pinned to **4.7.1**. Its CSS/JS SHA256 pins were verified against
+the official npm package after checking the package's published SHA512 integrity.
+Existing source files and cached files are checked against those same pins.
+`MAPLIBRE_GL_VERSION` still permits an explicit alternative version; its cache
+receipt records the downloaded byte hashes, and is checked on reuse.
+
+The stager uses the operating system's user cache by default. Set
+`GS_BROWSER_ASSETS_CACHE` to a writable shared cache for offline/container builds,
+or use `--cache PATH` with the preparation command. A cold offline checkout needs
+a previously verified cache. Missing, partial or placeholder assets fail clearly;
+they are never replaced by blank scripts/styles. Native advisory locks coordinate
+parallel builds and release automatically after a killed build. Files are written
+atomically and the version stamp is updated after both assets validate.
+
+`MAPLIBRE_GL_BASE_URL` is an optional HTTPS mirror override. Credentials and query
+strings are rejected; HTTP is restricted to loopback test fixtures. Generated
+files remain under `static/vendor/maplibre-gl` in the selected frontend checkout,
+not in the parent GroundStation source.
