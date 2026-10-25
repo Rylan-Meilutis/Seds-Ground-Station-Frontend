@@ -26,6 +26,9 @@ mod auth {
     pub fn can_view_data() -> bool {
         true
     }
+    pub fn is_admin() -> bool {
+        flag("admin=1") && !flag("readonly=1")
+    }
     pub fn can_view_actions() -> bool {
         !flag("readonly=1") && !flag("calibration_only=1")
     }

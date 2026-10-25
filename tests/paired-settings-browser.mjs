@@ -110,5 +110,23 @@ try {
  const fillArticle=page.getByRole('heading',{name:'Fill targets',exact:true}).locator('..');
  assert.equal(await fillArticle.getByRole('button',{name:/^Use /}).count(),0);
  assert.equal(requests.length,7);assert(posts.every(path=>path==='/api/mission-settings/resolve'),'review only posts resolution requests');assert.deepEqual(errors,[]);
- console.log('PASS real Wasm: four widths, 44px controls, details/Escape, exact causal CAS, stale rejection without retry, deferred apply, transient error recovery, read-only access, four mission summaries and exact resolution requests, split mission/calibration permissions');
+ const stationPositions={ground_station:{latitude:43,longitude:-78.8,altitude_m:null,accuracy_m:null,source:'manual'},rrls:null};
+ const previous=structuredClone(stationPositions);previous.ground_station.latitude=42;
+ resolved=false;documents={'mission/saved_station_positions':{heads:[{clock:{gs:2,rrls:1},value:previous},{clock:{gs:1,rrls:2},value:stationPositions}]}};
+ await page.goto(url+'/?mission_only=1');
+ await page.getByRole('heading',{name:'Saved station positions',exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:/^Use /}).count(),0,'command permission alone cannot edit administrator positions');
+ assert.match(await page.locator('article').innerText(),/43\.000000, -78\.800000/);
+ await page.goto(url+'/?admin=1');
+ await page.getByRole('button',{name:'Use RRLS',exact:true}).waitFor();
+ for(const width of [320,390,844,1440]) {
+  await page.setViewportSize({width,height:900});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`positions fit at ${width}`);
+ }
+ await page.getByRole('button',{name:'Use RRLS',exact:true}).click();
+ await page.getByText('Choice saved. Settings apply when safe.').waitFor();
+ assert.equal(requests.length,8);assert.equal(requests.at(-1).key,'mission/saved_station_positions');
+ assert.deepEqual(requests.at(-1).value,stationPositions);
+ assert.deepEqual(errors,[]);
+ console.log('PASS real Wasm: four widths, 44px controls, details/Escape, exact causal CAS, stale rejection without retry, deferred apply, transient error recovery, read-only access, mission summaries and exact resolution requests, administrator-only station positions, split mission/calibration permissions');
 }finally{await browser.close();await new Promise(r=>server.close(r));}
