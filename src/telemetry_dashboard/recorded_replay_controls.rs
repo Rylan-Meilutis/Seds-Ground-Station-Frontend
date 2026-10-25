@@ -20,6 +20,7 @@ enum Action {
     Rewind,
     Speed(f64),
     Loop(bool),
+    FollowSaved(bool),
     Seek(u64),
     Refresh,
 }
@@ -111,6 +112,7 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
                 speed: old.map(|p| p.speed).unwrap_or(1.),
                 paused: old.map(|p| p.paused).unwrap_or(false),
                 loop_playback: old.map(|p| p.loop_playback).unwrap_or(true),
+                follow_saved: old.is_some_and(|p| p.follow_saved),
             };
             next.recorded_replay = Some(plan);
             next.replay = None;
@@ -142,6 +144,7 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
                 }
                 Action::Speed(value) => plan.speed = value.clamp(0.25, 4.),
                 Action::Loop(value) => plan.loop_playback = value,
+                Action::FollowSaved(value) => plan.follow_saved = value,
                 Action::Seek(value) => {
                     plan.position_ms = value.min(plan.end_ms.saturating_sub(plan.start_ms) as u64);
                     plan.paused = true;
@@ -263,6 +266,7 @@ pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
                     option {value:"0.25","¼×"}option {value:"0.5","½×"}option {value:"1","1×"}option {value:"2","2×"}option {value:"4","4×"}
                 }}
                 label {style:"display:flex;gap:7px;align-items:center;min-height:44px;",input {r#type:"checkbox",checked:p.loop_playback,disabled:*busy.read(),onchange:move|e|dispatch(Action::Loop(e.checked()),base,busy,message)},"Loop recorded flight"}
+                label {style:"display:flex;gap:7px;align-items:center;min-height:44px;",input {r#type:"checkbox",checked:p.follow_saved,disabled:*busy.read(),onchange:move|e|dispatch(Action::FollowSaved(e.checked()),base,busy,message)},"Follow newly saved data"}
                 button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(Action::Refresh,base,busy,message),"Refresh saved snapshot"}
                 button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(Action::Stop,base,busy,message),"Stop flight replay"}
             }
@@ -273,7 +277,7 @@ pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
         }
         if !message.read().is_empty(){p {role:"status",style:"margin:0;","{message}"}}
         details {summary {style:"min-height:44px;display:flex;align-items:center;cursor:pointer;","About flight replay"}
-            p {style:"max-width:40rem;","Uses saved samples only. Active recordings are frozen at selection; refresh the snapshot to include newly saved data. Camera clips and live recovery positions remain separate."}
+            p {style:"max-width:40rem;","Uses saved samples only. Active recordings are frozen at selection. Refresh manually or enable Follow newly saved data for bounded updates from this saved flight. Camera clips and live recovery positions remain separate."}
         }
     }}
 }
@@ -292,6 +296,7 @@ mod tests {
             speed: 1.,
             paused: true,
             loop_playback: false,
+            follow_saved: false,
         };
         let mut b = a.clone();
         b.recording_id = "two.db".into();

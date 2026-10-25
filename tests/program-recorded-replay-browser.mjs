@@ -11,9 +11,9 @@ const server=http.createServer((req,res)=>{const u=new URL(req.url,'http://local
   res.setHeader('Content-Type','application/json');
   if(p.endsWith('/state')){res.end(JSON.stringify({plan,config,server_now_ms:now()}));return;}
   if(u.searchParams.get('recording_id')!==plan.recording_id){res.statusCode=409;res.end('{}');return;}
-  if(p.endsWith('/trajectory')){res.end(JSON.stringify({recording_id:plan.recording_id,upper_id:10,source_sender_id:'RF',points:points(),truncated:false,sampled:false}));return;}
+  if(p.endsWith('/trajectory')){res.end(JSON.stringify({recording_id:plan.recording_id,upper_id:plan.upper_id,source_sender_id:'RF',points:points(),truncated:false,sampled:false}));return;}
   const rows=points().map((v,i)=>({id:i+1,timestamp_ms:v.timestamp_ms,sender_id:'RF',data_type:'GPS_DATA',values:[v.latitude,v.longitude,v.altitude_m]}));rows.push({id:8,timestamp_ms:1000,sender_id:'FC',data_type:'ROLL',values:[15]},{id:9,timestamp_ms:1000,sender_id:'FC',data_type:'FLIGHT_STATE',values:[1],phase:'Ascent'});
-  res.end(JSON.stringify({recording_id:plan.recording_id,upper_id:10,next_id:10,has_more:false,rows,seeds:[]}));return;
+  res.end(JSON.stringify({recording_id:plan.recording_id,upper_id:plan.upper_id,next_id:plan.upper_id,has_more:false,rows,seeds:[]}));return;
  }
  if(p==='/'){res.setHeader('Content-Type','text/html');res.end(html);return;}
  const file=p.startsWith('/assets/')?path.resolve(rendering,p.slice('/assets/'.length)):'';
@@ -44,6 +44,10 @@ try{
   const angle=await value('document.querySelector("gs-vehicle-viewer").theta');await call('Input.dispatchMouseEvent',{type:'mousePressed',x:100,y:200,button:'left',clickCount:1});await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:145,y:220,button:'left',buttons:1});await call('Input.dispatchMouseEvent',{type:'mouseReleased',x:145,y:220,button:'left',clickCount:1});assert.notEqual(await value('document.querySelector("gs-vehicle-viewer").theta'),angle);
   console.log('PASS programme recordedapogee/follow/trail/drag/pause/fit',width);
  }
+ plan={...plan,upper_id:11,end_ms:12000,follow_saved:true};
+ await until('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-track"))?.upper_id===11&&JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms===3000');
+ assert.equal(await value('document.querySelector("gs-vehicle-viewer").root.position.y>9000'),true,'growing saved snapshot preserves paused recorded pose');
+ console.log('PASS programme growing saved snapshot retains playback and follow camera');
  plan={...plan,position_ms:0,speed:4,anchor_server_ms:now(),paused:false,loop_playback:true};
  await until('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms!==3000');
  await sleep(700);const at=await value('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms');assert(at>=1000&&at<=11000,'acceleratedloop stayswithinrecordedbounds');

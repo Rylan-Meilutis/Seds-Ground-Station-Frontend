@@ -79,7 +79,7 @@ stale controls require a refresh rather than silently overwriting it.
 
 Selection freezes the recording's row boundary. **Refresh saved snapshot** includes
 newly saved rows while preserving the current absolute replay time. It never
-reads live telemetry. Saved FC phases trim playback to the latest recorded ascent
+reads live telemetry. **Follow newly saved data** optionally persists automatic refreshes, at most once every five seconds for all viewers together. These updates preserve playback position and pause; they never switch into a later flight in the same recording. Saved FC phases trim playback to the latest recorded ascent
 through recovery plus five seconds when available. Recordings without flight
 phases use their full saved range. Overlapping wall-clock epochs are rejected
 rather than combining different flights.

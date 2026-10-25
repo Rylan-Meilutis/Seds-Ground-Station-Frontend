@@ -62,6 +62,8 @@ pub(crate) struct RecordedReplayPlan {
     pub speed: f64,
     pub paused: bool,
     pub loop_playback: bool,
+    #[serde(default)]
+    pub follow_saved: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
