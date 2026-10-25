@@ -74,7 +74,7 @@ otherwise the fixture reports the renderer actually selected by the browser.
 Stream Studio offers a **Recorded flight replay** panel. Select a saved recording,
 then Show 3D replay. Playback, pause, seek, quarter-to-four-times speed and looping
 are persisted by the server. Rewind pauses at the beginning. Stop restores the
-ordinary program layout. A competing operator's newer revision is preserved;
+ordinary program layout. Automatic saved-data growth does not invalidate an open scene/rundown draft and cannot be rolled back by saving that draft. Explicit replay controls use a separate authenticated control route. A competing operator's newer revision is preserved;
 stale controls require a refresh rather than silently overwriting it.
 
 Selection freezes the recording's row boundary. **Refresh saved snapshot** includes

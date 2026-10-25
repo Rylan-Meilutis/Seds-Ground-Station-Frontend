@@ -30,6 +30,14 @@ fn same_selection(a: &RecordedReplayPlan, b: &RecordedReplayPlan) -> bool {
         && a.start_ms == b.start_ms
         && a.end_ms == b.end_ms
 }
+fn same_or_grown_selection(a: &RecordedReplayPlan, b: &RecordedReplayPlan) -> bool {
+    same_selection(a, b)
+        || (a.follow_saved
+            && a.recording_id == b.recording_id
+            && a.start_ms == b.start_ms
+            && b.upper_id >= a.upper_id
+            && b.end_ms >= a.end_ms)
+}
 fn encoded(value: &str) -> String {
     const HEX: &[u8] = b"0123456789ABCDEF";
     let mut out = String::new();
@@ -88,7 +96,7 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
                     .recorded_replay
                     .as_ref()
                     .zip(old)
-                    .is_some_and(|(a, b)| same_selection(a, b))
+                    .is_some_and(|(a, b)| same_or_grown_selection(a, b))
             {
                 return Err("The selected recording changed. Review the current replay.".into());
             }
@@ -131,9 +139,10 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
                 .recorded_replay
                 .as_mut()
                 .ok_or("Select a recording first")?;
-            if !same_selection(plan, &clock.plan) {
+            if !same_or_grown_selection(plan, &clock.plan) {
                 return Err("The selected recording changed. Review the current replay.".into());
             }
+            *plan = clock.plan.clone();
             plan.position_ms = clock.replay_position_ms;
             plan.anchor_server_ms = 0;
             match action {
@@ -153,7 +162,11 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
             }
         }
     }
-    http_post_json::<BroadcastState, BroadcastState>("/api/live_streams/control", &next).await
+    http_post_json::<BroadcastState, BroadcastState>(
+        "/api/media-assets/recorded-vehicle/control",
+        &next,
+    )
+    .await
 }
 fn dispatch(
     action: Action,
@@ -205,7 +218,7 @@ pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
     let recordings =
         use_resource(|| async { http_get_json::<Vec<Recording>>("/api/recordings").await });
     use_effect(move || {
-        if broadcast.revision > base.read().revision {
+        if broadcast.revision >= base.read().revision && broadcast != *base.read() {
             base.set(broadcast.clone());
         }
     });
@@ -238,7 +251,10 @@ pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
         .as_ref()
         .and_then(|v| v.as_ref().ok())
         .and_then(|v| v.as_ref())
-        .filter(|v| plan.as_ref().is_some_and(|p| same_selection(p, &v.plan)))
+        .filter(|v| {
+            plan.as_ref()
+                .is_some_and(|p| same_or_grown_selection(p, &v.plan))
+        })
         .map(|v| v.replay_position_ms)
         .unwrap_or_else(|| plan.as_ref().map(|p| p.position_ms).unwrap_or(0));
     let options = recordings
@@ -304,6 +320,13 @@ mod tests {
         b = a.clone();
         b.upper_id = 11;
         assert!(!same_selection(&a, &b));
+        assert!(!same_or_grown_selection(&a, &b));
+        let mut following = a.clone();
+        following.follow_saved = true;
+        b.end_ms = 2000;
+        assert!(same_or_grown_selection(&following, &b));
+        b.recording_id = "another.db".into();
+        assert!(!same_or_grown_selection(&following, &b));
         assert_eq!(encoded("file name/#"), "file%20name%2F%23");
     }
 }
