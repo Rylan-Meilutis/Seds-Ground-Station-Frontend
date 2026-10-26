@@ -1,0 +1,117 @@
+{
+  "status": "PASS",
+  "updated_utc": "2026-10-26T05:57:12.308671+00:00",
+  "frontend_runtime_commit": "01a92c97fed53d873e84361366edb1c26199fe3d",
+  "scope": "Current frontend runtime; isolated synthetic browser APIs, no real accounts, hardware or actuation. Regression adds explicit abort recovery after a later FC Idle report.",
+  "native_tests": {
+    "passed": 140,
+    "ignored": 7,
+    "initial_sandbox_failure": "Local loopback socket denied; unchanged unrestricted rerun passed."
+  },
+  "settings_tests": {
+    "prototype_unit": 18,
+    "prototype_reconnect": 1,
+    "production_unit": 33,
+    "production_reconnect": 1,
+    "production_radio_budget": 1,
+    "all_passed": true
+  },
+  "sequence_tests": {
+    "passed": 37,
+    "failed": 0
+  },
+  "webassembly": {
+    "release_build": "PASS",
+    "wasm_bindgen": "0.2.129",
+    "wasm_sha256": "e0bbb503b3697c0e4a0b41c370f12abb29a77e058ca3d4a4546a7b3fd3a8e612"
+  },
+  "browser_suites": {
+    "operation-workflow": {
+      "exit_code": 0,
+      "elapsed_s": 7.03,
+      "log_sha256": "96e02f0780419bea6d52f89db0fba661039dad53d95f6706927813ec4289c802",
+      "log": ".workspace-progress/ui-final-browser/operation-workflow.log",
+      "final_exit_code": 0
+    },
+    "navigation-checklists": {
+      "exit_code": 0,
+      "elapsed_s": 18.74,
+      "log_sha256": "3dc2a31b42ebd3be3cb66d9d2c9fc535bbcf75080eea1b2a8af35e8d51a2be4e",
+      "log": ".workspace-progress/ui-final-browser/navigation-checklists.log",
+      "final_exit_code": 0
+    },
+    "chart-history": {
+      "exit_code": 0,
+      "elapsed_s": 6.12,
+      "log_sha256": "b73ff3f57fb831c58a7eaf4596b478f0170395748347361ef4dc7e5106545a26",
+      "log": ".workspace-progress/ui-final-browser/chart-history.log",
+      "final_exit_code": 0
+    },
+    "paired-settings-browser": {
+      "exit_code": 1,
+      "elapsed_s": 0.36,
+      "log_sha256": "b8950e4b7d0637b8226cf4e2cd0b320098b6be62f8c2a17d221f1609543d0f06",
+      "log": ".workspace-progress/ui-final-browser/paired-settings-browser.log",
+      "initial_fixture_failure": "Preview bundle absent; stopped before component load. Original failed log preserved.",
+      "final_exit_code": 0,
+      "postcheck_log": ".workspace-progress/ui-final-paired-browser-postcheck.log",
+      "postcheck_log_sha256": "b01dd5fd232c2d04f35fabe6b300f2b8fe18c6cae5d756acdfbddd22ecb38e62"
+    },
+    "checklist-sync-browser": {
+      "exit_code": 0,
+      "elapsed_s": 1.62,
+      "log_sha256": "739ba913157654a845063e81a48b69e0f4c6ef9c5551ac63e52fe63bef5dd3f7",
+      "log": ".workspace-progress/ui-final-browser/checklist-sync-browser.log",
+      "final_exit_code": 0
+    },
+    "stream-rundown-browser": {
+      "exit_code": 0,
+      "elapsed_s": 1.57,
+      "log_sha256": "3d39782e15ff113d5c322905cb7c0c10627dc11a2bfcbcc2bf7c48591068b925",
+      "log": ".workspace-progress/ui-final-browser/stream-rundown-browser.log",
+      "final_exit_code": 0
+    },
+    "dashboard-customization": {
+      "exit_code": 0,
+      "elapsed_s": 25.5,
+      "log_sha256": "34b42a0b7c6f0d06eec7c2820ea1c7a84d457b469a28e5edce717e96cdc79775",
+      "log": ".workspace-progress/ui-final-browser/dashboard-customization.log",
+      "final_exit_code": 0
+    },
+    "studio-audio-browser": {
+      "exit_code": 0,
+      "elapsed_s": 1.37,
+      "log_sha256": "a99997b9a781d7534deed5eee76015763fe2dd5ea8f67ed18aa362bdec87b8ad",
+      "log": ".workspace-progress/ui-final-browser/studio-audio-browser.log",
+      "final_exit_code": 0
+    },
+    "program-recorded-replay-browser": {
+      "exit_code": 0,
+      "elapsed_s": 8.78,
+      "log_sha256": "3f2794d26173ed54367a3e0ebef4d6d73c8caf77519a3029df4b2d05b0f81603",
+      "log": ".workspace-progress/ui-final-browser/program-recorded-replay-browser.log",
+      "final_exit_code": 0
+    },
+    "station-program_browser": {
+      "exit_code": 0,
+      "elapsed_s": 16.18,
+      "log_sha256": "0d06e91e63f6f9553d4f2a66bb0c44bc7b578aa0cc28e4befcd7107786cab2ae",
+      "log": ".workspace-progress/ui-final-browser/station-program_browser.log",
+      "final_exit_code": 0
+    }
+  },
+  "runtime_source_manifest_sha256": "c89c5b09ab4f55638654b33758f4c698592f203d39c129d3bbeadd2a6965992b",
+  "runtime_source_files": 111,
+  "abort_recovery_test_sha256": "045cbc4be859097d21341f07a46e9c5e97063b38a2edc34f2084cde4703e8a06",
+  "validation_log_sha256": {
+    "ui-final-audit-native-unrestricted.log": "085368bff702ea4f7c8dd9d3db620ffc45800143afa248638a5745fda7377849",
+    "ui-final-audit-settings.log": "5d58243111fac2ea5665e520f077633db5bca27153739dbbbdd37c5d688f05b7",
+    "ui-final-sequence-config.log": "5689c5b5e1b0c66e4fa9f99428ac95964eeb7773e28a6d34727ff11857417901",
+    "ui-final-audit-wasm.log": "7dcd4608f56a699f48221fc845a3dffa3496ec3e9c4fae0f325a7f6e7a8b3d40"
+  },
+  "limits": [
+    "Physical phone/Pi GPU, compass, camera, microphone and RF behavior remain hardware acceptance follow-ups.",
+    "macOS signing/notarization and native mobile packaging were not performed by this Linux audit.",
+    "The historical mission_settings prototype is retained separately; production uses paired_settings."
+  ]
+}

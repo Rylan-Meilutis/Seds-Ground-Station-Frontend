@@ -8,7 +8,7 @@ const root=path.resolve(process.env.GS_UI_BUNDLE || 'target/dx/groundstation_fro
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
 const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['admin'],permissions:{view_data:true,send_commands:true}};
 let lists={revision:0,enforce_before_launch:false,checklists:[{id:'setup',title:'Setup',required_before_launch:true,items:[{id:'pressure',text:'Pressure checked',checked:false,completed_by:null,completed_at_ms:null}]},{id:'recovery',title:'Recovery',required_before_launch:false,items:[{id:'recover',text:'Recovery area clear',checked:false,completed_by:null,completed_at_ms:null}]}]};
-let cameraOnline=true;
+let cameraOnline=true,abortClears=0;
 let broadcastState=example('live-streams').broadcast;
 let fillSource='kg50';
 let ptConfig={nitrogen_target_psi:100,pressure_step_psi:50,pressure_ceiling_psi:500,maximum_zero_offset_psi:20,dry_self_test_confirmed:false,grouped_panel:false};let overrides=0;
@@ -65,6 +65,12 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/action_policy'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(actionPolicy));return;}
   if(pathname==='/api/gse/status' && gseStatus){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(gseStatus));return;}
+  if(pathname==='/api/gse/abort/clear'){
+    assert.equal(req.method,'POST');assert.equal(req.headers.authorization,'Bearer ui-token');
+    let body='';for await(const data of req)body+=data;assert.deepEqual(JSON.parse(body),{});
+    abortClears++;gseStatus.automatic_abort_claimed=false;
+    res.setHeader('Content-Type','application/json');res.end('{}');return;
+  }
   if(pathname==='/api/gse/qualification/reset'){
     assert.equal(req.method,'POST');assert.equal(req.headers.authorization,'Bearer ui-token');
     qualificationResets++;gseStatus.qualification={self_test:false,nitrogen_test:false,fill_target:false,fault:null};
@@ -134,7 +140,14 @@ try {
  await page.waitForFunction(()=>document.querySelector('[aria-label="Mission workflow"] [aria-current="step"]')?.textContent==='Fire');
  assert.equal(await page.getByRole('button',{name:'Override cold-flow requirement',exact:true}).count(),0);
  assert(await page.getByRole('button',{name:'Reset operation checks',exact:true}).isDisabled());
+ gseStatus.mission_stage='idle';gseStatus.qualification.fire_started=false;
+ gseStatus.request_gate.flight_state='Idle';gseStatus.automatic_abort_claimed=true;
+ const clearAbort=page.getByRole('button',{name:'Clear GSE abort',exact:true});await clearAbort.waitFor();
+ await clearAbort.click();await page.getByRole('button',{name:'Cancel',exact:true}).click();
+ assert.equal(abortClears,0,'cancelling explicit abort recovery sends no request');
+ await clearAbort.click();await page.getByRole('button',{name:'Confirm clear abort',exact:true}).click();
+ await clearAbort.waitFor({state:'detached'});assert.equal(abortClears,1,'claimed abort remains recoverable after a later Idle report and clears exactly once');
  assert.deepEqual(errors,[]);
- console.log('PASS: four mission states, reasoned cold-flow override, actual-pass distinction, reload, Fire lock and 320/390/844/1440 layouts');
+ console.log('PASS: four mission states, reasoned cold-flow override, actual-pass distinction, reload, Fire lock, explicit abort recovery after Idle and 320/390/844/1440 layouts');
  await context.close();
 } finally {await browser.close();await new Promise(resolve=>server.close(resolve));}
