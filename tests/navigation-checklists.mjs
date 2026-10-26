@@ -207,9 +207,13 @@ try {
   await profile.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
   const mobile=await profile.newPage();await mobile.goto(origin+'/dashboard');
   const menu=mobile.getByRole('button',{name:'Menu',exact:true});await menu.waitFor();
-  const authButton=mobile.locator('.gs26-header-auth button');await authButton.waitFor();
-  assert(await authButton.isVisible(),'account action is available while menu is closed');
+  const authButton=mobile.locator('.gs26-utility-menu button').filter({hasText:/SIGN (IN|OUT)/});
+  await authButton.waitFor({state:'attached'});
+  assert.equal(await authButton.count(),1,'account action stays in Tools');
+  assert.equal(await mobile.getByText(/queue drops/i).count(),0,'queue counters are kept out of the regular UI');
+  assert.equal(await authButton.isVisible(),false,'account action follows the closed Tools/menu state');
   await menu.click();const panel=mobile.locator('#gs26-mobile-menu');
+  assert(await authButton.isVisible(),'account action is accessible in the expanded menu');
   assert((await panel.boundingBox()).height>700,'menu uses available screen height: '+JSON.stringify(await panel.evaluate(e=>({rect:e.getBoundingClientRect().toJSON(),position:getComputedStyle(e).position,display:getComputedStyle(e).display,transform:getComputedStyle(e.parentElement).transform}))));
   const tabs=mobile.getByRole('navigation',{name:'Mobile navigation'});
   assert(await tabs.getByRole('button').count()>5,'menu contains useful page navigation');

@@ -1225,7 +1225,8 @@ fn render_node(
     let node_z_index = if is_expanded { "20" } else { "2" };
     let packet_count_label = packet_stats.map(|stats| format_packet_count(stats.total_packets()));
     let age_label = format_seen_age(node.current_age_ms(super::monotonic_now_ms() as i64));
-    let last_seen = node.last_seen_ms
+    let last_seen = node
+        .last_seen_ms
         .and_then(|timestamp| i64::try_from(timestamp).ok())
         .map(super::format_timestamp_ms_clock)
         .unwrap_or_else(|| "Never observed".to_string());
@@ -1349,7 +1350,6 @@ fn format_seen_age(age_ms: Option<u64>) -> String {
     };
     format!("Seen {age} ago")
 }
-
 
 fn placement_for(id: &str, placements: &HashMap<String, NodePlacement>) -> Option<NodePlacement> {
     placements.get(id).copied()
@@ -1495,12 +1495,15 @@ fn topology_cache_hash(snapshot: &NetworkTopologyMsg, vertical_layout: bool) -> 
         node.id.hash(&mut hasher);
         node.label.hash(&mut hasher);
         node.kind.hash(&mut hasher);
+        node.status.hash(&mut hasher);
         node.sender_id.hash(&mut hasher);
         node.endpoints.hash(&mut hasher);
     }
     for link in &snapshot.links {
         link.source.hash(&mut hasher);
         link.target.hash(&mut hasher);
+        link.status.hash(&mut hasher);
+        link.label.hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -1789,131 +1792,60 @@ fn collapse_visible_links(
     links: &[NetworkTopologyLink],
     visible_node_ids: &HashSet<String>,
 ) -> Vec<NetworkTopologyLink> {
-    let visible_nodes = nodes
+    // Collapse only observed paths through hidden side/endpoint nodes. Never
+    // connect an isolated board to a guessed gateway or the local router.
+    let hidden = nodes
         .iter()
-        .filter(|node| visible_node_ids.contains(&node.id))
-        .cloned()
-        .collect::<Vec<_>>();
-    let Some(router) = visible_nodes
-        .iter()
-        .find(|node| node.kind == NetworkTopologyNodeKind::Router)
-    else {
-        return Vec::new();
-    };
-
-    let mut collapsed = BTreeMap::<(String, String), NetworkTopologyStatus>::new();
-
-    for link in links {
-        if !visible_node_ids.contains(&link.source) || !visible_node_ids.contains(&link.target) {
-            continue;
-        }
-        let key = ordered_link_key(link.source.clone(), link.target.clone());
-        collapsed
-            .entry(key)
-            .and_modify(|existing| *existing = existing.merged(link.status))
-            .or_insert(link.status);
-    }
-
-    let side_by_board = board_side_ids(nodes, links);
-    let relay_by_side = relay_board_ids(nodes, &side_by_board);
-
-    for node in visible_nodes
-        .iter()
-        .filter(|node| node.kind == NetworkTopologyNodeKind::Board)
-    {
-        let already_connected = collapsed
-            .keys()
-            .any(|(source, target)| source == &node.id || target == &node.id);
-        if already_connected {
-            continue;
-        }
-
-        let Some(side_id) = side_by_board.get(&node.id) else {
-            let key = ordered_link_key(router.id.clone(), node.id.clone());
-            collapsed.entry(key).or_insert(node.status);
-            continue;
-        };
-
-        if let Some(relay_id) = relay_by_side.get(side_id) {
-            let relay_status = nodes
-                .iter()
-                .find(|candidate| candidate.id == *relay_id)
-                .map(|relay| relay.status)
-                .unwrap_or(node.status);
-
-            let router_key = ordered_link_key(router.id.clone(), relay_id.clone());
-            collapsed
-                .entry(router_key)
-                .and_modify(|existing| *existing = existing.merged(relay_status))
-                .or_insert(relay_status);
-
-            if relay_id != &node.id {
-                let branch_key = ordered_link_key(relay_id.clone(), node.id.clone());
-                collapsed
-                    .entry(branch_key)
-                    .and_modify(|existing| *existing = existing.merged(node.status))
-                    .or_insert(node.status);
+        .filter(|node| !visible_node_ids.contains(&node.id))
+        .map(|node| node.id.clone())
+        .collect::<HashSet<_>>();
+    let mut collapsed = BTreeMap::<(String, String), NetworkTopologyLink>::new();
+    for source in visible_node_ids {
+        let mut queue = std::collections::VecDeque::from([(
+            source.clone(),
+            NetworkTopologyStatus::Online,
+            None::<String>,
+        )]);
+        let mut visited = HashSet::from([source.clone()]);
+        while let Some((current, path_status, path_label)) = queue.pop_front() {
+            for link in links {
+                let other = if link.source == current {
+                    &link.target
+                } else if link.target == current {
+                    &link.source
+                } else {
+                    continue;
+                };
+                if !visited.insert(other.clone()) {
+                    continue;
+                }
+                let status = if path_status == NetworkTopologyStatus::Offline
+                    || link.status == NetworkTopologyStatus::Offline
+                {
+                    NetworkTopologyStatus::Offline
+                } else {
+                    path_status.merged(link.status)
+                };
+                let label = path_label.clone().or_else(|| link.label.clone());
+                if visible_node_ids.contains(other) {
+                    let key = ordered_link_key(source.clone(), other.clone());
+                    collapsed.entry(key.clone()).or_insert(NetworkTopologyLink {
+                        source: key.0,
+                        target: key.1,
+                        label,
+                        status,
+                    });
+                } else if hidden.contains(other) {
+                    queue.push_back((other.clone(), status, label));
+                }
             }
-        } else {
-            let key = ordered_link_key(router.id.clone(), node.id.clone());
-            collapsed
-                .entry(key)
-                .and_modify(|existing| *existing = existing.merged(node.status))
-                .or_insert(node.status);
         }
     }
-
-    collapsed
-        .into_iter()
-        .map(|((source, target), status)| NetworkTopologyLink {
-            source,
-            target,
-            label: None,
-            status,
-        })
-        .collect()
+    collapsed.into_values().collect()
 }
 
 fn ordered_link_key(a: String, b: String) -> (String, String) {
     if a < b { (a, b) } else { (b, a) }
-}
-
-fn board_side_ids(
-    nodes: &[NetworkTopologyNode],
-    links: &[NetworkTopologyLink],
-) -> HashMap<String, String> {
-    let side_ids = nodes
-        .iter()
-        .filter(|node| node.kind == NetworkTopologyNodeKind::Side)
-        .map(|node| node.id.clone())
-        .collect::<HashSet<_>>();
-    let mut out = HashMap::new();
-    for link in links {
-        if side_ids.contains(&link.source) {
-            out.insert(link.target.clone(), link.source.clone());
-        } else if side_ids.contains(&link.target) {
-            out.insert(link.source.clone(), link.target.clone());
-        }
-    }
-    out
-}
-
-fn relay_board_ids(
-    nodes: &[NetworkTopologyNode],
-    side_by_board: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for node in nodes
-        .iter()
-        .filter(|node| node.kind == NetworkTopologyNodeKind::Board)
-    {
-        let Some(side_id) = side_by_board.get(&node.id) else {
-            continue;
-        };
-        out.entry(side_id.clone())
-            .or_insert_with(|| node.id.clone());
-    }
-    out
 }
 
 fn compute_graph_layout(
@@ -2158,6 +2090,50 @@ mod timing_tests {
     }
 
     #[test]
+    fn graph_uses_observed_edges_and_updates_when_link_state_changes() {
+        let node = |id: &str, kind: &str| -> NetworkTopologyNode {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"label":id,"kind":kind,"status":"online","group":"board",
+                "sender_id":id,"detail":null
+            }))
+            .unwrap()
+        };
+        let nodes = vec![
+            node("gs", "router"),
+            node("rrls", "board"),
+            node("rf", "board"),
+            node("fc", "board"),
+        ];
+        let visible = nodes.iter().map(|n| n.id.clone()).collect();
+        let mut snapshot = NetworkTopologyMsg::default();
+        snapshot.nodes = nodes.clone();
+        snapshot.links = vec![NetworkTopologyLink {
+            source: "gs".into(),
+            target: "rrls".into(),
+            label: Some("standby".into()),
+            status: NetworkTopologyStatus::Online,
+        }];
+        let edges = collapse_visible_links(&nodes, &snapshot.links, &visible);
+        assert_eq!(edges.len(), 1); // Isolated RF/FC get no fabricated edge.
+        assert_eq!(edges[0].label.as_deref(), Some("standby"));
+        let before = topology_cache_hash(&snapshot, false);
+        snapshot.links[0].status = NetworkTopologyStatus::Offline;
+        assert_ne!(before, topology_cache_hash(&snapshot, false));
+        let before = topology_cache_hash(&snapshot, false);
+        snapshot.links[0].label = Some("relay".into());
+        assert_ne!(before, topology_cache_hash(&snapshot, false));
+        snapshot.links.push(NetworkTopologyLink {
+            source: "rrls".into(),
+            target: "rf".into(),
+            label: Some("relay".into()),
+            status: NetworkTopologyStatus::Online,
+        });
+        let edges = collapse_visible_links(&nodes, &snapshot.links, &visible);
+        assert_eq!(edges.len(), 2);
+        assert!(!edges.iter().any(|l| l.source == "gs" && l.target == "rf"));
+    }
+
+    #[test]
     fn topology_timing_survives_cached_layout_and_old_servers() {
         let mut node: NetworkTopologyNode = serde_json::from_str(
             r#"{"id":"board_vb","label":"Valve","kind":"board","status":"offline","group":"board","sender_id":"VB","detail":null}"#,
@@ -2168,6 +2144,11 @@ mod timing_tests {
         node.received_mono_ms = 1000;
         assert_eq!(node.clone().current_age_ms(3000), Some(14_000));
         assert_eq!(node.current_age_ms(900), Some(12_000));
-        assert!(serde_json::to_value(&node).unwrap().get("received_mono_ms").is_none());
+        assert!(
+            serde_json::to_value(&node)
+                .unwrap()
+                .get("received_mono_ms")
+                .is_none()
+        );
     }
 }

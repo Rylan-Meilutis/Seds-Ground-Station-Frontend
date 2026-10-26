@@ -2845,7 +2845,6 @@ fn TelemetryDashboardInner() -> Element {
                }}
              }}
              .gs26-mobile-menu-pages {{display:none;}}
-             .gs26-header-auth {{margin-left:auto;order:1;}}
              @media (max-width:720px) {{
                .gs26-header-actions-shell {{pointer-events:auto;}}
                .gs26-header-actions-list {{position:fixed;inset:72px 8px 8px;width:auto;max-width:none;max-height:none;overflow-y:auto;overscroll-behavior:contain;justify-content:flex-start;}}
@@ -3129,7 +3128,6 @@ fn TelemetryDashboardInner() -> Element {
                                 --gs26-header-menu-border:{theme.button_border};
                                 --gs26-header-menu-text:{theme.button_text};
                             ",
-                            div {class:"gs26-header-auth",style:"pointer-events:auto;",{auth_button}}
                             button {
                                 r#type:"button",
                                 "aria-expanded":header_actions_expanded().to_string(),
@@ -3296,7 +3294,7 @@ fn TelemetryDashboardInner() -> Element {
                                         onclick:move |_| { clear_current_dashboard_data_without_reseed(); },
                                         "Clear all graphs"
                                     }
-                                    {reload_button}{version_button}{connect_button}
+                                    {auth_button}{reload_button}{version_button}{connect_button}
                                 }
                             }
 
