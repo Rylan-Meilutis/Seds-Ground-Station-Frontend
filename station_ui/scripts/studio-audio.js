@@ -125,3 +125,6 @@ if(new URLSearchParams(location.search).get('embedded')==='1'&&parent!==window){
  });
 }
 const timer=setInterval(refresh,2000);window.addEventListener('pagehide',()=>{stopped=true;clearInterval(timer);stopAll();});settings();
+
+for(const kind of ['contextmenu','selectstart','dragstart'])$('speak').addEventListener(kind,event=>event.preventDefault());
+$('speak').addEventListener('touchstart',event=>event.preventDefault(),{passive:false});

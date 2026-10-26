@@ -63,14 +63,14 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/live_streams/control') {
     let body='';for await(const data of req)body+=data;
-    const next=JSON.parse(body);assert.equal(next.revision,broadcastState.revision);
+    const next=JSON.parse(body);if(next.revision!==broadcastState.revision){res.statusCode=409;res.end('Broadcast changed; reload before saving');return;}
     next.revision++;
     if(next.replay && !next.replay.id){next.replay.id='fixture-replay';next.replay.started_at_ms=Date.now();next.replay.source_end_ms=Date.now()-10000;}
     broadcastState=next;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(next));return;
   }
   if(pathname.startsWith('/api/')){
     res.setHeader('Content-Type','application/json');
-    const data=pathname==='/api/auth/session'?session:pathname==='/api/layout'?dashboardLayout:pathname==='/api/fill_targets'?{version:1,fill_source:fillSource,nitrogen:{target_mass_kg:10,target_pressure_psi:100},nitrous:{target_mass_kg:20,target_pressure_psi:200}}:pathname==='/api/live_streams'?{...example('live-streams'),broadcast:broadcastState,can_manage_stream:session.roles.some(role=>['stream_master','stream_admin','admin'].includes(role)),program_url:'',can_preview_live:session.roles.some(role=>['stream_master','stream_admin','admin'].includes(role)),streams:[{id:'pad-wide',label:'Pad wide',url:'/test-camera?ticket=fixture',online:cameraOnline,kind:'webrtc'}]}:pathname==='/api/vehicle'?{}:[];
+    const data=pathname==='/api/auth/session'?session:pathname==='/api/layout'?dashboardLayout:pathname==='/api/fill_targets'?{version:1,fill_source:fillSource,nitrogen:{target_mass_kg:10,target_pressure_psi:100},nitrous:{target_mass_kg:20,target_pressure_psi:200}}:pathname==='/api/live_streams'?{...example('live-streams'),broadcast:broadcastState,can_manage_stream:session.roles.some(role=>['stream_master','stream_admin','admin'].includes(role)),program_url:'',can_preview_live:session.roles.some(role=>['stream_master','stream_admin','admin'].includes(role)),streams:[{id:'pad-wide',label:'Pad wide',url:'/test-camera?ticket=fixture',online:cameraOnline,kind:'webrtc'},{id:'side',label:'Side camera',url:'/test-camera?ticket=side',online:true,kind:'webrtc'}]}:pathname==='/api/vehicle'?{}:[];
     res.end(JSON.stringify(data));return;
   }
   const relative=pathname==='/'||pathname==='/dashboard'?'index.html':pathname.slice(1);
@@ -189,4 +189,56 @@ try {
  await page.getByRole('button',{name:'Dismiss warning notification'}).click();
  assert.deepEqual(errors,[]);console.log('PASS: exclusive navigation settings, sidebar collapse persistence, distinct icons, shared checklist updates, admin templates, stale-edit protection, mobile layouts, button-only warning pulses and notification');
  await context.close();
+ // Fresh profiles prevent the administrator's persisted session from masking grants.
+ const originalSession=structuredClone(session);
+ for(const entry of [
+  {name:'anonymous',authenticated:false,anonymous:true,roles:[],permissions:{view_data:true}},
+  {name:'publisher',authenticated:true,anonymous:false,roles:['operator'],permissions:{view_data:true,camera_publish:true}},
+  {name:'voice',authenticated:true,anonymous:false,roles:['operator'],permissions:{view_data:true,voice_transmit:true}},
+  {name:'manager',authenticated:true,anonymous:false,roles:['stream_master'],permissions:{view_data:true}},
+ ]){
+  Object.assign(session,originalSession,entry,{username:entry.authenticated?entry.name:null});
+  const profile=await browser.newContext({viewport:{width:390,height:844}});
+  await profile.addInitScript(({session,origin})=>{
+   if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base)}catch{return null}};
+   if(session.authenticated)localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));
+  },{session,origin});
+  await profile.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
+  await profile.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
+  const mobile=await profile.newPage();await mobile.goto(origin+'/dashboard');
+  const menu=mobile.getByRole('button',{name:'Menu',exact:true});await menu.waitFor();
+  const authButton=mobile.locator('.gs26-header-auth button');await authButton.waitFor();
+  assert(await authButton.isVisible(),'account action is available while menu is closed');
+  await menu.click();const panel=mobile.locator('#gs26-mobile-menu');
+  assert((await panel.boundingBox()).height>700,'menu uses available screen height: '+JSON.stringify(await panel.evaluate(e=>({rect:e.getBoundingClientRect().toJSON(),position:getComputedStyle(e).position,display:getComputedStyle(e).display,transform:getComputedStyle(e.parentElement).transform}))));
+  const tabs=mobile.getByRole('navigation',{name:'Mobile navigation'});
+  assert(await tabs.getByRole('button').count()>5,'menu contains useful page navigation');
+  assert.equal(await tabs.getByRole('button',{name:'Voice Chat',exact:true}).count(),entry.name==='voice'?1:0);
+  assert.equal(await tabs.getByRole('button',{name:'Cameras & Recordings',exact:true}).count(),entry.name==='manager'?1:0);
+  assert.equal(await tabs.getByRole('button',{name:'Share camera',exact:true}).count(),entry.name==='publisher'?1:0);
+  if(entry.name==='manager'){
+   await tabs.getByRole('button',{name:'Stream Manager',exact:true}).click();
+   const designer=mobile.getByRole('region',{name:'Camera layout designer'});
+   await designer.waitFor();
+   await designer.getByLabel('Camera layout',{exact:true}).selectOption('main-side');
+   await designer.getByLabel('Main camera width',{exact:true}).fill('70');
+   await designer.getByRole('button',{name:'Move Pad wide later',exact:true}).click();
+   await designer.getByRole('button',{name:'Save camera layout',exact:true}).click();
+   await designer.getByText('Layout saved',{exact:true}).waitFor();
+   assert.equal(broadcastState.layout,'tiles');assert.equal(broadcastState.tiles[0].stream_id,'side');assert.equal(broadcastState.tiles[0].width,70);
+   broadcastState.revision++;
+   await designer.getByRole('button',{name:'Save camera layout',exact:true}).click();
+   await designer.getByText(/reload before saving/).waitFor();
+   session.roles=[];
+   await mobile.getByRole('button',{name:'Menu',exact:true}).click();
+   await mobile.getByRole('navigation',{name:'Mobile navigation'}).getByRole('button',{name:'Cameras & Recordings',exact:true}).waitFor({state:'detached',timeout:12000});
+  }
+  if(entry.name==='anonymous'){
+   await mobile.getByRole('button',{name:'Close menu',exact:true}).click();await mobile.getByRole('button',{name:'SIGN IN',exact:true}).click();
+   await mobile.waitForURL(/login/);
+  }
+  await profile.close();
+ }
+ Object.assign(session,originalSession);
+ console.log('PASS: mobile menu dimensions, direct signed-out login, independent publisher/voice/manager tabs, saved tile ordering/resizing, stale revisions and live revocation');
 }finally{await browser.close();await new Promise(r=>server.close(r));}

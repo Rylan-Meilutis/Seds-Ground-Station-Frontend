@@ -6,7 +6,7 @@ import path from 'node:path';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const root=path.resolve(process.env.GS_UI_BUNDLE || 'target/dx/groundstation_frontend/debug/web/public');
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
-const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['stream_master'],permissions:{view_data:true,send_commands:true}};
+const session={...example('auth-session.anonymous'),authenticated:true,anonymous:false,username:'ui-test',roles:['stream_master'],permissions:{view_data:true,send_commands:true,voice_transmit:true,camera_publish:true}};
 let cameraOnline=true;
 let broadcastState=example('live-streams').broadcast;
 const alertSockets=new Set(); const alertAckRequests=[]; let alertAckFailure=false;
@@ -296,7 +296,7 @@ try{
   await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
   await page.getByText('Account saved',{exact:true}).waitFor();
   assert(adminAccounts[0].roles.includes('admin'));
-  await page.getByLabel('Transmit voice',{exact:true}).check();
+  await page.getByLabel('Join and transmit crew voice',{exact:true}).check();
   await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
   await page.getByText('Account saved',{exact:true}).waitFor();
   assert.equal(adminAccounts[0].permissions.voice_transmit,true);
@@ -332,7 +332,7 @@ try{
   await page.getByRole('button',{name:'Voice Chat',exact:true}).click();
   await page.frameLocator('#gs26-crew-voice').getByText('Media tool fixture').waitFor({state:'visible'});
   assert((await page.locator('#gs26-crew-voice').boundingBox()).height>300,'voice fills mobile tab');
-  await choose();await page.getByRole('button',{name:'Cameras & Recordings',exact:true}).click();
+  await choose();await page.getByRole('button',{name:'Share camera',exact:true}).click();
   await page.frameLocator('#gs26-media').getByText('Media tool fixture').waitFor({state:'visible'});
   assert((await page.locator('#gs26-media').boundingBox()).height>300,'cameras fill mobile tab');
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'media fits mobile width');
@@ -485,7 +485,7 @@ try{
   assert.match(await page.locator('.gs26-connection-notice').innerText(),/RRLS/,'connection labels follow the actual server identity');
   session.station_name='GroundStation';session.station_role='primary';
   await page.reload();await page.waitForFunction(()=>document.title==='UBSEDS GS');
-  session.roles=['stream_viewer'];session.permissions.send_commands=false;
+  session.roles=['stream_viewer'];session.permissions.send_commands=false;session.permissions.voice_transmit=false;session.permissions.camera_publish=false;
   await page.reload();
   await page.getByText('Waiting for the delayed broadcast program…',{exact:true}).waitFor();
   assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'viewer role mounts no mission navigation');

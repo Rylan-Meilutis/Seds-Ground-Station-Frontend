@@ -3,7 +3,7 @@ use super::{http_get_json,http_post_json};
 use dioxus::prelude::*;
 use serde::{Deserialize,Serialize};
 #[derive(Clone,Default,Serialize,Deserialize)]
-struct Permissions {view_data:bool,send_commands:bool,set_system_time:bool,voice_transmit:bool}
+struct Permissions {view_data:bool,send_commands:bool,set_system_time:bool,voice_transmit:bool,#[serde(default)]camera_publish:bool}
 #[derive(Clone,Default,Serialize,Deserialize)]
 struct CommandAccess {allowed_commands:Vec<String>}
 #[derive(Clone,Default,Serialize,Deserialize)]
@@ -53,7 +53,8 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
                             }}"Application administrator"}
                             label {input {r#type:"checkbox",checked:account.permissions.view_data,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.view_data=e.checked()}"View data"}
                             label {input {r#type:"checkbox",checked:account.permissions.send_commands,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.send_commands=e.checked()}"Send hardware commands"}
-                            label {input {r#type:"checkbox",checked:account.permissions.voice_transmit,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.voice_transmit=e.checked()}"Transmit voice"}
+                            label {input {r#type:"checkbox",checked:account.permissions.camera_publish,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.camera_publish=e.checked()}"Share camera and microphone"}
+                            label {input {r#type:"checkbox",checked:account.permissions.voice_transmit,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.voice_transmit=e.checked()}"Join and transmit crew voice"}
                             label {input {r#type:"checkbox",checked:account.permissions.set_system_time,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.set_system_time=e.checked()}"Set system time"}
                             label {input {r#type:"checkbox",checked:account.calibration_access.view,disabled:*busy.read(),onchange:move|e|accounts.write()[index].calibration_access.view=e.checked()}"View calibration"}
                             label {input {r#type:"checkbox",checked:account.calibration_access.edit,disabled:*busy.read(),onchange:move|e|accounts.write()[index].calibration_access.edit=e.checked()}"Edit calibration"}
@@ -61,7 +62,7 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
                         }
                         details {summary {"Roles & command limits"}
                             div {class:"admin-permissions",
-                                for (role,label) in [("stream_admin","Stream administrator"),("stream_master","Stream manager")] {
+                                for (role,label) in [("stream_admin","Stream administrator"),("stream_master","Stream manager (manage cameras and broadcast)")] {
                                     label {input {r#type:"checkbox",checked:account.roles.iter().any(|value|value==role),disabled:*busy.read(),onchange:move|e|{
                                         let mut accounts=accounts.write();let roles=&mut accounts[index].roles;roles.retain(|value|value!=role);if e.checked(){roles.push(role.into());}
                                     }}"{label}"}

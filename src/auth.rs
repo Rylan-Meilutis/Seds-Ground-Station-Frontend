@@ -27,6 +27,10 @@ pub struct Permissions {
     pub send_commands: bool,
     #[serde(default)]
     pub set_system_time: bool,
+    #[serde(default)]
+    pub voice_transmit: bool,
+    #[serde(default)]
+    pub camera_publish: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +258,11 @@ pub fn can_manage_stream() -> bool {
                 .iter()
                 .any(|command| command == "StreamControl"))
 }
+
+fn camera_permission(status:&SessionStatus)->bool {status.authenticated&&!status.anonymous&&(status.roles.iter().any(|r|r=="admin")||(status.permissions.view_data&&status.permissions.camera_publish))}
+fn voice_permission(status:&SessionStatus)->bool {status.authenticated&&!status.anonymous&&(status.roles.iter().any(|r|r=="admin")||(status.permissions.view_data&&status.permissions.voice_transmit))}
+pub fn can_publish_camera()->bool{camera_permission(&current_status())}
+pub fn can_join_voice()->bool{voice_permission(&current_status())}
 
 pub fn set_current_session(session: StoredAuthSession) {
     let host_scope = current_host_scope();
@@ -949,4 +958,8 @@ fn fallback_auth_storage_dir() -> std::path::PathBuf {
         .or_else(dirs::data_dir)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
         .join("gs26")
+}
+
+#[cfg(test)]mod media_permission_tests {use super::*;
+ #[test]fn publishing_voice_and_management_are_independent(){let mut status=SessionStatus{authenticated:true,permissions:Permissions{view_data:true,..Default::default()},..Default::default()};assert!(!camera_permission(&status));assert!(!voice_permission(&status));status.roles=vec!["stream_master".into()];assert!(!camera_permission(&status));assert!(!voice_permission(&status));status.roles.clear();status.permissions.camera_publish=true;assert!(camera_permission(&status));assert!(!voice_permission(&status));status.permissions.voice_transmit=true;assert!(voice_permission(&status));status.anonymous=true;assert!(!voice_permission(&status));assert!(!camera_permission(&status));}
 }

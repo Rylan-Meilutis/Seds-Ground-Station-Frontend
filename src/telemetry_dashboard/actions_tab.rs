@@ -275,6 +275,50 @@ fn apply_button_style(theme: &ThemeConfig, enabled: bool) -> String {
 }
 
 #[component]
+pub(super) fn NetworkUtcControls() -> Element {
+    let mut utc = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    let status = auth::current_status();
+    if !status.permissions.set_system_time {
+        return rsx! {};
+    }
+    let recovery = status.station_role.as_deref() == Some("rrls");
+    rsx! {
+        fieldset {
+            legend { "Network UTC time" }
+            if recovery {
+                p { "Set network UTC at the primary GroundStation." }
+            } else {
+                label {
+                    "UTC date and time "
+                    input { r#type: "datetime-local", value: "{utc}", step: "1",
+                        oninput: move |event| utc.set(event.value()) }
+                }
+                button { disabled: busy(), onclick: move |_| {
+                    let utc_ms = match super::recording_download::input_utc_ms(&utc()) {
+                        Ok(value) => value,
+                        Err(error) => { message.set(error); return; }
+                    };
+                    busy.set(true);
+                    spawn(async move {
+                        message.set(match super::http_post_json::<_, serde_json::Value>(
+                            "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
+                        ).await {
+                            Ok(_) => "Network UTC source updated.".into(),
+                            Err(error) => format!("Network UTC was not updated: {error}"),
+                        });
+                        busy.set(false);
+                    });
+                }, "Set network UTC" }
+                p { "Sets the station's network UTC source. Clock corrections apply gradually; the server system clock is unchanged." }
+            }
+            p { role: "status", "{message}" }
+        }
+    }
+}
+
+#[component]
 pub fn ActionsTab(
     layout: ActionsTabLayout,
     action_policy: Signal<ActionPolicyMsg>,
@@ -421,6 +465,7 @@ pub fn ActionsTab(
             ",
             style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
+            NetworkUtcControls {}
             if operational_status.read()["unavailable"].as_bool()==Some(true) {
                 p {role:"alert","Sequence and panel status unavailable"}
             }

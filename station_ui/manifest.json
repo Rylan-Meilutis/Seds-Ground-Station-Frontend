@@ -135,6 +135,11 @@
       "name": "MAPLIBRE_CSS",
       "path": "static/vendor/maplibre-gl/maplibre-gl.css",
       "kind": "text"
+    },
+    {
+      "name": "STAY_AWAKE_JS",
+      "path": "station_ui/scripts/stay-awake.js",
+      "kind": "text"
     }
   ]
 }

@@ -62,7 +62,7 @@ fn _default_main_tab_label(tab: MainTab) -> String {
         }
         MainTab::StreamManager => localized_copy(&lang, "Stream Manager", "Gestor de transmisión", "Gestion du direct"),
         MainTab::CrewVoice => localized_copy(&lang, "Voice Chat", "Chat de voz", "Discussion vocale"),
-        MainTab::Media => localized_copy(&lang, "Cameras & Recordings", "Cámaras y grabaciones", "Caméras et enregistrements"),
+        MainTab::Media => if auth::can_manage_stream(){localized_copy(&lang, "Cameras & Recordings", "Cámaras y grabaciones", "Caméras et enregistrements")}else{localized_copy(&lang,"Share camera","Compartir cámara","Partager une caméra")},
         MainTab::Vehicle => localized_copy(&lang, "3D replay", "Repetición 3D", "Relecture 3D"),
         MainTab::Messages => localized_copy(&lang, "Messages", "Mensajes", "Messages"),
         MainTab::Notifications => {
@@ -228,7 +228,9 @@ fn _available_main_tabs(
     for tab in [MainTab::CrewVoice, MainTab::Media, MainTab::Vehicle, MainTab::Checklists] {
         if !tabs.contains(&tab) { tabs.push(tab); }
     }
-    tabs.retain(|tab| *tab != MainTab::State);
+    tabs.retain(|tab| *tab != MainTab::State
+        && (*tab != MainTab::CrewVoice || auth::can_join_voice())
+        && (*tab != MainTab::Media || (auth::can_publish_camera() || auth::can_manage_stream())));
     if auth::can_manage_stream() && !tabs.contains(&MainTab::StreamManager) { tabs.push(MainTab::StreamManager); }
     tabs.retain(|tab| *tab != MainTab::StreamManager || auth::can_manage_stream());
     // Older layouts must expose recording export without a server config migration.
@@ -294,7 +296,9 @@ fn _configured_main_tabs(
         tabs.insert(notifications_idx, MainTab::Messages);
     }
     // The primary dashboard stays reachable regardless of old tab customization.
-    tabs.retain(|tab| *tab != MainTab::State);
+    tabs.retain(|tab| *tab != MainTab::State
+        && (*tab != MainTab::CrewVoice || auth::can_join_voice())
+        && (*tab != MainTab::Media || (auth::can_publish_camera() || auth::can_manage_stream())));
     tabs.insert(0, MainTab::State);
     tabs
 }
@@ -611,6 +615,6 @@ mod dashboard_customization_tests {
         let editor_tabs = _ordered_available_main_tabs(&layout, false, None, &customization);
         assert!(editor_tabs[0] == MainTab::State);
         assert!(editor_tabs[1] == MainTab::Mission);
-        assert!(editor_tabs.contains(&MainTab::Media));
+        assert!(!editor_tabs.contains(&MainTab::Media),"Customization cannot grant camera permissions");
     }
 }

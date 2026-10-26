@@ -38,6 +38,8 @@ pub(crate) struct BroadcastState {
     #[serde(default)]
     pub layout: String,
     #[serde(default)]
+    pub tiles: Vec<CameraTile>,
+    #[serde(default)]
     pub revision: u64,
     #[serde(default)]
     pub replay: Option<ReplayPlan>,
@@ -50,6 +52,9 @@ pub(crate) struct BroadcastState {
     #[serde(default)]
     pub recorded_replay: Option<RecordedReplayPlan>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct CameraTile {pub stream_id:String,pub x:f64,pub y:f64,pub width:f64,pub height:f64}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct RecordedReplayPlan {
@@ -221,7 +226,7 @@ pub(crate) fn LiveStreamTab(
             if manager_mode && !program_only {
                 div { class:"gs26-program-header",
                     strong { if manager_mode { "Stream Manager" } else { "Mission broadcast" } }
-                    if !dedicated {button { onclick:move |_| on_open_voice.call(()), "Voice Chat" }}
+                    if !dedicated && crate::auth::can_join_voice() {button { onclick:move |_| on_open_voice.call(()), "Voice Chat" }}
                     if cfg.can_preview_live {
                         button { onclick:move |_| on_open_media.call(()), "Camera recordings" }
                     }
@@ -291,7 +296,7 @@ pub(crate) fn LiveStreamTab(
                 }
             }
             if cfg.program_url.is_empty() {p {"Waiting for the delayed broadcast program…"}}
-            else {iframe {class:"gs26-program-player",src:url,title:"Mission broadcast — delayed video, audio and telemetry",allow:"autoplay; fullscreen"}}
+            else {iframe {class:"gs26-program-player",src:url,title:"Mission broadcast — delayed video, audio and telemetry",allow:"autoplay; fullscreen; screen-wake-lock"}}
 
             }
         }

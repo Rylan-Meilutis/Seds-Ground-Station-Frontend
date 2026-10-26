@@ -37,7 +37,7 @@ pub(super) fn MediaToolTab(
                 iframe {
                     id, src, title,
                     style: "height:100%;width:100%;border:0;",
-                    allow: "camera; microphone; autoplay; fullscreen",
+                    allow: "camera; microphone; autoplay; fullscreen; screen-wake-lock",
                     "sandbox": "allow-scripts allow-same-origin allow-forms allow-downloads",
                     onload: move |_| send_session(id, token.read().as_deref(), visible),
                 }
@@ -89,14 +89,17 @@ fn send_session(id: &str, token: Option<&str>, visible: bool) {
 
 /// Camera/voice documents outlive dashboard, aiming and stream-only surfaces.
 #[component]
-pub(super) fn MediaSurface(media_visible: bool, voice_visible: bool, children: Element) -> Element {
+pub(super) fn MediaSurface(media_visible: bool, voice_visible: bool, stream_visible:bool, children: Element) -> Element {
+    use_effect(use_reactive((&media_visible,&voice_visible,&stream_visible), move |(media,voice,stream)|{document::eval(include_str!("../../station_ui/scripts/stay-awake.js"));document::eval(&format!("window.GS26StayAwake?.setActive('media-view', {});",media||voice||stream));}));
     rsx! {
         div {style:"display:contents;",
-            MediaHost {host:"gs26-camera-host",slot:"gs26-media-slot",visible:media_visible,
+            if crate::auth::can_publish_camera() || crate::auth::can_manage_stream() { MediaHost {host:"gs26-camera-host",slot:"gs26-media-slot",visible:media_visible,
                 MediaToolTab {id:"gs26-media",path:"/media?embedded=1",title:"Cameras and recordings",visible:media_visible}
             }
-            MediaHost {host:"gs26-voice-host",slot:"gs26-voice-slot",visible:voice_visible,
+            }
+            if crate::auth::can_join_voice() { MediaHost {host:"gs26-voice-host",slot:"gs26-voice-slot",visible:voice_visible,
                 MediaToolTab {id:"gs26-crew-voice",path:"/radio?embedded=1",title:"Voice chat",visible:voice_visible}
+            }
             }
             {children}
         }

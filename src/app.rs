@@ -650,10 +650,28 @@ pub fn Dashboard() -> Element {
         });
     });
 
+    // Refresh grants without tearing down a working dashboard on a transient outage.
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(5000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let base = UrlConfig::base_http();
+            if let Ok(status) = auth::fetch_session_status(&base, UrlConfig::_skip_tls_verify()).await {
+                let changed = auth_state.peek().as_ref().and_then(|value| value.as_ref().ok())
+                    .and_then(|old| serde_json::to_value(old).ok()) != serde_json::to_value(&status).ok();
+                if changed { auth_state.set(Some(Ok(status))); }
+            }
+        }
+    });
+
+    let access = auth::current_status();
+    let access_key = serde_json::json!([access.username,access.roles,access.permissions]).to_string();
     let content = match auth_state.read().as_ref() {
         #[cfg(not(target_arch = "wasm32"))]
         None if can_render_dashboard_while_auth_check_runs => {
-            rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
+            rsx! { crate::telemetry_dashboard::TelemetryDashboard {key:"{access_key}"} }
         }
         None => rsx! {
             div { style: format!("height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;", shell_theme().app_background, shell_theme().text_primary),
@@ -674,7 +692,7 @@ pub fn Dashboard() -> Element {
             }
         },
         Some(Ok(status)) if status.permissions.view_data => {
-            rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
+            rsx! { crate::telemetry_dashboard::TelemetryDashboard {key:"{access_key}"} }
         }
         Some(Ok(_)) => {
             #[cfg(target_arch = "wasm32")]
@@ -711,7 +729,7 @@ pub fn Dashboard() -> Element {
         }
         #[cfg(not(target_arch = "wasm32"))]
         Some(Err(_err)) if can_render_dashboard_while_auth_check_runs => {
-            rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
+            rsx! { crate::telemetry_dashboard::TelemetryDashboard {key:"{access_key}"} }
         }
         Some(Err(err)) => rsx! {
             ConnectionFailedCard {

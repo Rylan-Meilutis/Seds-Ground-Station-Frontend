@@ -3,7 +3,9 @@
   "username": null,
   "permissions": {
     "view_data": true,
-    "send_commands": false
+    "send_commands": false,
+    "camera_publish": false,
+    "voice_transmit": false
   },
   "expires_at_ms": null,
   "anonymous": true,

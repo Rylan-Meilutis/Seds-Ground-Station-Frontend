@@ -7,8 +7,8 @@ body{display:flex;flex-direction:column;overflow:auto}#viewport{position:relativ
 #program-bar{flex:none;display:grid;grid-template-columns:100px minmax(0,1fr);gap:10px;padding:10px 12px;background:#101923;border-top:1px solid #344454}
 #rocket-inset{grid-row:1 / 3;align-self:center;width:100%;min-width:0;text-align:center}#rocket-inset svg{display:block;width:100%;height:100px}#rocket-phase{font-size:11px;overflow-wrap:anywhere}
 #banner{display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:10px;font-variant-numeric:tabular-nums;min-width:0}.name{font-size:10px;color:#9aaebb;text-transform:uppercase;letter-spacing:.08em}.value{margin-top:4px;overflow-wrap:anywhere}
-#playback-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;min-width:0}#status{font-size:12px;color:#b9c9d5;flex:1 1 150px}#status:empty{display:none}
-#stream-sound{display:flex;gap:8px;align-items:center;flex-wrap:wrap}button{font:inherit;background:#24374b;color:white;border:1px solid #697e8e;border-radius:6px;padding:7px 10px;cursor:pointer}input[type=range]{width:85px;max-width:100%}#audio-status{font-size:11px;color:#b9c9d5}
+#playback-controls{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:10px;align-items:center;min-height:44px;min-width:0}#status{font-size:12px;color:#b9c9d5;flex:1 1 150px}#status:empty{display:none}
+#stream-sound{display:flex;gap:8px;align-items:center;flex-wrap:nowrap;flex:none;margin-left:auto}button{font:inherit;background:#24374b;color:white;border:1px solid #697e8e;border-radius:6px;padding:7px 10px;cursor:pointer}input[type=range]{width:85px;max-width:100%}#audio-status{font-size:11px;color:#b9c9d5}
 @media(max-width:420px){#program-bar{grid-template-columns:72px minmax(0,1fr);padding:8px;gap:8px}#rocket-inset svg{height:88px}#banner{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}#playback-controls{grid-column:1 / -1}}
 #graphic-stage[data-flat="true"]{align-items:center;justify-content:center;flex-direction:column;background:radial-gradient(ellipse at 50% 70%,#203b50,#0b1725 70%)}
 #graphic-stage[data-flat="true"] #rocket-inset{padding:16px;max-width:700px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0;height:100%}
@@ -16,17 +16,23 @@ body{display:flex;flex-direction:column;overflow:auto}#viewport{position:relativ
 #graphic-stage[data-flat="true"] #rocket-phase{font-size:clamp(16px,3vw,24px);font-weight:600;margin-top:12px;letter-spacing:.04em}
 #program-bar[data-rocket-main="true"]{grid-template-columns:minmax(0,1fr)}
 button{min-height:44px;border-radius:10px}button:focus-visible{outline:3px solid #67c7ef;outline-offset:2px}
+.clean-feed #playback-controls{display:none!important}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
-<div id="viewport"><div id="stage"></div><div id="graphic-stage"></div><div id="map-scene" style="display:none"></div><iframe id="recorded-scene" title="Recorded flight replay" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:0" allow="fullscreen"></iframe></div><footer id="program-bar" aria-label="Program status"><div id="rocket-inset" aria-label="Delayed rocket state"><svg viewBox="0 0 100 180" role="img" aria-label="Single-stage rocket"><g id="chute" style="display:none"><path d="M10 32 Q50 -8 90 32Z" fill="#e5ecf2"/><path d="M10 32L50 63L90 32" fill="none" stroke="#99afc0"/></g><path d="M40 145L28 159V130L40 120M60 145L72 159V130L60 120" fill="#8498a8"/><path d="M40 145V68L50 45L60 68V145Z" fill="#e5ecf2"/><path id="flame" d="M42 148L50 175L58 148Z" fill="#ff984a" style="display:none"/></svg><div id="rocket-phase">Unknown</div></div><div id="banner"></div><div id="playback-controls"><div id="status" role="status">Building delayed program buffer…</div><div id="stream-sound"></div></div></footer><script src="/assets/hls.min.js"></script><script src="/assets/program-art.js"></script>
+<div id="viewport"><div id="stage"></div><div id="graphic-stage"></div><div id="map-scene" style="display:none"></div><iframe id="recorded-scene" title="Recorded flight replay" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:0" allow="fullscreen"></iframe></div><footer id="program-bar" aria-label="Program status"><div id="rocket-inset" aria-label="Delayed rocket state"><svg viewBox="0 0 100 180" role="img" aria-label="Single-stage rocket"><g id="chute" style="display:none"><path d="M10 32 Q50 -8 90 32Z" fill="#e5ecf2"/><path d="M10 32L50 63L90 32" fill="none" stroke="#99afc0"/></g><path d="M40 145L28 159V130L40 120M60 145L72 159V130L60 120" fill="#8498a8"/><path d="M40 145V68L50 45L60 68V145Z" fill="#e5ecf2"/><path id="flame" d="M42 148L50 175L58 148Z" fill="#ff984a" style="display:none"/></svg><div id="rocket-phase">Unknown</div></div><div id="banner"></div><div id="playback-controls"><div id="status" role="status">Buffering</div><div id="stream-sound"></div></div></footer><script src="/assets/stay-awake.js"></script><script src="/assets/hls.min.js"></script><script src="/assets/program-art.js"></script>
 <script>
 'use strict';
+window.GS26StayAwake?.setActive('programme',true);
 const stage=document.querySelector('#stage'),status=document.querySelector('#status'),banner=document.querySelector('#banner');
 const ticket=new URLSearchParams(location.search).get('ticket'),players=new Map();
-let state,clockOffset=0,lastPoll=0,displayed='',stopped=false,lastVideoError='';
-const supportsVideo=typeof Hls!=='undefined'&&Hls.isSupported();
+let state,clockOffset=0,lastPoll=0,displayed='',stopped=false,lastVideoError='',bufferMarginMs=2500;
+const supportsMse=typeof Hls!=='undefined'&&Hls.isSupported();
+const supportsNative=!!document.createElement('video').canPlayType('application/vnd.apple.mpegurl');
+const supportsVideo=supportsMse||supportsNative;
+const cleanFeed=new URLSearchParams(location.search).get('clean')==='1';
+if(cleanFeed){document.body.classList.add('clean-feed');document.querySelector('#playback-controls').hidden=true;}
 const unsupportedVideo='H.264 playback unavailable. Linux native app: install GStreamer good/bad and libav codecs, then restart the app.';
-window.gsStreamSound={muted:true,volume:1};
+window.gsStreamSound={muted:!cleanFeed,volume:1};
 function scene(){const override=state?.telemetry?.scene;return override&&override!=='inherit'?override:state?.broadcast.layout;}
 function sound(video){const interview=scene()==='interview'&&!state?.broadcast.replay,plan=state?.broadcast.interview;const allowed=!interview||(video.dataset.streamId===plan?.main_stream_id?plan.main_audio:video.dataset.streamId===plan?.pip_stream_id?plan.pip_audio:false);video.muted=window.gsStreamSound.muted||!allowed;video.volume=window.gsStreamSound.volume;}
 window.addEventListener('gs-stream-sound',()=>{for(const p of players.values())sound(p.video);});
@@ -60,23 +66,34 @@ function graphicDisplay(videoReady,tile=null){
  document.querySelector('#flame').style.display=phase==='Ascent'?'':'none';
  document.querySelector('#chute').style.display=['ParachuteDeploy','Descent','Landed','Recovery'].includes(phase)?'':'none';
 }
-function remove(id){const p=players.get(id);if(p){p.hls.destroy();p.tile.remove();players.delete(id);}}
+let transitionFrame=null,transitionStarted=0;
+function captureTransition(){
+ if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ transitionFrame?.remove();transitionFrame=null;
+ const bounds=stage.getBoundingClientRect(),canvas=document.createElement('canvas');canvas.width=Math.ceil(bounds.width);canvas.height=Math.ceil(bounds.height);if(!canvas.width||!canvas.height)return;
+ const ctx=canvas.getContext('2d');ctx.fillStyle='#080d15';ctx.fillRect(0,0,canvas.width,canvas.height);let drew=false;
+ for(const p of players.values()){if(p.video.readyState<2||p.video.style.opacity!=='1')continue;const r=p.tile.getBoundingClientRect();try{const scale=Math.min(r.width/p.video.videoWidth,r.height/p.video.videoHeight),w=p.video.videoWidth*scale,h=p.video.videoHeight*scale;ctx.drawImage(p.video,r.left-bounds.left+(r.width-w)/2,r.top-bounds.top+(r.height-h)/2,w,h);drew=true;}catch{}}
+ if(!drew)return;canvas.dataset.transition='camera';canvas.style.cssText='position:absolute;inset:0;width:100%;height:100%;z-index:30;pointer-events:none;transition:opacity 450ms ease';stage.append(canvas);transitionFrame=canvas;transitionStarted=performance.now();
+}
+function finishTransition(ready){if(!transitionFrame||(!ready&&performance.now()-transitionStarted<8000))return;const frame=transitionFrame;transitionFrame=null;requestAnimationFrame(()=>frame.style.opacity='0');setTimeout(()=>frame.remove(),500);}
+function remove(id){const p=players.get(id);if(p){p.hls?.destroy();p.video.pause();p.video.removeAttribute('src');p.video.load();p.tile.remove();players.delete(id);}}
 function create(feed){
- const video=document.createElement('video');video.dataset.streamId=feed.id;sound(video);video.playsInline=true;video.disableRemotePlayback=true;video.preload='auto';video.setAttribute('aria-label',feed.label);const tile=document.createElement("div");tile.style.cssText="position:absolute;overflow:hidden;width:100%;height:100%";video.style.cssText="position:absolute;width:100%;height:100%";tile.append(video);stage.append(tile);
- const hls=new Hls({autoStartLoad:false,lowLatencyMode:false,maxBufferLength:12,maxMaxBufferLength:20,backBufferLength:5,liveSyncDuration:3,liveMaxLatencyDuration:85,maxLiveSyncPlaybackRate:1,enableWorker:true});
- const p={video,tile,hls,details:null,started:false,ready:false,failed:false,lastFrame:0,lastSeek:-Infinity};players.set(feed.id,p);
- hls.on(Hls.Events.MANIFEST_PARSED,()=>hls.startLoad(-1));
- hls.on(Hls.Events.LEVEL_LOADED,(_,data)=>{p.details=data.details;});
- hls.on(Hls.Events.ERROR,(_,data)=>{if(data.fatal){p.failed=true;video.style.opacity=0;lastVideoError=data.type===Hls.ErrorTypes.MEDIA_ERROR?'Video decoder failed — check H.264 codec support in the native app':'Video connection failed — retrying buffered stream';}});
+ const video=document.createElement('video');video.dataset.streamId=feed.id;sound(video);video.playsInline=true;video.disableRemotePlayback=true;video.preload='auto';video.setAttribute('aria-label',feed.label);const tile=document.createElement("div");tile.style.cssText="position:absolute;overflow:hidden;width:100%;height:100%;transition:width 450ms ease,height 450ms ease,left 450ms ease,top 450ms ease";video.style.cssText="position:absolute;width:100%;height:100%;transition:opacity 450ms ease";tile.append(video);stage.append(tile);
+ const hls=supportsMse?new Hls({autoStartLoad:false,lowLatencyMode:false,maxBufferLength:12,maxMaxBufferLength:20,backBufferLength:5,liveSyncDuration:3,liveMaxLatencyDuration:85,maxLiveSyncPlaybackRate:1,enableWorker:true}):null;
+ const p={video,tile,hls,details:null,started:false,ready:false,failed:false,lastFrame:0,url:feed.url,lastSeek:-Infinity,decoderRecoveries:0,failedAt:0};players.set(feed.id,p);
+ if(hls){hls.on(Hls.Events.MANIFEST_PARSED,()=>hls.startLoad(-1));
+ hls.on(Hls.Events.LEVEL_LOADED,(_,data)=>{p.details=data.details;bufferMarginMs=Math.max(bufferMarginMs,(data.details.targetduration||1)*2000+500);});
+ hls.on(Hls.Events.ERROR,(_,data)=>{if(data.fatal){if(data.type===Hls.ErrorTypes.MEDIA_ERROR && p.decoderRecoveries++===0){hls.recoverMediaError();return;}p.failed=true;p.failedAt=performance.now();video.style.opacity=0;lastVideoError=data.type===Hls.ErrorTypes.MEDIA_ERROR?'Video decoder failed — check H.264 codec support in the native app':'Video connection failed — retrying buffered stream';}});
  hls.attachMedia(video);hls.loadSource(feed.url);
+ }else{video.src=feed.url;video.addEventListener('error',()=>{p.failed=true;p.failedAt=performance.now();lastVideoError='Video unavailable — reconnecting';});}
  if(video.requestVideoFrameCallback){const frame=()=>{p.lastFrame=performance.now();if(!stopped&&players.get(feed.id)===p)video.requestVideoFrameCallback(frame);};video.requestVideoFrameCallback(frame);}
 }
 function card(name,value){const card=document.createElement('div'),a=document.createElement('div'),b=document.createElement('div');a.className='name';b.className='value';a.textContent=name;b.textContent=value;card.append(a,b);banner.append(card);}
 let cycleKey='',cycleStart=0;
 function drawBanner(){
- banner.replaceChildren();card('Mission',state.broadcast.label||'Program');card(state.broadcast.replay?'Replay':'Video delay',state.broadcast.replay?state.broadcast.replay.duration_seconds+' s · '+state.broadcast.replay.speed+'×':state.broadcast.delay_seconds+' s');
+ banner.replaceChildren();card('Mission',state.broadcast.label||'Program');if(state.broadcast.replay)card('Replay',state.broadcast.replay.duration_seconds+' s · '+state.broadcast.replay.speed+'×');
  const telemetry=state.telemetry;card('T clock',telemetry?.t_clock||(telemetry?'Unavailable':state.broadcast.replay?'No saved clock':'Buffering…'));
- if(!telemetry){card('Telemetry',state.broadcast.replay?'No telemetry captured for this replay':'Buffering delayed telemetry');return;}
+ if(!telemetry){card('Telemetry',state.broadcast.replay?'No telemetry captured for this replay':'Buffering');return;}
  card('Flight phase',telemetry.phase);
  const seconds=Math.max(1,Math.min(30,Number(telemetry.cycle_seconds)||5)),count=Math.max(1,Math.min(6,Number(telemetry.stats_per_page)||3)),key=[telemetry.profile,seconds,count,...telemetry.stats.map(s=>s.label)].join('|');
  if(key!==cycleKey){cycleKey=key;cycleStart=serverNow();}
@@ -88,16 +105,17 @@ function drawBanner(){
 }
 async function poll(){
  try{
-  const start=Date.now(),r=await fetch('/api/media-assets/program/state?ticket='+encodeURIComponent(ticket),{cache:'no-store'});if(!r.ok)throw Error('Program unavailable');const next=await r.json();clockOffset=next.server_now_ms-(start+Date.now())/2;
+  const start=Date.now(),r=await fetch('/api/media-assets/program/state?ticket='+encodeURIComponent(ticket)+(Number.isFinite(window.gsProgramPlaybackMs)?'&playback_ms='+Math.floor(window.gsProgramPlaybackMs):''),{cache:'no-store'});if(!r.ok)throw Error('Program unavailable');const next=await r.json();clockOffset=next.server_now_ms-(start+Date.now())/2;
+  if(state&&JSON.stringify([state.broadcast.layout,state.broadcast.tiles,state.broadcast.featured_stream_id,state.broadcast.replay?.id,state.telemetry?.scene])!==JSON.stringify([next.broadcast.layout,next.broadcast.tiles,next.broadcast.featured_stream_id,next.broadcast.replay?.id,next.telemetry?.scene]))captureTransition();
   if(state&&(next.broadcast.delay_seconds!==state.broadcast.delay_seconds||(next.broadcast.replay?.id||'')!==(state.broadcast.replay?.id||''))){for(const id of [...players.keys()])remove(id);displayed='';}
   state=next;lastPoll=performance.now();
   window.gsProgramAudioState={enabled:(state.broadcast.comms_audio_enabled||state.broadcast.commentary_audio_enabled)&&!state.broadcast.replay,delay:state.broadcast.delay_seconds,fresh:true};window.dispatchEvent(new CustomEvent("gs-program-audio-state",{detail:window.gsProgramAudioState}));
   // Decode only the featured camera in hero mode, especially on the Pi.
-  let feeds=state.broadcast.replay?state.streams:scene()==='model'?[]:['grid','grid-model'].includes(scene())?state.streams:state.streams.filter(s=>s.id===(state.streams.find(s=>s.id===state.broadcast.featured_stream_id)||state.streams[0])?.id);
+  let feeds=state.broadcast.replay?state.streams:scene()==='model'?[]:['grid','grid-model','tiles'].includes(scene())?state.streams:state.streams.filter(s=>s.id===(state.streams.find(s=>s.id===state.broadcast.featured_stream_id)||state.streams[0])?.id);
   if(!state.broadcast.replay&&scene()==='interview'){const i=state.broadcast.interview;feeds=state.streams.filter(s=>s.id===i?.main_stream_id||s.id===i?.pip_stream_id);}
   if(!state.broadcast.replay&&['map','recorded-replay'].includes(scene()))feeds=[];
-  const ids=new Set(feeds.map(s=>s.id));for(const id of [...players.keys()])if(!ids.has(id))remove(id);
-  for(const feed of feeds){if(players.get(feed.id)?.failed)remove(feed.id);if(supportsVideo&&!players.has(feed.id))create(feed);}
+  const ids=new Set(feeds.map(s=>s.id));for(const id of [...players.keys()])if(!ids.has(id)){const outgoing=players.get(id);if(!outgoing.retiring){outgoing.retiring=true;outgoing.video.style.opacity=0;setTimeout(()=>{if(players.get(id)===outgoing)remove(id);},500);}}else players.get(id).retiring=false;
+  for(const feed of feeds){if(players.has(feed.id)&&players.get(feed.id).url!==feed.url)remove(feed.id);if(players.get(feed.id)?.failed && performance.now()-players.get(feed.id).failedAt>5000)remove(feed.id);if(supportsVideo&&!players.has(feed.id))create(feed);}
   drawBanner();
  }catch(e){status.textContent='Program unavailable — delayed feed paused';lastPoll=0;window.gsProgramAudioState={enabled:false,fresh:false};window.dispatchEvent(new CustomEvent("gs-program-audio-state",{detail:window.gsProgramAudioState}));}
  if(!stopped)setTimeout(poll,500);
@@ -106,31 +124,39 @@ function render(){
  if(stopped)return;
  if(!state||!lastPoll||performance.now()-lastPoll>2500){updateMap(state?.telemetry?.positions||{},false);for(const p of players.values()){p.video.pause();p.video.style.opacity=0;}graphicDisplay(false);return;}
  const replay=state.broadcast.replay;
- const layout=replay?(state.streams.length>1?"grid":"hero"):scene();
+ const layout=replay?(state.broadcast.tiles?.length?"tiles":state.streams.length>1?"grid":"hero"):scene();
  for(const p of players.values())sound(p.video);
- if(layout==='map'||layout==='recorded-replay'){specialScene(layout);graphicDisplay(false);document.querySelector('#graphic-stage').style.display='none';status.textContent=layout==='map'?'Recovery map · delayed positions':'Recorded replay · saved data';return;}
+ if(layout==='map'||layout==='recorded-replay'){specialScene(layout);graphicDisplay(false);document.querySelector('#graphic-stage').style.display='none';status.textContent=layout==='map'?'Recovery map · delayed positions':'Recorded replay · saved data';finishTransition(true);return;}
  specialScene(null);
- const target=replay?Math.min(replay.source_end_ms,replay.source_end_ms-replay.duration_seconds*1000+Math.max(0,serverNow()-replay.started_at_ms)*replay.speed):serverNow()-state.broadcast.delay_seconds*1000-2500;
+ const target=replay?Math.min(replay.source_end_ms,replay.source_end_ms-replay.duration_seconds*1000+Math.max(0,serverNow()-replay.started_at_ms)*replay.speed):serverNow()-state.broadcast.delay_seconds*1000-bufferMarginMs;
  for(const [id,p] of players){
+  if(p.retiring)continue;
   const frame=replay?.cameras.find(c=>c.id===id);
   p.video.playbackRate=replay?.speed||1;
   p.video.style.objectFit=frame&&frame.zoom>1?'cover':'contain';
   p.video.style.objectPosition=frame?`${frame.x}% ${frame.y}%`:'50% 50%';
   p.video.style.transform=frame?`scale(${frame.zoom})`:'none';
   p.video.style.transformOrigin=frame?`${frame.x}% ${frame.y}%`:'50% 50%';
+  if(!p.hls){
+    if(!p.started&&p.video.seekable.length)p.started=true;
+    p.ready=!p.failed&&p.video.readyState>=2&&!p.video.seeking&&(!p.video.requestVideoFrameCallback||performance.now()-p.lastFrame<5000);
+    p.video.play().catch(()=>{});continue;
+  }
   p.ready=false;const fragments=p.details?.fragments||[];
   const f=fragments.find(f=>f.programDateTime!=null&&f.programDateTime<=target&&f.endProgramDateTime>target);
-  if(!f){p.video.pause();p.video.style.opacity=0;continue;}
+  if(!f){p.ready=p.started&&!p.failed&&p.video.readyState>=2&&!p.video.seeking&&performance.now()-p.lastFrame<5000;if(p.ready)p.video.play().catch(()=>{});continue;}
   const desired=f.start+(target-f.programDateTime)/1000;
-  if(!p.started){p.started=true;p.hls.startLoad(desired);}
+  if(!p.started){p.started=true;p.hls.startLoad(desired);try{p.video.currentTime=desired;}catch{}p.video.addEventListener('loadedmetadata',()=>{try{p.video.currentTime=desired;}catch{}},{once:true});}
   const playing=p.hls.playingDate?.getTime();
-  // Let a seek finish and a slow decoder present a frame before seeking again.
-  if((playing==null||Math.abs(playing-target)>1500)&&!p.video.seeking&&performance.now()-p.lastSeek>1500){try{p.video.currentTime=desired;p.lastSeek=performance.now();}catch{}p.video.style.opacity=0;}
+  const driftLimit=Math.max(6000,((p.details?.targetduration||1)*2+3)*1000);
+  // Recover large drift without repeatedly starving a slow decoder or long GOP.
+  if((playing==null||Math.abs(playing-target)>driftLimit)&&!p.video.seeking&&performance.now()-p.lastSeek>5000){try{p.video.currentTime=desired;p.lastSeek=performance.now();}catch{}p.video.style.opacity=0;}
   const time=p.hls.playingDate?.getTime();
-  const frameFresh=!p.video.requestVideoFrameCallback||performance.now()-p.lastFrame<1500;
-  p.ready=!p.failed&&time!=null&&Math.abs(time-target)<1500&&p.video.readyState>=2&&!p.video.seeking&&frameFresh;
+  const frameFresh=!p.video.requestVideoFrameCallback||performance.now()-p.lastFrame<5000;
+  p.ready=!p.failed&&time!=null&&Math.abs(time-target)<driftLimit+1000&&p.video.readyState>=2&&!p.video.seeking&&frameFresh;
   p.video.play().catch(()=>{});
  }
+ window.gsProgramPlaybackMs=[...players.values()].find(p=>p.video.dataset.streamId===state.broadcast.featured_stream_id&&p.ready)?.hls?.playingDate?.getTime()||[...players.values()].find(p=>p.ready)?.hls?.playingDate?.getTime();
  const preferred=replay?state.streams[0]?.id:players.has(state.broadcast.featured_stream_id)?state.broadcast.featured_stream_id:state.streams[0]?.id;
  if(layout==='model'){
   status.textContent='Rocket graphic';graphicDisplay(false);
@@ -138,15 +164,18 @@ function render(){
   const interview=state.broadcast.interview||{};let ready=0;
   for(const [id,p]of players){const pip=id===interview.pip_stream_id;Object.assign(p.tile.style,{zIndex:pip?'4':'2',width:pip?'28%':'100%',height:pip?'28%':'100%',left:pip?'70%':'0',top:pip?'3%':'0',borderRadius:pip?'10px':'0',border:pip?'2px solid #cbd5e1':'0',boxShadow:pip?'0 6px 24px #000a':'none'});p.video.style.opacity=p.ready?'1':'0';if(p.ready)ready++;}
   displayed=players.get(interview.main_stream_id)?.ready?interview.main_stream_id:'';status.textContent=displayed?'Interview': 'Interview feed unavailable';graphicDisplay(ready>0);
+ }else if(layout==='tiles'){
+  let ready=0;for(const [id,p]of players){const tile=state.broadcast.tiles?.find(t=>t.stream_id===id);if(!tile){p.video.style.opacity=0;continue;}Object.assign(p.tile.style,{left:tile.x+'%',top:tile.y+'%',width:tile.width+'%',height:tile.height+'%',border:'0',borderRadius:'0',zIndex:'1'});p.video.style.opacity=p.ready?'1':'0';if(p.ready)ready++;}
+  status.textContent=ready?'':'Buffering';graphicDisplay(ready>0);
  }else if(['grid','grid-model'].includes(layout)){
   const entries=state.streams.map(s=>[s.id,players.get(s.id)]).filter(([,p])=>p),withModel=layout==='grid-model',count=entries.length+(withModel?1:0),columns=stage.clientWidth<500?1:count<=1?1:count<=4?2:3,rows=Math.max(1,Math.ceil(count/columns));let ready=0;
   entries.forEach(([id,p],i)=>{p.tile.style.border='0';p.tile.style.borderRadius='0';p.tile.style.boxShadow='none';p.tile.style.zIndex='1';p.tile.style.width=100/columns+'%';p.tile.style.height=100/rows+'%';p.tile.style.left=(i%columns)*100/columns+'%';p.tile.style.top=Math.floor(i/columns)*100/rows+'%';p.video.style.opacity=p.ready?'1':'0';if(p.ready)ready++;});
-  status.textContent=!supportsVideo?unsupportedVideo:ready?'':state.streams.length?(lastVideoError||'Buffering delayed video'):'No active camera';displayed='';graphicDisplay(ready>0,withModel?{left:(entries.length%columns)*100/columns+'%',top:Math.floor(entries.length/columns)*100/rows+'%',width:100/columns+'%',height:100/rows+'%'}:null);
+  status.textContent=!supportsVideo?unsupportedVideo:ready?'':state.streams.length?(lastVideoError||'Buffering'):'No active camera';displayed='';graphicDisplay(ready>0,withModel?{left:(entries.length%columns)*100/columns+'%',top:Math.floor(entries.length/columns)*100/rows+'%',width:100/columns+'%',height:100/rows+'%'}:null);
  }else{
   for(const p of players.values()){p.tile.style.border='0';p.tile.style.borderRadius='0';p.tile.style.boxShadow='none';p.tile.style.width='100%';p.tile.style.height='100%';p.tile.style.left='0';p.tile.style.top='0';}
   displayed=players.get(preferred)?.ready?preferred:'';
   for(const [id,p]of players){p.tile.style.zIndex=id===displayed?'2':'1';p.video.style.opacity=id===displayed&&p.ready?'1':'0';}
-  status.textContent=!supportsVideo?unsupportedVideo:players.get(displayed)?.ready?'':state.streams.length?(lastVideoError||'Buffering delayed video'):'No active camera';graphicDisplay(!!players.get(displayed)?.ready);
+  status.textContent=!supportsVideo?unsupportedVideo:players.get(displayed)?.ready?'':state.streams.length?(lastVideoError||'Buffering'):'No active camera';graphicDisplay(!!players.get(displayed)?.ready);
  }
 }
 let mapController=null,mapLoading=false,specialActive=null,lastMapInput=null,lastMapFresh=null,mapRetryAt=0;
@@ -161,7 +190,7 @@ function specialScene(next){
   updateMap(state.telemetry?.positions||{},true);
  }
 }
-const timer=setInterval(render,100);
+const timer=setInterval(()=>{render();finishTransition([...players.values()].some(p=>p.ready)||['model','map','recorded-replay'].includes(scene()));},100);
 if(!supportsVideo){status.textContent=unsupportedVideo;}poll();
 window.addEventListener('pagehide',()=>{stopped=true;clearInterval(timer);specialScene(null);for(const id of [...players.keys()])remove(id);});
 </script><script type="module" src="/assets/program-audio.js"></script></html>

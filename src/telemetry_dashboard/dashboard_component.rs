@@ -180,7 +180,7 @@ fn TelemetryDashboardInner() -> Element {
     let mut tabs_expanded = use_signal(|| false);
     let mut rail_collapsed = use_signal(|| persist::get_string("navigation-rail-collapsed").as_deref()!=Some("false"));
     let mut warning_toast_dismissed = use_signal(|| 0i64);
-    let header_actions_expanded = use_signal(|| false);
+    let mut header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
     let show_settings_overlay = use_signal(|| false);
     let show_version_overlay = use_signal(|| false);
@@ -2494,11 +2494,11 @@ fn TelemetryDashboardInner() -> Element {
     };
 
     let surface_session=auth::current_status();
-    let surface_viewer=surface_session.roles.iter().any(|r|r=="stream_viewer") && !auth::can_manage_stream() && !auth::can_view_actions();
+    let surface_viewer=surface_session.roles.iter().any(|r|r=="stream_viewer") && !auth::can_manage_stream() && !auth::can_view_actions() && !auth::can_publish_camera() && !auth::can_join_voice() && !surface_session.permissions.set_system_time;
     let surface_stream=*streamer_mode.read() || surface_viewer || matches!(*active_main_tab.read(),MainTab::Mission|MainTab::StreamManager);
     let surface_manager=surface_stream && !surface_viewer && !*streamer_mode.read() && *active_main_tab.read()==MainTab::StreamManager;
-    let media_visible=!*antenna_aiming.read() && !*admin_open.read() && ((surface_manager && *stream_camera_tool.read()) || (!surface_stream && *active_main_tab.read()==MainTab::Media));
-    let voice_visible=!*antenna_aiming.read() && !*admin_open.read() && !surface_stream && *active_main_tab.read()==MainTab::CrewVoice;
+    let media_visible=(auth::can_publish_camera() || auth::can_manage_stream()) && !*antenna_aiming.read() && !*admin_open.read() && ((surface_manager && *stream_camera_tool.read()) || (!surface_stream && *active_main_tab.read()==MainTab::Media));
+    let voice_visible=auth::can_join_voice() && !*antenna_aiming.read() && !*admin_open.read() && !surface_stream && *active_main_tab.read()==MainTab::CrewVoice;
     let view=(|| -> Element {
     // Keep hooks stable, but unmount all normal data views while aiming.
     if *antenna_aiming.read() {
@@ -2508,7 +2508,7 @@ fn TelemetryDashboardInner() -> Element {
     // Dedicated media devices must not mount dashboard alerts, warnings or controls.
     let stream_roles = auth::current_status();
     let viewer_only = stream_roles.roles.iter().any(|r| r == "stream_viewer")
-        && !auth::can_manage_stream() && !auth::can_view_actions();
+        && !auth::can_manage_stream() && !auth::can_view_actions() && !auth::can_publish_camera() && !auth::can_join_voice() && !stream_roles.permissions.set_system_time;
     let dedicated_stream = *streamer_mode.read() || viewer_only
         || matches!(*active_main_tab.read(), MainTab::Mission | MainTab::StreamManager);
     if dedicated_stream {
@@ -2844,6 +2844,16 @@ fn TelemetryDashboardInner() -> Element {
                  margin-bottom:6px !important;
                }}
              }}
+             .gs26-mobile-menu-pages {{display:none;}}
+             .gs26-header-auth {{margin-left:auto;order:1;}}
+             @media (max-width:720px) {{
+               .gs26-header-actions-shell {{pointer-events:auto;}}
+               .gs26-header-actions-list {{position:fixed;inset:72px 8px 8px;width:auto;max-width:none;max-height:none;overflow-y:auto;overscroll-behavior:contain;justify-content:flex-start;}}
+               .gs26-mobile-menu-pages {{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}}
+               .gs26-header-actions-list .gs26-utility-menu {{width:100%;}}
+               .gs26-header-actions-list .gs26-utility-menu>summary {{display:none;}}
+               .gs26-header-actions-list .gs26-utility-menu>div {{position:static;box-shadow:none;margin:0;border:0;min-width:0;padding:0;}}
+             }}
              @media (max-width: 720px), (max-height: 780px) {{
                .gs26-header-row button, .gs26-header-secondary button {{
                  min-height:44px !important;
@@ -3119,7 +3129,11 @@ fn TelemetryDashboardInner() -> Element {
                                 --gs26-header-menu-border:{theme.button_border};
                                 --gs26-header-menu-text:{theme.button_text};
                             ",
+                            div {class:"gs26-header-auth",style:"pointer-events:auto;",{auth_button}}
                             button {
+                                r#type:"button",
+                                "aria-expanded":header_actions_expanded().to_string(),
+                                "aria-controls":"gs26-mobile-menu",
                                 class: "gs26-header-menu-toggle",
                                 onclick: {
                                     let mut header_actions_expanded = header_actions_expanded;
@@ -3226,7 +3240,12 @@ fn TelemetryDashboardInner() -> Element {
                                     }
                                 }
                             }
-                        div { class: "gs26-header-actions-list",
+                        div { id:"gs26-mobile-menu",class: "gs26-header-actions-list",
+                            nav {class:"gs26-mobile-menu-pages","aria-label":"Mobile navigation",
+                                for tab in _available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read()) {
+                                    button {r#type:"button",onclick:move |_|{active_main_tab.set(tab);header_actions_expanded.set(false);},"{_main_tab_label(&layout,tab)}"}
+                                }
+                            }
                             if show_disable_actions {
                             button {
                                 style: if *abort_only_mode.read() {
@@ -3268,7 +3287,7 @@ fn TelemetryDashboardInner() -> Element {
                             }
 
                             if !*navigation_rail::SIDEBAR_NAVIGATION.read() { {settings_button} }
-                            details {class:"gs26-utility-menu",
+                            details {class:"gs26-utility-menu",open:*header_actions_expanded.read(),
                                 summary {"Tools"}
                                 div {
                                     button {
@@ -3277,7 +3296,7 @@ fn TelemetryDashboardInner() -> Element {
                                         onclick:move |_| { clear_current_dashboard_data_without_reseed(); },
                                         "Clear all graphs"
                                     }
-                                    {reload_button}{auth_button}{version_button}{connect_button}
+                                    {reload_button}{version_button}{connect_button}
                                 }
                             }
 
@@ -3897,7 +3916,7 @@ fn TelemetryDashboardInner() -> Element {
                 {version_overlay}
             }
     })();
-    rsx! {media_tool_tab::MediaSurface {media_visible,voice_visible,{view}}}
+    rsx! {media_tool_tab::MediaSurface {media_visible,voice_visible,stream_visible:surface_stream,{view}}}
 }
 
 fn send_cmd(cmd: &str) {

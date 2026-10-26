@@ -46,3 +46,8 @@
  .gs26-navigation-rail a{padding:8px;justify-content:center}.gs26-navigation-rail .gs26-rail-toggle{display:none}
  .gs26-status-shell{padding:8px !important;border-radius:8px !important}.gs26-status-row{font-size:12px}
 }
+@media(max-width:720px){
+ .gs26-header-actions-list{position:fixed;inset:60px 8px 8px;max-width:none;max-height:none;width:auto;flex-wrap:nowrap}
+ .gs26-header-auth{min-width:0;flex-shrink:1}
+ .gs26-header-auth button{max-width:clamp(90px,30vw,160px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+}

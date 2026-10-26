@@ -4,7 +4,7 @@ const controls=document.querySelector('#stream-sound');
 const button=document.createElement('button');button.textContent='Unmute stream';button.setAttribute('aria-pressed','false');
 const volume=document.createElement('input');volume.type='range';volume.min='0';volume.max='100';volume.value='100';volume.setAttribute('aria-label','Stream volume');
 const label=document.createElement('span');label.id='audio-status';label.setAttribute('role','status');
-controls.append(button,volume,label);
+if(new URLSearchParams(location.search).get('clean')!=='1')controls.append(button,volume,label);
 let context,gain,listening=false,stopped=false,cursor=0,generation=null,requestGeneration=0,program=null,lastState=0,busy=false,wantSound=true;
 const speakers=new Map(),sources=new Set();
 const ticket=new URLSearchParams(location.search).get('ticket');
@@ -65,7 +65,7 @@ async function poll(){
   if(listening&&program?.enabled&&program.fresh&&performance.now()-lastState<2500){
     const current=requestGeneration;
     try{
-      const response=await fetch(`/api/media-assets/program/audio?ticket=${encodeURIComponent(ticket)}&after=${cursor}`,{cache:'no-store'});
+      const response=await fetch(`/api/media-assets/program/audio?ticket=${encodeURIComponent(ticket)}&after=${cursor}${Number.isFinite(window.gsProgramPlaybackMs)?'&playback_ms='+Math.floor(window.gsProgramPlaybackMs):''}`,{cache:'no-store'});
       if(!response.ok)throw Error('Stream audio unavailable');
       const batch=await response.json();
       if(current!==requestGeneration||!listening||stopped)return;

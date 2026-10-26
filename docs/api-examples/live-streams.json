@@ -62,6 +62,8 @@
     "hidden_stream_ids": [],
     "layout": "hero",
     "delay_seconds": 10,
-    "revision": 1
-  }
+    "revision": 1,
+    "tiles": []
+  },
+  "can_publish_camera": true
 }

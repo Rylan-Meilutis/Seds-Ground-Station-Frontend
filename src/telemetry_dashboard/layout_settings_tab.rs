@@ -1035,6 +1035,7 @@ pub fn SettingsPage(
                             "{french_label}"
                         }
                     }
+                    super::actions_tab::NetworkUtcControls {}
                     div { style: "font-size:13px; color:{theme.text_muted}; margin-top:10px;", "{time_format_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{time_format_desc}" }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",
