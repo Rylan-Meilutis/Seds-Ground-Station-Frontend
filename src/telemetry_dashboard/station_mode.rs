@@ -9,6 +9,7 @@ pub(super) fn description(mode: &Value, observer: bool) -> String {
         Some("normal") => "Normal",
         Some("hitl") => "HITL",
         Some("test_fire") => "Test fire",
+        Some("testing") => "Testing",
         _ => "unavailable",
     };
     let scope = if observer {
@@ -25,16 +26,8 @@ pub(super) fn description(mode: &Value, observer: bool) -> String {
     } else {
         ""
     };
-    let local = match mode["local_build_mode"].as_str() {
-        Some("hitl") => "HITL",
-        Some("normal") => "Normal",
-        Some("test_fire") => "Test fire",
-        _ => "unknown",
-    };
     if observer {
-        format!(
-            "RRLS observer · {scope}: {name}{freshness} · Local build: {local} · Live operations remain read-only"
-        )
+        format!("RRLS observer · {scope}: {name}{freshness} · Live operations remain read-only")
     } else {
         format!("{scope}: {name}{freshness}")
     }
@@ -83,8 +76,10 @@ mod tests {
         let mut mode = serde_json::json!({"effective_mode":"hitl","local_build_mode":"normal","synchronized":true});
         let text = description(&mode, true);
         assert!(text.contains("Primary operating mode: HITL"));
-        assert!(text.contains("Local build: Normal"));
+        assert!(!text.contains("Local build"));
         assert!(text.contains("read-only"));
+        mode["effective_mode"] = Value::String("testing".into());
+        assert!(description(&mode, true).contains("Primary operating mode: Testing"));
         mode["synchronized"] = Value::Bool(false);
         assert!(description(&mode, true).contains("last known; not synchronized"));
     }

@@ -39,7 +39,7 @@ try {
  await page.goto(relayOrigin+'/dashboard');
  const notice=page.locator('.gs26-operating-mode');
  await notice.filter({hasText:'Primary operating mode: HITL'}).waitFor();
- assert.match(await notice.innerText(),/Local build: Normal.*read-only/);
+ assert.match(await notice.innerText(),/Primary operating mode: HITL.*read-only/);assert.doesNotMatch(await notice.innerText(),/Local build|Normal/,'main notice must not imply conflicting primary mode');
  assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).innerText(),tabs,'mode handover retains configured navigation');
  await page.getByRole('link',{name:'Actions',exact:true}).click();
  await page.getByText('Sequence diagnostics',{exact:true}).click();
@@ -47,12 +47,13 @@ try {
  relayMode={...relayMode,synchronized:false};await notice.filter({hasText:'last known; not synchronized'}).waitFor();
  await page.reload();await notice.filter({hasText:'last known; not synchronized'}).waitFor();
  relayMode={...relayMode,synchronized:true,effective_mode:'normal'};await notice.filter({hasText:'Primary operating mode: Normal'}).waitFor();
+ relayMode={...relayMode,effective_mode:'testing'};await notice.filter({hasText:'Primary operating mode: Testing'}).waitFor();
  modeUnavailable=true;await notice.filter({hasText:'last known; not synchronized'}).waitFor();
  modeUnavailable=false;relayMode={...relayMode,effective_mode:null,synchronized:false,persisted:false};await notice.filter({hasText:'Primary operating mode: unavailable'}).waitFor();
  for(const width of [320,844]){await page.setViewportSize({width,height:390});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));}
  await page.screenshot({path:'/tmp/station-mode-failover-844-20261027.png'});
  assert.deepEqual(posts.filter(p=>p!=='/api/i18n/translate'),[],'display sync and discovery never mutate mode or send operations');assert.deepEqual(errors,[]);
- console.log('PASS actual Wasm signed discovery GS HITL→RRLS normal-build handover; primary mode retained, local capabilities truthful, same tabs, stale/restart/refresh/unknown and no operations');await context.close();
+ console.log('PASS actual Wasm signed discovery GS HITL→RRLS normal-build handover; primary mode retained, local diagnostics truthful, Testing explicit, same tabs, stale/restart/refresh/unknown and no operations');await context.close();
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));await new Promise(resolve=>relay.close(resolve));}
 `;
 try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.stack||error);process.exitCode=1;}

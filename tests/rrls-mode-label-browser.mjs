@@ -15,7 +15,7 @@ fixture+=`try {
  await page.getByText('Sequence diagnostics',{exact:true}).click();
  const diagnostics=page.locator('details').filter({has:page.getByText('Sequence diagnostics',{exact:true})});
  console.log('Rendered sequence diagnostics:',await diagnostics.innerText());
- await page.getByText('RRLS observer · Primary operating mode: unavailable · Local build: unknown · Live operations remain read-only',{exact:true}).first().waitFor({timeout:5000});
+ await page.getByText('RRLS observer · Primary operating mode: unavailable · Live operations remain read-only',{exact:true}).first().waitFor({timeout:5000});
  await page.waitForFunction(()=>[...document.querySelectorAll('details')].some(e=>e.textContent.includes('RRLS local backend: mode=non-HITL')));
  assert.doesNotMatch(await diagnostics.innerText(),/mode=sequenced/);
  gseStatus.request_gate.hitl_mode=true;await page.waitForFunction(()=>[...document.querySelectorAll('details')].some(e=>e.textContent.includes('RRLS local backend: mode=HITL')));
