@@ -68,7 +68,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const embedded = new URLSearchParams(location.search).get('embedded') === '1' && parent !== window;
-let token = '', generation = 0;
+let token = '', generation = 0, pageActive = true;
 let recordingOffset = 0;
 const cameras = new Map();
 function notice(text) { $('message').textContent = text; }
@@ -106,37 +106,55 @@ $('logout').onclick = async () => {
   catch (err) { notice(err.message); }
   finally { stopAll(); token = ''; $('models').replaceChildren(); notice('Signed out'); }
 };
-function stopCamera(camera) {
-  camera.closed = true;
-  camera.pc?.close();
-  if (camera.session) api(camera.session, {method: 'DELETE'}).catch(() => {});
-  camera.card.remove();
+function removeCameraSession(camera, url) {
+  if (!url) return;
+  let target; try { target = new URL(url, location.href); } catch { return; }
+  const prefix = `/api/video/streams/${encodeURIComponent(camera.id)}/whep/`;
+  if (target.origin !== location.origin || !target.pathname.startsWith(prefix) || !/^[A-Za-z0-9_-]+$/.test(target.pathname.slice(prefix.length)) || target.search || target.hash) return;
+  fetch(target.pathname, {method: 'DELETE', keepalive: true, headers: {Authorization: `Bearer ${camera.auth}`}}).catch(() => {});
 }
+function cleanupCamera(camera) {
+  clearTimeout(camera.watchdog); clearTimeout(camera.iceTimer);
+  camera.request?.abort(); camera.request = null;
+  const pc = camera.pc; camera.pc = null;
+  if (pc) { pc.ontrack = null; pc.onconnectionstatechange = null; pc.onicegatheringstatechange = null; pc.close(); }
+  const stream = camera.video.srcObject; camera.video.srcObject = null;
+  stream?.getTracks().forEach(track => track.stop());
+  const session = camera.session; camera.session = null; removeCameraSession(camera, session);
+}
+function stopCamera(camera) { camera.closed = true; cleanupCamera(camera); camera.card.remove(); }
 function stopAll() { stopPublishing(); generation++; for (const camera of cameras.values()) stopCamera(camera); cameras.clear(); $('recording-player').pause(); $('recording-player').removeAttribute('src'); $('recording-player').load(); $('recording-player').hidden = true; $('recordings').replaceChildren(); $('recordings-status').textContent = ''; recordingOffset = 0; }
 async function connect(camera) {
   const pc = new RTCPeerConnection({iceServers: []}); camera.pc = pc;
+  const active = () => !camera.closed && !camera.failed && camera.pc === pc;
+  const fail = message => { if (!active()) return; camera.failed = true; cleanupCamera(camera); camera.status.textContent = message; };
+  const request = new AbortController(); camera.request = request;
+  camera.watchdog = setTimeout(() => fail('Connection timed out. Retrying…'), 20000);
   pc.addTransceiver('video', {direction: 'recvonly'});
   pc.addTransceiver('audio', {direction:'recvonly'});
   const incoming = new MediaStream();camera.video.srcObject=incoming;
-  pc.ontrack = event => { if(!incoming.getTracks().includes(event.track))incoming.addTrack(event.track); };
+  pc.ontrack = event => { if(active() && !incoming.getTracks().includes(event.track))incoming.addTrack(event.track); };
   pc.onconnectionstatechange = () => {
-    camera.status.textContent = pc.connectionState;
-    if (['failed', 'closed'].includes(pc.connectionState) && !camera.closed) camera.failed = true;
+    if (!active()) return;
+    if (pc.connectionState === 'connected') clearTimeout(camera.watchdog);
+    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) fail('Connection interrupted. Retrying…');
+    else camera.status.textContent = pc.connectionState;
   };
   try {
     await pc.setLocalDescription(await pc.createOffer());
     // Send a complete offer; this client does not require trickle-ICE PATCH requests.
     await new Promise((resolve, reject) => {
       if (pc.iceGatheringState === 'complete') return resolve();
-      const timeout = setTimeout(() => { pc.onicegatheringstatechange = null; reject(new Error('ICE gathering timed out')); }, 8000);
-      pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(timeout); pc.onicegatheringstatechange = null; resolve(); } };
+      camera.iceTimer = setTimeout(() => { pc.onicegatheringstatechange = null; reject(new Error('ICE gathering timed out')); }, 8000);
+      pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(camera.iceTimer); pc.onicegatheringstatechange = null; resolve(); } };
     });
-    if (camera.closed) return;
-    const response = await api(`/api/video/streams/${camera.id}/whep`, {method: 'POST', headers: {'Content-Type': 'application/sdp'}, body: pc.localDescription.sdp});
-    camera.session = response.headers.get('Location');
-    if (camera.closed) { if (camera.session) api(camera.session, {method: 'DELETE'}).catch(() => {}); return; }
+    if (!active()) return;
+    const response = await api(`/api/video/streams/${encodeURIComponent(camera.id)}/whep`, {method: 'POST', headers: {'Content-Type': 'application/sdp'}, body: pc.localDescription.sdp, signal: request.signal});
+    const session = response.headers.get('Location');
+    if (!active()) { removeCameraSession(camera, session); return; }
+    camera.session = session;
     await pc.setRemoteDescription({type: 'answer', sdp: await response.text()});
-  } catch (err) { pc.close(); camera.failed = true; camera.status.textContent = err.message; }
+  } catch (err) { fail(err.message); }
 }
 function addCamera(id, name) {
   const card = document.createElement('article'), title = document.createElement('h3');
@@ -146,10 +164,10 @@ function addCamera(id, name) {
   const nameInput=document.createElement('input');nameInput.value=name||id;nameInput.maxLength=80;nameInput.setAttribute('aria-label','Camera name for '+(name||id));
   const rename=document.createElement('button');rename.type='button';rename.textContent='Save camera name';rename.onclick=async()=>{try{await api(`/api/video/streams/${id}/name`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nameInput.value})});await refreshVideo();}catch(error){notice(error.message);}};
   card.append(title, nameInput, rename, video, status); $('cameras').append(card);
-  const camera = {id, card, title, video, status, closed: false, failed: false}; cameras.set(id, camera); connect(camera);
+  const camera = {id, card, title, video, status, auth: token, closed: false, failed: false}; cameras.set(id, camera); connect(camera);
 }
 async function refreshVideo() {
-  if(!canManage)return;
+  if(!canManage || !pageActive)return;
   const current = generation;
   try {
     const streams = await (await api('/api/video/streams')).json();
@@ -218,11 +236,13 @@ let previewStream=null,previewRequest=0,preferredFacing="environment",dashboardO
 function cameraAwake(active){window.GS26StayAwake?.setActive("camera",active);if(parent!==window)parent.postMessage({type:"gs26-capture-active",active},dashboardOrigin);}
 const publishNotice = text => { $('publish-status').textContent = text; };
 async function refreshPublishPermission() {
+  const current = generation;
   try {
     const config = await (await api('/api/live_streams')).json();
+    if (current !== generation) return;
     canPublish = !!token && config.can_publish_camera === true;
     canManage = !!token && config.can_manage_stream === true;
-  } catch { canPublish = false; canManage = false; }
+  } catch { if (current !== generation) return; canPublish = false; canManage = false; }
   $('publisher').hidden = !canPublish;
   $('receiver').hidden = !canManage;
   if(!canManage){for(const camera of cameras.values())stopCamera(camera);cameras.clear();$('recordings').replaceChildren();$('models').replaceChildren();}
@@ -383,11 +403,12 @@ $('upload').onsubmit = async event => {
 };
 async function refresh() { await refreshPublishPermission(); await Promise.all([refreshVideo(), refreshRecordings(), refreshModels().catch(err => notice(err.message))]); }
 async function poll() {
-  if (!embedded || token) { await refreshVideo(); await refreshPublishPermission(); }
+  if (pageActive && (!embedded || token)) { await refreshPublishPermission(); await refreshVideo(); }
   setTimeout(poll, 5000);
 }
 if (!embedded) { refreshModels().catch(err => notice(err.message)); refreshRecordings(); }
 poll();
-window.addEventListener('pagehide', stopAll);
+window.addEventListener('pagehide', () => { pageActive = false; stopAll(); });
+window.addEventListener('pageshow', () => { if (pageActive) return; pageActive = true; refresh().catch(error => notice(error.message)); });
 </script>
 </html>

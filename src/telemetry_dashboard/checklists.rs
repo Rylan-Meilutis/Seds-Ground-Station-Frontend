@@ -139,6 +139,9 @@ fn item_conflicted(sync: &SyncStatus, list: &str, item: &str) -> bool {
             })
     })
 }
+fn item_complete(sync: &SyncStatus, list: &str, item: &Item) -> bool {
+    item.checked && !item_conflicted(sync, list, &item.id)
+}
 fn id() -> Result<String, String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| "Cannot generate a checklist ID".to_string())?;
@@ -199,7 +202,10 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
         .read()
         .checklists
         .iter()
-        .filter(|c| c.required_before_launch && c.items.iter().any(|i| !i.checked))
+        .filter(|c| {
+            c.required_before_launch
+                && c.items.iter().any(|i| !item_complete(&sync_state.read(), &c.id, i))
+        })
         .count();
     rsx! {
      style {{include_str!("checklists.css")}}
@@ -215,6 +221,11 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
         else if sync_state.read().durability_pending {p {role:"status","Saving checklist state. Sequence starts remain locked until storage is ready."}}
         else if sync_state.read().definition_pending {p {role:"status","Template updates are waiting for a complete reviewed version, Idle and cleared qualification. Progress stays editable."}}
         else if !sync_state.read().qualification_binding_valid {p {role:"status","Reset local qualification before using this checklist template for a procedure."}}
+        if sync_state.read().definition_pending {
+         if let Some(reason)=sync_state.read().pending_reason.as_ref(){
+          p {class:"gs26-checklist-sync-note",role:"status","aria-label":"Pending checklist update details","{concise(reason)}"}
+         }
+        }
         if let Some(error)=sync_state.read().error.as_ref(){p {class:"gs26-checklist-sync-note",role:"status","{concise(error)}"}}
         if sync_state.read().conflict_count>0 {
          p {role:"status",if admin{"Choose the version to keep. Conflicting progress does not count as complete."}else{"An administrator must review conflicting updates before those items can count as complete."}}
@@ -279,7 +290,7 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
        div {class:"gs26-checklist-layout",
         nav {"aria-label":"Checklists",
          for list in &document.read().checklists{
-          {let list_id=list.id.clone();let active=current.as_ref().is_some_and(|c|c.id==list.id);let complete=list.items.iter().filter(|i|i.checked).count();rsx!{
+          {let list_id=list.id.clone();let active=current.as_ref().is_some_and(|c|c.id==list.id);let complete=list.items.iter().filter(|i|item_complete(&sync_state.read(),&list.id,i)).count();rsx!{
            button {key:"{list.id}","aria-current":if active{"page"}else{"false"},onclick:move |_|selected.set(list_id.clone()),span {"{list.title}"}small {"{complete}/{list.items.len()}"}if list.required_before_launch{small {"Required"}}}
           }}
          }
@@ -290,7 +301,7 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
           for item in &list.items{
            {let list_id=list.id.clone();let item_id=item.id.clone();rsx!{
             label {class:"gs26-checklist-item",key:"{item.id}",
-             input {r#type:"checkbox",checked:item.checked,disabled:*busy.read()||!*loaded.read()||(sync_state.read().enabled&&(!sync_state.read().ready||sync_state.read().durability_pending))||item_conflicted(&sync_state.read(),&list.id,&item.id),onchange:move|event|{
+             input {r#type:"checkbox",checked:item_complete(&sync_state.read(),&list.id,item),disabled:*busy.read()||!*loaded.read()||(sync_state.read().enabled&&(!sync_state.read().ready||sync_state.read().durability_pending))||item_conflicted(&sync_state.read(),&list.id,&item.id),onchange:move|event|{
               let request=Check{checklist_id:list_id.clone(),item_id:item_id.clone(),checked:event.checked()};busy.set(true);
               spawn(async move{match http_post_json::<Check,Document>("/api/checklists/check",&request).await{Ok(value)=>{if value.revision>=document.read().revision{document.set(value);}message.set(String::new());},Err(error)=>message.set(error)}busy.set(false);});
              }}
@@ -347,6 +358,9 @@ mod tests {
             ..Default::default()
         };
         assert!(item_conflicted(&status, "setup", "test"));
+        let retained = Item { id: "test".into(), checked: true, ..Default::default() };
+        assert!(!item_complete(&status, "setup", &retained), "retained local check cannot satisfy a shared progress conflict");
+        assert!(item_complete(&SyncStatus::default(), "setup", &retained));
         assert!(!item_conflicted(&status, "setup", "other"));
         assert_eq!(
             conflict_label("checklists/progress/example", &history),
