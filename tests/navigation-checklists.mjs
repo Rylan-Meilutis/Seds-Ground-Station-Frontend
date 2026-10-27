@@ -238,11 +238,11 @@ try {
    await mobile.getByRole('navigation',{name:'Mobile navigation'}).getByRole('button',{name:'Cameras & Recordings',exact:true}).waitFor({state:'detached',timeout:12000});
   }
   if(entry.name==='anonymous'){
-   await mobile.getByRole('button',{name:'Close menu',exact:true}).click();await mobile.getByRole('button',{name:'SIGN IN',exact:true}).click();
+   await authButton.click();
    await mobile.waitForURL(/login/);
   }
   await profile.close();
  }
  Object.assign(session,originalSession);
- console.log('PASS: mobile menu dimensions, direct signed-out login, independent publisher/voice/manager tabs, saved tile ordering/resizing, stale revisions and live revocation');
+ console.log('PASS: mobile menu dimensions, signed-out login through Tools, independent publisher/voice/manager tabs, saved tile ordering/resizing, stale revisions and live revocation');
 }finally{await browser.close();await new Promise(r=>server.close(r));}
