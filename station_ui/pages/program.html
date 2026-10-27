@@ -25,7 +25,7 @@ button{min-height:44px;border-radius:10px}button:focus-visible{outline:3px solid
 window.GS26StayAwake?.setActive('programme',true);
 const stage=document.querySelector('#stage'),status=document.querySelector('#status'),banner=document.querySelector('#banner');
 const ticket=new URLSearchParams(location.search).get('ticket'),players=new Map();
-let state,clockOffset=0,lastPoll=0,displayed='',stopped=false,lastVideoError='',bufferMarginMs=2500;
+let state,clockOffset=0,lastPoll=0,displayed='',stopped=false,lastVideoError='',bufferMarginMs=2500,pollTimer,pollAbort,pollEpoch=0;
 const supportsMse=typeof Hls!=='undefined'&&Hls.isSupported();
 const supportsNative=!!document.createElement('video').canPlayType('application/vnd.apple.mpegurl');
 const supportsVideo=supportsMse||supportsNative;
@@ -104,8 +104,10 @@ function drawBanner(){
  }
 }
 async function poll(){
+ if(stopped)return;
+ const epoch=pollEpoch,abort=new AbortController();pollAbort=abort;
  try{
-  const start=Date.now(),r=await fetch('/api/media-assets/program/state?ticket='+encodeURIComponent(ticket)+(Number.isFinite(window.gsProgramPlaybackMs)?'&playback_ms='+Math.floor(window.gsProgramPlaybackMs):''),{cache:'no-store'});if(!r.ok)throw Error('Program unavailable');const next=await r.json();clockOffset=next.server_now_ms-(start+Date.now())/2;
+  const start=Date.now(),r=await fetch('/api/media-assets/program/state?ticket='+encodeURIComponent(ticket)+(Number.isFinite(window.gsProgramPlaybackMs)?'&playback_ms='+Math.floor(window.gsProgramPlaybackMs):''),{cache:'no-store',signal:abort.signal});if(!r.ok)throw Error('Program unavailable');const next=await r.json();if(stopped||epoch!==pollEpoch)return;clockOffset=next.server_now_ms-(start+Date.now())/2;
   if(state&&JSON.stringify([state.broadcast.layout,state.broadcast.tiles,state.broadcast.featured_stream_id,state.broadcast.replay?.id,state.telemetry?.scene])!==JSON.stringify([next.broadcast.layout,next.broadcast.tiles,next.broadcast.featured_stream_id,next.broadcast.replay?.id,next.telemetry?.scene]))captureTransition();
   if(state&&(next.broadcast.delay_seconds!==state.broadcast.delay_seconds||(next.broadcast.replay?.id||'')!==(state.broadcast.replay?.id||''))){for(const id of [...players.keys()])remove(id);displayed='';}
   state=next;lastPoll=performance.now();
@@ -117,8 +119,8 @@ async function poll(){
   const ids=new Set(feeds.map(s=>s.id));for(const id of [...players.keys()])if(!ids.has(id)){const outgoing=players.get(id);if(!outgoing.retiring){outgoing.retiring=true;outgoing.video.style.opacity=0;setTimeout(()=>{if(players.get(id)===outgoing)remove(id);},500);}}else players.get(id).retiring=false;
   for(const feed of feeds){if(players.has(feed.id)&&players.get(feed.id).url!==feed.url)remove(feed.id);if(players.get(feed.id)?.failed && performance.now()-players.get(feed.id).failedAt>5000)remove(feed.id);if(supportsVideo&&!players.has(feed.id))create(feed);}
   drawBanner();
- }catch(e){status.textContent='Program unavailable — delayed feed paused';lastPoll=0;window.gsProgramAudioState={enabled:false,fresh:false};window.dispatchEvent(new CustomEvent("gs-program-audio-state",{detail:window.gsProgramAudioState}));}
- if(!stopped)setTimeout(poll,500);
+ }catch(e){if(stopped||epoch!==pollEpoch)return;status.textContent='Program unavailable — delayed feed paused';lastPoll=0;window.gsProgramAudioState={enabled:false,fresh:false};window.dispatchEvent(new CustomEvent("gs-program-audio-state",{detail:window.gsProgramAudioState}));}
+ if(!stopped&&epoch===pollEpoch)pollTimer=setTimeout(poll,500);
 }
 function render(){
  if(stopped)return;
@@ -186,11 +188,13 @@ function specialScene(next){
   if(next==='recorded-replay')recorded.src='/api/media-assets/recorded-vehicle?ticket='+encodeURIComponent(ticket);else recorded.removeAttribute('src');specialActive=next;
  }
  if(next==='map'){
-  if(!mapController&&!mapLoading&&performance.now()>=mapRetryAt){mapLoading=true;import('/assets/program-map.js').then(m=>m.mount(map)).then(controller=>{mapLoading=false;if(specialActive!=='map'){controller.destroy();return;}mapController=controller;updateMap(state.telemetry?.positions||{},true);}).catch(()=>{mapLoading=false;mapRetryAt=performance.now()+30000;status.textContent='Map unavailable';});}
+  if(!mapController&&!mapLoading&&performance.now()>=mapRetryAt){const epoch=pollEpoch;mapLoading=true;import('/assets/program-map.js').then(m=>m.mount(map)).then(controller=>{mapLoading=false;if(stopped||epoch!==pollEpoch||specialActive!=='map'){controller.destroy();return;}mapController=controller;updateMap(state?.telemetry?.positions||{},true);}).catch(()=>{mapLoading=false;if(stopped||epoch!==pollEpoch)return;mapRetryAt=performance.now()+30000;status.textContent='Map unavailable';});}
   updateMap(state.telemetry?.positions||{},true);
  }
 }
-const timer=setInterval(()=>{render();finishTransition([...players.values()].some(p=>p.ready)||['model','map','recorded-replay'].includes(scene()));},100);
+function tick(){render();finishTransition([...players.values()].some(p=>p.ready)||['model','map','recorded-replay'].includes(scene()));}
+let timer=setInterval(tick,100);
 if(!supportsVideo){status.textContent=unsupportedVideo;}poll();
-window.addEventListener('pagehide',()=>{stopped=true;clearInterval(timer);specialScene(null);for(const id of [...players.keys()])remove(id);});
+window.addEventListener('pagehide',()=>{stopped=true;pollEpoch++;pollAbort?.abort();clearTimeout(pollTimer);clearInterval(timer);timer=null;lastPoll=0;state=null;displayed='';window.gsProgramPlaybackMs=undefined;transitionFrame?.remove();transitionFrame=null;specialScene(null);for(const id of [...players.keys()])remove(id);window.gsProgramAudioState={enabled:false,fresh:false};window.dispatchEvent(new CustomEvent('gs-program-audio-state',{detail:window.gsProgramAudioState}));});
+window.addEventListener('pageshow',()=>{if(!stopped)return;stopped=false;pollEpoch++;status.textContent='Buffering';timer=setInterval(tick,100);poll();});
 </script><script type="module" src="/assets/program-audio.js"></script></html>

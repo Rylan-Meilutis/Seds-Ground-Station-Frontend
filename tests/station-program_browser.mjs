@@ -53,10 +53,21 @@ try {
   const unmute=page.getByRole('button',{name:'Unmute stream',exact:true});
   if(await unmute.isVisible())await unmute.click();
   await page.waitForFunction(()=>audioFrames>3);
+  const beforeRestoreAudio=await page.evaluate(()=>audioFrames);
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+  await page.waitForFunction(()=>document.querySelectorAll('video').length===0);
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+  await page.waitForFunction(()=>document.querySelector('video')?.style.opacity==='1',null,{timeout:8000});
+  await page.waitForFunction(n=>audioFrames>n,beforeRestoreAudio,{timeout:8000});
   assert.equal(await page.getByRole('button',{name:'Enable crew audio',exact:true}).count(),0);
   await page.getByRole('button',{name:'Mute stream',exact:true}).click();
   assert(await page.locator('video').evaluate(v=>v.muted),'one mute controls camera sound');
   const muted=await page.evaluate(()=>audioFrames);await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>audioFrames),muted);
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+  await page.waitForFunction(()=>document.querySelector('video')?.style.opacity==='1');
+  assert(await page.locator('video').evaluate(v=>v.muted),'restoring the page preserves the viewer mute choice');
+  await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>audioFrames),muted,'restoring a muted page does not resume crew audio');
   await page.getByRole('button',{name:'Unmute stream',exact:true}).click();await page.waitForFunction(n=>audioFrames>n,muted);
   const before=await page.locator('video').evaluate(v=>v.currentTime);await page.waitForTimeout(2200);
   assert((await page.locator('video').evaluate(v=>v.currentTime))>before+1,'video advances, not stuck in a seek loop');
@@ -122,5 +133,5 @@ try {
   await page.locator('#rocket-inset').waitFor({state:'visible'});
   assert.equal(live3dRequests,0,'3D assets are reserved for saved replay');
   assert.equal(errors.length,0,errors.join('\n'));
-  console.log('PASS: H.264 playback advances, single decoder, portrait grid/status bar, interview main/PiP audio, phase scene overrides and categorical metric cycling, unified camera/crew sound without worklet or microphone, delay changes, camera loss and server failure');
+  console.log('PASS: H.264 playback advances, restored-page video/audio and mute preference, single decoder, portrait grid/status bar, interview main/PiP audio, phase scene overrides and categorical metric cycling, unified camera/crew sound without worklet or microphone, delay changes, camera loss and server failure');
 } finally {await browser?.close();rmSync(dir,{recursive:true,force:true});}
