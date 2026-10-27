@@ -4,6 +4,7 @@
 
 mod accel_display_filter;
 mod actions_tab;
+mod station_mode;
 mod admin_console;
 mod station_positions_admin;
 mod calibration_tab;

@@ -3054,6 +3054,7 @@ fn TelemetryDashboardInner() -> Element {
                             on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);},
                         }
                     }
+                    station_mode::OperatingModeNotice {}
                     if !*WS_CONNECTED_SIGNAL.read() {
                         div {
                             role: "alert",class:"gs26-connection-notice",

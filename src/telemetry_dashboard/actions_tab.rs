@@ -546,7 +546,7 @@ pub fn ActionsTab(
             }
             if auth::current_status().station_role.as_deref() == Some("rrls") {
                 p {role:"status",style:"margin:0 0 12px;color:{theme.text_muted};font-size:13px;",
-                    "RRLS observer. Primary operating mode is unavailable; sequence diagnostics describe this RRLS backend."
+                    {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), true)}
                 }
             }
             if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {

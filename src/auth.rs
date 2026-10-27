@@ -65,6 +65,8 @@ fn configure_browser_discovery(pairing: Option<&StationPairing>) {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionStatus {
     #[serde(default)]
+    pub operating_mode: Option<serde_json::Value>,
+    #[serde(default)]
     pub station_name: Option<String>,
     #[serde(default)]
     pub station_role: Option<String>,
