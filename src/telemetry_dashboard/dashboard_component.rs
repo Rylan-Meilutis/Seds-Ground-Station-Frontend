@@ -2845,7 +2845,7 @@ fn TelemetryDashboardInner() -> Element {
                }}
              }}
              .gs26-mobile-menu-pages {{display:none;}}
-             @media (max-width:720px) {{
+             @media (max-width:900px) {{
                .gs26-header-actions-shell {{pointer-events:auto;}}
                .gs26-header-actions-list {{position:fixed;inset:72px 8px 8px;width:auto;max-width:none;max-height:none;overflow-y:auto;overscroll-behavior:contain;justify-content:flex-start;}}
                .gs26-mobile-menu-pages {{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}}
