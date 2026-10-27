@@ -318,6 +318,40 @@ pub(super) fn NetworkUtcControls() -> Element {
     }
 }
 
+fn request_gate_diagnostics(status: &serde_json::Value, recovery: bool) -> String {
+    let scope = if recovery {
+        "RRLS local backend"
+    } else {
+        "Backend gate"
+    };
+    let Some(gate) = status.get("request_gate") else {
+        return format!("{scope}: request-gate diagnostics unavailable.");
+    };
+    let mode = match gate["hitl_mode"].as_bool() {
+        Some(true) => "HITL",
+        Some(false) => "non-HITL",
+        None => "unknown",
+    };
+    format!(
+        "{scope}: mode={mode} · state={} · prelaunch={} · valve interlock={} · {} · {}",
+        gate["flight_state"].as_str().unwrap_or("unknown"),
+        gate["prelaunch"]
+            .as_bool()
+            .map(|value| if value { "yes" } else { "no" })
+            .unwrap_or("unknown"),
+        gate["button_interlock_satisfied"]
+            .as_bool()
+            .map(|value| if value { "satisfied" } else { "blocked" })
+            .unwrap_or("unknown"),
+        status["message"]
+            .as_str()
+            .unwrap_or("No local sequence status"),
+        status["configuration_error"]
+            .as_str()
+            .unwrap_or("Pressure configuration valid"),
+    )
+}
+
 #[component]
 pub fn ActionsTab(
     layout: ActionsTabLayout,
@@ -357,22 +391,12 @@ pub fn ActionsTab(
                             }
                             self_test_confirmed.set(confirmed);
                         }
-                    match status.get("request_gate") {
-                    Some(gate) => format!(
-                        "Backend gate: mode={} · state={} · prelaunch={} · valve interlock={} · {} · {}",
-                        if gate["hitl_mode"].as_bool() == Some(true) { "HITL" } else { "sequenced" },
-                        gate["flight_state"].as_str().unwrap_or("unknown"),
-                        gate["prelaunch"].as_bool().map(|v| if v { "yes" } else { "no" }).unwrap_or("unknown"),
-                        gate["button_interlock_satisfied"].as_bool().map(|v| if v { "satisfied" } else { "blocked" }).unwrap_or("unknown"),
-                        status["message"].as_str().unwrap_or("No sequence status"),
-                        status["configuration_error"].as_str().unwrap_or("Pressure configuration valid"),
-                    ),
-                    None => "Backend does not expose request-gate diagnostics; rebuild/restart it from current dev.".into(),
-                }
+                    request_gate_diagnostics(&status, auth::current_status().station_role.as_deref() == Some("rrls"))
                 }
                 Err(error) => {
                     operational_status.set(serde_json::json!({"unavailable":true}));
-                    format!("Cannot read backend GSE gate: {error}")
+                    let scope = if auth::current_status().station_role.as_deref() == Some("rrls") { "RRLS local backend" } else { "backend" };
+                    format!("Cannot read {scope} GSE gate: {error}")
                 }
             };
             if *gse_request_gate.read() != next {
@@ -519,6 +543,11 @@ pub fn ActionsTab(
             }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "Controls follow backend permissions and interlocks."
+            }
+            if auth::current_status().station_role.as_deref() == Some("rrls") {
+                p {role:"status",style:"margin:0 0 12px;color:{theme.text_muted};font-size:13px;",
+                    "RRLS observer. Primary operating mode is unavailable; sequence diagnostics describe this RRLS backend."
+                }
             }
             if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {
                 div {role:"alert",style:"padding:8px 10px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};","{error}"}
@@ -997,5 +1026,35 @@ fn FillTargetEditor(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mode_label_tests {
+    use super::request_gate_diagnostics;
+    #[test]
+    fn local_mode_is_scoped_and_absent_mode_stays_unknown() {
+        let mut status =
+            serde_json::json!({"request_gate":{"hitl_mode":false,"flight_state":"Idle"}});
+        assert!(
+            request_gate_diagnostics(&status, true)
+                .starts_with("RRLS local backend: mode=non-HITL")
+        );
+        status["request_gate"]["hitl_mode"] = serde_json::Value::Bool(true);
+        assert!(
+            request_gate_diagnostics(&status, true).starts_with("RRLS local backend: mode=HITL")
+        );
+        status["request_gate"]
+            .as_object_mut()
+            .unwrap()
+            .remove("hitl_mode");
+        assert!(
+            request_gate_diagnostics(&status, true).starts_with("RRLS local backend: mode=unknown")
+        );
+        assert!(request_gate_diagnostics(&status, false).starts_with("Backend gate: mode=unknown"));
+        assert!(
+            request_gate_diagnostics(&serde_json::Value::Null, true)
+                .contains("diagnostics unavailable")
+        );
     }
 }
