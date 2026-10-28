@@ -311,6 +311,19 @@ pub(super) fn NetworkUtcControls() -> Element {
                         busy.set(false);
                     });
                 }, "Set network UTC" }
+                button { disabled: busy(), onclick: move |_| {
+                    let utc_ms = super::current_wallclock_ms();
+                    busy.set(true);
+                    spawn(async move {
+                        message.set(match super::http_post_json::<_, serde_json::Value>(
+                            "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
+                        ).await {
+                            Ok(_) => "Network UTC source updated.".into(),
+                            Err(error) => format!("Network UTC was not updated: {error}"),
+                        });
+                        busy.set(false);
+                    });
+                }, "Use client time" }
                 p { "Sets the station's network UTC source. Clock corrections apply gradually; the server system clock is unchanged." }
             }
             p { role: "status", "{message}" }
@@ -489,58 +502,6 @@ pub fn ActionsTab(
             ",
             style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
-            NetworkUtcControls {}
-            if operational_status.read()["unavailable"].as_bool()==Some(true) {
-                p {role:"alert","Sequence and panel status unavailable"}
-            }
-            super::gse_panel::PhysicalPanelStatus {status:operational_status}
-            label {
-                input { r#type: "checkbox", checked: auto_zero().unwrap_or(false),
-                    disabled: auto_zero().is_none() || auto_zero_busy() || abort_only_mode,
-                    onchange: move |event| {
-                        let enabled = event.checked();
-                        auto_zero_busy.set(true);
-                        spawn(async move {
-                            match super::http_post_json::<_, serde_json::Value>("/api/auto_zero", &serde_json::json!({"enabled": enabled})).await {
-                                Ok(saved) => { auto_zero.set(saved["enabled"].as_bool()); auto_zero_message.set("Automatic zero setting saved".into()); }
-                                Err(error) => auto_zero_message.set(format!("Setting not changed: {error}")),
-                            }
-                            auto_zero_busy.set(false);
-                        });
-                    }
-                }
-                " Auto-zero before fill and launch"
-            }
-            super::gse_panel::ControlHelp {title:"automatic zero",paragraphs:vec![
-                "Fill uses 200 recent samples when stable within ±0.8 kg. Otherwise it captures 200 fresh samples and ignores isolated outliers.".into(),
-                "Turning this off preserves the existing tare. Offsets beyond ±0.8 kg require inspection and manual tare.".into()
-            ]}
-            if !auto_zero_message().is_empty() { p { "{auto_zero_message}" } }
-            if let Some(cfg) = fill_targets() {
-                label { "Fill cutoff source: "
-                    select {
-                        value: "{cfg.fill_source}", disabled: fill_targets_busy() || abort_only_mode,
-                        onchange: move |event| {
-                            let Some(mut cfg) = fill_targets() else { return; };
-                            cfg.fill_source = event.value();
-                            fill_targets_busy.set(true);
-                            spawn(async move {
-                                match super::http_post_json::<_, FillTargetsConfig>("/api/fill_targets", &cfg).await {
-                                    Ok(saved) => {
-                                        backend_fill_targets.set(Some(saved.clone()));
-                                        fill_targets.set(Some(saved));
-                                        fill_targets_status.set("Fill source saved".into());
-                                    }
-                                    Err(error) => fill_targets_status.set(format!("Fill source not changed: {error}")),
-                                }
-                                fill_targets_busy.set(false);
-                            });
-                        },
-                        option { value: "kg50", "50 kg loadcell (signed calibrated value)" }
-                        option { value: "kg1000_absolute", "1000 kg loadcell (absolute calibrated value)" }
-                    }
-                }
-            }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "Controls follow backend permissions and interlocks."
             }
@@ -705,6 +666,58 @@ pub fn ActionsTab(
                                 }
                             }
                         }
+                    }
+                }
+            }
+            NetworkUtcControls {}
+            if operational_status.read()["unavailable"].as_bool()==Some(true) {
+                p {role:"alert","Sequence and panel status unavailable"}
+            }
+            super::gse_panel::PhysicalPanelStatus {status:operational_status}
+            label {
+                input { r#type: "checkbox", checked: auto_zero().unwrap_or(false),
+                    disabled: auto_zero().is_none() || auto_zero_busy() || abort_only_mode,
+                    onchange: move |event| {
+                        let enabled = event.checked();
+                        auto_zero_busy.set(true);
+                        spawn(async move {
+                            match super::http_post_json::<_, serde_json::Value>("/api/auto_zero", &serde_json::json!({"enabled": enabled})).await {
+                                Ok(saved) => { auto_zero.set(saved["enabled"].as_bool()); auto_zero_message.set("Automatic zero setting saved".into()); }
+                                Err(error) => auto_zero_message.set(format!("Setting not changed: {error}")),
+                            }
+                            auto_zero_busy.set(false);
+                        });
+                    }
+                }
+                " Auto-zero before fill and launch"
+            }
+            super::gse_panel::ControlHelp {title:"automatic zero",paragraphs:vec![
+                "Fill uses 200 recent samples when stable within ±0.8 kg. Otherwise it captures 200 fresh samples and ignores isolated outliers.".into(),
+                "Turning this off preserves the existing tare. Offsets beyond ±0.8 kg require inspection and manual tare.".into()
+            ]}
+            if !auto_zero_message().is_empty() { p { "{auto_zero_message}" } }
+            if let Some(cfg) = fill_targets() {
+                label { "Fill cutoff source: "
+                    select {
+                        value: "{cfg.fill_source}", disabled: fill_targets_busy() || abort_only_mode,
+                        onchange: move |event| {
+                            let Some(mut cfg) = fill_targets() else { return; };
+                            cfg.fill_source = event.value();
+                            fill_targets_busy.set(true);
+                            spawn(async move {
+                                match super::http_post_json::<_, FillTargetsConfig>("/api/fill_targets", &cfg).await {
+                                    Ok(saved) => {
+                                        backend_fill_targets.set(Some(saved.clone()));
+                                        fill_targets.set(Some(saved));
+                                        fill_targets_status.set("Fill source saved".into());
+                                    }
+                                    Err(error) => fill_targets_status.set(format!("Fill source not changed: {error}")),
+                                }
+                                fill_targets_busy.set(false);
+                            });
+                        },
+                        option { value: "kg50", "50 kg loadcell (signed calibrated value)" }
+                        option { value: "kg1000_absolute", "1000 kg loadcell (absolute calibrated value)" }
                     }
                 }
             }

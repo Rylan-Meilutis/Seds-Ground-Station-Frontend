@@ -3835,10 +3835,10 @@ fn TelemetryDashboardInner() -> Element {
                 }
                 }
                 if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && *active_main_tab.read()!=MainTab::Warnings {
-                    aside {role:"alert",class:"gs26-warning-toast",style:"position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
+                    aside {role:"alert",class:"gs26-warning-toast",style:"font-family:{dashboard_font_stack};position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
                         div {style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
-                        button {onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
-                        button {"aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
+                        button {style:"font-family:inherit;",onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
+                        button {style:"font-family:inherit;","aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
                     }
                 }
                 if *active_main_tab.read() != MainTab::Notifications && !notifications.read().is_empty() {

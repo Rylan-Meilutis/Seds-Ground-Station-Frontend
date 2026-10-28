@@ -178,6 +178,11 @@ try {
  }
  for(const socket of sockets)socket.send(JSON.stringify({ty:'Warning',data:{timestamp_ms:Date.now(),message:'Simulated warning for UI validation'}}));
  await page.getByRole('alert').filter({hasText:'Simulated warning for UI validation'}).waitFor();
+ const dashboardFont=await page.locator('.gs26-dashboard-shell').evaluate(e=>getComputedStyle(e).fontFamily);
+ const warningToast=page.locator('.gs26-warning-toast');
+ assert.equal(await warningToast.evaluate(e=>getComputedStyle(e).fontFamily),dashboardFont,'warning popup matches dashboard typography');
+ for(const button of await warningToast.locator('button').all()) assert.equal(await button.evaluate(e=>getComputedStyle(e).fontFamily),dashboardFont,'warning popup controls inherit dashboard font');
+
  assert.equal(await page.locator('.gs26-dashboard-shell').evaluate(e=>getComputedStyle(e).boxShadow),'none','page frame does not blink');
  assert.equal(await page.locator('.gs26-status-count[data-alert=warning]').evaluate(e=>getComputedStyle(e).animationName),'gs26-button-warning');
  const pulseColors=await page.locator('.gs26-status-count[data-alert=warning]').evaluate(element=>{

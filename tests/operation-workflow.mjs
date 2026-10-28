@@ -150,6 +150,18 @@ try {
  await setUtc.click();
  await page.getByText('Network UTC source updated.',{exact:true}).waitFor();
  assert.deepEqual(networkUtcUpdates,[{source:'client',utc_ms:Date.UTC(2026,9,26,22,0,0)}]);
+ const clientTime=page.getByRole('button',{name:'Use client time',exact:true});
+ const beforeClientTime=await page.evaluate(()=>Date.now());
+ const clientTimeResponse=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/network_time' && r.request().method()==='POST');
+ await clientTime.click();
+ await clientTimeResponse;
+ await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Use client time')?.disabled);
+ assert.equal(networkUtcUpdates.length,2,'one client-time click sends one update');
+ assert.equal(networkUtcUpdates[1].source,'client');
+ assert(networkUtcUpdates[1].utc_ms>=beforeClientTime && networkUtcUpdates[1].utc_ms<=await page.evaluate(()=>Date.now()));
+ const primaryAction=page.getByRole('button',{name:/Start fill/i}).first();
+ assert((await primaryAction.boundingBox()).y < (await clientTime.boundingBox()).y,'main actions appear above network time controls');
+
  assert.equal(await page.getByRole('button',{name:'Override cold-flow requirement',exact:true}).count(),0);
  assert(await page.getByRole('button',{name:'Reset operation checks',exact:true}).isDisabled());
  gseStatus.mission_stage='idle';gseStatus.qualification.fire_started=false;
