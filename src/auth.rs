@@ -213,14 +213,30 @@ pub fn is_admin() -> bool {
 }
 
 pub fn can_send_command(cmd: &str) -> bool {
-    if is_admin() {
+    can_send_command_for_status(&current_status(), cmd)
+}
+
+fn can_send_command_for_status(status: &SessionStatus, cmd: &str) -> bool {
+    if status.station_role.as_deref() == Some("rrls") && !matches!(cmd,
+        "StartWritingNow" | "StartWritingLastTwoMinutes" | "PauseWritingDb" | "StopWritingDb") {
+        return false;
+    }
+    if status.roles.iter().any(|role| role == "admin") {
         return true;
     }
-    let status = current_status();
     if !status.permissions.send_commands {
         return false;
     }
-    status.allowed_commands.is_empty() || status.allowed_commands.iter().any(|item| item == cmd)
+    let permission = match cmd {
+        "NitrogenClose" => "Nitrogen",
+        "NitrousClose" => "Nitrous",
+        _ => cmd,
+    };
+    status.allowed_commands.is_empty()
+        || status
+            .allowed_commands
+            .iter()
+            .any(|item| item == permission)
 }
 
 pub fn can_view_data() -> bool {
@@ -261,10 +277,24 @@ pub fn can_manage_stream() -> bool {
                 .any(|command| command == "StreamControl"))
 }
 
-fn camera_permission(status:&SessionStatus)->bool {status.authenticated&&!status.anonymous&&(status.roles.iter().any(|r|r=="admin")||(status.permissions.view_data&&status.permissions.camera_publish))}
-fn voice_permission(status:&SessionStatus)->bool {status.authenticated&&!status.anonymous&&(status.roles.iter().any(|r|r=="admin")||(status.permissions.view_data&&status.permissions.voice_transmit))}
-pub fn can_publish_camera()->bool{camera_permission(&current_status())}
-pub fn can_join_voice()->bool{voice_permission(&current_status())}
+fn camera_permission(status: &SessionStatus) -> bool {
+    status.authenticated
+        && !status.anonymous
+        && (status.roles.iter().any(|r| r == "admin")
+            || (status.permissions.view_data && status.permissions.camera_publish))
+}
+fn voice_permission(status: &SessionStatus) -> bool {
+    status.authenticated
+        && !status.anonymous
+        && (status.roles.iter().any(|r| r == "admin")
+            || (status.permissions.view_data && status.permissions.voice_transmit))
+}
+pub fn can_publish_camera() -> bool {
+    camera_permission(&current_status())
+}
+pub fn can_join_voice() -> bool {
+    voice_permission(&current_status())
+}
 
 pub fn set_current_session(session: StoredAuthSession) {
     let host_scope = current_host_scope();
@@ -962,6 +992,51 @@ fn fallback_auth_storage_dir() -> std::path::PathBuf {
         .join("gs26")
 }
 
-#[cfg(test)]mod media_permission_tests {use super::*;
- #[test]fn publishing_voice_and_management_are_independent(){let mut status=SessionStatus{authenticated:true,permissions:Permissions{view_data:true,..Default::default()},..Default::default()};assert!(!camera_permission(&status));assert!(!voice_permission(&status));status.roles=vec!["stream_master".into()];assert!(!camera_permission(&status));assert!(!voice_permission(&status));status.roles.clear();status.permissions.camera_publish=true;assert!(camera_permission(&status));assert!(!voice_permission(&status));status.permissions.voice_transmit=true;assert!(voice_permission(&status));status.anonymous=true;assert!(!voice_permission(&status));assert!(!camera_permission(&status));}
+#[cfg(test)]
+mod media_permission_tests {
+    use super::*;
+    #[test]
+    fn publishing_voice_and_management_are_independent() {
+        let mut status = SessionStatus {
+            authenticated: true,
+            permissions: Permissions {
+                view_data: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!camera_permission(&status));
+        assert!(!voice_permission(&status));
+        status.roles = vec!["stream_master".into()];
+        assert!(!camera_permission(&status));
+        assert!(!voice_permission(&status));
+        status.roles.clear();
+        status.permissions.camera_publish = true;
+        assert!(camera_permission(&status));
+        assert!(!voice_permission(&status));
+        status.permissions.voice_transmit = true;
+        assert!(voice_permission(&status));
+        status.anonymous = true;
+        assert!(!voice_permission(&status));
+        assert!(!camera_permission(&status));
+    }
+}
+
+#[cfg(test)]
+mod recovery_command_permissions {
+    use super::*;
+    #[test]
+    fn recovery_admin_retains_recording_but_cannot_run_live_outputs() {
+        let mut status = SessionStatus::default();
+        status.roles = vec!["admin".into()];
+        status.station_role = Some("rrls".into());
+        for cmd in ["Pilot", "Nitrogen", "NitrogenClose", "NitrousClose", "DeployChutes", "ResetFlightState", "ResetTClock", "Abort"] {
+            assert!(!can_send_command_for_status(&status, cmd), "{cmd}");
+        }
+        for cmd in ["StartWritingNow", "StartWritingLastTwoMinutes", "PauseWritingDb", "StopWritingDb"] {
+            assert!(can_send_command_for_status(&status, cmd));
+        }
+        status.station_role = Some("primary".into());
+        assert!(can_send_command_for_status(&status, "Pilot"));
+    }
 }

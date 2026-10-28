@@ -21,6 +21,8 @@ fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
         ("StartFill", "Start fill"),
         ("PauseFill", "Pause fill"),
         ("CancelFill", "Cancel fill"),
+        ("NitrogenClose", "Close nitrogen"),
+        ("NitrousClose", "Close nitrous"),
     ] {
         if !actions.iter().any(|action| action.cmd == cmd) {
             actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
@@ -64,7 +66,7 @@ mod sequence_action_tests {
         let theme = ThemeConfig::default();
         let mut actions = Vec::new();
         ensure_sequence_actions(&mut actions, &theme);
-        assert_eq!(actions.len(), 5);
+        assert_eq!(actions.len(), 7);
         for cmd in [
             "StartFill",
             "PauseFill",
@@ -137,6 +139,58 @@ fn recording_command_active(cmd: &str, status: &RecordingStatusMsg) -> Option<bo
     }
 }
 
+fn physical_output_action(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "Dump"
+            | "NormallyOpen"
+            | "Nitrogen"
+            | "NitrogenClose"
+            | "Nitrous"
+            | "NitrousClose"
+            | "Pilot"
+            | "Igniter"
+            | "RetractPlumbing"
+    )
+}
+
+fn merge_command_feedback(cmd: &str, observed: Option<bool>, sent: bool) -> Option<bool> {
+    if physical_output_action(cmd) {
+        return observed;
+    }
+    observed.or(sent.then_some(true))
+}
+
+#[cfg(test)]
+mod physical_confirmation_tests {
+    use super::*;
+    #[test]
+    fn sending_a_valve_request_does_not_confirm_a_physical_output() {
+        for cmd in [
+            "Dump",
+            "NormallyOpen",
+            "Nitrogen",
+            "Nitrous",
+            "Pilot",
+            "Igniter",
+            "RetractPlumbing",
+        ] {
+            assert_eq!(merge_command_feedback(cmd, None, true), None, "{cmd}");
+            assert_eq!(
+                merge_command_feedback(cmd, Some(false), true),
+                Some(false),
+                "{cmd}"
+            );
+            assert_eq!(
+                merge_command_feedback(cmd, Some(true), false),
+                Some(true),
+                "{cmd}"
+            );
+        }
+        assert_eq!(merge_command_feedback("Postinit", None, true), Some(true));
+    }
+}
+
 fn merged_actuated(
     cmd: &str,
     control_actuated: Option<bool>,
@@ -144,11 +198,7 @@ fn merged_actuated(
 ) -> Option<bool> {
     let local_active = command_feedback_active(cmd);
     let base = control_actuated.or_else(|| recording_command_active(cmd, recording_status));
-    match (base, local_active) {
-        (Some(active), _) => Some(active),
-        (None, true) => Some(true),
-        (None, false) => None,
-    }
+    merge_command_feedback(cmd, base, local_active)
 }
 
 #[derive(Clone, Copy)]
@@ -398,17 +448,25 @@ pub fn ActionsTab(
                 Ok(status) => {
                     operational_status.set(status.clone());
                     if !*self_test_busy.read()
-                        && let Some(confirmed) = status["dry_self_test_confirmed"].as_bool() {
-                            if *self_test_confirmed.read() && !confirmed {
-                                self_test_message.set("Confirmation consumed by the last run. Confirm isolation again before retrying self-test.".into());
-                            }
-                            self_test_confirmed.set(confirmed);
+                        && let Some(confirmed) = status["dry_self_test_confirmed"].as_bool()
+                    {
+                        if *self_test_confirmed.read() && !confirmed {
+                            self_test_message.set("Confirmation consumed by the last run. Confirm isolation again before retrying self-test.".into());
                         }
-                    request_gate_diagnostics(&status, auth::current_status().station_role.as_deref() == Some("rrls"))
+                        self_test_confirmed.set(confirmed);
+                    }
+                    request_gate_diagnostics(
+                        &status,
+                        auth::current_status().station_role.as_deref() == Some("rrls"),
+                    )
                 }
                 Err(error) => {
                     operational_status.set(serde_json::json!({"unavailable":true}));
-                    let scope = if auth::current_status().station_role.as_deref() == Some("rrls") { "RRLS local backend" } else { "backend" };
+                    let scope = if auth::current_status().station_role.as_deref() == Some("rrls") {
+                        "RRLS local backend"
+                    } else {
+                        "backend"
+                    };
                     format!("Cannot read {scope} GSE gate: {error}")
                 }
             };
@@ -612,13 +670,16 @@ pub fn ActionsTab(
                                                 };
                                                 let reason_text = disabled_reason.unwrap_or("");
                                                 let label_lines = if action.group == "GSE sequence actions" { 1 } else { 2 };
-                                                let badge_visibility = if enabled { "hidden" } else { "visible" };
+
                                                 let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
                                                 let actuated = merged_actuated(
                                                     action.cmd.as_str(),
                                                     control.as_ref().and_then(|c| c.actuated),
                                                     &recording_status.read(),
                                                 );
+                                                let unconfirmed = physical_output_action(&action.cmd) && actuated.is_none();
+                                                let badge_visibility = if !enabled || unconfirmed { "visible" } else { "hidden" };
+                                                let badge_label = if unconfirmed { "Unconfirmed" } else { "Disabled" };
                                                 rsx! {
                                                     button {
                                                         style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\")}",
@@ -654,9 +715,9 @@ pub fn ActionsTab(
                                                             }
                                                         }
                                                             span {
-                                                                "aria-hidden": enabled,
+                                                                "aria-hidden": enabled && !unconfirmed,
                                                                 style: "visibility:{badge_visibility};flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
-                                                                "{translate_text(\"Disabled\")}"
+                                                                "{translate_text(badge_label)}"
                                                             }
                                                     }
                                                 }

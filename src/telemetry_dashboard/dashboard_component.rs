@@ -598,6 +598,27 @@ fn TelemetryDashboardInner() -> Element {
         });
     }
 
+    // A mode change on the primary changes the recovery UI's action layout,
+    // while every live-operation permission remains enforced by the backend.
+    {
+        let mut displayed_primary_mode = use_signal(|| None::<String>);
+        use_effect(move || {
+            let mode = station_mode::OPERATING_MODE.read()["effective_mode"]
+                .as_str().map(str::to_owned);
+            if crate::auth::current_status().station_role.as_deref() != Some("rrls")
+                || *displayed_primary_mode.peek() == mode
+            {
+                return;
+            }
+            displayed_primary_mode.set(mode);
+            refresh_layout_after_ws_reconnect(
+                layout_config, layout_loading, layout_error, layout_error_dismissed,
+                layout_request_base, calibration_has_sensors, calibration_request_base,
+                action_policy,
+            );
+        });
+    }
+
     // ---------------------------------------------------------
     // Layout config fetch + cache
     // ---------------------------------------------------------

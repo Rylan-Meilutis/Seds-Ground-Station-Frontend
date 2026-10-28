@@ -16,6 +16,10 @@ let gseStatus={phase:'idle',message:'Ready',nitrogen_passed:false,nitrogen_overr
 let actionPolicy=example('action-policy');
 let adminAccounts=[{username:'test-admin',roles:['admin'],permissions:{view_data:true,send_commands:false,set_system_time:false,voice_transmit:false},command_access:{allowed_commands:[]},calibration_access:{view:false,edit:false},disabled:false}];
 const dashboardLayout=example('layout.full');
+let servedMode=null;
+const wsCommands=[];
+dashboardLayout.actions_tab.actions.push({...dashboardLayout.actions_tab.actions[0],cmd:'Pilot',label:'Pilot safety fixture',group:'Fill controls'});
+actionPolicy.controls.push({cmd:'Pilot',enabled:true,actuated:null,blink:'none'});
 for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label:id,channels:[],subtabs:[
   {id:'large',label:'1000 kg',data_type:'KG1000',channels:['Raw'],chart:{enabled:true},chart_groups:[{title:'Fill %',data_type:'LOADCELL_FILL_PERCENT',channels:[0]}],summary_items:[{label:'Fill %',data_type:'LOADCELL_FILL_PERCENT',index:0}]},
   {id:'small',label:'50 kg',data_type:'KG50',channels:['Raw'],chart:{enabled:true},chart_groups:[],summary_items:[]}
@@ -23,6 +27,12 @@ for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label
 
 const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
+  if(pathname==='/api/station_mode') {res.setHeader('Content-Type','application/json');res.end(JSON.stringify(session.operating_mode||{effective_mode:'normal',synchronized:true}));return;}
+  if(pathname==='/api/layout') {
+    const layout=structuredClone(dashboardLayout);
+    if(servedMode)layout.actions_tab.actions.find(a=>a.cmd==='Pilot').label=`Primary ${servedMode} valve`;
+    res.setHeader('Content-Type','application/json');res.end(JSON.stringify(layout));return;
+  }
   if(pathname==='/api/network_time' && req.method==='POST') {
     assert.equal(req.headers.authorization,'Bearer ui-token');
     let body=''; for await(const chunk of req)body+=chunk;
@@ -115,13 +125,21 @@ try {
   localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));
  },{session,origin});
  await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
- await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
+ await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(data=>{try{wsCommands.push(JSON.parse(String(data)))}catch{}}));
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(origin+'/dashboard');
  await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
  await page.getByRole('link',{name:'Actions',exact:true}).click();
  const flow=page.locator('[aria-label="Mission workflow"]');await flow.waitFor();
  assert.equal(await flow.locator('[aria-current=step]').innerText(),'Idle');
+ const pilot=page.getByRole('button',{name:/Pilot safety fixture/});
+ await pilot.waitFor();
+ assert(await pilot.getByText('Unconfirmed',{exact:true}).isVisible());
+ await pilot.click();
+ await page.waitForTimeout(100);
+ assert(await pilot.getByText('Unconfirmed',{exact:true}).isVisible(),'local send feedback must not assert physical confirmation');
+ assert.equal(wsCommands.filter(packet=>packet.cmd==='Pilot').length,1);
+
  await page.getByRole('button',{name:'Override cold-flow requirement',exact:true}).click();
  const dialog=page.getByRole('dialog',{name:'Override nitrogen cold flow'});await dialog.waitFor();
  assert(await dialog.getByRole('button',{name:'Confirm override',exact:true}).isDisabled());
@@ -174,4 +192,33 @@ try {
  assert.deepEqual(errors,[]);
  console.log('PASS: four mission states, reasoned cold-flow override, actual-pass distinction, reload, Fire lock, explicit abort recovery after Idle and 320/390/844/1440 layouts');
  await context.close();
+ session.station_role='rrls';session.station_name='RRLS';
+ session.operating_mode={effective_mode:'hitl',local_build_mode:'normal',synchronized:true,persisted:true};
+ servedMode='HITL';
+ const observer=await browser.newContext({viewport:{width:1440,height:1000}});
+ await observer.addInitScript(({session,origin})=>{
+   localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));
+ },{session,origin});
+ const observerCommands=[];
+ await observer.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
+ await observer.routeWebSocket(url=>url.pathname==='/ws',socket=>socket.onMessage(data=>observerCommands.push(String(data))));
+ const recoveryPage=await observer.newPage();
+ await recoveryPage.goto(origin+'/dashboard');
+ await recoveryPage.getByRole('link',{name:'Actions',exact:true}).click();
+ const hitlValve=recoveryPage.getByRole('button',{name:/Primary HITL valve/});
+ await hitlValve.waitFor();assert(await hitlValve.isDisabled(),'primary HITL layout must not grant a normal RRLS local actuation authority');
+ session.operating_mode.synchronized=false;
+ await recoveryPage.getByText(/last known; not synchronized/).first().waitFor();
+ assert(await hitlValve.isDisabled());
+ session.operating_mode.effective_mode='normal';session.operating_mode.synchronized=true;servedMode='Normal';
+ const normalValve=recoveryPage.getByRole('button',{name:/Primary Normal valve/});
+ await normalValve.waitFor();assert(await normalValve.isDisabled());
+ await recoveryPage.reload();await recoveryPage.getByRole('link',{name:'Actions',exact:true}).click();
+ await normalValve.waitFor();assert(await normalValve.isDisabled());
+ session.operating_mode.effective_mode='hitl';servedMode='HITL';
+ await hitlValve.waitFor();assert(await hitlValve.isDisabled());
+ assert.equal(observerCommands.filter(data=>data.includes('Pilot')).length,0);
+ await observer.close();
+ console.log('PASS: unconfirmed physical feedback and RRLS normal-build primary-HITL layout, last-known mode, transitions and reconnect preserve read-only operations');
+
 } finally {await browser.close();await new Promise(resolve=>server.close(resolve));}
