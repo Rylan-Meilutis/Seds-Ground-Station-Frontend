@@ -1,3 +1,4 @@
+type RocketPositionUpdate = (Option<(f64, f64)>, Option<f64>);
 // Live telemetry runtime.
 //
 // This include keeps the high-rate data path out of the dashboard component:
@@ -49,6 +50,20 @@ struct ChannelMinMaxKey {
     index: usize,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct OrderedTelemetryValue(f32);
+impl Eq for OrderedTelemetryValue {}
+impl PartialOrd for OrderedTelemetryValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OrderedTelemetryValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
 impl LatestTelemetryKey {
     /// Builds the cache key used for latest-row tracking.
     fn new(data_type: TelemetryTextId, sender_id: TelemetryTextId) -> Self {
@@ -62,6 +77,11 @@ impl LatestTelemetryKey {
 #[derive(Default)]
 struct UiTelemetryStore {
     rows: BTreeMap<UiRowKey, TelemetryRow>,
+    // Index only valid GPS values. Fill-only sessions must not walk every
+    // retained DAQ row twice on every UI drain looking for nonexistent GPS.
+    gps_positions: BTreeMap<UiRowKey, (f64, f64)>,
+    gps_altitudes: BTreeMap<UiRowKey, f64>,
+    channel_values: HashMap<ChannelMinMaxKey, BTreeMap<OrderedTelemetryValue, usize>>,
     channel_minmax_cache: HashMap<ChannelMinMaxKey, (f32, f32)>,
     channel_minmax_dirty: bool,
 }
@@ -70,6 +90,9 @@ impl UiTelemetryStore {
     /// Replaces the compacted UI store with a fresh telemetry snapshot.
     fn replace_from_rows(&mut self, rows: &[TelemetryRow]) {
         self.rows.clear();
+        self.gps_positions.clear();
+        self.gps_altitudes.clear();
+        self.channel_values.clear();
         self.channel_minmax_cache.clear();
         self.channel_minmax_dirty = true;
         self.apply_rows(rows.iter().cloned());
@@ -93,6 +116,20 @@ impl UiTelemetryStore {
                 data_type: row.interned_data_type_id(),
                 sender_id: row.interned_sender_id(),
             };
+            if let Some(position) = row_to_gps(&row) {
+                self.gps_positions.insert(key.clone(), position);
+            } else {
+                self.gps_positions.remove(&key);
+            }
+            if let Some(altitude) = row_to_gps_altitude_m(&row) {
+                self.gps_altitudes.insert(key.clone(), altitude);
+            } else {
+                self.gps_altitudes.remove(&key);
+            }
+            if let Some(previous) = self.rows.remove(&key) {
+                self.index_channel_values(&previous, false);
+            }
+            self.index_channel_values(&row, true);
             self.rows.insert(key, row);
         }
         self.channel_minmax_dirty = true;
@@ -120,7 +157,11 @@ impl UiTelemetryStore {
             .first_key_value()
             .is_some_and(|(_, row)| telemetry_row_received_ms(row) < min_received_ms)
         {
-            self.rows.pop_first();
+            if let Some((key, row)) = self.rows.pop_first() {
+                self.gps_positions.remove(&key);
+                self.gps_altitudes.remove(&key);
+                self.index_channel_values(&row, false);
+            }
             pruned_any = true;
         }
         if pruned_any {
@@ -154,12 +195,12 @@ impl UiTelemetryStore {
 
     /// Returns the newest rocket GPS coordinates currently present in the compacted store.
     fn latest_rocket_gps(&self) -> Option<(f64, f64)> {
-        self.rows.values().rev().find_map(row_to_gps)
+        self.gps_positions.last_key_value().map(|(_, value)| *value)
     }
 
     /// Returns the newest rocket GPS altitude currently present in the compacted store.
     fn latest_rocket_gps_altitude_m(&self) -> Option<f64> {
-        self.rows.values().rev().find_map(row_to_gps_altitude_m)
+        self.gps_altitudes.last_key_value().map(|(_, value)| *value)
     }
 
     fn channel_minmax(
@@ -183,36 +224,63 @@ impl UiTelemetryStore {
         }
 
         self.channel_minmax_cache.clear();
-        for row in self.rows.values() {
-            let data_type = row.interned_data_type_id();
-            let sender_id = row.interned_sender_id();
-            for (index, value) in row.values.iter().enumerate() {
-                let Some(value) = *value else {
-                    continue;
-                };
-                for key in [
-                    ChannelMinMaxKey {
-                        data_type,
-                        sender_id,
-                        index,
-                    },
-                    ChannelMinMaxKey {
-                        data_type,
-                        sender_id: TelemetryTextId::EMPTY,
-                        index,
-                    },
-                ] {
-                    self.channel_minmax_cache
-                        .entry(key)
-                        .and_modify(|(min_value, max_value)| {
-                            *min_value = min_value.min(value);
-                            *max_value = max_value.max(value);
-                        })
-                        .or_insert((value, value));
-                }
+        for (key, values) in &self.channel_values {
+            if let (Some((min, _)), Some((max, _))) =
+                (values.first_key_value(), values.last_key_value())
+            {
+                self.channel_minmax_cache.insert(*key, (min.0, max.0));
             }
         }
         self.channel_minmax_dirty = false;
+    }
+
+    // Count values incrementally, including replacements and expiry. Rebuilding
+    // every channel's extrema from the entire history on every incoming batch
+    // made the Data tab progressively slower even when very few values changed.
+    fn index_channel_values(&mut self, row: &TelemetryRow, insert: bool) {
+        let data_type = row.interned_data_type_id();
+        let sender_id = row.interned_sender_id();
+        for (index, value) in row.values.iter().enumerate() {
+            let Some(value) = *value else {
+                continue;
+            };
+            if !value.is_finite() {
+                continue;
+            }
+            // Canonicalize signed zero so equality and total ordering agree.
+            let value = OrderedTelemetryValue(if value == 0.0 { 0.0 } else { value });
+            for key in [
+                ChannelMinMaxKey {
+                    data_type,
+                    sender_id,
+                    index,
+                },
+                ChannelMinMaxKey {
+                    data_type,
+                    sender_id: TelemetryTextId::EMPTY,
+                    index,
+                },
+            ] {
+                if insert {
+                    *self
+                        .channel_values
+                        .entry(key)
+                        .or_default()
+                        .entry(value)
+                        .or_default() += 1;
+                } else if let Some(values) = self.channel_values.get_mut(&key) {
+                    if let Some(count) = values.get_mut(&value) {
+                        *count -= 1;
+                        if *count == 0 {
+                            values.remove(&value);
+                        }
+                    }
+                    if values.is_empty() {
+                        self.channel_values.remove(&key);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -356,7 +424,7 @@ fn note_sender_telemetry_activity_batch(rows: &[TelemetryRow]) {
 fn ingest_telemetry_rows_into_runtime_caches_with_chart_mode(
     rows: Vec<TelemetryRow>,
     charts_live_enabled: bool,
-) -> Option<(Option<(f64, f64)>, Option<f64>)> {
+) -> Option<RocketPositionUpdate> {
     if rows.is_empty() {
         return None;
     }
@@ -381,7 +449,7 @@ fn ingest_telemetry_rows_into_runtime_caches_with_chart_mode(
 #[cfg(test)]
 fn ingest_telemetry_rows_profile_only(
     rows: Vec<TelemetryRow>,
-) -> Option<(Option<(f64, f64)>, Option<f64>)> {
+) -> Option<RocketPositionUpdate> {
     if rows.is_empty() {
         return None;
     }
@@ -665,6 +733,120 @@ mod latest_telemetry_tests {
 
     static PROFILE_TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
+    fn indexed_test_row(
+        ts: i64,
+        kind: &str,
+        board: &str,
+        values: Vec<Option<f32>>,
+    ) -> TelemetryRow {
+        TelemetryRow {
+            timestamp_ms: ts,
+            received_timestamp_ms: ts,
+            data_type: kind.into(),
+            sender_id: board.into(),
+            data_type_id: Default::default(),
+            sender_id_id: Default::default(),
+            values,
+        }
+    }
+
+    #[test]
+    fn history_indexes_follow_replacement_expiry_and_reset() {
+        let mut store = super::UiTelemetryStore::default();
+        let dt = intern_telemetry_text("KG1000");
+        let daq = intern_telemetry_text("DAQ");
+        store.apply_rows([
+            indexed_test_row(1000, "KG1000", "DAQ", vec![Some(-132.95)]),
+            indexed_test_row(1020, "KG1000", "DAQ", vec![Some(200.0)]),
+            indexed_test_row(1040, "KG1000", "other", vec![Some(300.0)]),
+            indexed_test_row(
+                1000,
+                "GPS",
+                "RF",
+                vec![Some(42.0), Some(-78.0), Some(123.0)],
+            ),
+        ]);
+        assert_eq!(store.channel_minmax(dt, None, 0), Some((-132.95, 300.0)));
+        assert_eq!(
+            store.channel_minmax(dt, Some(daq), 0),
+            Some((-132.95, 200.0))
+        );
+        assert_eq!(store.latest_rocket_gps(), Some((42.0, -78.0)));
+        // Same-bucket replacement removes the previous extreme and GPS value.
+        store.apply_rows([
+            indexed_test_row(1001, "KG1000", "DAQ", vec![Some(10.0)]),
+            indexed_test_row(1001, "GPS", "RF", vec![None, None, None]),
+        ]);
+        assert_eq!(store.channel_minmax(dt, Some(daq), 0), Some((10.0, 200.0)));
+        assert_eq!(store.latest_rocket_gps(), None);
+        assert_eq!(store.latest_rocket_gps_altitude_m(), None);
+        store.prune_history_from(1021 + super::telemetry_history_retention_ms());
+        assert_eq!(store.channel_minmax(dt, Some(daq), 0), None);
+        assert_eq!(store.channel_minmax(dt, None, 0), Some((300.0, 300.0)));
+        store.replace_from_rows(&[]);
+        assert!(store.channel_values.is_empty());
+        assert_eq!(store.channel_minmax(dt, None, 0), None);
+    }
+
+    #[test]
+    fn fill_only_long_history_has_constant_size_gps_lookup() {
+        let mut store = super::UiTelemetryStore::default();
+        // Twenty minutes at 100 rows/second; every drain queries GPS even when
+        // only the fill system is connected. No GPS index grows with DAQ data.
+        let dt = intern_telemetry_text("KG1000");
+        for batch in 0..1200i64 {
+            store.apply_rows((0..100).map(|i| {
+                indexed_test_row(
+                    1_700_000_000_000 + batch * 1000 + i * 10,
+                    "KG1000",
+                    "DAQ",
+                    vec![Some((i - 50) as f32)],
+                )
+            }));
+            assert_eq!(store.latest_rocket_gps(), None);
+            assert_eq!(store.latest_rocket_gps_altitude_m(), None);
+            assert!(store.channel_minmax(dt, None, 0).is_some());
+        }
+        assert!(store.rows.len() >= 15_000);
+        assert!(store.gps_positions.is_empty() && store.gps_altitudes.is_empty());
+    }
+
+    #[test]
+    #[ignore = "long-history before/after lookup profiling"]
+    fn long_history_lookup_profile() {
+        use std::{hint::black_box, time::Instant};
+        let mut store = super::UiTelemetryStore::default();
+        store.apply_rows((0..60_000).map(|i| {
+            indexed_test_row(
+                1_700_000_000_000 + i * 20,
+                "KG1000",
+                "DAQ",
+                vec![Some(i as f32)],
+            )
+        }));
+        let start = Instant::now();
+        for _ in 0..100 {
+            black_box(store.rows.values().rev().find_map(super::row_to_gps));
+            black_box(
+                store
+                    .rows
+                    .values()
+                    .rev()
+                    .find_map(super::row_to_gps_altitude_m),
+            );
+        }
+        let old = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..100 {
+            black_box(store.latest_rocket_gps());
+            black_box(store.latest_rocket_gps_altitude_m());
+        }
+        eprintln!(
+            "100 GPS lookup pairs after 20-minute fill-only history: old scan {old:?}, indexed {:?}",
+            start.elapsed()
+        );
+    }
+
     #[test]
     fn telemetry_drain_budget_uses_real_elapsed_time() {
         let budget = telemetry_rows_per_drain_budget_for(1_000.0, 10_000, 250);
@@ -861,7 +1043,7 @@ mod latest_telemetry_tests {
         let _guard = PROFILE_TEST_GUARD.lock().unwrap();
         charts_cache_clear_active();
         if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-            store.rows.clear();
+            store.replace_from_rows(&[]);
         }
         reset_latest_telemetry(&[]);
 
@@ -916,7 +1098,7 @@ mod latest_telemetry_tests {
         let _guard = PROFILE_TEST_GUARD.lock().unwrap();
         charts_cache_clear_active();
         if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-            store.rows.clear();
+            store.replace_from_rows(&[]);
             store.channel_minmax_cache.clear();
             store.channel_minmax_dirty = true;
         }
@@ -975,7 +1157,7 @@ mod latest_telemetry_tests {
         let _guard = PROFILE_TEST_GUARD.lock().unwrap();
         charts_cache_clear_active();
         if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-            store.rows.clear();
+            store.replace_from_rows(&[]);
             store.channel_minmax_cache.clear();
             store.channel_minmax_dirty = true;
         }
@@ -1029,7 +1211,7 @@ mod latest_telemetry_tests {
         let _guard = PROFILE_TEST_GUARD.lock().unwrap();
         charts_cache_clear_active();
         if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-            store.rows.clear();
+            store.replace_from_rows(&[]);
             store.channel_minmax_cache.clear();
             store.channel_minmax_dirty = true;
         }
@@ -1196,6 +1378,7 @@ fn persist_cached_telemetry_snapshot_if_due(force: bool) {
 }
 
 fn restore_cached_telemetry_rows_if_needed() -> usize {
+    load_graph_history_floor();
     if !data_cache_enabled() {
         persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
         return 0;
@@ -1218,6 +1401,8 @@ fn restore_cached_telemetry_rows_if_needed() -> usize {
         return 0;
     }
     let mut rows = cache.rows;
+    let floor = GRAPH_CLIENT_FLOOR_MS.load(Ordering::Relaxed);
+    if floor != 0 { rows.retain(|row| telemetry_row_received_ms(row) > floor); }
     if rows.is_empty() {
         return 0;
     }
@@ -1280,4 +1465,61 @@ fn apply_telemetry_history_settings(retention_ms: u64, view_window_ms: u64) {
 
     charts_cache_request_refit();
     bump_chart_render_epoch();
+}
+
+/// Calibration must not reuse stale display/cache values after a disconnect.
+pub(crate) fn fresh_daq_calibration_value(data_type: &str, now_ms: i64) -> Option<f32> {
+    let key = LatestTelemetryKey::new(intern_telemetry_text(data_type), intern_telemetry_text("DAQ"));
+    let latest = LATEST_TELEMETRY.lock().ok()?;
+    let row = latest.get(&key)?;
+    fresh_calibration_sample(row, now_ms)
+}
+
+fn fresh_calibration_sample(row: &LatestTelemetrySample, now_ms: i64) -> Option<f32> {
+    // Live ingestion stamps receipt using the client clock. Source timestamps
+    // may be slightly ahead while network clocks converge; they must not make
+    // a newly received temperature disappear until the browser catches up.
+    let age_ms = now_ms.checked_sub(row.received_timestamp_ms)?;
+    if !(0..=2000).contains(&age_ms) {
+        return None;
+    }
+    row.values.first().copied().flatten().filter(|v| v.is_finite())
+}
+
+#[cfg(test)]
+mod calibration_freshness_tests {
+    use super::*;
+
+    fn sample(source_ms: i64, received_ms: i64, value: Option<f32>) -> LatestTelemetrySample {
+        LatestTelemetrySample {
+            timestamp_ms: source_ms,
+            received_timestamp_ms: received_ms,
+            data_type: intern_telemetry_text("DAQ_ADC_TEMPERATURE"),
+            sender_id: intern_telemetry_text("DAQ"),
+            values: Arc::from(vec![value]),
+        }
+    }
+
+    #[test]
+    fn source_clock_skew_does_not_blank_fresh_temperature() {
+        let row = sample(10100, 10000, Some(29.5));
+        for now in [10000, 10001, 10099, 10100, 12000] {
+            assert_eq!(fresh_calibration_sample(&row, now), Some(29.5));
+        }
+        assert_eq!(fresh_calibration_sample(&row, 12001), None);
+    }
+
+    #[test]
+    fn stale_receipt_cannot_be_refreshed_by_a_future_source_timestamp() {
+        let row = sample(90000, 10000, Some(29.5));
+        assert_eq!(fresh_calibration_sample(&row, 12001), None);
+        assert_eq!(fresh_calibration_sample(&row, 9999), None);
+    }
+
+    #[test]
+    fn missing_and_nonfinite_values_are_not_calibration_samples() {
+        for value in [None, Some(f32::NAN), Some(f32::INFINITY)] {
+            assert_eq!(fresh_calibration_sample(&sample(10000, 10000, value), 10000), None);
+        }
+    }
 }

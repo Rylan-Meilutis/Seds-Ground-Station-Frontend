@@ -5,29 +5,40 @@
 'use strict';
 const video=document.querySelector('video'), status=document.querySelector('p');
 const id=location.pathname.split('/').pop(), ticket=new URLSearchParams(location.search).get('ticket');
-const access=path=>path+(ticket?'?ticket='+encodeURIComponent(ticket):'');
-let pc,session,closed=false,retry,watchdog;
-async function cleanup(){clearTimeout(watchdog);if(pc){pc.onconnectionstatechange=null;pc.close();pc=null;}if(session){const url=session;session=null;fetch(access(url),{method:'DELETE',keepalive:true}).catch(()=>{});}}
+const access=path=>path+(ticket?(path.includes('?')?'&':'?')+'ticket='+encodeURIComponent(ticket):'');
+let pc,session,closed=false,retry,watchdog,request;
+function removeSession(url){if(url)fetch(access(url),{method:'DELETE',keepalive:true}).catch(()=>{});}
+function cleanup(){
+  clearTimeout(watchdog);request?.abort();request=null;
+  const peer=pc;pc=null;
+  if(peer){peer.onconnectionstatechange=null;peer.ontrack=null;peer.close();}
+  const stream=video.srcObject;video.srcObject=null;stream?.getTracks().forEach(track=>track.stop());
+  const url=session;session=null;removeSession(url);
+}
 function restart(message){if(closed||retry)return;status.hidden=false;status.textContent=message;cleanup();retry=setTimeout(()=>{retry=null;connect();},3000);}
 async function connect(){
   if(closed)return;
   const peer=new RTCPeerConnection({iceServers:[]});pc=peer;
+  const abort=new AbortController();request=abort;
   watchdog=setTimeout(()=>restart('Connection timed out. Retrying…'),20000);
   peer.addTransceiver('video',{direction:'recvonly'});
-  peer.ontrack=e=>{video.srcObject=new MediaStream([e.track]);};
+  peer.addTransceiver('audio',{direction:'recvonly'});
+  const incoming=new MediaStream();video.srcObject=incoming;
+  peer.ontrack=e=>{if(closed||pc!==peer)return;if(!incoming.getTracks().includes(e.track))incoming.addTrack(e.track);};
   peer.onconnectionstatechange=()=>{if(peer.connectionState==='connected'){clearTimeout(watchdog);status.hidden=true;}else if(['failed','disconnected'].includes(peer.connectionState))restart('Reconnecting…');};
   try{
     await peer.setLocalDescription(await peer.createOffer());
     await new Promise((resolve,reject)=>{if(peer.iceGatheringState==='complete')return resolve();const timeout=setTimeout(()=>reject(Error('ICE gathering timeout')),8000);peer.onicegatheringstatechange=()=>{if(peer.iceGatheringState==='complete'){clearTimeout(timeout);resolve();}};});
     if(closed||pc!==peer)return;
-    const response=await fetch(access('/api/video/streams/'+encodeURIComponent(id)+'/whep'),{method:'POST',headers:{'Content-Type':'application/sdp'},body:peer.localDescription.sdp});
+    const response=await fetch(access('/api/video/streams/'+encodeURIComponent(id)+'/whep'),{method:'POST',headers:{'Content-Type':'application/sdp'},body:peer.localDescription.sdp,signal:abort.signal});
     if(!response.ok)throw Error(await response.text());
     const url=response.headers.get('Location');
-    if(closed||pc!==peer){fetch(access(url),{method:'DELETE'}).catch(()=>{});return;}
+    if(closed||pc!==peer){removeSession(url);return;}
     session=url;
     await peer.setRemoteDescription({type:'answer',sdp:await response.text()});
   }catch(err){if(pc===peer)restart(err.message);}
 }
-window.addEventListener('pagehide',()=>{closed=true;clearTimeout(retry);cleanup();});
+window.addEventListener('pagehide',()=>{closed=true;clearTimeout(retry);retry=null;cleanup();});
+window.addEventListener('pageshow',()=>{if(!closed)return;closed=false;status.hidden=false;status.textContent='Connecting…';connect();});
 connect();
 </script></html>

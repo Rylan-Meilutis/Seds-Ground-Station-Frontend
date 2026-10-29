@@ -1,8 +1,46 @@
 # Backend API Reference
 
+## Recording downloads (all modes)
+
+The Data tab uses GET /api/recordings for a descending session list of
+{id, bytes, active}, then GET /api/recordings/{id}/csv for a CSV attachment.
+Both endpoints require ViewData permission and accept the normal Bearer token.
+The CSV fields are id, received_timestamp_ms, source_timestamp_ms, sender_id,
+data_type, values_json, and payload_json. JSON arrays are quoted CSV cells.
+The export is all recorded telemetry, not chart-downsampled values. An active
+recording is bounded at its last committed row when the request begins.
+Start/stop recording and GSE sequence command permissions are unchanged.
+
+## Live telemetry and firmware
+
+The firmware-update tab refreshes `GET /api/firmware/targets` every two seconds
+while mounted, so later discovery becomes selectable without reopening the tab.
+It preserves the selected board and disables new uploads if target refresh fails.
+Discovery and OTA support are separate: the backend must advertise both before a
+target can be flashed. Current supported receivers are RF, Power, Valve, Gateway,
+Actuator and DAQ. Flight Computer remains unsupported until its application wires
+in the compatible live OTA receiver; discovery alone does not imply OTA support.
+
+Board status `age_ms` is the age when the backend creates its snapshot, not a
+live counter. On receipt the frontend attaches a local monotonic timestamp and
+displays `age_ms + elapsed_since_receipt`, refreshed every 100 ms in board-age
+views. Cloning/rendering a snapshot does not reset the anchor. The local timestamp
+is not serialized; the wire format is unchanged. Unknown age stays unavailable.
+
+Live dashboard stats include optional backend-owned `binding` metadata:
+`{data_type,sender_id,index,scale,offset}`. When present, the operator dashboard
+reads the corresponding WebSocket sample on each telemetry render (16 ms
+coalescing), instead of waiting for `/api/dashboard_status` HTTP polling. Bound
+values become unavailable after five seconds without fresh data; older backends
+without bindings retain HTTP-value fallback. Mission/Vehicle views participate in
+live rendering. The backend defaults to 20 ms telemetry batches, so 200 ms FC
+samples are not reduced to 1 Hz by this path. Physical board/radio rates are not
+changed by these UI updates. Bindings remain backend-owned, not UI settings.
+Delayed streamer views continue using delayed program values, not live samples.
+
 This document describes the backend contract that the frontend currently expects.
 
-Verified against frontend version `0.3.1`, app build `36`, and the current Dioxus `0.7.9` codebase.
+This reference targets the current frontend and backend. Dependency versions are recorded in `Cargo.toml` and `Cargo.lock`.
 
 It has also been checked against the current `../groundstation26` backend implementation in:
 
@@ -81,6 +119,14 @@ Command uplink:
 | `POST` | `/api/calibration/capture_zero` | Capture a zero point |
 | `POST` | `/api/calibration/capture_span` | Capture a span point |
 | `POST` | `/api/calibration/refit` | Recompute calibration fit |
+| `GET` | `/api/vehicle_visualization` | 3D vehicle asset, stages, animation clips, and telemetry bindings |
+| `GET` | `/api/dashboard_status` | Server-resolved live dashboard statistics and T clock |
+| `GET` / `POST` | `/api/stream-roles` | Admin-only role listing/assignment |
+| `POST` / `PUT` | `/api/vehicle_visualization` | Backend administration; no binding editor in UI |
+| `GET` | `/api/media-assets/program/state` | Scoped delayed audience telemetry and current editorial state |
+| `GET` | `/api/media-assets/hls/{id}/{file}` | Scoped HLS with server-enforced release delay |
+| `GET` | `/api/live_streams` | Camera angles, broadcast banner, and live-stat bindings |
+| `POST` | `/api/live_streams/control` | Stream-master broadcast control |
 | `GET` | `/api/i18n/catalog?lang=<code>` | Optional translation catalog |
 | `POST` | `/api/i18n/translate` | Optional translation service |
 
@@ -100,7 +146,8 @@ Response:
   },
   "expires_at_ms": null,
   "anonymous": true,
-  "session_type": "anonymous",
+  "session_type": null,
+  "roles": [],
   "allowed_commands": []
 }
 ```
@@ -136,7 +183,8 @@ Response:
     },
     "expires_at_ms": 1760000000000,
     "anonymous": false,
-    "session_type": "operator",
+    "session_type": "session",
+    "roles": [],
     "allowed_commands": ["Abort", "Arm", "Ignite"]
   }
 }
@@ -188,7 +236,7 @@ Notes:
 - if you stream, emit one complete telemetry row per line and start sending bytes promptly
 - the native streaming path is enabled when the response content type contains `ndjson` or `json-seq`
 - web builds should still be treated as requiring the array response path for compatibility
-- see [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md) for the current streaming-specific behavior
+- see [`docs/backend-recent-streaming.md`](backend-recent-streaming.md) for the current streaming-specific behavior
 
 ### `GET /api/alerts`
 
@@ -215,6 +263,12 @@ Response type:
 - `error`
 
 ### `GET /flightstate`
+
+Returns the live backend state used by command gating and WebSocket snapshots,
+not recording history or an empty-history Startup fallback (`Cache-Control:
+no-store`). `/api/gse/status` adds `request_gate` with `hitl_mode`, `flight_state`,
+`prelaunch` and `button_interlock_satisfied`; Actions displays these backend gates
+for diagnostics. Neither refresh nor diagnostics changes the live flight state.
 
 Response type:
 
@@ -768,6 +822,249 @@ Response:
 
 - same shape as `GET /api/calibration`
 
+### `GET /api/vehicle_visualization`
+
+Returns the backend-owned GLB model and live telemetry bindings used by the primary Dashboard and operator Mission
+fallback. Relative asset URLs are resolved against the selected Ground Station.
+
+```json
+{
+  "title": "Rocket",
+  "model_url": "/assets/models/vehicle.glb",
+  "renderer_url": "/assets/three/vehicle-renderer.js",
+  "model_alt": "Single-stage rocket with aft fins",
+  "camera_orbit": "",
+  "phase_animations": {},
+  "attitude": {
+    "roll": null,
+    "pitch": null,
+    "yaw": null
+  },
+  "stages": [
+    {
+      "id": "stage-1",
+      "label": "Single stage",
+      "separation": null,
+      "components": []
+    }
+  ],
+  "ground_systems": [],
+  "motions": [
+    {
+      "node": "motor-flame",
+      "transform": "visible",
+      "axis": [
+        0,
+        1,
+        0
+      ],
+      "from": 0,
+      "to": 1,
+      "binding": null,
+      "phase_values": {
+        "*": 0,
+        "Ascent": 1
+      }
+    },
+    {
+      "node": "drogue-parachute",
+      "transform": "scale",
+      "axis": [
+        1,
+        1,
+        1
+      ],
+      "from": 0.001,
+      "to": 1,
+      "binding": null,
+      "phase_values": {
+        "*": 0,
+        "ParachuteDeploy": 1
+      }
+    },
+    {
+      "node": "main-parachute",
+      "transform": "scale",
+      "axis": [
+        1,
+        1,
+        1
+      ],
+      "from": 0.001,
+      "to": 1,
+      "binding": null,
+      "phase_values": {
+        "*": 0,
+        "Descent": 1,
+        "Landed": 1,
+        "Recovery": 1
+      }
+    }
+  ]
+}
+```
+
+Telemetry bindings accept `data_type`, optional `sender_id`, `index`, optional `scale` (default
+`1`), and optional `offset` (default `0`). Supported component kinds include `motor`, `fin`,
+`gimbal`, `air_brake`, `tank`, `propellant`, `parachute`, and `link`. Unknown kinds remain visible
+as generic systems. `phase_animations` values must match named animation clips in the GLB.
+
+The JSON above is the current stock single-stage configuration; placeholder custom control-surface
+bindings below illustrate other backend profiles, not sensors present on the current rocket.
+The GLB response must be browser-readable. Scoped backend asset tickets avoid requiring bearer
+headers on model requests. The frontend loads the offline `/assets/three/vehicle-renderer.js`
+module and its bundled Three.js dependencies; no public CDN is required. `renderer_url` is a
+compatibility field, not an override used by this frontend. Configuration adds
+`motions`, each with `node`, `transform` (`rotate`, `translate`, `scale`, `visible`), `axis`,
+`from`, `to`, optional telemetry `binding`, and `phase_values`. Values are normalized 0–1;
+rotation endpoints are degrees. Bound telemetry older than five seconds is unknown, not a
+fabricated state. Named nodes must exist in the GLB. For example:
+
+```json
+{"node":"fin-pivot-0","transform":"rotate","axis":[1,0,0],"from":-30,"to":30,
+ "binding":{"data_type":"FIN_POSITION","index":0,"scale":0.016666667,"offset":0.5},
+ "phase_values":{}}
+```
+
+The data type above is illustrative: backend administrators bind actual firmware signals in
+the stage-model directory `_presentation.json`; there is no user-facing binding editor.
+`POST /api/vehicle_visualization` remains available for backend administration and returns
+`{"saved":true}`; it requires configuration/hardware permission, not just a stream role.
+Existing PUT clients receive 204. Phase clips and node motions are interpolated, including
+parachute, gimbal, aft-fin and GSE level nodes. The stock rocket is single-stage (`stage-1`)
+with no upper fins or airbrakes. Other backend vehicle profiles can still be multi-stage.
+
+### Dashboard and viewing modes
+
+Dashboard opens on the model and a cycling telemetry bar; there is no separate Vehicle tab.
+Settings → General → Viewing mode → Ground Station view restores the instrument/control view
+on the current device. Streamer is available in the same settings section to any viewer;
+it does not require a stream-manager role. Exit streamer returns to Dashboard.
+
+`GET /api/dashboard_status` requires viewing access and returns `{phase,t_clock,stats}`.
+Each stat is `{label,value,unit,precision}` with bindings resolved by the backend; missing or
+older-than-five-second values are null. The live dashboard and delayed streamer bars cycle
+three fields every five seconds, retaining state and T clock. Default backend fields include
+RF GPS altitude/latitude/longitude, calibrated tank pressure, fill mass and fill percentage.
+The streamer uses the same fields from delayed snapshots, never from this live endpoint.
+
+### `GET /api/live_streams`
+
+```json
+{
+  "title": "Flight Test 1",
+  "default_stream_id": "pad-wide",
+  "program_url": "/api/media-assets/program?ticket=EXAMPLE_PROGRAM_TICKET",
+  "can_manage_stream": true,
+  "can_preview_live": true,
+  "streams": [
+    {
+      "id": "pad-wide",
+      "label": "pad-wide",
+      "url": "/api/media-assets/streams/pad-wide?ticket=EXAMPLE_PAD_WIDE_TICKET",
+      "kind": "webrtc",
+      "poster_url": "",
+      "online": true
+    },
+    {
+      "id": "tower",
+      "label": "tower",
+      "url": "/api/media-assets/streams/tower?ticket=EXAMPLE_TOWER_TICKET",
+      "kind": "webrtc",
+      "poster_url": "",
+      "online": true
+    },
+    {
+      "id": "onboard",
+      "label": "onboard",
+      "url": "/api/media-assets/streams/onboard?ticket=EXAMPLE_ONBOARD_TICKET",
+      "kind": "webrtc",
+      "poster_url": "",
+      "online": false
+    }
+  ],
+  "stats": [
+    {
+      "label": "Altitude",
+      "binding": {
+        "data_type": "GPS_DATA",
+        "sender_id": "RF",
+        "index": 2,
+        "scale": 1,
+        "offset": 0
+      },
+      "unit": "m",
+      "precision": 1
+    },
+    {
+      "label": "Tank pressure",
+      "binding": {
+        "data_type": "PRESSURE_TRANSDUCER_CALIBRATED",
+        "sender_id": null,
+        "index": 0,
+        "scale": 1,
+        "offset": 0
+      },
+      "unit": "psi",
+      "precision": 1
+    }
+  ],
+  "broadcast": {
+    "label": "Flight Test 1",
+    "featured_stream_id": "pad-wide",
+    "hidden_stream_ids": [],
+    "layout": "hero",
+    "delay_seconds": 10,
+    "revision": 1
+  }
+}
+```
+
+The example is a manager response with a customized two-stat profile. The backend's empty/missing
+profile defaults contain six fields; the matching [viewer response](api-examples/live-streams-viewer.json)
+omits preview URLs. All `EXAMPLE_*_TICKET` values are placeholders, not usable credentials.
+
+`broadcast.layout` accepts `hero` (featured camera), `grid` (cameras), `model`
+(model only), and `grid-model` (cameras plus one model tile). Model choices use the
+same stream-management authorization as other broadcast changes. In camera-only
+layouts a model appears only when there are no available cameras; camera buffering
+does not insert a model. Dashboard live-camera cards use the scoped preview URLs
+and `can_preview_live`, and persist only camera IDs and presentation settings.
+
+`kind` may be `video` (browser-supported media/HLS), `iframe` or `webrtc` (backend-hosted player),
+or `mjpeg`. Multiple online streams become selectable camera angles. When none are online, the
+Mission Live program shows the 3D vehicle. The Dashboard itself has no model.
+Mission Live and Settings → Streamer embed `program_url`, a delayed HLS program with matching delayed telemetry, banner and camera
+layout. They buffer rather than falling back to live data. Scoped expiring URLs support media
+elements without bearer headers. The T−/T+ clock appears in the dashboard status bar and Mission
+data banner. The streamer program receives `telemetry.t_clock`, formatted at the delayed snapshot
+time, and shows an unknown value while buffering; it must not substitute the live launch clock.
+Viewer responses omit live previews; managers and hardware
+operators get live WebRTC previews. Clients use the returned capability flags as authoritative.
+
+### `POST /api/live_streams/control`
+
+Request and response use the `broadcast` object shown above. Account/session `roles` contains
+`stream_master` or `stream_admin`; `session_type` is not a role. Legacy explicit `StreamControl`
+grants remain supported unless the account has `stream_viewer`. These roles do not grant hardware
+commands. The backend increments and persists `revision`, returns 403 for unauthorized callers,
+409 for stale revisions, and 400 for invalid delay limits. `delay_seconds` is a server-enforced
+minimum of 3–60 seconds (default 10); playback adds about 2.5 seconds of buffering plus jitter.
+Managers cut the current delayed program while previewing live footage. Camera switches fade
+over 550 ms; hidden cameras are removed. Delay changes rebuild buffers without a live fallback.
+The program preloads up to eight visible angles and requires H.264/Media Source Extensions.
+
+### `GET` / `POST /api/stream-roles`
+
+Stream-admin-only role management. GET returns sanitized `{username, roles, disabled}` accounts.
+POST accepts `{"username":"producer","stream_master":true}` (false revokes) and returns
+`{"saved":true}`. The backend rechecks roles on every request and schedules closure of tracked
+live previews on revocation, unless the account retains operator/admin access. Role changes
+never broaden hardware command permissions. Bootstrap the first trusted admin by adding
+`"roles":["stream_admin"]` to an existing account in `backend/users/users.json`, with
+`permissions.view_data:true`; administrators cannot be created through this endpoint.
+The manager UI is in Mission → Stream controls → Broadcast studio → Stream manager roles.
+
 ### `GET /api/layout`
 
 This is the largest payload in the frontend contract. It controls tab visibility, actions, data labels, chart behavior, state widgets, board placeholders, theming, and battery estimation settings.
@@ -776,15 +1073,15 @@ Theme behavior notes:
 
 - Ground Station-provided theme colors are only used when the user selects the `backend` preset, labeled as the Ground Station theme in the UI
 - built-in presets such as `default`, `light`, `sunset`, `forest`, and `high_contrast` come from the app's compiled theme catalog
-- operators can edit built-in theme presets in [`assets/themes/presets.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/assets/themes/presets.json), which is compiled into the app during build
+- operators can edit built-in theme presets in [`assets/themes/presets.json`](../assets/themes/presets.json), which is compiled into the app during build
 
 A minimal valid example is provided in:
 
-- [`docs/api-examples/layout.minimal.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/layout.minimal.json)
+- [`docs/api-examples/layout.minimal.json`](api-examples/layout.minimal.json)
 
 A richer example is provided in:
 
-- [`docs/api-examples/layout.full.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/layout.full.json)
+- [`docs/api-examples/layout.full.json`](api-examples/layout.full.json)
 
 Important enum values used by layout:
 
@@ -837,6 +1134,8 @@ Main tab ids recognized by the frontend:
 - `map`
 - `actions`
 - `calibration`
+- `mission` (legacy alias: `live-stream`)
+- `vehicle`
 - `notifications`
 - `warnings`
 - `errors`
@@ -917,7 +1216,7 @@ Supported `ty` values:
 
 Examples are available in:
 
-- [`docs/api-examples/websocket-messages.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/websocket-messages.json)
+- [`docs/api-examples/websocket-messages.json`](api-examples/websocket-messages.json)
 
 Payload notes:
 
@@ -935,3 +1234,158 @@ Payload notes:
 - Keep route names and casing exact.
 - If auth is not implemented yet, return an anonymous session from `/api/auth/session` and accept no-op login/logout.
 - If you are prototyping, implement `/api/layout`, `/api/recent`, `/flightstate`, `/api/gps`, and WebSocket first. That gives you the fastest end-to-end feedback.
+
+## Current presentation examples
+
+See [example index](api-examples/README.md) for the single-stage model, manager/viewer
+streams, server-resolved dashboard status, delayed program state, and role API bodies.
+The backend's `docs/frontend/examples/` contains byte-identical media examples. Update
+both repositories together when changing these shapes. `/api/dashboard_status` polling
+is about 500 ms plus request time; the program polls every 500 ms plus request time,
+preloads at most eight visible cameras, and retains delayed telemetry for up to 90 s.
+
+### GSE ground setup and confirmation
+
+Ground setup appears in both Dashboard/state and Mission before Launch and disappears
+from Launch through flight/recovery. It includes the equipment scene, status, checklist,
+and only two numeric settings: nitrogen maximum pressure (`nitrogen_target_psi`) and
+`pressure_step_psi` (positive, default 50 psi; final step capped at the target).
+`pressure_ceiling_psi`, `maximum_zero_offset_psi`, and `grouped_panel` remain
+backend-owned configuration, preserved by UI saves. Missing safety limits still
+disable automation.
+
+The Actions tab retains its prior controls; GSE sequence actions are in the main button
+section alongside manual controls, not embedded in ground setup. The dry self-test
+confirmation checkbox must be checked, and all backend action-policy gates must pass.
+
+- `GET /api/gse/config`, `GET /api/gse/status`: ViewData.
+- `POST` / `PUT /api/gse/config`: SendCommands, saves full configuration.
+- `POST /api/gse/self-test-confirmation`: `{"confirmed":true}` or false, echoes the
+  object. Requires SendCommands and ValveSelfTest authorization; 403 otherwise.
+  Returns 409 during active sequences or for unlock after nitrogen testing starts.
+  Confirmation is consumed by testing and is not persisted on backend restart.
+
+The checkable/resettable ground checklist is stored locally per ground-station URL.
+It is an operator reminder, not shared execution state, certification or an interlock.
+
+### Streamer model fallback and compact navigation
+
+Normal tab navigation stays in one horizontally scrolling row, including narrow
+screens. Streamer mode does not render header/tab navigation at all; Exit streamer
+remains available. Without active/decoded video, the backend-selected GLB fills the
+scene. With video, a basic single-stage 2D rocket is shown in the corner.
+
+`/api/media-assets/program/state` adds static `model` configuration (the vehicle
+schema, including scoped asset URL). `telemetry.model_state` contains resolved
+`motions` with nullable `value`, `attitude` in pitch/yaw/roll degrees, `orbit`, and
+`clip`, sampled into the same delayed history as phase/stats/T clock. Missing delayed
+state uses neutral/unknown visuals, never live values. A camera relay outage can still
+return model/telemetry state. The full-size WebGL model is unmounted while video plays.
+# Model scene and HITL action updates
+
+Mission Live ground setup is status/settings/checklist only. Its secondary GSE
+model is not mounted or synchronized; the main media/model area owns visualization.
+This is a presentation change and does not change backend contracts.
+
+HITL layouts now include `ToggleGroundStationControl` ("Ground station control"),
+an illuminated command toggle whose default is ON. Read enabled/actuated state
+from `action_policy.controls`; do not persist or infer it in the client. It enables
+main-sequence target/plateau cutoff for one-button Start Fill. OFF requires operator
+stopping; pressure and sequence interlocks remain enforced. Automatic cutoff uses
+Pause Fill and awaits valve acknowledgements, not a simulated frontend valve state.
+
+Connection recovery: the backend's one-second network-time messages serve as
+activity heartbeats. Both transports reconnect/reseed after 15 seconds without
+incoming activity; native sends are limited to five seconds and never replayed.
+Browser HTTP GETs abort after 15 seconds (300 seconds for large recent-history
+transfers). WebSocket callbacks are detached and released at teardown, and
+old-epoch callbacks cannot enqueue live telemetry. Disconnected controls remain
+subject to existing authorization and backend interlocks.
+
+The pinned Tao 0.34.8 patch in `vendor-tao` runs iOS event observers in common
+run-loop modes, including tracking mode. See its patch note for the required
+physical-device scrolling/background/resume validation.
+
+Calibration labels are **New sequence** / **Continue existing**, with direction
+options **Low to high** / **High to low**. Both use the same editable mass and
+point-update workflow. Starting a new sequence preserves the prefilled mass;
+only its first capture replaces existing data, including in high-to-low mode.
+Zero captures remain fixed at 0 kg. Calibration wire endpoints are unchanged.
+Direction selection never sends a calibration POST or clears points. The
+high-to-low dialog includes **Finish at zero…** then **Capture Zero**; this
+records the final unloaded measurement without shifting previous raw samples.
+Only explicit **Save** publishes changes. A delayed save response is applied
+only if the local calibration still matches the submitted snapshot.
+
+Vehicle and delayed program model configuration now include `ground_model_url`.
+The bundled site GLB shows tanks, manifold, tower and rocket before launch; Launch
+and later phases use the rocket-only `model_url`. Streamer mode selects using the
+delayed phase. Separate Dashboard/Mission viewer instances have independent IDs.
+Empty stage cards are hidden, and the Mission data bar uses a responsive horizontal
+grid (wrapping on narrow screens).
+
+Sequence actions lead the Actions panel; Igniter and Igniter Sequence are grouped
+with manual valves. Only Valve Self-test uses its confirmation checkbox. HITL
+sequence request buttons follow the manual-button interlock, but every request
+still passes normal backend pressure, state, and safety checks before actuation.
+Rejected starts produce notifications. Regular/test-fire button availability is
+still sequenced; backend pressure ceiling and PT-offset limits remain mandatory.
+
+Enabled GSE sequence buttons illuminate in both Actions and State panels. HITL
+accepts sequence requests in Startup, Idle, PreFill, FillTest, NitrogenFill,
+NitrousFill and Armed when the valve/button interlock permits; launch, recovery
+and abort states remain blocked. Enabled means a request can be made, not that
+its pressure prerequisites have passed or its valves are actuated.
+
+Calibration initialization is a mount-scoped future, not a reactive reload
+effect. Hooks execute even while the sensor layout is empty. Background refresh
+responses must not replace edits made while the request was in flight.
+
+Notification snapshots are idempotent state, not new events. The frontend tracks
+seen `(id, timestamp_ms)` identities per backend across reloads, deduplicates
+snapshot/history entries, and does not replay already-seen transient toasts or
+locally dismissed entries. Persistent unresolved alerts remain visible but are
+not marked newly unread on reload. Routine GSE pause/cancel/pass/self-test
+completion notices are transient; sequence faults remain persistent. The wire
+schema is unchanged. Clearing local app storage resets replay tracking.
+
+Normalized charts reserve space for every horizontal per-series scale label.
+On narrow screens the chart panel scrolls horizontally, preserving a minimum
+160 px plot width instead of clipping labels or collapsing the plot. Both scale
+label orientations retain an explicit chart height. No backend contract changes.
+
+### Dedicated stream devices and replay
+
+Mission/stream viewer mode mounts only the program player; stream-manager mode
+mounts only broadcast management and preview. Neither shows mission warnings,
+notifications, status widgets or GSE controls. A stream-viewer-only account stays
+in the player and can sign out. Other users can exit stream mode.
+
+`POST /api/live_streams/control` accepts `replay: null` to return live, or a replay
+object alongside the existing broadcast fields and current `revision`:
+
+```json
+{"id":"","duration_seconds":20,"speed":0.25,"cameras":[{"id":"pad-wide","x":50,"y":50,"zoom":1}],"started_at_ms":0,"source_end_ms":0}
+```
+
+The server fills replay ID and timestamps. Select 1–8 cameras, 1–20 seconds and
+speed 1, 0.5 or 0.25. Camera order is display order. Pan is 0–100%; zoom is 1–3.
+Replay is taken from the audience timeline, independently of the live layout.
+Camera selection may include a camera hidden from the live program. Retaining
+an active replay ID lets the operator reorder/reframe its captured cameras
+without resetting time; duration/speed/new source changes require a new replay.
+Playback automatically returns live. Crew voice is muted during replay;
+selected camera sound follows playback speed. Viewer accounts cannot control it.
+
+Source telemetry snapshots are retained with each replay so slow motion does not age them out of the live ring (up to 128 snapshots per clip). Missing historical telemetry stays unavailable rather than showing current values.
+
+Encoded clips are frozen on station disk (256 MiB per clip; two retained clips,
+plus one in-progress capture), preserving footage while live HLS advances.
+Insufficient/discontinuous footage is rejected. Failed capture does not publish
+a new program. Clip access requires a camera-scoped ticket or authorized session.
+A service restart returns to the live program rather than resuming old replay.
+
+The layout response includes `test_fire_mode`, set by the backend build mode.
+Flight dashboards/programs hide GSE fill data from Launch onward. Test-fire
+retains it and shows calibrated 1000 kg load-cell thrust in newtons (kg × 9.80665).
+Recorded/calibrated sensor values remain in their original units.

@@ -13,6 +13,76 @@ use super::{
     translate_text,
 };
 
+// These controls must remain available even in older or custom layouts.
+fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
+    for (cmd, label) in [
+        ("ValveSelfTest", "Valve self-test"),
+        ("NitrogenTest", "Nitrogen test"),
+        ("StartFill", "Start fill"),
+        ("PauseFill", "Pause fill"),
+        ("CancelFill", "Cancel fill"),
+        ("NitrogenClose", "Close nitrogen"),
+        ("NitrousClose", "Close nitrous"),
+    ] {
+        if !actions.iter().any(|action| action.cmd == cmd) {
+            actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod sequence_action_tests {
+    use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn nitrogen_and_fill_controls_send_the_expected_websocket_command() {
+        let mut actions = Vec::new();
+        ensure_sequence_actions(&mut actions, &ThemeConfig::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sender = crate::telemetry_dashboard::WsSender { tx };
+        for expected in ["NitrogenTest", "StartFill"] {
+            let button = actions
+                .iter()
+                .find(|button| button.cmd == expected)
+                .unwrap();
+            sender.send_cmd(&button.cmd).unwrap();
+            let packet: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(packet, serde_json::json!({"cmd": expected}));
+            assert!(
+                rx.try_recv().is_err(),
+                "one activation must send one command"
+            );
+        }
+        drop(rx);
+        assert!(
+            sender.send_cmd("StartFill").is_err(),
+            "closed transports must report failure"
+        );
+    }
+
+    #[test]
+    fn all_layouts_retain_fill_nitrogen_and_self_test_without_duplicates() {
+        let theme = ThemeConfig::default();
+        let mut actions = Vec::new();
+        ensure_sequence_actions(&mut actions, &theme);
+        assert_eq!(actions.len(), 7);
+        for cmd in [
+            "StartFill",
+            "PauseFill",
+            "CancelFill",
+            "NitrogenTest",
+            "ValveSelfTest",
+        ] {
+            assert!(actions.iter().any(|action| action.cmd == cmd));
+        }
+        actions[0].label = "Custom self-test label".into();
+        let original = actions.clone();
+        ensure_sequence_actions(&mut actions, &theme);
+        assert_eq!(actions, original);
+    }
+}
+
 fn btn_style(
     border: &str,
     bg: &str,
@@ -20,10 +90,12 @@ fn btn_style(
     enabled: bool,
     blink: BlinkMode,
     actuated: Option<bool>,
+    illuminate_enabled: bool,
 ) -> String {
     let cursor = if enabled { "pointer" } else { "not-allowed" };
     let pointer_events = if enabled { "auto" } else { "none" };
-    let actuated_active = actuated.unwrap_or(false);
+    // A confirmed Off state takes precedence over an available-action glow.
+    let actuated_active = actuated.unwrap_or(enabled && illuminate_enabled);
     let recommended = enabled && blink != BlinkMode::None;
     let opacity = if recommended || actuated_active {
         "1.0"
@@ -47,10 +119,15 @@ fn btn_style(
         "0 4px 12px rgba(0,0,0,0.16)"
     };
     let animation = action_animation_style(enabled, blink, actuated);
+    let ready_glow = if enabled && illuminate_enabled && actuated != Some(false) {
+        format!("box-shadow:0 0 14px {border};")
+    } else {
+        String::new()
+    };
     format!(
-        "padding:0.65rem 1rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; \
-         display:flex; align-items:center; justify-content:space-between; gap:0.75rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
-         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation}"
+        "padding:0.35rem 0.65rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; min-width:0; height:2.75rem; min-height:2.75rem; max-height:2.75rem; flex-shrink:0; box-sizing:border-box; overflow:hidden; \
+         display:flex; align-items:center; justify-content:space-between; gap:0.4rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
+         font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation} {ready_glow}"
     )
 }
 
@@ -63,6 +140,68 @@ fn recording_command_active(cmd: &str, status: &RecordingStatusMsg) -> Option<bo
     }
 }
 
+fn physical_output_action(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "Dump"
+            | "NormallyOpen"
+            | "Nitrogen"
+            | "NitrogenClose"
+            | "Nitrous"
+            | "NitrousClose"
+            | "Pilot"
+            | "Igniter"
+            | "RetractPlumbing"
+    )
+}
+
+fn merge_command_feedback(cmd: &str, observed: Option<bool>, sent: bool) -> Option<bool> {
+    if physical_output_action(cmd) {
+        return observed;
+    }
+    observed.or(sent.then_some(true))
+}
+
+#[cfg(test)]
+mod physical_confirmation_tests {
+    use super::*;
+    #[test]
+    fn confirmed_off_is_not_illuminated_by_action_availability() {
+        let style = |observed| btn_style("red", "black", "white", true, BlinkMode::None, observed, true);
+        assert!(style(Some(true)).contains("opacity:1.0; filter:none;"));
+        let off = style(Some(false));
+        assert!(off.contains("opacity:0.62;"));
+        assert!(!off.contains("box-shadow:0 0 14px"));
+        let unknown_output = btn_style("red", "black", "white", true, BlinkMode::None, None, false);
+        assert!(unknown_output.contains("opacity:0.62;"));
+    }
+    #[test]
+    fn sending_a_valve_request_does_not_confirm_a_physical_output() {
+        for cmd in [
+            "Dump",
+            "NormallyOpen",
+            "Nitrogen",
+            "Nitrous",
+            "Pilot",
+            "Igniter",
+            "RetractPlumbing",
+        ] {
+            assert_eq!(merge_command_feedback(cmd, None, true), None, "{cmd}");
+            assert_eq!(
+                merge_command_feedback(cmd, Some(false), true),
+                Some(false),
+                "{cmd}"
+            );
+            assert_eq!(
+                merge_command_feedback(cmd, Some(true), false),
+                Some(true),
+                "{cmd}"
+            );
+        }
+        assert_eq!(merge_command_feedback("Postinit", None, true), Some(true));
+    }
+}
+
 fn merged_actuated(
     cmd: &str,
     control_actuated: Option<bool>,
@@ -70,11 +209,7 @@ fn merged_actuated(
 ) -> Option<bool> {
     let local_active = command_feedback_active(cmd);
     let base = control_actuated.or_else(|| recording_command_active(cmd, recording_status));
-    match (base, local_active) {
-        (Some(active), _) => Some(active),
-        (None, true) => Some(true),
-        (None, false) => None,
-    }
+    merge_command_feedback(cmd, base, local_active)
 }
 
 #[derive(Clone, Copy)]
@@ -84,6 +219,7 @@ enum ActionRowItem<'a> {
 }
 
 enum ActionLayoutRow<'a> {
+    Heading(&'a str),
     Items(Vec<ActionRowItem<'a>>),
     Spacer,
 }
@@ -100,8 +236,14 @@ fn flush_action_row<'a>(
 fn build_action_rows<'a>(actions: &'a [&'a ActionSpec]) -> Vec<ActionLayoutRow<'a>> {
     let mut rows = Vec::new();
     let mut current_row = Vec::new();
+    let mut previous_group = "";
 
     for action in actions {
+        if !action.group.is_empty() && action.group != previous_group {
+            flush_action_row(&mut rows, &mut current_row);
+            rows.push(ActionLayoutRow::Heading(&action.group));
+            previous_group = &action.group;
+        }
         if action.new_row_before || action.spacer_row_before {
             flush_action_row(&mut rows, &mut current_row);
         }
@@ -194,6 +336,97 @@ fn apply_button_style(theme: &ThemeConfig, enabled: bool) -> String {
 }
 
 #[component]
+pub(super) fn NetworkUtcControls() -> Element {
+    let mut utc = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    let status = auth::current_status();
+    if !status.permissions.set_system_time {
+        return rsx! {};
+    }
+    let recovery = status.station_role.as_deref() == Some("rrls");
+    rsx! {
+        fieldset {
+            legend { "Network UTC time" }
+            if recovery {
+                p { "Set network UTC at the primary GroundStation." }
+            } else {
+                label {
+                    "UTC date and time "
+                    input { r#type: "datetime-local", value: "{utc}", step: "1",
+                        oninput: move |event| utc.set(event.value()) }
+                }
+                button { disabled: busy(), onclick: move |_| {
+                    let utc_ms = match super::recording_download::input_utc_ms(&utc()) {
+                        Ok(value) => value,
+                        Err(error) => { message.set(error); return; }
+                    };
+                    busy.set(true);
+                    spawn(async move {
+                        message.set(match super::http_post_json::<_, serde_json::Value>(
+                            "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
+                        ).await {
+                            Ok(_) => "Network UTC source updated.".into(),
+                            Err(error) => format!("Network UTC was not updated: {error}"),
+                        });
+                        busy.set(false);
+                    });
+                }, "Set network UTC" }
+                button { disabled: busy(), onclick: move |_| {
+                    let utc_ms = super::current_wallclock_ms();
+                    busy.set(true);
+                    spawn(async move {
+                        message.set(match super::http_post_json::<_, serde_json::Value>(
+                            "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
+                        ).await {
+                            Ok(_) => "Network UTC source updated.".into(),
+                            Err(error) => format!("Network UTC was not updated: {error}"),
+                        });
+                        busy.set(false);
+                    });
+                }, "Use client time" }
+                p { "Sets the station's network UTC source. Clock corrections apply gradually; the server system clock is unchanged." }
+            }
+            p { role: "status", "{message}" }
+        }
+    }
+}
+
+fn request_gate_diagnostics(status: &serde_json::Value, recovery: bool) -> String {
+    let scope = if recovery {
+        "RRLS local backend"
+    } else {
+        "Backend gate"
+    };
+    let Some(gate) = status.get("request_gate") else {
+        return format!("{scope}: request-gate diagnostics unavailable.");
+    };
+    let mode = match gate["hitl_mode"].as_bool() {
+        Some(true) => "HITL",
+        Some(false) => "non-HITL",
+        None => "unknown",
+    };
+    format!(
+        "{scope}: mode={mode} · state={} · prelaunch={} · valve interlock={} · {} · {}",
+        gate["flight_state"].as_str().unwrap_or("unknown"),
+        gate["prelaunch"]
+            .as_bool()
+            .map(|value| if value { "yes" } else { "no" })
+            .unwrap_or("unknown"),
+        gate["button_interlock_satisfied"]
+            .as_bool()
+            .map(|value| if value { "satisfied" } else { "blocked" })
+            .unwrap_or("unknown"),
+        status["message"]
+            .as_str()
+            .unwrap_or("No local sequence status"),
+        status["configuration_error"]
+            .as_str()
+            .unwrap_or("Pressure configuration valid"),
+    )
+}
+
+#[component]
 pub fn ActionsTab(
     layout: ActionsTabLayout,
     action_policy: Signal<ActionPolicyMsg>,
@@ -202,6 +435,61 @@ pub fn ActionsTab(
     abort_only_mode: bool,
     theme: ThemeConfig,
 ) -> Element {
+    let mut auto_zero = use_signal(|| None::<bool>);
+    let mut auto_zero_busy = use_signal(|| false);
+    let mut auto_zero_message = use_signal(String::new);
+    use_effect(move || {
+        spawn(async move {
+            match super::http_get_json::<serde_json::Value>("/api/auto_zero").await {
+                Ok(value) => auto_zero.set(value["enabled"].as_bool()),
+                Err(error) => {
+                    auto_zero_message.set(format!("Automatic zero settings unavailable: {error}"))
+                }
+            }
+        });
+    });
+    let mut self_test_confirmed = use_signal(|| false);
+    let mut self_test_busy = use_signal(|| false);
+    let mut self_test_message = use_signal(String::new);
+    let mut gse_request_gate = use_signal(String::new);
+    let mut operational_status = use_signal(|| serde_json::Value::Null);
+    use_future(move || async move {
+        loop {
+            let next = match super::http_get_json::<serde_json::Value>("/api/gse/status").await {
+                Ok(status) => {
+                    operational_status.set(status.clone());
+                    if !*self_test_busy.read()
+                        && let Some(confirmed) = status["dry_self_test_confirmed"].as_bool()
+                    {
+                        if *self_test_confirmed.read() && !confirmed {
+                            self_test_message.set("Confirmation consumed by the last run. Confirm isolation again before retrying self-test.".into());
+                        }
+                        self_test_confirmed.set(confirmed);
+                    }
+                    request_gate_diagnostics(
+                        &status,
+                        auth::current_status().station_role.as_deref() == Some("rrls"),
+                    )
+                }
+                Err(error) => {
+                    operational_status.set(serde_json::json!({"unavailable":true}));
+                    let scope = if auth::current_status().station_role.as_deref() == Some("rrls") {
+                        "RRLS local backend"
+                    } else {
+                        "backend"
+                    };
+                    format!("Cannot read {scope} GSE gate: {error}")
+                }
+            };
+            if *gse_request_gate.read() != next {
+                gse_request_gate.set(next);
+            }
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(1000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+    });
     let mut flight_setup = use_signal(|| None::<FlightSetupConfig>);
     let mut flight_setup_status = use_signal(String::new);
     let mut flight_setup_busy = use_signal(|| false);
@@ -245,8 +533,20 @@ pub fn ActionsTab(
             fill_targets.set(Some(cfg));
         }
     });
+    let mut all_actions = layout.actions.clone();
+    ensure_sequence_actions(&mut all_actions, &theme);
+    for action in &mut all_actions {
+        if matches!(action.cmd.as_str(), "Igniter" | "IgniterSequence") {
+            action.group = "Manual GSE valves".into();
+        }
+    }
+    all_actions.sort_by_key(|action| match action.group.as_str() {
+        "GSE sequence actions" => 0,
+        "Manual GSE valves" => 2,
+        _ => 1,
+    });
     let visible_actions = if auth::can_view_actions() {
-        layout.actions.iter().collect::<Vec<_>>()
+        all_actions.iter().collect::<Vec<_>>()
     } else {
         Vec::new()
     };
@@ -272,8 +572,15 @@ pub fn ActionsTab(
             style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
-                "All available actions are available all the time, use with caution as improper use \
-                can and will damage the system."
+                "Controls follow backend permissions and interlocks."
+            }
+            if auth::current_status().station_role.as_deref() == Some("rrls") {
+                p {role:"status",style:"margin:0 0 12px;color:{theme.text_muted};font-size:13px;",
+                    {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), true)}
+                }
+            }
+            if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {
+                div {role:"alert",style:"padding:8px 10px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};","{error}"}
             }
             if abort_only_mode {
                 div {
@@ -305,6 +612,22 @@ pub fn ActionsTab(
                     ",
                     for row in action_rows.iter() {
                         match row {
+                            ActionLayoutRow::Heading(label) => rsx! {
+                                h3 {style:"margin:12px 0 0;color:{theme.text_muted};font-size:12px;letter-spacing:.08em;text-transform:uppercase;","{label}"}
+                                if *label=="GSE sequence actions" {
+                                    if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
+                                    super::gse_panel::SelfTestPtOffset {disabled:abort_only_mode || *self_test_busy.read() || !auth::can_send_command("ValveSelfTest"),theme:theme.clone()}
+                                    label {input {r#type:"checkbox",checked:*self_test_confirmed.read(),disabled:*self_test_busy.read()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:move |event| {
+                                        let confirmed=event.checked();self_test_confirmed.set(false);self_test_busy.set(true);
+                                        spawn(async move {match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":confirmed})).await {
+                                            Ok(_)=>{self_test_confirmed.set(confirmed);self_test_message.set(if confirmed {"Self-test confirmation accepted. Backend interlocks still apply."}else{"Self-test locked."}.into());},Err(error)=>self_test_message.set(error)
+                                        }self_test_busy.set(false);});
+                                    }} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
+                                    p {role:"status","{self_test_message}"}
+                                    super::gse_panel::QualificationStatus {status:operational_status,disabled:abort_only_mode}
+                                    details {summary {"Sequence diagnostics"} p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}}
+                                }
+                            },
                             ActionLayoutRow::Spacer => rsx! {
                                 div {
                                     style: "height:14px;"
@@ -314,7 +637,7 @@ pub fn ActionsTab(
                                 div {
                                     style: "
                                         display:grid;
-                                        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                                        grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
                                         gap:12px;
                                         align-items:stretch;
                                         width:100%;
@@ -338,17 +661,39 @@ pub fn ActionsTab(
                                                     .cloned();
                                                 let enabled = action_policy_control_enabled(&action_policy_snapshot, action.cmd.as_str())
                                                     && auth::can_send_command(action.cmd.as_str())
+                                                    && (action.cmd!="ValveSelfTest" || *self_test_confirmed.read())
                                                     && (!abort_only_mode || action.cmd == "Abort")
                                                 ;
+                                                let disabled_reason = if action.group != "GSE sequence actions" || enabled {
+                                                    None
+                                                } else if !auth::can_send_command(action.cmd.as_str()) {
+                                                    Some("Not permitted by your account")
+                                                } else if abort_only_mode {
+                                                    Some("Abort-only mode is enabled")
+                                                } else if !action_policy_snapshot.software_buttons_enabled {
+                                                    Some("Software controls disabled by backend")
+                                                } else if control.is_none() {
+                                                    Some("Command missing from backend policy")
+                                                } else if !control.as_ref().unwrap().enabled {
+                                                    Some("Sequence request disabled by backend")
+                                                } else {
+                                                    Some("Confirm dry valve self-test first")
+                                                };
+                                                let reason_text = disabled_reason.unwrap_or("");
+                                                let label_lines = if action.group == "GSE sequence actions" { 1 } else { 2 };
+
                                                 let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
                                                 let actuated = merged_actuated(
                                                     action.cmd.as_str(),
                                                     control.as_ref().and_then(|c| c.actuated),
                                                     &recording_status.read(),
                                                 );
+                                                let unconfirmed = physical_output_action(&action.cmd) && actuated.is_none();
+                                                let badge_visibility = if !enabled || unconfirmed { "visible" } else { "hidden" };
+                                                let badge_label = if unconfirmed { "Unconfirmed" } else { "Disabled" };
                                                 rsx! {
                                                     button {
-                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated)}",
+                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\" && !physical_output_action(&action.cmd))}",
                                                         disabled: !enabled,
                                                         onmousedown: {
                                                             let cmd = action.cmd.clone();
@@ -374,13 +719,17 @@ pub fn ActionsTab(
                                                                 }
                                                             }
                                                         },
-                                                        span { style: "min-width:0; flex:1 1 auto;", "{action.label}" }
-                                                        if !enabled {
-                                                            span {
-                                                                style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
-                                                                "{translate_text(\"Disabled\")}"
+                                                        span { style: "min-width:0; flex:1 1 auto;",
+                                                            span {title:"{action.label}",style:"display:-webkit-box;-webkit-line-clamp:{label_lines};-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;white-space:normal;line-height:1.25;", "{action.label}"}
+                                                            if action.group == "GSE sequence actions" {
+                                                                span {title:disabled_reason.unwrap_or(""),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;", "{reason_text}"}
                                                             }
                                                         }
+                                                            span {
+                                                                "aria-hidden": enabled && !unconfirmed,
+                                                                style: "visibility:{badge_visibility};flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
+                                                                "{translate_text(badge_label)}"
+                                                            }
                                                     }
                                                 }
                                             }
@@ -389,6 +738,58 @@ pub fn ActionsTab(
                                 }
                             }
                         }
+                    }
+                }
+            }
+            NetworkUtcControls {}
+            if operational_status.read()["unavailable"].as_bool()==Some(true) {
+                p {role:"alert","Sequence and panel status unavailable"}
+            }
+            super::gse_panel::PhysicalPanelStatus {status:operational_status}
+            label {
+                input { r#type: "checkbox", checked: auto_zero().unwrap_or(false),
+                    disabled: auto_zero().is_none() || auto_zero_busy() || abort_only_mode,
+                    onchange: move |event| {
+                        let enabled = event.checked();
+                        auto_zero_busy.set(true);
+                        spawn(async move {
+                            match super::http_post_json::<_, serde_json::Value>("/api/auto_zero", &serde_json::json!({"enabled": enabled})).await {
+                                Ok(saved) => { auto_zero.set(saved["enabled"].as_bool()); auto_zero_message.set("Automatic zero setting saved".into()); }
+                                Err(error) => auto_zero_message.set(format!("Setting not changed: {error}")),
+                            }
+                            auto_zero_busy.set(false);
+                        });
+                    }
+                }
+                " Auto-zero before fill and launch"
+            }
+            super::gse_panel::ControlHelp {title:"automatic zero",paragraphs:vec![
+                "Fill uses 200 recent samples when stable within ±0.8 kg. Otherwise it captures 200 fresh samples and ignores isolated outliers.".into(),
+                "Turning this off preserves the existing tare. Offsets beyond ±0.8 kg require inspection and manual tare.".into()
+            ]}
+            if !auto_zero_message().is_empty() { p { "{auto_zero_message}" } }
+            if let Some(cfg) = fill_targets() {
+                label { "Fill cutoff source: "
+                    select {
+                        value: "{cfg.fill_source}", disabled: fill_targets_busy() || abort_only_mode,
+                        onchange: move |event| {
+                            let Some(mut cfg) = fill_targets() else { return; };
+                            cfg.fill_source = event.value();
+                            fill_targets_busy.set(true);
+                            spawn(async move {
+                                match super::http_post_json::<_, FillTargetsConfig>("/api/fill_targets", &cfg).await {
+                                    Ok(saved) => {
+                                        backend_fill_targets.set(Some(saved.clone()));
+                                        fill_targets.set(Some(saved));
+                                        fill_targets_status.set("Fill source saved".into());
+                                    }
+                                    Err(error) => fill_targets_status.set(format!("Fill source not changed: {error}")),
+                                }
+                                fill_targets_busy.set(false);
+                            });
+                        },
+                        option { value: "kg50", "50 kg loadcell (signed calibrated value)" }
+                        option { value: "kg1000_absolute", "1000 kg loadcell (absolute calibrated value)" }
                     }
                 }
             }
@@ -710,5 +1111,35 @@ fn FillTargetEditor(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mode_label_tests {
+    use super::request_gate_diagnostics;
+    #[test]
+    fn local_mode_is_scoped_and_absent_mode_stays_unknown() {
+        let mut status =
+            serde_json::json!({"request_gate":{"hitl_mode":false,"flight_state":"Idle"}});
+        assert!(
+            request_gate_diagnostics(&status, true)
+                .starts_with("RRLS local backend: mode=non-HITL")
+        );
+        status["request_gate"]["hitl_mode"] = serde_json::Value::Bool(true);
+        assert!(
+            request_gate_diagnostics(&status, true).starts_with("RRLS local backend: mode=HITL")
+        );
+        status["request_gate"]
+            .as_object_mut()
+            .unwrap()
+            .remove("hitl_mode");
+        assert!(
+            request_gate_diagnostics(&status, true).starts_with("RRLS local backend: mode=unknown")
+        );
+        assert!(request_gate_diagnostics(&status, false).starts_with("Backend gate: mode=unknown"));
+        assert!(
+            request_gate_diagnostics(&serde_json::Value::Null, true)
+                .contains("diagnostics unavailable")
+        );
     }
 }

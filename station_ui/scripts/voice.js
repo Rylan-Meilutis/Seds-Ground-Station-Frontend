@@ -42,6 +42,7 @@ function transmit(){
   updateControls();
 }
 function leave(message='Left voice. Microphone released.'){
+  window.GS26StayAwake?.setActive('voice',false);
   const old=session;session=null;held=false;joining=false;$('radio-enable').checked=false;
   if(old){clearInterval(old.ping);clearTimeout(old.joinTimeout);old.ws?.close();old.stream?.getTracks().forEach(t=>t.stop());old.node?.disconnect();old.context?.close().catch(()=>{});}
   $('peers').replaceChildren();$('count').textContent='0 / 12';$('level').value=0;transmit();notice(message);
@@ -119,8 +120,7 @@ $('join').onclick=async()=>{
       if(m.type==='radio_link'){radioLink(m.radio);}
       if(m.type==='radio_state'){$('radio-enable').checked=m.enabled;session.radio=m.enabled;}
 
-      if(m.type==='broadcast_state')$('broadcast-notice').textContent=m.enabled?'Voice chat audio is included in the audience broadcast, with the program delay.':'Voice chat audio is not included in the audience broadcast.';
-      if(m.type==='joined'){clearTimeout(s.joinTimeout);s.ready=true;s.id=m.id;joining=false;transmit();notice('Connected to voice chat.');}
+      if(m.type==='joined'){clearTimeout(s.joinTimeout);s.ready=true;s.id=m.id;joining=false;window.GS26StayAwake?.setActive('voice',true);transmit();notice('Connected to voice chat.');}
       if(m.type==='roster'){
         const next=new Set(m.peers.map(p=>p.id));
         for(const id of s.peers||[])if(!next.has(id))s.node.port.postMessage({type:'remove',id});s.peers=next;
@@ -218,3 +218,6 @@ if (new URLSearchParams(location.search).get('embedded') === '1' && parent !== w
     }
   });
 }
+
+for(const kind of ['contextmenu','selectstart','dragstart'])$('ptt').addEventListener(kind,event=>event.preventDefault());
+$('ptt').addEventListener('touchstart',event=>event.preventDefault(),{passive:false});

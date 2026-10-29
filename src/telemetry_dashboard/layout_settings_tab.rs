@@ -111,9 +111,12 @@ pub fn SettingsPage(
     map_prefetch_user_radius_m: Signal<u32>,
     map_prefetch_rocket_radius_m: Signal<u32>,
     calibration_capture_sample_count: Signal<usize>,
+    streamer_mode: Signal<bool>,
+    ground_station_view: Signal<bool>,
     storage_breakdown: Vec<(String, String)>,
     measured_cache_bytes: u64,
     theme: ThemeConfig,
+    on_open_antenna: EventHandler<()>,
     on_clear_data_cache: EventHandler<()>,
     on_clear_current_data: EventHandler<()>,
     on_clear_data_and_map_cache: EventHandler<()>,
@@ -164,6 +167,7 @@ pub fn SettingsPage(
     let map_prefetch_user_radius_m_value = *map_prefetch_user_radius_m.read();
     let map_prefetch_rocket_radius_m_value = *map_prefetch_rocket_radius_m.read();
     let calibration_capture_sample_count_value = *calibration_capture_sample_count.read();
+    let streamer_mode_enabled = *streamer_mode.read();
     let radius_unit_label = if metric_enabled { "m" } else { "ft" };
     let radius_min_display = if metric_enabled { 100 } else { 328 };
     let radius_max_display = if metric_enabled { 20_000 } else { 65_617 };
@@ -943,7 +947,8 @@ pub fn SettingsPage(
     });
 
     rsx! {
-        div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
+        style { {include_str!("controls.css")} }
+        div { class:"gs26-settings", style: "--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};--gs-field-bg:{theme.panel_background_alt};--gs-field-text:{theme.text_primary};padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
             h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "{title}" }
             div { style: "{settings_tab_bar_style}",
                 button {
@@ -979,7 +984,24 @@ pub fn SettingsPage(
             }
 
             if active_settings_tab.read().as_str() == "general" {
-            div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px;",
+            if crate::auth::can_view_data() {
+                super::paired_settings::PairedSettings { theme:theme.clone() }
+            }
+            div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap:12px;",
+                div { style: "{card_style}",
+                    h3 { style:"margin:0;font-size:15px;", "Antenna alignment" }
+                    p { style:"margin:0;color:{theme.text_soft};font-size:14px;", "Aim toward the rocket, RRLS or GroundStation." }
+                    button { class:"gs26-settings-aim", style:"{chip_idle}", onclick:move |_| on_open_antenna.call(()), "Aim antenna" }
+                }
+                div { style: "{card_style}",
+                    div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "Viewing mode" }
+                    div { style: "font-size:13px; color:{theme.text_soft};", "The dashboard supports custom telemetry and live camera cards. Optionally show ground controls below your cards. Streamer mode shows delayed video and cycling telemetry; no stream-manager role is needed to watch." }
+                    div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                        button { style: if !streamer_mode_enabled { chip_selected.clone() } else { chip_idle.clone() }, onclick: move |_| streamer_mode.set(false), "Dashboard" }
+                        button { style: if streamer_mode_enabled { chip_selected.clone() } else { chip_idle.clone() }, onclick: move |_| streamer_mode.set(true), "Streamer" }
+                        label { input { r#type:"checkbox", checked:*ground_station_view.read(), onchange:move |event| {let enabled=event.checked();ground_station_view.set(enabled);persist::set_string(&super::ground_station_view_key(),if enabled {"on"}else{"off"});} } " Show ground controls on Dashboard" }
+                    }
+                }
                 div { style: "{card_style}",
                     div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_general}" }
                     div { style: "font-size:13px; color:{theme.text_muted};", "{language_title}" }
@@ -1013,6 +1035,7 @@ pub fn SettingsPage(
                             "{french_label}"
                         }
                     }
+                    super::actions_tab::NetworkUtcControls {}
                     div { style: "font-size:13px; color:{theme.text_muted}; margin-top:10px;", "{time_format_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{time_format_desc}" }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",
@@ -1031,6 +1054,15 @@ pub fn SettingsPage(
 
                 div { style: "{card_style}",
                     div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_appearance}" }
+                    label {style:"display:flex;align-items:center;gap:12px;flex-wrap:wrap;",
+                        span {"Navigation"}
+                        select {"aria-label":"Navigation",style:"width:auto;min-height:44px;max-width:100%;",value:if *super::navigation_rail::SIDEBAR_NAVIGATION.read() {"sidebar"}else{"tabs"},onchange:move |event| {
+                            let sidebar=event.value()=="sidebar";
+                            *super::navigation_rail::SIDEBAR_NAVIGATION.write()=sidebar;
+                            persist::set_string("navigation-style",if sidebar {"sidebar"}else{"tabs"});
+                        }, option {value:"sidebar","Sidebar"} option {value:"tabs","Tab dropdown"}}
+                    }
+                    super::custom_dashboard::HeaderPinSettings {}
                     div { style: "font-size:13px; color:{theme.text_muted};", "{theme_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{theme_desc}" }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",
@@ -1127,7 +1159,7 @@ pub fn SettingsPage(
                         div { style: "display:flex; flex-direction:column; gap:6px;",
                             div { style: "font-size:13px; color:{theme.text_muted};", "{manual_lat_title}" }
                             input {
-                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:min(100%, 18rem);",
                                 value: "{manual_user_lat_value}",
                                 placeholder: "31.000000",
                                 oninput: {
@@ -1139,7 +1171,7 @@ pub fn SettingsPage(
                         div { style: "display:flex; flex-direction:column; gap:6px;",
                             div { style: "font-size:13px; color:{theme.text_muted};", "{manual_lon_title}" }
                             input {
-                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                                style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:min(100%, 18rem);",
                                 value: "{manual_user_lon_value}",
                                 placeholder: "-99.000000",
                                 oninput: {
@@ -1172,7 +1204,7 @@ pub fn SettingsPage(
                     div { style: "display:flex; flex-direction:column; gap:6px; max-width:260px;",
                         div { style: "font-size:13px; color:{theme.text_muted};", "{manual_heading_title}" }
                         input {
-                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:100%;",
+                            style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:min(100%, 18rem);",
                             value: "{manual_user_heading_value}",
                             placeholder: "0.0",
                             oninput: {

@@ -82,6 +82,10 @@ def _workspace_root(frontend_dir: Path) -> Path:
 
 
 def _target_root(frontend_dir: Path) -> Path:
+    configured = os.environ.get("CARGO_TARGET_DIR")
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else frontend_dir / path
     return _workspace_root(frontend_dir) / "target"
 
 
@@ -94,7 +98,8 @@ def _append_log(line: str) -> None:
 
 def _cmd_to_str(cmd: object) -> str:
     if isinstance(cmd, (list, tuple)):
-        return " ".join(str(x) for x in cmd)
+        parts = [str(x) for x in cmd]
+        return " ".join("<redacted>" if i and parts[i - 1] == "--password" else x for i, x in enumerate(parts))
     return str(cmd)
 
 
@@ -244,7 +249,7 @@ def _contextual_failure_hints(cmd_s: str, text: str) -> list[str]:
 
 def run(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> None:
     cmd = [str(part) for part in cmd]
-    cmd_line = f"Running: {' '.join(cmd)} (cwd={cwd})"
+    cmd_line = f"Running: {_cmd_to_str(cmd)} (cwd={cwd})"
     print(cmd_line)
     _append_log(cmd_line + "\n")
     merged = os.environ.copy()
@@ -291,7 +296,7 @@ def run_filtered(
         line_filter: Optional[Callable[[str], list[str]]] = None,
 ) -> None:
     cmd = [str(part) for part in cmd]
-    cmd_line = f"Running: {' '.join(cmd)} (cwd={cwd})"
+    cmd_line = f"Running: {_cmd_to_str(cmd)} (cwd={cwd})"
     print(cmd_line)
     _append_log(cmd_line + "\n")
     merged = os.environ.copy()
@@ -357,7 +362,7 @@ def run_filtered(
 
 def run_capture(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> str:
     cmd = [str(part) for part in cmd]
-    print(f"Running: {' '.join(cmd)} (cwd={cwd})")
+    print(f"Running: {_cmd_to_str(cmd)} (cwd={cwd})")
     out = subprocess.check_output(cmd, cwd=cwd, env=(os.environ | (env or {})))
     return out.decode("utf-8", errors="replace")
 
@@ -1663,6 +1668,7 @@ def build_manual_linux_packages(
                 "Priority: optional",
                 f"Architecture: {deb_arch}",
                 "Maintainer: UBSEDS",
+                "Depends: libwebkit2gtk-4.1-0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav",
                 f"Description: {description}",
                 "",
             ])
@@ -3292,6 +3298,81 @@ def verify_macos_distribution(frontend_dir: Path, target: Path) -> None:
         run(["spctl", "--assess", "--type", "execute", "-vv", str(target)], cwd=frontend_dir)
 
 
+def _notarization_auth(frontend_dir: Path) -> list[str]:
+    profile = os.environ.get("NOTARY_PROFILE", "").strip()
+    if profile:
+        return ["--keychain-profile", profile]
+    apple_id = os.environ.get("NOTARY_APPLE_ID", "").strip()
+    team_id = os.environ.get("NOTARY_TEAM_ID", "").strip()
+    password = os.environ.get("NOTARY_PASSWORD", "").strip()
+    if apple_id and team_id and password:
+        return ["--apple-id", apple_id, "--team-id", team_id, "--password", password]
+    if apple_id or team_id or password:
+        raise RuntimeError("Set all of NOTARY_APPLE_ID, NOTARY_TEAM_ID and NOTARY_PASSWORD, or use NOTARY_PROFILE.")
+    # Query attributes only, never credential data. Includes the data-protection
+    # Keychain used by notarytool as well as legacy file-based keychains.
+    result = subprocess.run(["xcrun", "swift", str(_workspace_root(frontend_dir) / "scripts/notary_profiles.swift")],
+                            cwd=frontend_dir, capture_output=True, text=True, check=True)
+    profiles = sorted(set(json.loads(result.stdout)))
+    if len(profiles) == 1:
+        print("Using the sole stored notarization profile.")
+        return ["--keychain-profile", profiles[0]]
+    if profiles:
+        raise RuntimeError("Multiple notarization profiles found; select one using NOTARY_PROFILE.")
+    raise RuntimeError("No notarization profile found. Store credentials with xcrun notarytool store-credentials, or set NOTARY_PROFILE.")
+
+
+def _require_android_release_settings(frontend_dir: Path) -> dict[str, str]:
+    settings = _android_signing_settings(frontend_dir)
+    if not Path(settings["ANDROID_KEYSTORE_PATH"]).is_file():
+        raise RuntimeError("--final requires an Android release keystore (ANDROID_KEYSTORE_PATH).")
+    missing = [key for key in ("ANDROID_KEY_ALIAS", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_PASSWORD") if not settings[key]]
+    if missing:
+        raise RuntimeError("--final requires Android release signing credentials: " + ", ".join(missing))
+    return settings
+
+
+def _finalize_android_release(frontend_dir: Path, package_type: str) -> None:
+    settings = _require_android_release_settings(frontend_dir)
+    source = dist_dir(frontend_dir) / f"{ANDROID_APP_NAME}.{package_type}"
+    if not source.is_file():
+        raise FileNotFoundError(f"Android artifact not found: {source}")
+    # Passwords are referenced through the child environment, never command text.
+    env = {"GS_ANDROID_STORE_PASSWORD": settings["ANDROID_KEYSTORE_PASSWORD"],
+           "GS_ANDROID_KEY_PASSWORD": settings["ANDROID_KEY_PASSWORD"], "LC_ALL": "C"}
+    with tempfile.TemporaryDirectory(prefix="final-sign-", dir=source.parent) as temp:
+        signed = Path(temp) / source.name
+        if package_type == "apk":
+            sdk = _detect_android_sdk_root()
+            candidates = sorted((sdk / "build-tools").glob("*/apksigner")) if sdk else []
+            signer = shutil.which("apksigner") or (str(candidates[-1]) if candidates else None)
+            if not signer:
+                raise RuntimeError("Android SDK apksigner is required for --final APK signing.")
+            run([signer, "sign", "--ks", settings["ANDROID_KEYSTORE_PATH"], "--ks-key-alias", settings["ANDROID_KEY_ALIAS"],
+                 "--ks-pass", "env:GS_ANDROID_STORE_PASSWORD", "--key-pass", "env:GS_ANDROID_KEY_PASSWORD",
+                 "--out", str(signed), str(source)], cwd=frontend_dir, env=env)
+            run([signer, "verify", "--verbose", str(signed)], cwd=frontend_dir, env=env)
+        else:
+            run(["jarsigner", "-keystore", settings["ANDROID_KEYSTORE_PATH"], "-storetype", settings["ANDROID_KEYSTORE_TYPE"],
+                 "-storepass:env", "GS_ANDROID_STORE_PASSWORD", "-keypass:env", "GS_ANDROID_KEY_PASSWORD",
+                 "-signedjar", str(signed), str(source), settings["ANDROID_KEY_ALIAS"]], cwd=frontend_dir, env=env)
+            verification = run_capture(["jarsigner", "-verify", str(signed)], cwd=frontend_dir, env=env)
+            if "jar verified." not in verification or "unsigned entries" in verification:
+                raise RuntimeError("Android bundle signature verification failed.")
+        signed.replace(source)
+
+
+def finalize_release(frontend_dir: Path, platform_name: str, package_type: str, *, prepare: bool) -> None:
+    if prepare:
+        if platform_name == "macos": _notarization_auth(frontend_dir)
+        elif platform_name == "android": _require_android_release_settings(frontend_dir)
+        elif platform_name == "ios": ios_distribution_mobileprovision_path(frontend_dir)
+        return
+    if platform_name == "macos": notarize_macos(frontend_dir)
+    elif platform_name == "android": _finalize_android_release(frontend_dir, package_type)
+    # Physical iOS builds already package and verify their distribution IPA.
+
+
 def notarize_macos(frontend_dir: Path) -> None:
     if platform.system() != "Darwin":
         print("Error: macOS notarization requires macOS.", file=sys.stderr)
@@ -3310,31 +3391,19 @@ def notarize_macos(frontend_dir: Path) -> None:
         identity = _pick_codesign_identity(frontend_dir, cert_regex, cert_pick)
         sign_macos_dmg(frontend_dir, target, identity)
 
-    profile = os.environ.get("NOTARY_PROFILE", "").strip()
-    apple_id = os.environ.get("NOTARY_APPLE_ID", "").strip()
-    team_id = os.environ.get("NOTARY_TEAM_ID", "").strip()
-    password = os.environ.get("NOTARY_PASSWORD", "").strip()
-
-    auth_args: list[str]
-    if profile:
-        auth_args = ["--keychain-profile", profile]
-    elif apple_id and team_id and password:
-        auth_args = ["--apple-id", apple_id, "--team-id", team_id, "--password", password]
-    else:
-        raise RuntimeError(
-            "Missing notarization credentials. Set NOTARY_PROFILE or "
-            "NOTARY_APPLE_ID + NOTARY_TEAM_ID + NOTARY_PASSWORD."
-        )
+    auth_args = _notarization_auth(frontend_dir)
 
     print(f"Notarizing macOS artifact: {target.name}")
-    run(["xcrun", "notarytool", "submit", str(target), "--wait", *auth_args], cwd=frontend_dir)
+    try:
+        run(["xcrun", "notarytool", "submit", str(target), "--wait", *auth_args], cwd=frontend_dir)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Notarization submission failed (exit {error.returncode}).") from None
     run(["xcrun", "stapler", "staple", str(target)], cwd=frontend_dir)
     verify_macos_distribution(frontend_dir, target)
 
 
 def _prebuild_frontend_for_container(frontend_dir: Path) -> None:
-    # IMPORTANT: do NOT run dx bundle here (you asked not to “install another version of dioxus” or do slow tooling
-    # work)
+    # Prime Cargo dependencies without launching a second Dioxus bundle build.
     print("Container detected → priming cargo for frontend before dx bundle")
     run(["cargo", "fetch"], cwd=frontend_dir)
 
@@ -3506,10 +3575,13 @@ def _ensure_wasm_bindgen_cli(frontend_dir: Path, env: Optional[dict[str, str]]) 
     if installed_version == required and installed_path is not None:
         return installed_path
 
+    # Pin the tool to the application's wasm-bindgen ABI, but resolve its own
+    # transitive dependencies afresh. Published CLI lockfiles can contain yanked
+    # crates (for example der 0.8.0); --locked would keep installing those.
     if installed_path is None:
         print(f"wasm-bindgen-cli not found; installing required version {required}")
         run(
-            ["cargo", "install", "--locked", "wasm-bindgen-cli", "--version", required],
+            ["cargo", "install", "wasm-bindgen-cli", "--version", f"={required}"],
             cwd=_workspace_root(frontend_dir),
             env=env,
         )
@@ -3519,7 +3591,7 @@ def _ensure_wasm_bindgen_cli(frontend_dir: Path, env: Optional[dict[str, str]]) 
             f"want {required}); reinstalling"
         )
         run(
-            ["cargo", "install", "--locked", "wasm-bindgen-cli", "--version", required, "--force"],
+            ["cargo", "install", "wasm-bindgen-cli", "--version", f"={required}", "--force"],
             cwd=_workspace_root(frontend_dir),
             env=env,
         )
@@ -3527,6 +3599,9 @@ def _ensure_wasm_bindgen_cli(frontend_dir: Path, env: Optional[dict[str, str]]) 
     refreshed_path = _find_wasm_bindgen((env or {}).get("PATH", os.environ.get("PATH", "")))
     if refreshed_path is None:
         raise RuntimeError("wasm-bindgen-cli install completed but `wasm-bindgen` is still not on PATH")
+    actual = _wasm_bindgen_cli_version(refreshed_path, frontend_dir, env)
+    if actual != required:
+        raise RuntimeError(f"wasm-bindgen-cli install produced {actual or 'an unknown version'}; expected {required}")
     return refreshed_path
 
 
@@ -3922,6 +3997,24 @@ def _prune_stale_hashed_assets(frontend_dir: Path) -> None:
         for h, _ in arr[:keep_generations]:
             keep_hashes.add((base, ext, h))
 
+    # A current JS loader can refer to an older-mtime WASM from the shared
+    # Dioxus cache. Preserve dependencies of every retained loader, including
+    # retained older loaders used by already-open browser tabs.
+    asset_ref_re = re.compile(r"[A-Za-z0-9_.-]+-dxh[0-9a-f]+\.[A-Za-z0-9]+")
+    inspected: set[Path] = set()
+    while True:
+        pending = [p for p, base, ext, h in parsed
+                   if (base, ext, h) in keep_hashes
+                   and p.suffix in {".js", ".css"} and p not in inspected]
+        if not pending:
+            break
+        for loader in pending:
+            inspected.add(loader)
+            for name in asset_ref_re.findall(loader.read_text(encoding="utf-8", errors="replace")):
+                match = hashed_re.fullmatch(name)
+                if match:
+                    keep_hashes.add((match.group("base"), match.group("ext"), match.group("hash")))
+
     removed = 0
     for p, base, ext, h in parsed:
         if (base, ext, h) not in keep_hashes:
@@ -3935,10 +4028,29 @@ def _prune_stale_hashed_assets(frontend_dir: Path) -> None:
         print(f"Pruned stale hashed assets: {removed} (kept {keep_generations} generations)")
 
 
+def _validate_web_asset_references(frontend_dir: Path) -> None:
+    """Reject a broken current loader before its output can be published."""
+    public = frontend_dir / "dist" / "public"
+    asset_ref_re = re.compile(r"[A-Za-z0-9_.-]+-dxh[0-9a-f]+\.[A-Za-z0-9]+")
+    pending = list(public.glob("*.html"))
+    inspected: set[Path] = set()
+    while pending:
+        source = pending.pop()
+        if source in inspected:
+            continue
+        inspected.add(source)
+        for name in asset_ref_re.findall(source.read_text(encoding="utf-8", errors="replace")):
+            asset = public / "assets" / name
+            if not asset.is_file():
+                raise RuntimeError(f"Incomplete frontend bundle: {source.name} references missing assets/{name}")
+            if asset.suffix in {".js", ".css"}:
+                pending.append(asset)
+
+
 def _dx_bundle_env(frontend_dir: Path) -> dict[str, str]:
     """
     Construct an environment that:
-      - in containers: uses PATH from `bash -lc` so we match profile scripts
+      - preserves inherited tool paths and appends container login-shell paths
       - forces Dioxus CLI to *not download tools* (NO_DOWNLOADS=1)
       - points dx/wasm toolchains at your already-installed wasm-opt
     """
@@ -3947,10 +4059,10 @@ def _dx_bundle_env(frontend_dir: Path) -> dict[str, str]:
     if is_container():
         bash_path = _bash_login_path(frontend_dir)
         if bash_path:
-            base_path = bash_path
+            base_path = os.pathsep.join([base_path, bash_path])
 
     extra_paths = [
-        str(Path.home() / ".cargo" / "bin"),
+        str(Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))) / "bin"),
         str(frontend_dir / "node_modules" / ".bin"),
         "/usr/local/sbin",
         "/usr/local/bin",
@@ -5179,6 +5291,7 @@ def build_frontend(
         if platform_name in {None, "web"}:
             _manual_optimize_web_wasm(frontend_dir, env, max_size=max_size)
             _prune_stale_hashed_assets(frontend_dir)
+            _validate_web_asset_references(frontend_dir)
             _compress_web_assets(frontend_dir, env)
         elif platform_name == "android":
             rebuild_patched_android_bundle(frontend_dir, debug_mode, env)
@@ -5266,6 +5379,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("Usage:")
     print(f"  {build_script}                         # default: clean Android build")
     print(f"  {build_script} frontend_web|web [debug] [max_size] [existing] [log=<path>]")
+    print(f"  {build_script} --target list|<name>|all|all,sims [--docker] [--release|--debug] [--final|--no-sign] [--dry-run]")
     print(f"  {build_script} ios|ios_sim|macos|windows|android|candroid|linux [debug] [existing] [no_sign] [log=<path>]")
     print(f"  {build_script} android [apk|aab] [debug] [existing] [no_sign] [log=<path>]")
     print("")
@@ -5319,10 +5433,11 @@ def print_usage(exit_code: int = 1) -> None:
     print("  IOS_DEVELOPMENT_MOBILEPROVISION=...   # physical-device deploy provisioning profile")
     print("  IOS_DISTRIBUTION_MOBILEPROVISION=...  # distribution IPA provisioning profile")
     print("  MACOS_ENTITLEMENTS=...            # optional entitlements file for macOS codesign")
-    print("  NOTARY_PROFILE=...                # notarytool keychain profile")
+    print("  NOTARY_PROFILE=...                # optional if exactly one stored profile exists")
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")
     print("  NOTARY_TEAM_ID=...                # notarytool team ID")
     print("  NOTARY_PASSWORD=...               # notarytool app-specific password")
+    print("  python3 build.py --prepare-browser-assets  # verify/fetch browser dependencies without compiling UI")
     print("  GS_WASM_BINDGEN_CLI_VERSION=...   # force wasm-bindgen-cli version")
     print("  GS26_WINDOWS_TARGET=...           # override windows Rust target")
     print("  GS26_MACOS_TARGET=...             # override macOS Rust target")
@@ -5342,6 +5457,12 @@ def print_usage(exit_code: int = 1) -> None:
 
 def main() -> None:
     raw_args = [a.strip() for a in sys.argv[1:]]
+    if "--prepare-browser-assets" in raw_args:
+        from scripts.browser_assets import main as prepare_browser_assets
+        raise SystemExit(prepare_browser_assets([arg for arg in raw_args if arg != "--prepare-browser-assets"]))
+    from scripts.build_targets import handle_target_args
+    if handle_target_args(raw_args, _resolve_frontend_dir(), build_frontend, package_ios_ipa_with_script, finalize_release):
+        return
     if not raw_args:
         raw_args = ["candroid"]
     elif any(a in {"-h", "--help", "help"} for a in raw_args):

@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const listeners=new Map();let requested=0,released=0;
+const document={visibilityState:'visible',addEventListener:(name,fn)=>listeners.set(name,fn),querySelectorAll:()=>[]};
+const window={addEventListener:(name,fn)=>listeners.set(name,fn)};
+const navigator={wakeLock:{request:async kind=>{assert.equal(kind,'screen');requested++;return {release:async()=>{released++;},addEventListener:()=>{}};}}};
+vm.runInNewContext(fs.readFileSync('station_ui/scripts/stay-awake.js','utf8'),{window,document,navigator,URL,location:{href:'https://station.local'}});
+const settle=()=>new Promise(resolve=>setImmediate(resolve));
+window.GS26StayAwake.setActive('camera',true);await settle();assert.equal(requested,1);
+window.GS26StayAwake.setActive('voice',true);await settle();assert.equal(requested,1,'sharing uses a single screen lock');
+document.visibilityState='hidden';await listeners.get('visibilitychange')();assert.equal(released,1);
+document.visibilityState='visible';await listeners.get('visibilitychange')();assert.equal(requested,2,'visible capture reacquires');
+window.GS26StayAwake.setActive('camera',false);await settle();assert.equal(released,1,'voice keeps the lock');
+window.GS26StayAwake.setActive('voice',false);await settle();assert.equal(released,2);
+window.GS26StayAwake.setActive('view',true);await settle();listeners.get('pagehide')();await settle();assert.equal(released,3);
+listeners.get('pageshow')();await settle();assert.equal(requested,4);
+console.log('PASS screen wake lock sharing, hidden release, visible/page restoration and capture cleanup');

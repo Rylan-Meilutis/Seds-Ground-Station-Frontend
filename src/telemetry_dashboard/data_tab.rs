@@ -1,3 +1,4 @@
+type SummaryCardValues = (String, Option<String>, Option<String>, String, &'static str);
 use super::layout::{
     BooleanLabels, ChartSeriesSpec, DataChartGroup, DataChartScaleMode, DataSubtabSpec,
     DataSummaryItem, DataTabLayout, DataTabSpec, ThemeConfig, ValueFormatKind, ValueFormatter,
@@ -28,7 +29,26 @@ const _ACTIVE_SUBTAB_STORAGE_KEY_PREFIX: &str = "gs26_active_data_subtab::";
 const DATA_TAB_RESPONSIVE_CSS: &str = r#"
 .gs26-data-tab-shell, .gs26-data-subtab-shell { min-width: 0; width:100%; align-self:stretch; box-sizing:border-box; }
 .gs26-data-tab-toggle, .gs26-data-subtab-toggle { display:none; }
+.gs26-data-subtab-shell {
+  margin-top:6px;
+  padding:12px 10px 10px;
+  border-top:1px solid var(--gs26-data-toggle-border);
+  background:var(--gs26-data-toggle-background);
+  border-radius:0 0 10px 10px;
+}
+.gs26-data-tab-nav button, .gs26-data-subtab-nav button {
+  min-height:44px;
+  touch-action:manipulation;
+}
+.gs26-data-subtab-nav button { border-radius:8px !important; font-size:13px !important; padding:9px 12px !important; }
+.gs26-data-subtab-nav button[aria-pressed="true"] { font-weight:700; }
+.gs26-data-tab-nav button:focus-visible, .gs26-data-subtab-nav button:focus-visible,
+.gs26-data-tab-toggle:focus-visible, .gs26-data-subtab-toggle:focus-visible {
+  outline:2px solid currentColor;
+  outline-offset:3px;
+}
 .gs26-data-tab-nav, .gs26-data-subtab-nav { display:flex; gap:6px; flex-wrap:wrap; align-items:center; min-width:0; width:100%; box-sizing:border-box; }
+.gs26-data-subtab-nav { gap:8px; }
 .gs26-data-tab-nav button, .gs26-data-subtab-nav button,
 .gs26-data-tab-toggle, .gs26-data-subtab-toggle {
   box-sizing:border-box;
@@ -56,6 +76,7 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
     background:var(--gs26-data-toggle-background);
     color:var(--gs26-data-toggle-text);
     font:inherit;
+    min-height:44px;
     font-size:0.82rem;
     font-weight:800;
     line-height:1.12;
@@ -79,7 +100,7 @@ const DATA_TAB_RESPONSIVE_CSS: &str = r#"
   }
   .gs26-data-tab-nav button, .gs26-data-subtab-nav button {
     width:100%;
-    min-height:2.15rem;
+    min-height:44px;
   }
 }
 @media (max-width: 980px) {
@@ -122,6 +143,22 @@ struct DataChartRenderPayload {
 
 thread_local! {
     static DATA_CHART_RENDER_CACHE: RefCell<HashMap<u64, DataChartRenderPayload>> = RefCell::new(HashMap::new());
+}
+
+fn chart_axis_label(value: f32, min: f32, max: f32) -> String {
+    if value != 0.0 && (value.abs() < 0.0001 || value.abs() >= 1e6) {
+        return format!("{value:.3e}");
+    }
+    let span = (max - min).abs();
+    let decimals = if span > 0.0 { (2.0 - span.log10().floor()).clamp(2.0, 9.0) as usize } else { 2 };
+    format!("{value:.decimals$}")
+}
+
+#[cfg(test)]
+#[test]
+fn microvolt_axis_labels_remain_distinct() {
+    assert_ne!(chart_axis_label(0.0000276, 0.0000276, 0.0000278), chart_axis_label(0.0000278, 0.0000276, 0.0000278));
+    assert_eq!(chart_axis_label(10.0, 0.0, 100.0), "10.00");
 }
 
 fn subtab_storage_key(tab_id: &str) -> String {
@@ -191,13 +228,60 @@ fn chart_canvas_identity_key(
     format!("data-chart::{:016x}", hasher.finish())
 }
 
+// Older station layouts attach the shared fill series to KG1000. Relocate the
+// configured readout and chart together, including copies under the DAQ tab.
+fn layout_for_fill_source(mut layout: DataTabLayout, source: Option<&str>) -> DataTabLayout {
+    let selected = match source {
+        Some("kg50") => Some("KG50"),
+        Some("kg1000_absolute") => Some("KG1000"),
+        _ => None,
+    };
+    for tab in &mut layout.tabs {
+        let Some(subtabs) = tab.subtabs.as_mut() else { continue; };
+        let is_loadcell = |subtab: &DataSubtabSpec| matches!(subtab.data_type.as_deref(), Some("KG50" | "KG1000"));
+        let chart = subtabs.iter().filter(|s| is_loadcell(s))
+            .flat_map(|s| s.chart_groups.iter().flatten())
+            .find(|g| g.data_type.as_deref() == Some("LOADCELL_FILL_PERCENT")).cloned();
+        let summary = subtabs.iter().filter(|s| is_loadcell(s))
+            .flat_map(|s| s.summary_items.iter().flatten())
+            .find(|i| i.data_type == "LOADCELL_FILL_PERCENT").cloned();
+        for subtab in subtabs.iter_mut().filter(|s| is_loadcell(s)) {
+            if let Some(groups) = &mut subtab.chart_groups {
+                groups.retain(|g| g.data_type.as_deref() != Some("LOADCELL_FILL_PERCENT"));
+            }
+            if let Some(items) = &mut subtab.summary_items {
+                items.retain(|i| i.data_type != "LOADCELL_FILL_PERCENT");
+            }
+            if selected.is_some() && subtab.data_type.as_deref() == selected {
+                if let Some(chart) = &chart { subtab.chart_groups.get_or_insert_default().push(chart.clone()); }
+                if let Some(summary) = &summary { subtab.summary_items.get_or_insert_default().push(summary.clone()); }
+            }
+        }
+    }
+    layout
+}
+
 #[component]
 pub fn DataTab(
     active_tab: Signal<String>,
     layout: DataTabLayout,
+    fill_targets: Signal<Option<super::FillTargetsConfig>>,
     #[props(default = false)] state_chart_labels_vertical: bool,
     theme: ThemeConfig,
 ) -> Element {
+    // WebSocket snapshots keep this signal current after another operator
+    // changes the source; fetch once if the initial snapshot has not arrived.
+    use_effect(move || {
+        if fill_targets.read().is_none() {
+            spawn(async move {
+                if let Ok(targets) = super::http_get_json::<super::FillTargetsConfig>("/api/fill_targets").await {
+                    let mut fill_targets = fill_targets;
+                    if fill_targets.peek().is_none() { fill_targets.set(Some(targets)); }
+                }
+            });
+        }
+    });
+    let layout = layout_for_fill_source(layout, fill_targets.read().as_ref().map(|cfg| cfg.fill_source.as_str()));
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
     let active_subtabs = use_signal(HashMap::<String, String>::new);
@@ -366,9 +450,10 @@ pub fn DataTab(
                         },
                         "{data_tabs_toggle_label}"
                     }
-                div { class: "gs26-data-tab-nav",
+                div { class: "gs26-data-tab-nav", role: "group", "aria-label": "Data categories",
                     for t in types.iter().take(32) {
                         button {
+                            "aria-pressed": t.id == current,
                             style: if t.id == current {
                                 {
                                     let accent = theme
@@ -430,9 +515,10 @@ pub fn DataTab(
                             },
                             "{data_subtabs_toggle_label}"
                         }
-                    div { class: "gs26-data-subtab-nav",
+                    div { class: "gs26-data-subtab-nav", role: "group", "aria-label": "Data views",
                         for subtab in current_subtabs.iter() {
                             button {
+                                "aria-pressed": selected_subtab.as_ref().is_some_and(|active| active.id == subtab.id),
                                 style: if selected_subtab.as_ref().is_some_and(|active| active.id == subtab.id) {
                                     {
                                         let accent = theme
@@ -476,6 +562,9 @@ pub fn DataTab(
                     }
                 }
 
+                if selected_subtab_snapshot.as_ref().is_some_and(|s| s.data_type.as_deref() == Some("KG50")) {
+                    Kg50InputSelector { theme: theme.clone() }
+                }
                 div {
                     key: format!(
                         "data-live-{current}-{}",
@@ -667,6 +756,37 @@ fn chart_series_for_group(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fill_percentage_follows_selected_loadcell_in_sensor_and_daq_tabs() {
+        let fixture = serde_json::json!({"tabs": (["LOADCELL", "DAQ"].map(|id| serde_json::json!({
+            "id": id, "label": id, "channels": [], "subtabs": [
+                {"id": "large", "label": "1000kg", "data_type": "KG1000",
+                 "chart_groups": [{"title": "Calibrated", "data_type": "LOADCELL_WEIGHT_KG", "channels": [0]},
+                    {"title": "Fill %", "data_type": "LOADCELL_FILL_PERCENT", "channels": [0]}],
+                 "summary_items": [{"label": "Fill %", "data_type": "LOADCELL_FILL_PERCENT", "index": 0}]},
+                {"id": "small", "label": "50kg", "data_type": "KG50",
+                 "chart_groups": [{"title": "Calibrated", "data_type": "LOADCELL_50_WEIGHT_KG", "channels": [0]}],
+                 "summary_items": [{"label": "Mass", "data_type": "LOADCELL_50_WEIGHT_KG", "index": 0}]}
+            ]
+        })))});
+        let original: super::DataTabLayout = serde_json::from_value(fixture).unwrap();
+        for (source, selected) in [(Some("kg50"), Some("KG50")), (Some("kg1000_absolute"), Some("KG1000")), (None, None), (Some("invalid"), None)] {
+            let layout = super::layout_for_fill_source(original.clone(), source);
+            assert_eq!(original.tabs.len(), layout.tabs.len());
+            for tab in &layout.tabs {
+                for subtab in tab.subtabs.as_ref().unwrap() {
+                    let expected = usize::from(selected.is_some() && subtab.data_type.as_deref() == selected);
+                    assert_eq!(subtab.chart_groups.as_ref().unwrap().iter().filter(|g| g.data_type.as_deref() == Some("LOADCELL_FILL_PERCENT")).count(), expected, "{} {} charts", tab.id, subtab.id);
+                    assert_eq!(subtab.summary_items.as_ref().unwrap().iter().filter(|i| i.data_type == "LOADCELL_FILL_PERCENT").count(), expected, "{} {} summaries", tab.id, subtab.id);
+                    assert!(subtab.chart_groups.as_ref().unwrap().iter().any(|g| g.title.as_deref() == Some("Calibrated")));
+                }
+            }
+            assert_eq!(super::layout_for_fill_source(layout.clone(), source), layout, "rerender must not duplicate fill widgets");
+        }
+        let small = super::layout_for_fill_source(original.clone(), Some("kg50"));
+        assert_eq!(super::layout_for_fill_source(small, Some("kg1000_absolute")), super::layout_for_fill_source(original, Some("kg1000_absolute")));
+    }
+
     use super::{
         DataChartGroup, DataSource, DataSummaryItem, chart_groups_have_graph_source,
         chart_series_for_group, data_live_panel_has_telemetry, effective_chart_groups,
@@ -988,7 +1108,7 @@ fn DataSummarySection(
 
     if !summary_items.is_empty() {
         let grid_style = summary_grid_style(summary_items.len());
-        let summary_cards: Vec<(String, Option<String>, Option<String>, String, &'static str)> =
+        let summary_cards: Vec<SummaryCardValues> =
             summary_items
                 .iter()
                 .enumerate()
@@ -1041,7 +1161,7 @@ fn DataSummarySection(
     let vals = &row.values;
     let visible_label_count = labels.iter().filter(|label| !label.is_empty()).count();
     let grid_style = summary_grid_style(visible_label_count);
-    let row_cards: Vec<(String, Option<String>, Option<String>, String, &'static str)> = labels
+    let row_cards: Vec<SummaryCardValues> = labels
         .iter()
         .enumerate()
         .filter(|(_, label)| !label.is_empty())
@@ -1127,11 +1247,6 @@ fn DataGraphPanel(
     if charts_enabled || fullscreen {
         let _ = *CHART_RENDER_EPOCH.read();
     }
-    let chart_groups_grid_style = if chart_groups.len() >= 2 {
-        "display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; width:100%; align-items:start;"
-    } else {
-        "display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; width:100%; align-items:start;"
-    };
     let x_pct = |x: f64, total: f64| format!("{:.4}%", (x / total) * 100.0);
     let y_pct = |y: f64, total: f64| format!("{:.4}%", (y / total) * 100.0);
     let on_toggle_fullscreen = move |_: Event<MouseData>| {
@@ -1171,9 +1286,11 @@ fn DataGraphPanel(
 
                 if *show_chart.read() {
                     div { style: "width:100%;",
-                        div { class: "gs26-data-graph-groups", style: "{chart_groups_grid_style}",
-                        for group in chart_groups.iter() {
-                            {render_chart_group(
+                        div { class:"gs26-data-graph-groups",
+            {let panels=chart_groups.iter().enumerate().map(|(index,group)| {
+                let title=group.title.clone().unwrap_or_else(||format!("Chart {}",index+1));
+                let id=format!("{}:{:?}:{}",chart_key_for_group(group,&chart_key),group.channels,title);
+                super::info_panels::InfoPanel::new(&id,&title,"Charts",render_chart_group(
                                 group,
                                 &chart_key,
                                 &labels,
@@ -1189,9 +1306,10 @@ fn DataGraphPanel(
                                 &x_pct,
                                 &y_pct,
                                 &theme,
-                            )}
-                        }
-                        }
+                            ))
+            }).collect();
+            rsx! {super::info_panels::InfoPanels {key:"data-{chart_key}",page:format!("data-{chart_key}"),panels,wide:true}}}
+        }
                     }
                 }
             }
@@ -1215,9 +1333,11 @@ fn DataGraphPanel(
 
                         div {
                             style: "flex:1; min-height:0; width:100%; overflow-y:auto;",
-                            div { class: "gs26-data-graph-groups-fullscreen", style: "{chart_groups_grid_style}",
-                            for group in chart_groups.iter() {
-                                {render_chart_group(
+                            div { class:"gs26-data-graph-groups-fullscreen",
+            {let panels=chart_groups.iter().enumerate().map(|(index,group)| {
+                let title=group.title.clone().unwrap_or_else(||format!("Chart {}",index+1));
+                let id=format!("{}:{:?}:{}",chart_key_for_group(group,&chart_key),group.channels,title);
+                super::info_panels::InfoPanel::new(&id,&title,"Charts",render_chart_group(
                                     group,
                                     &chart_key,
                                     &labels,
@@ -1233,9 +1353,10 @@ fn DataGraphPanel(
                                     &x_pct,
                                     &y_pct,
                                     &theme,
-                                )}
-                            }
-                            }
+                                ))
+            }).collect();
+            rsx! {super::info_panels::InfoPanels {key:"data-{chart_key}",page:format!("data-{chart_key}"),panels,wide:true}}}
+        }
                         }
                     }
                 }
@@ -1323,9 +1444,9 @@ fn render_chart_group(
     let x_left_s = fmt_span(span_min);
     let x_mid_s = fmt_span(span_min * 0.5);
     let y_mid = (y_min + y_max) * 0.5;
-    let y_max_s = format!("{:.2}", y_max);
-    let y_mid_s = format!("{:.2}", y_mid);
-    let y_min_s = format!("{:.2}", y_min);
+    let y_max_s = chart_axis_label(y_max, y_min, y_max);
+    let y_mid_s = chart_axis_label(y_mid, y_min, y_max);
+    let y_min_s = chart_axis_label(y_min, y_min, y_max);
     let x_label_top = view_h - pad_bottom + CHART_X_LABEL_BOTTOM;
     let legend_rows: Vec<(usize, &str)> = legend_labels
         .iter()
@@ -1340,9 +1461,9 @@ fn render_chart_group(
             .filter_map(|(i, scale)| {
                 scale.map(|(series_min, series_max)| {
                     [
-                        (i, format!("{:.2}", series_max)),
-                        (i, format!("{:.2}", (series_min + series_max) * 0.5)),
-                        (i, format!("{:.2}", series_min)),
+                        (i, chart_axis_label(series_max, series_min, series_max)),
+                        (i, chart_axis_label((series_min + series_max) * 0.5, series_min, series_max)),
+                        (i, chart_axis_label(series_min, series_min, series_max)),
                     ]
                 })
             })
@@ -1375,7 +1496,12 @@ fn render_chart_group(
         (columns as f64 * scale_chip_width)
             + (columns.saturating_sub(1) as f64 * DATA_CHART_VERTICAL_SCALE_LABEL_RAIL_GAP)
     } else if use_per_series_scale {
-        scale_chip_width + 8.0
+        let count = per_series_scales
+            .iter()
+            .filter(|scale| scale.is_some())
+            .count()
+            .max(1);
+        count as f64 * scale_chip_width + count.saturating_sub(1) as f64 * 4.0
     } else {
         0.0
     };
@@ -1407,14 +1533,17 @@ fn render_chart_group(
         )
     };
     rsx! {
-        div { style: "width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
+        div { style: "box-sizing:border-box; min-width:0; width:100%; background:{theme.app_background}; border-radius:14px; border:1px solid {theme.border}; padding:12px; display:flex; flex-direction:column; gap:8px;",
             if let Some(title) = group.title.as_ref() {
                 div { style: "font-size:13px; font-weight:600; color:{theme.text_primary};", "{translate_text(title)}" }
             }
             if let Some((kind, note)) = reseed_note.as_ref() {
                 {reseed_note_banner(kind, note, theme, false)}
             }
-            div { style: "display:flex; gap:6px; align-items:stretch; width:100%; {chart_shell_size_style}",
+            if let Some(note) = super::data_chart::accel_filter_note(&chart_key) {
+                div { style: "font-size:12px; opacity:0.8; padding:4px 0;", "{note}" }
+            }
+            div { style: "display:flex; gap:6px; align-items:stretch; width:100%; min-width:0; overflow-x:auto; padding-bottom:12px; {chart_shell_size_style}",
                 if use_per_series_scale {
                     {normalized_scale_labels_side(
                         &legend_labels,
@@ -1429,7 +1558,7 @@ fn render_chart_group(
                         &per_series_chip_style,
                     )}
                 }
-                div { style: "position:relative; flex:1 1 auto; min-width:0; height:100%;",
+                div { style: "position:relative; flex:1 0 160px; min-width:160px; height:100%;",
                     ChartCanvas {
                         key: canvas_identity_key.clone(),
                         identity_key: canvas_identity_key.clone(),
@@ -1732,21 +1861,21 @@ fn stacked_scale_label_placements(
             target_y: top_y,
             label_y: top_y,
             rail_column: 0,
-            text: format!("{:.2}", series_max),
+            text: chart_axis_label(*series_max, *series_min, *series_max),
         });
         entries.push(ScaleLabelPlacement {
             series_index,
             target_y: mid_y,
             label_y: mid_y,
             rail_column: 0,
-            text: format!("{:.2}", (series_min + series_max) * 0.5),
+            text: chart_axis_label((series_min + series_max) * 0.5, *series_min, *series_max),
         });
         entries.push(ScaleLabelPlacement {
             series_index,
             target_y: bottom_y,
             label_y: bottom_y,
             rail_column: 0,
-            text: format!("{:.2}", series_min),
+            text: chart_axis_label(*series_min, *series_min, *series_max),
         });
     }
 
@@ -1827,18 +1956,18 @@ where
                 }
             } else {
                 div { style: "{top_row_style}",
-                    for (i, (_, series_max)) in cols.iter().copied() {
-                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_max)} }
+                    for (i, (series_min, series_max)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {chart_axis_label(series_max, series_min, series_max)} }
                     }
                 }
                 div { style: "{mid_row_style}",
                     for (i, (series_min, series_max)) in cols.iter().copied() {
-                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", (series_min + series_max) * 0.5)} }
+                        div { style: "{scale_chip_style(i)}", {chart_axis_label((series_min + series_max) * 0.5, series_min, series_max)} }
                     }
                 }
                 div { style: "{bottom_row_style}",
-                    for (i, (series_min, _)) in cols.iter().copied() {
-                        div { style: "{scale_chip_style(i)}", {format!("{:.2}", series_min)} }
+                    for (i, (series_min, series_max)) in cols.iter().copied() {
+                        div { style: "{scale_chip_style(i)}", {chart_axis_label(series_min, series_min, series_max)} }
                     }
                 }
             }
@@ -1977,5 +2106,70 @@ fn fmt_span(span_min: f32) -> String {
         format!("-{:.0} s", span_min * 60.0)
     } else {
         format!("-{:.1} min", span_min)
+    }
+}
+
+/// Shared by the data and calibration tabs. The backend owns this setting and
+/// drives the DAQ's managed input variable; this is not a local chart remap.
+#[component]
+pub(super) fn Kg50InputSelector(
+    theme: ThemeConfig,
+    #[props(default = false)] disabled: bool,
+    #[props(default)] on_changed: EventHandler<serde_json::Value>,
+) -> Element {
+    let mut input = use_signal(|| None::<String>);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    use_future(move || async move {
+        loop {
+            if !*busy.peek()
+                && let Ok(cfg) = super::http_get_json::<serde_json::Value>("/api/calibration").await
+                    && !*busy.peek() {
+                        input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
+                    }
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(2000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    });
+    let selected = input.read().clone().unwrap_or_else(|| "amp2".into());
+    rsx! {
+        section { style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background}; display:flex; flex-direction:column; gap:8px;",
+            label { r#for: "kg50-input", style: "font-weight:700; color:{theme.text_primary};", "50 kg input" }
+            select {
+                id: "kg50-input",
+                value: "{selected}",
+                disabled: disabled || *busy.read() || input.read().is_none(),
+                style: "padding:8px; border-radius:6px; background:{theme.button_background}; color:{theme.text_primary}; border:1px solid {theme.border}; font:inherit; max-width:100%;",
+                onchange: move |event| {
+                    let requested = event.value();
+                    if !matches!(requested.as_str(), "amp2" | "p6_differential") || *busy.peek() { return; }
+                    busy.set(true);
+                    message.set("Saving input selection…".into());
+                    spawn(async move {
+                        let body = serde_json::json!({"input":requested});
+                        match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/kg50_input", &body).await {
+                            Ok(cfg) => {
+                                input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
+                                on_changed.call(cfg);
+                                message.set("Selection saved. Waiting for fresh readings from the selected input.".into());
+                            }
+                            Err(error) => message.set(format!("Input change failed: {error}")),
+                        }
+                        busy.set(false);
+                    });
+                },
+                option { value: "amp2", "Normal · AMP2 / P8" }
+                option { value: "p6_differential", "P6 · pin 3 (+) − pin 4 (−)" }
+            }
+            p { style: "margin:0; font-size:12px; color:{theme.text_muted};", "Selected input uses the fast load-cell scan with a 250 Hz reporting target. Each input keeps its own calibration." }
+            if selected == "p6_differential" {
+                p { style: "margin:0; font-size:12px; color:{theme.text_secondary};", "P6 raw readings are differential volts. Calibrate this input in the Calibration tab before using kilograms. SD records retain differential ADC samples in volts." }
+            }
+            if !message.read().is_empty() {
+                p { role: "status", style: "margin:0; font-size:12px; color:{theme.text_secondary};", "{message}" }
+            }
+        }
     }
 }

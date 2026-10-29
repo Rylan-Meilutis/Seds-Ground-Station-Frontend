@@ -24,8 +24,7 @@ let configuredMaxDisplayZoom = null;
 let currentMaxNativeZoom = null;
 let currentMaxZoom = null;
 let currentMinZoom = null;
-let pendingRuntimeMinZoom = null;
-let runtimeMinZoomTimer = null;
+
 let lastRocketLatLng = null;
 let lastUserLatLng = null;
 let prefetchRocketLatLng = null;
@@ -53,6 +52,7 @@ let tileMemoryCacheBytes = 0;
 let tilePersistentClearPromise = null;
 let browserTileCacheQueue = Promise.resolve();
 const tileMissingCache = new Map();
+let missingTileRefreshTimer = null;
 const tileFetchInflight = new Map();
 let transparentTileArrayBufferPromise = null;
 let wheelRotateFrame = null;
@@ -222,7 +222,7 @@ const TILE_CACHE_MAX_TILE_BYTES = 2 * 1024 * 1024;
 const TILE_CACHE_DEFAULT_BUDGET_BYTES = 500 * 1024 * 1024;
 const TILE_PREFETCH_ESTIMATED_TILE_BYTES = 96 * 1024;
 const TILE_MISSING_CACHE_TTL_MS = 5 * 60 * 1000;
-const TRANSPARENT_TILE_BYTES = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3, 2, 0, 239, 191, 167, 219, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,]);
+const TRANSPARENT_TILE_BYTES = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0, 1, 122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]);
 const MAP_FIRST_PAINT_GATE_TIMEOUT_MS = 180;
 const MAP_FIRST_PAINT_FADE_MS = 45;
 const MAP_MAIN_THREAD_WATCHDOG_INTERVAL_MS = 250;
@@ -791,6 +791,43 @@ function tileMemoryKey(cacheName, url) {
     return `${cacheName}\n${tileCacheRequestKey(url)}`;
 }
 
+function isRasterTileData(data) {
+    if (!data || data.byteLength < 3) return false;
+    const b = new Uint8Array(data);
+    return (b[0] === 255 && b[1] === 216 && b[2] === 255)
+        || (b.length >= 8 && b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71 && b[4] === 13 && b[5] === 10 && b[6] === 26 && b[7] === 10)
+        || (b.length >= 12 && b[0] === 82 && b[1] === 73 && b[2] === 70 && b[3] === 70 && b[8] === 87 && b[9] === 69 && b[10] === 66 && b[11] === 80);
+}
+
+async function fetchRasterTile(cacheName, url) {
+    const response = await fetch(url);
+    if (response.status === 204 || !response.ok) {
+        if ([204, 404, 410].includes(response.status)) rememberMissingTile(cacheName, url, response.status);
+        throw new Error(`tile fetch failed: ${response.status}`);
+    }
+    // Validate before returning the response to any cache/prefetch branch.
+    // An HTML fallback, SVG, or empty 200 response is not a raster tile.
+    if (!isRasterTileData(await response.clone().arrayBuffer())) {
+        rememberMissingTile(cacheName, url, response.status);
+        throw new Error("tile fetch failed: response is not a PNG, JPEG or WebP image");
+    }
+    return response;
+}
+
+async function readValidatedCachedTile(cacheName, url, cached) {
+    if (cached && cached.ok && cached.status !== 204) {
+        const data = await cached.arrayBuffer();
+        if (isRasterTileData(data)) return data;
+    }
+    if (cached) {
+        await runBrowserTileCacheOp(async () => {
+            const cache = await openTileCache(cacheName);
+            if (cache) await cache.delete(tileCacheRequestKey(url));
+        });
+    }
+    return null;
+}
+
 function transparentTileFallbackArrayBuffer() {
     return TRANSPARENT_TILE_BYTES.slice().buffer;
 }
@@ -852,7 +889,7 @@ function hasTileMemoryCache(cacheName, url) {
 
 function writeTileMemoryCache(cacheName, url, data) {
     if (!tileCacheEnabled()) return;
-    if (!data || typeof data.byteLength !== "number") return;
+    if (!isRasterTileData(data)) return;
     if (data.byteLength > TILE_CACHE_MAX_TILE_BYTES) return;
     if (TILE_MEMORY_CACHE_MAX_BYTES <= 0) return;
     const key = tileMemoryKey(cacheName, url);
@@ -1100,9 +1137,8 @@ function shouldUseNativeTileTemplate(tilesUrl) {
     if (isAndroidPlatform() && /^https:\/\/gs26\.local\/tiles\//i.test(url)) {
         return true;
     }
-    if (isBrowserHostedMapRuntime() && /^https?:\/\//i.test(url)) {
-        return true;
-    }
+    // Browser HTTP tiles must use the validating protocol too: proxies and
+    // missing static assets can return an HTML/SVG body with HTTP 200.
     return /^gs26:\/\//i.test(url) && !isIosPlatform() && !tileCacheEnabled();
 }
 
@@ -1137,20 +1173,34 @@ function raiseRuntimeMinZoom(minZoom) {
     updateZoomControlAppearance();
 }
 
-function handleMissingTileCoord(coord) {
-    if (!coord || !Number.isFinite(coord.z)) return;
-    const zoom = groundMap && typeof groundMap.getZoom === "function" ? Number(groundMap.getZoom()) : NaN;
-    if (!Number.isFinite(zoom) || zoom > coord.z + 0.25) return;
-    const nextMin = Math.max(DEFAULT_SAFE_MIN_ZOOM, Math.floor(coord.z + 1));
-    if (Number.isFinite(currentMinZoom) && currentMinZoom >= nextMin) return;
-    pendingRuntimeMinZoom = Number.isFinite(pendingRuntimeMinZoom) ? Math.max(pendingRuntimeMinZoom, nextMin) : nextMin;
-    if (runtimeMinZoomTimer != null) return;
-    runtimeMinZoomTimer = setTimeout(safeMapCallback("runtime min zoom timer", () => {
-        runtimeMinZoomTimer = null;
-        const target = pendingRuntimeMinZoom;
-        pendingRuntimeMinZoom = null;
-        raiseRuntimeMinZoom(target);
-    }), 0);
+// An absent tile says nothing about the minimum usable zoom. Keep navigation
+// enabled while an offline map download is incomplete, and retry visible gaps.
+function refreshMissingMapTiles() {
+    tileMissingCache.clear();
+    if (rasterFallbackActive) {
+        const container = document.getElementById("ground-map");
+        const layers = container && container.__gs26RasterLayers;
+        if (layers) for (const [url, img] of layers.tiles) {
+            if (img.complete && img.naturalWidth === 0) { img.remove(); layers.tiles.delete(url); }
+        }
+        if (container) renderRasterFallbackMap();
+    } else if (groundMap) {
+        const source = groundMap.getSource(TILE_SOURCE_ID);
+        if (source && typeof source.setTiles === "function") {
+            source.setTiles([shouldUseNativeTileTemplate(currentTilesUrl) ? currentTilesUrl : tileProtocolTemplate()]);
+        }
+    }
+}
+
+function scheduleMissingTileRefresh() {
+    if (missingTileRefreshTimer != null) return;
+    missingTileRefreshTimer = setTimeout(safeMapCallback("missing map tile refresh", () => {
+        missingTileRefreshTimer = null;
+        const container = document.getElementById("ground-map");
+        if (!container || container.clientWidth === 0) return;
+        if (document.hidden) { scheduleMissingTileRefresh(); return; }
+        refreshMissingMapTiles();
+    }), 15000);
 }
 
 function normalizeTileCoord(z, x, y) {
@@ -1338,7 +1388,7 @@ function ensureMapProtocolOnce() {
             }
             cacheName = tileCacheName(currentTilesUrl);
             if (isKnownMissingTile(cacheName, url)) {
-                handleMissingTileCoord(coords);
+                scheduleMissingTileRefresh();
                 return {data: await transparentTileArrayBuffer()};
             }
             const cacheLookupOptions = mapFirstPaintGateActive ? {timeoutMs: STARTUP_TILE_CACHE_LOOKUP_BUDGET_MS} : undefined;
@@ -1361,7 +1411,7 @@ function ensureMapProtocolOnce() {
                     return {data: cached};
                 }
                 rememberMissingTile(cacheName, url, 0);
-                handleMissingTileCoord(coords);
+                scheduleMissingTileRefresh();
                 maybeFinishMapFirstPaintFromTile(coords);
             } catch (fallbackError) {
                 reportMapRuntimeError("tile protocol fallback failed", fallbackError);
@@ -1427,8 +1477,7 @@ async function readPersistentTileArrayBuffer(cacheName, url) {
             const cache = await openTileCache(cacheName);
             return await cache.match(tileCacheRequestKey(url), {ignoreVary: true});
         });
-        if (!cached || !cached.ok) return null;
-        return await cached.arrayBuffer();
+        return await readValidatedCachedTile(cacheName, url, cached);
     } catch (e) {
         if (mapDebugLoggingEnabled()) console.warn("[GS26 map] cache read failed", url, e);
         return null;
@@ -1444,7 +1493,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
 
     if (!tileCacheEnabled() || !tileCacheSupported()) {
         await yieldBrowserTileWork();
-        const response = await fetch(url);
+        const response = await fetchRasterTile(cacheName, url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
                 rememberMissingTile(cacheName, url, response.status);
@@ -1463,7 +1512,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     if (options.skipCacheLookup === true) {
         const data = await runInflightTileFetch(cacheName, url, async () => {
             await yieldBrowserTileWork();
-            const response = await fetch(url);
+            const response = await fetchRasterTile(cacheName, url);
             if (!response.ok) {
                 if (response.status === 404 || response.status === 410) {
                     rememberMissingTile(cacheName, url, response.status);
@@ -1503,7 +1552,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     const cache = await runBrowserTileCacheOp(async () => await openTileCache(cacheName));
     if (!cache) {
         await yieldBrowserTileWork();
-        const response = await fetch(url);
+        const response = await fetchRasterTile(cacheName, url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
                 rememberMissingTile(cacheName, url, response.status);
@@ -1515,11 +1564,11 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
     }
     const cacheKey = tileCacheRequestKey(url);
     const cached = await runBrowserTileCacheOp(async () => await cache.match(cacheKey, {ignoreVary: true}));
-    if (cached && cached.ok) {
-        const data = await cached.arrayBuffer();
-        writeTileMemoryCache(cacheName, url, data);
+    const cachedData = await readValidatedCachedTile(cacheName, url, cached);
+    if (cachedData) {
+        writeTileMemoryCache(cacheName, url, cachedData);
         forgetMissingTile(cacheName, url);
-        return cloneTileArrayBuffer(data);
+        return cloneTileArrayBuffer(cachedData);
     }
 
     if (options.cacheOnly === true) {
@@ -1528,7 +1577,7 @@ async function fetchAndCacheTileArrayBuffer(cacheName, url, options = {}) {
 
     const data = await runInflightTileFetch(cacheName, url, async () => {
         await yieldBrowserTileWork();
-        const response = await fetch(url);
+        const response = await fetchRasterTile(cacheName, url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
                 rememberMissingTile(cacheName, url, response.status);
@@ -1574,14 +1623,14 @@ async function prefetchTileToPersistentCache(cacheName, url) {
     if (!cache) return;
     const cacheKey = tileCacheRequestKey(url);
     const cached = await runBrowserTileCacheOp(async () => await cache.match(cacheKey, {ignoreVary: true}));
-    if (cached && cached.ok) {
+    if (await readValidatedCachedTile(cacheName, url, cached)) {
         forgetMissingTile(cacheName, url);
         return;
     }
 
     await runInflightTileFetch(cacheName, url, async () => {
         await yieldBrowserTileWork();
-        const response = await fetch(url);
+        const response = await fetchRasterTile(cacheName, url);
         if (!response.ok) {
             if (response.status === 404 || response.status === 410) {
                 rememberMissingTile(cacheName, url, response.status);
@@ -3039,6 +3088,36 @@ function ensureMarkerStylesOnce() {
     const style = document.createElement("style");
     style.id = "gs26-marker-styles";
     style.textContent = `
+    #ground-map .maplibregl-ctrl-group,
+    #ground-map .gs26-map-zoom-controls {
+      background: var(--gs26-panel-background, #142033);
+      border: 1px solid var(--gs26-border, #46566e);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 3px 12px #0003;
+    }
+    #ground-map .maplibregl-ctrl-group button,
+    #ground-map .gs26-map-zoom-controls button {
+      display: grid; place-items: center; box-sizing: border-box;
+      width: 44px; min-width: 44px; height: 44px; min-height: 44px;
+      padding: 0; margin: 0; border: 0; border-radius: 0;
+      background: var(--gs26-button-background, #1e293b);
+      color: var(--gs26-button-text, #e2e8f0);
+      font: 500 25px/1 system-ui, sans-serif;
+      cursor: pointer; touch-action: manipulation;
+    }
+    #ground-map .maplibregl-ctrl-group button + button,
+    #ground-map .gs26-map-zoom-controls button + button { border-top: 1px solid var(--gs26-border, #46566e); }
+    #ground-map .maplibregl-ctrl-group button:hover:not(:disabled),
+    #ground-map .gs26-map-zoom-controls button:hover:not(:disabled) { filter: brightness(1.15); }
+    #ground-map .maplibregl-ctrl-group button:focus-visible,
+    #ground-map .gs26-map-zoom-controls button:focus-visible { outline: 2px solid #60a5fa; outline-offset: -3px; }
+    #ground-map .maplibregl-ctrl-group button:disabled,
+    #ground-map .gs26-map-zoom-controls button:disabled { opacity: .4; cursor: default; }
+    #ground-map .maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon,
+    #ground-map .maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon { background-image: none; display: grid; place-items: center; }
+    #ground-map .maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon::before { content: "+"; }
+    #ground-map .maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon::before { content: "−"; }
     .gs26-map-center-control {
       position: relative;
     }
@@ -4785,6 +4864,8 @@ function renderRasterFallbackMap() {
     rasterFallbackZoom = zoom;
     rememberRasterFallbackView();
 
+    let layers = container.__gs26RasterLayers;
+    if (!layers) {
     container.innerHTML = "";
     container.style.position = "relative";
     container.style.overflow = "hidden";
@@ -4816,6 +4897,14 @@ function renderRasterFallbackMap() {
     badge.style.fontWeight = "800";
     badge.style.letterSpacing = "0.04em";
     overlay.appendChild(badge);
+    layers = container.__gs26RasterLayers = {tileLayer, overlay, badge, tiles: new Map()};
+    installRasterFallbackControls(container);
+    }
+    const {tileLayer, overlay, badge} = layers;
+    // Keep decoded tile images alive across telemetry updates and dragging.
+    for (const marker of layers.markers || []) marker.remove();
+    layers.markers = [];
+    const needed = new Set();
 
     const centerWorld = latLonToWorldPointAtZoom(rasterFallbackCenterLat, rasterFallbackCenterLon, zoom);
     const topLeftX = centerWorld.x - (width / 2);
@@ -4832,7 +4921,11 @@ function renderRasterFallbackMap() {
             const wrappedTileX = ((tileX % scale) + scale) % scale;
             const url = resolveTileUrl(zoom, wrappedTileX, tileY);
             if (!url) continue;
-            const img = document.createElement("img");
+            needed.add(url);
+            let img = layers.tiles.get(url);
+            if (!img) {
+            img = document.createElement("img");
+            img.onerror = scheduleMissingTileRefresh;
             img.src = url;
             img.alt = "";
             img.draggable = false;
@@ -4846,7 +4939,14 @@ function renderRasterFallbackMap() {
             img.style.objectFit = "cover";
             img.style.userSelect = "none";
             tileLayer.appendChild(img);
+            layers.tiles.set(url, img);
+            }
+            img.style.left = `${Math.round((tileX * 256) - topLeftX)}px`;
+            img.style.top = `${Math.round((tileY * 256) - topLeftY)}px`;
         }
+    }
+    for (const [url, img] of layers.tiles) {
+        if (!needed.has(url)) { img.remove(); layers.tiles.delete(url); }
     }
 
     const addMarkerIfVisible = (latLng, label, color) => {
@@ -4856,10 +4956,58 @@ function renderRasterFallbackMap() {
         const top = point.y - topLeftY;
         if (left < -24 || left > width + 24 || top < -24 || top > height + 24) return;
         createRasterFallbackMarker(overlay, label, color, left, top);
+        layers.markers.push(overlay.lastChild);
     };
 
     addMarkerIfVisible(lastRocketLatLng, "🚀", "#fca5a5");
     addMarkerIfVisible(currentUserAnchorLatLng(), "🧍", "#93c5fd");
+}
+
+function installRasterFallbackControls(container) {
+    container.style.touchAction = "none";
+    container.style.cursor = "grab";
+    container.tabIndex = 0;
+    container.setAttribute("aria-label", "Map: drag to pan; scroll or use plus and minus to zoom");
+    let drag = null, frame = null;
+    const redraw = () => {
+        if (frame !== null) return;
+        frame = requestAnimationFrame(() => { frame = null; renderRasterFallbackMap(); });
+    };
+    const zoomBy = (delta) => {
+        rasterFallbackZoom = Math.max(effectiveMinZoom(), Math.min(currentMaxZoom, rasterFallbackZoom + delta));
+        renderRasterFallbackMap();
+    };
+    container.addEventListener("pointerdown", event => {
+        if (event.target?.closest?.("button") || (event.button !== undefined && event.button !== 0)) return;
+        drag = {x:event.clientX,y:event.clientY,center:latLonToWorldPointAtZoom(rasterFallbackCenterLat,rasterFallbackCenterLon,rasterFallbackZoom)};
+        container.setPointerCapture?.(event.pointerId);
+        container.style.cursor = "grabbing";
+    });
+    container.addEventListener("pointermove", event => {
+        if (!drag) return;
+        [rasterFallbackCenterLat,rasterFallbackCenterLon] = worldPointToLatLonAtZoom(
+            drag.center.x-(event.clientX-drag.x),drag.center.y-(event.clientY-drag.y),rasterFallbackZoom);
+        redraw();
+    });
+    const end = () => { drag=null;container.style.cursor="grab"; };
+    container.addEventListener("pointerup", end);
+    container.addEventListener("pointercancel", end);
+    container.addEventListener("lostpointercapture", end);
+    container.addEventListener("wheel", event => {event.preventDefault();if(event.deltaY)zoomBy(event.deltaY<0?1:-1);},{passive:false});
+    container.addEventListener("keydown", event => {
+        if (event.key === "+" || event.key === "=") {event.preventDefault();zoomBy(1);}
+        if (event.key === "-") {event.preventDefault();zoomBy(-1);}
+    });
+    const controls=document.createElement("div");
+    controls.className="gs26-map-zoom-controls";
+    controls.style.cssText="position:absolute;right:10px;top:10px;z-index:3;display:flex;flex-direction:column";
+    for(const [label,delta] of [["Zoom in",1],["Zoom out",-1]]) {
+        const button=document.createElement("button");button.type="button";
+        button.textContent=delta>0?"+":"−";button.setAttribute("aria-label",label);
+        button.title=label;
+        button.addEventListener("click",event=>{event.preventDefault();zoomBy(delta);});controls.appendChild(button);
+    }
+    container.appendChild(controls);
 }
 
 function activateRasterFallback(reason, centerLat, centerLon, zoom) {
@@ -5340,11 +5488,10 @@ function resetMapObjects(options = {}) {
         clearTimeout(tileZoomDiscoveryTimer);
         tileZoomDiscoveryTimer = null;
     }
-    if (runtimeMinZoomTimer != null) {
-        clearTimeout(runtimeMinZoomTimer);
-        runtimeMinZoomTimer = null;
+    if (missingTileRefreshTimer != null) {
+        clearTimeout(missingTileRefreshTimer);
+        missingTileRefreshTimer = null;
     }
-    pendingRuntimeMinZoom = null;
     if (mapFirstPaintTimer != null) {
         clearTimeout(mapFirstPaintTimer);
         mapFirstPaintTimer = null;
@@ -5409,7 +5556,7 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     initCompassOnce();
     logMapRuntimeBoundary("initGroundMap:after-compass");
     pushMapTrace("initGroundMap:compass");
-    if (!shouldUseNativeTileTemplate(tilesUrl)) {
+    if (window.__gs26_prefer_raster_map !== true && !shouldUseNativeTileTemplate(tilesUrl)) {
         ensureMapProtocolOnce();
         logMapRuntimeBoundary("initGroundMap:after-protocol-ready");
         pushMapTrace("initGroundMap:protocol-ready");
@@ -5478,6 +5625,17 @@ function initGroundMap(tilesUrl, centerLat, centerLon, zoom, maxNativeZoom, asse
     pushMapTrace("initGroundMap:computed-start-state", {
         desiredZoom, clampedZoom, usingNativeTiles: shouldUseNativeTileTemplate(currentTilesUrl),
     });
+
+    if (window.__gs26_prefer_raster_map === true) {
+        if (groundMap) {
+            try { groundMap.remove(); } catch (_) {}
+            groundMap = null;
+            window.__gs26_ground_map = null;
+        }
+        activateRasterFallback("Native ARM Linux 2D compatibility renderer", startCenter[1], startCenter[0], clampedZoom);
+        finishMapFirstPaintGate("native-raster-renderer");
+        return;
+    }
 
     if (usingRasterFallback()) {
         activateRasterFallback(rasterFallbackReason, startCenter[1], startCenter[0], clampedZoom);

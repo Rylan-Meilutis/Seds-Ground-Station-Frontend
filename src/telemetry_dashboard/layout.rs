@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutConfig {
+    #[serde(default)]
+    pub test_fire_mode: bool,
     pub version: u32,
     #[serde(default)]
     pub branding: BrandingConfig,
@@ -26,7 +28,13 @@ fn default_main_tabs() -> Vec<String> {
         "connection-status".to_string(),
         "map".to_string(),
         "actions".to_string(),
+        "firmware-update".to_string(),
         "calibration".to_string(),
+        "mission".to_string(),
+        "crew-voice".to_string(),
+        "stream-manager".to_string(),
+        "media".to_string(),
+        "vehicle".to_string(),
         "notifications".to_string(),
         "warnings".to_string(),
         "errors".to_string(),
@@ -276,7 +284,10 @@ fn default_main_tab_accents() -> HashMap<String, String> {
         ("detailed".to_string(), "#4ab4ff".to_string()),
         ("map".to_string(), "#58d68d".to_string()),
         ("actions".to_string(), "#b8a0ff".to_string()),
+        ("firmware-update".to_string(), "#22d3ee".to_string()),
         ("calibration".to_string(), "#40d4c4".to_string()),
+        ("mission".to_string(), "#ef4444".to_string()),
+        ("vehicle".to_string(), "#38bdf8".to_string()),
         ("notifications".to_string(), "#63a4ff".to_string()),
         ("warnings".to_string(), "#f3c969".to_string()),
         ("errors".to_string(), "#ff8ca1".to_string()),
@@ -512,6 +523,8 @@ fn default_fill_targets_require_actions_enabled() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionSpec {
+    #[serde(default)]
+    pub group: String,
     pub label: String,
     pub cmd: String,
     pub border: String,
@@ -695,7 +708,15 @@ impl LayoutConfig {
                     | "connection-status"
                     | "map"
                     | "actions"
+                    | "firmware-update"
                     | "calibration"
+                    | "mission"
+                    | "crew-voice"
+                    | "stream-manager"
+                    | "my-dashboard"
+                    | "media"
+                    | "live-stream"
+                    | "vehicle"
                     | "messages"
                     | "notifications"
                     | "warnings"

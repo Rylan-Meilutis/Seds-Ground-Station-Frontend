@@ -10,11 +10,11 @@ let browser;
 try {
   if(process.env.GS_PROGRAM_TEST_MEDIA) cpSync(process.env.GS_PROGRAM_TEST_MEDIA,dir,{recursive:true});
   else execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=size=640x360:rate=10','-t','120','-an','-c:v','libx264','-preset','ultrafast','-profile:v','baseline','-pix_fmt','yuv420p','-g','10','-keyint_min','10','-sc_threshold','0','-f','hls','-hls_time','1','-hls_list_size','0','-hls_segment_type','fmp4','-hls_segment_filename',join(dir,'seg%d.m4s'),join(dir,'index.m3u8')]);
-  browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY,args:['--autoplay-policy=no-user-gesture-required']});
+  browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY,args:['--disable-audio-output','--autoplay-policy=no-user-gesture-required']});
   const page=await browser.newPage({viewport:{width:360,height:800}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   const start=Date.now()-20000;
-  let live=true,offline=false,layout='hero',delay=3,audioCursor=0,replay=null,live3dRequests=0;
+  let live=true,offline=false,layout='hero',scene='inherit',delay=3,audioCursor=0,replay=null,live3dRequests=0,profile='ground',phase='Idle',stats=[{label:'Altitude',value:12,precision:1,unit:'m'}];
   await page.addInitScript(()=>{
     window.audioFrames=0;
     const start=AudioBufferSourceNode.prototype.start;
@@ -31,7 +31,7 @@ try {
     if(path.startsWith('/assets/three/')){live3dRequests++;return route.abort();}
     if(path==='/api/media-assets/program/state') {
       if(offline)return route.fulfill({status:503,body:'offline'});
-      return route.fulfill({json:{server_now_ms:Date.now(),broadcast:{replay:replay&&Date.now()<replay.started_at_ms+replay.duration_seconds*1000/replay.speed?replay:null,delay_seconds:delay,comms_audio_enabled:true,label:'Test mission',featured_stream_id:'camera',layout},streams:live?(replay&&Date.now()<replay.started_at_ms+replay.duration_seconds*1000/replay.speed?replay.cameras.map(c=>c.id):['camera','other']).map(id=>({id,label:id,url:`/hls/${id}/index.m3u8`})):[],telemetry:{phase:'Idle',t_clock:'T− 00:10.00',stats:[{label:'Altitude',value:12,precision:1,unit:'m'}]}}});
+      return route.fulfill({json:{server_now_ms:Date.now(),broadcast:{replay:replay&&Date.now()<replay.started_at_ms+replay.duration_seconds*1000/replay.speed?replay:null,delay_seconds:delay,comms_audio_enabled:true,label:'Test mission',featured_stream_id:'camera',layout,interview:{main_stream_id:'other',pip_stream_id:'camera',main_audio:true,pip_audio:false}},streams:live?(replay&&Date.now()<replay.started_at_ms+replay.duration_seconds*1000/replay.speed?replay.cameras.map(c=>c.id):['camera','other']).map(id=>({id,label:id,url:`/hls/${id}/index.m3u8`})):[],telemetry:{scene,profile,cycle_seconds:1,stats_per_page:1,phase,t_clock:'T− 00:10.00',stats}}});
     }
     if(path==='/api/media-assets/program/audio')return route.fulfill({json:{enabled:true,generation:1,cursor:++audioCursor,frames:[{id:1,pcm:Buffer.alloc(640).toString('base64')}]}});
     if(path.endsWith('index.m3u8')){
@@ -50,11 +50,24 @@ try {
   await page.goto('http://localhost/program?ticket=synthetic');
   await page.waitForFunction(()=>[...document.querySelectorAll('video')].some(v=>v.style.opacity==='1'&&v.readyState>=2),{},{timeout:20000});
   assert.equal(await page.locator('video').count(),1,'hero only decodes one camera');
+  const unmute=page.getByRole('button',{name:'Unmute stream',exact:true});
+  if(await unmute.isVisible())await unmute.click();
   await page.waitForFunction(()=>audioFrames>3);
+  const beforeRestoreAudio=await page.evaluate(()=>audioFrames);
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+  await page.waitForFunction(()=>document.querySelectorAll('video').length===0);
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+  await page.waitForFunction(()=>document.querySelector('video')?.style.opacity==='1',null,{timeout:8000});
+  await page.waitForFunction(n=>audioFrames>n,beforeRestoreAudio,{timeout:8000});
   assert.equal(await page.getByRole('button',{name:'Enable crew audio',exact:true}).count(),0);
   await page.getByRole('button',{name:'Mute stream',exact:true}).click();
   assert(await page.locator('video').evaluate(v=>v.muted),'one mute controls camera sound');
   const muted=await page.evaluate(()=>audioFrames);await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>audioFrames),muted);
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+  await page.waitForFunction(()=>document.querySelector('video')?.style.opacity==='1');
+  assert(await page.locator('video').evaluate(v=>v.muted),'restoring the page preserves the viewer mute choice');
+  await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>audioFrames),muted,'restoring a muted page does not resume crew audio');
   await page.getByRole('button',{name:'Unmute stream',exact:true}).click();await page.waitForFunction(n=>audioFrames>n,muted);
   const before=await page.locator('video').evaluate(v=>v.currentTime);await page.waitForTimeout(2200);
   assert((await page.locator('video').evaluate(v=>v.currentTime))>before+1,'video advances, not stuck in a seek loop');
@@ -89,6 +102,10 @@ try {
   await page.waitForFunction(()=>document.querySelectorAll('video').length===2&&[...document.querySelectorAll('video')].every(v=>v.style.opacity==='1'));
   assert.deepEqual(await page.locator('video').evaluateAll(v=>v.map(x=>x.style.width)),['100%','100%'],'portrait grid stacks cameras');
   assert.equal(await page.locator('#graphic-stage').isVisible(),false,'camera grids do not show a 3D model by default');
+  layout='interview';
+  await page.waitForFunction(()=>document.querySelector('video[data-stream-id=other]')?.parentElement.style.width==='100%'&&document.querySelector('video[data-stream-id=camera]')?.parentElement.style.width==='28%');
+  assert.equal(await page.locator('video[data-stream-id=other]').evaluate(v=>v.muted),false,'selected interview main audio');
+  assert.equal(await page.locator('video[data-stream-id=camera]').evaluate(v=>v.muted),true,'PiP microphone is opt-in');
   layout='grid-model';
   await page.waitForFunction(()=>document.querySelector('#graphic-stage').style.display==='flex'&&document.querySelector('#graphic-stage').style.height.includes('33.3'));
   assert.equal(await page.locator('video').count(),2,'2D graphic tile coexists with the camera feeds');
@@ -100,6 +117,11 @@ try {
   layout='hero';
   await page.waitForFunction(()=>document.querySelectorAll('video').length===1&&document.querySelector('video').style.opacity==='1');
   assert.equal(await page.locator('#graphic-stage').isVisible(),false);
+  scene='model';profile='flight';phase='Ascent';stats=[{label:'GPS lock',value:1,format:'boolean',precision:0,unit:''},{label:'Dump',value:0,format:'valve',precision:0,unit:''},{label:'Pressure',value:null,precision:1,unit:'psi'}];
+  await page.waitForFunction(()=>!document.querySelector('video')&&document.querySelector('#graphic-stage').style.height==='100%');
+  await page.waitForFunction(()=>[...document.querySelectorAll('#banner>div')].some(e=>e.querySelector('.name')?.textContent==='GPS lock'&&e.querySelector('.value')?.textContent==='Yes'));await page.waitForFunction(()=>[...document.querySelectorAll('#banner>div')].some(e=>e.querySelector('.name')?.textContent==='Dump'&&e.querySelector('.value')?.textContent==='Closed'));await page.waitForFunction(()=>[...document.querySelectorAll('#banner>div')].some(e=>e.querySelector('.name')?.textContent==='Pressure'&&e.querySelector('.value')?.textContent==='Unavailable'));
+  scene='inherit';profile='test_fire';phase='Launch';stats=[{label:'Thrust',value:42,precision:1,unit:'N'}];
+  await page.waitForFunction(()=>document.querySelectorAll('video').length===1);await page.waitForFunction(()=>[...document.querySelectorAll('#banner>div')].some(e=>e.querySelector('.name')?.textContent==='Thrust'&&e.querySelector('.value')?.textContent==='42.0 N'));
   delay=10;await page.waitForTimeout(1600);
   await page.waitForFunction(()=>[...document.querySelectorAll('video')].some(v=>v.style.opacity==='1'));
   live=false;await page.waitForFunction(()=>!document.querySelector('video')&&document.querySelector('#graphic-stage').dataset.flat==='true');await page.locator('#rocket-inset').waitFor({state:'visible'});
@@ -111,5 +133,5 @@ try {
   await page.locator('#rocket-inset').waitFor({state:'visible'});
   assert.equal(live3dRequests,0,'3D assets are reserved for saved replay');
   assert.equal(errors.length,0,errors.join('\n'));
-  console.log('PASS: H.264 playback advances, single decoder, portrait grid/status bar, unified camera/crew sound without worklet or microphone, delay changes, camera loss and server failure');
+  console.log('PASS: H.264 playback advances, restored-page video/audio and mute preference, single decoder, portrait grid/status bar, interview main/PiP audio, phase scene overrides and categorical metric cycling, unified camera/crew sound without worklet or microphone, delay changes, camera loss and server failure');
 } finally {await browser?.close();rmSync(dir,{recursive:true,force:true});}

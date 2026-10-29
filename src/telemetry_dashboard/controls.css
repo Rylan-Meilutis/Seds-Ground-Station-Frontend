@@ -1,0 +1,54 @@
+/* Shared control defaults. Explicit action colours and layouts remain local. */
+:where(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) button {
+  box-sizing:border-box; min-height:44px; padding:9px 14px;
+  border:1px solid var(--gs-control-border,#405269); border-radius:10px;
+  background:var(--gs-control-bg,#172638); color:var(--gs-control-text,#edf3fa);
+  font:inherit; font-size:14px; font-weight:600; line-height:1.25;
+  cursor:pointer; touch-action:manipulation; vertical-align:middle;
+}
+:where(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) button:disabled {cursor:not-allowed;opacity:.5}
+:where(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) :is(input,select,textarea) {
+  box-sizing:border-box; min-width:0; max-width:100%; font:inherit; font-size:16px;
+}
+:where(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) :is(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]),select,textarea) {
+  min-height:44px; padding:9px 12px; border:1px solid var(--gs-control-border,#405269);
+  border-radius:10px; background:var(--gs-field-bg,#101c2b); color:var(--gs-field-text,#edf3fa);
+}
+:where(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) input[type=number] {width:10rem !important;max-width:100% !important;flex-grow:0 !important;align-self:start}
+:where(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) :is(input[type=checkbox],input[type=radio]) {width:20px;height:20px;flex:none;accent-color:#4faed5;vertical-align:middle}
+:where(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) :is(button,input,select,textarea):focus-visible {outline:2px solid #6ec9ed;outline-offset:3px}
+.gs26-settings {min-width:0;box-sizing:border-box}
+.gs26-settings-aim {align-self:start}
+
+.gs26-stream-studio label {display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.gs26-stream-studio input:not([type=checkbox]) {width:18rem;max-width:100%}
+.gs26-audience-audio {min-width:0;margin:16px 0;padding:12px;border:1px solid var(--gs-control-border,#405269);border-radius:10px}
+.gs26-audience-audio legend {font-size:14px;font-weight:600;padding:0 5px}
+.gs26-audience-audio label {min-height:44px}
+.gs26-audience-audio p {margin:4px 0 0;font-size:13px;line-height:1.5;color:var(--gs-field-text,#b7c5d2)}
+
+/* One control scale throughout the app, including older inline-styled panels. */
+:is(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) button {
+ height:44px !important;min-height:44px !important;box-sizing:border-box;
+ border-radius:10px !important;font-family:inherit !important;font-size:14px !important;
+ font-weight:600 !important;line-height:16px !important;padding:6px 12px !important;
+}
+:is(.gs26-dashboard-shell,.gs26-settings,.gs26-admin) input:is([type=text],[type=password],[type=email],[type=url],[type=search],:not([type])) {
+ width:min(100%,18rem) !important;min-width:0 !important;flex-grow:0 !important;
+}
+.gs26-dashboard-shell :is(h1,h2,h3) {font-family:inherit;font-weight:600;letter-spacing:-.015em;line-height:1.25}
+.gs26-dashboard-shell h1 {font-size:22px}
+.gs26-dashboard-shell h2 {font-size:18px}
+.gs26-dashboard-shell h3 {font-size:15px}
+.gs26-dashboard-card {border-color:var(--gs26-border,#314156) !important;background:var(--gs26-panel-background,#0b1628) !important;border-radius:12px !important;box-shadow:none !important}
+.gs26-custom-dashboard button {margin:0 !important}
+.gs26-custom-dashboard {line-height:1.45}
+
+.gs26-stream-studio{background:var(--gs26-panel-background,#0b1628) !important;color:var(--gs26-app-text,#edf3ff) !important;border-color:var(--gs26-border,#314156) !important}
+
+.gs26-dashboard-card .gs26-card-label{display:block;font-size:13px;font-weight:600;color:var(--gs26-text-secondary,#cbd5e1)}.gs26-dashboard-card .gs26-card-value{margin:8px 0 5px;font-size:28px !important;font-weight:500;line-height:1.2;letter-spacing:-.025em}.gs26-card-freshness{display:block;font-size:11px;line-height:1.4}.gs26-dashboard-card[data-display=state][data-width=normal]{grid-column:span 2}.gs26-dashboard-card[data-display=state] .gs26-card-value{font-size:16px !important;letter-spacing:0}.gs26-dashboard-card[data-display=state]{padding:12px !important}.gs26-custom-dashboard>h3{margin:22px 0 10px;font-size:13px;font-weight:600;color:var(--gs26-text-muted);letter-spacing:.025em}.gs26-custom-dashboard>h3:first-of-type{margin-top:16px}
+@media(max-width:900px){.gs26-dashboard-card[data-display=state][data-width=normal]{grid-column:span 3}}
+@media(max-width:600px){.gs26-dashboard-card[data-display=state][data-width=normal]{grid-column:span 6}.gs26-utility-menu{width:100%}.gs26-utility-menu>div{position:static;box-shadow:none;margin-top:6px;min-width:0}}
+
+@container(max-width:800px){.gs26-dashboard-card[data-display=state][data-width=normal]{grid-column:span 3}}
+@container(max-width:480px){.gs26-dashboard-card[data-display=state][data-width=normal]{grid-column:span 6}}

@@ -449,7 +449,28 @@ fn clear_data_caches_and_reseed() {
     reconnect_and_reload_ui();
 }
 
+fn graph_history_key() -> String {
+    format!("graph_history_floor_v1:{}", normalize_base_url(UrlConfig::base_http()))
+}
+fn load_graph_history_floor() {
+    let floor = persist::get_string(&graph_history_key())
+        .and_then(|s| serde_json::from_str::<(i64, i64)>(&s).ok()).unwrap_or((0, 0));
+    GRAPH_SERVER_FLOOR_MS.store(floor.0, Ordering::Relaxed);
+    GRAPH_CLIENT_FLOOR_MS.store(floor.1, Ordering::Relaxed);
+}
+fn graph_row_allowed(timestamp_ms: i64) -> bool {
+    let floor = GRAPH_SERVER_FLOOR_MS.load(Ordering::Relaxed);
+    floor == 0 || timestamp_ms > floor
+}
 fn clear_current_dashboard_data_without_reseed() {
+    let client_now = current_wallclock_ms();
+    let server_now = client_now.saturating_sub(GRAPH_CLOCK_OFFSET_MS.load(Ordering::Relaxed));
+    GRAPH_SERVER_FLOOR_MS.store(server_now, Ordering::Relaxed);
+    GRAPH_CLIENT_FLOOR_MS.store(client_now, Ordering::Relaxed);
+    persist::set_string(&graph_history_key(), &serde_json::to_string(&(server_now, client_now)).unwrap());
+    GRAPH_HISTORY_GENERATION.fetch_add(1, Ordering::Relaxed);
+    charts_cache_cancel_reseed_build();
+    persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);
     clear_frontend_data_caches();
     set_reseed_status(0, None);
     charts_cache_request_refit();

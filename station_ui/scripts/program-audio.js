@@ -4,15 +4,16 @@ const controls=document.querySelector('#stream-sound');
 const button=document.createElement('button');button.textContent='Unmute stream';button.setAttribute('aria-pressed','false');
 const volume=document.createElement('input');volume.type='range';volume.min='0';volume.max='100';volume.value='100';volume.setAttribute('aria-label','Stream volume');
 const label=document.createElement('span');label.id='audio-status';label.setAttribute('role','status');
-controls.append(button,volume,label);
-let context,gain,listening=false,stopped=false,cursor=0,generation=null,requestGeneration=0,program=null,lastState=0,busy=false,wantSound=true;
+const cleanFeed=new URLSearchParams(location.search).get('clean')==='1';
+if(!cleanFeed)controls.append(button,volume,label);
+let context,gain,listening=false,stopped=false,cursor=0,generation=null,requestGeneration=0,program=null,lastState=0,busy=false,wantSound=true,pollTimer,pollAbort,lifecycle=0;
 const speakers=new Map(),sources=new Set();
 const ticket=new URLSearchParams(location.search).get('ticket');
 function reset(){cursor=0;requestGeneration++;for(const source of sources){source.stop();source.disconnect();}sources.clear();speakers.clear();}
 function settings(){
   const level=Number(volume.value)/100;
   if(gain)gain.gain.value=level;
-  window.gsStreamSound={muted:!listening,volume:level};
+  window.gsStreamSound={muted:cleanFeed?false:!listening,volume:level};
   window.dispatchEvent(new Event('gs-stream-sound'));
   button.textContent=listening?'Mute stream':'Unmute stream';button.setAttribute('aria-pressed',String(listening));
 }
@@ -28,7 +29,7 @@ async function enable(){
   if(busy||listening||stopped)return;
   busy=true;
   try{
-    if(!context){context=new AudioContext();gain=context.createGain();gain.connect(context.destination);context.onstatechange=()=>{if(wantSound&&context.state==='running'&&!listening&&!stopped){listening=true;reset();settings();stateUpdate(program);}};}
+    if(!context){const next=new AudioContext();context=next;gain=context.createGain();gain.connect(context.destination);context.onstatechange=()=>{if(context===next&&wantSound&&context.state==='running'&&!listening&&!stopped){listening=true;reset();settings();stateUpdate(program);}};}
     // Do not wait on resume during autoplay: some browsers keep it pending until a gesture.
     const resumed=context.resume();resumed.catch(()=>{});
     if(context.state!=='running')return;
@@ -62,10 +63,11 @@ function play(frame){
 }
 async function poll(){
   if(stopped)return;
+  const epoch=lifecycle;
   if(listening&&program?.enabled&&program.fresh&&performance.now()-lastState<2500){
-    const current=requestGeneration;
+    const current=requestGeneration,abort=new AbortController();pollAbort=abort;
     try{
-      const response=await fetch(`/api/media-assets/program/audio?ticket=${encodeURIComponent(ticket)}&after=${cursor}`,{cache:'no-store'});
+      const response=await fetch(`/api/media-assets/program/audio?ticket=${encodeURIComponent(ticket)}&after=${cursor}${Number.isFinite(window.gsProgramPlaybackMs)?'&playback_ms='+Math.floor(window.gsProgramPlaybackMs):''}`,{cache:'no-store',signal:abort.signal});
       if(!response.ok)throw Error('Stream audio unavailable');
       const batch=await response.json();
       if(current!==requestGeneration||!listening||stopped)return;
@@ -74,14 +76,15 @@ async function poll(){
       cursor=batch.cursor;
       for(const frame of batch.frames)play(frame);
       label.textContent='Crew comms included';
-    }catch(error){reset();label.textContent=error.message;}
-    finally{if(!stopped)setTimeout(poll,100);}
+    }catch(error){if(!stopped&&epoch===lifecycle){reset();label.textContent=error.message;}}
+    finally{if(!stopped&&epoch===lifecycle)pollTimer=setTimeout(poll,100);}
     return;
   }
   if(listening&&performance.now()-lastState>=2500){reset();label.textContent='Audio paused · program unavailable';}
-  setTimeout(poll,100);
+  if(!stopped&&epoch===lifecycle)pollTimer=setTimeout(poll,100);
 }
 // Start sound with the program wherever autoplay is allowed. Otherwise one stream
 // unmute gesture enables both camera sound and comms, without joining the call.
 enable();poll();
-window.addEventListener('pagehide',()=>{stopped=true;listening=false;reset();context?.close();});
+window.addEventListener('pagehide',()=>{stopped=true;lifecycle++;clearTimeout(pollTimer);pollAbort?.abort();listening=false;reset();program=null;lastState=0;if(context){context.onstatechange=null;context.close().catch(()=>{});}context=null;gain=null;busy=false;settings();});
+window.addEventListener('pageshow',()=>{if(!stopped)return;stopped=false;lifecycle++;if(wantSound)enable();poll();});

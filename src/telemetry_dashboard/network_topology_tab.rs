@@ -14,8 +14,8 @@ const GRAPH_CANVAS_FULLSCREEN_ID: &str = "network-topology-canvas-fullscreen";
 
 use super::layout::{NetworkTabLayout, ThemeConfig};
 use super::types::{
-    BoardStatusEntry, NetworkTopologyLink, NetworkTopologyMsg, NetworkTopologyNode,
-    NetworkTopologyNodeKind, NetworkTopologyStatus,
+    NetworkTopologyLink, NetworkTopologyMsg, NetworkTopologyNode, NetworkTopologyNodeKind,
+    NetworkTopologyStatus,
 };
 use super::{js_eval, translate_text};
 
@@ -56,8 +56,16 @@ struct NodePacketPulse {
 
 #[derive(Clone)]
 struct NodePacketStats {
-    sender_id: String,
-    total: u64,
+    packets_sent: u64,
+    packets_received: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
+}
+
+impl NodePacketStats {
+    fn total_packets(&self) -> u64 {
+        self.packets_sent.saturating_add(self.packets_received)
+    }
 }
 
 #[derive(Clone)]
@@ -146,7 +154,6 @@ fn link_adjacency_map(links: &[NetworkTopologyLink]) -> HashMap<String, Vec<Stri
 #[component]
 pub fn NetworkTopologyTab(
     topology: Signal<NetworkTopologyMsg>,
-    board_status: Signal<Vec<BoardStatusEntry>>,
     ws_connected: bool,
     layout: NetworkTabLayout,
     flow_animation_enabled: bool,
@@ -154,7 +161,19 @@ pub fn NetworkTopologyTab(
     theme: ThemeConfig,
 ) -> Element {
     let snapshot = topology.read();
-    let board_status_snapshot = board_status.read().clone();
+    // Advance age labels between topology updates without rebuilding layout.
+    let mut age_tick = use_signal(|| 0_u64);
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(1_000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let next = age_tick.peek().wrapping_add(1);
+            age_tick.set(next);
+        }
+    });
+    let _age_tick = *age_tick.read();
     let expanded_node_id = use_signal(|| None::<String>);
     let mut is_fullscreen = use_signal(|| false);
     let title = layout
@@ -162,8 +181,7 @@ pub fn NetworkTopologyTab(
         .unwrap_or_else(|| "Network Topology".to_string());
     let topology_hash = topology_cache_hash(&snapshot, vertical_layout);
     let derived = topology_derived_cached(&snapshot, vertical_layout, topology_hash);
-    let packet_stats =
-        packet_stats_by_node_cached(&derived.graph_nodes, &board_status_snapshot, topology_hash);
+    let packet_stats = packet_stats_by_node_cached(&derived.graph_nodes, topology_hash);
     let packet_pulses =
         node_packet_pulse_serials(&derived.graph_nodes, &packet_stats, flow_animation_enabled);
     let viewport_id = if *is_fullscreen.read() {
@@ -1205,7 +1223,13 @@ fn render_node(
         "auto"
     };
     let node_z_index = if is_expanded { "20" } else { "2" };
-    let packet_count_label = packet_stats.map(|stats| format_packet_count(stats.total));
+    let packet_count_label = packet_stats.map(|stats| format_packet_count(stats.total_packets()));
+    let age_label = format_seen_age(node.current_age_ms(super::monotonic_now_ms() as i64));
+    let last_seen = node
+        .last_seen_ms
+        .and_then(|timestamp| i64::try_from(timestamp).ok())
+        .map(super::format_timestamp_ms_clock)
+        .unwrap_or_else(|| "Never observed".to_string());
 
     rsx! {
         div {
@@ -1241,6 +1265,7 @@ fn render_node(
                 style: "padding:2px 8px; border-radius:999px; background:{chip_bg}; color:{chip_fg}; font-size:0.7rem; font-weight:700;",
                 "{status_label}"
             }
+            div { style: "font-size:0.65rem; color:{theme.text_muted}; line-height:1.2;", "{age_label}" }
             div {
                 style: "font-size:0.68rem; color:{theme.text_muted}; max-width:100%; line-height:1.2;",
                 if let Some(packet_count_label) = packet_count_label.as_ref() {
@@ -1258,19 +1283,26 @@ fn render_node(
                             border:1px solid {theme.border}; background:{theme.panel_background}; box-shadow:0 20px 40px rgba(2, 6, 23, 0.55); z-index:4; text-align:left;",
                     div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{kind} details" }
                     div { style: "font-size:0.95rem; color:{theme.text_primary}; font-weight:700; margin:4px 0 10px 0;", "{node.label}" }
+                    div { style: "font-size:0.8rem; color:{theme.text_secondary}; margin-bottom:8px;", "Last seen: {last_seen}" }
+                    div { style: "font-size:0.8rem; color:{theme.text_secondary}; margin-bottom:12px;", "{age_label}" }
                     div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Packet stats" }
                     if let Some(stats) = packet_stats {
                         div { style: "display:flex; flex-direction:column; gap:6px; margin-bottom:12px;",
                             div {
                                 style: "display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border-radius:10px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:0.8rem;",
-                                span { "From {stats.sender_id}" }
-                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.total)}" }
+                                span { "Network TX" }
+                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.packets_sent)} pkt / {format_byte_count(stats.bytes_sent)}" }
+                            }
+                            div {
+                                style: "display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border-radius:10px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:0.8rem;",
+                                span { "Network RX" }
+                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.packets_received)} pkt / {format_byte_count(stats.bytes_received)}" }
                             }
                         }
                     } else {
                         div { style: "font-size:0.82rem; color:{theme.text_muted}; margin-bottom:12px;", "No packets seen for this node sender yet." }
                     }
-                    div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Connected to" }
+                    div { style: "font-size:0.73rem; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;", "Known connections" }
                     if neighbors.is_empty() {
                         div { style: "font-size:0.82rem; color:{theme.text_muted}; margin-bottom:12px;", "No active links." }
                     } else {
@@ -1302,31 +1334,40 @@ fn render_node(
     }
 }
 
+fn format_seen_age(age_ms: Option<u64>) -> String {
+    let Some(age_ms) = age_ms else {
+        return "Never observed".to_string();
+    };
+    let seconds = age_ms / 1_000;
+    let age = if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else if seconds < 86_400 {
+        format!("{}h {}m", seconds / 3_600, (seconds % 3_600) / 60)
+    } else {
+        format!("{}d {}h", seconds / 86_400, (seconds % 86_400) / 3_600)
+    };
+    format!("Seen {age} ago")
+}
+
 fn placement_for(id: &str, placements: &HashMap<String, NodePlacement>) -> Option<NodePlacement> {
     placements.get(id).copied()
 }
 
-fn packet_stats_by_node(
-    nodes: &[NetworkTopologyNode],
-    board_status: &[BoardStatusEntry],
-) -> HashMap<String, NodePacketStats> {
-    let counts_by_sender = board_status
-        .iter()
-        .map(|entry| (entry.sender_id.as_str(), entry.packet_count))
-        .collect::<HashMap<_, _>>();
+fn packet_stats_by_node(nodes: &[NetworkTopologyNode]) -> HashMap<String, NodePacketStats> {
     nodes
         .iter()
         .filter_map(|node| {
-            let sender_id = node.sender_id.as_ref()?;
-            let total = counts_by_sender
-                .get(sender_id.as_str())
-                .copied()
-                .unwrap_or(0);
+            node.sender_id.as_ref()?;
+            let stats = node.stats?;
             Some((
                 node.id.clone(),
                 NodePacketStats {
-                    sender_id: sender_id.clone(),
-                    total,
+                    packets_sent: stats.packets_sent,
+                    packets_received: stats.packets_received,
+                    bytes_sent: stats.bytes_sent,
+                    bytes_received: stats.bytes_received,
                 },
             ))
         })
@@ -1353,7 +1394,7 @@ fn node_packet_pulse_serials(
     for node in nodes {
         let count = packet_stats
             .get(&node.id)
-            .map(|stats| stats.total)
+            .map(NodePacketStats::total_packets)
             .unwrap_or(0);
         let pulse = pulses.entry(node.id.clone()).or_default();
         if count > pulse.last_count {
@@ -1400,6 +1441,18 @@ fn format_packet_count(total: u64) -> String {
     }
 }
 
+fn format_byte_count(total: u64) -> String {
+    if total >= 1_000_000_000 {
+        format!("{:.1} GB", total as f64 / 1_000_000_000.0)
+    } else if total >= 1_000_000 {
+        format!("{:.1} MB", total as f64 / 1_000_000.0)
+    } else if total >= 1_000 {
+        format!("{:.1} kB", total as f64 / 1_000.0)
+    } else {
+        format!("{total} B")
+    }
+}
+
 fn node_label(id: &str, node_labels: &HashMap<String, String>) -> String {
     node_labels
         .get(id)
@@ -1442,12 +1495,15 @@ fn topology_cache_hash(snapshot: &NetworkTopologyMsg, vertical_layout: bool) -> 
         node.id.hash(&mut hasher);
         node.label.hash(&mut hasher);
         node.kind.hash(&mut hasher);
+        node.status.hash(&mut hasher);
         node.sender_id.hash(&mut hasher);
         node.endpoints.hash(&mut hasher);
     }
     for link in &snapshot.links {
         link.source.hash(&mut hasher);
         link.target.hash(&mut hasher);
+        link.status.hash(&mut hasher);
+        link.label.hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -1591,35 +1647,21 @@ fn topology_derived_cached(
     }
 }
 
-fn packet_stats_cache_hash(
-    nodes: &[NetworkTopologyNode],
-    board_status: &[BoardStatusEntry],
-) -> u64 {
-    let counts_by_sender = board_status
-        .iter()
-        .map(|entry| (entry.sender_id.as_str(), entry.packet_count))
-        .collect::<HashMap<_, _>>();
+fn packet_stats_cache_hash(nodes: &[NetworkTopologyNode]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for node in nodes {
         node.id.hash(&mut hasher);
         node.sender_id.hash(&mut hasher);
-        let count = node
-            .sender_id
-            .as_ref()
-            .and_then(|sender_id| counts_by_sender.get(sender_id.as_str()))
-            .copied()
-            .unwrap_or(0);
-        count.hash(&mut hasher);
+        node.stats.hash(&mut hasher);
     }
     hasher.finish()
 }
 
 fn packet_stats_by_node_cached(
     nodes: &[NetworkTopologyNode],
-    board_status: &[BoardStatusEntry],
     topology_hash: u64,
 ) -> HashMap<String, NodePacketStats> {
-    let packet_hash = packet_stats_cache_hash(nodes, board_status);
+    let packet_hash = packet_stats_cache_hash(nodes);
     if let Ok(cache) = TOPOLOGY_PACKET_STATS_CACHE.lock()
         && let Some((cached_topology_hash, cached_packet_hash, stats)) = cache.as_ref()
         && *cached_topology_hash == topology_hash
@@ -1628,7 +1670,7 @@ fn packet_stats_by_node_cached(
         return stats.clone();
     }
 
-    let stats = packet_stats_by_node(nodes, board_status);
+    let stats = packet_stats_by_node(nodes);
     if let Ok(mut cache) = TOPOLOGY_PACKET_STATS_CACHE.lock() {
         *cache = Some((topology_hash, packet_hash, stats.clone()));
     }
@@ -1750,131 +1792,60 @@ fn collapse_visible_links(
     links: &[NetworkTopologyLink],
     visible_node_ids: &HashSet<String>,
 ) -> Vec<NetworkTopologyLink> {
-    let visible_nodes = nodes
+    // Collapse only observed paths through hidden side/endpoint nodes. Never
+    // connect an isolated board to a guessed gateway or the local router.
+    let hidden = nodes
         .iter()
-        .filter(|node| visible_node_ids.contains(&node.id))
-        .cloned()
-        .collect::<Vec<_>>();
-    let Some(router) = visible_nodes
-        .iter()
-        .find(|node| node.kind == NetworkTopologyNodeKind::Router)
-    else {
-        return Vec::new();
-    };
-
-    let mut collapsed = BTreeMap::<(String, String), NetworkTopologyStatus>::new();
-
-    for link in links {
-        if !visible_node_ids.contains(&link.source) || !visible_node_ids.contains(&link.target) {
-            continue;
-        }
-        let key = ordered_link_key(link.source.clone(), link.target.clone());
-        collapsed
-            .entry(key)
-            .and_modify(|existing| *existing = existing.merged(link.status))
-            .or_insert(link.status);
-    }
-
-    let side_by_board = board_side_ids(nodes, links);
-    let relay_by_side = relay_board_ids(nodes, &side_by_board);
-
-    for node in visible_nodes
-        .iter()
-        .filter(|node| node.kind == NetworkTopologyNodeKind::Board)
-    {
-        let already_connected = collapsed
-            .keys()
-            .any(|(source, target)| source == &node.id || target == &node.id);
-        if already_connected {
-            continue;
-        }
-
-        let Some(side_id) = side_by_board.get(&node.id) else {
-            let key = ordered_link_key(router.id.clone(), node.id.clone());
-            collapsed.entry(key).or_insert(node.status);
-            continue;
-        };
-
-        if let Some(relay_id) = relay_by_side.get(side_id) {
-            let relay_status = nodes
-                .iter()
-                .find(|candidate| candidate.id == *relay_id)
-                .map(|relay| relay.status)
-                .unwrap_or(node.status);
-
-            let router_key = ordered_link_key(router.id.clone(), relay_id.clone());
-            collapsed
-                .entry(router_key)
-                .and_modify(|existing| *existing = existing.merged(relay_status))
-                .or_insert(relay_status);
-
-            if relay_id != &node.id {
-                let branch_key = ordered_link_key(relay_id.clone(), node.id.clone());
-                collapsed
-                    .entry(branch_key)
-                    .and_modify(|existing| *existing = existing.merged(node.status))
-                    .or_insert(node.status);
+        .filter(|node| !visible_node_ids.contains(&node.id))
+        .map(|node| node.id.clone())
+        .collect::<HashSet<_>>();
+    let mut collapsed = BTreeMap::<(String, String), NetworkTopologyLink>::new();
+    for source in visible_node_ids {
+        let mut queue = std::collections::VecDeque::from([(
+            source.clone(),
+            NetworkTopologyStatus::Online,
+            None::<String>,
+        )]);
+        let mut visited = HashSet::from([source.clone()]);
+        while let Some((current, path_status, path_label)) = queue.pop_front() {
+            for link in links {
+                let other = if link.source == current {
+                    &link.target
+                } else if link.target == current {
+                    &link.source
+                } else {
+                    continue;
+                };
+                if !visited.insert(other.clone()) {
+                    continue;
+                }
+                let status = if path_status == NetworkTopologyStatus::Offline
+                    || link.status == NetworkTopologyStatus::Offline
+                {
+                    NetworkTopologyStatus::Offline
+                } else {
+                    path_status.merged(link.status)
+                };
+                let label = path_label.clone().or_else(|| link.label.clone());
+                if visible_node_ids.contains(other) {
+                    let key = ordered_link_key(source.clone(), other.clone());
+                    collapsed.entry(key.clone()).or_insert(NetworkTopologyLink {
+                        source: key.0,
+                        target: key.1,
+                        label,
+                        status,
+                    });
+                } else if hidden.contains(other) {
+                    queue.push_back((other.clone(), status, label));
+                }
             }
-        } else {
-            let key = ordered_link_key(router.id.clone(), node.id.clone());
-            collapsed
-                .entry(key)
-                .and_modify(|existing| *existing = existing.merged(node.status))
-                .or_insert(node.status);
         }
     }
-
-    collapsed
-        .into_iter()
-        .map(|((source, target), status)| NetworkTopologyLink {
-            source,
-            target,
-            label: None,
-            status,
-        })
-        .collect()
+    collapsed.into_values().collect()
 }
 
 fn ordered_link_key(a: String, b: String) -> (String, String) {
     if a < b { (a, b) } else { (b, a) }
-}
-
-fn board_side_ids(
-    nodes: &[NetworkTopologyNode],
-    links: &[NetworkTopologyLink],
-) -> HashMap<String, String> {
-    let side_ids = nodes
-        .iter()
-        .filter(|node| node.kind == NetworkTopologyNodeKind::Side)
-        .map(|node| node.id.clone())
-        .collect::<HashSet<_>>();
-    let mut out = HashMap::new();
-    for link in links {
-        if side_ids.contains(&link.source) {
-            out.insert(link.target.clone(), link.source.clone());
-        } else if side_ids.contains(&link.target) {
-            out.insert(link.source.clone(), link.target.clone());
-        }
-    }
-    out
-}
-
-fn relay_board_ids(
-    nodes: &[NetworkTopologyNode],
-    side_by_board: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for node in nodes
-        .iter()
-        .filter(|node| node.kind == NetworkTopologyNodeKind::Board)
-    {
-        let Some(side_id) = side_by_board.get(&node.id) else {
-            continue;
-        };
-        out.entry(side_id.clone())
-            .or_insert_with(|| node.id.clone());
-    }
-    out
 }
 
 fn compute_graph_layout(
@@ -2101,5 +2072,83 @@ fn compute_graph_layout(
         width,
         height,
         placements,
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn age_labels_distinguish_unknown_and_recent_boards() {
+        assert_eq!(format_seen_age(None), "Never observed");
+        assert_eq!(format_seen_age(Some(0)), "Seen 0s ago");
+        assert_eq!(format_seen_age(Some(12_000)), "Seen 12s ago");
+        assert_eq!(format_seen_age(Some(65_000)), "Seen 1m 5s ago");
+        assert_eq!(format_seen_age(Some(3_660_000)), "Seen 1h 1m ago");
+        assert_eq!(format_seen_age(Some(90_000_000)), "Seen 1d 1h ago");
+    }
+
+    #[test]
+    fn graph_uses_observed_edges_and_updates_when_link_state_changes() {
+        let node = |id: &str, kind: &str| -> NetworkTopologyNode {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"label":id,"kind":kind,"status":"online","group":"board",
+                "sender_id":id,"detail":null
+            }))
+            .unwrap()
+        };
+        let nodes = vec![
+            node("gs", "router"),
+            node("rrls", "board"),
+            node("rf", "board"),
+            node("fc", "board"),
+        ];
+        let visible = nodes.iter().map(|n| n.id.clone()).collect();
+        let mut snapshot = NetworkTopologyMsg::default();
+        snapshot.nodes = nodes.clone();
+        snapshot.links = vec![NetworkTopologyLink {
+            source: "gs".into(),
+            target: "rrls".into(),
+            label: Some("standby".into()),
+            status: NetworkTopologyStatus::Online,
+        }];
+        let edges = collapse_visible_links(&nodes, &snapshot.links, &visible);
+        assert_eq!(edges.len(), 1); // Isolated RF/FC get no fabricated edge.
+        assert_eq!(edges[0].label.as_deref(), Some("standby"));
+        let before = topology_cache_hash(&snapshot, false);
+        snapshot.links[0].status = NetworkTopologyStatus::Offline;
+        assert_ne!(before, topology_cache_hash(&snapshot, false));
+        let before = topology_cache_hash(&snapshot, false);
+        snapshot.links[0].label = Some("relay".into());
+        assert_ne!(before, topology_cache_hash(&snapshot, false));
+        snapshot.links.push(NetworkTopologyLink {
+            source: "rrls".into(),
+            target: "rf".into(),
+            label: Some("relay".into()),
+            status: NetworkTopologyStatus::Online,
+        });
+        let edges = collapse_visible_links(&nodes, &snapshot.links, &visible);
+        assert_eq!(edges.len(), 2);
+        assert!(!edges.iter().any(|l| l.source == "gs" && l.target == "rf"));
+    }
+
+    #[test]
+    fn topology_timing_survives_cached_layout_and_old_servers() {
+        let mut node: NetworkTopologyNode = serde_json::from_str(
+            r#"{"id":"board_vb","label":"Valve","kind":"board","status":"offline","group":"board","sender_id":"VB","detail":null}"#,
+        ).unwrap();
+        assert_eq!(node.current_age_ms(1000), None);
+        node.age_ms = Some(12_000);
+        node.last_seen_ms = Some(100);
+        node.received_mono_ms = 1000;
+        assert_eq!(node.clone().current_age_ms(3000), Some(14_000));
+        assert_eq!(node.current_age_ms(900), Some(12_000));
+        assert!(
+            serde_json::to_value(&node)
+                .unwrap()
+                .get("received_mono_ms")
+                .is_none()
+        );
     }
 }

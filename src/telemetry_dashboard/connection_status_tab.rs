@@ -43,21 +43,8 @@ pub fn ConnectionStatusTab(
     let history = use_signal(HashMap::<String, Vec<LatencyPoint>>::new);
     let previous_last_seen = use_signal(HashMap::<String, u64>::new);
     let smoothed_intervals = use_signal(HashMap::<String, f64>::new);
-    let board_age_now_ms = use_signal(current_wallclock_ms);
+    let board_age_now_ms = use_board_age_clock();
     let merged_boards = merged_connection_boards(&boards.read(), &expected_boards);
-
-    {
-        let mut board_age_now_ms = board_age_now_ms;
-        use_future(move || async move {
-            loop {
-                #[cfg(target_arch = "wasm32")]
-                gloo_timers::future::TimeoutFuture::new(1_000).await;
-                #[cfg(not(target_arch = "wasm32"))]
-                tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
-                board_age_now_ms.set(current_wallclock_ms());
-            }
-        });
-    }
 
     {
         use_effect(move || {
@@ -144,87 +131,100 @@ pub fn ConnectionStatusTab(
         latency_fullscreen.set(next);
     };
 
+    let mut panels = Vec::new();
+    for (idx, section) in layout.sections.iter().enumerate() {
+        let (id, default_title) = match section.kind {
+            ConnectionSectionKind::BoardStatus => ("boards", "Board status"),
+            ConnectionSectionKind::Latency => ("latency", "Packet intervals"),
+        };
+        let title = section
+            .title
+            .clone()
+            .unwrap_or_else(|| default_title.into());
+        let content = match section.kind {
+            ConnectionSectionKind::BoardStatus => rsx! {
+                div { style: {
+                        let top_margin = if idx == 0 { "" } else { "margin-top:16px;" };
+                        format!(
+                            "padding:14px; border:1px solid {}; border-radius:14px; background:{};{}",
+                            theme.border,
+                            theme.panel_background,
+                            top_margin
+                        )
+                    },
+                    div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
+                        div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Board Status\".to_string()))}" }
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
+                                onclick: toggle_board,
+                                {if *show_board.read() { translate_text("Collapse") } else { translate_text("Expand") }}
+                            }
+                            button {
+                                style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
+                                onclick: toggle_board_fullscreen,
+                                "{translate_text(\"Fullscreen\")}"
+                            }
+                        }
+                    }
+                    if *show_board.read() {
+                        {render_board_table(&merged_boards, board_age_now_ms, ws_connected, &theme)}
+                    }
+                }
+            },
+            ConnectionSectionKind::Latency => rsx! {
+                div { style: {
+                        let top_margin = if idx == 0 { "" } else { "margin-top:16px;" };
+                        format!(
+                            "padding:14px; border:1px solid {}; border-radius:14px; background:{};{}",
+                            theme.border,
+                            theme.panel_background,
+                            top_margin
+                        )
+                    },
+                    div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
+                        div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Packet Interval (ms)\".to_string()))}" }
+                        div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                            button {
+                                style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
+                                onclick: toggle_latency,
+                                {if *show_latency.read() { translate_text("Collapse") } else { translate_text("Expand") }}
+                            }
+                            button {
+                                style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
+                                onclick: toggle_latency_fullscreen,
+                                "{translate_text(\"Fullscreen\")}"
+                            }
+                        }
+                    }
+
+                    if *show_latency.read() {
+                        div { style: latency_list_style(),
+                            for entry in merged_boards.iter() {
+                                div { style: latency_card_style(&theme),
+                                    div { style: "font-size:12px; color:{theme.text_muted}; margin-bottom:6px;",
+                                        "{entry.display_name()} ({entry.sender_id})"
+                                    }
+                                    {render_latency_chart(
+                                        history.read().get(&entry.sender_id),
+                                        LATENCY_CHART_HEIGHT_PX as f64,
+                                        &theme,
+                                    )}
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        };
+        panels.push(super::info_panels::InfoPanel::new(
+            id, &title, "Overview", content,
+        ));
+    }
     rsx! {
         div { style: "padding:16px; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
             h2 { style: "margin:0 0 12px 0; color:{theme.text_primary};", "{title}" }
-            for (idx, section) in layout.sections.iter().enumerate() {
-                match section.kind {
-                    ConnectionSectionKind::BoardStatus => rsx! {
-                        div { style: {
-                                let top_margin = if idx == 0 { "" } else { "margin-top:16px;" };
-                                format!(
-                                    "padding:14px; border:1px solid {}; border-radius:14px; background:{};{}",
-                                    theme.border,
-                                    theme.panel_background,
-                                    top_margin
-                                )
-                            },
-                            div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
-                                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Board Status\".to_string()))}" }
-                                div { style: "display:flex; gap:8px; flex-wrap:wrap;",
-                                    button {
-                                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
-                                        onclick: toggle_board,
-                                        {if *show_board.read() { translate_text("Collapse") } else { translate_text("Expand") }}
-                                    }
-                                    button {
-                                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
-                                        onclick: toggle_board_fullscreen,
-                                        "{translate_text(\"Fullscreen\")}"
-                                    }
-                                }
-                            }
-                            if *show_board.read() {
-                                {render_board_table(&merged_boards, *board_age_now_ms.read(), ws_connected, &theme)}
-                            }
-                        }
-                    },
-                    ConnectionSectionKind::Latency => rsx! {
-                        div { style: {
-                                let top_margin = if idx == 0 { "" } else { "margin-top:16px;" };
-                                format!(
-                                    "padding:14px; border:1px solid {}; border-radius:14px; background:{};{}",
-                                    theme.border,
-                                    theme.panel_background,
-                                    top_margin
-                                )
-                            },
-                            div { style: "display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;",
-                                div { style: "font-size:14px; color:{theme.text_muted};", "{translate_text(&section.title.clone().unwrap_or_else(|| \"Packet Interval (ms)\".to_string()))}" }
-                                div { style: "display:flex; gap:8px; flex-wrap:wrap;",
-                                    button {
-                                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
-                                        onclick: toggle_latency,
-                                        {if *show_latency.read() { translate_text("Collapse") } else { translate_text("Expand") }}
-                                    }
-                                    button {
-                                        style: "padding:6px 12px; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.85rem; cursor:pointer;",
-                                        onclick: toggle_latency_fullscreen,
-                                        "{translate_text(\"Fullscreen\")}"
-                                    }
-                                }
-                            }
-
-                            if *show_latency.read() {
-                                div { style: latency_list_style(),
-                                    for entry in merged_boards.iter() {
-                                        div { style: latency_card_style(&theme),
-                                            div { style: "font-size:12px; color:{theme.text_muted}; margin-bottom:6px;",
-                                                "{entry.display_name()} ({entry.sender_id})"
-                                            }
-                                            {render_latency_chart(
-                                                history.read().get(&entry.sender_id),
-                                                LATENCY_CHART_HEIGHT_PX as f64,
-                                                &theme,
-                                            )}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                }
-            }
+            super::info_panels::InfoPanels {page:"connections",panels,wide:true}
         }
 
         if *board_fullscreen.read() {
@@ -237,7 +237,7 @@ pub fn ConnectionStatusTab(
                         "{translate_text(\"Exit Fullscreen\")}"
                     }
                 }
-                {render_board_table(&merged_boards, *board_age_now_ms.read(), ws_connected, &theme)}
+                {render_board_table(&merged_boards, board_age_now_ms, ws_connected, &theme)}
             }
         }
 
@@ -665,14 +665,14 @@ fn current_board_age_ms(entry: &BoardStatusEntry, now_ms: i64, ws_connected: boo
     if !ws_connected {
         return None;
     }
-    if let Some(age_ms) = entry.age_ms {
+    if let Some(age_ms) = entry.current_age_ms(now_ms) {
         return Some(age_ms);
     }
 
     if let Some(last_seen_ms) = entry.last_seen_ms
         && last_seen_ms >= 1_500_000_000_000
     {
-        let now_ms = u64::try_from(now_ms.max(0)).unwrap_or(0);
+        let now_ms = u64::try_from(current_wallclock_ms().max(0)).unwrap_or(0);
         return Some(now_ms.saturating_sub(last_seen_ms));
     }
 
@@ -690,4 +690,18 @@ fn format_last_seen(last_seen_ms: Option<u64>) -> String {
     }
 
     format!("{ts} ms")
+}
+
+pub(super) fn use_board_age_clock() -> i64 {
+    let mut now = use_signal(|| super::monotonic_now_ms() as i64);
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(100).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            now.set(super::monotonic_now_ms() as i64);
+        }
+    });
+    *now.read()
 }

@@ -6,21 +6,23 @@ import path from 'node:path';
 const {chromium} = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const source = process.env.GS_MEDIA_SOURCE || path.resolve('station_ui');
 const requests = [];
-let permitted = true, receiver;
+let permitted = true, receiver, publishCount=0;
 const server = http.createServer(async (req, res) => {
   requests.push({url:req.url, auth:req.headers.authorization, method:req.method});
   const url = new URL(req.url, 'http://localhost');
   const json = value => { res.setHeader('Content-Type','application/json'); res.end(JSON.stringify(value)); };
   if (url.pathname === '/') { res.end(`<iframe id="media" src="/media?embedded=1" allow="camera; microphone; autoplay"></iframe><iframe id="voice" src="/radio?embedded=1" allow="microphone; autoplay"></iframe><script>for(const frame of document.querySelectorAll('iframe'))frame.onload=()=>frame.contentWindow.postMessage({type:'gs26-session',token:'test-producer',visible:true},location.origin)</script>`); return; }
-  const files = {'/media':'pages/media.html','/radio':'pages/voice.html','/assets/voice.js':'scripts/voice.js','/assets/media-login.js':'scripts/media-login.js','/assets/voice-worklet.js':'scripts/voice-worklet.js'};
+  const files = {'/media':'pages/media.html','/radio':'pages/voice.html','/assets/voice.js':'scripts/voice.js','/assets/media-login.js':'scripts/media-login.js','/assets/voice-worklet.js':'scripts/voice-worklet.js','/assets/stay-awake.js':'scripts/stay-awake.js'};
   if (files[url.pathname]) { res.setHeader('Content-Type',url.pathname.endsWith('.js')?'text/javascript':'text/html'); res.end(fs.readFileSync(path.join(source,files[url.pathname]))); return; }
-  if (url.pathname === '/api/live_streams') return json({can_manage_stream:permitted});
+  if (url.pathname === '/api/live_streams') return json({can_manage_stream:false,can_publish_camera:permitted});
   if (url.pathname === '/api/video/streams' || url.pathname === '/api/stage-models') return json([]);
   if (url.pathname === '/api/video/recordings') return json({recordings:[],total:0,offset:0});
   if (url.pathname === '/api/voice/status') return json({can_transmit:true,radio:{configured:true,available:true}});
   if (url.pathname === '/api/video/publish' && req.method === 'POST') {
     let body=''; for await (const data of req) body+=data;
     if (!permitted) {res.statusCode=403;res.end('Permission denied');return;}
+    assert(['Pad interview','Launch pad'].includes(url.searchParams.get('name')));
+    publishCount++;if(publishCount===1)assert.doesNotMatch(body,/m=audio/,'explicitly disabled microphone is not captured');else assert.match(body,/m=audio/,'explicit interview microphone is included');
     assert.match(body, /H264\/90000/i); assert.doesNotMatch(body, /VP8\/90000/i);
     const answer = await receiver.evaluate(async sdp => {
       window.pc?.close(); window.pc = new RTCPeerConnection({iceServers:[]});
@@ -35,13 +37,15 @@ const server = http.createServer(async (req, res) => {
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`;
-const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY || (process.platform==='darwin' && fs.existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined),args:['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream','--autoplay-policy=no-user-gesture-required']});
+const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY || (process.platform==='darwin' && fs.existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined),args:['--disable-audio-output','--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream','--autoplay-policy=no-user-gesture-required']});
 try {
-  const context=await browser.newContext({permissions:['camera','microphone']});
+  const context=await browser.newContext({permissions:['camera','microphone'],viewport:{width:390,height:844},isMobile:true,hasTouch:true});
   receiver=await context.newPage();await receiver.goto(origin+'/receiver');
   const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.addInitScript(()=>{
-    window.__radioControls=[];
+    window.__radioControls=[];window.__cameraRequests=[];window.__zoom=1;
+    const capture=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia=async constraints=>{window.__cameraRequests.push(constraints);const stream=await capture(constraints);for(const track of stream.getVideoTracks()){const caps=track.getCapabilities.bind(track),settings=track.getSettings.bind(track),apply=track.applyConstraints.bind(track);track.getCapabilities=()=>({...caps(),zoom:{min:1,max:4,step:0.1}});track.getSettings=()=>({...settings(),zoom:window.__zoom});track.applyConstraints=async c=>{if(c.advanced?.[0]?.zoom){window.__zoom=c.advanced[0].zoom;return;}return apply(c);};}return stream;};
     window.WebSocket=class {
       static OPEN=1;readyState=1;bufferedAmount=0;
       constructor(){setTimeout(()=>this.onopen?.(),0);}
@@ -63,8 +67,19 @@ try {
   assert.equal(await voice.locator('#radio-enable').isChecked(),false,'open mic remains local');
   assert.equal(await page.frames().find(f=>f.url().includes('/radio?')).evaluate(()=>window.__radioControls.at(-1)),false);
 
+  assert.equal(await media.locator('#receiver').isVisible(),false,'publishers cannot view recordings or other live cameras');
+  await media.locator('#publish-name').fill('Pad interview');
+  await media.locator('#publish-viewfinder').click();await media.locator('#publish-preview').waitFor({state:'visible'});
+  assert.equal(publishCount,0,'viewfinder never publishes without Start');
+  const previewFrame=page.frames().find(f=>f.url().includes('/media?'));
+  assert.equal(await previewFrame.evaluate(()=>window.__cameraRequests.filter(c=>c.video).at(-1).video.facingMode.ideal),'environment','rear lens preferred');
+  await media.locator('#publish-flip').click();await previewFrame.waitForFunction(()=>window.__cameraRequests.filter(c=>c.video).at(-1)?.video.facingMode.ideal==='user');
+  await previewFrame.waitForFunction(()=>document.querySelector('#publish-zoom').max==='4'&&document.querySelector('#publish-preview').srcObject?.getVideoTracks()[0]?.readyState==='live');
+  await media.locator('#publish-zoom').fill('2.5');await media.locator('#publish-zoom').dispatchEvent('input');await previewFrame.waitForFunction(()=>window.__zoom===2.5);
+  await media.locator('#publish-audio').uncheck();
   await media.locator('#publish-start').click();
   await media.getByText('Sharing camera with the Ground Station',{exact:true}).waitFor({timeout:20000});
+  await media.locator('#publish-name').fill('Launch pad');await media.locator('#publish-rename').click();await media.getByText('Camera name saved',{exact:true}).waitFor();
   const hide=()=>page.evaluate(()=>{for(const f of document.querySelectorAll('iframe')){f.style.display='none';f.contentWindow.postMessage({type:'gs26-session',token:'test-producer',visible:false},location.origin);}});
   await hide();
   const mediaFrame=page.frames().find(f=>f.url().includes('/media?'));
@@ -82,12 +97,21 @@ try {
   await mediaFrame.evaluate(()=>window.postMessage({type:'gs26-session',token:'attacker',visible:true},location.origin));
   await page.evaluate(()=>document.querySelectorAll('iframe').forEach(f=>f.style.display='block'));
   await media.locator('#publish-stop').click();assert.equal(await media.locator('#publish-preview').isVisible(),false);
-  await media.locator('#publish-start').click();await media.getByText('Sharing camera with the Ground Station',{exact:true}).waitFor({timeout:20000});
+  await media.locator('#publish-audio').check();await media.locator('#publish-start').click();await media.getByText('Sharing camera with the Ground Station',{exact:true}).waitFor({timeout:20000});
+  await voice.locator('#mode').selectOption('ptt');await voice.locator('#ptt').scrollIntoViewIfNeeded();
+  const touch=await context.newCDPSession(page),touchBox=await voice.locator('#ptt').boundingBox();
+  await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:touchBox.x+20,y:touchBox.y+20}]});await page.waitForTimeout(800);
+
+  assert.equal(await voiceFrame.evaluate(()=>getSelection().toString()),'','long press never selects button text');
+  assert.equal(await voiceFrame.evaluate(()=>document.querySelector('#ptt').dispatchEvent(new Event('contextmenu',{cancelable:true}))),false,'long-press menu is prevented');
+  await touch.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:5,y:5}]});await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  await voiceFrame.waitForFunction(()=>document.querySelector('#ptt').getAttribute('aria-pressed')==='false');
+  assert.equal(await voice.locator('#broadcast-notice').count(),0);
   permitted=false;
   await media.locator('#publish-preview').waitFor({state:'hidden',timeout:10000});
-  assert.equal(await media.locator('#publisher').isVisible(),true);
+  assert.equal(await media.locator('#publisher').isVisible(),false,'unauthorized publishing controls are hidden');
   assert.equal(await media.locator('#publish-start').isDisabled(),true);
-  await media.getByText('Your account needs stream-manager permission to share this camera.',{exact:true}).waitFor();
+
   await page.evaluate(()=>{for(const f of document.querySelectorAll('iframe'))f.contentWindow.postMessage({type:'gs26-session',token:'',visible:true},location.origin);});
   await voice.getByText('Sign in from the dashboard to join voice chat.',{exact:true}).waitFor();
   assert.equal(await voice.locator('#mic-state').textContent(),'Microphone off');
@@ -95,5 +119,5 @@ try {
   assert(requests.filter(r=>r.url.startsWith('/api/video/publish')).every(r=>r.auth==='Bearer test-producer'),'publishing always uses shared session');
   assert(requests.some(r=>r.method==='DELETE'&&r.url.startsWith('/api/video/publish/')),'stop deletes relay session');
   assert.deepEqual(errors,[]);
-  console.log('PASS: shared login, fake-camera WebRTC publishing, hidden-tab persistence, open mic, PTT release, stop, permission loss, logout and sender validation');
+  console.log('PASS: publisher-only access, rear/front viewfinder, zoom, names, camera/mic WebRTC, mobile PTT selection/callout/release, hidden-tab persistence, revocation and logout');
 } finally {await browser.close();await new Promise(resolve=>server.close(resolve));}

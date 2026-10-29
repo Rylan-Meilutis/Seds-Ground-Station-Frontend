@@ -15,8 +15,11 @@ use dioxus_router::{Routable, Router, use_navigator};
 #[allow(unused_imports)]
 use crate::telemetry_dashboard::{self, UrlConfig};
 
+#[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
 const INLINE_MAPLIBRE_CSS: &str = include_str!("../static/vendor/maplibre-gl/maplibre-gl.css");
+#[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
 const INLINE_MAPLIBRE_JS: &str = include_str!("../static/vendor/maplibre-gl/maplibre-gl.js");
+#[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
 const INLINE_GROUND_MAP_JS: &str = include_str!("../static/ground_map.js");
 
 // -------------------------
@@ -89,6 +92,10 @@ pub enum Route {
     #[route("/connect")]
     Connect {},
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[route("/preview")]
+    Preview {},
+
     #[route("/version")]
     Version {},
 
@@ -156,15 +163,20 @@ pub fn App() -> Element {
             ensure_document_inline_style("gs26-maplibre-css", INLINE_MAPLIBRE_CSS);
             ensure_document_inline_script("gs26-maplibre-js", INLINE_MAPLIBRE_JS);
             ensure_document_inline_script("gs26-ground-map-js", INLINE_GROUND_MAP_JS);
+            ensure_document_inline_script("gs26-station-discovery-js", include_str!("../static/station_discovery.js"));
         });
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))]
     let document_assets: Element = rsx! {
         document::Style { "{GLOBAL_CSS}" }
         document::Style { "{INLINE_MAPLIBRE_CSS}" }
         document::Script { "{INLINE_MAPLIBRE_JS}" }
         document::Script { "{INLINE_GROUND_MAP_JS}" }
+    };
+    #[cfg(target_os = "linux")]
+    let document_assets: Element = rsx! {
+        document::Style { "{GLOBAL_CSS}" }
     };
     #[cfg(target_arch = "wasm32")]
     let document_assets: Element = rsx! { Fragment {} };
@@ -240,7 +252,7 @@ fn LoginCard(
     let mut submit_login = move || {
         let base = UrlConfig::base_http();
         if base.trim().is_empty() {
-            status.set("Configure the Ground Station URL first.".to_string());
+            status.set("Configure the station address first.".to_string());
             return;
         }
         let username_value = username();
@@ -305,7 +317,7 @@ fn LoginCard(
                     if base.trim().is_empty() {
                         div {
                             style: shell_warning_style(&theme),
-                            "Configure the Ground Station URL before logging in."
+                            "Configure the station address before logging in."
                         }
                     }
 
@@ -370,6 +382,16 @@ fn LoginCard(
 fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element {
     let theme = shell_theme();
     let nav = use_navigator();
+    #[cfg(not(target_arch = "wasm32"))]
+    let explore_button = rsx! {
+        button {
+            style: shell_button_alt_style(&theme),
+            onclick: move |_| { let _ = nav.replace(Route::Preview {}); },
+            "Explore offline"
+        }
+    };
+    #[cfg(target_arch = "wasm32")]
+    let explore_button = rsx! {};
     rsx! {
         div {
             style: shell_page_style(&theme),
@@ -385,6 +407,7 @@ fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element 
                         },
                         "Back to Connect"
                     }
+                    {explore_button}
                     button {
                         style: shell_button_alt_style(&theme),
                         onclick: move |_| {
@@ -445,7 +468,7 @@ pub fn Login() -> Element {
                 div {
                     style: shell_card_style(&shell_theme(), "min(520px, 92vw)"),
                     h1 { style: "margin:0 0 10px 0; font-size:20px;", "Connect First" }
-                    p { style: "margin:0 0 16px 0; color:{shell_theme().text_muted};", "Configure and connect to a Ground Station before signing in." }
+                    p { style: "margin:0 0 16px 0; color:{shell_theme().text_muted};", "Configure and connect to a station before signing in." }
                     button {
                         style: shell_button_style(&shell_theme()),
                         onclick: move |_| {
@@ -466,7 +489,7 @@ pub fn Login() -> Element {
         rsx! {
             LoginOverlay {
                 title: "Sign In".to_string(),
-                subtitle: "Authenticate with the Ground Station to view protected data or send commands.".to_string(),
+                subtitle: "Sign in to this station to view protected data or send commands.".to_string(),
                 back_route: Some(Route::Dashboard {}),
                 on_success_route: authenticated_route(),
             }
@@ -475,7 +498,7 @@ pub fn Login() -> Element {
         rsx! {
             LoginCard {
                 title: "Sign In".to_string(),
-                subtitle: "Authenticate with the Ground Station to view protected data or send commands.".to_string(),
+                subtitle: "Sign in to this station to view protected data or send commands.".to_string(),
                 back_route: Some(connect_route()),
                 on_success_route: authenticated_route(),
             }
@@ -550,7 +573,7 @@ pub fn Version() -> Element {
                 style: shell_card_style(&theme, "min(900px, 100%)"),
                 div {
                     style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;",
-                    h1 { style: "margin:0; font-size:20px;", "{APP_DISPLAY_NAME}" }
+                    h1 { style: "margin:0; font-size:20px;", {auth::station_app_name()} }
                     button {
                         style: shell_button_style(&theme),
                         onclick: back_action,
@@ -580,7 +603,7 @@ pub fn Dashboard() -> Element {
                     div {
                         style: shell_card_style(&theme, "min(560px, 92vw)"),
                         h1 { style: "margin:0 0 12px 0; font-size:18px;", "Not connected" }
-                        p { style: "margin:0 0 16px 0; color:{theme.text_muted};", "Please configure the Ground Station URL on the Connect screen." }
+                        p { style: "margin:0 0 16px 0; color:{theme.text_muted};", "Please configure the station address on the Connect screen." }
                         button {
                             style: shell_button_style(&theme),
                             onclick: move |_| {
@@ -627,17 +650,35 @@ pub fn Dashboard() -> Element {
         });
     });
 
-    match auth_state.read().as_ref() {
+    // Refresh grants without tearing down a working dashboard on a transient outage.
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(5000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let base = UrlConfig::base_http();
+            if let Ok(status) = auth::fetch_session_status(&base, UrlConfig::_skip_tls_verify()).await {
+                let changed = auth_state.peek().as_ref().and_then(|value| value.as_ref().ok())
+                    .and_then(|old| serde_json::to_value(old).ok()) != serde_json::to_value(&status).ok();
+                if changed { auth_state.set(Some(Ok(status))); }
+            }
+        }
+    });
+
+    let access = auth::current_status();
+    let access_key = serde_json::json!([access.username,access.roles,access.permissions]).to_string();
+    let content = match auth_state.read().as_ref() {
         #[cfg(not(target_arch = "wasm32"))]
         None if can_render_dashboard_while_auth_check_runs => {
-            rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
+            rsx! { crate::telemetry_dashboard::TelemetryDashboard {key:"{access_key}"} }
         }
         None => rsx! {
             div { style: format!("height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;", shell_theme().app_background, shell_theme().text_primary),
                 div {
                     style: format!("padding:20px; border:1px solid {}; border-radius:16px; background:{}; min-width:min(560px, 92vw);", shell_theme().border_strong, shell_theme().panel_background),
                     h1 { style: "margin:0 0 10px 0; font-size:22px;", "Checking session..." }
-                    p { style: format!("margin:0 0 16px 0; color:{};", shell_theme().text_muted), "Contacting the Ground Station session endpoint." }
+                    p { style: format!("margin:0 0 16px 0; color:{};", shell_theme().text_muted), "Contacting the station…" }
                     div { style: "display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap;",
                         button {
                             style: shell_button_style(&shell_theme()),
@@ -651,7 +692,7 @@ pub fn Dashboard() -> Element {
             }
         },
         Some(Ok(status)) if status.permissions.view_data => {
-            rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
+            rsx! { crate::telemetry_dashboard::TelemetryDashboard {key:"{access_key}"} }
         }
         Some(Ok(_)) => {
             #[cfg(target_arch = "wasm32")]
@@ -659,7 +700,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginCard {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This station requires a login. Sign in to continue.".to_string(),
                         back_route: Some(connect_route()),
                         on_success_route: authenticated_route(),
                     }
@@ -670,7 +711,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginOverlay {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This station requires a login. Sign in to continue.".to_string(),
                         back_route: Some(Route::Dashboard {}),
                         on_success_route: authenticated_route(),
                     }
@@ -679,7 +720,7 @@ pub fn Dashboard() -> Element {
                 rsx! {
                     LoginCard {
                         title: "Sign In Required".to_string(),
-                        subtitle: "This Ground Station does not allow anonymous view access. Sign in to continue.".to_string(),
+                        subtitle: "This station requires a login. Sign in to continue.".to_string(),
                         back_route: Some(connect_route()),
                         on_success_route: authenticated_route(),
                     }
@@ -687,8 +728,8 @@ pub fn Dashboard() -> Element {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        Some(Err(_err)) if has_cached_layout_for_base || has_completed_connect_flow => {
-            rsx! { crate::telemetry_dashboard::TelemetryDashboard {} }
+        Some(Err(_err)) if can_render_dashboard_while_auth_check_runs => {
+            rsx! { crate::telemetry_dashboard::TelemetryDashboard {key:"{access_key}"} }
         }
         Some(Err(err)) => rsx! {
             ConnectionFailedCard {
@@ -703,5 +744,19 @@ pub fn Dashboard() -> Element {
                 },
             }
         },
+    };
+    let station_name = auth::station_app_name();
+    rsx! { document::Title { "{station_name}" } {content} }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[component]
+fn Preview() -> Element {
+    let nav = use_navigator();
+    rsx! {
+        telemetry_dashboard::offline_preview::OfflinePreview {
+            theme: shell_theme(),
+            on_exit: move |_| { let _ = nav.replace(connect_route()); },
+        }
     }
 }

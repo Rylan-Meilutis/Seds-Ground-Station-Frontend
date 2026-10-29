@@ -62,6 +62,11 @@
       "kind": "bytes"
     },
     {
+      "name": "REPLAY_SCENE_JS",
+      "path": "station_ui/rendering/three/replay-scene.js",
+      "kind": "bytes"
+    },
+    {
       "name": "SOFTWARE_RENDERER_JS",
       "path": "station_ui/rendering/three/software-renderer.js",
       "kind": "bytes"
@@ -95,6 +100,46 @@
       "name": "VEHICLE_MODEL",
       "path": "station_ui/rendering/models/vehicle.glb",
       "kind": "bytes"
+    },
+    {
+      "name": "RECORDED_VEHICLE_HTML",
+      "path": "station_ui/pages/recorded-vehicle.html",
+      "kind": "text"
+    },
+    {
+      "name": "SAVED_REPLAY_PLAYER_JS",
+      "path": "station_ui/rendering/three/saved-replay-player.js",
+      "kind": "bytes"
+    },
+    {
+      "name": "STUDIO_AUDIO_HTML",
+      "path": "station_ui/pages/studio-audio.html",
+      "kind": "text"
+    },
+    {
+      "name": "STUDIO_AUDIO_JS",
+      "path": "station_ui/scripts/studio-audio.js",
+      "kind": "text"
+    },
+    {
+      "name": "PROGRAM_MAP_JS",
+      "path": "station_ui/scripts/program-map.js",
+      "kind": "text"
+    },
+    {
+      "name": "MAPLIBRE_JS",
+      "path": "static/vendor/maplibre-gl/maplibre-gl.js",
+      "kind": "text"
+    },
+    {
+      "name": "MAPLIBRE_CSS",
+      "path": "static/vendor/maplibre-gl/maplibre-gl.css",
+      "kind": "text"
+    },
+    {
+      "name": "STAY_AWAKE_JS",
+      "path": "station_ui/scripts/stay-awake.js",
+      "kind": "text"
     }
   ]
 }

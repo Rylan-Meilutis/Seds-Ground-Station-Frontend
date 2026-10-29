@@ -49,6 +49,14 @@ struct GenericCalibrationChannel {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct CalibrationFile {
+    #[serde(default = "default_kg50_input")]
+    kg50_input: String,
+    #[serde(default)]
+    noise: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    thermal: BTreeMap<String, ThermalCalibration>,
+    #[serde(default)]
+    temperature_captures: BTreeMap<String, Vec<TemperatureCapture>>,
     full_mass_kg: Option<f32>,
     #[serde(default)]
     weights_kg: Vec<f32>,
@@ -56,9 +64,32 @@ struct CalibrationFile {
     channels: BTreeMap<String, GenericCalibrationChannel>,
 }
 
+#[derive(Serialize)]
+struct CalibrationSaveRequest {
+    channel: String,
+    calibration: CalibrationFile,
+}
+
+fn apply_manual_linear(cfg: &mut CalibrationFile, channel: &str, slope: f32, offset: f32) -> Result<(), String> {
+    if !slope.is_finite() || slope == 0.0 || !offset.is_finite() {
+        return Err("Enter a finite, nonzero slope and a finite offset".into());
+    }
+    let slot = cfg.channels.entry(channel.into()).or_default();
+    slot.linear = ChannelLinear { m: Some(slope), b: Some(offset) };
+    slot.fit = Some(FitMeta { fit_type: Some("linear".into()), ..Default::default() });
+    slot.zero_raw = None; // Offset already defines zero for this explicit equation.
+    Ok(())
+}
+
+fn default_kg50_input() -> String { "amp2".into() }
+
 impl Default for CalibrationFile {
     fn default() -> Self {
         Self {
+            kg50_input: default_kg50_input(),
+            noise: BTreeMap::new(),
+            thermal: BTreeMap::new(),
+            temperature_captures: BTreeMap::new(),
             full_mass_kg: Some(10.0),
             weights_kg: Vec::new(),
             channels: BTreeMap::new(),
@@ -109,6 +140,49 @@ const CALIBRATION_FILE_CACHE_STORAGE_KEY_PREFIX: &str = "gs_calibration_file_v1_
 enum CaptureMode {
     SequenceZero,
     SequencePoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureDirection {
+    Increasing,
+    Decreasing,
+}
+
+// Direction is presentation state only: no calibration/dirty/save handle is
+// accepted here. Also prevent an enclosing form or click handler from acting.
+fn choose_capture_direction<T>(event: Event<T>, mut direction: Signal<CaptureDirection>, next: CaptureDirection) {
+    event.prevent_default();
+    event.stop_propagation();
+    direction.set(next);
+}
+
+fn apply_sequence_capture(
+    cfg: &mut CalibrationFile, channel: &str, mode: CaptureMode,
+    weight: f32, raw: f32, replace_existing: bool,
+) -> Result<(), String> {
+    if !raw.is_finite() || (mode == CaptureMode::SequencePoint && (!weight.is_finite() || weight.abs() <= 1e-6)) {
+        return Err("Capture requires a finite reading and a non-zero point mass.".to_string());
+    }
+    // Replacement is an explicitly confirmed first capture, never a direction
+    // change. Validation happens before touching the existing calibration.
+    if replace_existing { reset_channel_by_key(cfg, channel); }
+    if mode == CaptureMode::SequenceZero {
+        // A sequence endpoint is a measured point, not a tare adjustment.
+        set_zero_raw_by_key(cfg, channel, raw, false);
+    } else {
+        upsert_point_by_key(cfg, channel, weight, raw, false);
+    }
+    Ok(())
+}
+
+fn accept_calibration_save(
+    current: &mut CalibrationFile,
+    submitted: &CalibrationFile,
+    saved: CalibrationFile,
+) -> bool {
+    if current != submitted { return false; }
+    *current = saved;
+    true
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -220,15 +294,25 @@ async fn sleep_ms(millis: u64) {
 async fn capture_average_raw_sample<F>(
     data_type: String,
     samples: usize,
+    calibration: CalibrationFile,
     mut on_progress: F,
-) -> Result<(f32, usize), String>
+) -> Result<(f32, usize, Option<f32>), String>
 where
     F: FnMut(usize, usize),
 {
     let target = samples.clamp(1, 5_000);
     let mut captured_samples = Vec::with_capacity(target);
+    let mut temperatures = Vec::with_capacity(target);
     for idx in 0..target {
-        if let Some(raw) = latest_raw(&data_type) {
+        if matches!(data_type.as_str(), "KG1000" | "KG50") {
+            let temperature = fresh_temperature().ok_or("Fresh ADC temperature required for load-cell calibration")?;
+            let raw = super::fresh_daq_calibration_value(&data_type, now_ms() as i64)
+                .ok_or("Fresh DAQ load-cell readings required")?;
+            let corrected = thermal_raw(&calibration, &data_type, raw, Some(temperature))
+                .ok_or("Invalid thermal calibration")?;
+            captured_samples.push(corrected);
+            temperatures.push(temperature);
+        } else if let Some(raw) = latest_raw(&data_type) {
             captured_samples.push(raw);
         }
         let completed = idx + 1;
@@ -279,7 +363,8 @@ where
             filtered.as_slice()
         };
         let total: f32 = usable.iter().copied().sum();
-        Ok((total / usable.len() as f32, usable.len()))
+        let temperature = (!temperatures.is_empty()).then(|| temperatures.iter().sum::<f32>() / temperatures.len() as f32);
+        Ok((total / usable.len() as f32, usable.len(), temperature))
     }
 }
 
@@ -1082,6 +1167,10 @@ fn fit_details_text_parts((linear, fit): (&ChannelLinear, Option<&FitMeta>)) -> 
 }
 
 #[cfg(test)]
+#[path = "calibration_sequence_tests.rs"]
+mod calibration_sequence_tests;
+
+#[cfg(test)]
 mod calibration_eval_tests {
     use super::{
         CalibrationFile, CalibrationPoint, ChannelLinear, GenericCalibrationChannel, eval_fit_key,
@@ -1231,6 +1320,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let known_kg = use_signal(|| "1.0".to_string());
     let manual_kg = use_signal(|| "1.0".to_string());
     let manual_raw = use_signal(String::new);
+    let mut manual_temperature = use_signal(|| None::<f32>);
     let selected_point = use_signal(|| None::<SelectedCalibrationPoint>);
     let inspected_point_idx = use_signal(|| None::<SelectedCalibrationPoint>);
     let status = use_signal(|| "Loading calibration...".to_string());
@@ -1247,33 +1337,34 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let sequence_dialog_status = use_signal(String::new);
     let sequence_dialog_replace_existing = use_signal(|| false);
     let sequence_dialog_confirm_reset = use_signal(|| false);
+    let sequence_direction = use_signal(|| CaptureDirection::Increasing);
+    let sequence_capture_busy = use_signal(|| false);
+    let calibration_save_busy = use_signal(|| false);
 
     {
         let mut layout_cfg = layout_cfg;
         let mut status = status;
-        use_effect(move || {
+        use_future(move || async move {
             if let Some(cached_layout) = load_cached_calibration_layout() {
                 layout_cfg.set(Some(cached_layout));
             }
-            spawn(async move {
-                match http_get_json::<CalibrationTabLayout>("/api/calibration_config").await {
-                    Ok(v) => {
-                        save_cached_calibration_layout(&v);
-                        layout_cfg.set(Some(v));
-                    }
-                    Err(e) => {
-                        if layout_cfg.read().is_some() {
-                            status.set(format!(
-                                "Backend disconnected. Showing cached calibration layout: {e}"
-                            ));
-                        } else {
-                            status.set(format!(
+            match http_get_json::<CalibrationTabLayout>("/api/calibration_config").await {
+                Ok(v) => {
+                    save_cached_calibration_layout(&v);
+                    layout_cfg.set(Some(v));
+                }
+                Err(e) => {
+                    if layout_cfg.read().is_some() {
+                        status.set(format!(
+                            "Backend disconnected. Showing cached calibration layout: {e}"
+                        ));
+                    } else {
+                        status.set(format!(
                                 "Failed to load calibration config and no cached layout is available: {e}"
                             ));
-                        }
                     }
                 }
-            });
+            }
         });
     }
 
@@ -1291,7 +1382,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
             if let Some(first) = sensors.first() {
                 selected_sensor_id.set(first.id.clone());
-            } else {
+            } else if !cur.is_empty() {
                 selected_sensor_id.set(String::new());
                 persist::_remove(CALIBRATION_SELECTED_SENSOR_STORAGE_KEY);
             }
@@ -1314,7 +1405,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         let mut dirty = dirty;
         let mut fit_mode = fit_mode;
         let mut preserve_regression_on_zero_change = preserve_regression_on_zero_change;
-        use_effect(move || {
+        use_future(move || async move {
             if let Some(cached_cfg) = load_cached_calibration_file() {
                 cfg.set(Some(cached_cfg));
                 if status.read().starts_with("Loading calibration") {
@@ -1328,39 +1419,37 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 dirty.set(true);
                 status.set("Restored unsaved calibration changes from this device".to_string());
             }
-            spawn(async move {
-                match http_get_json::<CalibrationFile>("/api/calibration").await {
-                    Ok(mut v) => {
-                        sanitize_calibration_file(&mut v);
-                        save_cached_calibration_file(&v);
-                        if *dirty.read() {
-                            if cfg.read().is_none() {
-                                cfg.set(Some(v));
-                            }
-                            if status.read().starts_with("Loading calibration") {
-                                status.set(
-                                    "Unsaved local calibration changes restored from this device"
-                                        .to_string(),
-                                );
-                            }
-                        } else {
+            match http_get_json::<CalibrationFile>("/api/calibration").await {
+                Ok(mut v) => {
+                    sanitize_calibration_file(&mut v);
+                    save_cached_calibration_file(&v);
+                    if *dirty.read() {
+                        if cfg.read().is_none() {
                             cfg.set(Some(v));
-                            status.set("Calibration loaded".to_string());
                         }
-                    }
-                    Err(e) => {
-                        if cfg.read().is_some() {
-                            if !*dirty.read() {
-                                status.set(format!(
-                                    "Backend disconnected. Showing cached calibration data: {e}"
-                                ));
-                            }
-                        } else {
-                            status.set(format!("Failed to load: {e}"));
+                        if status.read().starts_with("Loading calibration") {
+                            status.set(
+                                "Unsaved local calibration changes restored from this device"
+                                    .to_string(),
+                            );
                         }
+                    } else {
+                        cfg.set(Some(v));
+                        status.set("Calibration loaded".to_string());
                     }
                 }
-            });
+                Err(e) => {
+                    if cfg.read().is_some() {
+                        if !*dirty.read() {
+                            status.set(format!(
+                                "Backend disconnected. Showing cached calibration data: {e}"
+                            ));
+                        }
+                    } else {
+                        status.set(format!("Failed to load: {e}"));
+                    }
+                }
+            }
         });
     }
 
@@ -1437,6 +1526,12 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             spawn(async move {
                 match http_get_json::<CalibrationFile>("/api/calibration").await {
                     Ok(mut remote_cfg) => {
+                        if *dirty.read()
+                            || *sequence_dialog_open.read()
+                            || cfg.read().as_ref() != current_cfg.as_ref()
+                        {
+                            return;
+                        }
                         sanitize_calibration_file(&mut remote_cfg);
                         if current_cfg.as_ref() != Some(&remote_cfg) {
                             save_cached_calibration_file(&remote_cfg);
@@ -1461,35 +1556,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .cloned()
         .or_else(|| sensors.first().cloned());
     let raw_precision = sensor_raw_precision(selected_sensor.as_ref(), 6);
-    if sensors.is_empty() {
-        let shell_style = format!(
-            "padding:12px; display:flex; flex-direction:column; gap:12px; min-height:100%; overflow:visible; color:{}; background:{};",
-            theme.text_primary, theme.tab_shell_background
-        );
-        let section_style = format!(
-            "display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid {}; border-radius:16px; background:{}; box-shadow:0 10px 24px rgba(0,0,0,0.18);",
-            theme.tab_shell_border, theme.panel_background
-        );
-        return rsx! {
-            div { style: "{shell_style}",
-                div { style: "{section_style}",
-                    h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
-                    div { style: "color:{theme.text_muted}; font-size:13px;", "{status.read()}" }
-                    if cfg.read().is_some() {
-                        div {
-                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
-                            "Showing the last calibration data seen on this device. The backend is disconnected and the sensor layout mapping is currently unavailable."
-                        }
-                    } else {
-                        div {
-                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
-                            "No cached calibration layout is available yet for this backend."
-                        }
-                    }
-                }
-            }
-        };
-    }
     let channel_key = selected_sensor
         .as_ref()
         .map(|s| s.channel.clone())
@@ -1603,12 +1669,13 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
         });
     }
-    let sequence_started = cfg.read().as_ref().is_some_and(|c| {
+    let sequence_has_zero = cfg.read().as_ref().is_some_and(|c| {
         c.channels
             .get(&channel_key)
             .and_then(|channel| channel.zero_raw)
             .is_some()
     });
+    let sequence_has_weighted_points = !points.is_empty();
     let fit_type_s = cfg
         .read()
         .as_ref()
@@ -1822,6 +1889,36 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .map(|((cx, cy), selection)| (cx, cy, selection))
         .collect();
 
+    if sensors.is_empty() {
+        let shell_style = format!(
+            "padding:12px; display:flex; flex-direction:column; gap:12px; min-height:100%; overflow:visible; color:{}; background:{};",
+            theme.text_primary, theme.tab_shell_background
+        );
+        let section_style = format!(
+            "display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid {}; border-radius:16px; background:{}; box-shadow:0 10px 24px rgba(0,0,0,0.18);",
+            theme.tab_shell_border, theme.panel_background
+        );
+        return rsx! {
+            div { style: "{shell_style}",
+                div { style: "{section_style}",
+                    h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
+                    div { style: "color:{theme.text_muted}; font-size:13px;", "{status.read()}" }
+                    if cfg.read().is_some() {
+                        div {
+                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
+                            "Showing the last calibration data seen on this device. The backend is disconnected and the sensor layout mapping is currently unavailable."
+                        }
+                    } else {
+                        div {
+                            style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:13px;",
+                            "No cached calibration layout is available yet for this backend."
+                        }
+                    }
+                }
+            }
+        };
+    }
+
     rsx! {
         div { style: "{shell_style}",
             style { {r#"
@@ -1837,10 +1934,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 div { style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;",
                     div {
                         h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
-                        div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Tune live sensor fits, capture calibration points, and refit without leaving the dashboard." }
+                        div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Live load-cell captures retain ADC temperature and normalize raw values to the saved thermal reference before fitting." }
                         div { style: "margin-top:6px; color:{theme.text_secondary}; font-size:12px;",
                             if can_edit {
-                                "Local edits stay on this page until Save pushes them to the backend. Saved changes sync to other open frontends."
+                                "Save updates only the selected sensor. Save edits before switching sensors. Saved changes sync to other open frontends."
                             } else {
                                 "Current calibration data, active regression, and captured points are shown here."
                             }
@@ -1854,30 +1951,43 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         }
                         if can_edit {
                             button {
+                                r#type: "button",
                                 style: "{success_button_style}",
-                                disabled: cfg.read().is_none() || !*dirty.read(),
+                                disabled: cfg.read().is_none() || !*dirty.read() || *sequence_capture_busy.read() || *calibration_save_busy.read(),
                                 onclick: {
                                     let mut cfg = cfg;
                                     let mut status = status;
                                     let mut dirty = dirty;
+                                    let mut calibration_save_busy = calibration_save_busy;
+                                    let selected_sensor = selected_sensor.clone();
                                     move |_| {
+                                        if *calibration_save_busy.read() { return; }
                                         let Some(next) = cfg.read().clone() else {
                                             status.set("No calibration data loaded".to_string());
                                             return;
                                         };
-                                        status.set("Saving calibration to backend...".to_string());
+                                        let Some(sensor) = selected_sensor.clone() else { return; };
+                                        let request = CalibrationSaveRequest { channel: sensor.channel, calibration: next.clone() };
+                                        status.set(format!("Saving {} calibration…", sensor.label));
+                                        calibration_save_busy.set(true);
                                         spawn(async move {
-                                            match http_post_json::<CalibrationFile, CalibrationFile>("/api/calibration", &next).await {
+                                            match http_post_json::<CalibrationSaveRequest, CalibrationFile>("/api/calibration", &request).await {
                                                 Ok(mut saved_cfg) => {
                                                     sanitize_calibration_file(&mut saved_cfg);
                                                     save_cached_calibration_file(&saved_cfg);
-                                                    cfg.set(Some(saved_cfg));
-                                                    dirty.set(false);
-                                                    clear_calibration_draft();
-                                                    status.set("Calibration saved".to_string());
+                                                    let mut current = cfg.read().clone().unwrap_or_default();
+                                                    if accept_calibration_save(&mut current, &next, saved_cfg) {
+                                                        cfg.set(Some(current));
+                                                        dirty.set(false);
+                                                        clear_calibration_draft();
+                                                        status.set("Selected sensor saved; other calibrations preserved".to_string());
+                                                    } else {
+                                                        status.set("Earlier calibration saved; newer local edits are preserved. Save again to publish them.".to_string());
+                                                    }
                                                 }
                                                 Err(e) => status.set(format!("Save failed: {e}")),
                                             }
+                                            calibration_save_busy.set(false);
                                         });
                                     }
                                 },
@@ -1892,6 +2002,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 for sensor in sensors.iter().cloned() {
                     button {
                         style: "{sensor_button_style(sensor.id == effective_selected_sensor_id)}",
+                        disabled: *dirty.read() || *sequence_capture_busy.read() || *calibration_save_busy.read(),
                         onclick: {
                             let mut selected_sensor_id = selected_sensor_id;
                             let mut selected_point = selected_point;
@@ -1906,6 +2017,19 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 }
             }
 
+            if selected_sensor.as_ref().is_some_and(|s| s.data_type == "KG50") {
+                super::data_tab::Kg50InputSelector {
+                    theme: theme.clone(),
+                    disabled: !can_edit || *dirty.read() || *sequence_capture_busy.read() || *sequence_dialog_open.read() || *calibration_save_busy.read(),
+                    on_changed: { let mut cfg = cfg; let mut dirty = dirty; let mut status = status; move |value: serde_json::Value| {
+                        if let Ok(updated) = serde_json::from_value::<CalibrationFile>(value) {
+                            save_cached_calibration_file(&updated);
+                            cfg.set(Some(updated)); dirty.set(false); clear_calibration_draft();
+                            status.set("50 kg input changed; its own calibration is now active".into());
+                        }
+                    } },
+                }
+            }
             div { style: "display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
                 CalibrationLiveMetrics {
                     theme: theme.clone(),
@@ -1917,7 +2041,89 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
             }
 
+            if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                section { style: "{section_style}",
+                    h2 { style: "margin:0; font-size:16px;", "Temperature compensation — {sensor.label}" }
+                    ThermalGeometryPreview { theme: theme.clone() }
+                    ThermalCompensationMetrics {
+                        theme: theme.clone(),
+                        selected_sensor: selected_sensor.clone(),
+                        calibration: cfg.read().clone(),
+                        channel_key: channel_key.clone(),
+                        dirty: *dirty.read(),
+                    }
+            if can_edit {
+                if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                    LongZeroPanel {
+                        theme: theme.clone(),
+                        sensor: sensor.data_type.clone(),
+                        dirty: *dirty.read(),
+                        on_applied: { let mut cfg = cfg; let mut dirty = dirty; move |updated: CalibrationFile| { cfg.set(Some(updated)); dirty.set(false); } },
+                    }
+                }
+            }
+                    if can_edit {
+                        ThermalPointCapture {
+                            key: "thermal-point-{sensor.id}",
+                            theme: theme.clone(),
+                            sensor: sensor.data_type.clone(),
+                            dirty: *dirty.read(),
+                            on_applied: { let mut cfg = cfg; move |saved: CalibrationFile| { cfg.set(Some(saved)); } },
+                        }
+                    }
+
+                }
+            }
+
             div { style: "{section_style}",
+            div {
+                div { style: "font-size:16px; font-weight:800; color:{theme.text_primary};", "Guided calibration" }
+                div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px; line-height:1.45;", "Choose the direction that matches the physical setup. Capture at least two known loads, let each reading settle, and save only after reviewing the plotted fit." }
+            }
+
+            if can_edit {
+            div { style: "display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px;",
+                button {
+                    r#type: "button",
+                    key: "calibration-direction-increasing",
+                    disabled: *sequence_capture_busy.read(),
+                    style: if *sequence_direction.read() == CaptureDirection::Increasing { "padding:14px; text-align:left; border-radius:14px; border:2px solid var(--cal-accent, #22d3ee); background:rgba(34,211,238,0.10); color:inherit; cursor:pointer;" } else { "padding:14px; text-align:left; border-radius:14px; border:1px solid currentColor; background:transparent; color:inherit; cursor:pointer; opacity:0.78;" },
+                    onclick: {
+                        let sequence_direction = sequence_direction;
+                        move |event| {
+                            choose_capture_direction(event, sequence_direction, CaptureDirection::Increasing);
+                        }
+                    },
+                    div { style: "font-weight:800;", "Low to high" }
+                    div { style: "margin-top:4px; color:{theme.text_muted}; font-size:12px; line-height:1.4;", "Start unloaded at zero, then add known weights in increasing order." }
+                }
+                button {
+                    r#type: "button",
+                    key: "calibration-direction-decreasing",
+                    disabled: *sequence_capture_busy.read(),
+                    style: if *sequence_direction.read() == CaptureDirection::Decreasing { "padding:14px; text-align:left; border-radius:14px; border:2px solid var(--cal-accent, #22d3ee); background:rgba(34,211,238,0.10); color:inherit; cursor:pointer;" } else { "padding:14px; text-align:left; border-radius:14px; border:1px solid currentColor; background:transparent; color:inherit; cursor:pointer; opacity:0.78;" },
+                    onclick: {
+                        let sequence_direction = sequence_direction;
+                        move |event| {
+                            choose_capture_direction(event, sequence_direction, CaptureDirection::Decreasing);
+                        }
+                    },
+                    div { style: "font-weight:800;", "High to low" }
+                    div { style: "margin-top:4px; color:{theme.text_muted}; font-size:12px; line-height:1.4;", "Start with the highest known weight, remove weight between points, and finish unloaded at zero." }
+                }
+            }
+            }
+
+            div { style: "display:flex; gap:8px; flex-wrap:wrap; color:{theme.text_secondary}; font-size:12px;",
+                span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "1  Select sensor" }
+                span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "2  Stabilize load" }
+                span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "3  Capture point" }
+                span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "4  Review & save" }
+            }
+
+            details { style: "border:1px solid {theme.border_soft}; border-radius:14px; background:{theme.panel_background_alt};",
+            summary { style: "padding:11px 12px; cursor:pointer; color:{theme.text_secondary}; font-size:13px; font-weight:700;", "Advanced fit and manual point tools" }
+            div { style: "display:flex; flex-direction:column; gap:10px; padding:0 10px 10px;",
             div { style: "{toolbar_style}",
                 span { style: "color:{theme.text_secondary};", "Regression" }
                 if can_edit {
@@ -1992,13 +2198,18 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 }
             }
             }
+            }
+            }
 
             if can_edit {
+            h3 { style: "margin:8px 0 0; font-size:15px;", "Manual calibration point" }
+            p { style: "margin:0; font-size:12px; color:{theme.text_muted};", "Enter the known weight and raw reading directly, or capture a live reading. Add the point, then Save the selected sensor. P6 raw readings are differential volts." }
             div { style: "{toolbar_style}",
                 input {
                     style: "{input_style}",
+                    aria_label: "Known weight or reference value",
                     r#type: "number",
-                    step: "0.01",
+                    step: "any",
                     placeholder: "Known mass (kg)",
                     value: "{manual_kg.read()}",
                     disabled: !can_edit,
@@ -2012,11 +2223,12 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     r#type: "number",
                     step: "0.000001",
                     placeholder: "Measured raw sensor value",
+                    aria_label: "Manual raw ADC reading",
                     value: "{manual_raw.read()}",
                     disabled: !can_edit,
                     oninput: {
                         let mut manual_raw = manual_raw;
-                        move |e| manual_raw.set(e.value())
+                        move |e| { manual_temperature.set(None); manual_raw.set(e.value()); }
                     }
                 }
                 button {
@@ -2041,6 +2253,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 status.set("Invalid manual raw".to_string());
                                 return;
                             };
+                            if !kg.is_finite() || !raw.is_finite() {
+                                status.set("Weight and raw reading must be finite numbers".into());
+                                return;
+                            }
                             let Some(sensor) = selected_sensor.clone() else {
                                 status.set("No sensor selected".to_string());
                                 return;
@@ -2054,6 +2270,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 raw,
                                 *preserve_regression_on_zero_change.read(),
                             );
+                            record_temperature_capture(&mut next, &sensor.data_type, kg, raw, *manual_temperature.read());
                             let refit_err = refresh_local_fit_preview(
                                 &mut next,
                                 &selected_channel,
@@ -2098,9 +2315,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             status.set(initial_message);
                             let sensor_label = sensor.label.clone();
                             spawn(async move {
+                                let capture_calibration = cfg.read().clone().unwrap_or_default();
                                 match capture_average_raw_sample(
                                     sensor.data_type.clone(),
                                     effective_capture_sample_count,
+                                    capture_calibration,
                                     |completed, target| {
                                         let progress = format!(
                                             "Capturing samples for {}: {}/{}",
@@ -2112,7 +2331,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 )
                                 .await
                                 {
-                                    Ok((raw, captured)) => {
+                                    Ok((raw, captured, temperature)) => {
+                                        manual_temperature.set(temperature);
                                         manual_raw.set(format_sensor_raw_value(
                                             raw,
                                             Some(&sensor),
@@ -2145,12 +2365,21 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
 
             if can_edit {
+                if let Some(sensor) = selected_sensor.as_ref() {
+                    ManualLinearCalibration {
+                        key: "manual-linear-{sensor.channel}",
+                        theme: theme.clone(), channel: sensor.channel.clone(),
+                        cfg, dirty, status, fit_mode,
+                    }
+                }
+            }
+            if can_edit {
             div { style: "{toolbar_style}",
                 input {
                     style: "{input_style}",
                     r#type: "number",
                     step: "0.01",
-                    placeholder: "Sequence point mass (kg)",
+                    placeholder: if *sequence_direction.read() == CaptureDirection::Decreasing { "Current mass — start high (kg)" } else { "Next known mass (kg)" },
                     value: "{known_kg.read()}",
                     disabled: !can_edit,
                     oninput: {
@@ -2169,24 +2398,29 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         let mut sequence_dialog_status = sequence_dialog_status;
                         let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
                         let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
-                        let mut known_kg = known_kg;
+                        let known_kg = known_kg;
+                        let sequence_direction = sequence_direction;
                         move |_| {
-                            sequence_dialog_mode.set(CaptureMode::SequenceZero);
-                            sequence_dialog_weight.set("0".to_string());
+                            let descending = *sequence_direction.read() == CaptureDirection::Decreasing;
+                            sequence_dialog_mode.set(if descending { CaptureMode::SequencePoint } else { CaptureMode::SequenceZero });
+                            sequence_dialog_weight.set(if descending { known_kg.read().clone() } else { "0".to_string() });
                             sequence_dialog_captured_raw.set(String::new());
-                            sequence_dialog_status.set(
-                                "Capture a zero-load sample, save it, then keep adding sequence points."
-                                    .to_string(),
-                            );
+                            sequence_dialog_status.set(if descending {
+                                "Keep the highest known load applied and capture it first. Then remove weight and capture progressively lower points."
+                                    .to_string()
+                            } else {
+                                "Remove all load, allow the reading to settle, and capture zero first."
+                                    .to_string()
+                            });
                             sequence_dialog_replace_existing.set(true);
                             sequence_dialog_confirm_reset.set(false);
-                            known_kg.set("1.0".to_string());
                             sequence_dialog_open.set(true);
                         }
                     },
-                    "Start New Sequence..."
+                    "New sequence…"
                 }
-                if sequence_started {
+                if (*sequence_direction.read() == CaptureDirection::Increasing && sequence_has_zero)
+                    || (*sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points) {
                     button {
                         style: "{neutral_button_style}",
                         disabled: selected_sensor.is_none() || !can_edit,
@@ -2204,7 +2438,40 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 sequence_dialog_weight.set(known_kg.read().clone());
                                 sequence_dialog_captured_raw.set(String::new());
                                 sequence_dialog_status.set(
-                                    "Capture the current live reading for a sequence point, then save it. Reusing the same mass recaptures that point."
+                                    if *sequence_direction.read() == CaptureDirection::Decreasing {
+                                        "Remove weight, let the reading settle, enter the lower remaining mass, and capture. Reusing a mass replaces that point."
+                                            .to_string()
+                                    } else {
+                                        "Add weight, let the reading settle, enter the total known mass, and capture. Reusing a mass replaces that point."
+                                            .to_string()
+                                    },
+                                );
+                                sequence_dialog_replace_existing.set(false);
+                                sequence_dialog_confirm_reset.set(false);
+                                sequence_dialog_open.set(true);
+                            }
+                        },
+                        "Continue existing…"
+                    }
+                }
+                if *sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points && !sequence_has_zero {
+                    button {
+                        style: "{success_button_style}",
+                        disabled: selected_sensor.is_none() || !can_edit,
+                        onclick: {
+                            let mut sequence_dialog_open = sequence_dialog_open;
+                            let mut sequence_dialog_mode = sequence_dialog_mode;
+                            let mut sequence_dialog_weight = sequence_dialog_weight;
+                            let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
+                            let mut sequence_dialog_status = sequence_dialog_status;
+                            let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
+                            let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
+                            move |_| {
+                                sequence_dialog_mode.set(CaptureMode::SequenceZero);
+                                sequence_dialog_weight.set("0".to_string());
+                                sequence_dialog_captured_raw.set(String::new());
+                                sequence_dialog_status.set(
+                                    "Remove all load, wait for a stable reading, then capture the final zero point. Existing weighted points will be kept."
                                         .to_string(),
                                 );
                                 sequence_dialog_replace_existing.set(false);
@@ -2212,7 +2479,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 sequence_dialog_open.set(true);
                             }
                         },
-                        "Continue Sequence..."
+                        "Finish at Zero..."
                     }
                 }
             }
@@ -2478,7 +2745,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;",
                             div {
                                 div { style: "font-size:18px; font-weight:700; color:{theme.text_primary};",
-                                    if *sequence_dialog_mode.read() == CaptureMode::SequenceZero { "Start New Sequence" } else { "Continue Sequence" }
+                                    if *sequence_dialog_replace_existing.read() { "New sequence" } else { "Continue existing" }
                                 }
                                 div { style: "margin-top:4px; font-size:13px; color:{theme.text_muted};", "{sequence_dialog_status.read()}" }
                             }
@@ -2487,7 +2754,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             div {
                                 style: "padding:12px; border-radius:12px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text};",
                                 div { style: "font-weight:700; margin-bottom:4px;", "Replace Existing Sequence" }
-                                div { style: "font-size:13px;", "Saving this new sequence zero will replace the current channel calibration points and fit." }
+                                div { style: "font-size:13px;", "The first capture in this sequence will replace the current channel calibration points and fit." }
                                 label { style: "margin-top:8px; display:flex; align-items:center; gap:8px; font-size:13px;",
                                     input {
                                         r#type: "checkbox",
@@ -2504,6 +2771,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 }
                             }
                         }
+                        div { style:"font-size:13px;color:{theme.text_secondary};",
+                            if *sequence_direction.read() == CaptureDirection::Decreasing { "High to low" } else { "Low to high" }
+                            " · Known mass (kg). Prefilled non-zero masses are editable in both sequences; zero captures remain 0 kg."
+                        }
                         div { style: "{toolbar_style}",
                             input {
                                 style: "{input_style}",
@@ -2511,7 +2782,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 step: "0.01",
                                 placeholder: if *sequence_dialog_mode.read() == CaptureMode::SequenceZero { "Sequence zero mass (kg)" } else { "Sequence point mass (kg)" },
                                 value: "{sequence_dialog_weight.read()}",
-                                disabled: *sequence_dialog_mode.read() == CaptureMode::SequenceZero,
+                                disabled: *sequence_dialog_mode.read() == CaptureMode::SequenceZero || *sequence_capture_busy.read(),
                                 oninput: {
                                     let mut sequence_dialog_weight = sequence_dialog_weight;
                                     move |e| sequence_dialog_weight.set(e.value())
@@ -2525,8 +2796,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 value: "{sequence_dialog_captured_raw.read()}",
                             }
                             button {
+                                r#type: "button",
                                 style: "{success_button_style}",
-                                disabled: !can_edit,
+                                disabled: !can_edit || *sequence_capture_busy.read() || (*sequence_dialog_replace_existing.read() && !*sequence_dialog_confirm_reset.read()),
                                 onclick: {
                                     let selected_sensor = selected_sensor.clone();
                                     let known_kg = known_kg;
@@ -2534,19 +2806,42 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     let mut dirty = dirty;
                                     let mut status = status;
                                     let fit_mode = fit_mode;
-                                    let preserve_regression_on_zero_change =
-                                        preserve_regression_on_zero_change;
                                     let mut sequence_dialog_mode = sequence_dialog_mode;
                                     let mut sequence_dialog_weight = sequence_dialog_weight;
                                     let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
                                     let mut sequence_dialog_status = sequence_dialog_status;
                                     let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
                                     let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
+                                    let sequence_direction = sequence_direction;
+                                    let mut sequence_dialog_open = sequence_dialog_open;
+                                    let mut sequence_capture_busy = sequence_capture_busy;
                                     move |_| {
+                                        if *sequence_capture_busy.read() { return; }
                                         let Some(sensor) = selected_sensor.clone() else {
                                             sequence_dialog_status.set("No sensor selected.".to_string());
                                             return;
                                         };
+                                        // Freeze the request before awaiting live samples. Changing
+                                        // UI controls must not reinterpret or reset an in-flight capture.
+                                        let mode = *sequence_dialog_mode.read();
+                                        let weight = if mode == CaptureMode::SequenceZero {
+                                            0.0
+                                        } else {
+                                            match sequence_dialog_weight.read().trim().parse::<f32>() {
+                                                Ok(value) if value.is_finite() && value.abs() > 1e-6 => value,
+                                                _ => {
+                                                    sequence_dialog_status.set("Enter a finite non-zero sequence point mass.".to_string());
+                                                    return;
+                                                }
+                                            }
+                                        };
+                                        let replace_existing = *sequence_dialog_replace_existing.read();
+                                        if replace_existing && !*sequence_dialog_confirm_reset.read() { return; }
+                                        if cfg.read().is_none() {
+                                            sequence_dialog_status.set("Wait for calibration to load before capturing.".to_string());
+                                            return;
+                                        }
+                                        sequence_capture_busy.set(true);
                                         sequence_dialog_status.set(format!(
                                             "Capturing and adding {} live samples for {}...",
                                             effective_capture_sample_count,
@@ -2554,9 +2849,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                         ));
                                         let sensor_label = sensor.label.clone();
                                         spawn(async move {
+                                            let capture_calibration = cfg.read().clone().unwrap_or_default();
                                             match capture_average_raw_sample(
                                                 sensor.data_type.clone(),
                                                 effective_capture_sample_count,
+                                                capture_calibration,
                                                 |completed, target| {
                                                     sequence_dialog_status.set(format!(
                                                         "Capturing samples for {}: {}/{}",
@@ -2566,43 +2863,16 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             )
                                             .await
                                             {
-                                                Ok((raw, captured)) => {
-                                                    let mode = *sequence_dialog_mode.read();
-                                                    let weight = if mode == CaptureMode::SequenceZero {
-                                                        0.0
-                                                    } else {
-                                                        match sequence_dialog_weight.read().trim().parse::<f32>() {
-                                                            Ok(value) if value.abs() > 1e-6 => value,
-                                                            _ => {
-                                                                sequence_dialog_status.set("Enter a non-zero sequence point mass.".to_string());
-                                                                return;
-                                                            }
-                                                        }
-                                                    };
-                                                    let replace_existing = *sequence_dialog_replace_existing.read();
+                                                Ok((raw, captured, temperature)) => {
                                                     let mut next = cfg.read().clone().unwrap_or_default();
-                                                    if replace_existing {
-                                                        reset_channel_by_key(&mut next, &sensor.channel);
+                                                    if let Err(error) = apply_sequence_capture(
+                                                        &mut next, &sensor.channel, mode, weight, raw, replace_existing,
+                                                    ) {
+                                                        sequence_dialog_status.set(error);
+                                                        sequence_capture_busy.set(false);
+                                                        return;
                                                     }
-                                                    if mode == CaptureMode::SequenceZero {
-                                                        set_zero_raw_by_key(
-                                                            &mut next,
-                                                            &sensor.channel,
-                                                            raw,
-                                                            *preserve_regression_on_zero_change.read(),
-                                                        );
-                                                        let channel = next.channels.entry(sensor.channel.clone()).or_default();
-                                                        channel.points.clear();
-                                                        channel.fit = None;
-                                                    } else {
-                                                        upsert_point_by_key(
-                                                            &mut next,
-                                                            &sensor.channel,
-                                                            weight,
-                                                            raw,
-                                                            *preserve_regression_on_zero_change.read(),
-                                                        );
-                                                    }
+                                                    record_temperature_capture(&mut next, &sensor.data_type, if mode == CaptureMode::SequenceZero { 0.0 } else { weight }, raw, temperature);
                                                     let refit_err = refresh_local_fit_preview(
                                                         &mut next,
                                                         &sensor.channel,
@@ -2630,16 +2900,22 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                                 sensor.label
                                                             ));
                                                         }
-                                                        sequence_dialog_mode.set(CaptureMode::SequencePoint);
-                                                        sequence_dialog_weight.set(known_kg.read().clone());
-                                                        sequence_dialog_replace_existing.set(false);
-                                                        sequence_dialog_confirm_reset.set(false);
-                                                        sequence_dialog_status.set(format!(
-                                                            "Zero captured as {} from {} samples on {}. Enter the next mass and capture again.",
-                                                            format_sensor_raw_value(raw, Some(&sensor), 6),
-                                                            captured,
-                                                            sensor.label
-                                                        ));
+                                                        if *sequence_direction.read() == CaptureDirection::Decreasing && !replace_existing {
+                                                            sequence_dialog_status.set(format!(
+                                                                "Final zero captured as {} from {} samples on {}. Review the fit, then save the calibration.",
+                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label
+                                                            ));
+                                                            sequence_dialog_open.set(false);
+                                                        } else {
+                                                            sequence_dialog_mode.set(CaptureMode::SequencePoint);
+                                                            sequence_dialog_weight.set(known_kg.read().clone());
+                                                            sequence_dialog_replace_existing.set(false);
+                                                            sequence_dialog_confirm_reset.set(false);
+                                                            sequence_dialog_status.set(format!(
+                                                                "Zero captured as {} from {} samples on {}. Add the next known mass and capture again.",
+                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label
+                                                            ));
+                                                        }
                                                     } else {
                                                         if let Some(err) = refit_err.as_ref() {
                                                             status.set(format!(
@@ -2652,6 +2928,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                                 weight, sensor.label
                                                             ));
                                                         }
+                                                        // Only the first capture of a new sequence replaces
+                                                        // old data; subsequent high-to-low points must accumulate.
+                                                        sequence_dialog_replace_existing.set(false);
+                                                        sequence_dialog_confirm_reset.set(false);
                                                         sequence_dialog_status.set(format!(
                                                             "Added/updated {weight} kg as {} from {} samples on {}. Enter the next mass and capture again.",
                                                             format_sensor_raw_value(raw, Some(&sensor), 6),
@@ -2662,6 +2942,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                 }
                                                 Err(err) => sequence_dialog_status.set(err),
                                             }
+                                            sequence_capture_busy.set(false);
                                         });
                                     }
                                 },
@@ -2669,6 +2950,26 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     "Capture Zero"
                                 } else {
                                     "Capture Averaged Sample"
+                                }
+                            }
+                            if *sequence_direction.read() == CaptureDirection::Decreasing
+                                && *sequence_dialog_mode.read() == CaptureMode::SequencePoint
+                                && !*sequence_dialog_replace_existing.read() && sequence_has_weighted_points {
+                                button {
+                                    r#type: "button",
+                                    style: "{neutral_button_style}",
+                                    disabled: !can_edit || *sequence_capture_busy.read(),
+                                    onclick: {
+                                        let mut sequence_dialog_mode = sequence_dialog_mode;
+                                        let mut sequence_dialog_weight = sequence_dialog_weight;
+                                        let mut sequence_dialog_status = sequence_dialog_status;
+                                        move |_| {
+                                            sequence_dialog_mode.set(CaptureMode::SequenceZero);
+                                            sequence_dialog_weight.set("0".to_string());
+                                            sequence_dialog_status.set("Remove all load and let the reading settle. Capture Zero to finish; all weighted points are preserved.".to_string());
+                                        }
+                                    },
+                                    "Finish at zero…"
                                 }
                             }
                         }
@@ -2695,7 +2996,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                         sequence_dialog_open.set(false);
                                     }
                                 },
-                                "Save"
+                                "Done"
                             }
                         }
                     }
@@ -2714,22 +3015,64 @@ fn CalibrationLiveMetrics(
     channel_key: String,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
+    let raw = selected_sensor.as_ref().and_then(|sensor| latest_raw(&sensor.data_type));
+    let value = calibration.as_ref().and_then(|cfg| {
+        raw.and_then(|raw| thermal_raw(cfg, &channel_key, raw, fresh_temperature()))
+            .and_then(|raw| eval_fit_key(cfg, &channel_key, raw))
+    });
+    rsx! {
+        {metric_card(&theme, "Live Raw", fmt_fixed(raw, 12, sensor_raw_precision(selected_sensor.as_ref(), 6)))}
+        {metric_card(&theme, "Calibrated Value", fmt_fixed(value, 12, 4))}
+    }
+}
+
+#[component]
+fn ThermalCompensationMetrics(
+    theme: ThemeConfig,
+    selected_sensor: Option<CalibrationSensorSpec>,
+    calibration: Option<CalibrationFile>,
+    channel_key: String,
+    dirty: bool,
+) -> Element {
+    let _ = *TELEMETRY_RENDER_EPOCH.read();
     let raw_live = selected_sensor
         .as_ref()
         .and_then(|sensor| latest_raw(sensor.data_type.as_str()));
-    let calibrated_live = calibration
-        .as_ref()
-        .and_then(|cfg| raw_live.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
-    let raw_live_s = fmt_fixed(
-        raw_live,
-        12,
-        sensor_raw_precision(selected_sensor.as_ref(), 6),
-    );
-    let calibrated_live_s = fmt_fixed(calibrated_live, 12, 4);
+    let temperature = fresh_temperature();
+    let cfg = calibration.as_ref();
+    let corrected_raw = cfg.and_then(|cfg| raw_live.and_then(|raw| thermal_raw(cfg, &channel_key, raw, temperature)));
+    let calibrated_live = cfg.and_then(|cfg| corrected_raw.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
+    let is_loadcell = selected_sensor.as_ref().is_some_and(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50"));
+    let thermal = cfg.and_then(|cfg| cfg.thermal.get(thermal_sensor(&channel_key)));
+    let enabled = thermal.is_some_and(|t| t.raw_per_c != 0.0);
+    let state = if cfg.is_none() { "Loading calibration" }
+        else if !enabled { "Off — no temperature correction" }
+        else if temperature.is_none() { "Waiting for fresh ADC temperature" }
+        else { "Temperature correction enabled" };
+    let raw_change = corrected_raw.zip(raw_live).map(|(corrected, raw)| corrected - raw);
+    let before_thermal = cfg.and_then(|cfg| raw_live.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
+    let weight_change = calibrated_live.zip(before_thermal).map(|(after, before)| after - before);
 
     rsx! {
-        {metric_card(&theme, "Live Raw", raw_live_s)}
-        {metric_card(&theme, "Calibrated Value", calibrated_live_s)}
+        if is_loadcell {
+            div { style: "grid-column:1 / -1; display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
+                div { style: "grid-column:1 / -1; color:{theme.text_primary};",
+                    div { style: "display:flex; gap:8px; align-items:center; flex-wrap:wrap;",
+                        span { style: "padding:5px 10px; border-radius:999px; background:{theme.info_background}; color:{theme.info_text}; font-size:12px; font-weight:700;", "{state}" }
+                        span { style: "font-size:12px; color:{theme.text_muted};", if dirty { "Unsaved preview · Save to apply" } else { "Saved settings · before smoothing" } }
+                    }
+                    p { style: "font-size:12px; color:{theme.text_muted}; margin:8px 0 0;", "ADC die temperature is a proxy, not the loadcell temperature. Corrected raw = raw − slope × (temperature − reference)." }
+                }
+                {metric_card(&theme, "ADC die temperature (°C)", fmt_fixed(temperature, 0, 2))}
+                {metric_card(&theme, "Reference temperature (°C)", fmt_fixed(thermal.map(|t| t.reference_c), 0, 2))}
+                {metric_card(&theme, "Thermal slope (raw/°C)", thermal.map(|t| format!("{:+.6e}", t.raw_per_c)).unwrap_or_else(|| "—".into()))}
+                {metric_card(&theme, "Applied raw change", raw_change.map(|v| format!("{:+.6e}", v)).unwrap_or_else(|| "—".into()))}
+                {metric_card(&theme, "Temperature-corrected raw", fmt_fixed(corrected_raw, 0, 9))}
+                {metric_card(&theme, "Without temperature correction (kg)", fmt_fixed(before_thermal, 0, 4))}
+                {metric_card(&theme, "With temperature correction (kg)", fmt_fixed(calibrated_live, 0, 4))}
+                {metric_card(&theme, "Temperature effect (kg)", weight_change.map(|v| format!("{:+.4}", v)).unwrap_or_else(|| "—".into()))}
+            }
+        }
     }
 }
 
@@ -2742,5 +3085,348 @@ fn metric_card(theme: &ThemeConfig, label: &str, value: String) -> Element {
                 "{value}"
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+struct ThermalCalibration { reference_c: f32, raw_per_c: f32, #[serde(default)] points: Vec<[f32; 2]> }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TemperatureCapture { expected: f32, raw: f32, temperature_c: Option<f32> }
+fn thermal_sensor(channel: &str) -> &str { match channel { "ch1" => "KG1000", "kg50" => "KG50", _ => channel } }
+fn fresh_temperature() -> Option<f32> {
+    super::fresh_daq_calibration_value("DAQ_ADC_TEMPERATURE", now_ms() as i64)
+        .filter(|t| (-40.0..=125.0).contains(t))
+}
+fn thermal_raw(cfg: &CalibrationFile, channel: &str, raw: f32, temperature: Option<f32>) -> Option<f32> {
+    let Some(t) = cfg.thermal.get(thermal_sensor(channel)) else { return Some(raw); };
+    if t.raw_per_c == 0.0 { return Some(raw); }
+    let corrected = raw - t.raw_per_c * (temperature? - t.reference_c);
+    corrected.is_finite().then_some(corrected)
+}
+fn record_temperature_capture(cfg: &mut CalibrationFile, sensor: &str, expected: f32,
+                              corrected_raw: f32, temperature_c: Option<f32>) {
+    if !matches!(sensor, "KG1000" | "KG50") { return; }
+    let drift = cfg.thermal.get(sensor).and_then(|t| temperature_c.map(|v| t.raw_per_c * (v - t.reference_c))).unwrap_or(0.0);
+    let captures = cfg.temperature_captures.entry(sensor.into()).or_default();
+    captures.retain(|p| (p.expected - expected).abs() >= 1e-6);
+    captures.push(TemperatureCapture { expected, raw: corrected_raw + drift, temperature_c });
+}
+
+#[cfg(test)]
+mod thermal_calibration_tests {
+    use super::*;
+    #[test]
+    fn capture_temperature_survives_save_and_raw_is_not_double_corrected() {
+        let mut cfg = CalibrationFile::default();
+        cfg.thermal.insert("KG1000".into(), ThermalCalibration { reference_c: 20., raw_per_c: 0.2, points: vec![] });
+        let corrected = thermal_raw(&cfg, "ch1", 12., Some(30.)).unwrap();
+        assert_eq!(corrected, 10.);
+        assert_eq!(thermal_raw(&cfg, "ch1", 12., None), None);
+        record_temperature_capture(&mut cfg, "KG1000", 0., corrected, Some(30.));
+        let saved: CalibrationFile = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(saved.temperature_captures["KG1000"][0].raw, 12.);
+        assert_eq!(saved.temperature_captures["KG1000"][0].temperature_c, Some(30.));
+        assert_eq!(saved.thermal["KG1000"].raw_per_c, 0.2);
+    }
+}
+
+fn thermal_control_style(theme: &ThemeConfig) -> String {
+    format!("padding:9px 12px; border:1px solid {}; border-radius:10px; background:{}; color:{}; font:inherit;", theme.border_soft,theme.panel_background_alt,theme.text_primary)
+}
+
+#[component]
+fn ThermalPointCapture(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: EventHandler<CalibrationFile>) -> Element {
+    let mut status = use_signal(|| serde_json::Value::Null);
+    let mut message = use_signal(String::new);
+    let mut confirmed = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let polling_sensor = sensor.clone();
+    use_future(move || {
+        let sensor=polling_sensor.clone();
+        async move {
+            loop {
+                match http_get_json::<serde_json::Value>(&format!("/api/calibration/thermal_settling?sensor_id={sensor}")).await {
+                    Ok(value)=>status.set(value),
+                    Err(e)=>{status.set(serde_json::Value::Null);message.set(format!("Settling status unavailable: {e}"));},
+                }
+                sleep_ms(2000).await;
+            }
+        }
+    });
+    let snapshot=status.read().clone();
+    let ready=snapshot["ready"].as_bool().unwrap_or(false);
+    let reason=snapshot["message"].as_str().unwrap_or("Checking load and temperature stability…");
+    let progress=snapshot["observed_s"].as_u64().unwrap_or(0).min(120);
+    let button=thermal_control_style(&theme);
+    rsx! {
+        div { style: "padding:16px; border:1px solid {theme.border_soft}; border-radius:12px; display:grid; gap:10px;",
+            div { style:"display:flex; justify-content:space-between; gap:12px; align-items:center;",
+                strong { "Settled temperature point" }
+                span { style:"font-size:12px; color:{theme.text_muted};", if ready { "Ready" } else { "Waiting for settling" } }
+            }
+            p { style:"margin:0; font-size:13px; color:{theme.text_secondary};", "{reason}" }
+            progress { max:"120", value:"{progress}", style:"width:100%; height:6px; accent-color:{theme.info_accent};" }
+            p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "Requires two minutes of stable 10-second means: load range ≤0.05 kg for KG1000 or ≤0.005 kg for KG50, and ADC range ≤0.2 °C. This checks readings; it does not prove thermal equilibrium. Collect at least six settled points across ≥0.25 °C, including intermediate temperatures. The slope updates only when the fit is consistent. Repeat during cooling." }
+            label { style:"display:flex; align-items:center; gap:8px; font-size:13px;",
+                input { r#type:"checkbox", checked:*confirmed.read(), onchange:move|e|confirmed.set(e.checked()) }
+                "Loadcell is physically unloaded (taring a load does not count)"
+            }
+            button { style:"{button}", disabled:dirty || *busy.read() || !ready || !*confirmed.read(),
+                onclick:move |_| {
+                    busy.set(true);let sensor=sensor.clone();
+                    spawn(async move {
+                        let body=serde_json::json!({"sensor_id":sensor});
+                        match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/capture_thermal_zero",&body).await {
+                            Ok(saved)=>{on_applied.call(saved);message.set("Settled point saved. A consistent fit needs six points across ≥0.25 °C including intermediate temperatures; until then the previous correction is retained. Verify zero and a known mass after fitting.".into());},
+                            Err(e)=>message.set(e),
+                        }
+                        busy.set(false);
+                    });
+                },
+                if *busy.read() { "Saving…" } else { "Capture settled point" }
+            }
+            if dirty { p { style:"margin:0; font-size:12px; color:{theme.warning_text};", "Save local calibration edits first." } }
+            if !message.read().is_empty() { p { role:"status", style:"margin:0; font-size:13px;", "{message}" } }
+        }
+    }
+}
+
+#[component]
+fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: EventHandler<CalibrationFile>) -> Element {
+    let mut status = use_signal(|| serde_json::Value::Null);
+    let mut message = use_signal(String::new);
+    let mut duration = use_signal(|| "1800".to_string());
+    let mut tau = use_signal(|| "100".to_string());
+    let mut known_zero = use_signal(|| false);
+    let mut thermal = use_signal(|| true);
+    use_future(move || async move {
+        loop {
+            if let Ok(value) = http_get_json::<serde_json::Value>("/api/calibration/long_zero").await { status.set(value); }
+            sleep_ms(1000).await;
+        }
+    });
+    let snapshot = status.read().clone();
+    let running = snapshot["running"].as_bool().unwrap_or(false);
+    let id = snapshot["session_id"].as_str().unwrap_or("").to_string();
+    let report = &snapshot["report"];
+    let same_sensor=snapshot["sensor_id"].as_str()==Some(sensor.as_str());
+    let ready = report["noise_ready"].as_bool().unwrap_or(false) && !running && snapshot["error"].is_null() && same_sensor;
+    let thermal_ready=report["thermal_ready"].as_bool().unwrap_or(false);
+    let quality = &report["thermal_quality"];
+    let settled_count=report["settled_points"].as_array().map_or(0,Vec::len);
+    let temperature=match (report["temperature_min_c"].as_f64(),report["temperature_max_c"].as_f64()) {
+        (Some(lo),Some(hi))=>format!("{lo:.2}–{hi:.2} °C"),_=>"—".into()
+    };
+    let samples=report["samples"].as_u64().unwrap_or(0).to_string();
+    let elapsed=format!("{} s",snapshot["elapsed_s"].as_u64().unwrap_or(0));
+    let slope=if thermal_ready { report["raw_per_c"].as_f64().map(|v|format!("{v:+.4e}")).unwrap_or_else(||"—".into()) } else { "Not ready".into() };
+    let disabled_reason=if dirty { "Save local calibration edits before applying." }
+        else if running { "Capture is running. Stop and analyze before applying." }
+        else if !ready { "Select the captured sensor and finish an error-free capture with ≥1,000 samples over ≥60 seconds." }
+        else if *thermal.read() && !thermal_ready { "Temperature fit is not ready; see fit quality below. Uncheck temperature drift to apply zero and smoothing only." }
+        else { "Ready to apply. Verify zero and a known mass afterward." };
+    let control=thermal_control_style(&theme);
+    rsx! {
+        details { style:"padding:16px; border:1px solid {theme.border_soft}; border-radius:12px;",
+            summary { style:"font-weight:700; cursor:pointer;", "Long zero capture & noise filter" }
+            div { style:"display:grid; gap:14px; margin-top:14px;",
+                p { style:"margin:0; color:{theme.text_secondary}; font-size:13px;", "Keep physically unloaded throughout. Raw data is retained during warming and cooling; thermal fitting uses only settled two-minute periods. Hold at each temperature until the loadcell has settled." }
+                label { style:"display:flex; align-items:center; gap:8px; font-size:13px;",
+                    input { r#type:"checkbox", checked:*known_zero.read(), onchange:move|e|known_zero.set(e.checked()) }
+                    "I confirm the loadcell will remain physically unloaded"
+                }
+                div { style:"display:flex; gap:10px; align-items:end; flex-wrap:wrap;",
+                    label { style:"display:grid; gap:5px; font-size:12px; color:{theme.text_secondary};", "Duration (seconds)"
+                        input { style:"{control}; width:140px;", r#type:"number", min:"60", max:"86400", value:"{duration}", oninput:move|e|duration.set(e.value()) }
+                    }
+                    button { style:"{control}", disabled:running || !*known_zero.read() || dirty,
+                        onclick:move |_| {
+                            let body=serde_json::json!({"sensor_id":sensor,"duration_s":duration.read().parse::<u64>().unwrap_or(0),"known_zero":*known_zero.read()});
+                            spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero",&body).await {
+                                Ok(v)=>{status.set(v);message.set("Recording raw data. Keep unloaded and hold each temperature until settled.".into());},Err(e)=>message.set(e),
+                            }});
+                        }, "Start capture"
+                    }
+                    button { style:"{control}", disabled:!running,
+                        onclick:{let id=id.clone();move |_| {
+                            let body=serde_json::json!({"session_id":id});
+                            spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero/stop",&body).await {
+                                Ok(v)=>{status.set(v);message.set("Finishing capture and saving analysis…".into());},Err(e)=>message.set(e),
+                            }});
+                        }}, "Stop & analyze"
+                    }
+                }
+                div { style:"display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
+                    {metric_card(&theme,"Capture sensor",snapshot["sensor_id"].as_str().unwrap_or("—").into())}
+                    {metric_card(&theme,"Elapsed",elapsed)}
+                    {metric_card(&theme,"Accepted samples",samples)}
+                    {metric_card(&theme,"ADC temperature range",temperature)}
+                    {metric_card(&theme,"Settled periods",settled_count.to_string())}
+                    {metric_card(&theme,"Fitted slope (raw/°C)",slope)}
+                    {metric_card(&theme,"Settled temperature span",quality["span_c"].as_f64().map(|v|format!("{v:.3} °C")).unwrap_or_else(||"—".into()))}
+                    {metric_card(&theme,"Slope repeatability margin",quality["slope_margin"].as_f64().map(|v|format!("±{v:.3e} raw/°C")).unwrap_or_else(||"—".into()))}
+                }
+                p { role:"status", style:"margin:0; font-size:13px; color:{theme.text_secondary};", {report["settling_message"].as_str().unwrap_or("No settling analysis yet").to_string()} }
+                p { role:"status", style:"margin:0; font-size:13px; color:{theme.text_secondary};", {quality["message"].as_str().unwrap_or("Collect six settled periods across at least 0.25 °C, including intermediate temperatures.").to_string()} }
+                p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "Repeatability margin estimates scatter between settled periods; it does not include systematic errors. Longer captures can qualify with a smaller temperature change, but elapsed time alone does not qualify a fit." }
+                if report["temperature_time_correlation"].as_f64().is_some_and(|v| v.abs()>0.9) {
+                    p { style:"margin:0; font-size:13px; color:{theme.warning_text};", "Temperature closely follows elapsed time. Creep or another time-dependent change could look like temperature drift. Repeat during cooling before relying on this correction." }
+                }
+                details {
+                    summary { style:"font-size:13px; cursor:pointer;", "Capture quality & saved data" }
+                    p { style:"font-size:12px;", {format!("Rejected: {} · Dropped: {}",snapshot["rejected_samples"],snapshot["dropped_samples"])} }
+                    p { style:"font-size:12px; overflow-wrap:anywhere;", "CSV: " {snapshot["csv_path"].as_str().unwrap_or("—").to_string()} }
+                    p { style:"font-size:12px;", "Error: " {snapshot["error"].as_str().unwrap_or("none").to_string()} }
+                    p { style:"font-size:12px;", "Residual noise σ: " {report["residual_sigma_raw"].as_f64().map(|v|format!("{v:.6e} raw")).unwrap_or_else(||"—".into())} }
+                    p { style:"font-size:12px;", "Adjacent noise σ: " {report["adjacent_noise_sigma_raw"].as_f64().map(|v|format!("{v:.6e} raw")).unwrap_or_else(||"—".into())} }
+                }
+                div { style:"border-top:1px solid {theme.border_soft}; padding-top:14px; display:grid; gap:10px;",
+                    label { style:"display:flex; gap:8px; align-items:center; font-size:13px;",
+                        input {r#type:"checkbox",checked:*thermal.read(),onchange:move|e|thermal.set(e.checked())}
+                        "Apply fitted temperature drift"
+                    }
+                    div { style:"display:flex; align-items:end; gap:10px; flex-wrap:wrap;",
+                        label { style:"display:grid; gap:5px; font-size:12px; color:{theme.text_secondary};", "Smoothing time constant (ms)"
+                            input { style:"{control}; width:140px;", r#type:"number",min:"0",max:"2000",value:"{tau}",oninput:move|e|tau.set(e.value()) }
+                        }
+                        button { style:"{control}", disabled:!ready || dirty || (*thermal.read() && !thermal_ready),
+                            onclick:move |_| {
+                                let body=serde_json::json!({"session_id":id,"apply_thermal":*thermal.read(),"tau_ms":tau.read().parse::<f32>().unwrap_or(-1.)});
+                                spawn(async move {match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/long_zero/apply",&body).await {
+                                    Ok(v)=>{on_applied.call(v);message.set("Calibration saved and sent to DAQ. Verify zero and a known mass.".into());},Err(e)=>message.set(e),
+                                }});
+                            }, if *thermal.read() { "Apply temperature, zero & filter" } else { "Apply zero & filter" }
+                        }
+                    }
+                    p { style:"margin:0; font-size:13px; color:{theme.text_secondary};", "{disabled_reason}" }
+                    p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "0 ms disables smoothing. At 100 ms, steps take about 300 ms to reach 95%. Raw recordings remain unfiltered." }
+                }
+                if !message.read().is_empty() { p { role:"status", style:"margin:0; font-size:13px;", "{message}" } }
+            }
+        }
+    }
+}
+
+// Lumped, uniform-temperature steel envelope; an illustrative boundary-condition
+// model, not a source of live cell temperature or signed zero-drift coefficients.
+fn steel_lag_preview(v: [f64; 8]) -> Option<(f64, f64, f64)> {
+    let [diameter_mm, height_mm, mass_kg, heat_capacity, h, initial, ambient, minutes] = v;
+    if v.iter().any(|x| !x.is_finite()) || diameter_mm <= 0. || height_mm <= 0.
+        || mass_kg <= 0. || heat_capacity <= 0. || h <= 0. || minutes < 0.
+        || !(-40.0..=125.0).contains(&initial) || !(-40.0..=125.0).contains(&ambient) {
+        return None;
+    }
+    let radius = diameter_mm / 2000.;
+    let area = 2. * std::f64::consts::PI * radius * (radius + height_mm / 1000.);
+    let tau = mass_kg * heat_capacity / (h * area);
+    let temperature = ambient + (initial - ambient) * (-minutes * 60. / tau).exp();
+    (tau.is_finite() && temperature.is_finite()).then_some((tau / 60., -0.05_f64.ln() * tau / 60., temperature))
+}
+
+#[component]
+fn ThermalGeometryPreview(theme: ThemeConfig) -> Element {
+    let mut values = use_signal(|| ["74", "34", "1.15", "470", "10", "23", "25", "30"].map(str::to_owned));
+    let parsed: Option<Vec<f64>> = values.read().iter().map(|v| v.parse().ok()).collect();
+    let result = parsed.and_then(|v| v.try_into().ok()).and_then(steel_lag_preview);
+    let control = thermal_control_style(&theme);
+    let labels = ["Diameter (mm)", "Height (mm)", "Estimated mass (kg)", "Steel heat capacity (J/kg·K)", "Surface heat transfer (W/m²·K)", "Initial body temperature (°C)", "Ambient temperature (°C)", "Time after change (min)"];
+    rsx! {
+        details { style:"padding:16px; border:1px solid {theme.border_soft}; border-radius:12px;",
+            summary { style:"font-weight:700; cursor:pointer;", "Steel geometry · thermal lag preview" }
+            div { style:"display:grid; gap:12px; margin-top:14px;",
+                p { style:"margin:0; font-size:13px; color:{theme.text_secondary};", "Explore how slowly a steel body might follow an ambient temperature change. Defaults approximate a DYLF-102-sized solid cylinder (74 × 34 mm); mass and material properties are assumptions. Adjust them to match your cell." }
+                div { style:"display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
+                    for (i, label) in labels.iter().enumerate() {
+                        label { style:"display:grid; gap:5px; font-size:12px; color:{theme.text_secondary};", "{label}"
+                            input { style:"{control}; width:100%; box-sizing:border-box;", r#type:"number", step:"any", value:"{values.read()[i]}",
+                                oninput:move |e| values.write()[i] = e.value() }
+                        }
+                    }
+                }
+                if let Some((tau, settled, temperature)) = result {
+                    div { style:"display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
+                        {metric_card(&theme, "63% response time", format!("{tau:.1} min"))}
+                        {metric_card(&theme, "95% response time", format!("{settled:.1} min"))}
+                        {metric_card(&theme, "Predicted body temperature", format!("{temperature:.2} °C"))}
+                    }
+                } else {
+                    p { role:"status", "Enter positive dimensions, mass, heat capacity and heat transfer, a nonnegative time, and temperatures from −40 to 125 °C." }
+                }
+                p { style:"margin:0; font-size:12px; color:{theme.text_muted};", "Illustration only · edits stay in this preview. Assumes a uniform body temperature and a sudden, constant ambient change. Mount conduction, sunlight, internal cutouts and changing airflow are omitted. This does not change telemetry or calibration, determine kg/°C, or prove settling. ADC die temperature is not the ambient input. Use a body-mounted temperature probe to validate the estimate." }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod steel_preview_tests {
+    use super::steel_lag_preview;
+    #[test]
+    fn thermal_response_has_correct_limits_and_mass_scaling() {
+        let v = [74.,34.,1.15,470.,10.,23.,25.,0.];
+        let (tau, t95, initial) = steel_lag_preview(v).unwrap();
+        assert_eq!(initial,23.);
+        assert!((t95/tau - 2.995732).abs()<1e-5);
+        let mut end=v; end[7]=t95;
+        assert!((steel_lag_preview(end).unwrap().2-24.9).abs()<1e-10);
+        end[5]=25.; end[6]=23.;
+        assert!((steel_lag_preview(end).unwrap().2-23.1).abs()<1e-10);
+        let mut doubled=v; doubled[2]*=2.;
+        assert_eq!(steel_lag_preview(doubled).unwrap().0,2.*tau);
+        for (i,value) in [(0,0.),(2,-1.),(4,0.),(5,f64::NAN),(7,-1.)] {
+            let mut invalid=v;invalid[i]=value;assert!(steel_lag_preview(invalid).is_none());
+        }
+    }
+}
+
+#[component]
+fn ManualLinearCalibration(
+    theme: ThemeConfig, channel: String,
+    mut cfg: Signal<Option<CalibrationFile>>, mut dirty: Signal<bool>,
+    mut status: Signal<String>, mut fit_mode: Signal<String>,
+) -> Element {
+    let mut slope = use_signal(String::new);
+    let mut offset = use_signal(|| "0".to_string());
+    rsx! {
+        details { style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px;",
+            summary { style: "font-weight:700; cursor:pointer;", "Manual slope and offset" }
+            p { style: "font-size:12px; color:{theme.text_muted};", "Output = slope × temperature-corrected raw + offset. Applying replaces this sensor's fit and clears its separate tare; captured points are retained. Save to publish." }
+            div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                input { r#type: "number", step: "any", aria_label: "Calibration slope", placeholder: "Slope", value: "{slope}", oninput: move |e| slope.set(e.value()) }
+                input { r#type: "number", step: "any", aria_label: "Calibration offset", placeholder: "Offset", value: "{offset}", oninput: move |e| offset.set(e.value()) }
+                button { r#type: "button", disabled: cfg.read().is_none(),
+                    onclick: move |_| {
+                        let (Ok(m), Ok(b)) = (slope.read().parse::<f32>(), offset.read().parse::<f32>()) else {
+                            status.set("Enter numeric slope and offset".into()); return;
+                        };
+                        let Some(mut next) = cfg.read().clone() else { return; };
+                        match apply_manual_linear(&mut next, &channel, m, b) {
+                            Ok(()) => { cfg.set(Some(next)); dirty.set(true); fit_mode.set("linear".into()); status.set("Manual coefficients applied locally to this sensor. Save to publish.".into()); }
+                            Err(error) => status.set(error),
+                        }
+                    }, "Apply to selected sensor"
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod manual_linear_tests {
+    use super::*;
+    #[test]
+    fn manual_fit_changes_only_selected_sensor_and_clears_its_old_tare() {
+        let mut cfg = CalibrationFile::default();
+        apply_manual_linear(&mut cfg, "ch1", 100.0, 2.0).unwrap();
+        let other = cfg.channels["ch1"].clone();
+        apply_manual_linear(&mut cfg, "kg50", 200.0, -3.0).unwrap();
+        cfg.channels.get_mut("kg50").unwrap().zero_raw = Some(7.0);
+        apply_manual_linear(&mut cfg, "kg50", 300.0, -4.0).unwrap();
+        assert_eq!(cfg.channels["ch1"], other);
+        assert_eq!(cfg.channels["kg50"].zero_raw, None);
+        assert_eq!(eval_fit_key(&cfg, "kg50", 0.01), Some(-1.0));
+        let before = cfg.clone();
+        assert!(apply_manual_linear(&mut cfg, "kg50", f32::NAN, 0.0).is_err());
+        assert_eq!(cfg, before);
     }
 }

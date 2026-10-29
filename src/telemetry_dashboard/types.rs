@@ -112,9 +112,49 @@ pub struct BoardStatusEntry {
     pub packet_count: u64,
     pub last_seen_ms: Option<u64>,
     pub age_ms: Option<u64>,
+    /// Local receipt anchor, never a server timestamp or a wire field.
+    #[serde(skip, default = "board_status_received_ms")]
+    pub received_mono_ms: i64,
+}
+fn board_status_received_ms() -> i64 {
+    super::monotonic_now_ms() as i64
+}
+
+#[cfg(test)]
+mod board_age_tests {
+    use super::*;
+    #[test]
+    fn snapshot_age_advances_between_packets_without_changing_on_clone() {
+        let mut entry: BoardStatusEntry = serde_json::from_str(
+            r#"{"board":"FC","sender_id":"FC","seen":true,"last_seen_ms":100,"age_ms":0}"#,
+        )
+        .unwrap();
+        entry.received_mono_ms = 1000;
+        assert_eq!(entry.current_age_ms(1000), Some(0));
+        assert_eq!(entry.current_age_ms(1100), Some(100));
+        assert_eq!(entry.clone().current_age_ms(1500), Some(500));
+        assert_eq!(entry.current_age_ms(900), Some(0));
+        entry.age_ms = Some(250);
+        entry.received_mono_ms = 2000;
+        assert_eq!(entry.current_age_ms(2100), Some(350));
+        assert!(
+            serde_json::to_value(&entry)
+                .unwrap()
+                .get("received_mono_ms")
+                .is_none()
+        );
+        entry.age_ms = None;
+        assert_eq!(entry.current_age_ms(9999), None);
+    }
 }
 
 impl BoardStatusEntry {
+    pub fn current_age_ms(&self, now_mono_ms: i64) -> Option<u64> {
+        self.age_ms.map(|age| {
+            age.saturating_add(now_mono_ms.saturating_sub(self.received_mono_ms).max(0) as u64)
+        })
+    }
+
     pub fn display_name(&self) -> &str {
         if self.board_label.trim().is_empty() {
             &self.board
@@ -136,6 +176,7 @@ impl BoardStatusEntry {
             packet_count: 0,
             last_seen_ms: None,
             age_ms: None,
+            received_mono_ms: board_status_received_ms(),
         })
     }
 }
@@ -183,10 +224,38 @@ pub struct NetworkTopologyNode {
     pub group: String,
     pub sender_id: Option<String>,
     #[serde(default)]
+    pub last_seen_ms: Option<u64>,
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+    #[serde(skip, default = "board_status_received_ms")]
+    pub received_mono_ms: i64,
+    #[serde(default)]
     pub endpoints: Vec<String>,
     #[serde(default = "default_true")]
     pub show_in_details: bool,
     pub detail: Option<String>,
+    #[serde(default)]
+    pub stats: Option<NetworkTopologyStats>,
+}
+
+impl NetworkTopologyNode {
+    pub fn current_age_ms(&self, now_mono_ms: i64) -> Option<u64> {
+        self.age_ms.map(|age| {
+            age.saturating_add(now_mono_ms.saturating_sub(self.received_mono_ms).max(0) as u64)
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct NetworkTopologyStats {
+    #[serde(default)]
+    pub packets_sent: u64,
+    #[serde(default)]
+    pub packets_received: u64,
+    #[serde(default)]
+    pub bytes_sent: u64,
+    #[serde(default)]
+    pub bytes_received: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
@@ -198,7 +267,53 @@ pub struct NetworkTopologyLink {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct BoardDiagnostics {
+    pub version: u32,
+    pub received_age_ms: u64,
+    pub uptime_ticks: u64,
+    pub uptime_frequency_hz: u32,
+    pub reset_flags: u32,
+    pub watchdog_missing_mask: u32,
+    pub heap_live_bytes: Option<u32>,
+    pub heap_peak_bytes: Option<u32>,
+    pub heap_region_bytes: Option<u32>,
+    pub allocation_failures: Option<u32>,
+    pub admission_refusals: u32,
+    pub can_rx_drops: Option<u32>,
+    pub can_tx_rejected: Option<u32>,
+    pub uart_rx_drops: Option<u32>,
+    pub tx_queue_high_water: Option<u32>,
+    pub sd_accepted_records: Option<u32>,
+    pub sd_processed_records: Option<u32>,
+    pub sd_rejected_records: Option<u32>,
+    pub sd_flushed_records: Option<u32>,
+    pub sd_write_errors: Option<u32>,
+    pub sd_max_write_ms: Option<u32>,
+    pub adc_overruns: Option<u32>,
+    pub diagnostic_send_failures: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct NetworkBoardHealthEntry {
+    #[serde(default)]
+    pub diagnostics: Option<BoardDiagnostics>,
+    pub sender_id: String,
+    pub healthy: bool,
+    pub age_ms: u64,
+    pub last_seen_ms: u64,
+    pub disconnects: u64,
+    pub reconnects: u64,
+    pub rx_observations: u64,
+    pub observed_ms: u64,
+    pub offline_ms: u64,
+    pub longest_outage_ms: u64,
+    pub current_outage_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
 pub struct NetworkTopologyMsg {
+    #[serde(default)]
+    pub health: Vec<NetworkBoardHealthEntry>,
     pub generated_ms: u64,
     #[serde(default)]
     pub simulated: bool,
@@ -206,6 +321,8 @@ pub struct NetworkTopologyMsg {
     pub nodes: Vec<NetworkTopologyNode>,
     #[serde(default)]
     pub links: Vec<NetworkTopologyLink>,
+    #[serde(default)]
+    pub traffic: Option<NetworkTrafficSnapshot>,
 }
 
 fn default_true() -> bool {
@@ -264,4 +381,22 @@ impl TelemetryRow {
         }
         self.sender_id_id
     }
+}
+
+/// Ground Station router counters, sampled before WebSocket batching.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct NetworkTrafficSnapshot {
+    pub interval_ms: u64,
+    pub sides: Vec<NetworkTrafficSide>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct NetworkTrafficSide {
+    pub side_id: usize,
+    pub name: String,
+    pub ingress_enabled: bool,
+    pub egress_enabled: bool,
+    pub totals: NetworkTopologyStats,
+    /// Absent until two samples exist, or if the side/counters reset.
+    pub delta: Option<NetworkTopologyStats>,
 }

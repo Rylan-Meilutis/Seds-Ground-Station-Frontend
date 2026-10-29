@@ -1,6 +1,9 @@
 mod app;
 mod auth;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_station;
 mod debug_log;
+mod log_redaction;
 mod native_storage;
 mod telemetry_dashboard;
 
@@ -106,8 +109,6 @@ fn write_cached_tile(base: &str, z: u32, x: u32, y: u32, bytes: &[u8]) {
 fn init_android_platform_tls_verifier() {
     use ::jni::JavaVM;
     use ::jni::objects::JObject;
-    use ::jni021::JavaVM as JavaVM021;
-    use ::jni021::objects::JObject as JObject021;
 
     let ctx = ndk_context::android_context();
     let vm = match unsafe { JavaVM::from_raw(ctx.vm().cast()) } {
@@ -121,19 +122,6 @@ fn init_android_platform_tls_verifier() {
     }) {
         Ok(_) => debug_log::append("[startup] android TLS verifier initialized"),
         Err(e) => debug_log::append(&format!("[startup] android TLS verifier init failed: {e}")),
-    }
-
-    match (|| -> ::jni021::errors::Result<()> {
-        let vm = unsafe { JavaVM021::from_raw(ctx.vm().cast()) }?;
-        let mut env = vm.attach_current_thread()?;
-        let context = unsafe { JObject021::from_raw(ctx.context().cast()) };
-        rustls_platform_verifier_reqwest::android::init_with_env(&mut env, context)?;
-        Ok(())
-    })() {
-        Ok(_) => debug_log::append("[startup] android reqwest TLS verifier initialized"),
-        Err(e) => debug_log::append(&format!(
-            "[startup] android reqwest TLS verifier init failed: {e}"
-        )),
     }
 }
 
@@ -211,11 +199,15 @@ fn load_desktop_window_icon() -> Option<dioxus_desktop::tao::window::Icon> {
     dioxus_desktop::tao::window::Icon::from_rgba(image.into_raw(), width, height).ok()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "android"),
+    not(target_os = "linux")
+))]
 fn startup_custom_head() -> String {
     String::from(
         r##"
-<meta name="theme-color" content="#020617">
+<meta charset="utf-8"><meta name="theme-color" content="#020617">
 <style>
 html {
     background: #020617;
@@ -236,6 +228,43 @@ body, #main {
 "##,
     )
 }
+
+#[cfg(target_os = "linux")]
+fn startup_custom_head() -> String {
+    // WebKitGTK does not consistently execute large inline scripts inserted after the
+    // document has loaded. Put the self-contained map runtime in the initial document
+    // head so Debian/Ubuntu (including Raspberry Pi) initializes MapLibre reliably.
+    let mut head = String::from(
+        r##"<meta charset="utf-8"><meta name="theme-color" content="#020617"><style>html,body,#main{margin:0;min-height:100%;background:#020617;color:#e5e7eb;color-scheme:dark}</style>"##,
+    );
+    let prefer_raster = prefer_native_raster_map(
+        cfg!(any(target_arch = "aarch64", target_arch = "arm")),
+        std::env::var("GS26_MAP_RENDERER").ok().as_deref(),
+    );
+    head.push_str(if prefer_raster {
+        "<script>window.__gs26_prefer_raster_map=true;</script>"
+    } else {
+        "<script>window.__gs26_prefer_raster_map=false;</script>"
+    });
+    head.push_str("<style id=\"gs26-maplibre-css\">");
+    head.push_str(include_str!("../static/vendor/maplibre-gl/maplibre-gl.css"));
+    head.push_str("</style><script id=\"gs26-maplibre-js\">");
+    head.push_str(include_str!("../static/vendor/maplibre-gl/maplibre-gl.js"));
+    head.push_str("</script><script id=\"gs26-ground-map-js\">");
+    head.push_str(include_str!("../static/ground_map.js"));
+    head.push_str("</script>");
+    head
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn prefer_native_raster_map(arm_linux: bool, renderer: Option<&str>) -> bool {
+    match renderer {
+        Some("raster") => true,
+        Some("webgl") => false,
+        _ => arm_linux,
+    }
+}
+
 
 #[cfg(target_os = "android")]
 fn startup_custom_head() -> String {
@@ -267,7 +296,7 @@ fn startup_custom_head() -> String {
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 fn startup_custom_head_base() -> &'static str {
     r##"
-<meta name="theme-color" content="#020617">
+<meta charset="utf-8"><meta name="theme-color" content="#020617">
 <style>
 html {
     background: #020617;
@@ -365,6 +394,8 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
 
     let client = match reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(skip_tls)
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
     {
         Ok(c) => c,
@@ -413,6 +444,10 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         return build_response(200, content_type.as_deref().or(Some("image/jpeg")), cached);
     }
 
+    debug_log::append(&format!(
+        "[protocol] tile completed status={status} bytes={}",
+        bytes.len()
+    ));
     build_response(status, content_type.as_deref(), bytes)
 }
 
@@ -427,4 +462,28 @@ fn _handle_gs26_protocol_async(request: HttpRequest<Vec<u8>>, responder: Request
                 debug_log::append("[protocol] panic while responding to request");
             }
         });
+}
+
+#[cfg(test)]
+mod native_map_tests {
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_document_declares_utf8_before_inline_assets() {
+        let head = super::startup_custom_head();
+        assert!(head.trim_start().starts_with("<meta charset=\"utf-8\">"));
+        let charset = head.find("<meta charset=\"utf-8\">").unwrap();
+        assert!(charset < 1024, "HTML encoding must be declared early");
+        if let Some(script) = head.find("<script") {
+            assert!(charset < script, "inline assets must be decoded as UTF-8");
+        }
+    }
+
+    #[test]
+    fn arm_linux_uses_raster_with_explicit_webgl_override() {
+        assert!(super::prefer_native_raster_map(true, None));
+        assert!(!super::prefer_native_raster_map(false, None));
+        assert!(!super::prefer_native_raster_map(true, Some("webgl")));
+        assert!(super::prefer_native_raster_map(false, Some("raster")));
+        assert!(super::prefer_native_raster_map(true, Some("invalid")));
+    }
 }

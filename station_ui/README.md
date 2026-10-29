@@ -6,7 +6,7 @@ models are frontend-owned. Original vendor licenses remain beside their assets.
 
 `manifest.json` exports static bodies to the backend compile-time bridge.
 Backend Rust retains routing, authentication, configuration and media services;
-runtime URLs and asset bodies stay unchanged. `station_ui` stays outside the
+runtime URLs remain stable as browser assets evolve. `station_ui` stays outside the
 native client's `assets/**/*` resource glob to avoid packaging server-only
 scripts and models in every client.
 
@@ -30,3 +30,16 @@ The legacy CDP broadcast/animation fixtures are also frontend-owned; their
 loopback-only server setup remains documented by GroundStation. The obsolete
 live-3D streamer fixture is superseded by `station-program_browser.mjs`, which
 requires live2D artwork and rejects live3D asset requests.
+
+`station-player-browser.mjs` checks standalone WHEP camera audio/video negotiation,
+combined incoming tracks, session cleanup and restored-page reconnection using
+synthetic WebRTC tracks. `station-program_browser.mjs` plays real synthetic H.264
+and checks that restored pages restart video and crew audio while retaining an
+explicit mute choice. Page lifecycle callbacks are dispatched by these fixtures;
+physical iOS background behavior still requires testing on a device.
+
+`concurrent-broadcast-browser.mjs` exercises the real loopback MediaMTX/backend
+fixture with original or remotely encoded feeds. It checks decoded camera PCM,
+continuous frames for one/two viewers, restored clean OBS audio and saved geometry;
+encoded runs reject silent fallback to original camera URLs. Set
+`GS_MEDIA_TEST_ORIGIN` to the isolated backend fixture.

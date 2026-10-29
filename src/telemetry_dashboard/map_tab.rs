@@ -397,14 +397,13 @@ pub fn MapTab(
         let mut browser_user_gps = browser_user_gps;
         use_future(move || async move {
             loop {
-                if crate::telemetry_dashboard::dashboard_page_visible() {
-                    if let Some((lat, lon)) = js_read_user_latlon_from_window() {
+                if crate::telemetry_dashboard::dashboard_page_visible()
+                    && let Some((lat, lon)) = js_read_user_latlon_from_window() {
                         let current_browser_gps = *browser_user_gps.read();
                         if current_browser_gps != Some((lat, lon)) {
                             browser_user_gps.set(Some((lat, lon)));
                         }
                     }
-                }
 
                 let sleep_ms = if crate::telemetry_dashboard::dashboard_page_visible() {
                     WEB_GEO_SYNC_INTERVAL_MS

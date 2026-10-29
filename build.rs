@@ -219,90 +219,70 @@ fn main() {
 }
 
 fn stage_maplibre_assets(manifest_dir: &Path) {
-    const DEFAULT_MAPLIBRE_VERSION: &str = "4.7.1";
-    const PLACEHOLDER_MARKER: &str = "gs26-maplibre-placeholder";
-
-    println!("cargo:rerun-if-env-changed=MAPLIBRE_GL_VERSION");
-
-    let version =
-        env::var("MAPLIBRE_GL_VERSION").unwrap_or_else(|_| DEFAULT_MAPLIBRE_VERSION.to_string());
-    let vendor_dir = manifest_dir
-        .join("static")
-        .join("vendor")
-        .join("maplibre-gl");
-    let stamp = vendor_dir.join(".maplibre-gl-stamp");
-    let stamp_contents = format!("version={version}\n");
-
-    for asset in ["maplibre-gl.css", "maplibre-gl.js"] {
+    for name in [
+        "MAPLIBRE_GL_VERSION",
+        "MAPLIBRE_GL_BASE_URL",
+        "GS_BROWSER_ASSETS_CACHE",
+        "GS_PYTHON",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    let script = manifest_dir.join("scripts/browser_assets.py");
+    println!("cargo:rerun-if-changed={}", script.display());
+    for name in [
+        "maplibre-gl.css",
+        "maplibre-gl.js",
+        ".maplibre-gl-assets.json",
+        ".maplibre-gl-stamp",
+    ] {
         println!(
             "cargo:rerun-if-changed={}",
-            vendor_dir.join(asset).display()
+            manifest_dir
+                .join("static/vendor/maplibre-gl")
+                .join(name)
+                .display()
         );
     }
-    println!("cargo:rerun-if-changed={}", stamp.display());
-
-    if let Err(e) = fs::create_dir_all(&vendor_dir) {
-        log(format!("Failed to create MapLibre vendor dir {vendor_dir:?}: {e}").as_ref());
-        return;
-    }
-
-    if let Err(e) = write_if_changed(&stamp, &stamp_contents) {
-        log(format!("Failed to write MapLibre stamp {}: {e}", stamp.display()).as_ref());
-    }
-
-    for (filename, cdn_path) in [
-        ("maplibre-gl.css", "dist/maplibre-gl.css"),
-        ("maplibre-gl.js", "dist/maplibre-gl.js"),
-    ] {
-        if let Err(e) = download_vendor_asset(
-            &vendor_dir,
-            &stamp_contents,
-            filename,
-            &format!("https://unpkg.com/maplibre-gl@{version}/{cdn_path}"),
-            PLACEHOLDER_MARKER,
-            log,
-        ) {
-            log(format!("Failed to download MapLibre asset {filename}: {e}").as_ref());
+    let candidates = env::var_os("GS_PYTHON")
+        .map(|python| vec![python])
+        .unwrap_or_else(|| vec!["python3".into(), "python".into(), "py".into()]);
+    for python in candidates {
+        let mut probe = std::process::Command::new(&python);
+        if python == "py" {
+            probe.arg("-3");
+        }
+        match probe
+            .args([
+                "-c",
+                "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)",
+            ])
+            .output()
+        {
+            Ok(output) if output.status.success() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("Unable to find Python3.10+ for browser assets: {error}"),
+        }
+        let mut command = Command::new(&python);
+        if python == "py" {
+            command.arg("-3");
+        }
+        let result = command
+            .arg(&script)
+            .arg("--root")
+            .arg(manifest_dir)
+            .output();
+        match result {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("Unable to prepare frontend browser assets: {error}"),
+            Ok(output) if output.status.success() => return,
+            Ok(output) => panic!(
+                "Frontend browser asset preparation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
         }
     }
-}
-
-fn download_vendor_asset(
-    vendor_dir: &Path,
-    expected_stamp: &str,
-    filename: &str,
-    url: &str,
-    placeholder_marker: &str,
-    log: impl Fn(&str),
-) -> Result<(), Box<dyn std::error::Error>> {
-    let out_path = vendor_dir.join(filename);
-    let stamp_path = vendor_dir.join(".maplibre-gl-stamp");
-    let existing_stamp = fs::read_to_string(&stamp_path).unwrap_or_default();
-
-    let needs_download = match fs::read_to_string(&out_path) {
-        Ok(existing) => {
-            existing_stamp != expected_stamp
-                || existing.contains(placeholder_marker)
-                || existing.len() < 128
-        }
-        Err(_) => true,
-    };
-
-    if !needs_download {
-        return Ok(());
-    }
-
-    log(format!("Downloading {url} -> {}", out_path.display()).as_ref());
-
-    let resp = reqwest::blocking::get(url)?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP error: {}", resp.status()).into());
-    }
-
-    let bytes = resp.bytes()?;
-    let mut file = fs::File::create(&out_path)?;
-    file.write_all(&bytes)?;
-    file.flush()?;
-
-    Ok(())
+    panic!(
+        "Python3.10+ is required to prepare frontend browser assets; set GS_PYTHON to its executable"
+    );
 }

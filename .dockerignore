@@ -1,0 +1,8 @@
+target
+artifacts
+dist
+.git
+.gradle-user-home
+*.mobileprovision
+*.p12
+*.p8

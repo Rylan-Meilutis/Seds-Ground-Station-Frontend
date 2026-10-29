@@ -1,11 +1,17 @@
 use super::*;
 
-const WS_DISCONNECT_NOTIFICATION_PREFIX: &str = "WebSocket disconnected.\nURL:";
+const WS_DISCONNECT_NOTIFICATION_PREFIX: &str = "GroundStation connection lost. Reconnecting…";
+const RRLS_DISCONNECT_NOTIFICATION_PREFIX: &str = "RRLS connection lost. Reconnecting…";
+const LEGACY_WS_DISCONNECT_PREFIX: &str = "WebSocket disconnected.\nURL:";
 
 fn is_ws_disconnect_notification(notification: &PersistentNotification) -> bool {
     notification
         .message
         .starts_with(WS_DISCONNECT_NOTIFICATION_PREFIX)
+        || notification.message.starts_with(RRLS_DISCONNECT_NOTIFICATION_PREFIX)
+        || notification
+            .message
+            .starts_with(LEGACY_WS_DISCONNECT_PREFIX)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,7 +71,7 @@ impl Default for FrontendNetworkMetrics {
 pub(super) fn reset_frontend_network_metrics_state() {
     if let Ok(mut metrics) = FRONTEND_NETWORK_METRICS_STATE.lock() {
         *metrics = FrontendNetworkMetrics {
-            base_http: UrlConfig::base_http(),
+            base_http: crate::log_redaction::redact_urls_owned(&UrlConfig::base_http()),
             ..FrontendNetworkMetrics::default()
         };
     }
@@ -81,26 +87,8 @@ pub(super) fn frontend_network_metrics_snapshot() -> FrontendNetworkMetrics {
 }
 
 /// Redacts authentication tokens from a WebSocket URL before it is shown in the UI.
-fn redact_ws_url_for_display(ws_url: &str) -> String {
-    if let Some((prefix, query)) = ws_url.split_once('?') {
-        let redacted_query = query
-            .split('&')
-            .map(|part| {
-                if let Some((key, _)) = part.split_once('=') {
-                    if key == "token" {
-                        return format!("{key}=<redacted>");
-                    }
-                } else if part == "token" {
-                    return "token=<redacted>".to_string();
-                }
-                part.to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("&");
-        format!("{prefix}?{redacted_query}")
-    } else {
-        ws_url.to_string()
-    }
+pub(super) fn redact_ws_url_for_display(ws_url: &str) -> String {
+    crate::log_redaction::redact_urls_owned(ws_url)
 }
 
 /// Records a WebSocket connection or disconnection transition for the dashboard diagnostics.
@@ -121,7 +109,7 @@ pub(super) fn note_ws_connection_state(
         let was_connected = next.ws_connected;
         next.ws_connected = connected;
         next.ws_url = redact_ws_url_for_display(&ws_url);
-        next.base_http = UrlConfig::base_http();
+        next.base_http = crate::log_redaction::redact_urls_owned(&UrlConfig::base_http());
         next.ws_epoch = epoch;
         if connected {
             next.last_connect_wall_ms = Some(current_wallclock_ms());
@@ -129,7 +117,7 @@ pub(super) fn note_ws_connection_state(
             next.ws_disconnects_total = next.ws_disconnects_total.saturating_add(1);
         }
         if let Some(reason) = reason {
-            next.last_disconnect_reason = Some(reason);
+            next.last_disconnect_reason = Some(crate::log_redaction::redact_urls_owned(&reason));
         }
     }
 }
@@ -141,6 +129,11 @@ pub(super) fn note_ws_connection_notification(
     ws_url: &str,
     reason: &str,
 ) {
+    // The connection banner handles initial startup; notify once only after
+    // an established station connection is lost.
+    if !DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
+        return;
+    }
     if notifications
         .read()
         .iter()
@@ -157,14 +150,15 @@ pub(super) fn note_ws_connection_notification(
         *slot = Some(redact_ws_url_for_display(ws_url));
     }
 
+    debug_log::append(&format!(
+        "[network] disconnected: {} · {}",
+        redact_ws_url_for_display(ws_url),
+        reason.trim()
+    ));
     let item = PersistentNotification {
         id: now_ms as u64,
         timestamp_ms: now_ms,
-        message: format!(
-            "WebSocket disconnected.\nURL: {}\nReason: {}",
-            redact_ws_url_for_display(ws_url),
-            reason.trim()
-        ),
+        message: format!("{} connection lost. Reconnecting…", auth::station_name()),
         persistent: false,
         action_label: None,
         action_cmd: None,
@@ -286,7 +280,7 @@ pub(super) fn note_http_rtt_ms(rtt_ms: f64) {
         return;
     }
     if let Ok(mut next) = FRONTEND_NETWORK_METRICS_STATE.lock() {
-        next.base_http = UrlConfig::base_http();
+        next.base_http = crate::log_redaction::redact_urls_owned(&UrlConfig::base_http());
         next.http_rtt_ms = Some(rtt_ms);
         next.http_rtt_ema_ms = Some(match next.http_rtt_ema_ms {
             Some(prev) => prev * 0.82 + rtt_ms * 0.18,

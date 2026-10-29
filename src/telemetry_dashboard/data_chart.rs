@@ -11,7 +11,6 @@
 //   charts_cache_reset_and_ingest(rows)
 //   charts_cache_ingest_row(row)
 //   charts_cache_get(data_type, width, height) -> ([d;8], y_min, y_max, span_min)
-//   charts_cache_get_channel_minmax(data_type, width, height) -> (mins, maxs)
 //
 // Y-axis:
 // - Expand immediately (never clip)
@@ -100,7 +99,12 @@ const X_SHRINK_EPS_MS: i64 = 250;
 // Y-range tuning
 const Y_SHRINK_ALPHA: f32 = 0.10; // used only during refit_pending
 const Y_PAD_FRAC: f32 = 0.06;
-const Y_MIN_PAD_ABS: f32 = 0.001;
+// Preserve microvolt-scale input detail. Relative padding also keeps f32
+// endpoints distinct for large values; a fixed millivolt floor hid P6 data.
+const Y_MIN_PAD_ABS: f32 = 1e-12;
+fn y_resolution(min: f32, max: f32) -> f32 {
+    (min.abs().max(max.abs()) * f32::EPSILON * 4.0).max(Y_MIN_PAD_ABS)
+}
 const CHART_INTEREST_TTL_GENERATIONS: u64 = 50_000;
 
 #[allow(dead_code)]
@@ -172,6 +176,17 @@ pub fn charts_cache_ingest_row(row: &TelemetryRow) {
         let mut cache = c.borrow_mut();
         cache.ingest_row(row);
     });
+}
+
+pub fn accel_filter_note(key: &str) -> Option<String> {
+    CHARTS_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        let chart = cache.charts.get(&ChartSeriesKey::from_query(key))?;
+        if !chart.preserve_peaks { return None; }
+        let suspicious: usize = chart.accel_filters.values().map(|f| f.suspicious).sum();
+        let invalid: usize = chart.accel_filters.values().map(|f| f.invalid).sum();
+        Some(format!("Acceleration display: causal screening, no look-ahead; peaks preserved. {suspicious} suspect samples retained; {invalid} invalid values omitted. Raw recordings unchanged."))
+    })
 }
 
 pub fn charts_cache_ingest_rows(rows: &[TelemetryRow]) {
@@ -399,24 +414,6 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
     })
 }
 
-pub fn charts_cache_get_channel_minmax(
-    data_type: &str,
-    width: f32,
-    height: f32,
-) -> (Vec<Option<f32>>, Vec<Option<f32>>) {
-    CHARTS_CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        let chart_key = ChartSeriesKey::from_query(data_type);
-        c.ensure_interested_chart(chart_key);
-        if let Some(ch) = c.charts.get_mut(&chart_key) {
-            ch.build_if_needed(width, height);
-            (ch.chan_min.clone(), ch.chan_max.clone())
-        } else {
-            (Vec::new(), Vec::new())
-        }
-    })
-}
-
 // ============================================================
 // Internals
 // ============================================================
@@ -457,7 +454,25 @@ impl ChartsCache {
 
     fn ingest_rows(&mut self, rows: &[TelemetryRow]) {
         self.generation = self.generation.wrapping_add(1).max(1);
-        for row in rows {
+        // A websocket/UI flush can contain rows in a different order from their
+        // receipt timestamps. Feed the fixed-bucket cache chronologically:
+        // otherwise its freeze rule drops earlier samples in the same batch.
+        // Keep the normal ordered path allocation-free; never modify raw input.
+        let ordered = if rows
+            .windows(2)
+            .any(|pair| telemetry_row_received_ms(&pair[0]) > telemetry_row_received_ms(&pair[1]))
+        {
+            let mut ordered = rows.iter().collect::<Vec<_>>();
+            ordered.sort_by_key(|row| telemetry_row_received_ms(row));
+            Some(ordered)
+        } else {
+            None
+        };
+        let already_ordered = if ordered.is_none() { rows } else { &[] };
+        let ordered_rows = already_ordered
+            .iter()
+            .chain(ordered.iter().flatten().copied());
+        for row in ordered_rows {
             self.store_raw_row_without_prune(row);
             self.note_source_row(row);
             self.ingest_interested_row(row);
@@ -541,7 +556,7 @@ impl ChartsCache {
             .iter()
             .filter_map(|(key, until)| {
                 if *until < generation {
-                    Some(key.clone())
+                    Some(*key)
                 } else {
                     None
                 }
@@ -686,6 +701,63 @@ mod tests {
         configure_sender_split_data_types,
     };
     use crate::telemetry_dashboard::types::TelemetryRow;
+
+    #[test]
+    fn microvolt_chart_range_preserves_detail_and_startup_peaks() {
+        let (mut lo, mut hi) = (0.0000276, 0.0000278);
+        super::CachedChart::stabilize_raw_range(&mut lo, &mut hi);
+        let (lo, hi) = super::CachedChart::apply_padding(lo, hi);
+        assert!(lo < 0.0000276 && hi > 0.0000278);
+        assert!(hi - lo < 0.000001);
+        let (lo, hi) = super::CachedChart::apply_padding(0.0000277, 0.03);
+        assert!(lo < 0.0000277 && hi > 0.03, "Never erase an actual peak");
+        for center in [0.0, 0.0000277, 1000.0] {
+            let (mut lo, mut hi) = (center, center);
+            super::CachedChart::stabilize_raw_range(&mut lo, &mut hi);
+            assert!(lo.is_finite() && hi.is_finite() && lo < hi);
+        }
+    }
+
+    #[test]
+    fn accel_batch_order_does_not_drop_samples_or_create_spikes() {
+        let rows: Vec<_> = (0..400)
+            .map(|i| {
+                let timestamp_ms = 1_700_000_000_000 + i * 200;
+                TelemetryRow {
+                    timestamp_ms,
+                    received_timestamp_ms: timestamp_ms,
+                    data_type: "ACCEL_DATA".into(),
+                    data_type_id: Default::default(),
+                    sender_id: "FC".into(),
+                    sender_id_id: Default::default(),
+                    values: vec![Some(0.1), Some(-0.2), Some(9.81)],
+                }
+            })
+            .collect();
+        let key = super::ChartSeriesKey::from_query("ACCEL_DATA@@FC");
+        let mut cache = super::ChartsCache::new();
+        cache.ensure_interested_chart(key);
+        for batch in rows.chunks(10) {
+            let reversed: Vec<_> = batch.iter().rev().cloned().collect();
+            cache.ingest_rows(&reversed);
+            cache.get("ACCEL_DATA@@FC", 1200.0, 260.0);
+        }
+        let chart = &cache.charts[&key];
+        assert_eq!(chart.buckets.len(), rows.len());
+        for bucket in &chart.buckets {
+            assert_eq!(bucket.last, vec![0.1, -0.2, 9.81]);
+        }
+        // A real acceleration event must remain visible, not be flattened by
+        // the batching fix. Raw records and acquisition are never filtered.
+        let mut event = rows.last().unwrap().clone();
+        event.timestamp_ms += 200;
+        event.received_timestamp_ms += 200;
+        event.values[0] = Some(20.0);
+        cache.ingest_row(&event);
+        assert_eq!(cache.charts[&key].buckets.back().unwrap().last[0], 20.0);
+        let buckets = cache.charts[&key].view_buckets(0, i64::MAX / super::BUCKET_MS, 10_000);
+        assert!(buckets.iter().any(|b| b.last[0] == 20.0));
+    }
 
     #[test]
     fn does_not_derive_calibrated_loadcell_chart_rows_from_raw_samples() {
@@ -1093,6 +1165,8 @@ impl Bucket {
 }
 
 struct CachedChart {
+    accel_filters: HashMap<TelemetryTextId, super::accel_display_filter::AccelDisplayFilter>,
+    preserve_peaks: bool,
     buckets: VecDeque<Bucket>,
     newest_bucket_id: i64,
     newest_ts: i64,
@@ -1167,6 +1241,8 @@ fn max_buckets_per_type() -> usize {
 impl CachedChart {
     fn new() -> Self {
         Self {
+            accel_filters: HashMap::new(),
+            preserve_peaks: false,
             buckets: VecDeque::new(),
             newest_bucket_id: 0,
             newest_ts: 0,
@@ -1197,6 +1273,27 @@ impl CachedChart {
     }
 
     fn ingest(&mut self, r: &TelemetryRow) {
+        if r.data_type == "ACCEL_DATA" {
+            self.preserve_peaks = true;
+            let filter = self
+                .accel_filters
+                .entry(r.interned_sender_id())
+                .or_default();
+            if let Some((time, values)) =
+                filter.push(telemetry_row_received_ms(r), r.values.clone())
+            {
+                let mut display = r.clone();
+                display.received_timestamp_ms = time;
+                display.timestamp_ms = time;
+                display.values = values;
+                self.ingest_display(&display);
+            }
+        } else {
+            self.ingest_display(r);
+        }
+    }
+
+    fn ingest_display(&mut self, r: &TelemetryRow) {
         let ch_count = r.values.len();
         if ch_count > self.channel_count {
             self.ensure_channels(ch_count);
@@ -1288,9 +1385,9 @@ impl CachedChart {
             return;
         }
         let range = *max - *min;
-        if range.abs() < 1e-6 {
+        if range.abs() <= y_resolution(*min, *max) {
             let center = *min;
-            let pad = (center.abs() * 0.05).max(Y_MIN_PAD_ABS);
+            let pad = if center == 0.0 { 1e-6 } else { (center.abs() * 0.05).max(Y_MIN_PAD_ABS) };
             *min = center - pad;
             *max = center + pad;
         }
@@ -1299,8 +1396,8 @@ impl CachedChart {
     fn apply_padding(min: f32, max: f32) -> (f32, f32) {
         let mut lo = min;
         let mut hi = max;
-        let r = (hi - lo).abs().max(1e-6);
-        let pad = (r * Y_PAD_FRAC).max(Y_MIN_PAD_ABS);
+        let r = (hi - lo).abs();
+        let pad = (r * Y_PAD_FRAC).max(y_resolution(lo, hi));
         lo -= pad;
         hi += pad;
         (lo, hi)
@@ -1311,7 +1408,7 @@ impl CachedChart {
 
         if !self.disp_min.is_finite()
             || !self.disp_max.is_finite()
-            || (self.disp_max - self.disp_min).abs() < 1e-6
+            || self.disp_max <= self.disp_min
         {
             self.disp_min = raw_min;
             self.disp_max = raw_max;
@@ -1339,8 +1436,8 @@ impl CachedChart {
             }
         }
 
-        if (hi - lo).abs() < 1e-6 {
-            hi = lo + 1.0;
+        if hi <= lo {
+            hi = lo + y_resolution(lo, hi);
         }
 
         self.disp_min = lo;
@@ -1351,6 +1448,58 @@ impl CachedChart {
         let effective_bucket_ms = bucket_ms.max(BUCKET_MS);
         let start_ts = start_bid.saturating_mul(BUCKET_MS);
         let newest_ts = newest_bid.saturating_mul(BUCKET_MS);
+
+        if self.preserve_peaks && effective_bucket_ms > BUCKET_MS {
+            // Keep first/last and every channel's extrema, in sample order.
+            // At most 2 + 2*channels points per render bucket, not an average.
+            let mut groups: BTreeMap<i64, Vec<&Bucket>> = BTreeMap::new();
+            for bucket in self
+                .buckets
+                .iter()
+                .filter(|b| b.id >= start_bid && b.id <= newest_bid)
+            {
+                groups
+                    .entry(
+                        bucket
+                            .id
+                            .saturating_mul(BUCKET_MS)
+                            .div_euclid(effective_bucket_ms),
+                    )
+                    .or_default()
+                    .push(bucket);
+            }
+            let mut out = Vec::new();
+            for (id, group) in groups {
+                let mut selected = vec![0, group.len() - 1];
+                for ch in 0..self.channel_count {
+                    let valid: Vec<_> = group
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| b.has[ch])
+                        .collect();
+                    if let Some((i, _)) = valid
+                        .iter()
+                        .min_by(|a, b| a.1.last[ch].total_cmp(&b.1.last[ch]))
+                    {
+                        selected.push(*i);
+                    }
+                    if let Some((i, _)) = valid
+                        .iter()
+                        .max_by(|a, b| a.1.last[ch].total_cmp(&b.1.last[ch]))
+                    {
+                        selected.push(*i);
+                    }
+                }
+                selected.sort_unstable();
+                selected.dedup();
+                for index in selected {
+                    let mut bucket = group[index].clone();
+                    bucket.id = id;
+                    out.push(bucket);
+                }
+            }
+            return out;
+        }
 
         if effective_bucket_ms <= BUCKET_MS {
             return self
@@ -1517,8 +1666,9 @@ impl CachedChart {
         if self.refit_pending {
             let span_settled = (self.prev_span_ms - desired_span_ms).abs() <= X_SHRINK_EPS_MS;
             let (pmin, pmax) = Self::apply_padding(self.raw_min, self.raw_max);
+            let epsilon = ((pmax - pmin).abs() * 0.001).max(y_resolution(pmin, pmax));
             let y_settled =
-                (self.disp_min - pmin).abs() < 1e-3 && (self.disp_max - pmax).abs() < 1e-3;
+                (self.disp_min - pmin).abs() < epsilon && (self.disp_max - pmax).abs() < epsilon;
             if span_settled && y_settled {
                 self.refit_pending = false;
             }
@@ -1553,8 +1703,9 @@ impl CachedChart {
             let chunk_start_x = left + pw * ((chunk_start_bid - start_view_id) as f32 / total);
             let chunk_end_x = left + pw * ((chunk_end_bid - start_view_id + 1) as f32 / total);
             let chunk_width = (chunk_end_x - chunk_start_x).max(1.0);
-            let smooth_chunk =
-                lod_bucket_ms <= 100 && should_smooth_chunk(chunk_width, chunk_bucket_count);
+            let smooth_chunk = !self.preserve_peaks
+                && lod_bucket_ms <= 100
+                && should_smooth_chunk(chunk_width, chunk_bucket_count);
 
             let mut paths = vec![String::new(); self.channel_count];
             let mut gap_paths = vec![String::new(); self.channel_count];
@@ -1562,10 +1713,9 @@ impl CachedChart {
             let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; self.channel_count];
             let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; self.channel_count];
 
-            for b in &view_buckets {
-                if b.id < chunk_start_bid || b.id > chunk_end_bid {
-                    continue;
-                }
+            let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
+            let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            for b in &view_buckets[first..end] {
                 let has_any = b.has.iter().any(|v| *v);
                 if !has_any {
                     continue;
@@ -1727,8 +1877,9 @@ impl CachedChart {
             let chunk_start_x = left + pw * ((chunk_start_bid - start_view_id) as f32 / total);
             let chunk_end_x = left + pw * ((chunk_end_bid - start_view_id + 1) as f32 / total);
             let chunk_width = (chunk_end_x - chunk_start_x).max(1.0);
-            let smooth_chunk =
-                lod_bucket_ms <= 100 && should_smooth_chunk(chunk_width, chunk_bucket_count);
+            let smooth_chunk = !self.preserve_peaks
+                && lod_bucket_ms <= 100
+                && should_smooth_chunk(chunk_width, chunk_bucket_count);
 
             let mut paths = vec![String::new(); valid_channels.len()];
             let mut gap_paths = vec![String::new(); valid_channels.len()];
@@ -1736,10 +1887,9 @@ impl CachedChart {
             let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
             let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
 
-            for b in &view_buckets {
-                if b.id < chunk_start_bid || b.id > chunk_end_bid {
-                    continue;
-                }
+            let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
+            let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            for b in &view_buckets[first..end] {
                 let rel_bid = b.id - chunk_start_bid;
                 let x = chunk_width * ((rel_bid as f32 + 0.5) / chunk_bucket_count as f32);
 
@@ -1953,8 +2103,9 @@ impl CachedChart {
             let chunk_start_x = left + pw * ((chunk_start_bid - start_view_id) as f32 / total);
             let chunk_end_x = left + pw * ((chunk_end_bid - start_view_id + 1) as f32 / total);
             let chunk_width = (chunk_end_x - chunk_start_x).max(1.0);
-            let smooth_chunk =
-                lod_bucket_ms <= 100 && should_smooth_chunk(chunk_width, chunk_bucket_count);
+            let smooth_chunk = !self.preserve_peaks
+                && lod_bucket_ms <= 100
+                && should_smooth_chunk(chunk_width, chunk_bucket_count);
 
             let mut paths = vec![String::new(); valid_channels.len()];
             let mut gap_paths = vec![String::new(); valid_channels.len()];
@@ -1962,10 +2113,9 @@ impl CachedChart {
             let mut last_bucket_id_drawn: Vec<Option<i64>> = vec![None; valid_channels.len()];
             let mut last_point_drawn: Vec<Option<(f32, f32)>> = vec![None; valid_channels.len()];
 
-            for b in &view_buckets {
-                if b.id < chunk_start_bid || b.id > chunk_end_bid {
-                    continue;
-                }
+            let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
+            let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            for b in &view_buckets[first..end] {
                 let rel_bid = b.id - chunk_start_bid;
                 let x = chunk_width * ((rel_bid as f32 + 0.5) / chunk_bucket_count as f32);
 
@@ -2484,7 +2634,10 @@ fn queue_chart_canvas_draw(canvas_id_json: String, payload_json: String) {
         return;
     }
 
-    spawn(async move {
+    // The queue/latch are global, so its task must outlive a chart component.
+    // A tab/state change could cancel a component-owned task during the yield,
+    // leaving FLUSH_SCHEDULED true and every future chart draw stuck until reload.
+    dioxus::core::spawn_forever(async move {
         #[cfg(target_arch = "wasm32")]
         gloo_timers::future::TimeoutFuture::new(0).await;
 

@@ -4,6 +4,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ground station · Video & stage models</title>
 <style>
+[hidden]{display:none!important}
   :root { color-scheme: dark; font: 16px system-ui, sans-serif; background:var(--gs26-app-background,#030712);color:var(--gs26-app-text,#edf3ff); }
   body { box-sizing:border-box;max-width: 1200px; margin: auto; padding: 24px; }
   a { color: #87cfff; } h1 { font-size:22px;font-weight:600;letter-spacing:-.02em; } h2 { font-size:18px;font-weight:600;margin-top:24px; }
@@ -29,13 +30,20 @@
 <section id="publisher">
 <h2>Use your camera as a stream source</h2>
 <p>Your camera becomes available to the Ground Station and may be recorded or selected for the audience broadcast. It stays on when you switch dashboard tabs. Stop sharing to release it.</p>
-<label>Camera<select id="publish-device"><option value="">System default</option></select></label>
+<label>Camera name<input id="publish-name" maxlength="80" value="My camera" placeholder="Pad, GroundStation or interview"></label>
+<button id="publish-rename" disabled>Save camera name</button>
+<label>Camera<select id="publish-device"><option value="">Automatic (rear camera)</option></select></label>
+<button id="publish-viewfinder" disabled>Open viewfinder</button><button id="publish-flip" disabled>Switch front / rear</button>
+<label id="publish-zoom-control" hidden>Zoom<input id="publish-zoom" type="range" min="1" max="1" step="0.1" value="1"><output id="publish-zoom-value">1×</output></label>
 <p id="publish-access" role="status">Connecting to your dashboard session…</p>
 <button id="publish-devices" disabled>Refresh cameras</button>
+<label style="display:flex;align-items:center;gap:10px;min-height:44px"><input id="publish-audio" type="checkbox" checked style="width:22px;height:22px"> Include microphone audio</label>
+<label>Microphone<select id="publish-microphone"><option value="">System default microphone</option></select></label>
 <button id="publish-start" disabled>Start sharing camera</button><button id="publish-stop" disabled>Stop sharing</button>
 <p id="publish-status" role="status">Camera off</p>
 <video id="publish-preview" autoplay playsinline muted hidden></video>
 </section>
+<section id="receiver" hidden>
 <h2>Live cameras</h2>
 <p id="video-status">Connecting to video receiver…</p>
 <div id="cameras"></div>
@@ -55,11 +63,12 @@
   <button id="save">Upload model</button>
 </form>
 <ul id="models"></ul>
-<script>
+</section>
+<script src="/assets/stay-awake.js"></script><script>
 'use strict';
 const $ = id => document.getElementById(id);
 const embedded = new URLSearchParams(location.search).get('embedded') === '1' && parent !== window;
-let token = '', generation = 0;
+let token = '', generation = 0, pageActive = true;
 let recordingOffset = 0;
 const cameras = new Map();
 function notice(text) { $('message').textContent = text; }
@@ -97,56 +106,80 @@ $('logout').onclick = async () => {
   catch (err) { notice(err.message); }
   finally { stopAll(); token = ''; $('models').replaceChildren(); notice('Signed out'); }
 };
-function stopCamera(camera) {
-  camera.closed = true;
-  camera.pc?.close();
-  if (camera.session) api(camera.session, {method: 'DELETE'}).catch(() => {});
-  camera.card.remove();
+function removeCameraSession(camera, url) {
+  if (!url) return;
+  let target; try { target = new URL(url, location.href); } catch { return; }
+  const prefix = `/api/video/streams/${encodeURIComponent(camera.id)}/whep/`;
+  if (target.origin !== location.origin || !target.pathname.startsWith(prefix) || !/^[A-Za-z0-9_-]+$/.test(target.pathname.slice(prefix.length)) || target.search || target.hash) return;
+  fetch(target.pathname, {method: 'DELETE', keepalive: true, headers: {Authorization: `Bearer ${camera.auth}`}}).catch(() => {});
 }
+function cleanupCamera(camera) {
+  clearTimeout(camera.watchdog); clearTimeout(camera.iceTimer);
+  camera.request?.abort(); camera.request = null;
+  const pc = camera.pc; camera.pc = null;
+  if (pc) { pc.ontrack = null; pc.onconnectionstatechange = null; pc.onicegatheringstatechange = null; pc.close(); }
+  const stream = camera.video.srcObject; camera.video.srcObject = null;
+  stream?.getTracks().forEach(track => track.stop());
+  const session = camera.session; camera.session = null; removeCameraSession(camera, session);
+}
+function stopCamera(camera) { camera.closed = true; cleanupCamera(camera); camera.card.remove(); }
 function stopAll() { stopPublishing(); generation++; for (const camera of cameras.values()) stopCamera(camera); cameras.clear(); $('recording-player').pause(); $('recording-player').removeAttribute('src'); $('recording-player').load(); $('recording-player').hidden = true; $('recordings').replaceChildren(); $('recordings-status').textContent = ''; recordingOffset = 0; }
 async function connect(camera) {
   const pc = new RTCPeerConnection({iceServers: []}); camera.pc = pc;
+  const active = () => !camera.closed && !camera.failed && camera.pc === pc;
+  const fail = message => { if (!active()) return; camera.failed = true; cleanupCamera(camera); camera.status.textContent = message; };
+  const request = new AbortController(); camera.request = request;
+  camera.watchdog = setTimeout(() => fail('Connection timed out. Retrying…'), 20000);
   pc.addTransceiver('video', {direction: 'recvonly'});
-  pc.ontrack = event => { camera.video.srcObject = new MediaStream([event.track]); };
+  pc.addTransceiver('audio', {direction:'recvonly'});
+  const incoming = new MediaStream();camera.video.srcObject=incoming;
+  pc.ontrack = event => { if(active() && !incoming.getTracks().includes(event.track))incoming.addTrack(event.track); };
   pc.onconnectionstatechange = () => {
-    camera.status.textContent = pc.connectionState;
-    if (['failed', 'closed'].includes(pc.connectionState) && !camera.closed) camera.failed = true;
+    if (!active()) return;
+    if (pc.connectionState === 'connected') clearTimeout(camera.watchdog);
+    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) fail('Connection interrupted. Retrying…');
+    else camera.status.textContent = pc.connectionState;
   };
   try {
     await pc.setLocalDescription(await pc.createOffer());
     // Send a complete offer; this client does not require trickle-ICE PATCH requests.
     await new Promise((resolve, reject) => {
       if (pc.iceGatheringState === 'complete') return resolve();
-      const timeout = setTimeout(() => { pc.onicegatheringstatechange = null; reject(new Error('ICE gathering timed out')); }, 8000);
-      pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(timeout); pc.onicegatheringstatechange = null; resolve(); } };
+      camera.iceTimer = setTimeout(() => { pc.onicegatheringstatechange = null; reject(new Error('ICE gathering timed out')); }, 8000);
+      pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(camera.iceTimer); pc.onicegatheringstatechange = null; resolve(); } };
     });
-    if (camera.closed) return;
-    const response = await api(`/api/video/streams/${camera.id}/whep`, {method: 'POST', headers: {'Content-Type': 'application/sdp'}, body: pc.localDescription.sdp});
-    camera.session = response.headers.get('Location');
-    if (camera.closed) { if (camera.session) api(camera.session, {method: 'DELETE'}).catch(() => {}); return; }
+    if (!active()) return;
+    const response = await api(`/api/video/streams/${encodeURIComponent(camera.id)}/whep`, {method: 'POST', headers: {'Content-Type': 'application/sdp'}, body: pc.localDescription.sdp, signal: request.signal});
+    const session = response.headers.get('Location');
+    if (!active()) { removeCameraSession(camera, session); return; }
+    camera.session = session;
     await pc.setRemoteDescription({type: 'answer', sdp: await response.text()});
-  } catch (err) { pc.close(); camera.failed = true; camera.status.textContent = err.message; }
+  } catch (err) { fail(err.message); }
 }
-function addCamera(id) {
+function addCamera(id, name) {
   const card = document.createElement('article'), title = document.createElement('h3');
-  title.textContent = id;
+  title.textContent = name || id;
   const video = document.createElement('video'); video.autoplay = true; video.muted = true; video.playsInline = true; video.controls = true;
   const status = document.createElement('p'); status.textContent = 'Connecting…';
-  card.append(title, video, status); $('cameras').append(card);
-  const camera = {id, card, video, status, closed: false, failed: false}; cameras.set(id, camera); connect(camera);
+  const nameInput=document.createElement('input');nameInput.value=name||id;nameInput.maxLength=80;nameInput.setAttribute('aria-label','Camera name for '+(name||id));
+  const rename=document.createElement('button');rename.type='button';rename.textContent='Save camera name';rename.onclick=async()=>{try{await api(`/api/video/streams/${id}/name`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nameInput.value})});await refreshVideo();}catch(error){notice(error.message);}};
+  card.append(title, nameInput, rename, video, status); $('cameras').append(card);
+  const camera = {id, card, title, video, status, auth: token, closed: false, failed: false}; cameras.set(id, camera); connect(camera);
 }
 async function refreshVideo() {
+  if(!canManage || !pageActive)return;
   const current = generation;
   try {
     const streams = await (await api('/api/video/streams')).json();
     if (current !== generation) return;
     const live = new Set(streams.filter(s => s.live).map(s => s.id));
     for (const [id, camera] of cameras) if (!live.has(id) || camera.failed) { stopCamera(camera); cameras.delete(id); }
-    for (const id of live) if (!cameras.has(id)) addCamera(id);
+    for (const feed of streams.filter(s=>s.live)) {if(!cameras.has(feed.id))addCamera(feed.id,feed.name);else cameras.get(feed.id).title.textContent=feed.name||feed.id;}
     $('video-status').textContent = live.size ? `${live.size} camera feed(s)` : 'Waiting for cameras to publish to RTSP port 8554.';
   } catch (err) { if (current === generation) { for (const camera of cameras.values()) stopCamera(camera); cameras.clear(); $('video-status').textContent = err.message; } }
 }
 async function refreshModels() {
+  if(!canManage)return;
   const current = generation;
   const models = await (await api('/api/stage-models')).json();
   if (current !== generation) return;
@@ -174,6 +207,7 @@ async function refreshModels() {
   }
 }
 async function refreshRecordings() {
+  if(!canManage)return;
   const current = generation;
   try {
     const page = await (await api(`/api/video/recordings?offset=${recordingOffset}&limit=50`)).json();
@@ -197,38 +231,79 @@ async function refreshRecordings() {
     }
   } catch (err) { if (current === generation) { $('recordings').replaceChildren(); $('recordings-status').textContent = err.message; $('recordings-prev').disabled = true; $('recordings-next').disabled = true; } }
 }
-let publisher = null, canPublish = false;
+let publisher = null, canPublish = false, canManage = false;
+let previewStream=null,previewRequest=0,preferredFacing="environment",dashboardOrigin=location.origin;
+function cameraAwake(active){window.GS26StayAwake?.setActive("camera",active);if(parent!==window)parent.postMessage({type:"gs26-capture-active",active},dashboardOrigin);}
 const publishNotice = text => { $('publish-status').textContent = text; };
 async function refreshPublishPermission() {
+  const current = generation;
   try {
     const config = await (await api('/api/live_streams')).json();
-    canPublish = !!token && config.can_manage_stream === true;
-  } catch { canPublish = false; }
+    if (current !== generation) return;
+    canPublish = !!token && config.can_publish_camera === true;
+    canManage = !!token && config.can_manage_stream === true;
+  } catch { if (current !== generation) return; canPublish = false; canManage = false; }
+  $('publisher').hidden = !canPublish;
+  $('receiver').hidden = !canManage;
+  if(!canManage){for(const camera of cameras.values())stopCamera(camera);cameras.clear();$('recordings').replaceChildren();$('models').replaceChildren();}
   $('publish-start').disabled = !canPublish || !!publisher;
   $('publish-devices').disabled = !canPublish;
+  $('publish-viewfinder').disabled=!canPublish; $('publish-flip').disabled=!canPublish; $('publish-rename').disabled=!canPublish||!publisher;
   $('publish-access').hidden = canPublish;
   $('publish-access').textContent = token
-    ? 'Your account needs stream-manager permission to share this camera.'
+    ? 'Your account needs camera-publishing permission.'
     : embedded ? 'Sign in through the dashboard to share this camera.' : 'Sign in to share this camera.';
-  if (!canPublish && publisher) stopPublishing('Camera stopped: publishing permission is unavailable.');
+  if (!canPublish && (publisher||previewStream)) stopPublishing('Camera stopped: publishing permission is unavailable.');
 }
 async function listPublishDevices() {
   try {
     const selected = $('publish-device').value;
     const devices = await navigator.mediaDevices.enumerateDevices();
-    $('publish-device').replaceChildren(new Option('System default', ''));
+    const microphone = $('publish-microphone').value;
+    $('publish-microphone').replaceChildren(new Option('System default microphone',''));
+    devices.filter(d=>d.kind==='audioinput').forEach((d,i)=>$('publish-microphone').add(new Option(d.label||`Microphone ${i+1}`,d.deviceId)));
+    if([...$('publish-microphone').options].some(o=>o.value===microphone))$('publish-microphone').value=microphone;
+    $('publish-device').replaceChildren(new Option('Automatic (rear camera)', ''));
     devices.filter(d => d.kind === 'videoinput').forEach((d, i) => $('publish-device').add(new Option(d.label || `Camera ${i + 1}`, d.deviceId)));
     if ([...$('publish-device').options].some(o => o.value === selected)) $('publish-device').value = selected;
   } catch (error) { publishNotice(error.message); }
 }
+function updateZoom(track) {
+  const zoom=track.getCapabilities?.().zoom;
+  $('publish-zoom-control').hidden=!(zoom && Number.isFinite(zoom.min) && Number.isFinite(zoom.max) && zoom.max>zoom.min);
+  if(!$('publish-zoom-control').hidden){const input=$('publish-zoom');input.min=zoom.min;input.max=zoom.max;input.step=zoom.step||0.1;input.value=track.getSettings?.().zoom||zoom.min;$('publish-zoom-value').value=Number(input.value).toFixed(1)+'×';}
+}
+async function openViewfinder() {
+  if(!canPublish)return;
+  const request=++previewRequest,old=previewStream;
+  // iOS may require releasing the current lens before opening the other one.
+  old?.getVideoTracks().forEach(t=>{t.onended=null;t.stop();});
+  try {
+    const stream=await navigator.mediaDevices.getUserMedia({video:{deviceId:$('publish-device').value?{exact:$('publish-device').value}:undefined,facingMode:$('publish-device').value?undefined:{ideal:preferredFacing},width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:30}},audio:false});
+    if(request!==previewRequest||!canPublish){stream.getTracks().forEach(t=>t.stop());return;}
+    const track=stream.getVideoTracks()[0];
+    if(publisher?.stream){const sender=publisher.pc?.getSenders().find(s=>s.track?.kind==='video');if(sender)await sender.replaceTrack(track);publisher.stream.getVideoTracks().forEach(t=>publisher.stream.removeTrack(t));publisher.stream.addTrack(track);previewStream=publisher.stream;}
+    else previewStream=stream;
+    track.onended=()=>stopPublishing('Camera disconnected.');
+    $('publish-preview').srcObject=previewStream;$('publish-preview').hidden=false;await $('publish-preview').play().catch(()=>{});updateZoom(track);await listPublishDevices();
+    cameraAwake(true);$('publish-stop').disabled=false;publishNotice(publisher?'Sharing camera and selected audio':'Viewfinder ready · not sharing');
+  }catch(error){if(request===previewRequest)stopPublishing('Cannot open camera: '+error.message);}
+}
+$('publish-viewfinder').onclick=openViewfinder;
+$('publish-flip').onclick=()=>{preferredFacing=preferredFacing==='environment'?'user':'environment';$('publish-device').value='';openViewfinder();};
+$('publish-device').onchange=()=>{if(previewStream)openViewfinder();};
+$('publish-zoom').oninput=async()=>{const track=previewStream?.getVideoTracks()[0];if(!track)return;try{await track.applyConstraints({advanced:[{zoom:Number($('publish-zoom').value)}]});$('publish-zoom-value').value=Number(track.getSettings?.().zoom||$('publish-zoom').value).toFixed(1)+'×';}catch(error){publishNotice('Camera zoom unavailable: '+error.message);}};
+$('publish-rename').onclick=async()=>{if(!publisher?.location)return;try{await api(publisher.location,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('publish-name').value})});publishNotice('Camera name saved');}catch(error){publishNotice(error.message);}};
 function stopPublishing(message = 'Camera off') {
-  const old = publisher; publisher = null;
+  cameraAwake(false);
+  const old = publisher; publisher = null; ++previewRequest;
+  previewStream?.getTracks().forEach(track=>{track.onended=null;track.stop();});previewStream=null;$('publish-zoom-control').hidden=true;$('publish-rename').disabled=true;
   if (old) {
     clearInterval(old.heartbeat); old.pc?.close(); old.stream?.getTracks().forEach(track => track.stop());
     if (old.location) fetch(old.location, {method: 'DELETE', headers: {Authorization: `Bearer ${old.token}`}, keepalive: true}).catch(() => {});
   }
   $('publish-preview').srcObject = null; $('publish-preview').hidden = true;
-  $('publish-start').disabled = !canPublish; $('publish-stop').disabled = true; $('publish-device').disabled = false;
+  $('publish-start').disabled = !canPublish; $('publish-stop').disabled = true; $('publish-device').disabled = false; $('publish-audio').disabled=false; $('publish-microphone').disabled=false;
   publishNotice(message);
 }
 $('publish-devices').onclick = listPublishDevices;
@@ -237,12 +312,15 @@ $('publish-start').onclick = async () => {
   if (publisher || !canPublish) return;
   if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) return publishNotice('Camera sharing requires HTTPS (or localhost).');
   const current = {token}; publisher = current;
-  $('publish-start').disabled = true; $('publish-stop').disabled = false; $('publish-device').disabled = true;
+  $('publish-start').disabled = true; $('publish-stop').disabled = false; $('publish-device').disabled = true; $('publish-audio').disabled=true; $('publish-microphone').disabled=true;
   publishNotice('Requesting camera access…');
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({video: {deviceId: $('publish-device').value ? {exact: $('publish-device').value} : undefined}, audio: false});
+    if(!previewStream)await openViewfinder();
+    if(!previewStream)throw Error('Open a camera viewfinder first.');
+    const stream=previewStream;
+    if($('publish-audio').checked){const audio=await navigator.mediaDevices.getUserMedia({video:false,audio:{deviceId:$('publish-microphone').value?{exact:$('publish-microphone').value}:undefined,echoCancellation:true,noiseSuppression:true,autoGainControl:false}});if(publisher!==current){audio.getTracks().forEach(t=>t.stop());return;}audio.getAudioTracks().forEach(t=>stream.addTrack(t));}
     if (publisher !== current) { stream.getTracks().forEach(track => track.stop()); return; }
-    current.stream = stream;
+    current.stream = stream;cameraAwake(true);
     stream.getTracks().forEach(track => { track.onended = () => { if (publisher === current) stopPublishing('Camera disconnected.'); }; });
     $('publish-preview').srcObject = stream; $('publish-preview').hidden = false;
     const pc = new RTCPeerConnection({iceServers: []}); current.pc = pc;
@@ -251,8 +329,10 @@ $('publish-start').onclick = async () => {
     if (!codecs.length) throw new Error('This browser cannot publish H.264 video for the Ground Station.');
     for (const track of stream.getTracks()) {
       const transceiver = pc.addTransceiver(track, {direction: 'sendonly', streams: [stream]});
-      if (!transceiver.setCodecPreferences) throw new Error('Camera sharing requires a browser with video codec selection support.');
-      transceiver.setCodecPreferences(codecs);
+      if (track.kind === 'video') {
+        if (!transceiver.setCodecPreferences) throw new Error('Camera sharing requires a browser with video codec selection support.');
+        transceiver.setCodecPreferences(codecs);
+      }
     }
     pc.onconnectionstatechange = () => {
       if (publisher !== current) return;
@@ -267,12 +347,12 @@ $('publish-start').onclick = async () => {
       pc.addEventListener('icegatheringstatechange', changed);
     });
     if (publisher !== current) return;
-    const response = await api('/api/video/publish', {method: 'POST', headers: {'Content-Type': 'application/sdp'}, body: pc.localDescription.sdp});
+    const response = await api('/api/video/publish?name='+encodeURIComponent($('publish-name').value), {method: 'POST', headers: {'Content-Type': 'application/sdp'}, body: pc.localDescription.sdp});
     const locationHeader = response.headers.get('Location');
     if (!locationHeader) throw new Error('Missing camera session location.');
     const locationURL = new URL(locationHeader, location.href);
     if (locationURL.origin !== location.origin || !/^\/api\/video\/publish\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(locationURL.pathname)) throw new Error('Invalid camera session location.');
-    current.location = locationURL.href;
+    current.location = locationURL.href; $('publish-rename').disabled=false;
     if (publisher !== current) { await fetch(current.location, {method: 'DELETE', headers: {Authorization: `Bearer ${current.token}`}}); return; }
     await pc.setRemoteDescription({type: 'answer', sdp: await response.text()});
     current.heartbeat = setInterval(async () => {
@@ -292,6 +372,7 @@ if (embedded) {
   let receivedSession = false;
   window.addEventListener('message', event => {
     if (event.source !== parent || event.data?.type !== 'gs26-session' || typeof event.data.token !== 'string') return;
+    dashboardOrigin=event.origin;
     if(event.data.theme && typeof event.data.theme==='object'){
       for(const name of ['--gs26-app-background','--gs26-app-text','--gs26-panel-background','--gs26-panel-alt-background','--gs26-border','--gs26-text-muted','--gs26-button-background','--gs26-button-border','--gs26-button-text']){
         const value=event.data.theme[name];
@@ -322,11 +403,12 @@ $('upload').onsubmit = async event => {
 };
 async function refresh() { await refreshPublishPermission(); await Promise.all([refreshVideo(), refreshRecordings(), refreshModels().catch(err => notice(err.message))]); }
 async function poll() {
-  if (!embedded || token) { await refreshVideo(); await refreshPublishPermission(); }
+  if (pageActive && (!embedded || token)) { await refreshPublishPermission(); await refreshVideo(); }
   setTimeout(poll, 5000);
 }
 if (!embedded) { refreshModels().catch(err => notice(err.message)); refreshRecordings(); }
 poll();
-window.addEventListener('pagehide', stopAll);
+window.addEventListener('pagehide', () => { pageActive = false; stopAll(); });
+window.addEventListener('pageshow', () => { if (pageActive) return; pageActive = true; refresh().catch(error => notice(error.message)); });
 </script>
 </html>

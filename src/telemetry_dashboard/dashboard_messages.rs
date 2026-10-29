@@ -1,6 +1,7 @@
 #[derive(Deserialize, Debug)]
 #[serde(tag = "ty", content = "data")]
 enum WsInMsg {
+    CalibrationChanged,
     Telemetry(TelemetryRow),
     TelemetryBatch(Vec<TelemetryRow>),
     FlightState(FlightStateMsg),
@@ -129,10 +130,14 @@ pub(crate) struct FluidFillTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct FillTargetsConfig {
+    #[serde(default = "default_fill_source")]
+    pub fill_source: String,
     pub version: u32,
     pub nitrogen: FluidFillTarget,
     pub nitrous: FluidFillTarget,
 }
+
+fn default_fill_source() -> String { "kg50".into() }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -310,16 +315,24 @@ struct AlertDto {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MainTab {
+    Checklists,
     State,
     ConnectionStatus,
     Detailed,
     NetworkTopology,
     Map,
     Actions,
+    FirmwareUpdate,
     Calibration,
+    Mission,
+    CrewVoice,
+    StreamManager,
+    Media,
+    Vehicle,
     Messages,
     Notifications,
     Warnings,
     Errors,
     Data,
+    DataExport,
 }

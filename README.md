@@ -2,24 +2,128 @@
 
 This repository contains the Dioxus-based frontend for the UBSEDS ground station UI.
 
+## Custom State dashboard
+
+Live history uses indexed GPS and channel extrema lookups so those operations
+do not scan the argo cleangrowing rolling buffer on every update. On reconnect/reload,
+history is fetched from GroundStation and its receipt times are aligned using
+the read-only `/api/system/time` endpoint; recorded source timestamps are not
+modified. This prevents a skewed backend clock from making live updates evict
+the restored history. The local offline cache is only a bounded startup preview
+(5,000 rows), not a full recording; full restoration requires the backend.
+
+Regression checks: `cargo test --bin groundstation_frontend` and
+`cargo test --bin groundstation_frontend -- --ignored --nocapture --test-threads=1`
+(the latter includes long-history profiling checks).
+
+Open **State → Customize dashboard** to add, hide, remove, reorder or configure
+telemetry cards. Cards support numbers, bars, gauges, short trends and binary
+state indicators. Choose a telemetry data type, optional board ID, zero-based
+channel index, label, unit and display range (maximum must exceed minimum).
+Layouts are saved locally per user and backend address; they do not synchronize
+between computers. **Restore defaults** restores the standard layout.
+
+Defaults group both loadcells, pressure, fill percentage, valve states and
+fill-system batteries under **Fill System**, and battery/GPS/barometer readings
+under **Avionics**. Missing data remains marked unavailable; readings older than
+10 seconds are marked stale. These displays do not replace safety controls or
+board connection status. Card rendering samples the existing telemetry cache at
+5 Hz and trends retain at most 150 samples; acquisition and CSV data are unchanged.
+
+Voice chat and recording tools open inside the app with a return button, not in
+external browser tabs. The Pi-compatible raster map supports dragging to pan,
+wheel or +/- buttons to zoom, and keyboard +/- when focused. Tiles are reused
+between telemetry updates. 3D views use a reduced-detail wireframe of the actual
+model when WebGL2 is unavailable. Rendering is capped at 30 FPS (12 FPS for the
+software fallback) and pauses when the view is hidden.
+
+## Data capture downloads
+
+**Data Export** now includes channel graphs and CSV/Excel/PDF reports. Select a
+recording (or all recordings), optionally enter UTC date bounds, and load the
+preview. Select channels and use the start/end sliders to highlight a time window,
+or export the entire loaded span. Preview graphs are downsampled; exported data
+is not. Excel contains charts and data sheets; PDF contains graphs and full selected
+data tables. Reports include recorded regression coefficients/tare/provenance,
+or explicitly labelled inferred/unavailable metadata for older recordings.
+
+Install the backend report libraries with `python3 scripts/setup-report-export.py`
+in GroundStation26. Native clients need no Python libraries and save all formats
+to Downloads/Documents without opening browser tabs. Selection limits and backend
+setup are documented in GroundStation26's `docs/backend/data-capture.md`.
+
+The panel also offers **Start/End (UTC)** for exporting across all saved backend
+recordings automatically. The interval includes start and excludes end; data is
+selected by stored receive timestamps, not database filenames.
+
+**GroundStation system date/time** allows users with the separate
+`set_system_time` permission to set the Linux host clock from their device,
+manually selected UTC, or complete network UTC (RF GPS when available). This
+changes future timestamps for all logs, not only CSV. It requires backend OS
+authorization; it never silently disables NTP. Correct time before active
+operations and sign in again if a large correction expires the session. Old
+incorrect timestamps are not rewritten. The permission is off by default and
+cannot be granted to anonymous users.
+
+In Test Fire, HITL, or normal/main mode, start/stop recording in **Actions**, then
+open the **Data Export** tab. Refresh, choose a recording, and
+select **Download CSV**. Browsers save through their download manager; native
+clients save to Downloads (or Documents) and display the path. Active sessions
+export only rows committed when requested; stop recording for the complete capture.
+
+The matching backend must provide authenticated GET /api/recordings and
+GET /api/recordings/{id}/csv endpoints. Exports include all recorded telemetry,
+source identities, receive/source timestamps, decoded values and payload bytes,
+without graph downsampling or extra calibration. Browser downloads buffer the
+CSV; use the native client for large captures. This does not fetch board SD files.
+
+Fill start/pause/cancel, nitrogen-test, and valve self-test macros remain in
+**Actions**, even for older/custom layouts, with existing safety interlocks and
+permissions. CSV viewing does not grant permission to operate valves.
+
+## Dashboard
+
+Dashboard opens on a customizable telemetry and live-camera card layout. Use
+**Customize dashboard** to add cards, pick data/camera sources, resize cards, and
+change their sections, order and visibility. Layouts are saved per user and station;
+telemetry values can be pinned to the centered status bar. The boxed active-tab selector
+opens the tab picker without pushing content down. The previous
+“My Dashboard” tab now maps to Dashboard and retains its saved cards.
+
+The 3D model is confined to the delayed stream: it appears when no cameras are
+available, or when a stream operator selects **3D model** or **Cameras + 3D model**.
+**Settings → General → Viewing mode** can add ground controls beneath dashboard
+cards or enable Streamer (delayed audience video). Live camera cards require
+operator or stream-management access. Viewing the audience stream does not require
+stream-management permission.
+
+See the [current API contract](docs/backend-api.md) and [JSON example index](docs/api-examples/README.md).
+Deploy the matching backend and frontend `dev` versions together; the backend's default
+build may select the stable frontend unless `--frontend-dev` is requested.
+
+The dashboard reconnects automatically after a backend restart. While its
+WebSocket is offline, a visible banner warns that data may be stale and offers
+Reconnect now. Replacing a connection cannot let the old event pump remove the
+new one; regression tests cover that ownership race.
+
 Current release:
 
 - Frontend version: `0.3.1`
 - App build: `36`
-- Dioxus line: `0.7.9`
+- Dioxus line: `0.7.10`
 - Targets: web, macOS desktop, Windows desktop, Linux desktop, Android, iOS
 
 Backend compatibility note:
 
-- The current frontend contract has been checked against `../groundstation26/backend/src/web.rs`, `../groundstation26/backend/src/state.rs`, and `../groundstation26/backend/src/types.rs`.
+- The current frontend contract has been checked against the sibling `GroundStation26/backend/src/web.rs`, `state.rs`, `types.rs`, `auth.rs`, `media/contract.rs`, and `media/program.rs`.
 - In addition to the older dashboard routes, this frontend now expects backend support for shared alert acknowledgement state, message history, board `packet_count`, and the `ActionPolicy` / `FillTargets` / `RecordingStatus` WebSocket snapshots.
 
 If your goal is to build a backend that works with this frontend, start here:
 
-- Backend contract: [`docs/backend-api.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-api.md)
-- Example payloads: [`docs/api-examples`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples)
-- Build helper: [`build.py`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/build.py)
-- Streaming `/api/recent` notes: [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md)
+- Backend contract: [`docs/backend-api.md`](docs/backend-api.md)
+- Example payloads: [`docs/api-examples`](docs/api-examples)
+- Build helper: [`build.py`](build.py)
+- Streaming `/api/recent` notes: [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md)
 
 ## What The Frontend Expects
 
@@ -92,6 +196,12 @@ A minimal backend should implement at least:
 - `POST /api/auth/logout`
 - `GET /ws` or equivalent WebSocket upgrade on `/ws`
 
+The current model dashboard additionally requires `GET /api/vehicle_visualization`
+and `GET /api/dashboard_status`; missing endpoints display unavailable state. Mission
+and Streamer use `GET /api/live_streams` and its scoped program/player URLs. Directing
+the broadcast uses `POST /api/live_streams/control`; assigning roles uses
+`GET`/`POST /api/stream-roles` with stream-admin authorization.
+
 For a more complete dashboard, also implement:
 
 - `GET /api/action_policy`
@@ -118,10 +228,15 @@ Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph e
 
 ## Running The Frontend
 
+Native clients can use **Explore offline** from connection setup or a failed
+connection to learn the sample UI without a station. Example data is labelled,
+outputs are disabled, and practice choices never change real station state. See
+[Disconnected native preview](docs/offline-preview.md).
+
 Web:
 
 ```bash
-cargo install dioxus-cli --version 0.7.9
+cargo install dioxus-cli --version 0.7.10
 dx serve
 ```
 
@@ -133,7 +248,7 @@ python3 build.py web
 
 Running `python3 build.py` with no arguments now performs the default clean Android build. Use `python3 build.py --help` for the full build helper usage.
 
-The codebase is currently pinned to Dioxus `0.7.9`. Use the matching `0.7.9` CLI when possible; the helper also contains guards for patch-level CLI/runtime skew.
+The codebase is currently pinned to Dioxus `0.7.10`. Use the matching `0.7.10` CLI when possible; the helper also contains guards for patch-level CLI/runtime skew.
 
 ## Android Build Notes
 
@@ -234,7 +349,7 @@ The dashboard reload button refetches and reapplies layout/config for the active
 
 ## Editing Themes
 
-Built-in theme presets live in [`assets/themes/presets.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/assets/themes/presets.json). They are validated in `build.rs` and compiled into the app at build time, so there is no runtime file dependency.
+Built-in theme presets live in [`assets/themes/presets.json`](assets/themes/presets.json). They are validated in `build.rs` and compiled into the app at build time, so there is no runtime file dependency.
 
 For easier editing or adding presets, use the local Tkinter editor:
 
@@ -263,7 +378,7 @@ When the app reconnects or explicitly reseeds, it keeps existing chart history v
 - the live 20-minute history window is pruned using local receive time, not packet/network timestamp, so delayed or skewed packets do not incorrectly evict visible history
 - native builds keep the last valid layout per Ground Station URL plus a compact local telemetry snapshot so a failed connection attempt can still open the dashboard with the last remembered data/GPS/map state. Without a cached layout for that URL, the app shows the connection failure page.
 
-If you are implementing the backend streaming path, use [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md).
+If you are implementing the backend streaming path, use [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md).
 
 ## Calibration Behavior
 
@@ -271,6 +386,9 @@ If you are implementing the backend streaming path, use [`docs/backend-recent-st
 - If the backend disconnects later, the tab keeps showing the last cached calibration layout/document instead of rendering blank.
 - Unsaved calibration edits are stored locally as a draft per Ground Station URL, so switching tabs or remounting the page does not discard a local refit/edit before it is saved to the backend.
 - Saving calibration clears the local draft and refreshes the cached backend copy.
+- Choosing **Low to high** or **High to low** changes only capture direction; it does not clear points, change the saved fit, or submit calibration. Only the explicitly confirmed first capture of **New sequence** replaces existing points.
+- Within a high-to-low sequence, choose **Finish at zero…**, remove all load, then **Capture Zero** to finish. Weighted raw measurements are preserved (this final measurement is not a tare shift). Review and **Save** separately.
+- Captures cannot overlap, and delayed save responses cannot overwrite newer local edits.
 - Zero-point changes include a `Preserve regression when changing zero point` toggle so operators can choose whether the existing fit shape should shift with the new zero or be recalculated independently.
 - Calibration sensor definitions, channel ids, labels, colors, and allowed regression modes still come entirely from `/api/calibration_config`.
 
@@ -302,7 +420,71 @@ The current suite covers layout parsing/validation, sender-aware chart series, l
 
 ## Reference Files
 
-- API reference: [`docs/backend-api.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-api.md)
-- Streaming notes: [`docs/backend-recent-streaming.md`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/backend-recent-streaming.md)
-- Minimal layout example: [`docs/api-examples/layout.minimal.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/layout.minimal.json)
-- WebSocket examples: [`docs/api-examples/websocket-messages.json`](/Users/rylan/Documents/GitKraken/Seds-Ground-Station-Frontend/docs/api-examples/websocket-messages.json)
+- Acceleration graph screening and peak preservation: [`docs/acceleration-display.md`](docs/acceleration-display.md)
+- API reference: [`docs/backend-api.md`](docs/backend-api.md)
+- Streaming notes: [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md)
+- Minimal layout example: [`docs/api-examples/layout.minimal.json`](docs/api-examples/layout.minimal.json)
+- WebSocket examples: [`docs/api-examples/websocket-messages.json`](docs/api-examples/websocket-messages.json)
+
+### Explicit targets and Docker builds
+
+```sh
+python3 build.py --target list
+python3 build.py --target web,linux-arm64 --docker --release
+python3 build.py --target android --docker --package-type apk
+python3 build.py --target all --no-sign
+python3 build.py --target all,sims --docker --no-sign
+python3 build.py --target web,linux --docker --dry-run
+```
+
+`all` selects every listed device/desktop/web target; `all,sims` adds iOS and Android simulator builds. Builds run sequentially, retain per-target output in `artifacts/<target>`, and report failures together. These are builds, not simulator launches or device installs.
+
+Docker provides reproducible web, Linux x86-64/ARM64 and Android builders using `Dockerfile.builder`. Web builds use the host architecture because their Wasm output is architecture independent. Docker Buildx and cross-architecture emulation are required when the builder architecture differs from the host. Native macOS/iOS targets require macOS and Xcode; Windows requires a Windows worker with MSVC/WebView2 tooling. Those targets use the native worker even with `--docker`; unsupported host targets fail explicitly, so `all` across every OS requires the corresponding workers. `--no-sign` leaves iOS as an unsigned app bundle. `--docker-image` selects an existing compatible Linux/Android builder. Signing credentials are not copied into images.
+
+### Final signed releases
+
+```bash
+python3 build.py --target macos --final
+python3 build.py --target ios --final
+python3 build.py --target android --final --package-type aab
+```
+
+`--final` requires a release build and conflicts with `--debug` and `--no-sign`.
+macOS signs with Developer ID, submits to Apple notarization, staples the ticket,
+and verifies Gatekeeper acceptance. `NOTARY_PROFILE` overrides selection; otherwise
+an explicitly configured Apple ID/team/password is used, or the sole stored
+notarytool profile is detected from Keychain attributes (no password enumeration).
+If several profiles exist, select one explicitly. iOS creates and verifies a
+distribution-signed IPA with its matching profile. Android requires the release
+keystore and signs/verifies the selected APK or AAB, including after Docker builds;
+signing happens on the host and passwords are passed through the child environment.
+Simulator targets skip final signing. Other targets build normally. Existing
+platform signing defaults remain available without `--final`; the flag additionally
+requires the complete distribution workflow. It does not upload to app stores.
+
+### Prepare browser dependencies without a UI build
+
+`python3 build.py --prepare-browser-assets` verifies or fetches the generated
+MapLibre files used by both the UI and the backend asset catalog. It does not
+install Rust tools, compile the UI, sign packages or select a platform. Frontend
+Cargo builds and backend-only GroundStation Cargo builds call the same stager.
+Python 3.10 or newer is required; `GS_PYTHON` can select its executable for Cargo.
+
+MapLibre remains pinned to **4.7.1**. Its CSS/JS SHA256 pins were verified against
+the official npm package after checking the package's published SHA512 integrity.
+Existing source files and cached files are checked against those same pins.
+`MAPLIBRE_GL_VERSION` still permits an explicit alternative version; its cache
+receipt records the downloaded byte hashes, and is checked on reuse.
+
+The stager uses the operating system's user cache by default. Set
+`GS_BROWSER_ASSETS_CACHE` to a writable shared cache for offline/container builds,
+or use `--cache PATH` with the preparation command. A cold offline checkout needs
+a previously verified cache. Missing, partial or placeholder assets fail clearly;
+they are never replaced by blank scripts/styles. Native advisory locks coordinate
+parallel builds and release automatically after a killed build. Files are written
+atomically and the version stamp is updated after both assets validate.
+
+`MAPLIBRE_GL_BASE_URL` is an optional HTTPS mirror override. Credentials and query
+strings are rejected; HTTP is restricted to loopback test fixtures. Generated
+files remain under `static/vendor/maplibre-gl` in the selected frontend checkout,
+not in the parent GroundStation source.
