@@ -18,8 +18,13 @@ let adminAccounts=[{username:'test-admin',roles:['admin'],permissions:{view_data
 const dashboardLayout=example('layout.full');
 let servedMode=null;
 const wsCommands=[];
-dashboardLayout.actions_tab.actions.push({...dashboardLayout.actions_tab.actions[0],cmd:'Pilot',label:'Pilot safety fixture',group:'Fill controls'});
-actionPolicy.controls.push({cmd:'Pilot',enabled:true,actuated:null,blink:'none'});
+const physicalValveCommands=['Pilot','NormallyOpen','Dump','Nitrogen','Nitrous'];
+for(const cmd of physicalValveCommands) {
+ dashboardLayout.actions_tab.actions=dashboardLayout.actions_tab.actions.filter(a=>a.cmd!==cmd);
+ dashboardLayout.actions_tab.actions.push({...dashboardLayout.actions_tab.actions[0],cmd,label:`${cmd} safety fixture`,group:'Fill controls'});
+ actionPolicy.controls=actionPolicy.controls.filter(c=>c.cmd!==cmd);
+ actionPolicy.controls.push({cmd,enabled:true,actuated:null,blink:'none'});
+}
 actionPolicy.controls=actionPolicy.controls.filter(c=>c.cmd!=='NitrogenClose');
 actionPolicy.controls.push({cmd:'NitrogenClose',enabled:true,actuated:null,blink:'none'});
 for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label:id,channels:[],subtabs:[
@@ -156,6 +161,19 @@ try {
    assert(!await closeNitrogen.getByText('Unconfirmed',{exact:true}).isVisible());
  }
  assert.equal(wsCommands.filter(packet=>packet.cmd==='NitrogenClose').length,0,'status rendering must not issue a command');
+ for(const cmd of physicalValveCommands) {
+   const button=page.getByRole('button',{name:new RegExp(`${cmd} safety fixture`)});
+   assert(await button.getByText('Unconfirmed',{exact:true}).isVisible());
+   for(const observed of [true,false,true,false]) {
+     actionPolicy.controls.find(c=>c.cmd===cmd).actuated=observed;
+     primarySocket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy}));
+     await page.waitForFunction(({cmd,observed})=>{
+       const element=[...document.querySelectorAll('button')].find(e=>e.textContent.includes(`${cmd} safety fixture`));
+       return element?.style.opacity===(observed?'1':'0.62') && element.style.boxShadow.includes('14px')===observed;
+     },{cmd,observed});
+     assert(!await button.getByText('Unconfirmed',{exact:true}).isVisible());
+   }
+ }
 
  await page.getByRole('button',{name:'Override cold-flow requirement',exact:true}).click();
  const dialog=page.getByRole('dialog',{name:'Override nitrogen cold flow'});await dialog.waitFor();

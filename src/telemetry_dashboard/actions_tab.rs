@@ -119,7 +119,9 @@ fn btn_style(
         "0 4px 12px rgba(0,0,0,0.16)"
     };
     let animation = action_animation_style(enabled, blink, actuated);
-    let ready_glow = if enabled && illuminate_enabled && actuated != Some(false) {
+    let ready_glow = if actuated == Some(true)
+        || (enabled && illuminate_enabled && actuated.is_none())
+    {
         format!("box-shadow:0 0 14px {border};")
     } else {
         String::new()
@@ -169,11 +171,15 @@ mod physical_confirmation_tests {
     fn confirmed_off_is_not_illuminated_by_action_availability() {
         let style = |observed| btn_style("red", "black", "white", true, BlinkMode::None, observed, true);
         assert!(style(Some(true)).contains("opacity:1.0; filter:none;"));
+        assert!(style(Some(true)).contains("box-shadow:0 0 14px red;"));
         let off = style(Some(false));
         assert!(off.contains("opacity:0.62;"));
         assert!(!off.contains("box-shadow:0 0 14px"));
         let unknown_output = btn_style("red", "black", "white", true, BlinkMode::None, None, false);
         assert!(unknown_output.contains("opacity:0.62;"));
+        assert!(!unknown_output.contains("box-shadow:0 0 14px"));
+        let locked_on = btn_style("red", "black", "white", false, BlinkMode::None, Some(true), false);
+        assert!(locked_on.contains("box-shadow:0 0 14px red;"), "permissions do not change confirmed output state");
     }
     #[test]
     fn sending_a_valve_request_does_not_confirm_a_physical_output() {
