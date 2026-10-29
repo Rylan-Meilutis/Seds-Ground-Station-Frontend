@@ -24,11 +24,26 @@ struct Checklist {
     items: Vec<Item>,
 }
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+struct Signoff {
+    checklist_id: String,
+    checklist_title: String,
+    signed_by: String,
+    signed_at_ms: i64,
+    content_digest: String,
+    signed_revision: u64,
+    invalidated_at_ms: Option<i64>,
+    invalidation_reason: Option<String>,
+}
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 struct Document {
     revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signoffs: Option<Vec<Signoff>>,
     enforce_before_launch: bool,
     checklists: Vec<Checklist>,
 }
+#[derive(Serialize)]
+struct Sign { checklist_id: String, revision: u64 }
 #[derive(Serialize)]
 struct Check {
     checklist_id: String,
@@ -61,6 +76,20 @@ struct Resolve {
     key: String,
     expected: History,
     value: serde_json::Value,
+}
+fn active_signoff<'a>(document: &'a Document, list: &Checklist) -> Option<&'a Signoff> {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(serde_json::to_vec(list).ok()?);
+    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    document.signoffs.as_ref()?.iter().rev().find(|signature| signature.checklist_id == list.id
+        && signature.invalidated_at_ms.is_none() && signature.content_digest == digest)
+}
+fn requires_signoff(document: &Document, list: &Checklist) -> bool {
+    document.signoffs.is_some() && active_signoff(document, list).is_none()
+}
+fn utc(ms: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000)
+        .ok().map(|value| format!("{value} UTC")).unwrap_or_else(|| format!("{ms} UTC milliseconds"))
 }
 fn concise(text: &str) -> String {
     let mut result = text.chars().take(160).collect::<String>();
@@ -156,6 +185,8 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
     let mut busy = use_signal(|| false);
     let mut draft = use_signal(|| None::<Document>);
     let mut sync_state = use_signal(SyncStatus::default);
+    let auth_status = crate::auth::current_status();
+    let can_sign = auth_status.authenticated && (auth_status.roles.iter().any(|r| r == "admin") || (auth_status.permissions.view_data && auth_status.permissions.sign_checklists));
     let admin = crate::auth::current_status()
         .roles
         .iter()
@@ -198,19 +229,24 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
             .or_else(|| snapshot.checklists.first())
             .cloned()
     };
+    let signoffs_supported = document.read().signoffs.is_some();
     let missing = document
         .read()
         .checklists
         .iter()
         .filter(|c| {
             c.required_before_launch
-                && c.items.iter().any(|i| !item_complete(&sync_state.read(), &c.id, i))
+                && (c.items.iter().any(|i| !item_complete(&sync_state.read(), &c.id, i)) || requires_signoff(&document.read(), c))
         })
         .count();
     rsx! {
      style {{include_str!("checklists.css")}}
      main {class:"gs26-checklists",style:"color:{theme.text_primary};--checklist-panel:{theme.panel_background};--checklist-border:{theme.button_border};","aria-label":"Shared checklists",
-      header {div {h2 {"Checklists"}p {role:"status",if !*loaded.read(){{format!("Connecting to {}…", crate::auth::station_name())}}else if document.read().enforce_before_launch{if missing==0{"Required checklists complete"}else{"{missing} required checklists incomplete — launch locked"}}else{"Shared progress · launch enforcement off"}}}
+      header {div {h2 {"Checklists"}p {role:"status",if !*loaded.read(){{format!("Connecting to {}…", crate::auth::station_name())}}else if document.read().enforce_before_launch{if missing==0{if signoffs_supported{"Required checklists complete and signed off"}else{"Required checklists complete"}}else{if signoffs_supported{"{missing} required checklists incomplete or unsigned — launch locked"}else{"{missing} required checklists incomplete — launch locked"}}}else{"Shared progress · launch enforcement off"}}}
+       if signoffs_supported {
+       button {disabled:*busy.read()||!*loaded.read(),onclick:move |_|{busy.set(true);spawn(async move{message.set(match super::recording_download::download_csv_path("/api/checklists/export","checklists.json").await{Ok(value)=>value,Err(error)=>error});busy.set(false);});},"Export checklists"}
+       button {disabled:*busy.read()||!*loaded.read(),onclick:move |_|{busy.set(true);spawn(async move{message.set(match super::recording_download::download_csv_path("/api/checklists/export.csv","checklist-signoffs.csv").await{Ok(value)=>value,Err(error)=>error});busy.set(false);});},"Export sign-offs CSV"}
+       }
        if admin && draft.read().is_none(){button {disabled:!*loaded.read(),onclick:move |_|{draft.set(Some(document.read().clone()));message.set(String::new());},"Manage checklists"}}
       }
       if !message.read().is_empty(){p {role:"status","{message}"}}
@@ -315,6 +351,26 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
             }
            }}
           }
+          if signoffs_supported {
+          section {class:"gs26-checklist-signoff","aria-label":"Checklist sign-off",
+           h4 {"Sign-off"}
+           if let Some(signature)=active_signoff(&document.read(), &list) {
+            p {{format!("Signed off by {} · {}", signature.signed_by, utc(signature.signed_at_ms))}}
+           }else{
+            p {"Not signed off. Complete all items, then an administrator or authorized reviewer must approve this checklist."}
+            if can_sign {
+             {let list_id=list.id.clone();let complete=!list.items.is_empty()&&list.items.iter().all(|item|item_complete(&sync_state.read(),&list.id,item));rsx!{
+              button {disabled:*busy.read()||!*loaded.read()||!complete||(sync_state.read().enabled&&(!sync_state.read().ready||sync_state.read().durability_pending||sync_state.read().definition_pending||sync_state.read().conflict_count>0)),onclick:move |_|{
+               let request=Sign{checklist_id:list_id.clone(),revision:document.read().revision};busy.set(true);spawn(async move{match http_post_json::<Sign,Document>("/api/checklists/sign",&request).await{Ok(value)=>{document.set(value);message.set("Checklist signed off".into());},Err(error)=>message.set(error)}busy.set(false);});
+              },"Sign off checklist"}
+             }}
+            }
+           }
+           for signature in document.read().signoffs.iter().flatten().filter(|s|s.checklist_id==list.id&&s.invalidated_at_ms.is_some()) {
+            p {class:"gs26-checklist-note",{format!("Previous sign-off by {} at {}; invalidated at {} when the checklist changed.", signature.signed_by, utc(signature.signed_at_ms), utc(signature.invalidated_at_ms.unwrap()))}}
+           }
+          }
+          }else{p {class:"gs26-checklist-note","Sign-off is unavailable with this station version."}}
           p {class:"gs26-checklist-note",{format!("Progress is saved by {} and shared with signed-in devices.", crate::auth::station_name())}}
          }
         }
@@ -327,6 +383,34 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_document_does_not_invent_signoff_support_or_a_launch_lock() {
+        let document: Document = serde_json::from_str(r#"{"revision":1,"enforce_before_launch":true,"checklists":[{"id":"setup","title":"Setup","required_before_launch":true,"items":[]}]}"#).unwrap();
+        assert!(document.signoffs.is_none());
+        assert!(!requires_signoff(&document, &document.checklists[0]));
+        assert!(serde_json::to_value(&document).unwrap().get("signoffs").is_none());
+    }
+    #[test]
+    fn supported_empty_signoffs_still_require_approval() {
+        let document: Document = serde_json::from_str(r#"{"revision":1,"enforce_before_launch":true,"signoffs":[],"checklists":[{"id":"setup","title":"Setup","required_before_launch":true,"items":[]}]}"#).unwrap();
+        assert!(document.signoffs.is_some());
+        assert!(requires_signoff(&document, &document.checklists[0]));
+        assert_eq!(serde_json::to_value(&document).unwrap()["signoffs"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn approval_display_requires_current_content_digest_and_valid_audit() {
+        use sha2::Digest;
+        let list = Checklist { id: "setup".into(), title: "Setup".into(), items: vec![Item { id: "a".into(), text: "Inspect".into(), checked: true, ..Default::default() }], ..Default::default() };
+        let digest: String = sha2::Sha256::digest(serde_json::to_vec(&list).unwrap()).iter().map(|byte| format!("{byte:02x}")).collect();
+        let mut document = Document { checklists: vec![list.clone()], signoffs: Some(vec![Signoff { checklist_id: "setup".into(), signed_by: "reviewer".into(), content_digest: digest, ..Default::default() }]), ..Default::default() };
+        assert!(active_signoff(&document, &list).is_some());
+        document.signoffs.as_mut().unwrap()[0].invalidated_at_ms = Some(1);
+        assert!(active_signoff(&document, &list).is_none());
+        document.signoffs.as_mut().unwrap()[0].invalidated_at_ms = None;
+        let mut changed = list.clone(); changed.title = "Changed".into();
+        assert!(active_signoff(&document, &changed).is_none());
+    }
     #[test]
     fn reviewed_versions_keep_receipt_and_causal_context() {
         let receipt = serde_json::json!({"list_id":"setup","item_id":"test","checked":true,"completion_source":"automated_sequence","completed_by":"sequence engine","completed_at_ms":123});

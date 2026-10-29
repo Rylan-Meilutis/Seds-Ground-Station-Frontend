@@ -25,6 +25,9 @@ pub fn Connect() -> Element {
     let mut test_report = use_signal(|| None::<ConnectionTestReport>);
     let mut testing = use_signal(|| false);
     let has_test_report = test_report.read().is_some();
+    let mut discovering = use_signal(|| false);
+    let mut discovery_status = use_signal(String::new);
+    let mut stations = use_signal(Vec::<crate::native_station::StationHint>::new);
 
     use_effect({
         let scheme_edit = scheme_edit;
@@ -87,17 +90,57 @@ pub fn Connect() -> Element {
                     }
                 }
                 div {
-                    style: format!(
-                        "flex:1 1 auto; min-height:0; {} padding-right:4px;",
-                        if has_test_report {
-                            "overflow:auto;"
-                        } else {
-                            "overflow:visible;"
-                        }
-                    ),
+                    style: "flex:1 1 auto; min-height:0; overflow:auto; padding-right:4px;",
                     p { style: "margin:0 0 16px 0; color:{theme.text_muted};",
                         "Enter the station host and port. Example: ",
                         code { "your-ground-station-url.com" }
+                    }
+
+                    div { style: "margin-bottom:16px; display:flex; flex-direction:column; gap:8px;",
+                        button {
+                            id: "discover-stations",
+                            style: shell_button_style(&theme),
+                            disabled: discovering(),
+                            onclick: move |_| {
+                                discovering.set(true);
+                                stations.set(vec![]);
+                                discovery_status.set("Searching this local network…".into());
+                                spawn(async move {
+                                    match crate::native_station::discover().await {
+                                        Ok(found) => {
+                                            discovery_status.set(if found.is_empty() {
+                                                "No stations found. Check the same LAN, station version, and UDP port 49363, or enter an address below.".into()
+                                            } else { "Select a station, then Connect. Discovered addresses still use normal certificate and sign-in checks.".into() });
+                                            stations.set(found);
+                                        }
+                                        Err(error) => discovery_status.set(error),
+                                    }
+                                    discovering.set(false);
+                                });
+                            },
+                            if discovering() { "Searching…" } else { "Discover stations" }
+                        }
+                        div { role: "status", aria_live: "polite", style: "font-size:13px; color:{theme.text_muted};", "{discovery_status()}" }
+                        for station in stations() {
+                            button {
+                                key: "{station.base}",
+                                class: "discovered-station",
+                                style: shell_button_style(&theme),
+                                onclick: move |_| {
+                                    let (scheme, host) = discovered_station_fields(&station);
+                                    scheme_edit.set(scheme.to_string());
+                                    host_edit.set(host);
+                                    skip_tls.set(UrlConfig::_skip_tls_verify_for_base(&station.base));
+                                    scheme_menu_open.set(false);
+                                    test_status.set(String::new());
+                                    test_report.set(None);
+                                    discovery_status.set("Station selected. Use Connect to continue.".into());
+                                },
+                                "{station.name} · "
+                                if station.role == "rrls" { "RRLS" } else { "Ground station" }
+                                " · {station.base}"
+                            }
+                        }
                     }
 
                     div {
@@ -469,6 +512,32 @@ pub fn Connect() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+// Uses the same URL normalization as manual entry. Selection never changes TLS
+// policy itself; the click handler restores only this origin's saved preference.
+#[cfg(not(target_arch = "wasm32"))]
+fn discovered_station_fields(station: &crate::native_station::StationHint) -> (&'static str, String) {
+    split_base_url_for_connect(&station.base)
+}
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod discovery_selection_tests {
+    use super::*;
+    #[test]
+    fn station_selection_preserves_discovered_scheme_address_and_port() {
+        for (base, expected) in [
+            ("https://192.0.2.8:8443", ("https://", "192.0.2.8:8443")),
+            ("http://192.0.2.9:3000", ("http://", "192.0.2.9:3000")),
+            ("https://[2001:db8::1]:443", ("https://", "[2001:db8::1]:443")),
+        ] {
+            let station = crate::native_station::StationHint {
+                name: "Example".into(), role: "rrls".into(), base: base.into(),
+            };
+            let (scheme, host) = discovered_station_fields(&station);
+            assert_eq!((scheme, host.as_str()), expected);
+            assert_eq!(compose_base_url_for_connect(scheme, &host), base);
         }
     }
 }

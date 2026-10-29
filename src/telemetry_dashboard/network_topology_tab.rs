@@ -160,6 +160,9 @@ pub fn NetworkTopologyTab(
     vertical_layout: bool,
     theme: ThemeConfig,
 ) -> Element {
+    use_drop(|| {
+        js_eval("window.__gs26NetworkGraphState?.dispose?.();");
+    });
     let snapshot = topology.read();
     // Advance age labels between topology updates without rebuilding layout.
     let mut age_tick = use_signal(|| 0_u64);
@@ -561,6 +564,11 @@ fn install_drag_handlers(
             viewportHeight: 0,
             listenersInstalled: false,
           }};
+          if (state.surface && state.surface !== surface) {{
+            state.cancelGesture?.();
+          }}
+          state.layoutRevision = (state.layoutRevision || 0) + 1;
+          const layoutRevision = state.layoutRevision;
           state.viewport = viewport;
           state.surface = surface;
           state.canvas = canvas;
@@ -611,11 +619,11 @@ fn install_drag_handlers(
             const marginY = Math.min(72, Math.max({fit_margin_px}, state.viewport.clientHeight * 0.06));
             const availW = Math.max(state.viewport.clientWidth - marginX * 2, 240);
             const availH = Math.max(state.viewport.clientHeight - marginY * 2, 240);
-            return clamp(Math.min(availW / {graph_width}, availH / {graph_height}) * 0.98, {zoom_min}, {zoom_max});
+            return clamp(Math.min(availW / state.graphWidth, availH / state.graphHeight) * 0.98, {zoom_min}, {zoom_max});
           }};
           const refreshSurfaceFrame = () => {{
-            const scaledWidth = Math.round({graph_width} * state.scale);
-            const scaledHeight = Math.round({graph_height} * state.scale);
+            const scaledWidth = Math.round(state.graphWidth * state.scale);
+            const scaledHeight = Math.round(state.graphHeight * state.scale);
             const fitPadX = Math.max({fit_margin_px}, Math.round((state.viewport.clientWidth - scaledWidth) / 2));
             const fitPadY = Math.max({fit_margin_px}, Math.round((state.viewport.clientHeight - scaledHeight) / 2));
             const panPadX = Math.max(fitPadX, Math.round(state.viewport.clientWidth * 0.58));
@@ -676,8 +684,8 @@ fn install_drag_handlers(
             }});
           }};
           const centerGraph = () => {{
-            const scaledWidth = Math.round({graph_width} * state.scale);
-            const scaledHeight = Math.round({graph_height} * state.scale);
+            const scaledWidth = Math.round(state.graphWidth * state.scale);
+            const scaledHeight = Math.round(state.graphHeight * state.scale);
             setViewportScroll(
               state.padLeft + Math.round((scaledWidth - state.viewport.clientWidth) / 2),
               state.padTop + Math.round((scaledHeight - state.viewport.clientHeight) / 2),
@@ -737,9 +745,11 @@ fn install_drag_handlers(
             refreshSurfaceFrame();
             centerGraph();
             window.requestAnimationFrame(() => {{
+              if (!state.viewport.isConnected || state.layoutRevision !== layoutRevision || state.userInteracted) return;
               refreshSurfaceFrame();
               centerGraph();
               window.requestAnimationFrame(() => {{
+                if (!state.viewport.isConnected || state.layoutRevision !== layoutRevision || state.userInteracted) return;
                 refreshSurfaceFrame();
                 centerGraph();
               }});
@@ -760,10 +770,11 @@ fn install_drag_handlers(
             }}
           }};
 
+          state.handleViewportResize = handleViewportResize;
           if (typeof window.ResizeObserver === "function") {{
             if (!state.resizeObserver) {{
               state.resizeObserver = new window.ResizeObserver(() => {{
-                handleViewportResize();
+                state.handleViewportResize();
               }});
             }}
             if (state.resizeObserverTarget !== state.viewport) {{
@@ -790,11 +801,44 @@ fn install_drag_handlers(
           if (state.listenersInstalled) return;
           state.listenersInstalled = true;
 
-          window.addEventListener("resize", () => {{
-            fitAndCenterGraph();
+          const controller = new AbortController();
+          const listen = (target, name, callback, options = {{}}) => {{
+            target.addEventListener(name, callback, {{...options, signal: controller.signal}});
+          }};
+          state.cancelGesture = () => {{
+            flushPendingPan();
+            const pointerIds = [...state.pointers.keys()];
+            state.pointers.clear();
+            for (const pointerId of pointerIds) {{
+              try {{ state.surface.releasePointerCapture(pointerId); }} catch (_err) {{}}
+            }}
+            state.drag = null;
+            state.pinchDistance = null;
+            state.suppressNextClick = false;
+            setCursor("grab");
+          }};
+          state.dispose = () => {{
+            state.cancelGesture();
+            controller.abort();
+            state.resizeObserver?.disconnect();
+            if (window.__gs26NetworkGraphState === state) {{
+              delete window.__gs26NetworkGraphState;
+              delete window.__gs26NetworkGraphZoomDelta;
+              delete window.__gs26NetworkGraphZoomReset;
+              delete window.__gs26NetworkGraphRefresh;
+            }}
+          }};
+          listen(window, "resize", () => state.handleViewportResize());
+          listen(window, "blur", () => state.cancelGesture());
+          listen(window, "pointercancel", () => state.cancelGesture());
+          listen(document, "lostpointercapture", (evt) => {{
+            if (state.pointers.has(evt.pointerId)) state.cancelGesture();
+          }});
+          listen(document, "visibilitychange", () => {{
+            if (document.hidden) state.cancelGesture();
           }});
 
-          document.addEventListener("wheel", (evt) => {{
+          listen(document, "wheel", (evt) => {{
             if (!withinSurface(evt.target)) return;
             if (isInteractiveNodeTarget(evt.target)) {{
               return;
@@ -803,8 +847,9 @@ fn install_drag_handlers(
             evt.preventDefault();
           }}, {{ passive: false }});
 
-          document.addEventListener("pointerdown", (evt) => {{
+          listen(document, "pointerdown", (evt) => {{
             if (!withinSurface(evt.target)) return;
+            if (isMouseLikePointer(evt) && evt.button !== 0) return;
             if (isInteractiveNodeTarget(evt.target)) {{
               return;
             }}
@@ -831,7 +876,7 @@ fn install_drag_handlers(
             setCursor("grabbing");
           }});
 
-          window.addEventListener("pointermove", (evt) => {{
+          listen(window, "pointermove", (evt) => {{
             if (!state.pointers.has(evt.pointerId)) return;
             const previousPointer = state.pointers.get(evt.pointerId) || null;
             state.pointers.set(evt.pointerId, {{
@@ -866,7 +911,7 @@ fn install_drag_handlers(
             evt.preventDefault();
           }}, {{ passive: false }});
 
-          window.addEventListener("pointerup", (evt) => {{
+          listen(window, "pointerup", (evt) => {{
             if (!state.pointers.has(evt.pointerId)) return;
             const dragged = !!(state.drag && state.drag.moved);
             state.suppressNextClick = state.suppressNextClick || dragged;
@@ -892,13 +937,13 @@ fn install_drag_handlers(
             }} catch (_err) {{}}
           }});
 
-          document.addEventListener("click", (evt) => {{
+          listen(document, "click", (evt) => {{
             if (!withinSurface(evt.target)) return;
             if (!state.suppressNextClick) return;
             state.suppressNextClick = false;
             evt.preventDefault();
             evt.stopPropagation();
-          }}, true);
+          }}, {{capture: true}});
         }})();
         "#,
         viewport_id = viewport_id,

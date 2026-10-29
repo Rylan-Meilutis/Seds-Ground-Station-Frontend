@@ -31,6 +31,8 @@ pub struct Permissions {
     pub voice_transmit: bool,
     #[serde(default)]
     pub camera_publish: bool,
+    #[serde(default)]
+    pub sign_checklists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

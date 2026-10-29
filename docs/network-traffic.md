@@ -24,3 +24,16 @@ WebSocket messages include an optional `traffic` object with `interval_ms` and
 `sides`. Each side has `side_id`, `name`, direction flags, cumulative `totals`,
 and nullable `delta`. Rate = delta × 1000 / interval_ms. Older backends omit
 this object and the UI reports backend traffic as unavailable.
+
+The topology view follows observed nodes and links, including direct and relayed
+paths. Zoom and pan use the current graph dimensions as nodes appear or disappear.
+Resizing the window preserves manual zoom; **Reset** fits the graph again.
+Interrupted touch gestures end when the pointer is cancelled, capture is lost,
+or the window loses focus. Leaving the tab releases its event handlers before
+another graph is mounted.
+
+`node tests/network-topology-controls-browser.mjs` exercises the production graph
+controller with local browser events. After `dx build --platform web`,
+`node tests/network-topology-transitions-browser.mjs` checks the real Wasm UI
+against isolated topology snapshots, including fullscreen and tab remounts.
+Both accept `PLAYWRIGHT_MODULE` and `CHROME_BINARY` for local browser paths.

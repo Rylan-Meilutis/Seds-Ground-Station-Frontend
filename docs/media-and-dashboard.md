@@ -11,7 +11,9 @@ and stale data indicators. Preferences are local to the user and Ground Station.
 embedded pages remain mounted after their first visit, so switching dashboard
 tabs does not end voice or camera capture. Hiding voice releases push-to-talk;
 open mic continues until muted or left. Logging out, changing sessions, closing
-the dashboard, or stopping sharing releases media resources. Operating systems
+the dashboard, or stopping sharing releases media resources. Unmounting the
+dashboard also releases its screen wake-lock owners; a hidden camera tab keeps
+its capture lock until sharing stops. Operating systems
 may suspend capture when the app itself is backgrounded.
 
 **Mission Live** displays only the broadcast stream. Logged-in users with command permission can open **Checklist** beside the tab selector from any tab. Checkmarks are saved per user and station and do not bypass interlocks.
@@ -66,5 +68,9 @@ and `node tests/embedded_media.mjs`. The browser media test uses fake devices an
 a local WebRTC receiver. Set `PLAYWRIGHT_MODULE` and `CHROME_BINARY` if Playwright
 and Chrome are installed outside their default locations. These tests do not
 connect to hardware or start a production Ground Station.
+
+After building the web bundle, run
+`node tests/media-surface-wake-lock-browser.mjs` to check dashboard unmount,
+hidden capture, remount and independent wake-lock ownership with synthetic locks.
 
 Fill percentage in Telemetry follows the saved fill source from Actions. Its readout and chart appear only under the selected load cell in both Loadcell and DAQ. The percentage comes from backend telemetry, including calibration and source-selection rules.

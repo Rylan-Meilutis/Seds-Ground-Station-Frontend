@@ -37,6 +37,22 @@ fixture+=`try {
  await update({...topology,nodes,links:[link('gs','rf'),link('gs','rrls','online','standby'),link('rf','fc')]});await waitEdges([['Ground Station','AV RF'],['Ground Station','RRLS'],['AV RF','Flight Computer']]);await record('restored');
  assert.ok(!(await edgeNames()).some(edge=>edge==='AV RF ↔ RRLS'),'restored direct snapshot must remove old relay edge');
  await update({...topology,links:[]});await waitEdges([]);await record('unknown-no-links');assert.equal(await graph.locator('[data-network-node]').count(),5,'isolated nodes remain without fabricated links');
+ // Exercise mounted Dioxus controls and teardown, in addition to isolated controller tests.
+ await page.getByRole('button',{name:'Zoom In',exact:true}).click();
+ const zoomed=await page.evaluate(()=>window.__gs26NetworkGraphState.scale);
+ await page.setViewportSize({width:1280,height:900});await page.waitForTimeout(100);
+ assert.equal(await page.evaluate(()=>window.__gs26NetworkGraphState.scale),zoomed,'resize retains operator zoom');
+ await page.getByRole('button',{name:'Fullscreen',exact:true}).click();
+ await page.locator('#network-topology-canvas-fullscreen').waitFor({state:'visible'});
+ await page.waitForFunction(()=>window.__gs26NetworkGraphState?.canvas?.id==='network-topology-canvas-fullscreen');
+ await page.getByRole('button',{name:'Exit Fullscreen',exact:true}).click();
+ await graph.waitFor({state:'visible'});await page.waitForFunction(()=>window.__gs26NetworkGraphState?.canvas?.id==='network-topology-canvas');
+ await page.getByRole('link',{name:'Telemetry',exact:true}).click();
+ await page.waitForFunction(()=>!window.__gs26NetworkGraphState);
+ await page.getByRole('link',{name:'Topology',exact:true}).click();await graph.waitFor({state:'visible'});
+ await page.waitForFunction(()=>!!window.__gs26NetworkGraphState?.listenersInstalled);
+ await page.getByRole('button',{name:'Zoom In',exact:true}).click();
+ assert.ok(Number.isFinite(await page.evaluate(()=>window.__gs26NetworkGraphState.scale)),'remounted controls remain valid');
  assert.deepEqual(errors,[]);console.log('PASS actual Wasm direct→relay-only→stale/unknown→direct restore→no-links graph transitions without page reload');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}`;
 try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}

@@ -3,7 +3,7 @@ use super::{http_get_json,http_post_json};
 use dioxus::prelude::*;
 use serde::{Deserialize,Serialize};
 #[derive(Clone,Default,Serialize,Deserialize)]
-struct Permissions {view_data:bool,send_commands:bool,set_system_time:bool,voice_transmit:bool,#[serde(default)]camera_publish:bool}
+struct Permissions {view_data:bool,send_commands:bool,set_system_time:bool,voice_transmit:bool,#[serde(default)]camera_publish:bool,#[serde(default)]sign_checklists:bool}
 #[derive(Clone,Default,Serialize,Deserialize)]
 struct CommandAccess {allowed_commands:Vec<String>}
 #[derive(Clone,Default,Serialize,Deserialize)]
@@ -54,6 +54,7 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
                             label {input {r#type:"checkbox",checked:account.permissions.view_data,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.view_data=e.checked()}"View data"}
                             label {input {r#type:"checkbox",checked:account.permissions.send_commands,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.send_commands=e.checked()}"Send hardware commands"}
                             label {input {r#type:"checkbox",checked:account.permissions.camera_publish,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.camera_publish=e.checked()}"Share camera and microphone"}
+                            label {input {r#type:"checkbox",checked:account.permissions.sign_checklists,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.sign_checklists=e.checked()}"Sign off checklists"}
                             label {input {r#type:"checkbox",checked:account.permissions.voice_transmit,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.voice_transmit=e.checked()}"Join and transmit crew voice"}
                             label {input {r#type:"checkbox",checked:account.permissions.set_system_time,disabled:*busy.read(),onchange:move|e|accounts.write()[index].permissions.set_system_time=e.checked()}"Set system time"}
                             label {input {r#type:"checkbox",checked:account.calibration_access.view,disabled:*busy.read(),onchange:move|e|accounts.write()[index].calibration_access.view=e.checked()}"View calibration"}

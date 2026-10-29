@@ -90,6 +90,13 @@ fn send_session(id: &str, token: Option<&str>, visible: bool) {
 /// Camera/voice documents outlive dashboard, aiming and stream-only surfaces.
 #[component]
 pub(super) fn MediaSurface(media_visible: bool, voice_visible: bool, stream_visible:bool, children: Element) -> Element {
+    use_drop(|| {
+        // Iframe capture messages cannot clear their parent lock after removal.
+        // Release only this surface's owners; other mounted media stays awake.
+        document::eval(
+            "for (const owner of ['media-view', 'gs26-media', 'gs26-crew-voice']) { window.GS26StayAwake?.setActive(owner, false); }",
+        );
+    });
     use_effect(use_reactive((&media_visible,&voice_visible,&stream_visible), move |(media,voice,stream)|{document::eval(include_str!("../../station_ui/scripts/stay-awake.js"));document::eval(&format!("window.GS26StayAwake?.setActive('media-view', {});",media||voice||stream));}));
     rsx! {
         div {style:"display:contents;",

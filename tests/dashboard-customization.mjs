@@ -385,18 +385,27 @@ try{
   });
   await commandPage.getByRole('button',{name:'Actions',exact:true}).click();
   await commandPage.getByRole('checkbox',{name:/gas supplies are isolated/}).check();
+  // Physical outputs intentionally expose an Unconfirmed badge until board
+  // feedback arrives, so their accessible name is not only the action label.
+  // Select the actual action label without hiding or fabricating that feedback.
+  const actionButton=cmd=>commandPage.locator('button').filter({has:commandPage.locator(`span[title="${cmd}"]`)}).last();
+  const unconfirmedOutputs=new Set(['Dump','NormallyOpen','Nitrogen','NitrogenClose','Nitrous','NitrousClose','Pilot','Igniter','RetractPlumbing']);
   for(const cmd of commands){
     if(cmd==='ValveSelfTest'){await commandPage.getByRole('checkbox',{name:/gas supplies are isolated/}).check();await commandPage.getByText('Self-test confirmation accepted. Backend interlocks still apply.',{exact:true}).waitFor();}
     const count=requests.length;
-    await commandPage.getByRole('button',{name:cmd,exact:true}).last().click().catch(async error=>{fs.writeFileSync('/tmp/gs-command-inventory-body.txt',await commandPage.locator('body').innerText());throw error;});
+    const button=actionButton(cmd);
+    assert(await button.isEnabled(),`${cmd} remains permitted by the authoritative action policy`);
+    if(unconfirmedOutputs.has(cmd))assert.match(await button.innerText(),/unconfirmed/i,`${cmd} has no invented output confirmation`);
+    await button.click().catch(async error=>{fs.writeFileSync('/tmp/gs-command-inventory-body.txt',await commandPage.locator('body').innerText());throw error;});
     for(let attempt=0;attempt<100&&requests.length===count;attempt++)await new Promise(resolve=>setTimeout(resolve,20));
     assert.equal(requests.length,count+1,`${cmd} dispatches exactly one request`);
     assert.equal(requests[count],cmd,`${cmd} retains the backend command name`);
+    if(unconfirmedOutputs.has(cmd))assert.match(await button.innerText(),/unconfirmed/i,`${cmd} dispatch cannot confirm physical output`);
   }
   approveRecovery=false;
   for(const cmd of ['ResetFlightState','ResetTClock']){
     const count=requests.length;
-    await commandPage.getByRole('button',{name:cmd,exact:true}).last().click();
+    await actionButton(cmd).click();
     await new Promise(resolve=>setTimeout(resolve,300));
     assert.equal(requests.length,count,`${cmd} cancellation sends no request`);
   }
