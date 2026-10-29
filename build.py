@@ -3997,6 +3997,24 @@ def _prune_stale_hashed_assets(frontend_dir: Path) -> None:
         for h, _ in arr[:keep_generations]:
             keep_hashes.add((base, ext, h))
 
+    # A current JS loader can refer to an older-mtime WASM from the shared
+    # Dioxus cache. Preserve dependencies of every retained loader, including
+    # retained older loaders used by already-open browser tabs.
+    asset_ref_re = re.compile(r"[A-Za-z0-9_.-]+-dxh[0-9a-f]+\.[A-Za-z0-9]+")
+    inspected: set[Path] = set()
+    while True:
+        pending = [p for p, base, ext, h in parsed
+                   if (base, ext, h) in keep_hashes
+                   and p.suffix in {".js", ".css"} and p not in inspected]
+        if not pending:
+            break
+        for loader in pending:
+            inspected.add(loader)
+            for name in asset_ref_re.findall(loader.read_text(encoding="utf-8", errors="replace")):
+                match = hashed_re.fullmatch(name)
+                if match:
+                    keep_hashes.add((match.group("base"), match.group("ext"), match.group("hash")))
+
     removed = 0
     for p, base, ext, h in parsed:
         if (base, ext, h) not in keep_hashes:
@@ -4008,6 +4026,25 @@ def _prune_stale_hashed_assets(frontend_dir: Path) -> None:
 
     if removed:
         print(f"Pruned stale hashed assets: {removed} (kept {keep_generations} generations)")
+
+
+def _validate_web_asset_references(frontend_dir: Path) -> None:
+    """Reject a broken current loader before its output can be published."""
+    public = frontend_dir / "dist" / "public"
+    asset_ref_re = re.compile(r"[A-Za-z0-9_.-]+-dxh[0-9a-f]+\.[A-Za-z0-9]+")
+    pending = list(public.glob("*.html"))
+    inspected: set[Path] = set()
+    while pending:
+        source = pending.pop()
+        if source in inspected:
+            continue
+        inspected.add(source)
+        for name in asset_ref_re.findall(source.read_text(encoding="utf-8", errors="replace")):
+            asset = public / "assets" / name
+            if not asset.is_file():
+                raise RuntimeError(f"Incomplete frontend bundle: {source.name} references missing assets/{name}")
+            if asset.suffix in {".js", ".css"}:
+                pending.append(asset)
 
 
 def _dx_bundle_env(frontend_dir: Path) -> dict[str, str]:
@@ -5254,6 +5291,7 @@ def build_frontend(
         if platform_name in {None, "web"}:
             _manual_optimize_web_wasm(frontend_dir, env, max_size=max_size)
             _prune_stale_hashed_assets(frontend_dir)
+            _validate_web_asset_references(frontend_dir)
             _compress_web_assets(frontend_dir, env)
         elif platform_name == "android":
             rebuild_patched_android_bundle(frontend_dir, debug_mode, env)
