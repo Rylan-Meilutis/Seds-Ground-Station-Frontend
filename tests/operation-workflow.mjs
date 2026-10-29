@@ -20,6 +20,8 @@ let servedMode=null;
 const wsCommands=[];
 dashboardLayout.actions_tab.actions.push({...dashboardLayout.actions_tab.actions[0],cmd:'Pilot',label:'Pilot safety fixture',group:'Fill controls'});
 actionPolicy.controls.push({cmd:'Pilot',enabled:true,actuated:null,blink:'none'});
+actionPolicy.controls=actionPolicy.controls.filter(c=>c.cmd!=='NitrogenClose');
+actionPolicy.controls.push({cmd:'NitrogenClose',enabled:true,actuated:null,blink:'none'});
 for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label:id,channels:[],subtabs:[
   {id:'large',label:'1000 kg',data_type:'KG1000',channels:['Raw'],chart:{enabled:true},chart_groups:[{title:'Fill %',data_type:'LOADCELL_FILL_PERCENT',channels:[0]}],summary_items:[{label:'Fill %',data_type:'LOADCELL_FILL_PERCENT',index:0}]},
   {id:'small',label:'50 kg',data_type:'KG50',channels:['Raw'],chart:{enabled:true},chart_groups:[],summary_items:[]}
@@ -125,7 +127,8 @@ try {
   localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));
  },{session,origin});
  await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
- await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(data=>{try{wsCommands.push(JSON.parse(String(data)))}catch{}}));
+ let primarySocket;
+ await context.routeWebSocket(url=>url.pathname==='/ws',s=>{primarySocket=s;s.onMessage(data=>{try{wsCommands.push(JSON.parse(String(data)))}catch{}})});
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(origin+'/dashboard');
  await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
@@ -139,6 +142,20 @@ try {
  await page.waitForTimeout(100);
  assert(await pilot.getByText('Unconfirmed',{exact:true}).isVisible(),'local send feedback must not assert physical confirmation');
  assert.equal(wsCommands.filter(packet=>packet.cmd==='Pilot').length,1);
+
+ const closeNitrogen=page.getByRole('button',{name:/Close nitrogen/});
+ await closeNitrogen.waitFor();
+ assert.equal(await closeNitrogen.evaluate(e=>e.style.opacity),'0.62','an available physical control must not glow while unconfirmed');
+ for(const observed of [true,false,true,false]) {
+   actionPolicy.controls.find(c=>c.cmd==='NitrogenClose').actuated=observed;
+   primarySocket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy}));
+   await page.waitForFunction(({observed})=>{
+     const button=[...document.querySelectorAll('button')].find(e=>e.textContent.includes('Close nitrogen'));
+     return button?.style.opacity===(observed?'1':'0.62');
+   },{observed});
+   assert(!await closeNitrogen.getByText('Unconfirmed',{exact:true}).isVisible());
+ }
+ assert.equal(wsCommands.filter(packet=>packet.cmd==='NitrogenClose').length,0,'status rendering must not issue a command');
 
  await page.getByRole('button',{name:'Override cold-flow requirement',exact:true}).click();
  const dialog=page.getByRole('dialog',{name:'Override nitrogen cold flow'});await dialog.waitFor();

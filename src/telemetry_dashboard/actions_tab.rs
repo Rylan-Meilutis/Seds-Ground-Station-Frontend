@@ -94,7 +94,8 @@ fn btn_style(
 ) -> String {
     let cursor = if enabled { "pointer" } else { "not-allowed" };
     let pointer_events = if enabled { "auto" } else { "none" };
-    let actuated_active = actuated.unwrap_or(false) || (enabled && illuminate_enabled);
+    // A confirmed Off state takes precedence over an available-action glow.
+    let actuated_active = actuated.unwrap_or(enabled && illuminate_enabled);
     let recommended = enabled && blink != BlinkMode::None;
     let opacity = if recommended || actuated_active {
         "1.0"
@@ -118,7 +119,7 @@ fn btn_style(
         "0 4px 12px rgba(0,0,0,0.16)"
     };
     let animation = action_animation_style(enabled, blink, actuated);
-    let ready_glow = if enabled && illuminate_enabled {
+    let ready_glow = if enabled && illuminate_enabled && actuated != Some(false) {
         format!("box-shadow:0 0 14px {border};")
     } else {
         String::new()
@@ -164,6 +165,16 @@ fn merge_command_feedback(cmd: &str, observed: Option<bool>, sent: bool) -> Opti
 #[cfg(test)]
 mod physical_confirmation_tests {
     use super::*;
+    #[test]
+    fn confirmed_off_is_not_illuminated_by_action_availability() {
+        let style = |observed| btn_style("red", "black", "white", true, BlinkMode::None, observed, true);
+        assert!(style(Some(true)).contains("opacity:1.0; filter:none;"));
+        let off = style(Some(false));
+        assert!(off.contains("opacity:0.62;"));
+        assert!(!off.contains("box-shadow:0 0 14px"));
+        let unknown_output = btn_style("red", "black", "white", true, BlinkMode::None, None, false);
+        assert!(unknown_output.contains("opacity:0.62;"));
+    }
     #[test]
     fn sending_a_valve_request_does_not_confirm_a_physical_output() {
         for cmd in [
@@ -682,7 +693,7 @@ pub fn ActionsTab(
                                                 let badge_label = if unconfirmed { "Unconfirmed" } else { "Disabled" };
                                                 rsx! {
                                                     button {
-                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\")}",
+                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\" && !physical_output_action(&action.cmd))}",
                                                         disabled: !enabled,
                                                         onmousedown: {
                                                             let cmd = action.cmd.clone();
