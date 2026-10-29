@@ -212,12 +212,14 @@ pub fn is_admin() -> bool {
     status.authenticated && !status.anonymous && status.roles.iter().any(|role| role == "admin")
 }
 
+pub(crate) static RRLS_CLOCK_RESET_SUPPORTED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+
 pub fn can_send_command(cmd: &str) -> bool {
     can_send_command_for_status(&current_status(), cmd)
 }
 
 fn can_send_command_for_status(status: &SessionStatus, cmd: &str) -> bool {
-    if status.station_role.as_deref() == Some("rrls") && !matches!(cmd,
+    if status.station_role.as_deref() == Some("rrls") && !(cmd=="ResetTClock" && RRLS_CLOCK_RESET_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)) && !matches!(cmd,
         "StartWritingNow" | "StartWritingLastTwoMinutes" | "PauseWritingDb" | "StopWritingDb") {
         return false;
     }

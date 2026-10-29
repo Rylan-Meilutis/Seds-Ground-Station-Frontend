@@ -1315,7 +1315,9 @@ fn LaunchClockBadge(
                             if fallback_anchor.is_some() {
                                 fallback_tplus_anchor_ms.set(None);
                             }
-                        } else if fallback_anchor.is_none() {
+                        } else if fallback_anchor.is_none() && now_ms.is_some() {
+                            // Avoid subscribing to and repeatedly writing the same None
+                            // while a retained TPlus has no network-time sample yet.
                             fallback_tplus_anchor_ms.set(now_ms);
                         }
                     }

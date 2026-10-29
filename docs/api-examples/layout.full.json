@@ -89,7 +89,16 @@
   "network_tab": {
     "enabled": true,
     "title": "Network Topology",
-    "expected_boards": ["GS", "FC", "RF", "PB", "VB", "GW", "AB", "DAQ"]
+    "expected_boards": [
+      "GS",
+      "FC",
+      "RF",
+      "PB",
+      "VB",
+      "GW",
+      "AB",
+      "DAQ"
+    ]
   },
   "actions_tab": {
     "disable_actions_by_default": false,
@@ -125,12 +134,18 @@
       "enabled": false,
       "kind": "raw"
     },
-    "sender_split_data_types": ["BATTERY_VOLTAGE"],
+    "sender_split_data_types": [
+      "BATTERY_VOLTAGE"
+    ],
     "tabs": [
       {
         "id": "GPS",
         "label": "GPS",
-        "channels": ["Latitude", "Longitude", "Altitude"],
+        "channels": [
+          "Latitude",
+          "Longitude",
+          "Altitude"
+        ],
         "display_filter": {
           "enabled": false,
           "kind": "raw"
@@ -142,7 +157,11 @@
       {
         "id": "VALVE_STATE",
         "label": "Valves",
-        "channels": ["Main", "Vent", "Fill"],
+        "channels": [
+          "Main",
+          "Vent",
+          "Fill"
+        ],
         "display_filter": {
           "enabled": false,
           "kind": "raw"
@@ -171,7 +190,9 @@
       {
         "id": "LOADCELL_WEIGHT_KG",
         "label": "Loadcell",
-        "channels": ["Weight"],
+        "channels": [
+          "Weight"
+        ],
         "display_filter": {
           "enabled": true,
           "kind": "time_average",
@@ -183,8 +204,12 @@
         "chart_groups": [
           {
             "title": "Loadcell Average",
-            "channels": [0],
-            "labels": ["Weight"],
+            "channels": [
+              0
+            ],
+            "labels": [
+              "Weight"
+            ],
             "display_filter": {
               "enabled": true,
               "kind": "time_average",
@@ -196,7 +221,11 @@
       {
         "id": "ACCEL",
         "label": "Acceleration",
-        "channels": ["X", "Y", "Z"],
+        "channels": [
+          "X",
+          "Y",
+          "Z"
+        ],
         "display_filter": {
           "enabled": true,
           "kind": "low_pass",
@@ -208,14 +237,28 @@
         "chart_groups": [
           {
             "title": "Acceleration",
-            "channels": [0, 1, 2],
-            "labels": ["X", "Y", "Z"],
+            "channels": [
+              0,
+              1,
+              2
+            ],
+            "labels": [
+              "X",
+              "Y",
+              "Z"
+            ],
             "scale_mode": "shared"
           },
           {
             "title": "Battery Overview",
-            "channels": [0, 1],
-            "labels": ["Battery", "Percent"],
+            "channels": [
+              0,
+              1
+            ],
+            "labels": [
+              "Battery",
+              "Percent"
+            ],
             "scale_mode": "per_series",
             "chart_series": [
               {
@@ -232,13 +275,38 @@
             ]
           }
         ]
+      },
+      {
+        "id": "COMBUSTION_CHAMBER_PRESSURE",
+        "label": "Combustion chamber pressure",
+        "channels": [
+          "Pressure (psig)"
+        ],
+        "chart": {
+          "enabled": true
+        },
+        "display_filter": {
+          "enabled": true,
+          "kind": "low_pass",
+          "cutoff_hz": 8.0
+        },
+        "channel_formatters": [
+          {
+            "precision": 2,
+            "suffix": " psig"
+          }
+        ]
       }
     ]
   },
   "state_tab": {
     "states": [
       {
-        "states": ["Startup", "Idle", "Armed"],
+        "states": [
+          "Startup",
+          "Idle",
+          "Armed"
+        ],
         "sections": [
           {
             "title": "Board Status",
@@ -295,7 +363,9 @@
         ]
       },
       {
-        "states": ["Flight"],
+        "states": [
+          "Flight"
+        ],
         "sections": [
           {
             "title": "Map",
@@ -310,7 +380,9 @@
             "widgets": [
               {
                 "kind": "actions",
-                "actions": ["Abort"]
+                "actions": [
+                  "Abort"
+                ]
               }
             ]
           }

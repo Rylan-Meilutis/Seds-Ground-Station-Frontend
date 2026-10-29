@@ -2700,6 +2700,38 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                 (function() {{
                   if (typeof window.__gs26DrawChartCanvas === "function") return;
                   const chartCanvasCacheRoot = window.__gs26ChartCanvasCache || (window.__gs26ChartCanvasCache = new Map());
+                  const pendingDraws = new Map();
+                  const scheduledDraws = new Map();
+                  const chartCanvasResizeObserver = typeof ResizeObserver === "function"
+                    ? new ResizeObserver(entries => {{
+                        for (const {{ target }} of entries) {{
+                          const cache = chartCanvasCacheRoot.get(target.id);
+                          if (cache && cache.latestData) window.__gs26DrawChartCanvas(target.id, cache.latestData);
+                        }}
+                      }}) : null;
+                  window.__gs26DisposeChartCanvas = function(canvasId) {{
+                    pendingDraws.delete(canvasId);
+                    const scheduled = scheduledDraws.get(canvasId);
+                    if (scheduled) {{
+                      if (scheduled.raf) cancelAnimationFrame(scheduled.handle);
+                      else clearTimeout(scheduled.handle);
+                    }}
+                    scheduledDraws.delete(canvasId);
+                    const cache = chartCanvasCacheRoot.get(canvasId);
+                    const el = cache?.element || document.getElementById(canvasId);
+                    if (el) {{
+                      chartCanvasVisibilityObserver?.unobserve(el);
+                      chartCanvasResizeObserver?.unobserve(el);
+                      delete el.__gs26ChartCanvasObserved;
+                    }}
+                    chartCanvasCacheRoot.delete(canvasId);
+                  }};
+                  document.addEventListener("visibilitychange", () => {{
+                    if (document.visibilityState === "hidden") return;
+                    for (const [id, cache] of chartCanvasCacheRoot) {{
+                      if (cache.latestData) window.__gs26DrawChartCanvas(id, cache.latestData);
+                    }}
+                  }});
                   const chartCanvasVisibilityObserver = typeof IntersectionObserver === "function"
                     ? new IntersectionObserver((entries) => {{
                         for (const entry of entries) {{
@@ -2731,10 +2763,17 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                     if (chartCanvasVisibilityObserver) {{
                       chartCanvasVisibilityObserver.observe(el);
                     }}
+                    chartCanvasResizeObserver?.observe(el);
                   }};
                   window.__gs26DrawChartCanvas = function(canvasId, data) {{
+                    pendingDraws.set(canvasId, data);
+                    if (scheduledDraws.has(canvasId)) return;
+                    scheduledDraws.set(canvasId, null);
                     const isWindows = /Windows/i.test(navigator.userAgent || navigator.platform || "");
                     const draw = () => {{
+                      scheduledDraws.delete(canvasId);
+                      const data = pendingDraws.get(canvasId);
+                      pendingDraws.delete(canvasId);
                       const el = document.getElementById(canvasId);
                       if (!el || !data) return;
                       ensureChartCanvasObserved(el);
@@ -2759,6 +2798,8 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         isVisible: rectVisible,
                         pendingData: null,
                       }};
+                      cache.element = el;
+                      cache.latestData = data;
                       cache.isVisible = cache.isVisible !== false && rectVisible;
                       if (!docVisible || !rectVisible || cache.isVisible === false) {{
                         cache.pendingData = data;
@@ -2991,10 +3032,11 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         }}
                         return combined;
                       }};
-                      const cacheMiss = !cache
-                          || cache.signature !== data.signature
-                          || cache.pxW !== pxW
-                          || cache.pxH !== pxH;
+                      // Grid geometry is independent of incoming sample values.
+                      // Reuse its backing canvas while data/path signatures change.
+                      const gridSignature = [pxW, pxH, data.view_w, data.view_h,
+                        left, right, top, bottom].join("|");
+                      const cacheMiss = !cache.gridBuffer || cache.gridSignature !== gridSignature;
 
                       if (isWindows) {{
                         cache.signature = data.signature;
@@ -3044,13 +3086,16 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
 
                         cache = {{
                           signature: data.signature,
+                          gridSignature,
                           pxW,
                           pxH,
                           gridBuffer,
-                          path2dCache: new Map(),
-                          combinedPathCache: new Map(),
+                          path2dCache: cache.path2dCache || new Map(),
+                          combinedPathCache: cache.combinedPathCache || new Map(),
                           isVisible: true,
                           pendingData: null,
+                          element: el,
+                          latestData: data,
                         }};
                         chartCanvasCacheRoot.set(canvasId, cache);
                       }}
@@ -3116,9 +3161,9 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                     }};
 
                     if (typeof requestAnimationFrame === "function") {{
-                      requestAnimationFrame(draw);
+                      scheduledDraws.set(canvasId, {{ handle: requestAnimationFrame(draw), raf: true }});
                     }} else {{
-                      setTimeout(draw, 0);
+                      scheduledDraws.set(canvasId, {{ handle: setTimeout(draw, 0), raf: false }});
                     }}
                   }};
                   window.__gs26QueueChartCanvasDrawBatch = function(batch) {{
@@ -3177,6 +3222,11 @@ pub fn ChartCanvas(
             "gs26-chart-canvas-{}",
             NEXT_CANVAS_ID.fetch_add(1, Ordering::Relaxed)
         )
+    });
+    let dispose_id = canvas_id.clone();
+    use_drop(move || {
+        let id = serde_json::to_string(&dispose_id).unwrap_or_default();
+        super::js_eval(&format!("window.__gs26DisposeChartCanvas?.({id});"));
     });
     let last_draw_signature = use_hook(|| Cell::new(0_u64));
 

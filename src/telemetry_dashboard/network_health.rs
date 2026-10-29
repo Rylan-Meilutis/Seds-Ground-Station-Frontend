@@ -4,6 +4,30 @@ const TIMEOUT_MS: u64 = 12_000;
 fn healthy(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> bool {
     connected && row.healthy && row.age_ms.saturating_add(elapsed) <= TIMEOUT_MS
 }
+fn temperature(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> String {
+    if !connected {
+        return "Unavailable".to_owned();
+    }
+    if let Some(value) = row.cpu_temperature_centi_c {
+        if row.cpu_temperature_age_ms.saturating_add(elapsed) <= 15_000
+            && (-4000..=15000).contains(&value)
+        {
+            return format!("CPU {:.2} °C", f64::from(value) / 100.0);
+        }
+    }
+    if let Some(report) = &row.diagnostics {
+        let age = report
+            .received_age_ms
+            .saturating_add(elapsed)
+            .saturating_add(u64::from(report.die_temperature_sample_age_ms));
+        if let Some(value) = report.die_temperature_centi_c {
+            if age <= 15_000 && (-4000..=15000).contains(&value) {
+                return format!("MCU die {:.2} °C", f64::from(value) / 100.0);
+            }
+        }
+    }
+    "Unavailable".to_owned()
+}
 fn duration(ms: u64) -> String {
     let seconds = ms / 1000;
     if seconds < 60 {
@@ -52,6 +76,7 @@ pub fn NetworkHealthSection(
                                 }
                             }
                             dl { style: "display:grid; grid-template-columns:1fr auto; gap:8px; font-size:0.9rem; margin:12px 0 0;",
+                                dt { "Temperature" } dd { style: "margin:0;", "{temperature(row, ws_connected, elapsed)}" }
                                 dt { "Last received" } dd { style: "margin:0;", "{age} ago" }
                                 dt { "Disconnects" } dd { style: "margin:0;", "{row.disconnects}" }
                                 dt { "Reconnects" } dd { style: "margin:0;", "{row.reconnects}" }
@@ -104,6 +129,26 @@ pub fn NetworkHealthSection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temperature_is_signed_unit_labelled_and_expires_independently() {
+        let mut row = NetworkBoardHealthEntry {
+            diagnostics: Some(super::super::types::BoardDiagnostics {
+                die_temperature_centi_c: Some(-1234),
+                die_temperature_sample_age_ms: 200,
+                received_age_ms: 5000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(temperature(&row, true, 0), "MCU die -12.34 °C");
+        assert_eq!(temperature(&row, true, 9801), "Unavailable");
+        assert_eq!(temperature(&row, false, 0), "Unavailable");
+        row.cpu_temperature_centi_c = Some(5550);
+        row.cpu_temperature_age_ms = 1;
+        assert_eq!(temperature(&row, true, 0), "CPU 55.50 °C");
+        row.cpu_temperature_centi_c = Some(20000);
+        assert_eq!(temperature(&row, true, 0), "MCU die -12.34 °C");
+    }
     #[test]
     fn disconnected_stream_and_aged_snapshot_cannot_show_healthy() {
         let row = NetworkBoardHealthEntry {

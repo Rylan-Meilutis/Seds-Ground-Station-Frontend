@@ -3650,6 +3650,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
                     if !matches!(*active_main_tab.read(), MainTab::Data | MainTab::Detailed) {
                             recovery_status::RecoveryStatus {}
+                            recovery_marker::RecoveryMarker {}
                         }
                     div {class:"gs26-page-content", style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                         div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}

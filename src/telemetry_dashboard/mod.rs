@@ -40,6 +40,7 @@ mod notifications_tab;
 pub(crate) mod prelude;
 mod recording_download;
 mod recovery_status;
+mod recovery_marker;
 mod report_studio;
 mod reseed_buffer;
 mod stream_studio;

@@ -1075,3 +1075,14 @@ mod tests {
         assert!(err.contains("outside data type 'BATTERY_VOLTAGE' channel count 1"));
     }
 }
+
+#[cfg(test)]
+mod chamber_layout_contract {
+    #[test]
+    fn chamber_documented_layout_decodes_with_psig_units() {
+        let layout:super::LayoutConfig=serde_json::from_str(include_str!("../../docs/api-examples/layout.full.json")).unwrap();
+        layout.validate().unwrap();
+        let pressure=layout.data_tab.tabs.iter().find(|x|x.id=="COMBUSTION_CHAMBER_PRESSURE").unwrap();
+        assert_eq!(pressure.channel_formatters.as_ref().unwrap()[0].suffix.as_deref(),Some(" psig"));
+    }
+}

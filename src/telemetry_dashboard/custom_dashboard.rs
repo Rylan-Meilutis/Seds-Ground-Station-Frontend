@@ -50,6 +50,16 @@ fn defaults() -> Vec<Card> {
         ),
         (
             "Fill System",
+            "Chamber pressure",
+            "COMBUSTION_CHAMBER_PRESSURE",
+            "DAQ",
+            0,
+            "psig",
+            1000.0,
+            "gauge",
+        ),
+        (
+            "Fill System",
             "Tank pressure",
             "FUEL_TANK_PRESSURE",
             "VB",
@@ -365,22 +375,59 @@ fn CardEditor(card: Card, cameras: Vec<super::live_stream_tab::LiveStreamSpec>, 
     }}
 }
 
+#[derive(Default)]
+struct TrendHistory {
+    source: Option<(String, String, usize, bool, u64)>,
+    samples: Vec<(i64, f32)>,
+}
+impl TrendHistory {
+    fn select(&mut self, (kind, sender, index, thrust, clear_epoch): (&str, &str, usize, bool, u64)) {
+        let next = (kind.to_owned(), sender.to_owned(), index, thrust, clear_epoch);
+        if self.source.as_ref() != Some(&next) {
+            self.source = Some(next);
+            self.samples.clear();
+        }
+    }
+    fn record(&mut self, timestamp: i64, value: f32) {
+        if !value.is_finite() { return; }
+        match self.samples.binary_search_by_key(&timestamp, |sample| sample.0) {
+            Ok(index) => self.samples[index].1 = value,
+            Err(index) => self.samples.insert(index, (timestamp, value)),
+        }
+        if self.samples.len() > 150 { self.samples.remove(0); }
+    }
+    fn points(&self, min: f32, max: f32) -> String {
+        let first = self.samples.first().map_or(0, |sample| sample.0);
+        let span = self.samples.last().map_or(1, |sample| sample.0.saturating_sub(first).max(1));
+        self.samples.iter().map(|&(timestamp, value)| format!("{},{}",
+            timestamp.saturating_sub(first) as f64 * 260.0 / span as f64,
+            60.0 - ((value-min)/(max-min)).clamp(0.0,1.0)*60.0,
+        )).collect::<Vec<_>>().join(" ")
+    }
+}
+#[cfg(test)]
+mod trend_tests {
+    use super::TrendHistory;
+    #[test]
+    fn source_time_order_and_bounded_history_are_independent_of_refresh_ticks() {
+        let mut history=TrendHistory::default();history.select(("X","FC",0,false,0));
+        history.record(100,1.0);history.record(300,3.0);history.record(200,2.0);history.record(300,4.0);history.record(400,f32::NAN);
+        assert_eq!(history.samples,vec![(100,1.0),(200,2.0),(300,4.0)]);
+        assert!(history.points(0.0,10.0).contains("130,"));
+        for n in 0..200 { history.record(1000+n,1.0); }
+        assert_eq!(history.samples.len(),150);
+        history.select(("X","PB",0,false,0));assert!(history.samples.is_empty());
+    }
+}
+
 #[component]
 fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default = false)] compact: bool) -> Element {
-    let mut clock = use_signal(|| 0u64);
-    // Sampling the existing ingress cache at 5 Hz avoids a DOM update for every
-    // DAQ packet. No polling request, extra telemetry subscription or unbounded history.
-    use_future(move || async move {
-        loop {
-            #[cfg(target_arch = "wasm32")]
-            gloo_timers::future::TimeoutFuture::new(200).await;
-            #[cfg(not(target_arch = "wasm32"))]
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let next = *clock.read() + 1;
-            clock.set(next);
-        }
-    });
-    let _ = *clock.read();
+    // Share Data's ingress-driven render cadence. A per-card200ms sampler
+    // delayed live values and discarded intermediate display updates.
+    let _ = *super::TELEMETRY_RENDER_EPOCH.read();
+    // Age labels still advance when no sample arrives; this clock never adds
+    // trend points or fabricates telemetry.
+    let _ = *super::HEADER_CLOCK_TICK.read();
     let row = latest_telemetry_row(
         &card.data_type,
         if card.sender.is_empty() {
@@ -414,36 +461,23 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default = f
     let fraction = value
         .map(|v| ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0))
         .unwrap_or(0.0);
-    let history =
-        use_hook(|| std::rc::Rc::new(std::cell::RefCell::new((None::<i64>, Vec::<f32>::new()))));
+    let clear_epoch = *super::FRONTEND_DATA_CLEAR_EPOCH.read();
+    let history = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(TrendHistory::default())));
     let points = {
-        let mut h = history.borrow_mut();
-        if let (Some(row), Some(v)) = (&row, value)
-            && h.0 != Some(row.received_timestamp_ms) {
-                h.0 = Some(row.received_timestamp_ms);
-                h.1.push(v);
-                if h.1.len() > 150 {
-                    h.1.remove(0);
-                }
-            }
-        h.1.iter()
-            .enumerate()
-            .map(|(i, v)| {
-                format!(
-                    "{},{}",
-                    i as f32 * 260.0 / h.1.len().saturating_sub(1).max(1) as f32,
-                    60.0 - ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0) * 60.0
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        let mut history = history.borrow_mut();
+        history.select((&card.data_type, &card.sender, card.index, thrust, clear_epoch));
+        if card.display == "trend" && !compact && let (Some(row), Some(value)) = (&row, value) {
+            history.record(row.timestamp_ms, value);
+        }
+        history.points(card.min, card.max)
     };
+    let has_trend = history.borrow().samples.len() >= 2;
     rsx! {div { style: if compact { "display:flex;align-items:baseline;justify-content:center;gap:6px;flex-wrap:wrap;" } else { "" },
         strong {class:"gs26-card-label","{card.label}"}
         div {class:"gs26-card-value",style:if compact {"font-size:13px;font-variant-numeric:tabular-nums;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},"{text}"}
         if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
         if !compact && value.is_some() && card.display=="gauge" {div {role:"img","aria-label":text.clone(),style:"width:70px;height:70px;border-radius:50%;background:conic-gradient(#38bdf8 {fraction*360.0}deg,#334155 0);",div {style:"position:relative;top:12px;left:12px;width:46px;height:46px;border-radius:50%;background:#0f172a;"}}}
-        if !compact && value.is_some() && history.borrow().1.len() >= 2 && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",polyline {points,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
+        if !compact && value.is_some() && has_trend && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",polyline {points,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
         if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
             if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago" if !card.sender.is_empty() {" · {card.sender}"}}else{"Waiting for telemetry"}
         }}
