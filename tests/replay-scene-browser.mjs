@@ -55,7 +55,7 @@ const server=http.createServer((req,res)=>{
  res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':'model/gltf-binary');res.end(fs.readFileSync(file));
 });
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
-const profile=fs.mkdtempSync(path.join(os.tmpdir(),'gs-replay-scene-')); 
+const profile=fs.mkdtempSync(path.join(os.tmpdir(),'gs-replay-scene-'));
 const chrome=spawn(process.env.CHROME_BINARY||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',['--headless','--no-sandbox','--no-first-run','--disable-background-networking','--disable-component-update','--disable-sync','--disable-extensions',...(process.env.GS_REPLAY_WEBGL==='1'?['--use-gl=angle','--use-angle=swiftshader','--ignore-gpu-blocklist','--enable-webgl','--enable-unsafe-swiftshader']:[]),'--remote-debugging-port=0','--remote-allow-origins=*','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']});
 let stderr='';chrome.stderr.on('data',d=>stderr=(stderr+d).slice(-65536));let ws;let next=0;const pending=new Map(),events=[];
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
