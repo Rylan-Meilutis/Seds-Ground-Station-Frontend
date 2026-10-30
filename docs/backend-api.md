@@ -829,6 +829,7 @@ fallback. Relative asset URLs are resolved against the selected Ground Station.
 
 ```json
 {
+  "flight_phase_version": 1,
   "title": "Rocket",
   "model_url": "/assets/models/vehicle.glb",
   "renderer_url": "/assets/three/vehicle-renderer.js",
@@ -879,7 +880,7 @@ fallback. Relative asset URLs are resolved against the selected Ground Station.
       "binding": null,
       "phase_values": {
         "*": 0,
-        "ParachuteDeploy": 1
+        "Descent": 1
       }
     },
     {
@@ -895,7 +896,7 @@ fallback. Relative asset URLs are resolved against the selected Ground Station.
       "binding": null,
       "phase_values": {
         "*": 0,
-        "Descent": 1,
+        "Reefing": 1,
         "Landed": 1,
         "Recovery": 1
       }
@@ -1389,3 +1390,5 @@ The layout response includes `test_fire_mode`, set by the backend build mode.
 Flight dashboards/programs hide GSE fill data from Launch onward. Test-fire
 retains it and shows calibrated 1000 kg load-cell thrust in newtons (kg × 9.80665).
 Recorded/calibrated sensor values remain in their original units.
+
+Flight-state wire codes follow the flight computer: `11` is `Descent`, `12` is `Reefing`, and `13` is `Landed`. Layout, vehicle and rundown phase maps returned by the backend include `flight_phase_version: 1`. Saved maps without that field are converted on read, preserving their original numeric phase meaning; this requires no database migration. Vehicle and broadcast mutations require `flight_phase_version: 1` in the vehicle or rundown object. Requests from an older UI that drops this field are rejected without changing saved settings; reload the updated UI before editing. New clients preserve the returned version when editing a map and omit version 0 when talking to older backends.

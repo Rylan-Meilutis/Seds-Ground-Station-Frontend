@@ -7,10 +7,54 @@ use super::{
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Rundown {
+    #[serde(default, skip_serializing_if = "phase_version_is_legacy")]
+    pub flight_phase_version: u8,
     pub profiles: BTreeMap<String, Profile>,
     pub phase_profiles: BTreeMap<String, String>,
+}
+fn phase_version_is_legacy(version: &u8) -> bool {
+    *version == 0
+}
+fn phase_names(version: u8) -> [&'static str; 16] {
+    let mut names = ["Startup", "Idle", "PreFill", "FillTest", "NitrogenFill",
+        "NitrousFill", "Armed", "Launch", "Ascent", "Coast", "Apogee",
+        "Descent", "Reefing", "Landed", "Recovery", "Aborted"];
+    if version == 0 {
+        names[11] = "ParachuteDeploy";
+        names[12] = "Descent";
+    }
+    names
+}
+impl Default for Rundown {
+    fn default() -> Self {
+        Self {
+            flight_phase_version: 1,
+            profiles: BTreeMap::new(),
+            phase_profiles: BTreeMap::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase_version_tests {
+    use super::*;
+
+    #[test]
+    fn phase_version_round_trips_without_relabeling_legacy_server_data() {
+        let fresh = Rundown::default();
+        assert_eq!(serde_json::to_value(&fresh).unwrap()["flight_phase_version"], 1);
+        let legacy: Rundown = serde_json::from_value(serde_json::json!({
+            "profiles": {}, "phase_profiles": {"Descent":"flight"}
+        })).unwrap();
+        assert_eq!(legacy.flight_phase_version, 0);
+        let value = serde_json::to_value(legacy).unwrap();
+        assert!(value.get("flight_phase_version").is_none());
+        assert_eq!(value["phase_profiles"]["Descent"], "flight");
+        assert_eq!(phase_names(0)[11..13], ["ParachuteDeploy", "Descent"]);
+        assert_eq!(phase_names(1)[11..13], ["Descent", "Reefing"]);
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Profile {
@@ -100,7 +144,7 @@ pub(super) fn RundownEditor(broadcast: BroadcastState) -> Element {
                     {let remove_name=name.clone();rsx!{div {class:"gs26-studio-actions",span {"{name} → {target}"}button {onclick:move|_|{if let Some(r)=draft.write().as_mut(){r.phase_profiles.remove(&remove_name);}},"Remove assignment"}}}}
                 }
                 div {class:"gs26-studio-fields",label {"Flight phase" select {value:phase(),onchange:move|e|phase.set(e.value()),
-                    for name in ["Startup","Idle","PreFill","FillTest","NitrogenFill","NitrousFill","Armed","Launch","Ascent","Coast","Apogee","ParachuteDeploy","Descent","Landed","Recovery","Aborted"] {option {value:name,"{name}"}}
+                    for name in phase_names(rundown.flight_phase_version) {option {value:name,"{name}"}}
                 }}button {onclick:move|_|{if let Some(r)=draft.write().as_mut(){r.phase_profiles.insert(phase(),selected());}},"Use selected profile for phase"}}
             }
         } else {p {"Reload broadcast settings to edit this station’s audience rundown."}}

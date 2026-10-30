@@ -5,8 +5,10 @@ use std::collections::BTreeMap;
 
 static VIEWER_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct VehicleVisualizationConfig {
+    #[serde(default, skip_serializing_if = "phase_version_is_legacy")]
+    pub flight_phase_version: u8,
     #[serde(default)]
     pub motions: Vec<ModelMotion>,
     #[serde(default)]
@@ -31,6 +33,46 @@ pub(crate) struct VehicleVisualizationConfig {
     pub stages: Vec<VehicleStageConfig>,
     #[serde(default)]
     pub ground_systems: Vec<VehicleComponentConfig>,
+}
+
+fn phase_version_is_legacy(version: &u8) -> bool {
+    *version == 0
+}
+impl Default for VehicleVisualizationConfig {
+    fn default() -> Self {
+        Self {
+            flight_phase_version: 1,
+            motions: Vec::new(),
+            title: String::new(),
+            model_url: String::new(),
+            ground_model_url: String::new(),
+            renderer_url: String::new(),
+            model_alt: String::new(),
+            camera_orbit: String::new(),
+            phase_animations: BTreeMap::new(),
+            attitude: Default::default(),
+            stages: Vec::new(),
+            ground_systems: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase_version_tests {
+    use super::*;
+
+    #[test]
+    fn new_phase_maps_are_versioned_and_legacy_responses_remain_compatible() {
+        let fresh = VehicleVisualizationConfig::default();
+        assert_eq!(fresh.flight_phase_version, 1);
+        let value = serde_json::to_value(&fresh).unwrap();
+        assert_eq!(value["flight_phase_version"], 1);
+        let restored: VehicleVisualizationConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.flight_phase_version, 1);
+        let legacy: VehicleVisualizationConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.flight_phase_version, 0);
+        assert!(serde_json::to_value(legacy).unwrap().get("flight_phase_version").is_none());
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -814,7 +856,7 @@ mod tests {
         assert_eq!(config.stages[0].id, "stage-1");
         assert!(config.ground_systems.is_empty());
         assert_eq!(config.motions.len(), 3);
-        assert_eq!(model_animation(&config, "ParachuteDeploy"), None);
+        assert_eq!(model_animation(&config, "Descent"), None);
     }
 
     #[test]

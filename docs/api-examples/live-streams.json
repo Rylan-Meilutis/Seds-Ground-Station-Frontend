@@ -63,7 +63,101 @@
     "layout": "hero",
     "delay_seconds": 10,
     "revision": 1,
-    "tiles": []
+    "tiles": [],
+    "rundown": {
+      "flight_phase_version": 1,
+      "profiles": {
+        "ground": {
+          "title": "Fill and preparation",
+          "cycle_seconds": 5,
+          "stats_per_page": 2,
+          "scene": "inherit",
+          "stats": [
+            {
+              "label": "Tank pressure",
+              "binding": {
+                "data_type": "PRESSURE_TRANSDUCER_CALIBRATED",
+                "sender_id": null,
+                "index": 0,
+                "scale": 1,
+                "offset": 0
+              },
+              "unit": "psi",
+              "precision": 1,
+              "source": "telemetry",
+              "format": "number"
+            }
+          ]
+        },
+        "flight": {
+          "title": "Flight",
+          "cycle_seconds": 5,
+          "stats_per_page": 2,
+          "scene": "inherit",
+          "stats": [
+            {
+              "label": "Altitude",
+              "binding": {
+                "data_type": "GPS_DATA",
+                "sender_id": "RF",
+                "index": 2,
+                "scale": 1,
+                "offset": 0
+              },
+              "unit": "m",
+              "precision": 1,
+              "source": "telemetry",
+              "format": "number"
+            }
+          ]
+        },
+        "recovery": {
+          "title": "Recovery",
+          "cycle_seconds": 5,
+          "stats_per_page": 2,
+          "scene": "inherit",
+          "stats": [
+            {
+              "label": "Altitude",
+              "binding": {
+                "data_type": "GPS_DATA",
+                "sender_id": "RF",
+                "index": 2,
+                "scale": 1,
+                "offset": 0
+              },
+              "unit": "m",
+              "precision": 1,
+              "source": "telemetry",
+              "format": "number"
+            }
+          ]
+        },
+        "test_fire": {
+          "title": "Test fire",
+          "cycle_seconds": 5,
+          "stats_per_page": 2,
+          "scene": "inherit",
+          "stats": [
+            {
+              "label": "Tank pressure",
+              "binding": {
+                "data_type": "PRESSURE_TRANSDUCER_CALIBRATED",
+                "sender_id": null,
+                "index": 0,
+                "scale": 1,
+                "offset": 0
+              },
+              "unit": "psi",
+              "precision": 1,
+              "source": "telemetry",
+              "format": "number"
+            }
+          ]
+        }
+      },
+      "phase_profiles": {}
+    }
   },
   "can_publish_camera": true
 }

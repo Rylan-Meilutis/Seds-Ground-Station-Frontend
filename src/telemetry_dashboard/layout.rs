@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutConfig {
+    #[serde(default, skip_serializing_if = "phase_version_is_legacy")]
+    pub flight_phase_version: u8,
     #[serde(default)]
     pub test_fire_mode: bool,
     pub version: u32,
@@ -20,6 +22,10 @@ pub struct LayoutConfig {
     pub state_tab: StateTabLayout,
     #[serde(default)]
     pub battery: BatteryLayoutConfig,
+}
+
+fn phase_version_is_legacy(version: &u8) -> bool {
+    *version == 0
 }
 
 fn default_main_tabs() -> Vec<String> {

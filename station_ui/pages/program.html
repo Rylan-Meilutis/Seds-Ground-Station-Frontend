@@ -64,7 +64,7 @@ function graphicDisplay(videoReady,tile=null){
  holder.querySelector('gs-vehicle-viewer')?.remove();
  document.querySelector('#rocket-phase').textContent=phase;
  document.querySelector('#flame').style.display=phase==='Ascent'?'':'none';
- document.querySelector('#chute').style.display=['ParachuteDeploy','Descent','Landed','Recovery'].includes(phase)?'':'none';
+ document.querySelector('#chute').style.display=['Descent','Reefing','ParachuteDeploy','Landed','Recovery'].includes(phase)?'':'none';
 }
 let transitionFrame=null,transitionStarted=0;
 function captureTransition(){

@@ -4,7 +4,7 @@ const rendering=path.resolve('station_ui/rendering'),html=fs.readFileSync('stati
 const requests=[],started=Date.now();let fail=false;
 const now=()=>50000+Date.now()-started;
 let plan={recording_id:'groundstation_recording_1.db',upper_id:10,start_ms:1000,end_ms:11000,position_ms:2000,anchor_server_ms:now(),speed:1,paused:true,loop_playback:false};
-const config={model_url:'/assets/models/vehicle.glb',attitude:{roll:{data_type:'ROLL',sender_id:'FC',index:0},pitch:{data_type:'PITCH',sender_id:'FC',index:0},yaw:{data_type:'YAW',sender_id:'FC',index:0}},motions:[{node:'motor-flame',transform:'visible',axis:[0,1,0],from:0,to:1,phase_values:{'*':0,Ascent:1}},{node:'drogue-parachute',transform:'scale',axis:[1,1,1],from:.001,to:1,phase_values:{'*':0,ParachuteDeploy:1}},{node:'main-parachute',transform:'scale',axis:[1,1,1],from:.001,to:1,phase_values:{'*':0,Descent:1,Landed:1,Recovery:1}}],phase_animations:{}};
+const config={flight_phase_version:1,model_url:'/assets/models/vehicle.glb',attitude:{roll:{data_type:'ROLL',sender_id:'FC',index:0},pitch:{data_type:'PITCH',sender_id:'FC',index:0},yaw:{data_type:'YAW',sender_id:'FC',index:0}},motions:[{node:'motor-flame',transform:'visible',axis:[0,1,0],from:0,to:1,phase_values:{'*':0,Ascent:1}},{node:'drogue-parachute',transform:'scale',axis:[1,1,1],from:.001,to:1,phase_values:{'*':0,Descent:1}},{node:'main-parachute',transform:'scale',axis:[1,1,1],from:.001,to:1,phase_values:{'*':0,Reefing:1,Landed:1,Recovery:1}}],phase_animations:{}};
 const points=()=>{const base=plan.recording_id.includes('_2.')?40:43;return [0,1,2,3,4].map((v)=>({timestamp_ms:1000+v*1000,latitude:base+[0,.001,.014,.018,.025][v],longitude:-78+[0,.006,.035,.05,.06][v],altitude_m:[300,4000,10000,8000,1000][v],break_before:v===0}));};
 const server=http.createServer((req,res)=>{const u=new URL(req.url,'http://localhost'),p=u.pathname;
  if(p.startsWith('/api/')){requests.push({method:req.method,path:p});if(fail||u.searchParams.get('ticket')!=='audience-fixture'){res.statusCode=401;res.end('unavailable');return;}
@@ -12,7 +12,7 @@ const server=http.createServer((req,res)=>{const u=new URL(req.url,'http://local
   if(p.endsWith('/state')){res.end(JSON.stringify({plan,config,server_now_ms:now()}));return;}
   if(u.searchParams.get('recording_id')!==plan.recording_id){res.statusCode=409;res.end('{}');return;}
   if(p.endsWith('/trajectory')){res.end(JSON.stringify({recording_id:plan.recording_id,upper_id:plan.upper_id,source_sender_id:'RF',points:points(),truncated:false,sampled:false}));return;}
-  const rows=points().map((v,i)=>({id:i+1,timestamp_ms:v.timestamp_ms,sender_id:'RF',data_type:'GPS_DATA',values:[v.latitude,v.longitude,v.altitude_m]}));rows.push({id:6,timestamp_ms:1000,sender_id:'FC',data_type:'PITCH',values:[0]},{id:7,timestamp_ms:1000,sender_id:'FC',data_type:'YAW',values:[0]},{id:8,timestamp_ms:1000,sender_id:'FC',data_type:'ROLL',values:[15]},{id:9,timestamp_ms:1000,sender_id:'FC',data_type:'FLIGHT_STATE',values:[1],phase:'Ascent'});
+  const rows=points().map((v,i)=>({id:i+1,timestamp_ms:v.timestamp_ms,sender_id:'RF',data_type:'GPS_DATA',values:[v.latitude,v.longitude,v.altitude_m]}));rows.push({id:6,timestamp_ms:1000,sender_id:'FC',data_type:'PITCH',values:[0]},{id:7,timestamp_ms:1000,sender_id:'FC',data_type:'YAW',values:[0]},{id:8,timestamp_ms:1000,sender_id:'FC',data_type:'ROLL',values:[15]},{id:9,timestamp_ms:1000,sender_id:'FC',data_type:'FLIGHT_STATE',values:[11],phase:'Descent'},{id:10,timestamp_ms:4000,sender_id:'FC',data_type:'FLIGHT_STATE',values:[12],phase:'Reefing'});
   res.end(JSON.stringify({recording_id:plan.recording_id,upper_id:plan.upper_id,next_id:plan.upper_id,has_more:false,rows,seeds:[]}));return;
  }
  if(p==='/'){res.setHeader('Content-Type','text/html');res.end(html);return;}
@@ -37,6 +37,7 @@ try{
   await call('Emulation.setTouchEmulationEnabled',{enabled:width<500,maxTouchPoints:2});
   await call('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/?ticket=audience-fixture`});
   await until('document.querySelector("gs-vehicle-viewer")?.dataset.loaded==="true"&&document.querySelector("gs-vehicle-viewer")?.dataset.trailSegments==="2"');
+  assert.equal(await value('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).motions.find(m=>m.node==="drogue-parachute").value'),1,'FC11Descent shows drogue');
   assert.equal(await value('innerWidth'),width);assert.equal(await value('document.documentElement.scrollWidth<=innerWidth'),true);
   assert.equal(await value('document.body.innerText.includes("RECORDED FLIGHT · REPLAY")'),true);
   const layout=await value('(()=>{const note=document.querySelector(".gs-vehicle-reference-note").getBoundingClientRect(),controls=document.querySelector(".controls").getBoundingClientRect();return{note:note.toJSON(),controls:controls.toJSON(),buttons:[...document.querySelectorAll("[data-camera]")].map(b=>{const r=b.getBoundingClientRect();return{width:r.width,height:r.height,onTop:document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===b}})}})()');
@@ -82,6 +83,7 @@ try{
  plan={...plan,upper_id:12,end_ms:13000,position_ms:3000};
  await until('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-track"))?.upper_id===12&&JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms===4000');await sleep(150);
  assert.equal(await value('(()=>{const v=document.querySelector("gs-vehicle-viewer");return v.follow&&v.target.distanceTo(v.root.position)<1e-6})()'),true,'follow continues tracking the newly selected saved rocket pose');
+ assert.equal(await value('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).motions.find(m=>m.node==="main-parachute").value'),1,'FC12Reefing shows main chute');
  console.log('PASS programme growing saved snapshot retains free/follow camera, pan, zoom and playback');
  plan={...plan,position_ms:0,speed:4,anchor_server_ms:now(),paused:false,loop_playback:true};
  await until('JSON.parse(document.querySelector("gs-vehicle-viewer").getAttribute("data-state")).replay_timestamp_ms!==3000');
