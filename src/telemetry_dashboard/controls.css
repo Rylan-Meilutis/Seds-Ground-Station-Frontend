@@ -61,7 +61,7 @@
 .gs26-message-history :is(p,span,div) {min-width:0;overflow-wrap:anywhere}
 .gs26-message-history>div>div {padding:12px !important}
 .gs26-message-card {display:flex !important;flex-wrap:wrap;align-items:center !important;gap:8px !important;padding:12px !important;line-height:1.45}
-.gs26-message-card .gs26-message-body {flex:1 0 100% !important;max-height:24vh;overflow:auto;font-size:14px;line-height:1.5;white-space:pre-wrap}
+.gs26-message-card .gs26-message-body {flex:1 0 100% !important;max-height:min(24vh,9rem);overflow:auto;font-size:14px;line-height:1.5;white-space:pre-wrap}
 .gs26-message-card button {flex:none;min-height:44px;min-width:44px;padding:8px 12px !important;font-size:14px !important;line-height:20px;white-space:normal;overflow-wrap:anywhere;touch-action:manipulation}
 .gs26-notification-stack {top:max(72px,env(safe-area-inset-top)) !important;right:max(12px,env(safe-area-inset-right)) !important;width:min(420px,calc(100vw - 24px)) !important;max-height:40dvh !important;overscroll-behavior:contain}
 .gs26-warning-toast {bottom:max(12px,env(safe-area-inset-bottom)) !important;right:max(12px,env(safe-area-inset-right)) !important;width:min(420px,calc(100vw - 24px)) !important}
@@ -71,3 +71,5 @@
  .gs26-message-history button {max-width:100%;height:auto !important;min-height:44px !important}
  .gs26-message-card button {height:auto !important;min-height:44px !important}
 }
+
+.gs26-warning-toast button {border:1px solid #a68a42;border-radius:10px;background:#44381b;color:#fff3c4;font-family:inherit;cursor:pointer}
