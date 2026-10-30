@@ -165,6 +165,30 @@ fn TelemetryDashboardInner() -> Element {
     let dismissed_notifications = use_signal(load_dismissed_notifications);
     let unread_notification_ids = use_signal(Vec::<u64>::new);
     let action_policy = use_signal(ActionPolicyMsg::default_locked);
+    use_future(move || async move {
+        let mut action_policy = action_policy;
+        loop {
+            if auth::current_status().station_role.as_deref() == Some("rrls") {
+                let base = UrlConfig::base_http();
+                let token = auth::current_token();
+                let next = http_get_json::<auth::CommandProxyStatus>("/api/rrls/control").await.ok();
+                let policy = http_get_json::<ActionPolicyMsg>("/api/action_policy").await
+                    .unwrap_or_else(|_|ActionPolicyMsg::default_locked());
+                if UrlConfig::base_http() == base && auth::current_token() == token
+                    && auth::current_status().station_role.as_deref() == Some("rrls") {
+                    auth::update_command_proxy(next.clone());
+                    *COMMAND_PROXY_STATUS.write() = next;
+                    set_signal_if_changed(&mut action_policy, policy);
+                }
+            } else {
+                *COMMAND_PROXY_STATUS.write() = None;
+            }
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(1000).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+    });
     let recording_status = use_signal(|| RecordingStatusMsg {
         mode: "idle".to_string(),
         db_path: None,
@@ -3941,6 +3965,9 @@ fn TelemetryDashboardInner() -> Element {
 }
 
 fn send_cmd(cmd: &str) {
+    confirm_command_dispatch(cmd, send_confirmed_cmd);
+}
+fn confirm_command_dispatch(cmd: &str, dispatch: fn(&str)) {
     let confirmation = match cmd {
         "ResetFlightState" => Some("Reset the shared flight state to Idle? This does not close valves or stop an active physical sequence. Confirm the system is safe first."),
         "ResetTClock" => Some("Reset the displayed T-clock? Flight state and physical board sequences will not be changed."),
@@ -3951,11 +3978,11 @@ fn send_cmd(cmd: &str) {
         let script = format!("return window.confirm({});", serde_json::to_string(message).unwrap());
         spawn(async move {
             if dioxus::document::eval(&script).join::<bool>().await.unwrap_or(false) {
-                send_confirmed_cmd(&cmd);
+                dispatch(&cmd);
             }
         });
     } else {
-        send_confirmed_cmd(cmd);
+        dispatch(cmd);
     }
 }
 
@@ -3964,6 +3991,10 @@ fn send_confirmed_cmd(cmd: &str) {
         || !auth::can_send_command(cmd)
     {
         log!("[CMD] blocked cmd='{cmd}'");
+        return;
+    }
+    if auth::command_uses_primary_proxy(&auth::current_status(), cmd) {
+        send_primary_request(cmd);
         return;
     }
     let sender = WS_SENDER.read().clone();
@@ -4099,4 +4130,37 @@ fn row_to_gps_altitude_m(row: &TelemetryRow) -> Option<f64> {
 // ---------- Web vs Native logging ----------
 fn log(msg: &str) {
     debug_log::append(msg);
+}
+
+/// This is explicitly an execution request, independent of stale presentation policy.
+/// The primary performs current permissions/interlocks; no local execution is possible.
+pub(super) fn request_primary_command(cmd: &str) {
+    if !auth::command_uses_primary_proxy(&auth::current_status(), cmd) || !auth::can_send_command(cmd) { return; }
+    confirm_command_dispatch(cmd, send_primary_request);
+}
+fn send_primary_request(cmd: &str) {
+    if !auth::command_uses_primary_proxy(&auth::current_status(), cmd) || !auth::can_send_command(cmd) { return; }
+    let command = cmd.to_owned();
+    let base = UrlConfig::base_http();
+    let token = auth::current_token();
+    *COMMAND_PROXY_MESSAGE.write() = Some(format!("{command}: submitting to RRLS; primary acceptance is pending."));
+    spawn(async move {
+        let result = http_post_json::<_, auth::CommandProxyStatus>("/api/command", &command).await;
+        if UrlConfig::base_http() != base || auth::current_token() != token { return; }
+        match result {
+            Ok(status) => {
+                // HTTP 202 acknowledges local admission only. Never change actuated here.
+                auth::update_command_proxy(Some(status.clone()));
+                *COMMAND_PROXY_STATUS.write() = Some(status);
+                *COMMAND_SEND_ERROR.write() = None;
+                *COMMAND_PROXY_MESSAGE.write() = None;
+                schedule_action_policy_resync();
+            }
+            Err(error) => {
+                *COMMAND_PROXY_MESSAGE.write() = None;
+                *COMMAND_SEND_ERROR.write() = Some(format!("{command}: primary request was not admitted: {error}"));
+                clear_command_feedback_latches();
+            }
+        }
+    });
 }

@@ -285,7 +285,9 @@ fn action_control<'a>(policy: &'a ActionPolicyMsg, cmd: &str) -> Option<&'a Acti
 }
 
 pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str) -> bool {
-    if !policy.software_buttons_enabled {
+    let local_rrls = auth::current_status().station_role.as_deref() == Some("rrls")
+        && auth::is_local_station_command(cmd);
+    if !policy.software_buttons_enabled && !local_rrls {
         return false;
     }
 

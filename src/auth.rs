@@ -64,8 +64,44 @@ fn configure_browser_discovery(pairing: Option<&StationPairing>) {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CommandProxyRequest {
+    pub request_id: String,
+    pub operation: String,
+    pub phase: String,
+    #[serde(default)]
+    pub primary_accepted: bool,
+    #[serde(default)]
+    pub device_confirmed: bool,
+    pub error: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CommandProxyStatus {
+    #[serde(default)] pub supported: bool,
+    #[serde(default)] pub paired: bool,
+    #[serde(default)] pub connected: bool,
+    #[serde(default)] pub available: bool,
+    pub primary_mode: Option<serde_json::Value>,
+    #[serde(default)] pub supported_commands: Vec<String>,
+    pub pending: Option<CommandProxyRequest>,
+    pub last: Option<CommandProxyRequest>,
+    #[serde(default)] pub reason: String,
+}
+pub fn update_command_proxy(status: Option<CommandProxyStatus>) {
+    if let Ok(mut current) = CURRENT_STATUS.lock() { current.command_proxy = status; }
+}
+pub fn is_local_station_command(cmd: &str) -> bool {
+    matches!(cmd, "StartWritingNow" | "StartWritingLastTwoMinutes" | "PauseWritingDb" | "StopWritingDb" | "ResetTClock")
+}
+pub fn command_uses_primary_proxy(status: &SessionStatus, cmd: &str) -> bool {
+    status.station_role.as_deref() == Some("rrls") && !is_local_station_command(cmd)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionStatus {
+    // Live authority is never restored from a persisted login/session cache.
+    #[serde(default, skip_serializing)]
+    pub command_proxy: Option<CommandProxyStatus>,
     #[serde(default)]
     pub operating_mode: Option<serde_json::Value>,
     #[serde(default)]
@@ -221,10 +257,13 @@ pub fn can_send_command(cmd: &str) -> bool {
 }
 
 fn can_send_command_for_status(status: &SessionStatus, cmd: &str) -> bool {
-    if status.station_role.as_deref() == Some("rrls") && !(cmd=="ResetTClock" && RRLS_CLOCK_RESET_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)) && !matches!(cmd,
-        "StartWritingNow" | "StartWritingLastTwoMinutes" | "PauseWritingDb" | "StopWritingDb") {
+    if command_uses_primary_proxy(status, cmd) && !status.command_proxy.as_ref().is_some_and(|proxy|
+        proxy.supported && proxy.paired && proxy.connected && proxy.available
+            && proxy.supported_commands.iter().any(|name|name == cmd)) {
         return false;
     }
+    if status.station_role.as_deref() == Some("rrls") && cmd == "ResetTClock"
+        && !RRLS_CLOCK_RESET_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed) { return false; }
     if status.roles.iter().any(|role| role == "admin") {
         return true;
     }
@@ -1042,5 +1081,31 @@ mod recovery_command_permissions {
         }
         status.station_role = Some("primary".into());
         assert!(can_send_command_for_status(&status, "Pilot"));
+    }
+}
+
+#[cfg(test)]
+mod primary_proxy_permissions {
+    use super::*;
+    #[test]
+    fn signed_catalog_does_not_bypass_local_permission_or_availability() {
+        let mut status=SessionStatus {station_role:Some("rrls".into()),permissions:Permissions {send_commands:true,..Default::default()},allowed_commands:vec!["Pilot".into()],command_proxy:Some(CommandProxyStatus {supported:true,paired:true,connected:true,available:true,supported_commands:vec!["Pilot".into(),"Launch".into()],..Default::default()}),..Default::default()};
+        assert!(can_send_command_for_status(&status,"Pilot"));
+        assert!(!can_send_command_for_status(&status,"Launch"));
+        assert!(!can_send_command_for_status(&status,"ResetFlightState"));
+        status.command_proxy.as_mut().unwrap().available=false;
+        assert!(!can_send_command_for_status(&status,"Pilot"));
+        status.roles=vec!["admin".into()];
+        assert!(!can_send_command_for_status(&status,"Pilot"));
+        status.command_proxy=None;
+        assert!(!can_send_command_for_status(&status,"Pilot"));
+        assert!(can_send_command_for_status(&status,"StartWritingNow"));
+    }
+    #[test]
+    fn legacy_session_without_proxy_does_not_gain_hardware_authority() {
+        let status:SessionStatus=serde_json::from_value(serde_json::json!({"station_role":"rrls","roles":["admin"]})).unwrap();
+        assert!(status.command_proxy.is_none());
+        assert!(!can_send_command_for_status(&status,"Launch"));
+        assert!(!command_uses_primary_proxy(&status,"ResetTClock"));
     }
 }

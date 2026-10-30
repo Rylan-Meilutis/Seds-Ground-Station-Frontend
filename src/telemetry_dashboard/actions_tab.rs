@@ -355,14 +355,15 @@ pub(super) fn NetworkUtcControls() -> Element {
         fieldset {
             legend { "Network UTC time" }
             if recovery {
-                p { "Set network UTC at the primary GroundStation." }
-            } else {
+                p { "The primary validates and applies this network UTC request; the RRLS machine clock is unchanged." }
+            }
+            div {
                 label {
                     "UTC date and time "
                     input { r#type: "datetime-local", value: "{utc}", step: "1",
                         oninput: move |event| utc.set(event.value()) }
                 }
-                button { disabled: busy(), onclick: move |_| {
+                button { disabled: busy() || (recovery && !super::COMMAND_PROXY_STATUS.read().as_ref().is_some_and(|s|s.available)), onclick: move |_| {
                     let utc_ms = match super::recording_download::input_utc_ms(&utc()) {
                         Ok(value) => value,
                         Err(error) => { message.set(error); return; }
@@ -372,19 +373,21 @@ pub(super) fn NetworkUtcControls() -> Element {
                         message.set(match super::http_post_json::<_, serde_json::Value>(
                             "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
                         ).await {
+                            Ok(value) if recovery => primary_utc_proxy_response(value),
                             Ok(_) => "Network UTC source updated.".into(),
                             Err(error) => format!("Network UTC was not updated: {error}"),
                         });
                         busy.set(false);
                     });
                 }, "Set network UTC" }
-                button { disabled: busy(), onclick: move |_| {
+                button { disabled: busy() || (recovery && !super::COMMAND_PROXY_STATUS.read().as_ref().is_some_and(|s|s.available)), onclick: move |_| {
                     let utc_ms = super::current_wallclock_ms();
                     busy.set(true);
                     spawn(async move {
                         message.set(match super::http_post_json::<_, serde_json::Value>(
                             "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
                         ).await {
+                            Ok(value) if recovery => primary_utc_proxy_response(value),
                             Ok(_) => "Network UTC source updated.".into(),
                             Err(error) => format!("Network UTC was not updated: {error}"),
                         });
@@ -585,6 +588,20 @@ pub fn ActionsTab(
                     {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), true)}
                 }
             }
+            if auth::current_status().station_role.as_deref() == Some("rrls") {
+                p { role:"status", style:"margin:0 0 12px;color:{theme.text_muted};font-size:13px;",
+                    {primary_proxy_message(super::COMMAND_PROXY_STATUS.read().as_ref())}
+                }
+                if let Some(status) = super::COMMAND_PROXY_STATUS.read().as_ref().filter(|status| !status.available) {
+                    p {role:"status", "Primary command control unavailable: {status.reason}"}
+                }
+                if let Some(message) = super::COMMAND_PROXY_MESSAGE.read().clone() {
+                    p {role:"status", "{message}"}
+                }
+            }
+            if auth::current_status().station_role.as_deref() == Some("rrls") {
+                PrimaryCommandRequest {abort_only_mode}
+            }
             if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {
                 div {role:"alert",style:"padding:8px 10px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};","{error}"}
             }
@@ -621,9 +638,12 @@ pub fn ActionsTab(
                             ActionLayoutRow::Heading(label) => rsx! {
                                 h3 {style:"margin:12px 0 0;color:{theme.text_muted};font-size:12px;letter-spacing:.08em;text-transform:uppercase;","{label}"}
                                 if *label=="GSE sequence actions" {
+                                    if auth::current_status().station_role.as_deref()==Some("rrls") {
+                                        p {"Pressure limits, dry self-test confirmation and qualification changes must be made at the primary ground station."}
+                                    }
                                     if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
-                                    super::gse_panel::SelfTestPtOffset {disabled:abort_only_mode || *self_test_busy.read() || !auth::can_send_command("ValveSelfTest"),theme:theme.clone()}
-                                    label {input {r#type:"checkbox",checked:*self_test_confirmed.read(),disabled:*self_test_busy.read()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:move |event| {
+                                    super::gse_panel::SelfTestPtOffset {disabled:auth::current_status().station_role.as_deref()==Some("rrls") || abort_only_mode || *self_test_busy.read() || !auth::can_send_command("ValveSelfTest"),theme:theme.clone()}
+                                    label {input {r#type:"checkbox",checked:*self_test_confirmed.read(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||*self_test_busy.read()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:move |event| {
                                         let confirmed=event.checked();self_test_confirmed.set(false);self_test_busy.set(true);
                                         spawn(async move {match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":confirmed})).await {
                                             Ok(_)=>{self_test_confirmed.set(confirmed);self_test_message.set(if confirmed {"Self-test confirmation accepted. Backend interlocks still apply."}else{"Self-test locked."}.into());},Err(error)=>self_test_message.set(error)
@@ -1147,5 +1167,82 @@ mod mode_label_tests {
             request_gate_diagnostics(&serde_json::Value::Null, true)
                 .contains("diagnostics unavailable")
         );
+    }
+}
+
+fn primary_proxy_message(status: Option<&auth::CommandProxyStatus>) -> String {
+    let Some(status) = status else {
+        return "Primary command control is unavailable. This RRLS cannot take standalone hardware authority.".into();
+    };
+    if let Some(request) = &status.pending {
+        return format!("{}: queued at RRLS; waiting for the primary. Device state is unconfirmed.", request.operation);
+    }
+    if let Some(request) = &status.last {
+        return match request.phase.as_str() {
+            "accepted_by_primary" if request.primary_accepted => format!("{}: accepted by the primary. Await fresh board telemetry for device confirmation.", request.operation),
+            "rejected_by_primary" | "denied" => format!("{}: rejected. {}",request.operation,request.error.as_deref().unwrap_or("The primary did not accept this request.")),
+            _ => format!("{}: outcome unknown. Check board telemetry before retrying. {}",request.operation,request.error.as_deref().unwrap_or("")),
+        };
+    }
+    if !status.available { return format!("Primary command control unavailable: {}",status.reason); }
+    "Commands are sent through the primary ground station. Button illumination follows fresh board reports.".into()
+}
+
+#[cfg(test)]
+mod primary_proxy_tests {
+    use super::*;
+    #[test]
+    fn admission_and_primary_acceptance_never_claim_device_confirmation() {
+        let request=auth::CommandProxyRequest {request_id:"one".into(),operation:"Nitrogen".into(),phase:"pending_primary".into(),..Default::default()};
+        let mut status=auth::CommandProxyStatus {pending:Some(request.clone()),..Default::default()};
+        assert!(primary_proxy_message(Some(&status)).contains("waiting for the primary"));
+        status.pending=None;
+        status.last=Some(auth::CommandProxyRequest {phase:"accepted_by_primary".into(),primary_accepted:true,device_confirmed:true,..request});
+        let message=primary_proxy_message(Some(&status));
+        assert!(message.contains("Await fresh board telemetry"));
+        assert!(!message.contains("device confirmed"));
+        status.last.as_mut().unwrap().phase="denied".into();
+        assert!(primary_proxy_message(Some(&status)).contains("rejected"));
+        status.last.as_mut().unwrap().phase="unknown".into();
+        assert!(primary_proxy_message(Some(&status)).contains("outcome unknown"));
+        assert!(primary_proxy_message(None).contains("cannot take standalone"));
+        assert!(primary_utc_proxy_response(serde_json::json!({"network_utc_ms":1})).contains("admission is unknown"));
+    }
+}
+
+fn primary_utc_proxy_response(value: serde_json::Value) -> String {
+    let Ok(status)=serde_json::from_value::<auth::CommandProxyStatus>(value) else {
+        return "Network UTC admission is unknown; the RRLS returned an unsupported response.".into();
+    };
+    let queued=status.supported && status.pending.as_ref().is_some_and(|request|
+        request.operation=="NetworkUtc" && request.phase=="pending_primary" && !request.primary_accepted);
+    if !queued { return "Network UTC admission is unknown; check primary status before retrying.".into(); }
+    // The host-scoped poll publishes live status; this response only describes admission.
+    "Network UTC request queued at RRLS; waiting for primary acceptance.".into()
+}
+
+#[component]
+fn PrimaryCommandRequest(abort_only_mode: bool) -> Element {
+    let mut selected=use_signal(String::new);
+    let status=super::COMMAND_PROXY_STATUS.read().clone();
+    let choices=status.as_ref().filter(|status|status.available).map(|status|
+        status.supported_commands.iter().filter(|command|auth::can_send_command(command)
+            && (!abort_only_mode || command.as_str()=="Abort")).cloned().collect::<Vec<_>>()
+    ).unwrap_or_default();
+    let no_choices=choices.is_empty();
+    let allowed=choices.iter().any(|command|command==selected.read().as_str());
+    let pending=status.as_ref().is_some_and(|status|status.pending.is_some());
+    rsx! {
+        fieldset {
+            legend {"Request execution at primary"}
+            p {"This can actuate hardware if the primary permits it. The primary checks current permissions, mode and interlocks. Stale display state does not grant permission or confirm an output."}
+            label {"Command "
+                select {"aria-label":"Primary execution command",value:"{selected}",disabled:no_choices||pending,onchange:move |event|selected.set(event.value()),
+                    option {value:"","Choose a command"}
+                    for command in choices {option {value:"{command}","{command}"}}
+                }
+            }
+            button {disabled:!allowed||pending,onclick:move |_|super::request_primary_command(&selected()),"Request execution if primary permits"}
+        }
     }
 }

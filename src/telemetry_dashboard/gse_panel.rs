@@ -84,8 +84,15 @@ struct Noise {
     noise_psi: f32,
     samples: usize,
 }
+#[derive(Clone, Deserialize)]
+struct PrimaryObservation {
+    fresh: bool,
+    age_ms: u64,
+}
 #[derive(Clone, Default, Deserialize)]
 struct Status {
+    #[serde(default)]
+    primary_observation: Option<PrimaryObservation>,
     phase: String,
     message: String,
     nitrogen_passed: bool,
@@ -153,7 +160,22 @@ pub(super) fn GsePanel(
             settings.set(Some(cfg));
         }
         loop {
-            match http_get_json::<Status>("/api/gse/status").await {
+            let base=UrlConfig::base_http();
+            let token=auth::current_token();
+            if auth::current_status().station_role.as_deref()==Some("rrls") {settings.set(None);}
+            let response=http_get_json::<Status>("/api/gse/status").await;
+            if UrlConfig::base_http()!=base || auth::current_token()!=token {
+                online.set(false);
+                status.set(Status {phase:"unknown".into(),..Status::default()});
+                continue;
+            }
+            match response {
+                Ok(next) if auth::current_status().station_role.as_deref() == Some("rrls")
+                    && !next.primary_observation.as_ref().is_some_and(|source|source.fresh && source.age_ms<=1500) => {
+                    online.set(false);
+                    status.set(Status {phase:"unknown".into(),..Status::default()});
+                    message.set("Fresh primary GSE observations are unavailable; local RRLS settings are not primary evidence.".into());
+                }
                 Ok(next) => {
                     if !["idle", "passed", "cancelled", "fault"].contains(&next.phase.as_str())
                         && let Some(cfg) = settings.write().as_mut() {
@@ -164,6 +186,9 @@ pub(super) fn GsePanel(
                 }
                 Err(err) => {
                     online.set(false);
+                    // Never keep stale confirmed valves or an active model animation
+                    // after the primary observation expires or becomes unavailable.
+                    status.set(Status {phase:"unknown".into(),..Status::default()});
                     message.set(format!("GSE status unavailable: {err}"));
                 }
             }
@@ -177,7 +202,8 @@ pub(super) fn GsePanel(
         }
     });
     let active = !["idle", "passed", "cancelled", "fault"].contains(&snapshot.phase.as_str());
-    let can_edit = auth::can_view_actions() && !active && !abort_only_mode && !*busy.read();
+    let can_edit = auth::current_status().station_role.as_deref()!=Some("rrls")
+        && auth::can_view_actions() && !active && !abort_only_mode && !*busy.read();
     let pressure_label = snapshot
         .pressure_psi
         .map(|v| format!("{v:.1} psi"))
@@ -188,7 +214,7 @@ pub(super) fn GsePanel(
                 div { h3 {style:"margin:0;font-weight:600;letter-spacing:.02em;","Reconfigure GSE"}
                     p {style:"margin:6px 0 0;color:{theme.text_muted};font-size:12px;","Nitrogen · Nitrous · Fill manifold · Launch tower"}
                 }
-                span {style:"font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{theme.text_muted};",if snapshot.nitrogen_overridden {"Fill unlocked · override"}else if snapshot.nitrogen_passed {"Fill unlocked"}else{"Fill locked"}}
+                span {style:"font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:{theme.text_muted};",if !*online.read() {"Fill status unknown"}else if snapshot.nitrogen_overridden {"Fill unlocked · override"}else if snapshot.nitrogen_passed {"Fill unlocked"}else{"Fill locked"}}
             }
             if show_model {
             div {style:"height:360px;background:radial-gradient(ellipse at center,#202b34,#0b1016);",
@@ -200,13 +226,14 @@ pub(super) fn GsePanel(
                     for (i, label) in ["Pilot", "Vent", "Dump", "Nitrogen", "Nitrous"].iter().enumerate() {
                         { let value=match snapshot.valves[i] {Some(true)=>"OPEN",Some(false)=>"CLOSED",None=>"UNKNOWN"}; rsx! {span {"{label}: {value}"}} }
                     }
-                    span {"Last board acknowledgement"}
+                    span {"Latest board observation"}
                     if show_model {span {"Animation indicates sequence activity, not measured flow"}}
                 }
                 p {style:"margin:0;color:{theme.text_primary};", "{snapshot.message}"}
                 div {style:"display:flex;gap:24px;flex-wrap:wrap;color:{theme.text_muted};font-size:12px;font-variant-numeric:tabular-nums;",
                     span {"Tank: {pressure_label}"}
-                    span {"Test step: {snapshot.current_step_psi:.0} psi"}
+                    if *online.read() {span {"Test step: {snapshot.current_step_psi:.0} psi"}}
+                    else {span {"Test step: unknown"}}
                     if snapshot.self_test_locked {span {"Self-test locked for this fill session"}}
                 }
                 if let Some(noise)=snapshot.baseline {

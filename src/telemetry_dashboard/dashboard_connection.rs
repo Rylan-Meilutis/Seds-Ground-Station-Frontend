@@ -591,6 +591,8 @@ impl WsSender {
 }
 
 static WS_SENDER: GlobalSignal<Option<WsSender>> = Signal::global(|| None::<WsSender>);
+pub(super) static COMMAND_PROXY_STATUS: GlobalSignal<Option<auth::CommandProxyStatus>> = Signal::global(|| None);
+pub(super) static COMMAND_PROXY_MESSAGE: GlobalSignal<Option<String>> = Signal::global(|| None);
 pub(super) static COMMAND_SEND_ERROR: GlobalSignal<Option<String>> = Signal::global(|| None);
 
 #[cfg(test)]
