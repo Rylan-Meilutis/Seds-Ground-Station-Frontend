@@ -21,6 +21,12 @@ ALT_APP_NAME="SEDS GS"
 LEGACY_APP_NAME="GroundstationFrontend"
 APP_DIR="${APP_DIR:-./dist/${APP_NAME}.app}"
 PLIST="${APP_DIR}/Info.plist"
+IOS_BUNDLE_PLATFORM="${GS26_IOS_BUNDLE_PLATFORM:-iphoneos}"
+case "$IOS_BUNDLE_PLATFORM" in
+  iphoneos) SUPPORTED_PLATFORM="iPhoneOS" ;;
+  iphonesimulator) SUPPORTED_PLATFORM="iPhoneSimulator" ;;
+  *) printf '[ERROR] Unsupported iOS bundle platform: %s\n' "$IOS_BUNDLE_PLATFORM" >&2; exit 1 ;;
+esac
 VERSION_INPUT="${1:-${APP_VERSION:-}}"
 BUILD_INPUT="${2:-${APP_BUILD:-}}"
 
@@ -294,7 +300,7 @@ fi
 # -----------------------------------------------------------------------------
 # 2c) Add Xcode/SDK metadata keys Transporter validates for some packages
 # -----------------------------------------------------------------------------
-set_string_if_missing "DTPlatformName" "iphoneos"
+set_string "DTPlatformName" "$IOS_BUNDLE_PLATFORM"
 
 MIN_OS="$(get_string "MinimumOSVersion")"
 SDK_VER_FALLBACK="${MIN_OS%%.*}.${MIN_OS#*.}"
@@ -302,10 +308,16 @@ if [[ "$SDK_VER_FALLBACK" == "$MIN_OS" ]]; then
   SDK_VER_FALLBACK="$MIN_OS"
 fi
 
-SDK_NAME_ENV="${SDK_NAME:-iphoneos}"
+SDK_NAME_ENV="$IOS_BUNDLE_PLATFORM"
 SDK_VER_ENV="${SDK_VERSION:-$SDK_VER_FALLBACK}"
 
-set_string_if_missing "DTSDKName" "${SDK_NAME_ENV}${SDK_VER_ENV}"
+CURRENT_SDK_NAME="$(get_string DTSDKName)"
+case "$CURRENT_SDK_NAME" in
+  "${SDK_NAME_ENV}"*) ;;
+  iphoneos*) set_string "DTSDKName" "${SDK_NAME_ENV}${CURRENT_SDK_NAME#iphoneos}" ;;
+  iphonesimulator*) set_string "DTSDKName" "${SDK_NAME_ENV}${CURRENT_SDK_NAME#iphonesimulator}" ;;
+  *) set_string "DTSDKName" "${SDK_NAME_ENV}${SDK_VER_ENV}" ;;
+esac
 set_string_if_missing "DTPlatformVersion" "${SDK_VER_ENV}"
 
 if [[ -n "${XCODE_VERSION_ACTUAL:-}" ]]; then
@@ -323,12 +335,12 @@ ensure_dict "UILaunchScreen"
 set_string "UILaunchScreen:UILaunchScreenBackgroundColor" "#1E1F22"
 
 # Required by App Store validation for some non-Xcode bundles
-# CFBundleSupportedPlatforms must be an array with a single entry: iPhoneOS
+# CFBundleSupportedPlatforms must match the validated device/simulator target.
 if plist_has "CFBundleSupportedPlatforms"; then
   pb "Delete :CFBundleSupportedPlatforms"
 fi
 pb "Add :CFBundleSupportedPlatforms array"
-pb "Add :CFBundleSupportedPlatforms:0 string iPhoneOS"
+pb "Add :CFBundleSupportedPlatforms:0 string $SUPPORTED_PLATFORM"
 
 dump_plist_sections
 

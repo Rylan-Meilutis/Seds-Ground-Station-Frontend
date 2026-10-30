@@ -530,13 +530,18 @@ def build_docker(repo_root: Path, pi_build: bool, testing: bool, plain_progress:
     run(cmd, cwd=repo_root)
 
 
-def patch_plist(frontend_dir: Path, app_dir: Optional[Path] = None) -> None:
+def patch_plist(frontend_dir: Path, app_dir: Optional[Path] = None, *, ios_target: str = "aarch64-apple-ios") -> None:
+    app = app_dir or app_bundle_path(frontend_dir)
+    tools = _ios_bundle_tools()
+    tools.validate_app(app, ios_target)
+    _cpu, _platform, sdk, _clang = tools.target_spec(ios_target)
     script = frontend_dir / "scripts" / "patch_plist.sh"
     version = _read_frontend_version(frontend_dir)
     build = _read_dioxus_build(frontend_dir)
     env = {
         "APP_VERSION": version,
         "APP_BUILD": build,
+        "GS26_IOS_BUNDLE_PLATFORM": sdk,
     }
     if app_dir is not None:
         env["APP_DIR"] = str(app_dir)
@@ -628,12 +633,22 @@ def app_bundle_path(frontend_dir: Path) -> Path:
     return preferred
 
 
+def _ios_bundle_tools():
+    # Resolve relative to this source, including when build.py is imported by tooling.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gs26_ios_bundle", _frontend_script_dir() / "scripts" / "ios_bundle.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _stage_app_bundle_from_dx(
         frontend_dir: Path,
         *,
         platform_name: str,
         preferred_bundle_name: str,
         debug_mode: bool = False,
+        ios_target: str = "aarch64-apple-ios",
 ) -> Optional[Path]:
     dist = dist_dir(frontend_dir)
     dist.mkdir(parents=True, exist_ok=True)
@@ -650,6 +665,15 @@ def _stage_app_bundle_from_dx(
         target_root / fallback_profile / platform_name / APP_BUNDLE_NAME,
         target_root / fallback_profile / platform_name / MACOS_ALT_APP_BUNDLE_NAME,
     ]
+
+    if platform_name == "ios":
+        # Device and simulator dx output share a directory. Never guess a profile
+        # or a bundle alias, and inspect the binary before copying/plist mutation.
+        candidates = [path for path in candidates[:3] if path.exists()]
+        if len(candidates) > 1:
+            raise RuntimeError("Ambiguous iOS bundles in the requested profile; rebuild without existing artifacts")
+        if candidates:
+            _ios_bundle_tools().validate_app(candidates[0], ios_target)
 
     for src in candidates:
         if not src.exists():
@@ -3082,6 +3106,17 @@ def clear_app_bundle(frontend_dir: Path) -> None:
     remove_legacy_dmgs(frontend_dir)
 
 
+def clear_ios_dx_bundle_cache(frontend_dir: Path, debug_mode: bool) -> None:
+    profile = "debug" if debug_mode else "release"
+    root = _target_root(frontend_dir) / "dx" / _frontend_package_name(frontend_dir) / profile / "ios"
+    for name in (APP_BUNDLE_NAME, MACOS_ALT_APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME):
+        path = root / name
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+
 def clear_ios_staging_bundle(frontend_dir: Path) -> None:
     dist = dist_dir(frontend_dir)
     bundles = [dist / APP_BUNDLE_NAME, dist / MACOS_ALT_APP_BUNDLE_NAME, dist / LEGACY_APP_BUNDLE_NAME]
@@ -4119,8 +4154,7 @@ def _ensure_ios_deployment_env(
     min_ios = "13.0"
     env.setdefault("IPHONEOS_DEPLOYMENT_TARGET", min_ios)
 
-    is_sim = bool(rust_target and ("ios-sim" in rust_target or "simulator" in rust_target))
-    target_triple = "arm64-apple-ios13.0-simulator" if is_sim else "arm64-apple-ios13.0"
+    _cpu, _platform, _sdk, target_triple = _ios_bundle_tools().target_spec(rust_target or "aarch64-apple-ios")
 
     _append_rustflags(
         env,
@@ -4311,11 +4345,13 @@ def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debu
         platform_name="ios",
         preferred_bundle_name=APP_BUNDLE_NAME,
         debug_mode=debug_mode,
-    ) or app_bundle_path(frontend_dir)
-    if not app.exists():
+        ios_target="aarch64-apple-ios",
+    )
+    if app is None or not app.exists():
         raise FileNotFoundError(f"App bundle not found: {app}")
 
-    patch_plist(frontend_dir, app)
+    _ios_bundle_tools().validate_app(app, "aarch64-apple-ios")
+    patch_plist(frontend_dir, app, ios_target="aarch64-apple-ios")
 
     bundle_id = _bundle_id_from_app(app)
     profile_arg = "-"
@@ -4495,6 +4531,10 @@ def ios_device_deploy(frontend_dir: Path, debug_mode: bool = False) -> tuple[lis
     return udids, bundle_id
 
 
+def _ios_simulator_rust_target() -> str:
+    return "x86_64-apple-ios" if platform.machine().lower() in {"x86_64", "amd64"} else "aarch64-apple-ios-sim"
+
+
 def ios_sim_deploy(frontend_dir: Path, debug_mode: bool = False) -> tuple[str, str]:
     if platform.system() != "Darwin":
         print("Error: iOS simulator deploy requires macOS.", file=sys.stderr)
@@ -4505,10 +4545,12 @@ def ios_sim_deploy(frontend_dir: Path, debug_mode: bool = False) -> tuple[str, s
         platform_name="ios",
         preferred_bundle_name=APP_BUNDLE_NAME,
         debug_mode=debug_mode,
-    ) or app_bundle_path(frontend_dir)
-    if not app.exists():
+        ios_target=_ios_simulator_rust_target(),
+    )
+    if app is None or not app.exists():
         raise FileNotFoundError(f"Simulator app bundle not found: {app}")
-    patch_plist(frontend_dir, app)
+    _ios_bundle_tools().validate_app(app, _ios_simulator_rust_target())
+    patch_plist(frontend_dir, app, ios_target=_ios_simulator_rust_target())
 
     udid = _simctl_booted_device_udid(frontend_dir)
     if not udid:
@@ -4531,6 +4573,7 @@ def ios_sim_deploy(frontend_dir: Path, debug_mode: bool = False) -> tuple[str, s
 def capture_ios_sim_screenshot(
         frontend_dir: Path,
         *,
+        debug_mode: bool = False,
         output_dir: Path,
         delay_seconds: float,
         filename_stem: Optional[str] = None,
@@ -4543,13 +4586,15 @@ def capture_ios_sim_screenshot(
         frontend_dir,
         platform_name="ios",
         preferred_bundle_name=APP_BUNDLE_NAME,
-        debug_mode=False,
-    ) or app_bundle_path(frontend_dir)
-    if not app.exists():
+        debug_mode=debug_mode,
+        ios_target=_ios_simulator_rust_target(),
+    )
+    if app is None or not app.exists():
         raise FileNotFoundError(f"Simulator app bundle not found: {app}")
-    patch_plist(frontend_dir, app)
+    _ios_bundle_tools().validate_app(app, _ios_simulator_rust_target())
+    patch_plist(frontend_dir, app, ios_target=_ios_simulator_rust_target())
 
-    udid, bundle_id = ios_sim_deploy(frontend_dir)
+    udid, bundle_id = ios_sim_deploy(frontend_dir, debug_mode=debug_mode)
     if delay_seconds > 0:
         print(f"Waiting {delay_seconds:.1f}s before iOS simulator screenshot capture")
         time.sleep(delay_seconds)
@@ -5135,6 +5180,7 @@ def build_frontend(
             clear_android_staging_artifacts(frontend_dir)
         elif platform_name == "ios":
             clear_ios_staging_bundle(frontend_dir)
+            clear_ios_dx_bundle_cache(frontend_dir, debug_mode)
         else:
             _ensure_bundle_icon_compat(frontend_dir)
 
@@ -5329,8 +5375,12 @@ def build_frontend(
                 platform_name="ios",
                 preferred_bundle_name=APP_BUNDLE_NAME,
                 debug_mode=debug_mode,
-            ) or app_bundle_path(frontend_dir)
-            patch_plist(frontend_dir, staged_app)
+                ios_target=rust_target or "aarch64-apple-ios",
+            )
+            if staged_app is None:
+                raise FileNotFoundError("No iOS bundle in the requested profile; rebuild without existing artifacts")
+            _ios_bundle_tools().validate_app(staged_app, rust_target or "aarch64-apple-ios")
+            patch_plist(frontend_dir, staged_app, ios_target=rust_target or "aarch64-apple-ios")
 
     except FileNotFoundError as e:
         _print_missing_tool("Frontend build", e, frontend_dir)
@@ -5675,7 +5725,7 @@ def main() -> None:
                 build_frontend(
                     frontend_dir,
                     platform_name="ios",
-                    rust_target="aarch64-apple-ios-sim",
+                    rust_target=_ios_simulator_rust_target(),
                     debug_mode=debug_mode,
                     max_size=max_size_mode,
                 )
@@ -5688,12 +5738,13 @@ def main() -> None:
                 build_frontend(
                     frontend_dir,
                     platform_name="ios",
-                    rust_target="aarch64-apple-ios-sim",
+                    rust_target=_ios_simulator_rust_target(),
                     debug_mode=debug_mode,
                     max_size=max_size_mode,
                 )
             screenshot_path = capture_ios_sim_screenshot(
                 frontend_dir,
+                debug_mode=debug_mode,
                 output_dir=screenshot_out_dir,
                 delay_seconds=screenshot_delay,
                 filename_stem=screenshot_name_arg,

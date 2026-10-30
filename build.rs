@@ -1,3 +1,5 @@
+#[path = "scripts/apple_objc_target.rs"]
+mod apple_objc_target;
 use std::process::Output;
 use std::{env, fs, io::Write, path::Path, path::PathBuf, process::Command};
 
@@ -48,21 +50,7 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
         panic!("ObjC shim not found: {}", src.display());
     }
 
-    let (sdk, clang_target, out_subdir) = if target.contains("apple-ios-sim") {
-        (
-            "iphonesimulator",
-            "arm64-apple-ios13.0-simulator",
-            "ios-sim",
-        )
-    } else if target.contains("apple-ios") {
-        ("iphoneos", "arm64-apple-ios13.0", "ios")
-    } else if target.contains("apple-darwin") {
-        if target.starts_with("x86_64") {
-            ("macosx", "x86_64-apple-macosx10.15", "macos")
-        } else {
-            ("macosx", "arm64-apple-macosx10.15", "macos")
-        }
-    } else {
+    let Some((sdk, clang_target, out_subdir)) = apple_objc_target::target_spec(target) else {
         return;
     };
 
