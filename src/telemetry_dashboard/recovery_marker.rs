@@ -122,7 +122,7 @@ pub(super) fn RecoveryMarker() -> Element {
         if current.clock_known==Some(false) {span{role:"alert","Saved T0 is unknown · explicit primary T clock reset required"}}
         else if !current.synchronized {span{"Clock retained offline · primary sync pending"}}
         if let Some(error)=current.persistence_error {span{role:"alert","History storage: {error}"}}
-        for kind in ["json","csv"] {button {disabled:*busy.read(),onclick:move |_|{spawn(async move {let path=format!("/api/recovery/export.{kind}");message.set(match super::recording_download::download_csv_path(&path,&format!("launch-recovery-history.{kind}")).await {Ok(text)=>text,Err(error)=>format!("Export failed: {error}")});});},"Export {kind}"}}
+
         if !message.read().is_empty(){span{role:"status","{message}"}}
     }}
 }

@@ -307,11 +307,58 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
                     });
                 }, if downloading() { "Downloading…" } else { "Download CSV" } }
             }
+            RecoveryHistoryExport {}
+            ChecklistExport {}
             super::report_studio::ReportStudio { key:selected(), recording:selected() }
             details { summary { "Legacy CSV / clock settings" } RangeAndClock {} }
             p { role:"status", style:"overflow-wrap:anywhere;", "{status}" }
         }
     }
+}
+
+#[component]
+fn ChecklistExport() -> Element {
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    rsx! { section {
+        h3 { "Checklists" }
+        div {style:"display:flex;gap:8px;flex-wrap:wrap;",
+            for (path, file, label) in [("/api/checklists/export", "checklists.json", "Export checklists"), ("/api/checklists/export.csv", "checklist-signoffs.csv", "Export sign-offs CSV")] {
+                button {disabled:busy(),onclick:move |_| {
+                    busy.set(true);
+                    spawn(async move {
+                        message.set(match download_csv_path(path, file).await {Ok(text)=>text, Err(error)=>format!("Export failed: {error}")});
+                        busy.set(false);
+                    });
+                }, "{label}"}
+            }
+        }
+        if !message.read().is_empty() {p {role:"status", "{message}"}}
+    }}
+}
+
+/// Recovery history belongs with recording exports, never in the global header.
+#[component]
+fn RecoveryHistoryExport() -> Element {
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    rsx! { section { class:"gs26-recovery-export",
+        h3 { "Recovery history" }
+        div { style:"display:flex;gap:8px;flex-wrap:wrap;",
+            for kind in ["json", "csv"] {
+                button { disabled:busy(), onclick:move |_| {
+                    busy.set(true);
+                    spawn(async move {
+                        message.set(match download_csv_path(&format!("/api/recovery/export.{kind}"), &format!("launch-recovery-history.{kind}")).await {
+                            Ok(text) => text, Err(error) => format!("Export failed: {error}"),
+                        });
+                        busy.set(false);
+                    });
+                }, "Export recovery {kind}" }
+            }
+        }
+        if !message.read().is_empty() { p {role:"status", "{message}"} }
+    }}
 }
 
 #[cfg(test)]

@@ -18,16 +18,17 @@ fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(pathname==='
  if(pathname==='/api/checklists'||`);
 fixture+=`try {
  const context=await browser.newContext({viewport:{width:1280,height:900},acceptDownloads:true});
- await context.addInitScript(({session,origin})=>{localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
+ await context.addInitScript(({session,origin})=>{if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base)}catch{return null}};localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
  const sockets=new Set(),commands=[];await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>{sockets.add(s);s.onClose(()=>sockets.delete(s));s.onMessage(msg=>commands.push(JSON.parse(msg)));});
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
  await page.goto(origin+'/dashboard');const mark=page.getByRole('button',{name:'Mark recovered',exact:true});await mark.waitFor();assert(await mark.isEnabled());await mark.click();
  await page.getByRole('button',{name:'Rocket reached',exact:true}).waitFor();assert.equal(markPosts,1);assert(await page.getByRole('button',{name:'Rocket reached',exact:true}).isDisabled());await page.getByText(/Rocket reached T\\+00:01:30/).waitFor();
  await page.reload();await page.getByRole('button',{name:'Rocket reached',exact:true}).waitFor();assert.equal(markPosts,1,'UI reload does not repeat recovery write');
- const download=page.waitForEvent('download');await page.getByRole('button',{name:'Export json',exact:true}).click();await download;assert.deepEqual(exports,['/api/recovery/export.json']);
+ assert.equal(await page.getByRole('button',{name:/^Export /}).count(),0);await page.getByRole('link',{name:'Data Export',exact:true}).click();const download=page.waitForEvent('download');await page.getByRole('button',{name:'Export recovery json',exact:true}).click();await download;assert.deepEqual(exports,['/api/recovery/export.json']);
+ await page.getByRole('link',{name:'Dashboard',exact:true}).click();
  for(const width of[320,390,844,1280]){await page.setViewportSize({width,height:900});assert(await page.locator('.gs26-recovery-marker').evaluate(e=>e.getBoundingClientRect().width<=innerWidth),'recovery row fits '+width);}
  const previousSession=recovery.clock.session;recovery.clock={session:'b'.repeat(32),t0_utc_ms:null};await page.getByRole('button',{name:'Mark recovered',exact:true}).waitFor();assert(await page.getByRole('button',{name:'Mark recovered',exact:true}).isDisabled());assert.equal(recovery.events[0].launch_session,previousSession,'reset retains old audit');
  recovery={};await page.locator('.gs26-recovery-marker').waitFor({state:'detached'});assert.equal(markPosts,1,'older backend never enables a recovery mutation');
  assert.deepEqual(commands,[],'recovery marking/export sends no telemetry command');assert.deepEqual(errors,[]);await context.close();console.log('PASS real Wasm recovery capability, authenticated metadata POST, same-session idempotent display/reload, JSON export, explicit reset history, legacy backend and mobile widths');
 }finally{await browser.close();await new Promise(r=>server.close(r));}`;
-try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.stack);process.exitCode=1;}
+try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}

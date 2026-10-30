@@ -130,11 +130,14 @@ try {
  await sign.click();
  await page.getByText(/Signed off by server-reviewer/).waitFor();
  assert.equal(await page.getByRole('button',{name:'Sign off checklist',exact:true}).count(),0);
+ assert.equal(await page.getByRole('button',{name:'Export checklists',exact:true}).count(),0);
+ await page.getByRole('link',{name:'Data Export',exact:true}).click();
  let download=page.waitForEvent('download');await page.getByRole('button',{name:'Export checklists',exact:true}).click();
  let data=JSON.parse(fs.readFileSync(await (await download).path(),'utf8'));
  assert.equal(data.signoffs[0].signed_by,'server-reviewer');assert.equal(data.signoffs[0].signed_at_ms,1793260800000);
  download=page.waitForEvent('download');await page.getByRole('button',{name:'Export sign-offs CSV',exact:true}).click();
  assert(fs.readFileSync(await (await download).path(),'utf8').includes('server-reviewer,1793260800000'));
+ await page.getByRole('link',{name:'Checklists',exact:true}).click();
  await page.getByText('Pressure checked',{exact:true}).click();
  await page.getByText(/Previous sign-off by server-reviewer/).waitFor();
  assert(await page.getByRole('button',{name:'Sign off checklist',exact:true}).isDisabled());

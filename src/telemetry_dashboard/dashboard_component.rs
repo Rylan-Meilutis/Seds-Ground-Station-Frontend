@@ -1843,7 +1843,7 @@ fn TelemetryDashboardInner() -> Element {
         let unread_notification_ids = unread_notification_ids;
         use_effect(move || {
             if *active_main_tab.read() == MainTab::Notifications {
-                dismiss_all_active_notifications_local_and_remote(
+                dismiss_all_active_notifications_local(
                     notifications,
                     dismissed_notifications,
                     unread_notification_ids,
@@ -3097,7 +3097,7 @@ fn TelemetryDashboardInner() -> Element {
                             on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);},
                         }
                     }
-                    station_mode::OperatingModeNotice {}
+                    station_mode::OperatingModeNotice {visible:false}
                     if !*WS_CONNECTED_SIGNAL.read() {
                         div {
                             role: "alert",class:"gs26-connection-notice",
@@ -3874,19 +3874,21 @@ fn TelemetryDashboardInner() -> Element {
                 }
                 }
                 if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && *active_main_tab.read()!=MainTab::Warnings {
-                    aside {role:"alert",class:"gs26-warning-toast",style:"font-family:{dashboard_font_stack};position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
-                        div {style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
+                    aside {role:"alert",class:"gs26-warning-toast gs26-message-card",style:"font-family:{dashboard_font_stack};position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
+                        div {class:"gs26-message-body",style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
                         button {style:"font-family:inherit;",onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
                         button {style:"font-family:inherit;","aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
                     }
                 }
                 if *active_main_tab.read() != MainTab::Notifications && !notifications.read().is_empty() {
                     div {
+                        class:"gs26-notification-stack",
                         style: "position:fixed; top:88px; right:16px; z-index:2000; width:min(420px, calc(100vw - 32px)); max-height:min(40vh, 280px); display:flex; flex-direction:column; gap:8px; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; pointer-events:none; font-family:{dashboard_font_stack};",
                         for n in notifications.read().iter() {
                             div {
+                                class:"gs26-message-card",
                                 style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0; box-shadow:0 16px 40px rgba(0,0,0,0.35); pointer-events:auto; font-family:{dashboard_font_stack};",
-                                span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
+                                span { class:"gs26-message-body", style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
                                 if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
                                     && auth::can_send_command(action_cmd)
                                 {
@@ -3939,9 +3941,7 @@ fn TelemetryDashboardInner() -> Element {
                                                 dismissed_notifications.set(ids.clone());
                                                 persist_dismissed_notifications(&ids);
                                             }
-                                            spawn_detached(async move {
-                                                let _ = dismiss_notification_remote(id).await;
-                                            });
+
                                         }
                                     },
                                     {translate_text("Dismiss")}

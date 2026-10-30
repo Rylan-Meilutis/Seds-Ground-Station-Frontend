@@ -613,7 +613,7 @@ async fn cooperative_yield() {
     tokio::task::yield_now().await;
 }
 
-fn dismiss_all_active_notifications_local_and_remote(
+fn dismiss_all_active_notifications_local(
     notifications: Signal<Vec<PersistentNotification>>,
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
@@ -649,12 +649,6 @@ fn dismiss_all_active_notifications_local_and_remote(
         persist_dismissed_notifications(&ids);
     }
 
-    for n in active {
-        let id = n.id;
-        spawn_detached(async move {
-            let _ = dismiss_notification_remote(id).await;
-        });
-    }
 }
 
 fn clear_all_notifications_local_and_remote(
@@ -663,13 +657,20 @@ fn clear_all_notifications_local_and_remote(
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
 ) {
-    dismiss_all_active_notifications_local_and_remote(
+    dismiss_all_active_notifications_local(
         notifications,
         dismissed_notifications,
         unread_notification_ids,
     );
     let mut notification_history = notification_history;
+    let history = notification_history.read().clone();
     notification_history.set(Vec::new());
+    // Clearing the center is explicit; hiding/expiring a popup is only local.
+    for notice in history {
+        spawn_detached(async move {
+            let _ = dismiss_notification_remote(notice.id).await;
+        });
+    }
 }
 
 fn merge_notification_history(
@@ -700,40 +701,23 @@ mod notification_replay_tests {
     use super::*;
 
     #[test]
-    fn snapshots_and_reload_do_not_replay_transient_notifications() {
+    fn only_live_events_create_popups_even_for_legacy_persistent_flags() {
         let mut notice = PersistentNotification {
-            id: 42,
-            timestamp_ms: 1000,
-            message: "GSE state changed".into(),
-            persistent: false,
-            action_label: None,
-            action_cmd: None,
+            id:42, timestamp_ms:1000, message:"T clock reset".into(),
+            persistent:false, action_label:None, action_cmd:None,
         };
         let empty = HashSet::new();
         let seen = HashSet::from([notification_identity(&notice)]);
-        assert!(notification_visible_on_snapshot(
-            &notice, &empty, &empty, &empty
-        ));
-        // A repeat snapshot keeps an existing toast, but remount/reload does not replay it.
-        assert!(notification_visible_on_snapshot(
-            &notice, &seen, &empty, &seen
-        ));
-        assert!(!notification_visible_on_snapshot(
-            &notice, &seen, &empty, &empty
-        ));
-        // A genuinely new event is not hidden just because the server reused its ID.
+        for persistent in [false, true] {
+            notice.persistent = persistent;
+            assert!(!notification_visible_on_snapshot(&notice, &empty, &empty, false), "first load and new clients restore only history");
+            assert!(!notification_visible_on_snapshot(&notice, &seen, &empty, false), "reconnects never replay popups");
+            assert!(notification_visible_on_snapshot(&notice, &empty, &empty, true), "new live events appear");
+            assert!(!notification_visible_on_snapshot(&notice, &seen, &empty, true), "duplicate live events do not replay");
+            assert!(!notification_visible_on_snapshot(&notice, &empty, &seen, true), "dismissed events stay dismissed");
+        }
         notice.timestamp_ms += 1;
-        assert!(notification_visible_on_snapshot(
-            &notice, &seen, &empty, &empty
-        ));
-        notice.timestamp_ms -= 1;
-        notice.persistent = true;
-        assert!(notification_visible_on_snapshot(
-            &notice, &seen, &empty, &empty
-        ));
-        assert!(!notification_visible_on_snapshot(
-            &notice, &seen, &seen, &empty
-        ));
+        assert!(notification_visible_on_snapshot(&notice, &seen, &empty, true));
     }
 
     #[test]
@@ -757,11 +741,10 @@ fn notification_visible_on_snapshot(
     n: &PersistentNotification,
     seen: &HashSet<DismissedNotification>,
     dismissed: &HashSet<DismissedNotification>,
-    visible: &HashSet<DismissedNotification>,
+    live_event: bool,
 ) -> bool {
     let identity = notification_identity(n);
-    !dismissed.contains(&identity)
-        && (n.persistent || !seen.contains(&identity) || visible.contains(&identity))
+    live_event && !dismissed.contains(&identity) && !seen.contains(&identity)
 }
 
 fn apply_notifications_snapshot(
@@ -770,6 +753,7 @@ fn apply_notifications_snapshot(
     notification_history: Signal<Vec<PersistentNotification>>,
     dismissed_notifications: Signal<Vec<DismissedNotification>>,
     unread_notification_ids: Signal<Vec<u64>>,
+    live_event: bool,
 ) {
     let mut notification_history = notification_history;
     let mut notifications = notifications;
@@ -787,19 +771,15 @@ fn apply_notifications_snapshot(
     let seen: HashSet<DismissedNotification> = persist::get_string(&seen_key)
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default();
-    let visible: HashSet<_> = notifications
-        .read()
-        .iter()
-        .map(notification_identity)
-        .collect();
     let dismissed: HashSet<_> = dismissed_notifications.read().iter().copied().collect();
     let mut unique = HashSet::new();
-    let mut active: Vec<PersistentNotification> = incoming
-        .iter()
+    let mut active: Vec<PersistentNotification> = notifications.read().iter()
+        .filter(|n| !dismissed.contains(&notification_identity(n)))
+        .cloned().collect();
+    active.extend(incoming.iter()
         .filter(|n| unique.insert(notification_identity(n)))
-        .filter(|n| notification_visible_on_snapshot(n, &seen, &dismissed, &visible))
-        .cloned()
-        .collect();
+        .filter(|n| notification_visible_on_snapshot(n, &seen, &dismissed, live_event))
+        .cloned());
     let mut remembered = seen.clone();
     remembered.extend(incoming.iter().map(notification_identity));
     if remembered != seen {
@@ -830,10 +810,6 @@ fn apply_notifications_snapshot(
                 dismissed_ids.push(item);
                 dismissed_changed = true;
             }
-            let id = item.id;
-            spawn_detached(async move {
-                let _ = dismiss_notification_remote(id).await;
-            });
         }
         active = active.split_off(overflow);
     }
@@ -864,9 +840,6 @@ fn apply_notifications_snapshot(
     // Auto-dismiss new visible notifications after timeout.
     for n in active {
         if prev_ids.contains(&n.id) {
-            continue;
-        }
-        if n.persistent {
             continue;
         }
         let id = n.id;
@@ -904,7 +877,6 @@ fn apply_notifications_snapshot(
                 persist_dismissed_notifications(&ids);
             }
 
-            let _ = dismiss_notification_remote(id).await;
         });
     }
 }
@@ -1148,6 +1120,7 @@ async fn seed_from_db(
             *notification_history,
             *dismissed_notifications,
             *unread_notification_ids,
+            false,
         );
     }
 
@@ -2213,6 +2186,14 @@ fn handle_ws_message(
                 notification_history,
                 dismissed_notifications,
                 unread_notification_ids,
+                false,
+            );
+        }
+
+        WsInMsg::Notification(event) => {
+            apply_notifications_snapshot(
+                vec![event], notifications, notification_history,
+                dismissed_notifications, unread_notification_ids, page_visible,
             );
         }
 

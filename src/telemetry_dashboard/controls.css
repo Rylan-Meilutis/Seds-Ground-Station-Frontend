@@ -52,3 +52,22 @@
 
 @container(max-width:800px){.gs26-dashboard-card[data-display=state][data-width=normal]{grid-column:span 3}}
 @container(max-width:480px){.gs26-dashboard-card[data-display=state][data-width=normal]{grid-column:span 6}}
+
+/* Alerts keep the text readable instead of squeezing it between action buttons. */
+.gs26-dashboard-shell :is([role=alert],[role=status]) {min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:normal}
+.gs26-message-history {min-width:0;max-width:100%;overflow:auto;padding:12px !important;line-height:1.5}
+.gs26-message-history>div:first-child {flex-wrap:wrap}
+.gs26-message-history h2 {min-width:0}
+.gs26-message-history :is(p,span,div) {min-width:0;overflow-wrap:anywhere}
+.gs26-message-history>div>div {padding:12px !important}
+.gs26-message-card {display:flex !important;flex-wrap:wrap;align-items:center !important;gap:8px !important;padding:12px !important;line-height:1.45}
+.gs26-message-card .gs26-message-body {flex:1 0 100% !important;max-height:24vh;overflow:auto;font-size:14px;line-height:1.5;white-space:pre-wrap}
+.gs26-message-card button {flex:none;min-height:44px;min-width:44px;padding:8px 12px !important;font-size:14px !important;line-height:20px;white-space:normal;overflow-wrap:anywhere;touch-action:manipulation}
+.gs26-notification-stack {top:max(72px,env(safe-area-inset-top)) !important;right:max(12px,env(safe-area-inset-right)) !important;width:min(420px,calc(100vw - 24px)) !important;max-height:40dvh !important;overscroll-behavior:contain}
+.gs26-warning-toast {bottom:max(12px,env(safe-area-inset-bottom)) !important;right:max(12px,env(safe-area-inset-right)) !important;width:min(420px,calc(100vw - 24px)) !important}
+@media(max-width:600px){
+ .gs26-message-history>div:first-child {align-items:flex-start !important}
+ .gs26-message-history h2 {flex:1 0 100% !important}
+ .gs26-message-history button {max-width:100%;height:auto !important;min-height:44px !important}
+ .gs26-message-card button {height:auto !important;min-height:44px !important}
+}

@@ -681,6 +681,7 @@ fn flush_hidden_pending_ws_state(
             notification_history,
             dismissed_notifications,
             unread_notification_ids,
+            false,
         );
     }
     if let Some(next) = pending.messages {

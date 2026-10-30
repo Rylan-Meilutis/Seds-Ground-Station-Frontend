@@ -10,7 +10,7 @@ pub fn WarningsTab(
     let ack_timestamp_ms = *ack_warning_ts.read();
 
     rsx! {
-        div { style: "padding:4px 0 0 0; color:{theme.text_primary}; height:100%; box-sizing:border-box;",
+        div { class:"gs26-message-history", style: "padding:4px 0 0 0; color:{theme.text_primary}; height:100%; box-sizing:border-box;",
             div { style: "display:flex; align-items:center; gap:10px; margin:0 0 8px 0;",
                 h2 { style: "margin:0; color:{theme.text_primary}; flex:1;", "{translate_text(\"Warnings\")}" }
                 ClearWarningsButton { latest_warning_ts, ack_warning_ts }

@@ -243,10 +243,6 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
      style {{include_str!("checklists.css")}}
      main {class:"gs26-checklists",style:"color:{theme.text_primary};--checklist-panel:{theme.panel_background};--checklist-border:{theme.button_border};","aria-label":"Shared checklists",
       header {div {h2 {"Checklists"}p {role:"status",if !*loaded.read(){{format!("Connecting to {}…", crate::auth::station_name())}}else if document.read().enforce_before_launch{if missing==0{if signoffs_supported{"Required checklists complete and signed off"}else{"Required checklists complete"}}else{if signoffs_supported{"{missing} required checklists incomplete or unsigned — launch locked"}else{"{missing} required checklists incomplete — launch locked"}}}else{"Shared progress · launch enforcement off"}}}
-       if signoffs_supported {
-       button {disabled:*busy.read()||!*loaded.read(),onclick:move |_|{busy.set(true);spawn(async move{message.set(match super::recording_download::download_csv_path("/api/checklists/export","checklists.json").await{Ok(value)=>value,Err(error)=>error});busy.set(false);});},"Export checklists"}
-       button {disabled:*busy.read()||!*loaded.read(),onclick:move |_|{busy.set(true);spawn(async move{message.set(match super::recording_download::download_csv_path("/api/checklists/export.csv","checklist-signoffs.csv").await{Ok(value)=>value,Err(error)=>error});busy.set(false);});},"Export sign-offs CSV"}
-       }
        if admin && draft.read().is_none(){button {disabled:!*loaded.read(),onclick:move |_|{draft.set(Some(document.read().clone()));message.set(String::new());},"Manage checklists"}}
       }
       if !message.read().is_empty(){p {role:"status","{message}"}}

@@ -9,7 +9,6 @@ pub fn NotificationsTab(
     let entries = history
         .read()
         .iter()
-        .filter(|item| item.persistent)
         .cloned()
         .collect::<Vec<_>>();
     let has_history = !entries.is_empty();
@@ -25,7 +24,7 @@ pub fn NotificationsTab(
     );
 
     rsx! {
-        div { style: "padding:4px 0 2px 0; color:{theme.text_primary}; height:100%; box-sizing:border-box; font-family:{font_stack};",
+        div { class:"gs26-message-history", style: "padding:4px 0 2px 0; color:{theme.text_primary}; height:100%; box-sizing:border-box; font-family:{font_stack};",
             div { style: "display:flex; align-items:center; gap:10px; margin:0 0 8px 0;",
                 h2 { style: "margin:0; color:{theme.text_primary}; flex:1;", "{translate_text(\"Notifications History\")}" }
                 button {

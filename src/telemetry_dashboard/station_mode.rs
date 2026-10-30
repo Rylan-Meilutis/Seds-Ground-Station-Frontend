@@ -34,7 +34,7 @@ pub(super) fn description(mode: &Value, observer: bool) -> String {
 }
 
 #[component]
-pub(super) fn OperatingModeNotice() -> Element {
+pub(super) fn OperatingModeNotice(#[props(default = true)] visible: bool) -> Element {
     let observer = crate::auth::current_status().station_role.as_deref() == Some("rrls");
     use_future(move || async move {
         // Auth handover already returns this snapshot; do not briefly guess Normal.
@@ -60,7 +60,7 @@ pub(super) fn OperatingModeNotice() -> Element {
     });
     let mode = OPERATING_MODE.read();
     // Preserve compatibility with older primary servers that have no mode API.
-    if !observer && mode.is_null() {
+    if !visible || (!observer && mode.is_null()) {
         return rsx! {};
     }
     let text = description(&mode, observer);

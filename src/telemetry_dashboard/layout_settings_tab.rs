@@ -984,6 +984,7 @@ pub fn SettingsPage(
             }
 
             if active_settings_tab.read().as_str() == "general" {
+            p {role:"status",class:"gs26-operating-mode", {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), crate::auth::current_status().station_role.as_deref() == Some("rrls"))} }
             if crate::auth::can_view_data() {
                 super::paired_settings::PairedSettings { theme:theme.clone() }
             }

@@ -12,6 +12,7 @@ enum WsInMsg {
     BoardStatus(BoardStatusMsg),
     NetworkTopology(NetworkTopologyMsg),
     Notifications(Vec<PersistentNotification>),
+    Notification(PersistentNotification),
     Messages(Vec<PersistentNotification>),
     ActionPolicy(ActionPolicyMsg),
     FillTargets(FillTargetsConfig),

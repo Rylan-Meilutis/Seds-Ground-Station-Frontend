@@ -6,7 +6,7 @@ pub fn MessagesTab(history: Signal<Vec<PersistentNotification>>, theme: ThemeCon
     let entries = history.read().clone();
 
     rsx! {
-        div { style: "padding:4px 0 2px 0; color:{theme.text_primary}; height:100%; box-sizing:border-box; font-family:{font_stack};",
+        div { class:"gs26-message-history", style: "padding:4px 0 2px 0; color:{theme.text_primary}; height:100%; box-sizing:border-box; font-family:{font_stack};",
             div { style: "display:flex; align-items:center; gap:10px; margin:0 0 8px 0;",
                 h2 { style: "margin:0; color:{theme.text_primary}; flex:1;", "{translate_text(\"Messages\")}" }
             }
