@@ -211,7 +211,7 @@ try {
   await profile.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
   await profile.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
   const mobile=await profile.newPage();await mobile.goto(origin+'/dashboard');
-  const menu=mobile.getByRole('button',{name:'Menu',exact:true});await menu.waitFor();
+  const menu=mobile.locator('.gs26-header-menu-toggle');await menu.waitFor();
   const authButton=mobile.locator('.gs26-utility-menu button').filter({hasText:/SIGN (IN|OUT)/});
   await authButton.waitFor({state:'attached'});
   assert.equal(await authButton.count(),1,'account action stays in Tools');
@@ -219,14 +219,19 @@ try {
   assert.equal(await authButton.isVisible(),false,'account action follows the closed Tools/menu state');
   await menu.click();const panel=mobile.locator('#gs26-mobile-menu');
   assert(await authButton.isVisible(),'account action is accessible in the expanded menu');
-  assert((await panel.boundingBox()).height>700,'menu uses available screen height: '+JSON.stringify(await panel.evaluate(e=>({rect:e.getBoundingClientRect().toJSON(),position:getComputedStyle(e).position,display:getComputedStyle(e).display,transform:getComputedStyle(e.parentElement).transform}))));
-  const tabs=mobile.getByRole('navigation',{name:'Mobile navigation'});
-  assert(await tabs.getByRole('button').count()>5,'menu contains useful page navigation');
-  assert.equal(await tabs.getByRole('button',{name:'Voice Chat',exact:true}).count(),entry.name==='voice'?1:0);
-  assert.equal(await tabs.getByRole('button',{name:'Cameras & Recordings',exact:true}).count(),entry.name==='manager'?1:0);
-  assert.equal(await tabs.getByRole('button',{name:'Share camera',exact:true}).count(),entry.name==='publisher'?1:0);
+  const bounds=await panel.boundingBox();
+  assert(bounds.x>=0&&bounds.x+bounds.width<=390&&bounds.y+bounds.height<=844,'Tools dropdown fits viewport');
+  assert.equal(await panel.locator('nav').count(),0,'Tools does not duplicate page navigation');
+  await menu.click();
+  const tabs=mobile.getByRole('navigation',{name:'Mission navigation'});
+  if(!await tabs.isVisible())await mobile.getByRole('button',{name:'Show navigation sidebar',exact:true}).click();
+  await tabs.waitFor({state:'visible'});
+  assert(await tabs.getByRole('link').count()>5,'sidebar retains page navigation');
+  assert.equal(await tabs.getByRole('link',{name:'Voice Chat',exact:true}).count(),entry.name==='voice'?1:0);
+  assert.equal(await tabs.getByRole('link',{name:'Cameras & Recordings',exact:true}).count(),entry.name==='manager'?1:0);
+  assert.equal(await tabs.getByRole('link',{name:'Share camera',exact:true}).count(),entry.name==='publisher'?1:0);
   if(entry.name==='manager'){
-   await tabs.getByRole('button',{name:'Stream Manager',exact:true}).click();
+   await tabs.getByRole('link',{name:'Stream Manager',exact:true}).click();
    const designer=mobile.getByRole('region',{name:'Camera layout designer'});
    await designer.waitFor();
    await designer.getByLabel('Camera layout',{exact:true}).selectOption('main-side');
@@ -239,10 +244,10 @@ try {
    await designer.getByRole('button',{name:'Save camera layout',exact:true}).click();
    await designer.getByText(/reload before saving/).waitFor();
    session.roles=[];
-   await mobile.getByRole('button',{name:'Menu',exact:true}).click();
-   await mobile.getByRole('navigation',{name:'Mobile navigation'}).getByRole('button',{name:'Cameras & Recordings',exact:true}).waitFor({state:'detached',timeout:12000});
+   await mobile.getByRole('navigation',{name:'Mission navigation'}).getByRole('link',{name:'Cameras & Recordings',exact:true}).waitFor({state:'detached',timeout:12000});
   }
   if(entry.name==='anonymous'){
+   await menu.click();
    await authButton.click();
    await mobile.waitForURL(/login/);
   }

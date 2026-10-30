@@ -204,7 +204,7 @@ fn TelemetryDashboardInner() -> Element {
     let mut tabs_expanded = use_signal(|| false);
     let mut rail_collapsed = use_signal(|| persist::get_string("navigation-rail-collapsed").as_deref()!=Some("false"));
     let mut warning_toast_dismissed = use_signal(|| 0i64);
-    let mut header_actions_expanded = use_signal(|| false);
+    let header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
     let show_settings_overlay = use_signal(|| false);
     let show_version_overlay = use_signal(|| false);
@@ -2889,11 +2889,9 @@ fn TelemetryDashboardInner() -> Element {
                  margin-bottom:6px !important;
                }}
              }}
-             .gs26-mobile-menu-pages {{display:none;}}
              @media (max-width:900px) {{
                .gs26-header-actions-shell {{pointer-events:auto;}}
-               .gs26-header-actions-list {{position:fixed;inset:72px 8px 8px;width:auto;max-width:none;max-height:none;overflow-y:auto;overscroll-behavior:contain;justify-content:flex-start;}}
-               .gs26-mobile-menu-pages {{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}}
+               .gs26-header-actions-list {{position:absolute;inset:auto;right:0;top:calc(100% + 8px);width:min(320px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(var(--gs26-app-height,100vh) - 96px);overflow-y:auto;overscroll-behavior:contain;justify-content:flex-start;}}
                .gs26-header-actions-list .gs26-utility-menu {{width:100%;}}
                .gs26-header-actions-list .gs26-utility-menu>summary {{display:none;}}
                .gs26-header-actions-list .gs26-utility-menu>div {{position:static;box-shadow:none;margin:0;border:0;min-width:0;padding:0;}}
@@ -3193,7 +3191,7 @@ fn TelemetryDashboardInner() -> Element {
                                         editing.set(false);
                                     }
                                 },
-                                {if *header_actions_expanded.read() { translate_text("Close menu") } else { translate_text("Menu") }}
+                                "Tools"
                             }
                             {
                                 let abort_control = action_policy
@@ -3285,11 +3283,6 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
                         div { id:"gs26-mobile-menu",class: "gs26-header-actions-list",
-                            nav {class:"gs26-mobile-menu-pages","aria-label":"Mobile navigation",
-                                for tab in _available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read()) {
-                                    button {r#type:"button",onclick:move |_|{active_main_tab.set(tab);header_actions_expanded.set(false);},"{_main_tab_label(&layout,tab)}"}
-                                }
-                            }
                             if show_disable_actions {
                             button {
                                 style: if *abort_only_mode.read() {

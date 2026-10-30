@@ -297,7 +297,6 @@ impl UIScreenOverscanCompensation {
 #[link(name = "UIKit", kind = "framework")]
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
-  pub static kCFRunLoopDefaultMode: CFRunLoopMode;
   pub static kCFRunLoopCommonModes: CFRunLoopMode;
 
   pub fn UIApplicationMain(
@@ -408,9 +407,7 @@ pub trait NSStringRust: Sized {
   }
 
   unsafe fn initWithUTF8String_(self, c_string: *const c_char) -> id;
-  unsafe fn stringByAppendingString_(self, other: id) -> id;
   unsafe fn init_str(self, string: &str) -> Self;
-  unsafe fn UTF8String(self) -> *const c_char;
 }
 
 impl NSStringRust for id {
@@ -418,16 +415,8 @@ impl NSStringRust for id {
     msg_send![self, initWithUTF8String: c_string]
   }
 
-  unsafe fn stringByAppendingString_(self, other: id) -> id {
-    msg_send![self, stringByAppendingString: other]
-  }
-
   unsafe fn init_str(self, string: &str) -> id {
     let cstring = CString::new(string).unwrap();
     self.initWithUTF8String_(cstring.as_ptr())
-  }
-
-  unsafe fn UTF8String(self) -> *const c_char {
-    msg_send![self, UTF8String]
   }
 }

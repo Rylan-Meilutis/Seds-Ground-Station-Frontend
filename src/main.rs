@@ -5,6 +5,8 @@ mod native_station;
 mod debug_log;
 mod log_redaction;
 mod native_storage;
+#[cfg(target_os = "ios")]
+mod startup_diagnostics;
 mod telemetry_dashboard;
 
 use dioxus::prelude::*;
@@ -41,6 +43,8 @@ fn init_panic_hook() {
 /// Installs a native panic hook that appends panic details to the frontend log file.
 fn init_panic_hook() {
     panic::set_hook(Box::new(|panic_info| {
+        #[cfg(target_os = "ios")]
+        startup_diagnostics::panic_location(panic_info.location());
         let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
             (*s).to_string()
         } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
@@ -138,12 +142,20 @@ fn main() {
 #[cfg(not(target_arch = "wasm32"))]
 /// Launches the desktop build and wires in the custom tile proxy protocol.
 fn main() {
+    #[cfg(target_os = "ios")]
+    startup_diagnostics::begin();
     init_panic_hook();
+    #[cfg(target_os = "ios")]
+    startup_diagnostics::mark(startup_diagnostics::Stage::PanicHookInstalled);
     init_rustls_crypto_provider();
+    #[cfg(target_os = "ios")]
+    startup_diagnostics::mark(startup_diagnostics::Stage::CryptoReady);
     debug_log::append("[startup] native main entered");
     #[cfg(target_os = "android")]
     init_android_platform_tls_verifier();
     let mut cfg = dioxus_desktop::Config::new();
+    #[cfg(target_os = "ios")]
+    startup_diagnostics::mark(startup_diagnostics::Stage::ConfigCreated);
     #[cfg(target_os = "android")]
     {
         cfg = cfg.with_custom_protocol("gs26", |_id, request| {
@@ -170,7 +182,11 @@ fn main() {
         cfg = cfg.with_icon(icon);
     }
     debug_log::append("[startup] launching desktop app");
+    #[cfg(target_os = "ios")]
+    startup_diagnostics::mark(startup_diagnostics::Stage::Launching);
     LaunchBuilder::desktop().with_cfg(cfg).launch(app::App);
+    #[cfg(target_os = "ios")]
+    startup_diagnostics::mark(startup_diagnostics::Stage::LaunchReturned);
     debug_log::append("[startup] desktop launch returned");
 }
 

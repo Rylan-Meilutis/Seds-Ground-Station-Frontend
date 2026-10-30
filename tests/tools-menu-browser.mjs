@@ -14,8 +14,8 @@ fixture+=`try {
   await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
   const page=await context.newPage();await page.goto(origin+'/dashboard');
   const account=page.locator('.gs26-utility-menu button').filter({hasText:/SIGN OUT/});await account.waitFor({state:'attached'});
-  const menu=page.getByRole('button',{name:'Menu',exact:true}),collapsed=await menu.isVisible();if(collapsed)await menu.click();
-  if(collapsed){const panel=await page.locator('#gs26-mobile-menu').boundingBox();console.log('Expanded responsive Menu:',JSON.stringify({viewport:[width,height],panel}));if(panel.height<height-100)failures.push('Responsive Menu remains compressed '+width+'x'+height);}
+  const menu=page.locator('.gs26-header-menu-toggle'),collapsed=await menu.isVisible();if(collapsed)await menu.click();
+  if(collapsed){const panel=await page.locator('#gs26-mobile-menu').boundingBox();console.log('Expanded responsive Menu:',JSON.stringify({viewport:[width,height],panel}));if(panel.x<0||panel.x+panel.width>width||panel.y+panel.height>height)failures.push('Tools dropdown outside viewport '+width+'x'+height);assert.equal(await page.locator('#gs26-mobile-menu nav').count(),0,'Tools contains no page navigation');}
   const tools=page.locator('.gs26-utility-menu');if(!await tools.evaluate(e=>e.open))await tools.locator('summary').click();
   await account.waitFor({state:'visible'});await account.scrollIntoViewIfNeeded();
   const bounds=await tools.locator(':scope > div').evaluate(e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom,scrollWidth:e.scrollWidth,clientWidth:e.clientWidth};});

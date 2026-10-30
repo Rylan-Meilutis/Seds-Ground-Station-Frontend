@@ -47,7 +47,7 @@
  .gs26-status-shell{padding:8px !important;border-radius:8px !important}.gs26-status-row{font-size:12px}
 }
 @media(max-width:900px){
- .gs26-header-actions-list{position:fixed;inset:60px 8px 8px;max-width:none;max-height:none;width:auto;flex-wrap:nowrap}
+ .gs26-header-actions-list{position:absolute;inset:auto;right:0;top:calc(100% + 8px);width:min(320px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(var(--gs26-app-height,100vh) - 96px);flex-wrap:nowrap;overflow:auto}
 }
 @media(max-width:720px){
  .gs26-header-auth{min-width:0;flex-shrink:1}

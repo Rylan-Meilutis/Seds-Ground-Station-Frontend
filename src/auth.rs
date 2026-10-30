@@ -382,6 +382,14 @@ pub fn clear_current_session() {
     }
     clear_storage_session_for_host(&host_scope);
     if let Some(token) = old_token.filter(|t| t.starts_with("paired1.")) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _file_lock = match crate::native_storage::transaction_lock(&auth_storage_path()) {
+            Ok(lock) => lock,
+            Err(error) => {
+                crate::native_storage::report_error("lock remembered sessions", &error);
+                return;
+            }
+        };
         let mut store = read_storage_store();
         store.entries.retain(|entry| entry.session.token != token);
         write_storage_store(&store);
@@ -395,6 +403,14 @@ pub fn clear_all_stored_sessions() {
     if let Ok(mut status) = CURRENT_STATUS.lock() {
         *status = SessionStatus::default();
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _file_lock = match crate::native_storage::transaction_lock(&auth_storage_path()) {
+        Ok(lock) => lock,
+        Err(error) => {
+            crate::native_storage::report_error("lock remembered sessions", &error);
+            return;
+        }
+    };
     write_storage_store(&StoredAuthSessionStore::default());
 }
 
@@ -856,7 +872,14 @@ fn read_storage_store() -> StoredAuthSessionStore {
 #[cfg(not(target_arch = "wasm32"))]
 fn read_storage_store() -> StoredAuthSessionStore {
     let path = auth_storage_path();
-    let raw = std::fs::read_to_string(path).ok();
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => Some(raw),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            crate::native_storage::report_error("read remembered sessions", &error);
+            None
+        }
+    };
     parse_storage_store(raw.as_deref())
 }
 
@@ -876,13 +899,15 @@ fn write_storage_store(store: &StoredAuthSessionStore) {
 #[cfg(not(target_arch = "wasm32"))]
 fn write_storage_store(store: &StoredAuthSessionStore) {
     let path = auth_storage_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if store.entries.is_empty() {
-        let _ = std::fs::remove_file(path);
-    } else if let Ok(raw) = serde_json::to_string_pretty(store) {
-        let _ = std::fs::write(path, raw);
+    let result = if store.entries.is_empty() {
+        crate::native_storage::remove_durable(&path)
+    } else {
+        serde_json::to_vec_pretty(store)
+            .map_err(std::io::Error::other)
+            .and_then(|raw| crate::native_storage::atomic_write(&path, &raw))
+    };
+    if let Err(error) = result {
+        crate::native_storage::report_error("save remembered sessions", &error);
     }
 }
 
@@ -890,6 +915,14 @@ fn read_storage_session(host_scope: &str) -> Option<StoredAuthSession> {
     if host_scope.is_empty() {
         return None;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _file_lock = match crate::native_storage::transaction_lock(&auth_storage_path()) {
+        Ok(lock) => lock,
+        Err(error) => {
+            crate::native_storage::report_error("lock remembered sessions", &error);
+            return None;
+        }
+    };
     let mut store = read_storage_store();
     if let Some(entry) = store
         .entries
@@ -921,6 +954,14 @@ fn write_storage_session(host_scope: &str, session: Option<&StoredAuthSession>) 
     if host_scope.is_empty() {
         return;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _file_lock = match crate::native_storage::transaction_lock(&auth_storage_path()) {
+        Ok(lock) => lock,
+        Err(error) => {
+            crate::native_storage::report_error("lock remembered sessions", &error);
+            return;
+        }
+    };
     let mut store = read_storage_store();
     store.entries.retain(|entry| entry.host_scope != host_scope);
     if let Some(session) = session {
@@ -938,6 +979,14 @@ fn clear_storage_session_for_host(host_scope: &str) {
     if host_scope.is_empty() {
         return;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _file_lock = match crate::native_storage::transaction_lock(&auth_storage_path()) {
+        Ok(lock) => lock,
+        Err(error) => {
+            crate::native_storage::report_error("lock remembered sessions", &error);
+            return;
+        }
+    };
     let mut store = read_storage_store();
     let original_len = store.entries.len();
     store.entries.retain(|entry| entry.host_scope != host_scope);

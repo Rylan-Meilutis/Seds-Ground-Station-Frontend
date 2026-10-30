@@ -1,0 +1,36 @@
+/* Connection failures are a full route, never a shrink-to-fit dashboard column. */
+.gs26-connection-failure {
+    width: 100%;
+    min-width: 0;
+    flex: 1 1 100%;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+.gs26-connection-failure-card {
+    flex: 0 1 560px;
+    min-width: 0;
+    max-width: 560px;
+    max-height: calc(var(--gs26-app-height, 100vh) - 32px);
+    overflow: auto;
+}
+.gs26-connection-failure-card p {
+    line-height: 1.5;
+    white-space: normal;
+    overflow-wrap: break-word;
+}
+.gs26-connection-failure-details {
+    margin-bottom: 16px;
+    min-width: 0;
+}
+.gs26-connection-failure-details summary {
+    min-height: 44px;
+    padding: 12px 0;
+    cursor: pointer;
+}
+.gs26-connection-failure-details pre {
+    max-height: 12rem;
+    overflow: auto;
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: 0.85rem/1.5 ui-monospace, monospace;
+}

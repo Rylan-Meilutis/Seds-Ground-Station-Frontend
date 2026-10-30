@@ -24,14 +24,13 @@ use crate::{
 use crate::platform_impl::platform::{
   app_state,
   ffi::{
-    id, kCFRunLoopAfterWaiting, kCFRunLoopBeforeWaiting, kCFRunLoopCommonModes,
-    kCFRunLoopEntry, kCFRunLoopExit, nil, CFIndex, CFRelease,
-    CFRunLoopActivity, CFRunLoopAddObserver, CFRunLoopAddSource, CFRunLoopGetMain,
-    CFRunLoopObserverCreate, CFRunLoopObserverRef, CFRunLoopSourceContext, CFRunLoopSourceCreate,
-    CFRunLoopSourceInvalidate, CFRunLoopSourceRef, CFRunLoopSourceSignal, CFRunLoopWakeUp,
-    NSStringRust, UIApplicationMain, UIUserInterfaceIdiom,
+    id, kCFRunLoopAfterWaiting, kCFRunLoopBeforeWaiting, kCFRunLoopCommonModes, kCFRunLoopEntry,
+    kCFRunLoopExit, nil, CFIndex, CFRelease, CFRunLoopActivity, CFRunLoopAddObserver,
+    CFRunLoopAddSource, CFRunLoopGetMain, CFRunLoopObserverCreate, CFRunLoopObserverRef,
+    CFRunLoopSourceContext, CFRunLoopSourceCreate, CFRunLoopSourceInvalidate, CFRunLoopSourceRef,
+    CFRunLoopSourceSignal, CFRunLoopWakeUp, NSStringRust, UIApplicationMain, UIUserInterfaceIdiom,
   },
-  monitor, set_badge_count, view, MonitorHandle,
+  monitor, view, MonitorHandle,
 };
 
 #[non_exhaustive]
@@ -93,11 +92,6 @@ impl<T: 'static> EventLoopWindowTarget<T> {
   pub fn cursor_position(&self) -> Result<PhysicalPosition<f64>, ExternalError> {
     debug!("`EventLoopWindowTarget::cursor_position` is ignored on iOS");
     Ok((0, 0).into())
-  }
-
-  /// Sets badge count on iOS launcher. 0 hides the count
-  pub fn set_badge_count(&self, count: i32) {
-    set_badge_count(count);
   }
 }
 

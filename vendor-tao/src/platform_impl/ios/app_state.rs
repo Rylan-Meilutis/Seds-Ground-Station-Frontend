@@ -4,14 +4,7 @@
 
 #![deny(unused_results)]
 
-use std::{
-  cell::{RefCell, RefMut},
-  collections::HashSet,
-  mem,
-  os::raw::c_void,
-  ptr,
-  time::Instant,
-};
+use std::{cell::RefMut, collections::HashSet, mem, os::raw::c_void, ptr, time::Instant};
 
 use objc2::runtime::AnyObject;
 use once_cell::sync::Lazy;
@@ -132,17 +125,15 @@ impl Drop for AppState {
 impl AppState {
   // requires main thread
   unsafe fn get_mut() -> RefMut<'static, AppState> {
-    // basically everything in UIKit requires the main thread, so it's pointless to use the
-    // std::sync APIs.
-    // must be mut because plain `static` requires `Sync`
-    static mut APP_STATE: RefCell<Option<AppState>> = RefCell::new(None);
-
-    if cfg!(debug_assertions) {
-      assert_main_thread!(
-        "bug in tao: `AppState::get_mut()` can only be called on the main thread"
-      );
+    assert_main_thread!("bug in tao: `AppState::get_mut()` can only be called on the main thread");
+    thread_local! {
+      // State and its waker deliberately outlive individual callback guards,
+      // just as with the previous process-lifetime static. No Sync is invented.
+      static APP_STATE: super::process_lifetime::ProcessLifetime<Option<AppState>> =
+        const { super::process_lifetime::ProcessLifetime::new() };
     }
-    let mut guard = APP_STATE.borrow_mut();
+    let cell = APP_STATE.with(|state| state.get_or_init(|| None));
+    let mut guard = cell.borrow_mut();
     if guard.is_none() {
       #[inline(never)]
       #[cold]

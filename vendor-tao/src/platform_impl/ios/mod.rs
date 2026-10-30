@@ -77,6 +77,7 @@ mod event_loop;
 mod ffi;
 mod keycode;
 mod monitor;
+mod process_lifetime;
 mod view;
 mod window;
 

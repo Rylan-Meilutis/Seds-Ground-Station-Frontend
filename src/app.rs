@@ -137,6 +137,8 @@ include!("app_connection.rs");
 #[component]
 /// Top-level app component that installs global CSS and mounts the router.
 pub fn App() -> Element {
+    #[cfg(target_os = "ios")]
+    crate::startup_diagnostics::mark(crate::startup_diagnostics::Stage::AppRendered);
     #[cfg(not(target_arch = "wasm32"))]
     {
         keep_awake::set_enabled(true);
@@ -394,11 +396,19 @@ fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element 
     let explore_button = rsx! {};
     rsx! {
         div {
+            class: "gs26-connection-failure",
             style: shell_page_style(&theme),
+            style { {include_str!("connection_failure.css")} }
             div {
-                style: shell_card_style(&theme, "min(560px, 92vw)"),
+                class: "gs26-connection-failure-card",
+                style: format!("{} padding:clamp(18px, 4vw, 24px);", shell_card_style(&theme, "100%")),
                 h1 { style: "margin:0 0 10px 0; font-size:22px;", "Failed to Connect" }
-                p { style: "margin:0 0 16px 0; color:{theme.text_muted}; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word;", "{message}" }
+                p { style: "margin:0 0 12px 0; color:{theme.text_muted};", "The Ground Station could not be reached. Check the backend address and your network connection, then retry." }
+                details {
+                    class: "gs26-connection-failure-details",
+                    summary { "Connection details" }
+                    pre { "{message}" }
+                }
                 div { style: "display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap;",
                     button {
                         style: shell_button_style(&theme),

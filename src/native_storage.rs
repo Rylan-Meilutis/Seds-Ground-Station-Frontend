@@ -33,3 +33,14 @@ pub(crate) fn android_files_dir() -> Option<std::path::PathBuf> {
     })
     .ok()
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod file;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use file::{atomic_write, remove_durable, transaction_lock};
+
+/// Report the operation and OS error category only, never stored values/tokens.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn report_error(operation: &'static str, error: &std::io::Error) {
+    crate::debug_log::append(&format!("[storage] {operation} failed: {:?}", error.kind()));
+}

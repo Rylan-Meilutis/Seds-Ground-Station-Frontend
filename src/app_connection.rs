@@ -84,7 +84,7 @@ mod persist {
     fn write_key(key: &str, v: &str) -> Result<(), io::Error> {
         let dir = storage_dir();
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(path_for(key), v.as_bytes())
+        crate::native_storage::atomic_write(&path_for(key), v.as_bytes())
     }
 
     /// Persists that the native connect screen has already been shown.

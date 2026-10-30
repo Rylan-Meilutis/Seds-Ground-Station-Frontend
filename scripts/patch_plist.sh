@@ -283,6 +283,9 @@ set_bool "ITSAppUsesNonExemptEncryption" "false"
 # -----------------------------------------------------------------------------
 set_string_if_missing "CFBundlePackageType" "APPL"
 set_bool_if_missing   "LSRequiresIPhoneOS" "true"
+# Exposes only sandbox Documents, not Library auth/settings.
+set_bool "UIFileSharingEnabled" "true"
+set_bool "LSSupportsOpeningDocumentsInPlace" "true"
 
 if ! plist_has "MinimumOSVersion"; then
   set_string "MinimumOSVersion" "14.0"

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
+  cell::Cell,
   collections::HashMap,
   ffi::{c_char, CStr, CString},
 };
@@ -89,16 +90,15 @@ macro_rules! add_property {
 
 // requires main thread
 unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
-  static mut CLASSES: Option<HashMap<*const Class, &'static Class>> = None;
-  static mut ID: usize = 0;
-
-  if CLASSES.is_none() {
-    CLASSES = Some(HashMap::default());
+  assert_main_thread!("Tao view classes can only be registered on the main thread");
+  thread_local! {
+    static CLASSES: super::process_lifetime::ProcessLifetime<HashMap<*const Class, &'static Class>> =
+      const { super::process_lifetime::ProcessLifetime::new() };
+    static NEXT_ID: Cell<usize> = const { Cell::new(0) };
   }
-
-  let classes = CLASSES.as_mut().unwrap();
-
-  classes.entry(root_view_class).or_insert_with(move || {
+  let cache = CLASSES.with(|classes| classes.get_or_init(HashMap::new));
+  let mut classes = cache.borrow_mut();
+  *classes.entry(root_view_class).or_insert_with(move || {
     let uiview_class = class!(UIView);
     let is_uiview: bool = msg_send![root_view_class, isSubclassOfClass: uiview_class];
     assert!(is_uiview, "`root_view_class` must inherit from `UIView`");
@@ -283,12 +283,16 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
       }
     }
 
+    let id = NEXT_ID.with(|counter| {
+      let id = counter.get();
+      counter.set(id.checked_add(1).expect("Tao UIView class IDs exhausted"));
+      id
+    });
     let mut decl = ClassDecl::new(
-      &CString::new(format!("TaoUIView{}", ID)).unwrap(),
+      &CString::new(format!("TaoUIView{id}")).unwrap(),
       root_view_class,
     )
     .expect("Failed to declare class `TaoUIView`");
-    ID += 1;
     decl.add_method(sel!(drawRect:), draw_rect as extern "C" fn(_, _, _));
     decl.add_method(sel!(layoutSubviews), layout_subviews as extern "C" fn(_, _));
     decl.add_method(
@@ -319,8 +323,11 @@ unsafe fn get_view_class(root_view_class: &'static Class) -> &'static Class {
 
 // requires main thread
 unsafe fn get_view_controller_class() -> &'static Class {
-  static mut CLASS: Option<&'static Class> = None;
-  if CLASS.is_none() {
+  assert_main_thread!("Tao UIKit classes can only be registered on the main thread");
+  thread_local! {
+    static CLASS: Cell<Option<&'static Class>> = const { Cell::new(None) };
+  }
+  if CLASS.with(Cell::get).is_none() {
     let os_capabilities = app_state::os_capabilities();
 
     let uiviewcontroller_class = class!(UIViewController);
@@ -384,15 +391,19 @@ unsafe fn get_view_controller_class() -> &'static Class {
             },
         preferredScreenEdgesDeferringSystemGestures,
     }
-    CLASS = Some(decl.register());
+    let class = decl.register();
+    CLASS.with(|slot| slot.set(Some(class)));
   }
-  CLASS.unwrap()
+  CLASS.with(Cell::get).unwrap()
 }
 
 // requires main thread
 unsafe fn get_window_class() -> &'static Class {
-  static mut CLASS: Option<&'static Class> = None;
-  if CLASS.is_none() {
+  assert_main_thread!("Tao UIKit classes can only be registered on the main thread");
+  thread_local! {
+    static CLASS: Cell<Option<&'static Class>> = const { Cell::new(None) };
+  }
+  if CLASS.with(Cell::get).is_none() {
     let uiwindow_class = class!(UIWindow);
 
     extern "C" fn become_key_window(object: &Object, _: Sel) {
@@ -429,9 +440,10 @@ unsafe fn get_window_class() -> &'static Class {
       resign_key_window as extern "C" fn(_, _),
     );
 
-    CLASS = Some(decl.register());
+    let class = decl.register();
+    CLASS.with(|slot| slot.set(Some(class)));
   }
-  CLASS.unwrap()
+  CLASS.with(Cell::get).unwrap()
 }
 
 // requires main thread
