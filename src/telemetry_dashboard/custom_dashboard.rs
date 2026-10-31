@@ -396,6 +396,24 @@ impl TrendHistory {
         }
         if self.samples.len() > 150 { self.samples.remove(0); }
     }
+    fn measured_range(&self) -> Option<(f32, f32)> {
+        let low = self
+            .samples
+            .iter()
+            .map(|(_, value)| *value)
+            .reduce(f32::min)?;
+        let high = self
+            .samples
+            .iter()
+            .map(|(_, value)| *value)
+            .reduce(f32::max)?;
+        // Preserve small raw changes and negative tare offsets. A fixed
+        // 0..1000 kg plot otherwise turns every negative value into one line.
+        let padding = ((high - low) * 0.05)
+            .max(high.abs().max(low.abs()) * 0.001)
+            .max(0.000001);
+        Some((low - padding, high + padding))
+    }
     fn points(&self, min: f32, max: f32) -> String {
         let first = self.samples.first().map_or(0, |sample| sample.0);
         let span = self.samples.last().map_or(1, |sample| sample.0.saturating_sub(first).max(1));
@@ -408,6 +426,32 @@ impl TrendHistory {
 #[cfg(test)]
 mod trend_tests {
     use super::TrendHistory;
+    #[test]
+    fn measured_loadcell_range_shows_negative_and_small_raw_changes() {
+        let mut history = TrendHistory::default();
+        assert!(history.measured_range().is_none());
+        for (timestamp, value) in [(1, -5.0), (2, -4.0), (3, -3.0)] {
+            history.record(timestamp, value);
+        }
+        let (low, high) = history.measured_range().unwrap();
+        assert!(low < -5.0 && high > -3.0);
+        let points = history.points(low, high);
+        let ys: Vec<f32> = points
+            .split_whitespace()
+            .map(|point| point.split_once(',').unwrap().1.parse().unwrap())
+            .collect();
+        assert!(ys[0] > ys[1] && ys[1] > ys[2]);
+        assert!(ys.iter().all(|value| (0.0..=60.0).contains(value)));
+        history.samples.clear();
+        history.record(1, 0.0117);
+        history.record(2, 0.0118);
+        let (low, high) = history.measured_range().unwrap();
+        assert!(high - low < 0.001);
+        history.samples.clear();
+        history.record(1, 0.0);
+        let (low, high) = history.measured_range().unwrap();
+        assert!(low.is_finite() && high.is_finite() && high > low);
+    }
     #[test]
     fn source_time_order_and_bounded_history_are_independent_of_refresh_ticks() {
         let mut history=TrendHistory::default();history.select(("X","FC",0,false,0));
@@ -469,7 +513,16 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default = f
         if card.display == "trend" && !compact && let (Some(row), Some(value)) = (&row, value) {
             history.record(row.timestamp_ms, value);
         }
-        history.points(card.min, card.max)
+        let range = if matches!(
+            card.data_type.as_str(),
+            "KG1000" | "KG50" | "LOADCELL_WEIGHT_KG" | "LOADCELL_50_WEIGHT_KG"
+        ) {
+            history.measured_range()
+        } else {
+            None
+        };
+        let (min, max) = range.unwrap_or((card.min, card.max));
+        history.points(min, max)
     };
     let has_trend = history.borrow().samples.len() >= 2;
     rsx! {div { style: if compact { "display:flex;align-items:baseline;justify-content:center;gap:6px;flex-wrap:wrap;" } else { "" },

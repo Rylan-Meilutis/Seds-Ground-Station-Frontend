@@ -199,7 +199,8 @@ mod history_clock_tests {
 
 #[cfg(target_arch = "wasm32")]
 async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
-    let mut rows = http_get_json::<Vec<TelemetryRow>>("/api/recent").await?;
+    let mut rows =
+        http_get_json::<Vec<TelemetryRow>>("/api/recent?display=true&max_rows=12000").await?;
     normalize_telemetry_rows_for_runtime(&mut rows);
     Ok(rows)
 }
@@ -208,7 +209,7 @@ async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
 async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
     use futures_util::StreamExt;
 
-    let path = "/api/recent".to_string();
+    let path = "/api/recent?display=true&max_rows=12000".to_string();
     let base = UrlConfig::base_http();
     let url = if base.is_empty() {
         format!("http://localhost:3000{path}")
