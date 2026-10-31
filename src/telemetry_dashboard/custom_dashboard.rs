@@ -239,7 +239,7 @@ fn save(cards: &[Card]) {
     if valid(cards)
         && let Ok(json) = serde_json::to_string(cards) {
             persist::set_string(&storage_key(), &json);
-            persist::set_string(&format!("{}_defaults_version", storage_key()), "2");
+            persist::set_string(&format!("{}_defaults_version", storage_key()), "3");
         }
 }
 
@@ -255,13 +255,36 @@ fn migrate_default_loadcell_trend(cards: &mut [Card]) {
     }
 }
 
+fn migrate_default_pressure_cards(cards: &mut Vec<Card>) {
+    let default_cards = defaults();
+    // A custom dashboard gets no new cards. Recognize the original fill dashboard
+    // from its existing named loadcells and tank-pressure source.
+    let legacy_default_layout = ["LOADCELL_50_WEIGHT_KG", "LOADCELL_WEIGHT_KG", "FUEL_TANK_PRESSURE"]
+        .iter().all(|kind| default_cards.iter().find(|card| card.data_type == *kind).is_some_and(|default| {
+            cards.iter().any(|card| card.data_type == default.data_type
+                && card.label == default.label && card.sender == default.sender
+                && card.section == default.section)
+        }));
+    if legacy_default_layout && cards.len() < 32 && !cards.iter().any(|card| card.data_type == "COMBUSTION_CHAMBER_PRESSURE") {
+        let chamber = default_cards.iter().find(|card| card.data_type == "COMBUSTION_CHAMBER_PRESSURE").unwrap().clone();
+        let index = cards.iter().position(|card| card.data_type == "FUEL_TANK_PRESSURE").unwrap_or(cards.len());
+        cards.insert(index, chamber);
+    }
+
+}
+
 pub(super) fn load_cards() -> Vec<Card> {
     let mut cards = persist::get_string(&storage_key())
         .and_then(|raw| serde_json::from_str::<Vec<Card>>(&raw).ok())
         .filter(|cards| valid(cards))
         .unwrap_or_else(defaults);
-    if persist::get_string(&format!("{}_defaults_version", storage_key())).as_deref() != Some("2") {
-        migrate_default_loadcell_trend(&mut cards);
+    let version = persist::get_string(&format!("{}_defaults_version", storage_key()));
+    if version.as_deref() != Some("3") {
+        // Version2 already migrated the loadcell. Preserve later explicit choices.
+        if version.as_deref() != Some("2") {
+            migrate_default_loadcell_trend(&mut cards);
+        }
+        migrate_default_pressure_cards(&mut cards);
         save(&cards);
     }
     cards
@@ -667,6 +690,26 @@ mod tests {
         assert_eq!(cards[0].display, "trend");
         assert!(cards[0].pinned);
         assert!(cards.last() == Some(&custom));
+    }
+
+    #[test]
+    fn missing_chamber_migration_is_bounded_and_preserves_pressure_style() {
+        let mut cards = defaults();
+        cards.retain(|card| card.data_type != "COMBUSTION_CHAMBER_PRESSURE");
+        migrate_default_pressure_cards(&mut cards);
+        migrate_default_pressure_cards(&mut cards);
+        let pressure: Vec<_> = cards.iter().filter(|card| matches!(card.data_type.as_str(), "COMBUSTION_CHAMBER_PRESSURE" | "FUEL_TANK_PRESSURE")).collect();
+        assert_eq!(pressure.len(), 2);
+        assert!(pressure.iter().all(|card| card.display == "gauge"));
+        assert!(pressure.iter().any(|card| card.sender == "DAQ" && card.data_type == "COMBUSTION_CHAMBER_PRESSURE"));
+        let mut custom = vec![cards[0].clone()];
+        let before = custom.clone();
+        migrate_default_pressure_cards(&mut custom);
+        assert!(custom == before);
+        let mut full = vec![defaults()[0].clone(); 30];
+        full.extend(cards.iter().filter(|card| matches!(card.data_type.as_str(), "LOADCELL_WEIGHT_KG" | "FUEL_TANK_PRESSURE")).cloned());
+        migrate_default_pressure_cards(&mut full);
+        assert_eq!(full.len(), 32);
     }
 
     #[test]
