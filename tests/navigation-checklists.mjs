@@ -111,18 +111,21 @@ try {
  await page.getByRole('button',{name:'Hide navigation sidebar'}).click();
  await page.getByRole('button',{name:'Show navigation sidebar'}).click();
  const bounds=await page.locator('.gs26-navigation-rail, .gs26-page-content').evaluateAll(nodes=>nodes.map(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width}}));
- assert(bounds[0].right<=bounds[1].left,'sidebar occupies its own column');
+ assert.equal(bounds[1].width,beforeWidth,'mobile overlay preserves content width');
+ assert.equal(await page.locator('.gs26-navigation-rail').evaluate(e=>getComputedStyle(e).position),'absolute','mobile navigation overlays the page');
  assert(await page.locator('.gs26-header-row').evaluate(e=>e.getBoundingClientRect().height<=52),'mobile header stays in one compact row');
  assert.equal(await page.locator('.gs26-navigation-mark').count(),0,'no redundant S badge');
  await page.screenshot({path:'/tmp/gs-mobile-sidebar-reflow.png',fullPage:true});
  await page.getByRole('button',{name:'Hide navigation sidebar'}).click();
- assert(await content.evaluate(e=>e.getBoundingClientRect().width)>bounds[1].width,'hiding the sidebar restores page width');
+ assert.equal(await content.evaluate(e=>e.getBoundingClientRect().width),bounds[1].width,'hiding the overlay keeps the page width');
  await page.setViewportSize({width:844,height:1000});
  for(const name of ['Show navigation sidebar','Hide navigation sidebar']) {
   await page.getByRole('button',{name}).click();
   const b=await page.locator('.gs26-navigation-rail').boundingBox();
-  assert(b&&b.width>=60,'tablet collapsed and expanded navigation remain available');
-  assert(b.x+b.width<=await content.evaluate(e=>e.getBoundingClientRect().left),'tablet navigation never overlays content');
+  if(name==='Show navigation sidebar') {
+   assert(b&&b.width>=60,'tablet overlay opens');
+   assert.equal(await page.locator('.gs26-navigation-rail').evaluate(e=>getComputedStyle(e).position),'absolute');
+  } else assert.equal(b,null,'tablet navigation hides fully');
  }
  await page.setViewportSize({width:1440,height:1000});
  assert.equal(await page.getByRole('button',{name:/^Settings$/i}).count(),0,'sidebar has only one Settings entry'); await page.getByRole('link',{name:'Settings',exact:true}).click();

@@ -31,7 +31,11 @@ try {
    assert(await rail.isVisible(),'mobile panel opens');
    const b=await rail.boundingBox(),c=await content.boundingBox();
    assert(b.width>=width-20&&c.width===closedContent.width,'open panel never squeezes content');
-   assert(b.y+b.height<=c.y+1,'in-flow panel does not cover content');
+   assert.equal(c.y,closedContent.y,'opening the sidebar does not move the page down');
+   assert.equal(c.height,closedContent.height,'opening the sidebar does not resize the page');
+   assert(b.y<c.y+c.height&&b.y+b.height>c.y,'sidebar overlays content');
+   assert(await rail.evaluate(e=>getComputedStyle(e).position==='absolute'),'mobile sidebar is out of document flow');
+   assert(await page.evaluate(()=>{const rail=document.querySelector('.gs26-navigation-rail'),r=rail.getBoundingClientRect();return rail.contains(document.elementFromPoint(r.x+20,r.y+20));}),'sidebar is above the covered page');
    for(const label of ['Dashboard','Mission','Map','Checklists','Detailed info','Settings'])assert(await rail.locator('a').getByText(label,{exact:true}).isVisible(),'icons plus text: '+label);
    const labels=await rail.locator('a>span').evaluateAll(es=>es.map(e=>getComputedStyle(e).display));assert(labels.every(x=>x!=='none'));
    assert.equal(await rail.locator('svg').count(),6);
