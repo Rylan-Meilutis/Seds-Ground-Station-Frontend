@@ -38,14 +38,28 @@
  .gs26-mobile-sidebar-toggle{border:1px solid var(--gs-control-border,#42536d);background:var(--gs-control-bg,#162235);color:var(--gs-control-text,#edf3ff);border-radius:8px;width:44px;height:44px;flex:none;cursor:pointer}
  .gs26-header-secondary{margin-bottom:8px !important}
 }
+/* On a phone the navigation is a full-width in-flow panel or absent.
+   It never becomes an icon-only strip or steals the page's readable width. */
+@media(max-width:900px){
+ .gs26-dashboard-shell[data-streamer=false],
+ .gs26-dashboard-shell[data-navigation=sidebar][data-streamer=false],
+ .gs26-dashboard-shell[data-navigation=sidebar][data-rail-collapsed=true][data-streamer=false]{
+  --nav-width:0px;--nav-gap:0px;padding:8px !important;
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:auto auto auto auto auto auto minmax(0,1fr);
+  grid-template-areas:"mode" "connection" "toolbar" "rail" "summary" "recovery" "content";
+ }
+ .gs26-navigation-rail{height:min(360px,44dvh);min-height:120px;margin-bottom:8px;padding:8px !important}
+ .gs26-navigation-rail[data-collapsed=true]{display:none}
+ .gs26-navigation-rail[data-collapsed=false] a>span{display:block;min-width:0;overflow-wrap:anywhere}
+ .gs26-navigation-rail[data-collapsed=false] .gs26-navigation-group>p{display:block}
+ .gs26-navigation-rail a{padding:9px 10px;justify-content:flex-start;font-size:14px}
+ .gs26-navigation-rail .gs26-rail-toggle{display:none}
+}
 @media(max-width:719px){
- .gs26-dashboard-shell[data-streamer=false],.gs26-dashboard-shell[data-navigation=sidebar][data-streamer=false]{padding:8px !important;--nav-width:56px;--nav-gap:8px}
- .gs26-dashboard-shell[data-navigation=tabs][data-streamer=false],.gs26-dashboard-shell[data-navigation=sidebar][data-rail-collapsed=true][data-streamer=false]{--nav-width:0px;--nav-gap:0px;padding-left:8px !important}
- .gs26-navigation-rail[data-collapsed=true]{display:none}.gs26-navigation-rail{padding:4px !important}
- .gs26-navigation-rail .gs26-navigation-group>p,.gs26-navigation-rail a>span,.gs26-navigation-rail .gs26-navigation-connection{display:none}
- .gs26-navigation-rail a{padding:8px;justify-content:center}.gs26-navigation-rail .gs26-rail-toggle{display:none}
  .gs26-status-shell{padding:8px !important;border-radius:8px !important}.gs26-status-row{font-size:12px}
 }
+
 @media(max-width:900px){
  .gs26-header-actions-list{position:absolute;inset:auto;right:0;top:calc(100% + 8px);width:min(320px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(var(--gs26-app-height,100vh) - 96px);flex-wrap:nowrap;overflow:auto}
 }

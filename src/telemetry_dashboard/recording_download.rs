@@ -160,6 +160,10 @@ struct ClockStatus {
     utc_ms: u64,
     network_utc_ms: Option<i64>,
     can_set_system_time: bool,
+    #[serde(default)]
+    set_system_time_permission: bool,
+    #[serde(default)]
+    system_time_unavailable_reason: Option<String>,
 }
 fn utc_label(ms: i128) -> String {
     time::OffsetDateTime::from_unix_timestamp_nanos(ms * 1_000_000)
@@ -185,38 +189,6 @@ fn RangeAndClock() -> Element {
     let mut end = use_signal(String::new);
     let mut message = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let mut clock = use_signal(|| None::<ClockStatus>);
-    let mut refresh = use_signal(|| 0u32);
-    let mut confirmed = use_signal(|| false);
-    let mut manual = use_signal(String::new);
-    use_effect(move || {
-        let _ = refresh();
-        spawn(async move {
-            match http_get_json::<ClockStatus>("/api/system/time").await {
-                Ok(c) => clock.set(Some(c)),
-                Err(e) => message.set(format!("Could not read GroundStation clock: {e}")),
-            }
-        });
-    });
-    let can_set = clock.read().as_ref().is_some_and(|c| c.can_set_system_time);
-    let has_network = clock
-        .read()
-        .as_ref()
-        .is_some_and(|c| c.network_utc_ms.is_some());
-    let mut sync = move |body: serde_json::Value| {
-        busy.set(true);
-        spawn(async move {
-            match super::http_post_json::<_, ClockStatus>("/api/system/time", &body).await {
-                Ok(c) => {
-                    clock.set(Some(c));
-                    confirmed.set(false);
-                    message.set("GroundStation system clock updated. Future logs use this date/time. A large correction may require signing in again.".into());
-                }
-                Err(e) => message.set(format!("System clock was not updated: {e}")),
-            }
-            busy.set(false);
-        });
-    };
     rsx! {
         fieldset {
             legend { "Export a time range from all local recordings" }
@@ -232,20 +204,72 @@ fn RangeAndClock() -> Element {
             }, "Download date-range CSV" }
             p { "Automatically searches saved database contents. Old data recorded with a wrong clock remains under its original timestamp; use a session download below if needed." }
         }
-        details {
-            summary { "GroundStation system date/time" }
-            if let Some(c) = clock.read().as_ref() { p { "Current server time: {utc_label(c.utc_ms as i128)}" } }
+        p { role: "status", "{message}" }
+    }
+}
+
+#[component]
+pub fn SystemClockSettings() -> Element {
+    let mut message = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let mut clock = use_signal(|| None::<ClockStatus>);
+    let mut refresh = use_signal(|| 0u32);
+    let mut confirmed = use_signal(|| false);
+    let mut manual = use_signal(String::new);
+    use_effect(move || {
+        let _ = refresh();
+        spawn(async move {
+            match http_get_json::<ClockStatus>("/api/system/time").await {
+                Ok(c) => clock.set(Some(c)),
+                Err(e) => message.set(format!("Could not read station clock: {e}")),
+            }
+        });
+    });
+    let can_set = clock.read().as_ref().is_some_and(|c| c.can_set_system_time);
+    let has_network = clock
+        .read()
+        .as_ref()
+        .is_some_and(|c| c.network_utc_ms.is_some());
+    let mut sync = move |body: serde_json::Value| {
+        busy.set(true);
+        spawn(async move {
+            match super::http_post_json::<_, ClockStatus>("/api/system/time", &body).await {
+                Ok(c) => {
+                    clock.set(Some(c));
+                    confirmed.set(false);
+                    message.set("OS clock updated immediately. Network UTC source accepted; network time synchronizes gradually.".into());
+                }
+                Err(e) => message.set(format!("Clock update failed: {e}")),
+            }
+            busy.set(false);
+        });
+    };
+    rsx! {
+        section { class: "system-clock-settings",
+            h3 { "Station system date/time" }
+            if let Some(c) = clock.read().as_ref() {
+                p { "OS: {utc_label(c.utc_ms as i128)}" }
+                if let Some(network) = c.network_utc_ms { p { "Network: {utc_label(network as i128)}" } }
+            }
             button { disabled:busy(), onclick:move |_| refresh += 1, "Refresh time and permission" }
             if can_set {
-                p { "This changes the machine clock for all logs, not just this export. Stop active operations first. NTP settings are not changed." }
-                label { input { r#type:"checkbox", checked:confirmed(), onchange:move |e| confirmed.set(e.checked()) } "I intend to change the GroundStation system clock" }
-                button { disabled:busy() || !confirmed(), onclick:move |_| sync(serde_json::json!({"source":"client","utc_ms":client_now_ms()})), "Set from this device" }
-                button { disabled:busy() || !confirmed() || !has_network, onclick:move |_| sync(serde_json::json!({"source":"network"})), "Set from network UTC (RF GPS when available)" }
+                p { "OS updates immediately. Network UTC synchronizes gradually." }
+                details {
+                    summary { "About clock synchronization" }
+                    p { "Network corrections normally use a 5% slew rate and preserve monotonic timers. NTP settings remain unchanged. A large OS clock change may require signing in again." }
+                }
+                label { input { r#type:"checkbox", checked:confirmed(), onchange:move |e| confirmed.set(e.checked()) } "Change this station’s system clock" }
+                button { disabled:busy() || !confirmed(), onclick:move |_| sync(serde_json::json!({"source":"client","utc_ms":client_now_ms()})), "Set OS + network from this device" }
+                button { disabled:busy() || !confirmed() || !has_network, onclick:move |_| sync(serde_json::json!({"source":"network"})), "Set OS from current network UTC" }
                 label { "Set date/time (UTC) " input { r#type:"datetime-local", value:"{manual}", oninput:move |e| manual.set(e.value()) } }
                 button { disabled:busy() || !confirmed(), onclick:move |_| {
                     match input_utc_ms(&manual()) { Ok(ms)=>sync(serde_json::json!({"source":"client","utc_ms":ms})), Err(e)=>message.set(e) }
                 }, "Set selected date/time" }
-            } else { p { "Sign in with Set System Date/Time permission to change the server clock." } }
+            } else if let Some(c) = clock.read().as_ref() {
+                if !c.set_system_time_permission { p { "Set System Date/Time permission is required." } }
+                else if let Some(reason) = &c.system_time_unavailable_reason { p { "{reason}" } }
+                else { p { "OS clock updates are unavailable on this host." } }
+            }
         }
         p { role:"status", "{message}" }
     }
@@ -399,4 +423,16 @@ mod tests {
         assert_eq!(choose_recording(&records, id), id);
         assert!(choose_recording(&[], id).is_empty());
     }
+    #[test]
+    fn clock_capability_distinguishes_host_limits_from_account_permission() {
+        let clock: ClockStatus = serde_json::from_value(serde_json::json!({
+            "utc_ms":1_800_000_000_000u64,"network_utc_ms":1_799_999_000_000i64,
+            "can_set_system_time":false,"set_system_time_permission":true,
+            "system_time_unavailable_reason":"Linux host needs CAP_SYS_TIME"
+        })).unwrap();
+        assert!(clock.set_system_time_permission);
+        assert!(!clock.can_set_system_time);
+        assert!(clock.system_time_unavailable_reason.unwrap().contains("CAP_SYS_TIME"));
+    }
+
 }

@@ -3093,8 +3093,8 @@ fn TelemetryDashboardInner() -> Element {
                             error_alert:active_error_alert,
                             active:_main_tab_to_str(*active_main_tab.read()).to_string(),
                             title:layout.branding.app_name.clone().unwrap_or_else(||"GroundStation".into()),
-                            on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);},
-                            on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);},
+                            on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);navigation_rail::close_after_mobile_selection(rail_collapsed);},
+                            on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);navigation_rail::close_after_mobile_selection(rail_collapsed);},
                         }
                     }
                     station_mode::OperatingModeNotice {visible:false}
@@ -3150,7 +3150,7 @@ fn TelemetryDashboardInner() -> Element {
                             class: "gs26-header-title",
                             style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
                             if *navigation_rail::SIDEBAR_NAVIGATION.read() {
-                                button {class:"gs26-mobile-sidebar-toggle",title:if *rail_collapsed.read(){"Show pages"}else{"Hide pages"},"aria-label":if *rail_collapsed.read(){"Show navigation sidebar"}else{"Hide navigation sidebar"},"aria-expanded":(!*rail_collapsed.read()).to_string(),onclick:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next{"true"}else{"false"});},svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:"M3 4h18v16H3z M9 4v16 M5 8h2 M5 12h2 M5 16h2"}}}
+                                button {class:"gs26-mobile-sidebar-toggle","aria-controls":"gs26-sidebar-navigation",title:if *rail_collapsed.read(){"Show pages"}else{"Hide pages"},"aria-label":if *rail_collapsed.read(){"Show navigation sidebar"}else{"Hide navigation sidebar"},"aria-expanded":(!*rail_collapsed.read()).to_string(),onclick:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next{"true"}else{"false"});},svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:"M3 4h18v16H3z M9 4v16 M5 8h2 M5 12h2 M5 16h2"}}}
                             }
                             span {class:"gs26-desktop-tab-title", "{_main_tab_label(&layout, *active_main_tab.read())}"}
                             button {

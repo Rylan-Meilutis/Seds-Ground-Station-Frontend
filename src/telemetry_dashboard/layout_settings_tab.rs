@@ -1804,6 +1804,11 @@ pub fn SettingsPage(
             }
 
             if active_settings_tab.read().as_str() == "maintenance" {
+                div {
+                    style: "margin-top:12px; {card_style}",
+                    style { {include_str!("system_clock_settings.css")} }
+                    super::recording_download::SystemClockSettings {}
+                }
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_storage}" }
                 div { style: "display:flex; flex-direction:column; gap:12px;",
