@@ -1,6 +1,6 @@
 use super::{
     layout::ThemeConfig,
-    types::{BoardDiagnostics, NetworkBoardHealthEntry},
+    types::{BoardDiagnostics, LaunchLogStatus, NetworkBoardHealthEntry},
 };
 use dioxus::prelude::*;
 const TIMEOUT_MS: u64 = 12_000;
@@ -40,6 +40,43 @@ fn duration(ms: u64) -> String {
     } else {
         format!("{}h {}m", seconds / 3600, seconds % 3600 / 60)
     }
+}
+fn launch_log_state(
+    status: Option<&LaunchLogStatus>,
+    connected: bool,
+    elapsed: u64,
+) -> (&'static str, &'static str) {
+    let Some(status) = status else {
+        return ("No confirmation yet", "unknown");
+    };
+    if !connected || status.received_age_ms.saturating_add(elapsed) > 15_000 {
+        return ("Confirmation stale", "unknown");
+    }
+    match status.matches_expected {
+        None => return ("Unverified launch clock", "unknown"),
+        Some(false) => return ("Awaiting DAQ acceptance", "pending"),
+        Some(true) => {}
+    }
+    if status.session == 0 {
+        return ("Normal log mode confirmed", "good");
+    }
+    if status.flags & 8 != 0 {
+        return if status.flags & (16 | 32 | 64) != 0 {
+            ("Window ended; files draining", "pending")
+        } else {
+            ("Launch window closed", "idle")
+        };
+    }
+    if status.flags & 2 == 0 {
+        return ("Clock accepted; SD unavailable", "error");
+    }
+    if status.flags & 4 == 0 {
+        return ("Clock accepted; awaiting time", "pending");
+    }
+    if status.flags & (16 | 32) != 0 {
+        return ("Launch files open", "good");
+    }
+    ("Launch clock accepted", "good")
 }
 // Status is based on successful device I/O, never just enqueue acceptance.
 fn sd_state(
@@ -123,6 +160,14 @@ fn SdHealth(
         "pending" => "#815b12",
         _ => "#475569",
     };
+    let (launch_label, launch_state) =
+        launch_log_state(report.launch_log.as_ref(), connected, elapsed);
+    let launch_color = match launch_state {
+        "good" => "#146c43",
+        "error" => "#9f1239",
+        "pending" => "#815b12",
+        _ => "#475569",
+    };
     let age = report.sd_status_received_age_ms.unwrap_or(0);
     let fresh = connected
         && report
@@ -163,6 +208,10 @@ fn SdHealth(
                 }
             }
             if !message.is_empty() { p { role:"status", style:"font-size:0.85rem; margin:8px 0 0; overflow-wrap:anywhere;", "{message}" } }
+            div { "data-launch-log-state":launch_state, style:"display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin-top:14px;",
+                strong { "DAQ launch log" }
+                span { role:"status", style:"border-radius:999px; padding:3px 9px; background:{launch_color}; color:white; font-size:0.8rem;", "{launch_label}" }
+            }
             details { style:"font-size:0.85rem; margin-top:8px;",
                 summary { style:"min-height:44px; display:flex; align-items:center; cursor:pointer;", "Recording details" }
                 p { "Writes show successful card transfers. Flushed records show successful filesystem flushes; a write alone does not confirm a flush." }
@@ -170,6 +219,12 @@ fn SdHealth(
                 if let Some(count) = report.sd_retry_count { p { "Initialization attempts: {count} · Failures: {report.sd_init_failures.unwrap_or(0)}" } }
                 if let Some(stage) = report.sd_init_stage { p { "Initialization stage: {stage}" } }
                 p { "Retry preserves the recording session and launch cutoff. It does not format the card." }
+                if let Some(status) = &report.launch_log {
+                    p { "DAQ session: {status.session} · Revision: {status.revision} · Cutoff UTC ms: {status.deadline_utc_ms}" }
+                    if status.matches_expected == Some(true) { p { "The reported session, cutoff and revision match GroundStation's current launch clock." } }
+                } else { p { "Matching DAQ firmware is required for application-level launch confirmation." } }
+                p { "Acceptance confirms DAQ applied the launch clock; it does not prove every sample was recorded. File-open flags and the recording cutoff are separate from write and flush progress." }
+
             }
         }
     }
@@ -278,6 +333,75 @@ pub fn NetworkHealthSection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launch_confirmation_requires_current_exact_application_report() {
+        assert_eq!(launch_log_state(None, true, 0).0, "No confirmation yet");
+        let mut status = LaunchLogStatus {
+            session: 42,
+            revision: 123,
+            flags: 7,
+            matches_expected: Some(true),
+            expected_session: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Launch clock accepted"
+        );
+        status.matches_expected = Some(false);
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Awaiting DAQ acceptance"
+        );
+        status.matches_expected = Some(true);
+        status.flags |= 16 | 32;
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Launch files open"
+        );
+        status.received_age_ms = 15_001;
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Confirmation stale"
+        );
+        status.received_age_ms = 0;
+        assert_eq!(
+            launch_log_state(Some(&status), false, 0).0,
+            "Confirmation stale"
+        );
+        status.flags |= 8;
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Window ended; files draining"
+        );
+        status.flags = 1 | 2 | 4 | 8;
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Launch window closed"
+        );
+        status.session = 0;
+        status.flags = 1;
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Normal log mode confirmed"
+        );
+        status.session = 42;
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Clock accepted; SD unavailable"
+        );
+        status.flags = 3;
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Clock accepted; awaiting time"
+        );
+        status.matches_expected = None;
+        assert_eq!(
+            launch_log_state(Some(&status), true, 0).0,
+            "Unverified launch clock"
+        );
+    }
+
     #[test]
     fn sd_status_requires_fresh_successful_io_and_preserves_idle_completion() {
         let mut report = BoardDiagnostics {

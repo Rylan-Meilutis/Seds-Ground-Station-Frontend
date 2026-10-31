@@ -267,7 +267,22 @@ pub struct NetworkTopologyLink {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct LaunchLogStatus {
+    pub session: u64,
+    pub deadline_utc_ms: u64,
+    pub revision: u64,
+    pub flags: u32,
+    pub received_age_ms: u64,
+    pub matches_expected: Option<bool>,
+    pub expected_session: Option<u64>,
+    pub expected_deadline_utc_ms: Option<u64>,
+    pub expected_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
 pub struct BoardDiagnostics {
+    #[serde(default)]
+    pub launch_log: Option<LaunchLogStatus>,
     /// Internal MCU die temperature, not ambient. Absent on older firmware.
     #[serde(default)]
     pub die_temperature_centi_c: Option<i32>,

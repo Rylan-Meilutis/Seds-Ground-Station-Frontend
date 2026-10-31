@@ -23,6 +23,15 @@ try {
  await page.getByText('Retry pending',{exact:true}).waitFor();
  assert(await page.getByRole('button',{name:'Retry pending…',exact:true}).isDisabled());
  assert.match(await page.locator('[data-sd-state]').innerText(),/queued; waiting for DAQ diagnostics/);
+ await page.getByText('Launch files open',{exact:true}).waitFor();
+ await page.getByRole('button',{name:'Different launch',exact:true}).click();
+ await page.getByText('Awaiting DAQ acceptance',{exact:true}).waitFor();
+ await page.getByRole('button',{name:'Stale launch',exact:true}).click();
+ await page.getByText('Confirmation stale',{exact:true}).waitFor();
+ await page.getByRole('button',{name:'Close launch window',exact:true}).click();
+ await page.getByText('Launch window closed',{exact:true}).waitFor();
+ await page.getByRole('button',{name:'Accept launch',exact:true}).click();
+ await page.getByText('Launch files open',{exact:true}).waitFor();
  assert.deepEqual(errors,[]);
- console.log('PASS: SD writing/failure/stall/pending states, retry disabled while pending, 320/390/844/1280 mobile/desktop widths, no browser errors');
+ console.log('PASS: exact launch acceptance/mismatch/stale/cutoff states, SD writing/failure/stall/pending states, retry disabled while pending, 320/390/844/1280 mobile/desktop widths, no browser errors');
 } finally {await browser.close();}

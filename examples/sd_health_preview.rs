@@ -38,7 +38,15 @@ fn App() -> Element {
     let mut flags = use_signal(|| 3u32);
     let mut write_age = use_signal(|| Some(200u32));
     let mut message = use_signal(String::new);
+    let mut launch_mode = use_signal(|| 0u8);
     let report = types::BoardDiagnostics {
+        launch_log:Some(types::LaunchLogStatus {
+            session:42, deadline_utc_ms:1_800_000_020_000, revision:123,
+            flags:if launch_mode()==3 {1|2|4|8} else {1|2|4|16|32},
+            received_age_ms:if launch_mode()==2 {20_000}else{0},
+            matches_expected:Some(launch_mode()!=1), expected_session:Some(42),
+            ..Default::default()
+        }),
         sd_flags:Some(flags()), sd_status_received_age_ms:Some(0),
         sd_last_write_age_ms:write_age(), sd_last_flush_age_ms:Some(1000),
         sd_accepted_records:Some(120), sd_processed_records:Some(110),
@@ -50,6 +58,10 @@ fn App() -> Element {
         div { style:"padding:12px; background:#060b13; font:16px system-ui,sans-serif; min-height:100vh; box-sizing:border-box;",
             button { onclick:move |_| {flags.set(1);write_age.set(Some(20_000));}, "Fail SD" }
             button { onclick:move |_| {flags.set(3);write_age.set(Some(20_000));}, "Stall SD" }
+            button { onclick:move |_| launch_mode.set(0), "Accept launch" }
+            button { onclick:move |_| launch_mode.set(1), "Different launch" }
+            button { onclick:move |_| launch_mode.set(2), "Stale launch" }
+            button { onclick:move |_| launch_mode.set(3), "Close launch window" }
             network_health::NetworkHealthSection {
                 rows:vec![types::NetworkBoardHealthEntry {
                     sender_id:"DAQ".into(), healthy:true, diagnostics:Some(report), ..Default::default()
