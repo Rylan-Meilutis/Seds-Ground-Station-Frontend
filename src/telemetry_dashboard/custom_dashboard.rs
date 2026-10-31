@@ -36,7 +36,7 @@ fn defaults() -> Vec<Card> {
             0,
             "kg",
             50.0,
-            "number",
+            "trend",
         ),
         (
             "Fill System",
@@ -239,14 +239,66 @@ fn save(cards: &[Card]) {
     if valid(cards)
         && let Ok(json) = serde_json::to_string(cards) {
             persist::set_string(&storage_key(), &json);
+            persist::set_string(&format!("{}_defaults_version", storage_key()), "2");
         }
 }
 
+fn migrate_default_loadcell_trend(cards: &mut [Card]) {
+    let mut legacy = defaults()[0].clone();
+    legacy.display = "number".into();
+    for card in cards {
+        let mut candidate = card.clone();
+        candidate.pinned = false;
+        if candidate == legacy {
+            card.display = "trend".into();
+        }
+    }
+}
+
 pub(super) fn load_cards() -> Vec<Card> {
-    persist::get_string(&storage_key())
+    let mut cards = persist::get_string(&storage_key())
         .and_then(|raw| serde_json::from_str::<Vec<Card>>(&raw).ok())
         .filter(|cards| valid(cards))
-        .unwrap_or_else(defaults)
+        .unwrap_or_else(defaults);
+    if persist::get_string(&format!("{}_defaults_version", storage_key())).as_deref() != Some("2") {
+        migrate_default_loadcell_trend(&mut cards);
+        save(&cards);
+    }
+    cards
+}
+
+fn data_type_choices(
+    layout: &super::layout::DataTabLayout,
+    cards: &[Card],
+    observed: impl IntoIterator<Item = String>,
+) -> Vec<(String, String)> {
+    let mut types = std::collections::BTreeMap::<String, String>::new();
+    for id in defaults().into_iter().chain(cards.iter().cloned()).map(|card| card.data_type).chain(observed) {
+        if !id.is_empty() { types.entry(id.clone()).or_insert(id); }
+    }
+    let mut insert = |id: &str, label: &str| {
+        if !id.is_empty() { types.insert(id.to_string(), label.to_string()); }
+    };
+    for tab in &layout.tabs {
+        if !tab.channels.is_empty() || tab.subtabs.as_ref().is_none_or(Vec::is_empty) {
+            insert(&tab.id, &tab.label);
+        }
+        for group in tab.chart_groups.iter().flatten() {
+            if let Some(id) = &group.data_type { insert(id, group.title.as_deref().unwrap_or(id)); }
+        }
+        for subtab in tab.subtabs.iter().flatten() {
+            let id = subtab.data_type.as_deref().unwrap_or(&tab.id);
+            insert(id, &subtab.label);
+            for group in subtab.chart_groups.iter().flatten() {
+                if let Some(id) = &group.data_type { insert(id, group.title.as_deref().unwrap_or(id)); }
+            }
+            for item in subtab.summary_items.iter().flatten() { insert(&item.data_type, &item.label); }
+        }
+    }
+    types.into_iter().map(|(id, label)| {
+        let text = if id == label { id.clone() } else { format!("{label} ({id})") };
+        (id, text)
+    }).collect()
 }
 
 fn display_card(mut card: Card, test_fire: bool) -> Card {
@@ -257,7 +309,7 @@ fn display_card(mut card: Card, test_fire: bool) -> Card {
 }
 
 #[component]
-pub(super) fn CustomDashboard(theme: ThemeConfig, #[props(default)] test_fire_mode: bool) -> Element {
+pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::DataTabLayout, #[props(default)] test_fire_mode: bool) -> Element {
     let mut cards = use_context::<Signal<Vec<Card>>>();
     let mut editing = use_signal(|| false);
     let mut cameras = use_signal(super::live_stream_tab::LiveStreamConfig::default);
@@ -277,6 +329,14 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, #[props(default)] test_fire_mo
         }
     });
     let snapshot = cards.read().clone();
+    let type_choices = if *editing.read() {
+        // Refresh discovery at the editor heartbeat, not once per telemetry packet.
+        let _ = *super::HEADER_CLOCK_TICK.read();
+        let observed = super::LATEST_TELEMETRY_BY_TYPE.lock().map(|latest| {
+            latest.keys().map(|id| super::resolve_telemetry_text(*id).to_string()).collect::<Vec<_>>()
+        }).unwrap_or_default();
+        data_type_choices(&data_layout, &snapshot, observed)
+    } else { Vec::new() };
     let mut sections = Vec::new();
     for card in &snapshot { if (card.visible || *editing.read()) && !sections.contains(&card.section) { sections.push(card.section.clone()); } }
     rsx! {section {class:"gs26-custom-dashboard",style:"color:{theme.text_primary};--card-button-bg:{theme.button_background};--card-button-border:{theme.button_border};--card-button-text:{theme.button_text};",
@@ -312,7 +372,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, #[props(default)] test_fire_mo
                 for (index,card) in snapshot.iter().enumerate().filter(|(_,c)|c.section==section && (c.visible || *editing.read())) {
                     div {key:"card-{index}",class:"gs26-dashboard-card","data-width":card.width.clone(),"data-display":card.display.clone(),style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
                         if *editing.read() {
-                            CardEditor {card:card.clone(),cameras:cameras.read().streams.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
+                            CardEditor {card:card.clone(),type_choices:type_choices.clone(),cameras:cameras.read().streams.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
                             button {disabled:index==0,onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index-1);save(&all);cards.set(all);},"Move up"}
                             button {disabled:index+1==snapshot.len(),onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index+1);save(&all);cards.set(all);},"Move down"}
                             button {disabled:snapshot.len()==1,onclick:move |_|{let mut all=cards.read().clone();all.remove(index);save(&all);cards.set(all);},"Remove"}
@@ -348,7 +408,7 @@ fn CameraCard(card: Card, config: super::live_stream_tab::LiveStreamConfig, erro
 }
 
 #[component]
-fn CardEditor(card: Card, cameras: Vec<super::live_stream_tab::LiveStreamSpec>, onchange: EventHandler<Card>) -> Element {
+fn CardEditor(card: Card, type_choices: Vec<(String, String)>, cameras: Vec<super::live_stream_tab::LiveStreamSpec>, onchange: EventHandler<Card>) -> Element {
     rsx! {div {style:"display:grid;gap:6px;margin-bottom:10px;",
         label {"Show " input {r#type:"checkbox",checked:card.visible,onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.visible=e.checked();onchange.call(c);}}}}
         label {"Title " input {value:card.label.clone(),oninput:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.label=e.value();onchange.call(c);}}}}
@@ -364,7 +424,9 @@ fn CardEditor(card: Card, cameras: Vec<super::live_stream_tab::LiveStreamSpec>, 
                 for camera in cameras {option {value:camera.id.clone(),"{camera.label}"}}
             }}
         } else {
-        label {"Data type " input {value:card.data_type.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.data_type=e.value();onchange.call(c);}}}}
+        label {"Data type " select {aria_label:"Data type",style:"min-height:44px;",value:card.data_type.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.data_type=e.value();onchange.call(c);}},
+            for (id, label) in type_choices {option {key:"{id}",value:id,"{label}"}}
+        }}
         label {"Board ID (blank = any) " input {value:card.sender.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.sender=e.value();onchange.call(c);}}}}
         label {"Channel index " input {r#type:"number",min:"0",max:"127",value:"{card.index}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.index=v;onchange.call(c);}}}}}
         label {"Unit " input {value:card.unit.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.unit=e.value();onchange.call(c);}}}}
@@ -576,6 +638,37 @@ pub(super) fn HeaderPinSettings() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn type_choices_merge_layout_runtime_defaults_and_offline_saved_types() {
+        let value: serde_json::Value = serde_json::from_str(include_str!("../../docs/api-examples/layout.full.json")).unwrap();
+        let mut layout: super::super::layout::DataTabLayout = serde_json::from_value(value["data_tab"].clone()).unwrap();
+        layout.tabs[0].id = "SCHEMA_ONLY".into();
+        layout.tabs[0].label = "Schema sensor".into();
+        let mut cards = defaults();
+        cards[0].data_type = "OFFLINE_CUSTOM".into();
+        let choices = data_type_choices(&layout, &cards, ["RUNTIME_ONLY".into(), "RUNTIME_ONLY".into()]);
+        for kind in ["SCHEMA_ONLY", "RUNTIME_ONLY", "OFFLINE_CUSTOM", "LOADCELL_WEIGHT_KG"] {
+            assert_eq!(choices.iter().filter(|(id, _)| id == kind).count(), 1);
+        }
+        assert!(choices.iter().any(|(id, label)| id == "SCHEMA_ONLY" && label == "Schema sensor (SCHEMA_ONLY)"));
+        assert!(choices.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
+
+    #[test]
+    fn legacy_default_50kg_gets_a_trend_without_changing_custom_cards() {
+        let mut cards = defaults();
+        assert_eq!(cards[0].display, "trend");
+        cards[0].display = "number".into();
+        cards[0].pinned = true;
+        let mut custom = cards[0].clone();
+        custom.label = "Custom numeric readout".into();
+        cards.push(custom.clone());
+        migrate_default_loadcell_trend(&mut cards);
+        assert_eq!(cards[0].display, "trend");
+        assert!(cards[0].pinned);
+        assert!(cards.last() == Some(&custom));
+    }
+
     #[test]
     fn camera_cards_preserve_source_and_size_without_becoming_telemetry_pins() {
         let mut cards = defaults();

@@ -3658,7 +3658,7 @@ fn TelemetryDashboardInner() -> Element {
                             MainTab::Checklists => rsx! {checklists::ChecklistsTab {theme:theme.clone()}},
                             MainTab::State => rsx! {
                                 div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
-                                    custom_dashboard::CustomDashboard {theme:theme.clone(),test_fire_mode:layout.test_fire_mode}
+                                    custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:layout.test_fire_mode}
                                     if *ground_station_view.read() && auth::can_view_actions() && flight_state.read().as_str() == "Aborted" {
                                         gse_panel::ClearGseAbort {}
                                     }
