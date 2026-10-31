@@ -1,0 +1,24 @@
+.gs26-connect-screen,
+.gs26-connect-screen * { box-sizing: border-box; }
+.gs26-connect-screen {
+    min-width: 0;
+    width: 100%;
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)) !important;
+}
+.gs26-connect-card { min-width: 0; max-width: 100%; padding: clamp(16px, 4vw, 24px) !important; }
+.gs26-connect-header { flex-wrap: wrap; }
+.gs26-connect-header h1 { min-width: 0; overflow-wrap: anywhere; }
+.gs26-connect-header > div { min-width: 0; }
+.gs26-connect-body { min-width: 0; overflow-x: hidden !important; }
+.gs26-connect-body p,
+.gs26-connect-body code,
+.gs26-connect-body [role="status"],
+.gs26-connect-body .discovered-station { overflow-wrap: anywhere; }
+.gs26-connect-body .discovered-station { min-width: 0; width: 100%; white-space: normal; text-align: left; }
+.gs26-station-address { min-width: 0; width: 100%; }
+.gs26-station-address button { min-height: 44px; }
+.gs26-station-address input { max-width: 100%; }
+.gs26-connect-actions { min-width: 0; }
+@media (max-width: 460px) {
+    .gs26-connect-actions > button { flex: 1 1 120px; min-width: 0; }
+}

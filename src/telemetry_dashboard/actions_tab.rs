@@ -583,6 +583,10 @@ pub fn ActionsTab(
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "Controls follow backend permissions and interlocks."
             }
+            section {"aria-label":"Recovery actions",
+                super::recovery_status::RecoveryStatus {}
+                super::recovery_marker::RecoveryMarker {}
+            }
             if auth::current_status().station_role.as_deref() == Some("rrls") {
                 p {role:"status",style:"margin:0 0 12px;color:{theme.text_muted};font-size:13px;",
                     {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), true)}

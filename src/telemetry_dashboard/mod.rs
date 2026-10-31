@@ -385,14 +385,6 @@ macro_rules! log {
 // Live telemetry stores, queue budgeting, cache persistence, and tests.
 include!("telemetry_runtime.rs");
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn dashboard_has_cached_layout_for_base(base: &str) -> bool {
-    let cache_key = layout_cache_key_for_base(base);
-    persist::get_string(&cache_key)
-        .and_then(|raw| serde_json::from_str::<LayoutConfig>(&raw).ok())
-        .is_some_and(|layout| layout.validate().is_ok())
-}
-
 // Persisted dashboard settings, cache maintenance, and local clear/reseed actions.
 include!("dashboard_storage.rs");
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # scripts/patch_plist.sh
 #
-# iOS .app bundle post-processing (COSMETIC + METADATA):
+# iOS .app bundle post-processing (METADATA + SCENE CONFIGURATION):
 #  - Copies Assets.car into the bundle (asset catalog icons)
 #  - (Optionally) removes loose AppIcon*.png so Transporter doesn't get confused
 #  - Patches Info.plist (display name, icon name, privacy strings)
@@ -276,11 +276,31 @@ if plist_has "CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconFiles"; then
   pb "Delete :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconFiles"
 fi
 
+# Use the actual scene delegate registered by vendored Tao. iOS 27 requires
+# scene lifecycle adoption for apps linked with the current SDK; a manifest
+# without a working delegate/window association is insufficient.
+ensure_dict "UIApplicationSceneManifest"
+set_bool "UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes" "false"
+ensure_dict "UIApplicationSceneManifest:UISceneConfigurations"
+SCENE_CONFIG="UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication"
+if plist_has "$SCENE_CONFIG"; then pb "Delete :$SCENE_CONFIG"; fi
+ensure_array "$SCENE_CONFIG"
+pb "Add :$SCENE_CONFIG:0 dict"
+set_string "$SCENE_CONFIG:0:UISceneConfigurationName" "Default Configuration"
+set_string "$SCENE_CONFIG:0:UISceneClassName" "UIWindowScene"
+set_string "$SCENE_CONFIG:0:UISceneDelegateClassName" "TaoSceneDelegate"
+
 # Privacy strings
 set_string "NSLocalNetworkUsageDescription" \
   "This app connects to devices on your local network to get data from the ground station."
 set_string "NSLocationWhenInUseUsageDescription" \
   "This app requires location access to help you locate your rocket."
+set_string "NSCameraUsageDescription" \
+  "Share your camera as a Ground Station stream when you choose Start sharing."
+set_string "NSMicrophoneUsageDescription" \
+  "Use your microphone for crew voice when you choose Join voice."
+set_string "NSMotionUsageDescription" \
+  "Use device orientation to help aim your antenna and orient the map."
 
 set_bool "ITSAppUsesNonExemptEncryption" "false"
 

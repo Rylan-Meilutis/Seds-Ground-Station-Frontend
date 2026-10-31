@@ -54,12 +54,16 @@ fn elapsed(ms: i64) -> String {
         seconds % 60
     )
 }
+static RECOVERY_STATUS: GlobalSignal<Status> = Signal::global(Status::default);
+
+/// Keep protocol capability/current status live without rendering global controls.
 #[component]
-pub(super) fn RecoveryMarker() -> Element {
-    let mut status = use_signal(Status::default);
-    let mut message = use_signal(String::new);
-    let mut busy = use_signal(|| false);
+pub(super) fn RecoveryRuntime() -> Element {
     use_future(move || async move {
+        // A native station switch must not briefly expose the previous
+        // station's launch-session metadata or reset capability.
+        *RECOVERY_STATUS.write() = Status::default();
+        crate::auth::RRLS_CLOCK_RESET_SUPPORTED.store(false, std::sync::atomic::Ordering::Relaxed);
         loop {
             match super::http_get_json::<Status>("/api/recovery").await {
                 Ok(value) => {
@@ -67,12 +71,12 @@ pub(super) fn RecoveryMarker() -> Element {
                         value.clock_reset_request_supported,
                         std::sync::atomic::Ordering::Relaxed,
                     );
-                    status.set(value);
+                    *RECOVERY_STATUS.write() = value;
                 }
                 Err(_) => {
                     crate::auth::RRLS_CLOCK_RESET_SUPPORTED
                         .store(false, std::sync::atomic::Ordering::Relaxed);
-                    status.write().recovery_marker_supported = false;
+                    RECOVERY_STATUS.write().recovery_marker_supported = false;
                 }
             }
             #[cfg(target_arch = "wasm32")]
@@ -81,6 +85,14 @@ pub(super) fn RecoveryMarker() -> Element {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     });
+    rsx! {}
+}
+
+#[component]
+pub(super) fn RecoveryMarker() -> Element {
+    let mut status = RECOVERY_STATUS.signal();
+    let mut message = use_signal(String::new);
+    let mut busy = use_signal(|| false);
     let current = status.read().clone();
     // An older backend does not advertise this metadata-only capability.
     if !current.recovery_marker_supported {
@@ -104,7 +116,8 @@ pub(super) fn RecoveryMarker() -> Element {
         )
     });
     let session = current.clock.session.clone();
-    rsx! {div {class:"gs26-recovery-marker",style:"padding:6px 12px;border-bottom:1px solid #435165;display:flex;gap:10px;align-items:center;flex-wrap:wrap;",
+    rsx! {div {class:"gs26-recovery-marker",style:"padding:12px;border:1px solid #435165;border-radius:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;",
+        strong {style:"flex:1 0 100%;", "Recovery"}
         button {disabled, title:"Record arrival at the rocket; does not send a hardware command",onclick:move |_|{
             busy.set(true);let session=session.clone();spawn(async move {
                 match super::http_post_json::<Mark,Event>("/api/recovery/reached",&Mark{launch_session:session}).await {

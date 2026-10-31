@@ -558,11 +558,13 @@ pub unsafe fn did_finish_launching() {
       // [ApplicationLifecycle] Windows were created before application initialzation
       // completed. This may result in incorrect visual appearance.
       // ```
-      let screen: id = msg_send![window, screen];
-      let _: id = msg_send![screen, retain];
-      let () = msg_send![window, setScreen:0 as id];
-      let () = msg_send![window, setScreen: screen];
-      let () = msg_send![screen, release];
+      if !super::view::attach_window_to_scene(window) {
+        let screen: id = msg_send![window, screen];
+        let _: id = msg_send![screen, retain];
+        let () = msg_send![window, setScreen:0 as id];
+        let () = msg_send![window, setScreen: screen];
+        let () = msg_send![screen, release];
+      }
       let controller: id = msg_send![window, rootViewController];
       let () = msg_send![window, setRootViewController: ptr::null::<AnyObject>()];
       let () = msg_send![window, setRootViewController: controller];
@@ -585,6 +587,7 @@ pub unsafe fn did_finish_launching() {
     let count: NSUInteger = msg_send![window, retainCount];
     // make sure the window is still referenced
     if count > 1 {
+      let _ = super::view::attach_window_to_scene(window);
       let () = msg_send![window, makeKeyAndVisible];
     }
     let () = msg_send![window, release];

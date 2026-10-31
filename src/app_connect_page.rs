@@ -29,6 +29,29 @@ pub fn Connect() -> Element {
     let mut discovery_status = use_signal(String::new);
     let mut stations = use_signal(Vec::<crate::native_station::StationHint>::new);
 
+    // Public LAN discovery supplies address hints only. It never selects a
+    // station, sends stored credentials, or changes the origin's TLS policy.
+    let mut discover_stations = move || {
+        discovering.set(true);
+        stations.set(vec![]);
+        discovery_status.set("Searching this local network…".into());
+        spawn(async move {
+            match crate::native_station::discover().await {
+                Ok(found) => {
+                    discovery_status.set(if found.is_empty() {
+                        "No stations found. Check this device's Wi-Fi and local-network access, or enter the station address below.".into()
+                    } else {
+                        "Select a station, then Connect.".into()
+                    });
+                    stations.set(found);
+                }
+                Err(error) => discovery_status.set(error),
+            }
+            discovering.set(false);
+        });
+    };
+    use_effect(move || discover_stations());
+
     use_effect({
         let scheme_edit = scheme_edit;
         let host_edit = host_edit;
@@ -50,16 +73,19 @@ pub fn Connect() -> Element {
 
     rsx! {
         div {
+            class: "gs26-connect-screen",
             style: format!(
                 "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
                 theme.app_background, theme.text_primary
             ),
+            style { {include_str!("connection_setup.css")} }
             div {
+                class: "gs26-connect-card",
                 style: format!(
                     "{} display:flex; flex-direction:column; overflow:hidden; {};",
                     shell_card_style(
                         &theme,
-                        if has_test_report { "min(900px, 94vw)" } else { "min(760px, 92vw)" }
+                        if has_test_report { "min(900px, 100%)" } else { "min(760px, 100%)" }
                     ),
                     if has_test_report {
                         "height:min(900px, calc(var(--gs26-app-height) - 48px)); max-height:min(900px, calc(var(--gs26-app-height) - 48px));"
@@ -69,6 +95,7 @@ pub fn Connect() -> Element {
                 ),
 
                 div {
+                    class: "gs26-connect-header",
                     style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px;",
                     h1 { style: "margin:0; font-size:20px;", {auth::station_app_name()} }
                     div {
@@ -90,6 +117,7 @@ pub fn Connect() -> Element {
                     }
                 }
                 div {
+                    class: "gs26-connect-body",
                     style: "flex:1 1 auto; min-height:0; overflow:auto; padding-right:4px;",
                     p { style: "margin:0 0 16px 0; color:{theme.text_muted};",
                         "Enter the station host and port. Example: ",
@@ -101,23 +129,7 @@ pub fn Connect() -> Element {
                             id: "discover-stations",
                             style: shell_button_style(&theme),
                             disabled: discovering(),
-                            onclick: move |_| {
-                                discovering.set(true);
-                                stations.set(vec![]);
-                                discovery_status.set("Searching this local network…".into());
-                                spawn(async move {
-                                    match crate::native_station::discover().await {
-                                        Ok(found) => {
-                                            discovery_status.set(if found.is_empty() {
-                                                "No stations found. Check the same LAN, station version, and UDP port 49363, or enter an address below.".into()
-                                            } else { "Select a station, then Connect. Discovered addresses still use normal certificate and sign-in checks.".into() });
-                                            stations.set(found);
-                                        }
-                                        Err(error) => discovery_status.set(error),
-                                    }
-                                    discovering.set(false);
-                                });
-                            },
+                            onclick: move |_| discover_stations(),
                             if discovering() { "Searching…" } else { "Discover stations" }
                         }
                         div { role: "status", aria_live: "polite", style: "font-size:13px; color:{theme.text_muted};", "{discovery_status()}" }
@@ -144,17 +156,21 @@ pub fn Connect() -> Element {
                     }
 
                     div {
+                        class: "gs26-station-address",
                         style: format!(
-                            "position:relative; display:flex; align-items:stretch; min-height:48px; border:1px solid {}; border-radius:12px; background:{}; color:{}; overflow:visible;",
+                            "position:relative; display:grid; grid-template-columns:84px minmax(0,1fr); align-items:stretch; min-height:48px; border:1px solid {}; border-radius:12px; background:{}; color:{}; overflow:visible;",
                             theme.border, theme.app_background, theme.text_primary
                         ),
                         div {
                             style: format!(
-                                "position:relative; flex:0 0 136px; border-right:1px solid {}; background:{}; padding:4px;",
+                                "position:relative; min-width:0; border-right:1px solid {}; background:{}; padding:4px;",
                                 theme.border, theme.panel_background
                             ),
                             button {
                                 r#type: "button",
+                                id: "station-scheme",
+                                aria_label: "Connection protocol",
+                                aria_expanded: "{scheme_menu_open()}",
                                 style: format!(
                                     "width:100%; height:100%; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 10px;",
                                     theme.button_border, theme.button_background, theme.text_primary
@@ -215,8 +231,10 @@ pub fn Connect() -> Element {
                         },
 
                         input {
+                            id: "station-host",
+                            aria_label: "Station host and port",
                             style: format!(
-                                "flex:1 1 auto; min-width:0; padding:12px 14px; border:none; background:transparent; color:{}; outline:none; font-size:14px;",
+                                "width:100%; min-width:0; padding:12px; border:none; background:transparent; color:{}; outline:none; font-size:16px;",
                                 theme.text_primary
                             ),
                             placeholder: "your-ground-station-url.com",
@@ -264,7 +282,6 @@ pub fn Connect() -> Element {
                                 } else {
                                     crate::telemetry_dashboard::reconnect_and_reseed_after_auth_change();
                                 }
-                                let _ = persist::write_connect_shown(true);
                                 let _ = nav.replace(Route::Dashboard {});
                             },
                         }
@@ -422,7 +439,7 @@ pub fn Connect() -> Element {
                     }
                 }
 
-                div { style: format!("display:flex; gap:12px; margin-top:16px; padding-top:16px; justify-content:flex-end; flex-wrap:wrap; border-top:1px solid {};", theme.border_soft),
+                div { class: "gs26-connect-actions", style: format!("display:flex; gap:12px; margin-top:16px; padding-top:16px; justify-content:flex-end; flex-wrap:wrap; border-top:1px solid {};", theme.border_soft),
                     button {
                         style: shell_button_alt_style(&theme),
                         disabled: testing(),
@@ -505,7 +522,6 @@ pub fn Connect() -> Element {
                             } else {
                                 crate::telemetry_dashboard::reconnect_and_reseed_after_auth_change();
                             }
-                            let _ = persist::write_connect_shown(true);
                             let _ = nav.replace(Route::Dashboard {});
                         },
                         "Connect"

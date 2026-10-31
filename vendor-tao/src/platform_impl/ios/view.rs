@@ -8,7 +8,9 @@ use std::{
   ffi::{c_char, CStr, CString},
 };
 
-use objc2::runtime::{AnyClass as Class, AnyObject as Object, ClassBuilder as ClassDecl, Sel};
+use objc2::runtime::{
+  AnyClass as Class, AnyObject as Object, AnyProtocol as Protocol, ClassBuilder as ClassDecl, Sel,
+};
 
 use crate::{
   dpi::PhysicalPosition,
@@ -522,6 +524,26 @@ pub unsafe fn create_view_controller(
   view_controller
 }
 
+// UIKit owns scene activation; Tao owns the windows and their Rust event loop.
+// Keep one strong scene reference for this single-scene application. No UIKit
+// object is accessed from a worker thread.
+thread_local! {
+  static WINDOW_SCENE: Cell<id> = const { Cell::new(nil) };
+  static SCENE_LAUNCHED: Cell<bool> = const { Cell::new(false) };
+}
+
+pub unsafe fn attach_window_to_scene(window: id) -> bool {
+  assert_main_thread!("Tao scenes can only be accessed on the main thread");
+  WINDOW_SCENE.with(|current| {
+    let scene = current.get();
+    if scene == nil {
+      return false;
+    }
+    let () = msg_send![window, setWindowScene: scene];
+    true
+  })
+}
+
 // requires main thread
 pub unsafe fn create_window(
   window_attributes: &WindowAttributes,
@@ -533,30 +555,41 @@ pub unsafe fn create_window(
 
   let window: id = msg_send![class, alloc];
   assert!(!window.is_null(), "Failed to create `UIWindow` instance");
-  let window: id = msg_send![window, initWithFrame: frame];
+  let scene = WINDOW_SCENE.with(Cell::get);
+  let window: id = if scene == nil {
+    // Windows constructed before UIApplicationMain are attached when the first
+    // UIWindowScene connects, before becoming visible.
+    msg_send![window, initWithFrame: frame]
+  } else {
+    let window: id = msg_send![window, initWithWindowScene: scene];
+    let () = msg_send![window, setFrame: frame];
+    window
+  };
   assert!(
     !window.is_null(),
     "Failed to initialize `UIWindow` instance"
   );
   let () = msg_send![window, setRootViewController: view_controller];
-  match window_attributes.fullscreen {
-    Some(Fullscreen::Exclusive(ref video_mode)) => {
-      let uiscreen = video_mode.monitor().ui_screen() as id;
-      let () = msg_send![uiscreen, setCurrentMode: video_mode.video_mode.screen_mode.0];
-      msg_send![window, setScreen:video_mode.monitor().ui_screen()]
-    }
-    Some(Fullscreen::Borderless(ref monitor)) => {
-      let uiscreen: id = match &monitor {
-        Some(monitor) => monitor.ui_screen() as id,
-        None => {
-          let uiscreen: id = msg_send![window, screen];
-          uiscreen
-        }
-      };
+  if scene == nil {
+    match window_attributes.fullscreen {
+      Some(Fullscreen::Exclusive(ref video_mode)) => {
+        let uiscreen = video_mode.monitor().ui_screen() as id;
+        let () = msg_send![uiscreen, setCurrentMode: video_mode.video_mode.screen_mode.0];
+        msg_send![window, setScreen:video_mode.monitor().ui_screen()]
+      }
+      Some(Fullscreen::Borderless(ref monitor)) => {
+        let uiscreen: id = match &monitor {
+          Some(monitor) => monitor.ui_screen() as id,
+          None => {
+            let uiscreen: id = msg_send![window, screen];
+            uiscreen
+          }
+        };
 
-      msg_send![window, setScreen: uiscreen]
+        msg_send![window, setScreen: uiscreen]
+      }
+      None => (),
     }
-    None => (),
   }
 
   window
@@ -564,9 +597,8 @@ pub unsafe fn create_window(
 
 pub fn create_delegate_class() {
   extern "C" fn did_finish_launching(_: &Object, _: Sel, _: id, _: id) -> BOOL {
-    unsafe {
-      app_state::did_finish_launching();
-    }
+    // Scene connection is the point at which a window can be created. Starting
+    // Tao here would race UIWindowScene creation on modern iOS.
     YES
   }
 
@@ -658,7 +690,116 @@ pub fn create_delegate_class() {
     }
   }
 
+  extern "C" fn scene_open_urls(_: &Object, _: Sel, _: id, contexts: id) {
+    unsafe {
+      let enumerator: id = msg_send![contexts, objectEnumerator];
+      loop {
+        let context: id = msg_send![enumerator, nextObject];
+        if context == nil {
+          break;
+        }
+        let url: id = msg_send![context, URL];
+        if url != nil {
+          handle_deep_link(url);
+        }
+      }
+    }
+  }
+
+  extern "C" fn scene_continue(_: &Object, _: Sel, _: id, activity: id) {
+    unsafe {
+      let url: id = msg_send![activity, webpageURL];
+      if url != nil {
+        handle_deep_link(url);
+      }
+    }
+  }
+
+  extern "C" fn scene_connect(delegate: &Object, _: Sel, scene: id, _: id, options: id) {
+    unsafe {
+      assert_main_thread!("Tao scene connection requires the main thread");
+      let is_window_scene: bool = msg_send![scene, isKindOfClass: class!(UIWindowScene)];
+      if !is_window_scene {
+        return;
+      }
+      let _: id = msg_send![scene, retain];
+      let previous = WINDOW_SCENE.with(|current| current.replace(scene));
+      // A restored single scene reuses Tao's existing windows and event loop.
+      if previous != nil {
+        let windows: id = msg_send![previous, windows];
+        let windows: id = msg_send![windows, copy];
+        let enumerator: id = msg_send![windows, objectEnumerator];
+        loop {
+          let window: id = msg_send![enumerator, nextObject];
+          if window == nil {
+            break;
+          }
+          let is_tao: bool = msg_send![window, isKindOfClass: class!(TaoUIWindow)];
+          if is_tao {
+            attach_window_to_scene(window);
+            let () = msg_send![window, makeKeyAndVisible];
+          }
+        }
+        let () = msg_send![windows, release];
+        let () = msg_send![previous, release];
+      }
+      if !SCENE_LAUNCHED.with(|launched| launched.replace(true)) {
+        app_state::did_finish_launching();
+      }
+      let contexts: id = msg_send![options, URLContexts];
+      scene_open_urls(delegate, sel!(scene:openURLContexts:), scene, contexts);
+      let activities: id = msg_send![options, userActivities];
+      let enumerator: id = msg_send![activities, objectEnumerator];
+      loop {
+        let activity: id = msg_send![enumerator, nextObject];
+        if activity == nil {
+          break;
+        }
+        scene_continue(delegate, sel!(scene:continueUserActivity:), scene, activity);
+      }
+    }
+  }
+
   let ui_responder = class!(UIResponder);
+  let mut scene_decl = ClassDecl::new(
+    CStr::from_bytes_with_nul(b"TaoSceneDelegate\0").unwrap(),
+    ui_responder,
+  )
+  .expect("Failed to declare class `TaoSceneDelegate`");
+  unsafe {
+    scene_decl.add_protocol(
+      Protocol::get(CStr::from_bytes_with_nul(b"UIWindowSceneDelegate\0").unwrap()).unwrap(),
+    );
+    scene_decl.add_method(
+      sel!(scene:willConnectToSession:options:),
+      scene_connect as extern "C" fn(_, _, _, _, _),
+    );
+    scene_decl.add_method(
+      sel!(sceneDidBecomeActive:),
+      did_become_active as extern "C" fn(_, _, _),
+    );
+    scene_decl.add_method(
+      sel!(sceneWillResignActive:),
+      will_resign_active as extern "C" fn(_, _, _),
+    );
+    scene_decl.add_method(
+      sel!(sceneWillEnterForeground:),
+      will_enter_foreground as extern "C" fn(_, _, _),
+    );
+    scene_decl.add_method(
+      sel!(sceneDidEnterBackground:),
+      did_enter_background as extern "C" fn(_, _, _),
+    );
+    scene_decl.add_method(
+      sel!(scene:openURLContexts:),
+      scene_open_urls as extern "C" fn(_, _, _, _),
+    );
+    scene_decl.add_method(
+      sel!(scene:continueUserActivity:),
+      scene_continue as extern "C" fn(_, _, _, _),
+    );
+    scene_decl.register();
+  }
   let mut decl = ClassDecl::new(
     CStr::from_bytes_with_nul(b"AppDelegate\0").unwrap(),
     ui_responder,

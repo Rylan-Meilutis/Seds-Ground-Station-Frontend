@@ -187,6 +187,22 @@ class IOSPlistMetadataTests(unittest.TestCase):
         app=self.app(2);script=self.script((ROOT/'scripts/patch_plist.sh').read_text());env=os.environ.copy();env.pop('GS26_IOS_BUNDLE_PLATFORM',None);env['APP_DIR']=str(app)
         subprocess.run(['bash',str(script),'0.3.1','36'],cwd=self.root,env=env,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         info=plistlib.loads((app/'Info.plist').read_bytes());self.assertEqual(info['CFBundleSupportedPlatforms'],['iPhoneOS']);self.assertEqual(info['DTPlatformName'],'iphoneos')
+    def test_scene_manifest_uses_registered_window_delegate_and_is_idempotent(self):
+        app=self.app(2);self.script((ROOT/'scripts/patch_plist.sh').read_text())
+        for _ in range(2):
+            build.patch_plist(self.root,app,ios_target='aarch64-apple-ios')
+        info=plistlib.loads((app/'Info.plist').read_bytes())
+        manifest=info['UIApplicationSceneManifest']
+        for key in ('NSCameraUsageDescription','NSMicrophoneUsageDescription','NSMotionUsageDescription'):
+            self.assertTrue(info[key].strip())
+        self.assertIs(manifest['UIApplicationSupportsMultipleScenes'],False)
+        self.assertEqual(manifest['UISceneConfigurations']['UIWindowSceneSessionRoleApplication'],[{
+            'UISceneConfigurationName':'Default Configuration',
+            'UISceneClassName':'UIWindowScene',
+            'UISceneDelegateClassName':'TaoSceneDelegate',
+        }])
+        self.assertEqual(build._ios_bundle_tools().inspect_macho(app/'groundstation_frontend')[0]['platform'],2)
+
     def test_wrong_binary_target_is_rejected_before_shell_patcher(self):
         app=self.app(7)
         with patch.object(build,'run_script') as shell:

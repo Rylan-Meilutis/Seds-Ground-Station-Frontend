@@ -56,3 +56,16 @@ Mach-O. A matching binary UUID is needed to relate symbols to the crash report.
 Use the `.ips` termination/exception details and the last recorded Rust milestone
 to choose the next investigation. Do not change entitlements, trust policy,
 framework embedding or signing identities based only on an instant exit.
+
+## Identified build-36 failure
+
+The connected iPhone's build-36 crash matches the saved device executable UUID
+and reports a main-thread `SIGTRAP` in UIKit's
+`_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`. Its startup file
+ends at `launching`, with no Rust panic or first render. Apps built with the latest
+SDK must adopt the [UIKit scene lifecycle](https://developer.apple.com/documentation/uikit/transitioning-to-the-uikit-scene-based-life-cycle).
+
+The fix registers Tao's window-scene delegate and writes its matching scene
+manifest during iOS packaging. Test the newly signed app on an unlocked device;
+CoreDevice cannot launch the app while the phone is locked. Preserve matching
+artifacts and verify `app_rendered` before considering the launch failure fixed.

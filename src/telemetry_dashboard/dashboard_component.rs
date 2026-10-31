@@ -1999,7 +1999,7 @@ fn TelemetryDashboardInner() -> Element {
             let alive_for_click = alive.clone();
             let mut header_actions_expanded = header_actions_expanded;
             let connect_button_label =
-                localized_copy(&current_language(), "CONNECT", "CONECTAR", "CONNECTER");
+                localized_copy(&current_language(), "Change station", "Cambiar estación", "Changer de station");
 
             rsx! {
 
@@ -3041,12 +3041,12 @@ fn TelemetryDashboardInner() -> Element {
                     --gs26-alert-frame-shadow:none;
                     box-sizing:border-box;
                 ",
-                        div { style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
+                        div { class:"gs26-layout-unavailable", style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
                             div { style: "font-size:20px; font-weight:800; color:{theme.error_text};", "Dashboard layout unavailable" }
                             if let Some(msg) = layout_error_snapshot.clone() {
-                                div { style: "font-size:13px; color:{theme.text_muted};", "{msg}" }
+                                details {class:"gs26-layout-unavailable-details",summary {"Connection details"}pre {"{msg}"}}
                             }
-                            div { style: "display:flex; gap:10px; flex-wrap:wrap; justify-content:center;",
+                            div { class:"gs26-layout-notice-actions", style: "display:flex; gap:10px; flex-wrap:wrap; justify-content:center;",
                                 {reload_button}
                                 {version_button}
                                 {connect_button}
@@ -3098,18 +3098,32 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
                     station_mode::OperatingModeNotice {visible:false}
-                    if !*WS_CONNECTED_SIGNAL.read() {
-                        div {
-                            role: "alert",class:"gs26-connection-notice",
-                            style: "flex-shrink:0;padding:10px 14px;margin-bottom:8px;border:1px solid currentColor;border-radius:8px;display:flex;gap:12px;align-items:center;justify-content:space-between;",
-                            span {
-                                if DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
-                                    {format!("{} disconnected. Reconnecting automatically; displayed data may be stale.", auth::station_name())}
+                    recovery_marker::RecoveryRuntime {}
+                    if !*WS_CONNECTED_SIGNAL.read() || layout_cached_error_banner.is_some() {
+                        aside {
+                            role:"alert", class:"gs26-connection-notice gs26-layout-notice",
+                            style:"border-color:{theme.error_border};background:{theme.error_background};color:{theme.error_text};",
+                            div {class:"gs26-layout-notice-body",
+                                strong {"Station connection"}
+                                if let Some(msg)=layout_cached_error_banner.clone() {
+                                    p {"Using a saved dashboard. The station layout could not be refreshed."}
+                                    details {summary {"Connection details"} pre {"{msg}"}}
                                 } else {
-                                    {format!("Connecting to {}…", auth::station_name())}
+                                    p {
+                                        if DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
+                                            {format!("{} disconnected. Reconnecting automatically; displayed data may be stale.", auth::station_name())}
+                                        } else { {format!("Connecting to {}…", auth::station_name())} }
+                                    }
                                 }
                             }
-                            button { style:"min-height:44px;min-width:44px;flex-shrink:0;", onclick: move |_| reconnect_and_reload_ui(), "Reconnect now" }
+                            div {class:"gs26-layout-notice-actions",
+                                if layout_cached_error_banner.is_some() { {reload_button.clone()} }
+                                else {button {onclick:move |_|reconnect_and_reload_ui(),"Reconnect now"}}
+                                {connect_button.clone()}
+                                if let Some(msg)=layout_cached_error_banner.clone() {
+                                    button {onclick:move |_|layout_error_dismissed.set(Some(msg.clone())),"Dismiss"}
+                                }
+                            }
                         }
                     }
                     if *streamer_mode.read() {
@@ -3444,36 +3458,6 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
 
-                    if let Some(msg) = layout_cached_error_banner.clone() {
-                        div { style: "margin-bottom:12px; padding:10px 12px; border-radius:10px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;",
-                            span { style: "flex:1 1 220px; min-width:0;", "{msg}" }
-                            button {
-                                style: format!("
-                                    padding:0.3rem 0.7rem;
-                                    border-radius:0.6rem;
-                                    border:1px solid {};
-                                    background:{};
-                                    color:{};
-                                    font-weight:800;
-                                    cursor:pointer;
-                                ", theme.button_border, theme.button_background, theme.button_text),
-                                onclick: {
-                                    let mut layout_error_dismissed = layout_error_dismissed;
-                                    let msg = msg.clone();
-                                    move |_| {
-                                        layout_error_dismissed.set(Some(msg.clone()));
-                                    }
-                                },
-                                "Dismiss"
-                            }
-                        }
-                    }
-
-                    if !action_policy.read().software_buttons_enabled {
-                        div { style: "margin-bottom:12px; padding:10px 12px; border-radius:10px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:12px;",
-                            "{action_buttons_disabled_message(&action_policy.read())}"
-                        }
-                    }
                     // Header row 2
                     div {
                         class: "gs26-header-secondary",
@@ -3665,10 +3649,6 @@ fn TelemetryDashboardInner() -> Element {
                     }
 
                     }
-                    if !matches!(*active_main_tab.read(), MainTab::Data | MainTab::Detailed) {
-                            recovery_status::RecoveryStatus {}
-                            recovery_marker::RecoveryMarker {}
-                        }
                     div {class:"gs26-page-content", style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                         div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                         div {id:"gs26-media-slot",style:if media_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}

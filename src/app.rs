@@ -632,17 +632,10 @@ pub fn Dashboard() -> Element {
     let nav = use_navigator();
     let mut auth_state = use_signal(|| None::<Result<AuthSessionStatus, String>>);
     let mut auth_state_base = use_signal(String::new);
-    #[cfg(not(target_arch = "wasm32"))]
-    let has_cached_layout_for_base =
-        telemetry_dashboard::dashboard_has_cached_layout_for_base(&base);
-    #[cfg(not(target_arch = "wasm32"))]
-    let has_completed_connect_flow = persist::read_connect_shown();
-    #[cfg(not(target_arch = "wasm32"))]
-    let can_render_dashboard_while_auth_check_runs = auth::current_session().is_some()
-        || auth::current_status().permissions.view_data
-        || telemetry_dashboard::dashboard_has_prior_backend_connection()
-        || has_cached_layout_for_base
-        || has_completed_connect_flow;
+    // A persisted login/address is not proof that this station is reachable on
+    // the current Wi-Fi. Verify the origin before mounting dashboard workers.
+    // The refresh loop below keeps an established dashboard mounted across a
+    // transient outage; offline exploration remains an explicit Preview route.
     use_effect(move || {
         let base = UrlConfig::base_http();
         let current_auth_state_base = auth_state_base.read().clone();
@@ -656,7 +649,20 @@ pub fn Dashboard() -> Element {
             return;
         }
         spawn(async move {
-            auth_state.set(Some(auth::fetch_session_status(&base, skip_tls).await));
+            let result = auth::fetch_session_status(&base, skip_tls).await;
+            if UrlConfig::base_http() != base {
+                return;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let result = if result.is_err() {
+                recover_paired_station(&base, skip_tls).await.map(Ok).unwrap_or(result)
+            } else {
+                result
+            };
+            if result.is_err() && UrlConfig::base_http() != base {
+                return;
+            }
+            auth_state.set(Some(result));
         });
     });
 
@@ -679,14 +685,10 @@ pub fn Dashboard() -> Element {
     let access = auth::current_status();
     let access_key = serde_json::json!([access.username,access.roles,access.permissions]).to_string();
     let content = match auth_state.read().as_ref() {
-        #[cfg(not(target_arch = "wasm32"))]
-        None if can_render_dashboard_while_auth_check_runs => {
-            rsx! { crate::telemetry_dashboard::TelemetryDashboard {key:"{access_key}"} }
-        }
         None => rsx! {
             div { style: format!("height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;", shell_theme().app_background, shell_theme().text_primary),
                 div {
-                    style: format!("padding:20px; border:1px solid {}; border-radius:16px; background:{}; min-width:min(560px, 92vw);", shell_theme().border_strong, shell_theme().panel_background),
+                    style: format!("padding:20px; border:1px solid {}; border-radius:16px; background:{}; width:min(560px, calc(100% - 32px)); min-width:0; box-sizing:border-box; overflow-wrap:anywhere;", shell_theme().border_strong, shell_theme().panel_background),
                     h1 { style: "margin:0 0 10px 0; font-size:22px;", "Checking session..." }
                     p { style: format!("margin:0 0 16px 0; color:{};", shell_theme().text_muted), "Contacting the station…" }
                     div { style: "display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap;",
@@ -736,10 +738,6 @@ pub fn Dashboard() -> Element {
                     }
                 }
             }
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        Some(Err(_err)) if can_render_dashboard_while_auth_check_runs => {
-            rsx! { crate::telemetry_dashboard::TelemetryDashboard {key:"{access_key}"} }
         }
         Some(Err(err)) => rsx! {
             ConnectionFailedCard {

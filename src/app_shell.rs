@@ -51,7 +51,6 @@ html, body {
 * { box-sizing: border-box; }
 "#;
 
-const _CONNECT_SHOWN_KEY: &str = "gs_connect_shown";
 
 fn shell_theme() -> ThemeConfig {
     telemetry_dashboard::app_shell_theme()

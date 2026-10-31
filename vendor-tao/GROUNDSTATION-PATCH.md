@@ -43,3 +43,26 @@ compiler warnings. macOS and WebAssembly frontend checks also pass.
 xvfb-run -a cargo test --manifest-path vendor-tao/Cargo.toml --lib platform_impl::platform::channel::tests -- --include-ignored --test-threads=1
 cargo test --manifest-path vendor-tao/Cargo.toml --no-default-features --features rwh_06 --lib platform_impl::platform::channel::tests -- --test-threads=1
 ```
+
+## iOS scene lifecycle
+
+A physical iOS 27.0.1 crash from build 36 stopped in UIKit's
+`_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption` before the first
+Dioxus render. The matching executable UUID and launch milestones establish this
+as a native scene-lifecycle failure, not a Rust panic or telemetry failure.
+
+The iOS implementation registers `TaoSceneDelegate` as a `UIWindowSceneDelegate`.
+The bundle patcher declares one application `UIWindowScene`, with multiple scenes
+disabled. Tao starts its event loop when that scene connects, attaches windows to
+it before showing them, and forwards scene activation, suspension, URL and
+universal-link events. App termination remains application-scoped. Reconnecting
+the single scene reuses existing windows instead of re-running launch.
+
+The manifest and implementation must ship together. Merely setting a plist key
+or suppressing the runtime diagnostic does not supply the required lifecycle.
+Reference: https://developer.apple.com/documentation/uikit/transitioning-to-the-uikit-scene-based-life-cycle
+
+Qualification requires an actual iOS 27 device launch through `app_rendered`,
+background/resume, rotation, and foreground relaunch. Device/simulator Mach-O
+checks and plist idempotence tests remain required before signing; they do not
+replace physical validation.

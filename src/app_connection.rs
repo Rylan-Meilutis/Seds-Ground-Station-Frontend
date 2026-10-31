@@ -33,69 +33,25 @@ mod objc_poke {
     pub fn poke_url(_url: &str) {}
 }
 
-// -------------------------
-// Persistence helpers
-// -------------------------
+/// Recover only an installation-paired station after an unreachable saved
+/// address. Public discovery hints are never used to send stored credentials.
 #[cfg(not(target_arch = "wasm32"))]
-mod persist {
-    use super::_CONNECT_SHOWN_KEY;
-    use std::io;
-
-    /// Resolves the app-specific fallback directory for persisted native state.
-    fn fallback_storage_dir() -> std::path::PathBuf {
-        dirs::data_local_dir()
-            .or_else(dirs::data_dir)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
-            .join("gs26")
+async fn recover_paired_station(
+    original_base: &str,
+    skip_tls: bool,
+) -> Option<AuthSessionStatus> {
+    let mut session = auth::current_session()?;
+    let (base, status) = crate::native_station::find(&session, skip_tls).await?;
+    // Do not override a station the user selected while discovery was running.
+    if UrlConfig::base_http() != original_base {
+        return None;
     }
-
-    #[cfg(target_os = "android")]
-    /// Resolves the Android app-private files directory when the JNI context is available.
-    fn android_storage_dir() -> Option<std::path::PathBuf> {
-        crate::native_storage::android_files_dir().map(|path| path.join("gs26"))
-    }
-
-    /// Chooses the best writable native storage directory for simple key-value persistence.
-    fn storage_dir() -> std::path::PathBuf {
-        #[cfg(target_os = "android")]
-        {
-            if let Some(path) = android_storage_dir() {
-                return path;
-            }
-        }
-
-        fallback_storage_dir()
-    }
-
-    /// Builds the on-disk path for a persisted key.
-    fn path_for(key: &str) -> std::path::PathBuf {
-        storage_dir().join(format!("{key}.txt"))
-    }
-
-    /// Reads and trims a persisted string value.
-    fn _read_key(key: &str) -> Option<String> {
-        let path = path_for(key);
-        std::fs::read_to_string(path)
-            .ok()
-            .map(|s| s.trim().to_string())
-    }
-
-    /// Writes a string key to disk, creating the storage directory on demand.
-    fn write_key(key: &str, v: &str) -> Result<(), io::Error> {
-        let dir = storage_dir();
-        std::fs::create_dir_all(&dir)?;
-        crate::native_storage::atomic_write(&path_for(key), v.as_bytes())
-    }
-
-    /// Persists that the native connect screen has already been shown.
-    pub fn write_connect_shown(v: bool) -> Result<(), io::Error> {
-        write_key(_CONNECT_SHOWN_KEY, if v { "true" } else { "false" })
-    }
-
-    /// Reads whether the user has already completed the native connect flow before.
-    pub fn read_connect_shown() -> bool {
-        matches!(_read_key(_CONNECT_SHOWN_KEY).as_deref(), Some("true"))
-    }
+    UrlConfig::_set_skip_tls_verify_for_base(&base, skip_tls);
+    auth::init_from_storage(&base);
+    session.session = status.clone();
+    auth::set_current_session(session);
+    UrlConfig::set_base_url_and_persist(base);
+    Some(status)
 }
 
 // -------------------------
