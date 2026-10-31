@@ -15,6 +15,12 @@ use super::{
 };
 use crate::telemetry_dashboard::map_tab::{format_elevation, format_precise_distance};
 
+#[derive(serde::Deserialize)]
+struct SdRetryReply {
+    accepted: bool,
+    token: u32,
+}
+
 #[component]
 pub fn DetailedTab(
     metrics: Signal<FrontendNetworkMetrics>,
@@ -33,6 +39,9 @@ pub fn DetailedTab(
     cache_stats: Vec<(String, String)>,
     theme: ThemeConfig,
 ) -> Element {
+    let mut sd_retry_busy = use_signal(|| false);
+    let mut sd_retry_message = use_signal(String::new);
+    let mut sd_retry_token = use_signal(|| None::<u32>);
     use_effect(move || {
         js_eval(
             r#"
@@ -500,7 +509,32 @@ pub fn DetailedTab(
         panels.push(InfoPanel::new(&id, &title, "Network", content));
     }
     panels.push(InfoPanel::new("health","Board health","Network",rsx! {
-        super::network_health::NetworkHealthSection { rows:topology.health.clone(),ws_connected:stream_connected,generated_ms:topology.generated_ms,simulated:topology.simulated,theme:theme.clone() }
+        super::network_health::NetworkHealthSection {
+            rows:topology.health.clone(), ws_connected:stream_connected,
+            generated_ms:topology.generated_ms, simulated:topology.simulated, theme:theme.clone(),
+            sd_retry_allowed:crate::auth::can_send_command("DaqSdRetry")
+                && crate::auth::current_status().station_role.as_deref() != Some("rrls"),
+            sd_retry_busy:sd_retry_busy(), sd_retry_message:sd_retry_message(), sd_retry_token:sd_retry_token(),
+            on_sd_retry:move |_| {
+                if sd_retry_busy() { return; }
+                sd_retry_busy.set(true);
+                sd_retry_token.set(None);
+                sd_retry_message.set("Requesting SD retry…".into());
+                spawn(async move {
+                    match super::http_post_json::<_,SdRetryReply>(
+                        "/api/network-health/daq/sd/retry", &serde_json::json!({})
+                    ).await {
+                        Ok(reply) if reply.accepted && reply.token != 0 => {
+                            sd_retry_token.set(Some(reply.token));
+                            sd_retry_message.set("Retry command queued; waiting for DAQ diagnostics.".into());
+                        }
+                        Ok(_) => sd_retry_message.set("SD retry was not accepted.".into()),
+                        Err(error) => sd_retry_message.set(error),
+                    }
+                    sd_retry_busy.set(false);
+                });
+            }
+        }
     }));
     panels.push(InfoPanel::new("routes","Board Routes","Network",rsx! { div { style: "{section_style(&theme)}",
                     h3 { style: "{section_title_style(&theme)}", "Board Routes" }

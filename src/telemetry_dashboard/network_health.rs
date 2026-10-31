@@ -1,4 +1,7 @@
-use super::{layout::ThemeConfig, types::NetworkBoardHealthEntry};
+use super::{
+    layout::ThemeConfig,
+    types::{BoardDiagnostics, NetworkBoardHealthEntry},
+};
 use dioxus::prelude::*;
 const TIMEOUT_MS: u64 = 12_000;
 fn healthy(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> bool {
@@ -38,6 +41,139 @@ fn duration(ms: u64) -> String {
         format!("{}h {}m", seconds / 3600, seconds % 3600 / 60)
     }
 }
+// Status is based on successful device I/O, never just enqueue acceptance.
+fn sd_state(
+    report: &BoardDiagnostics,
+    connected: bool,
+    elapsed: u64,
+) -> (&'static str, &'static str) {
+    let Some(age) = report.sd_status_received_age_ms else {
+        return ("Status unavailable", "unknown");
+    };
+    if !connected || age.saturating_add(elapsed) > 15_000 {
+        return ("Status stale", "unknown");
+    }
+    let Some(flags) = report.sd_flags else {
+        return ("Status unavailable", "unknown");
+    };
+    if flags & 8 != 0 {
+        return ("Retry pending", "pending");
+    }
+    if flags & 4 != 0 {
+        return ("Recording complete", "idle");
+    }
+    if flags & 1 == 0 {
+        return ("Starting", "pending");
+    }
+    if flags & 2 == 0 {
+        return if report.sd_init_failures.unwrap_or(0) > 0 {
+            ("Card unavailable", "error")
+        } else {
+            ("Initializing", "pending")
+        };
+    }
+    let write_age = report
+        .sd_last_write_age_ms
+        .map(|value| u64::from(value).saturating_add(age).saturating_add(elapsed));
+    if report.sd_processed_records.unwrap_or(0) > 0
+        && write_age.is_some_and(|value| value <= 15_000)
+    {
+        return ("Writing", "good");
+    }
+    let backlog = report
+        .sd_accepted_records
+        .zip(report.sd_processed_records)
+        .is_some_and(|(accepted, processed)| accepted.wrapping_sub(processed) > 0);
+    if backlog {
+        ("Write stalled", "error")
+    } else {
+        ("Idle", "idle")
+    }
+}
+fn sd_io_age(value: Option<u32>, report_age: u64, elapsed: u64) -> String {
+    value
+        .map(|age| {
+            format!(
+                "{} ago",
+                duration(
+                    u64::from(age)
+                        .saturating_add(report_age)
+                        .saturating_add(elapsed)
+                )
+            )
+        })
+        .unwrap_or_else(|| "Not yet reported".into())
+}
+#[component]
+fn SdHealth(
+    report: BoardDiagnostics,
+    connected: bool,
+    elapsed: u64,
+    theme: ThemeConfig,
+    retry_allowed: bool,
+    retry_busy: bool,
+    retry_message: String,
+    retry_token: Option<u32>,
+    on_retry: EventHandler<()>,
+) -> Element {
+    let (label, state) = sd_state(&report, connected, elapsed);
+    let color = match state {
+        "good" => "#146c43",
+        "error" => "#9f1239",
+        "pending" => "#815b12",
+        _ => "#475569",
+    };
+    let age = report.sd_status_received_age_ms.unwrap_or(0);
+    let fresh = connected
+        && report
+            .sd_status_received_age_ms
+            .is_some_and(|age| age.saturating_add(elapsed) <= 15_000);
+    let pending = report.sd_flags.is_some_and(|flags| flags & 8 != 0);
+    let message = if fresh
+        && retry_token.is_some_and(|token| report.sd_retry_completed_token == Some(token))
+    {
+        if report.sd_flags.is_some_and(|flags| flags & 2 != 0) {
+            "Retry completed; card ready".to_owned()
+        } else {
+            "Retry completed; card unavailable".to_owned()
+        }
+    } else {
+        retry_message
+    };
+    rsx! {
+        section { "data-sd-state": state, style: "margin-top:12px; padding-top:12px; border-top:1px solid {theme.border_soft}; min-width:0;",
+            div { style:"display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px;",
+                strong { "SD recording" }
+                span { role:"status", style:"border-radius:999px; padding:3px 9px; background:{color}; color:white; font-size:0.8rem;", "{label}" }
+            }
+            if fresh {
+                dl { style:"display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; font-size:0.85rem; margin:12px 0;",
+                    dt { "Last write" } dd { style:"margin:0;", "{sd_io_age(report.sd_last_write_age_ms, age, elapsed)}" }
+                    dt { "Last flush" } dd { style:"margin:0;", "{sd_io_age(report.sd_last_flush_age_ms, age, elapsed)}" }
+                    if let Some(flushed) = report.sd_flushed_records {
+                        dt { "Samples flushed" } dd { style:"margin:0;", "{flushed}" }
+                    }
+                    dt { "Write errors" } dd { style:"margin:0;", "{report.sd_write_errors.unwrap_or(0)}" }
+                }
+            }
+            if retry_allowed && report.sd_flags.is_some() {
+                button { disabled:retry_busy || !fresh || pending || report.sd_flags.is_none_or(|flags| flags & 1 == 0),
+                    style:"min-height:44px; margin-top:8px; padding:10px 16px; border:1px solid {theme.button_border}; border-radius:10px; background:{theme.button_background}; color:{theme.button_text}; font:inherit; cursor:pointer;", onclick:move |_| on_retry.call(()),
+                    if retry_busy || pending { "Retry pending…" } else { "Retry SD" }
+                }
+            }
+            if !message.is_empty() { p { role:"status", style:"font-size:0.85rem; margin:8px 0 0; overflow-wrap:anywhere;", "{message}" } }
+            details { style:"font-size:0.85rem; margin-top:8px;",
+                summary { style:"min-height:44px; display:flex; align-items:center; cursor:pointer;", "Recording details" }
+                p { "Writes show successful card transfers. Flushed records show successful filesystem flushes; a write alone does not confirm a flush." }
+                if report.sd_flags.is_none() { p { "Update DAQ firmware to receive recording status and enable retry." } }
+                if let Some(count) = report.sd_retry_count { p { "Initialization attempts: {count} · Failures: {report.sd_init_failures.unwrap_or(0)}" } }
+                if let Some(stage) = report.sd_init_stage { p { "Initialization stage: {stage}" } }
+                p { "Retry preserves the recording session and launch cutoff. It does not format the card." }
+            }
+        }
+    }
+}
 #[component]
 pub fn NetworkHealthSection(
     rows: Vec<NetworkBoardHealthEntry>,
@@ -45,6 +181,11 @@ pub fn NetworkHealthSection(
     generated_ms: u64,
     simulated: bool,
     theme: ThemeConfig,
+    #[props(default = false)] sd_retry_allowed: bool,
+    #[props(default = false)] sd_retry_busy: bool,
+    #[props(default)] sd_retry_message: String,
+    #[props(default)] sd_retry_token: Option<u32>,
+    #[props(default)] on_sd_retry: EventHandler<()>,
 ) -> Element {
     let now = super::connection_status_tab::use_board_age_clock();
     // Anchor each server snapshot to local monotonic time; UTC adjustments do not age boards.
@@ -84,6 +225,14 @@ pub fn NetworkHealthSection(
                                 dt { "Longest outage" } dd { style: "margin:0;", "{duration(row.longest_outage_ms)}" }
                                 if row.current_outage_ms > 0 {
                                     dt { "Current outage" } dd { style: "margin:0;", "{duration(row.current_outage_ms.saturating_add(elapsed))}" }
+                                }
+                            }
+                            if row.sender_id == "DAQ" {
+                                if let Some(report) = &row.diagnostics {
+                                    SdHealth { report:report.clone(), connected:ws_connected, elapsed,
+                                        theme:theme.clone(), retry_allowed:sd_retry_allowed,
+                                        retry_busy:sd_retry_busy, retry_message:sd_retry_message.clone(),
+                                        retry_token:sd_retry_token, on_retry:on_sd_retry }
                                 }
                             }
                             details { style: "margin-top:12px; font-size:0.85rem;",
@@ -129,6 +278,53 @@ pub fn NetworkHealthSection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sd_status_requires_fresh_successful_io_and_preserves_idle_completion() {
+        let mut report = BoardDiagnostics {
+            sd_status_received_age_ms: Some(1000),
+            sd_flags: Some(3),
+            sd_accepted_records: Some(100),
+            sd_processed_records: Some(90),
+            sd_last_write_age_ms: Some(200),
+            ..Default::default()
+        };
+        assert_eq!(sd_state(&report, true, 0).0, "Writing");
+        assert_eq!(sd_state(&report, false, 0).0, "Status stale");
+        assert_eq!(sd_state(&report, true, 14_001).0, "Status stale");
+        report.sd_status_received_age_ms = Some(0);
+        report.sd_last_write_age_ms = Some(16_000);
+        assert_eq!(sd_state(&report, true, 0).0, "Write stalled");
+        report.sd_processed_records = Some(100);
+        assert_eq!(sd_state(&report, true, 0).0, "Idle");
+        report.sd_flags = Some(7);
+        assert_eq!(sd_state(&report, true, 0).0, "Recording complete");
+        report.sd_flags = Some(9);
+        assert_eq!(sd_state(&report, true, 0).0, "Retry pending");
+        report.sd_flags = Some(1);
+        report.sd_init_failures = Some(1);
+        assert_eq!(sd_state(&report, true, 0).0, "Card unavailable");
+        report.sd_status_received_age_ms = None;
+        assert_eq!(sd_state(&report, true, 0).0, "Status unavailable");
+    }
+    #[test]
+    fn queued_records_and_old_board_health_cannot_claim_sd_is_writing() {
+        let mut report = BoardDiagnostics {
+            received_age_ms: 0,
+            sd_accepted_records: Some(100),
+            sd_processed_records: Some(0),
+            sd_flushed_records: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(sd_state(&report, true, 0).0, "Status unavailable");
+        report.sd_status_received_age_ms = Some(0);
+        report.sd_flags = Some(3);
+        report.sd_last_write_age_ms = Some(0);
+        assert_ne!(sd_state(&report, true, 0).0, "Writing");
+        report.sd_status_received_age_ms = Some(16_000);
+        assert_eq!(sd_state(&report, true, 0).0, "Status stale");
+        assert_eq!(sd_io_age(None, 0, 0), "Not yet reported");
+        assert_eq!(sd_io_age(Some(1000), 1000, 1000), "3s ago");
+    }
     #[test]
     fn temperature_is_signed_unit_labelled_and_expires_independently() {
         let mut row = NetworkBoardHealthEntry {
