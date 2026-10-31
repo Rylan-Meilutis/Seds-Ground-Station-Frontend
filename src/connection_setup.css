@@ -16,7 +16,7 @@
 .gs26-connect-body .discovered-station { overflow-wrap: anywhere; }
 .gs26-connect-body .discovered-station { min-width: 0; width: 100%; white-space: normal; text-align: left; }
 .gs26-station-address { min-width: 0; width: 100%; }
-.gs26-station-address button { min-height: 44px; }
+.gs26-station-address select { min-height: 44px; }
 .gs26-station-address input { max-width: 100%; }
 .gs26-connect-actions { min-width: 0; }
 @media (max-width: 460px) {

@@ -155,7 +155,14 @@ async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
             log!("[seed] backend clock unavailable; retaining original history timestamps: {error}")
         }
     }
+    // Pre-step server cache rows can be future-dated after an OS correction.
+    // They remain in DB/exports, but must not outrank or prune current display data.
+    discard_future_display_history(&mut rows, current_wallclock_ms());
     Ok(rows)
+}
+
+fn discard_future_display_history(rows: &mut Vec<TelemetryRow>, now_ms: i64) {
+    rows.retain(|row| telemetry_row_received_ms(row) <= now_ms.saturating_add(1_000));
 }
 
 fn align_history_receipt_clock(rows: &mut [TelemetryRow], server_ms: i64, client_ms: i64) {
@@ -168,6 +175,14 @@ fn align_history_receipt_clock(rows: &mut [TelemetryRow], server_ms: i64, client
 #[cfg(test)]
 mod history_clock_tests {
     use super::*;
+
+    #[test]
+    fn old_future_display_seed_is_excluded_without_rewriting_raw_timestamps() {
+        let row = |timestamp_ms| TelemetryRow {timestamp_ms, received_timestamp_ms:timestamp_ms, data_type:"KG50".into(), sender_id:"DAQ".into(), data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(1.0)]};
+        let mut rows = vec![row(900), row(1_000), row(2_001), row(900_000)];
+        discard_future_display_history(&mut rows, 1_000);
+        assert_eq!(rows.iter().map(|row|row.timestamp_ms).collect::<Vec<_>>(), vec![900,1_000]);
+    }
 
     #[test]
     fn reload_keeps_ten_minutes_when_backend_clock_is_a_day_behind() {
@@ -1049,7 +1064,7 @@ async fn seed_from_db(
             if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
                 store.replace_from_rows(&list);
             }
-            reset_latest_telemetry(&list);
+            reseed_latest_telemetry(&list);
             rebuild_chart_cache_from_visible_rows();
             bump_render_epoch();
             persist_cached_telemetry_rows(&list);

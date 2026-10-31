@@ -516,3 +516,46 @@ fn reset_local_app_data() {
 }
 
 // When this number changes, we tear down and rebuild the websocket connection.
+
+// Only display state uses this epoch. Saved telemetry and source timestamps are untouched.
+fn display_clock_moved_back(previous_ms: i64, now_ms: i64, clear_floor_ms: i64) -> bool {
+    (previous_ms > 0 && previous_ms.saturating_sub(now_ms) > 1000)
+        || clear_floor_ms.saturating_sub(now_ms) > 1000
+}
+
+fn observe_display_wall_clock(now_ms: i64) {
+    let previous_ms = LAST_DISPLAY_WALL_MS.swap(now_ms, Ordering::Relaxed);
+    if display_clock_moved_back(previous_ms, now_ms, GRAPH_CLIENT_FLOOR_MS.load(Ordering::Relaxed)) {
+        // Invalidate a previous clear cutoff before checking the incoming row.
+        GRAPH_SERVER_FLOOR_MS.store(0, Ordering::Relaxed);
+        GRAPH_CLIENT_FLOOR_MS.store(0, Ordering::Relaxed);
+        DISPLAY_CLOCK_RESET_PENDING.store(true, Ordering::Relaxed);
+    }
+}
+
+fn apply_pending_display_clock_reset() {
+    if !DISPLAY_CLOCK_RESET_PENDING.swap(false, Ordering::Relaxed) { return; }
+    persist::_remove(&graph_history_key());
+    GRAPH_HISTORY_GENERATION.fetch_add(1, Ordering::Relaxed);
+    charts_cache_cancel_reseed_build();
+    // Keep rows just received in the new epoch. Do not clear queued control events.
+    let now_ms = current_wallclock_ms();
+    if let Ok(mut queue) = TELEMETRY_QUEUE.lock() {
+        queue.retain(|row| row.received_timestamp_ms <= now_ms.saturating_add(1000));
+    }
+    clear_visible_telemetry_history_without_bridge();
+    bump_frontend_data_clear_epoch();
+    charts_cache_request_refit();
+}
+
+#[cfg(test)]
+mod display_clock_tests {
+    use super::display_clock_moved_back;
+    #[test]
+    fn backward_clock_invalidates_display_epoch_and_future_clear_floor_only() {
+        assert!(display_clock_moved_back(100_000, 90_000, 0));
+        assert!(display_clock_moved_back(0, 90_000, 100_000));
+        assert!(!display_clock_moved_back(100_000, 99_500, 0));
+        assert!(!display_clock_moved_back(90_000, 100_000, 80_000));
+    }
+}

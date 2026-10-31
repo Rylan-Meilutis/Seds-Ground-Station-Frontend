@@ -17,7 +17,6 @@ pub fn Connect() -> Element {
         && UrlConfig::_skip_tls_verify_for_base(&initial);
 
     let mut scheme_edit = use_signal(|| initial_scheme.to_string());
-    let mut scheme_menu_open = use_signal(|| false);
     let mut host_edit = use_signal(|| initial_host);
     let mut skip_tls = use_signal(|| initial_skip_tls);
 
@@ -143,7 +142,6 @@ pub fn Connect() -> Element {
                                     scheme_edit.set(scheme.to_string());
                                     host_edit.set(host);
                                     skip_tls.set(UrlConfig::_skip_tls_verify_for_base(&station.base));
-                                    scheme_menu_open.set(false);
                                     test_status.set(String::new());
                                     test_report.set(None);
                                     discovery_status.set("Station selected. Use Connect to continue.".into());
@@ -166,67 +164,34 @@ pub fn Connect() -> Element {
                                 "position:relative; min-width:0; border-right:1px solid {}; background:{}; padding:4px;",
                                 theme.border, theme.panel_background
                             ),
-                            button {
-                                r#type: "button",
+                            select {
                                 id: "station-scheme",
                                 aria_label: "Connection protocol",
-                                aria_expanded: "{scheme_menu_open()}",
+                                value: "{scheme_edit()}",
                                 style: format!(
-                                    "width:100%; height:100%; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 10px;",
+                                    "width:100%; height:100%; min-width:0; min-height:44px; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:16px; font-weight:600; padding:0 4px;",
                                     theme.button_border, theme.button_background, theme.text_primary
                                 ),
-                                onclick: move |_| {
-                                    let next = !*scheme_menu_open.read();
-                                    scheme_menu_open.set(next);
+                                onchange: move |evt| {
+                                    let scheme = evt.value();
+                                    if !matches!(scheme.as_str(), "http://" | "https://") {
+                                        return;
+                                    }
+                                    scheme_edit.set(scheme.clone());
+                                    let base = compose_base_url_for_connect(&scheme, &host_edit.read());
+                                    if connect_scheme_supports_skip_tls(&scheme) {
+                                        skip_tls.set(UrlConfig::_skip_tls_verify_for_base(&base));
+                                    } else {
+                                        skip_tls.set(false);
+                                        if !base.is_empty() {
+                                            UrlConfig::_set_skip_tls_verify_for_base(&base, false);
+                                        }
+                                    }
+                                    test_status.set(String::new());
+                                    test_report.set(None);
                                 },
-                                span { if scheme_edit() == "https://" { "https" } else { "http" } }
-                                span { style: "font-size:11px; color:{theme.text_muted};", if *scheme_menu_open.read() { "▲" } else { "▼" } }
-                            }
-                            if *scheme_menu_open.read() {
-                                div {
-                                    style: "position:absolute; top:calc(100% + 6px); left:4px; right:4px; z-index:50; display:flex; flex-direction:column; gap:4px; padding:4px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background}; box-shadow:0 12px 30px rgba(0,0,0,0.28);",
-                                    button {
-                                        r#type: "button",
-                                        style: format!(
-                                            "width:100%; padding:9px 10px; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; text-align:left; cursor:pointer;",
-                                            if scheme_edit() == "https://" { theme.info_accent.as_str() } else { theme.button_border.as_str() },
-                                            if scheme_edit() == "https://" { theme.info_background.as_str() } else { theme.button_background.as_str() },
-                                            theme.text_primary
-                                        ),
-                                        onclick: move |_| {
-                                            scheme_edit.set("https://".to_string());
-                                            let base = compose_base_url_for_connect("https://", &host_edit.read());
-                                            if !base.is_empty() {
-                                                skip_tls.set(UrlConfig::_skip_tls_verify_for_base(&base));
-                                            }
-                                            scheme_menu_open.set(false);
-                                            test_status.set(String::new());
-                                            test_report.set(None);
-                                        },
-                                        "https"
-                                    }
-                                    button {
-                                        r#type: "button",
-                                        style: format!(
-                                            "width:100%; padding:9px 10px; border-radius:8px; border:1px solid {}; background:{}; color:{}; font-size:13px; font-weight:700; text-align:left; cursor:pointer;",
-                                            if scheme_edit() == "http://" { theme.info_accent.as_str() } else { theme.button_border.as_str() },
-                                            if scheme_edit() == "http://" { theme.info_background.as_str() } else { theme.button_background.as_str() },
-                                            theme.text_primary
-                                        ),
-                                        onclick: move |_| {
-                                            scheme_edit.set("http://".to_string());
-                                            skip_tls.set(false);
-                                            let base = compose_base_url_for_connect("http://", &host_edit.read());
-                                            if !base.is_empty() {
-                                                UrlConfig::_set_skip_tls_verify_for_base(&base, false);
-                                            }
-                                            scheme_menu_open.set(false);
-                                            test_status.set(String::new());
-                                            test_report.set(None);
-                                        },
-                                        "http"
-                                    }
-                                }
+                                option { value: "https://", "https" }
+                                option { value: "http://", "http" }
                             }
                         },
 
@@ -243,7 +208,6 @@ pub fn Connect() -> Element {
                             spellcheck: "false",
                             oninput: move |evt| {
                                 host_edit.set(evt.value().to_ascii_lowercase());
-                                scheme_menu_open.set(false);
                                 test_status.set(String::new());
                                 test_report.set(None);
                             },

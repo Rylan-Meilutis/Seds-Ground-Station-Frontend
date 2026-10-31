@@ -38,9 +38,40 @@ struct LatestTelemetryKey {
 struct LatestTelemetrySample {
     timestamp_ms: i64,
     received_timestamp_ms: i64,
+    // Internal provenance only; never serialized into packets or recordings.
+    live_received_mono_ms: Option<i64>,
     data_type: TelemetryTextId,
     sender_id: TelemetryTextId,
     values: Arc<[Option<f32>]>,
+}
+
+#[cfg(test)]
+mod backward_clock_latest_tests {
+    use super::*;
+    fn row(received: i64, value: f32) -> TelemetryRow {
+        let mut row = TelemetryRow { timestamp_ms:received, received_timestamp_ms:received,
+            data_type:"KG1000".into(), sender_id:"DAQ".into(), data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(value)] };
+        row.refresh_interned_ids(); row
+    }
+    #[test]
+    fn future_history_cannot_freeze_or_replace_fresh_live_after_wall_clock_backstep() {
+        let mut latest = HashMap::new(); let mut by_type = HashMap::new();
+        let future = row(2_000_000, 100.0);
+        let live = row(1_000_000, 25.0);
+        update_latest_telemetry_locked(&mut latest, &mut by_type, &future);
+        update_latest_telemetry_with_provenance(&mut latest, &mut by_type, &live, Some(500));
+        assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(25.0)]);
+        rebuild_latest_preserving_live(&mut latest, &mut by_type, &[future.clone()], 600);
+        assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(25.0)]);
+        // A second live receipt wins even when the CLIENT wall clock also moves backward.
+        let newer = row(500_000, 26.0);
+        update_latest_telemetry_with_provenance(&mut latest, &mut by_type, &newer, Some(700));
+        assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(26.0)]);
+        assert_eq!(latest.values().next().unwrap().received_timestamp_ms, 500_000);
+        // Once live data is stale, offline recalibration/history may seed again.
+        rebuild_latest_preserving_live(&mut latest, &mut by_type, &[future], 3_000);
+        assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(100.0)]);
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
@@ -371,11 +402,37 @@ fn update_latest_telemetry_batch(rows: &[TelemetryRow]) {
     if let Ok(mut latest) = LATEST_TELEMETRY.lock()
         && let Ok(mut latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock()
     {
+        let arrival_mono_ms = monotonic_now_ms() as i64;
         for row in rows {
-            update_latest_telemetry_locked(&mut latest, &mut latest_by_type, row);
+            update_latest_telemetry_with_provenance(&mut latest, &mut latest_by_type, row, Some(arrival_mono_ms));
         }
     }
     note_sender_packet_count_batch(rows);
+}
+
+// History snapshots must not roll back values received live while they load.
+fn rebuild_latest_preserving_live(
+    latest: &mut HashMap<LatestTelemetryKey, LatestTelemetrySample>,
+    latest_by_type: &mut HashMap<TelemetryTextId, LatestTelemetrySample>,
+    rows: &[TelemetryRow], now_mono_ms: i64,
+) {
+    let recent_live = |sample: &LatestTelemetrySample| sample.live_received_mono_ms
+        .is_some_and(|received| (0..=2_000).contains(&now_mono_ms.saturating_sub(received)));
+    let live: Vec<_> = latest.iter().filter(|(_, sample)| recent_live(sample)).map(|(key, sample)| (key.clone(), sample.clone())).collect();
+    let live_by_type: Vec<_> = latest_by_type.iter().filter(|(_, sample)| recent_live(sample)).map(|(key, sample)| (*key, sample.clone())).collect();
+    latest.clear(); latest_by_type.clear();
+    for row in rows { update_latest_telemetry_locked(latest, latest_by_type, row); }
+    latest.extend(live);
+    latest_by_type.extend(live_by_type);
+}
+
+fn reseed_latest_telemetry(rows: &[TelemetryRow]) {
+    if let Ok(mut latest) = LATEST_TELEMETRY.lock()
+        && let Ok(mut latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock()
+    {
+        rebuild_latest_preserving_live(&mut latest, &mut latest_by_type, rows, monotonic_now_ms() as i64);
+    }
+    reset_telemetry_packet_counts(rows);
 }
 
 fn reset_telemetry_packet_counts(rows: &[TelemetryRow]) {
@@ -544,16 +601,26 @@ fn update_latest_telemetry_locked(
     latest_by_type: &mut HashMap<TelemetryTextId, LatestTelemetrySample>,
     row: &TelemetryRow,
 ) {
+    update_latest_telemetry_with_provenance(latest, latest_by_type, row, None);
+}
+
+fn update_latest_telemetry_with_provenance(
+    latest: &mut HashMap<LatestTelemetryKey, LatestTelemetrySample>,
+    latest_by_type: &mut HashMap<TelemetryTextId, LatestTelemetrySample>,
+    row: &TelemetryRow, live_received_mono_ms: Option<i64>,
+) {
     let row_received_ms = telemetry_row_received_ms(row);
     let data_type_id = row.interned_data_type_id();
     let sender_id = row.interned_sender_id();
     let key = LatestTelemetryKey::new(data_type_id, sender_id);
     let should_replace = latest
         .get(&key)
-        .is_none_or(|existing| existing.received_timestamp_ms <= row_received_ms);
+        .is_none_or(|existing| live_received_mono_ms.is_some()
+            || (existing.live_received_mono_ms.is_none() && existing.received_timestamp_ms <= row_received_ms));
     let should_replace_type = latest_by_type
         .get(&data_type_id)
-        .is_none_or(|existing| existing.received_timestamp_ms <= row_received_ms);
+        .is_none_or(|existing| live_received_mono_ms.is_some()
+            || (existing.live_received_mono_ms.is_none() && existing.received_timestamp_ms <= row_received_ms));
     if !should_replace && !should_replace_type {
         return;
     }
@@ -565,6 +632,7 @@ fn update_latest_telemetry_locked(
             LatestTelemetrySample {
                 timestamp_ms: row.timestamp_ms,
                 received_timestamp_ms: row_received_ms,
+                live_received_mono_ms,
                 data_type: data_type_id,
                 sender_id,
                 values: values.clone(),
@@ -578,6 +646,7 @@ fn update_latest_telemetry_locked(
             LatestTelemetrySample {
                 timestamp_ms: row.timestamp_ms,
                 received_timestamp_ms: row_received_ms,
+                live_received_mono_ms,
                 data_type: data_type_id,
                 sender_id,
                 values,
@@ -1494,6 +1563,7 @@ mod calibration_freshness_tests {
         LatestTelemetrySample {
             timestamp_ms: source_ms,
             received_timestamp_ms: received_ms,
+            live_received_mono_ms: None,
             data_type: intern_telemetry_text("DAQ_ADC_TEMPERATURE"),
             sender_id: intern_telemetry_text("DAQ"),
             values: Arc::from(vec![value]),

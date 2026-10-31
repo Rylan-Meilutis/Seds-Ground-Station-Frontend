@@ -1349,7 +1349,8 @@ fn TelemetryDashboardInner() -> Element {
                         break;
                     }
                     DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
-                    let now_ms = current_wallclock_ms();
+                    // Render deadlines must survive an operator OS-clock correction.
+                    let now_ms = monotonic_now_ms() as i64;
 
                     let ws_open_events: Vec<(u64, String)> =
                         if let Ok(mut q) = PENDING_WS_OPEN_EVENTS.lock() {
@@ -1436,6 +1437,7 @@ fn TelemetryDashboardInner() -> Element {
                         &mut network_time_flush,
                     );
 
+                    apply_pending_display_clock_reset();
                     let drained = drain_telemetry_queue_for_frame();
 
                     let charts_live_enabled =

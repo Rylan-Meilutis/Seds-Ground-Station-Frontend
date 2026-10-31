@@ -254,6 +254,7 @@ fn normalize_live_telemetry_row_for_client_clock(
     mut row: TelemetryRow,
     now_ms: i64,
 ) -> Option<TelemetryRow> {
+    observe_display_wall_clock(now_ms);
     if !graph_row_allowed(row.timestamp_ms) {
         return None;
     }
@@ -481,6 +482,8 @@ static BUILTIN_THEME_CATALOG: Lazy<layout::ThemePresetCatalog> = Lazy::new(|| {
 static WS_RAW: GlobalSignal<Option<web_sys::WebSocket>> = Signal::global(|| None);
 // Force re-seed of graphs/history from backend.
 static SEED_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
+static LAST_DISPLAY_WALL_MS: AtomicI64 = AtomicI64::new(0);
+static DISPLAY_CLOCK_RESET_PENDING: AtomicBool = AtomicBool::new(false);
 static GRAPH_HISTORY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static GRAPH_SERVER_FLOOR_MS: AtomicI64 = AtomicI64::new(0);
 static GRAPH_CLIENT_FLOOR_MS: AtomicI64 = AtomicI64::new(0);
@@ -596,7 +599,7 @@ fn drain_telemetry_queue_for_frame() -> Vec<TelemetryRow> {
             return Vec::new();
         }
         trim_telemetry_queue_to_live_window(&mut q);
-        let take = telemetry_rows_per_drain_budget(q.len(), current_wallclock_ms());
+        let take = telemetry_rows_per_drain_budget(q.len(), monotonic_now_ms() as i64);
         q.drain(0..take).collect()
     } else {
         Vec::new()

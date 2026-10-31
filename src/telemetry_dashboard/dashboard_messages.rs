@@ -188,9 +188,18 @@ struct NetworkTimeSync {
 }
 
 #[cfg(target_arch = "wasm32")]
-/// Returns a monotonic-ish timestamp source for rate calculations in the browser.
+/// Browser render and freshness deadlines must survive wall-clock corrections.
 fn monotonic_now_ms() -> f64 {
-    js_sys::Date::now()
+    use wasm_bindgen::JsCast;
+    let performance = js_sys::Reflect::get(&js_sys::global(), &"performance".into())
+        .expect("browser performance clock must be available");
+    let now = js_sys::Reflect::get(&performance, &"now".into())
+        .expect("browser performance.now must be available")
+        .unchecked_into::<js_sys::Function>();
+    now.call0(&performance)
+        .expect("browser performance.now must succeed")
+        .as_f64()
+        .expect("browser performance.now must return milliseconds")
 }
 
 #[cfg(not(target_arch = "wasm32"))]
