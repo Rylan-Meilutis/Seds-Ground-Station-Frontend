@@ -10,13 +10,164 @@ struct Settings {
     nitrogen_target_psi: f32,
     #[serde(default = "default_pressure_step")]
     pressure_step_psi: f32,
+    #[serde(default)]
+    nitrogen_steps: Vec<NitrogenStep>,
+    #[serde(default = "default_fill_overfill")]
+    fill_overfill_kg: f32,
+    #[serde(default = "default_fill_tolerance")]
+    fill_tolerance_kg: f32,
+    #[serde(default = "default_fill_settle")]
+    fill_settle_ms: u64,
     pressure_ceiling_psi: Option<f32>,
     maximum_zero_offset_psi: Option<f32>,
     dry_self_test_confirmed: bool,
     grouped_panel: bool,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 fn default_pressure_step() -> f32 {
     50.0
+}
+fn default_fill_overfill() -> f32 {
+    0.05
+}
+fn default_fill_tolerance() -> f32 {
+    0.07
+}
+fn default_fill_settle() -> u64 {
+    3000
+}
+#[derive(Clone)]
+struct FillDraft {
+    overfill: String,
+    tolerance: String,
+    settle: String,
+}
+impl From<&Settings> for FillDraft {
+    fn from(config: &Settings) -> Self {
+        Self {
+            overfill: config.fill_overfill_kg.to_string(),
+            tolerance: config.fill_tolerance_kg.to_string(),
+            settle: (config.fill_settle_ms as f64 / 1000.0).to_string(),
+        }
+    }
+}
+impl Default for FillDraft {
+    fn default() -> Self {
+        Self {
+            overfill: "0.05".into(),
+            tolerance: "0.07".into(),
+            settle: "3".into(),
+        }
+    }
+}
+fn validated_fill(draft: &FillDraft) -> Result<(f32, f32, u64), String> {
+    let overfill = draft.overfill.parse::<f32>().unwrap_or(f32::NAN);
+    if !overfill.is_finite() || !(0.0..=0.1).contains(&overfill) {
+        return Err("Overfill allowance must be 0–0.1 kg.".into());
+    }
+    let tolerance = draft.tolerance.parse::<f32>().unwrap_or(f32::NAN);
+    if !tolerance.is_finite() || tolerance <= 0.0 || tolerance > 0.07 {
+        return Err("Mass tolerance must be greater than 0 and at most 0.07 kg.".into());
+    }
+    let settle = draft.settle.parse::<f64>().unwrap_or(f64::NAN);
+    if !settle.is_finite() || !(1.0..=600.0).contains(&settle) {
+        return Err("Fill settling wait must be 1–600 seconds.".into());
+    }
+    Ok((overfill, tolerance, (settle * 1000.0).round() as u64))
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct NitrogenStep {
+    target_psi: f32,
+    settle_ms: u64,
+    hold_ms: u64,
+}
+#[derive(Clone)]
+struct NitrogenStepDraft {
+    pressure: String,
+    settle: String,
+    hold: String,
+}
+impl From<&NitrogenStep> for NitrogenStepDraft {
+    fn from(step: &NitrogenStep) -> Self {
+        Self {
+            pressure: step.target_psi.to_string(),
+            settle: (step.settle_ms as f64 / 1000.0).to_string(),
+            hold: (step.hold_ms as f64 / 1000.0).to_string(),
+        }
+    }
+}
+fn nitrogen_drafts(config: &Settings) -> Vec<NitrogenStepDraft> {
+    if !config.nitrogen_steps.is_empty() {
+        return config
+            .nitrogen_steps
+            .iter()
+            .map(NitrogenStepDraft::from)
+            .collect();
+    }
+    if !config.nitrogen_target_psi.is_finite()
+        || config.nitrogen_target_psi <= 0.0
+        || !config.pressure_step_psi.is_finite()
+        || config.pressure_step_psi <= 0.0
+    {
+        return Vec::new();
+    }
+    let count = (config.nitrogen_target_psi / config.pressure_step_psi).ceil();
+    // Preserve legacy configuration rather than silently dropping/truncating steps.
+    if count > 32.0 {
+        return Vec::new();
+    }
+    (1..=count as u32)
+        .map(|index| {
+            NitrogenStepDraft::from(&NitrogenStep {
+                target_psi: (index as f32 * config.pressure_step_psi)
+                    .min(config.nitrogen_target_psi),
+                settle_ms: 2000,
+                hold_ms: 5000,
+            })
+        })
+        .collect()
+}
+fn validated_nitrogen_steps(rows: &[NitrogenStepDraft]) -> Result<Vec<NitrogenStep>, String> {
+    if rows.is_empty() || rows.len() > 32 {
+        return Err("Add 1–32 pressure steps.".into());
+    }
+    let mut previous = 0.0;
+    let mut total_ms = 0u64;
+    let mut steps = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let pressure = row.pressure.parse::<f32>().unwrap_or(f32::NAN);
+        if !pressure.is_finite() || pressure <= previous {
+            return Err(format!(
+                "Step {}: pressure must be positive and higher than the previous step.",
+                index + 1
+            ));
+        }
+        let wait = |text: &str| -> Option<u64> {
+            let seconds = text.parse::<f64>().ok()?;
+            if !seconds.is_finite() || !(1.0..=600.0).contains(&seconds) {
+                return None;
+            }
+            Some((seconds * 1000.0).round() as u64)
+        };
+        let (Some(settle_ms), Some(hold_ms)) = (wait(&row.settle), wait(&row.hold)) else {
+            return Err(format!(
+                "Step {}: each wait must be 1–600 seconds.",
+                index + 1
+            ));
+        };
+        total_ms += settle_ms + hold_ms;
+        if total_ms > 3_600_000 {
+            return Err("Total settling and holding time must not exceed 1 hour.".into());
+        }
+        steps.push(NitrogenStep {
+            target_psi: pressure,
+            settle_ms,
+            hold_ms,
+        });
+        previous = pressure;
+    }
+    Ok(steps)
 }
 #[component]
 pub(super) fn ControlHelp(
@@ -55,14 +206,7 @@ mod visibility_tests {
             assert!(super::ground_visible(phase));
         }
         for phase in [
-            "Launch",
-            "Ascent",
-            "Coast",
-            "Apogee",
-            "Descent",
-            "Reefing",
-            "Landed",
-            "Recovery",
+            "Launch", "Ascent", "Coast", "Apogee", "Descent", "Reefing", "Landed", "Recovery",
             "Aborted",
         ] {
             assert!(!super::ground_visible(phase));
@@ -151,36 +295,54 @@ pub(super) fn GsePanel(
     #[props(default = true)] show_model: bool,
 ) -> Element {
     let mut settings = use_signal(|| None::<Settings>);
+    let mut nitrogen_rows = use_signal(Vec::<NitrogenStepDraft>::new);
+    let mut fill_draft = use_signal(FillDraft::default);
     let mut status = use_signal(Status::default);
     let mut message = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut online = use_signal(|| false);
     use_future(move || async move {
         if let Ok(cfg) = http_get_json::<Settings>("/api/gse/config").await {
+            nitrogen_rows.set(nitrogen_drafts(&cfg));
+            fill_draft.set(FillDraft::from(&cfg));
             settings.set(Some(cfg));
         }
         loop {
-            let base=UrlConfig::base_http();
-            let token=auth::current_token();
-            if auth::current_status().station_role.as_deref()==Some("rrls") {settings.set(None);}
-            let response=http_get_json::<Status>("/api/gse/status").await;
-            if UrlConfig::base_http()!=base || auth::current_token()!=token {
+            let base = UrlConfig::base_http();
+            let token = auth::current_token();
+            if auth::current_status().station_role.as_deref() == Some("rrls") {
+                settings.set(None);
+            }
+            let response = http_get_json::<Status>("/api/gse/status").await;
+            if UrlConfig::base_http() != base || auth::current_token() != token {
                 online.set(false);
-                status.set(Status {phase:"unknown".into(),..Status::default()});
+                status.set(Status {
+                    phase: "unknown".into(),
+                    ..Status::default()
+                });
                 continue;
             }
             match response {
-                Ok(next) if auth::current_status().station_role.as_deref() == Some("rrls")
-                    && !next.primary_observation.as_ref().is_some_and(|source|source.fresh && source.age_ms<=1500) => {
+                Ok(next)
+                    if auth::current_status().station_role.as_deref() == Some("rrls")
+                        && !next
+                            .primary_observation
+                            .as_ref()
+                            .is_some_and(|source| source.fresh && source.age_ms <= 1500) =>
+                {
                     online.set(false);
-                    status.set(Status {phase:"unknown".into(),..Status::default()});
+                    status.set(Status {
+                        phase: "unknown".into(),
+                        ..Status::default()
+                    });
                     message.set("Fresh primary GSE observations are unavailable; local RRLS settings are not primary evidence.".into());
                 }
                 Ok(next) => {
                     if !["idle", "passed", "cancelled", "fault"].contains(&next.phase.as_str())
-                        && let Some(cfg) = settings.write().as_mut() {
-                            cfg.dry_self_test_confirmed = false;
-                        }
+                        && let Some(cfg) = settings.write().as_mut()
+                    {
+                        cfg.dry_self_test_confirmed = false;
+                    }
                     status.set(next);
                     online.set(true);
                 }
@@ -188,7 +350,10 @@ pub(super) fn GsePanel(
                     online.set(false);
                     // Never keep stale confirmed valves or an active model animation
                     // after the primary observation expires or becomes unavailable.
-                    status.set(Status {phase:"unknown".into(),..Status::default()});
+                    status.set(Status {
+                        phase: "unknown".into(),
+                        ..Status::default()
+                    });
                     message.set(format!("GSE status unavailable: {err}"));
                 }
             }
@@ -202,12 +367,19 @@ pub(super) fn GsePanel(
         }
     });
     let active = !["idle", "passed", "cancelled", "fault"].contains(&snapshot.phase.as_str());
-    let can_edit = auth::current_status().station_role.as_deref()!=Some("rrls")
-        && auth::can_view_actions() && !active && !abort_only_mode && !*busy.read();
+    let can_edit = auth::current_status().station_role.as_deref() != Some("rrls")
+        && auth::can_view_actions()
+        && !active
+        && !abort_only_mode
+        && !*busy.read();
     let pressure_label = snapshot
         .pressure_psi
         .map(|v| format!("{v:.1} psi"))
         .unwrap_or_else(|| "—".into());
+    let rows = nitrogen_rows.read().clone();
+    let step_error = validated_nitrogen_steps(&rows).err();
+    let fill = fill_draft.read().clone();
+    let fill_error = validated_fill(&fill).err();
     rsx! {
         section { style:"border:1px solid {theme.border};border-radius:14px;overflow:hidden;background:{theme.panel_background};",
             div { style:"padding:18px 20px;border-bottom:1px solid {theme.border};display:flex;justify-content:space-between;gap:16px;align-items:center;",
@@ -242,17 +414,69 @@ pub(super) fn GsePanel(
                 details {
                     summary {style:"cursor:pointer;color:{theme.text_muted};font-size:13px;","Nitrogen test settings"}
                     if let Some(cfg)=settings.read().clone() {
-                        div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;padding-top:16px;",
-                            label {"Pressure step (psi)" input {r#type:"number",min:"0.1",step:"0.1",value:"{cfg.pressure_step_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse()&& let Some(c)=settings.write().as_mut(){c.pressure_step_psi=v;}}}}
-                            label {"Nitrogen maximum pressure (psi)" input {r#type:"number",value:"{cfg.nitrogen_target_psi}",disabled:!can_edit,oninput:move |e|{if let Ok(v)=e.value().parse()&& let Some(c)=settings.write().as_mut(){c.nitrogen_target_psi=v;}}}}
-                            p {"Automatic failure limit: nitrogen target +100 psi; nitrous fill target +50 psi. A lower hardware ceiling takes precedence."}
-                            label {"Maximum acceptable empty-tank PT offset (psi, required)" input {r#type:"number",min:"0",step:"0.1",value:cfg.maximum_zero_offset_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.maximum_zero_offset_psi=e.value().parse().ok();}}}}
-                            label {"Hardware pressure ceiling (psi, optional lower limit)" input {r#type:"number",min:"0.1",step:"0.1",value:cfg.pressure_ceiling_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.pressure_ceiling_psi=e.value().parse().ok();}}}}
+                        div {style:"display:grid;gap:12px;padding-top:12px;max-width:880px;min-width:0;",
+                            if cfg.nitrogen_steps.is_empty() {
+                                p {style:"margin:0;font-size:12px;color:{theme.text_muted};", "Legacy profile · saving stores the steps below."}
+                            }
+                            for (index, row) in rows.iter().enumerate() {
+                                fieldset {key:"n2-step-{index}",style:"margin:0;padding:10px;border:1px solid {theme.border};border-radius:10px;min-width:0;",
+                                    legend {style:"padding:0 5px;font-size:13px;", "Step {index + 1}"}
+                                    div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,130px),1fr));gap:10px;align-items:end;",
+                                        label {style:"display:grid;gap:5px;min-width:0;", "Pressure (psi)"
+                                            input {r#type:"number",min:"0.1",step:"0.1",value:row.pressure.clone(),disabled:!can_edit,aria_label:"Step {index + 1} pressure in psi",style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",oninput:move |event|{nitrogen_rows.write()[index].pressure=event.value();}}
+                                        }
+                                        label {style:"display:grid;gap:5px;min-width:0;", "Settle wait (s)"
+                                            input {r#type:"number",min:"1",max:"600",step:"0.1",value:row.settle.clone(),disabled:!can_edit,aria_label:"Step {index + 1} settling seconds",style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",oninput:move |event|{nitrogen_rows.write()[index].settle=event.value();}}
+                                        }
+                                        label {style:"display:grid;gap:5px;min-width:0;", "Leak-test hold (s)"
+                                            input {r#type:"number",min:"1",max:"600",step:"0.1",value:row.hold.clone(),disabled:!can_edit,aria_label:"Step {index + 1} holding seconds",style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",oninput:move |event|{nitrogen_rows.write()[index].hold=event.value();}}
+                                        }
+                                    }
+                                    div {style:"display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;",
+                                        button {r#type:"button",aria_label:"Move step {index + 1} up",disabled:!can_edit||index==0,style:"min-height:44px;min-width:44px;width:auto;padding:6px 12px;",onclick:move |_|nitrogen_rows.write().swap(index,index-1),"↑"}
+                                        button {r#type:"button",aria_label:"Move step {index + 1} down",disabled:!can_edit||index+1==rows.len(),style:"min-height:44px;min-width:44px;width:auto;padding:6px 12px;",onclick:move |_|nitrogen_rows.write().swap(index,index+1),"↓"}
+                                        button {r#type:"button",disabled:!can_edit,style:"min-height:44px;width:auto;padding:6px 12px;",onclick:move |_|{nitrogen_rows.write().remove(index);},"Remove"}
+                                    }
+                                }
+                            }
+                            div {style:"display:flex;gap:10px;flex-wrap:wrap;align-items:center;",
+                                button {r#type:"button",disabled:!can_edit||rows.len()>=32,style:"min-height:44px;width:auto;padding:8px 12px;",onclick:move |_|{
+                                    let pressure=nitrogen_rows.read().last().and_then(|row|row.pressure.parse::<f32>().ok()).filter(|v|v.is_finite()).unwrap_or(0.0)+50.0;
+                                    nitrogen_rows.write().push(NitrogenStepDraft {pressure:pressure.to_string(),settle:"2".into(),hold:"5".into()});
+                                },"Add pressure step"}
+                                ControlHelp {title:"pressure steps",compact:true,paragraphs:vec!["Targets run in ascending order. Settling starts after nitrogen closes at the target; the hold checks for pressure loss. Each wait is 1–600 seconds; total waits are limited to one hour.".into(),"Saving changes the next test only. It does not run valves. Existing pressure ceilings and interlocks still apply.".into()]}
+                            }
+                            if let Some(error)=step_error.as_ref() {p {role:"alert",style:"margin:0;font-size:13px;color:{theme.text_primary};", "{error}"}}
                         }
-                        button {style:"margin-top:12px;padding:10px 14px;",disabled:!can_edit,onclick:move |_|{
-                            let Some(cfg)=settings.read().clone() else{return;};
+                        div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:12px;padding-top:16px;max-width:880px;",
+                            label {style:"display:grid;gap:5px;min-width:0;", "Maximum acceptable empty-tank PT offset (psi, required)" input {style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",r#type:"number",min:"0",step:"0.1",value:cfg.maximum_zero_offset_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.maximum_zero_offset_psi=e.value().parse().ok();}}}}
+                            label {style:"display:grid;gap:5px;min-width:0;", "Hardware pressure ceiling (psi, optional lower limit)" input {style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",r#type:"number",min:"0.1",step:"0.1",value:cfg.pressure_ceiling_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.pressure_ceiling_psi=e.value().parse().ok();}}}}
+                        }
+                        fieldset {style:"margin:16px 0 0;padding:12px;border:1px solid {theme.border};border-radius:10px;max-width:880px;min-width:0;box-sizing:border-box;",
+                            legend {style:"padding:0 5px;font-size:13px;", "Nitrous fill precision"}
+                            div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:10px;",
+                                label {style:"display:grid;gap:5px;min-width:0;", "Overfill allowance (kg)"
+                                    input {r#type:"number",min:"0",max:"0.1",step:"0.01",value:fill.overfill.clone(),disabled:!can_edit,style:"width:100%;min-width:0;min-height:44px;box-sizing:border-box;",oninput:move |event|fill_draft.write().overfill=event.value()}
+                                }
+                                label {style:"display:grid;gap:5px;min-width:0;", "Mass tolerance (kg)"
+                                    input {r#type:"number",min:"0.001",max:"0.07",step:"0.01",value:fill.tolerance.clone(),disabled:!can_edit,style:"width:100%;min-width:0;min-height:44px;box-sizing:border-box;",oninput:move |event|fill_draft.write().tolerance=event.value()}
+                                }
+                                label {style:"display:grid;gap:5px;min-width:0;", "Vent settling wait (s)"
+                                    input {r#type:"number",min:"1",max:"600",step:"0.1",value:fill.settle.clone(),disabled:!can_edit,style:"width:100%;min-width:0;min-height:44px;box-sizing:border-box;",oninput:move |event|fill_draft.write().settle=event.value()}
+                                }
+                            }
+                            ControlHelp {title:"fill precision",compact:true,paragraphs:vec!["The overfill allowance is limited to 0.1 kg. Mass tolerance accounts for load-cell noise and is limited to ±0.07 kg. The settling wait lets the mass stabilize between vent adjustments.".into(),"These limits control the automated sequence; they are not a guarantee of sensor accuracy. Existing pressure and connection interlocks remain active.".into()]}
+                            if let Some(error)=fill_error.as_ref() {p {role:"alert",style:"margin:0;font-size:13px;color:{theme.text_primary};", "{error}"}}
+                        }
+                        button {style:"margin-top:12px;padding:10px 14px;min-height:44px;width:auto;max-width:100%;",disabled:!can_edit||step_error.is_some()||fill_error.is_some(),onclick:move |_|{
+                            let Some(mut cfg)=settings.read().clone() else{return;};
+                            let steps=match validated_nitrogen_steps(&nitrogen_rows.read()) {Ok(steps)=>steps,Err(error)=>{message.set(error);return;}};
+                            cfg.nitrogen_target_psi=steps.last().unwrap().target_psi;
+                            cfg.nitrogen_steps=steps;
+                            let (overfill,tolerance,settle)=match validated_fill(&fill_draft.read()) {Ok(next)=>next,Err(error)=>{message.set(error);return;}};
+                            cfg.fill_overfill_kg=overfill;cfg.fill_tolerance_kg=tolerance;cfg.fill_settle_ms=settle;
                             busy.set(true);
-                            spawn(async move {match http_post_json::<Settings,Settings>("/api/gse/config",&cfg).await{Ok(next)=>{settings.set(Some(next));message.set("GSE configuration saved".into());},Err(err)=>message.set(err)}busy.set(false);});
+                            spawn(async move {match http_post_json::<Settings,Settings>("/api/gse/config",&cfg).await{Ok(next)=>{nitrogen_rows.set(nitrogen_drafts(&next));fill_draft.set(FillDraft::from(&next));settings.set(Some(next));message.set("GSE configuration saved".into());},Err(err)=>message.set(err)}busy.set(false);});
                         },"Save GSE configuration"}
                     }
                 }
@@ -518,5 +742,134 @@ pub(super) fn ClearGseAbort() -> Element {
             }
             if !message.read().is_empty() {p {role:"status",style:"margin:0;","{message}"}}
         }
+    }
+}
+
+#[cfg(test)]
+mod nitrogen_settings_tests {
+    use super::*;
+    fn row(pressure: &str, settle: &str, hold: &str) -> NitrogenStepDraft {
+        NitrogenStepDraft {
+            pressure: pressure.into(),
+            settle: settle.into(),
+            hold: hold.into(),
+        }
+    }
+    #[test]
+    fn custom_targets_and_per_step_waits_round_trip_without_losing_other_settings() {
+        let mut config: Settings = serde_json::from_value(serde_json::json!({
+            "nitrogen_target_psi":500.0,"pressure_step_psi":50.0,"pressure_ceiling_psi":650.0,
+            "maximum_zero_offset_psi":20.0,"dry_self_test_confirmed":false,"grouped_panel":true,
+            "future_fill_setting":{"tolerance":0.1}
+        }))
+        .unwrap();
+        config.nitrogen_steps = validated_nitrogen_steps(&[
+            row("100", "2", "5"),
+            row("300", "3.5", "12"),
+            row("500", "10", "30"),
+        ])
+        .unwrap();
+        config.nitrogen_target_psi = config.nitrogen_steps.last().unwrap().target_psi;
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(encoded["nitrogen_steps"][1]["settle_ms"], 3500);
+        assert_eq!(encoded["future_fill_setting"]["tolerance"], 0.1);
+        assert_eq!(encoded["pressure_ceiling_psi"], 650.0);
+        let restored: Settings = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            validated_nitrogen_steps(&nitrogen_drafts(&restored)).unwrap(),
+            config.nitrogen_steps
+        );
+    }
+    #[test]
+    fn fill_defaults_units_and_limits_are_preserved() {
+        let config:Settings=serde_json::from_value(serde_json::json!({"nitrogen_target_psi":100.0,"pressure_step_psi":50.0,"pressure_ceiling_psi":null,"maximum_zero_offset_psi":20.0,"dry_self_test_confirmed":false,"grouped_panel":false})).unwrap();
+        assert_eq!(
+            validated_fill(&FillDraft::from(&config)).unwrap(),
+            (0.05, 0.07, 3000)
+        );
+        assert_eq!(
+            validated_fill(&FillDraft {
+                overfill: "0.1".into(),
+                tolerance: "0.03".into(),
+                settle: "4.25".into()
+            })
+            .unwrap(),
+            (0.1, 0.03, 4250)
+        );
+        for (overfill, tolerance, settle) in [
+            ("0.101", "0.07", "3"),
+            ("NaN", "0.07", "3"),
+            ("0.05", "0", "3"),
+            ("0.05", "0.071", "3"),
+            ("0.05", "0.07", "0"),
+            ("0.05", "0.07", "601"),
+        ] {
+            assert!(
+                validated_fill(&FillDraft {
+                    overfill: overfill.into(),
+                    tolerance: tolerance.into(),
+                    settle: settle.into()
+                })
+                .is_err()
+            );
+        }
+    }
+    #[test]
+    fn viewing_legacy_profile_does_not_modify_it() {
+        let config = Settings {
+            nitrogen_target_psi: 125.0,
+            pressure_step_psi: 50.0,
+            ..Settings::default()
+        };
+        let steps = validated_nitrogen_steps(&nitrogen_drafts(&config)).unwrap();
+        assert_eq!(
+            steps.iter().map(|s| s.target_psi).collect::<Vec<_>>(),
+            vec![50.0, 100.0, 125.0]
+        );
+        assert!(
+            steps
+                .iter()
+                .all(|s| s.settle_ms == 2000 && s.hold_ms == 5000)
+        );
+        assert!(config.nitrogen_steps.is_empty());
+        assert!(
+            nitrogen_drafts(&Settings {
+                pressure_step_psi: 0.0,
+                ..config
+            })
+            .is_empty()
+        );
+    }
+    #[test]
+    fn rejects_invalid_pressure_waits_and_unbounded_plans() {
+        for rows in [
+            vec![],
+            vec![row("NaN", "2", "5")],
+            vec![row("0", "2", "5")],
+            vec![row("300", "2", "5"), row("100", "2", "5")],
+            vec![row("100", "", "5")],
+            vec![row("100", "0", "5")],
+            vec![row("100", "2", "601")],
+            vec![row("100", "inf", "5")],
+        ] {
+            assert!(validated_nitrogen_steps(&rows).is_err());
+        }
+        assert!(
+            validated_nitrogen_steps(
+                &(1..=33)
+                    .map(|i| row(&i.to_string(), "1", "1"))
+                    .collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+        assert!(
+            validated_nitrogen_steps(
+                &(1..=4)
+                    .map(|i| row(&i.to_string(), "600", "600"))
+                    .collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+        assert!(validated_nitrogen_steps(&[row("100", "1", "600")]).is_ok());
     }
 }
