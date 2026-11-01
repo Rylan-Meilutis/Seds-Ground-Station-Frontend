@@ -233,7 +233,14 @@ async function refreshRecordings() {
 }
 let publisher = null, canPublish = false, canManage = false;
 let previewStream=null,previewRequest=0,preferredFacing="environment",dashboardOrigin=location.origin;
-function cameraAwake(active){window.GS26StayAwake?.setActive("camera",active);if(parent!==window)parent.postMessage({type:"gs26-capture-active",active},dashboardOrigin);}
+function cameraAwake(active){
+  active=Boolean(active);
+  window.GS26StayAwake?.setActive("camera",active);
+  // Native webviews may serialize their parent origin as "null", which is
+  // not a valid postMessage target origin. Only this non-secret lifetime
+  // boolean may use a wildcard; dashboard session tokens remain target-bound.
+  if(parent!==window)parent.postMessage({type:"gs26-capture-active",active},dashboardOrigin==='null'?'*':dashboardOrigin);
+}
 const publishNotice = text => { $('publish-status').textContent = text; };
 async function refreshPublishPermission() {
   const current = generation;
