@@ -24,7 +24,7 @@ for(const change of [c=>delete c.min,c=>delete c.max,c=>c.max=c.min,c=>c.min=NaN
 assert.equal(GSOfflineReplay.tankFillFraction(GSOfflineReplay.state(p,999).components[0]),null,'future sample cannot drive fill');
 assert.equal(GSOfflineReplay.tankFillFraction(GSOfflineReplay.state(p,9000).components[0]),null,'stale sample remains unknown');
 assert.deepEqual(GSOfflineReplay.validate(JSON.stringify(p)).layout,p.layout);
-for(const change of [x=>x.version=2,x=>x.schema=null,x=>x.valve_mappings[0].index=-1,x=>x.samples[1].id=1,x=>x.samples[0].values=[Infinity]]){
+for(const change of [x=>x.version=2,x=>x.schema=null,x=>x.valve_mappings[0].index=-1,x=>x.samples[1].id=1,x=>x.samples[0].values=[Infinity],x=>x.view_config.ground_systems=[null],x=>x.view_config.stages=[null],x=>x.view_config.ground_systems[0].binding.scale='bad',x=>x.valve_mappings[0].true_label={bad:true}]){
  const bad=structuredClone(fixture);change(bad);assert.throws(()=>GSOfflineReplay.validate(bad));
 }
 console.log('PASS offline roundtrip, embedded config/schema/units/mappings, no future/live substitution, every valve update, null/stale unknown, malformed refusal');

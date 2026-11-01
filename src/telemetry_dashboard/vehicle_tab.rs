@@ -182,12 +182,14 @@ fn sync_model_viewer(
     frame: &super::vehicle_replay::Frame,
     replay_seconds: f64,
     gps_sender: &str,
+    scene_mode: &str,
+    layout: &serde_json::Value,
 ) {
     let phase = frame.phase().unwrap_or_else(|| "Unknown".into());
     let roll = config.attitude.roll.as_ref().and_then(|b| value(b, frame));
     let pitch = config.attitude.pitch.as_ref().and_then(|b| value(b, frame));
     let yaw = config.attitude.yaw.as_ref().and_then(|b| value(b, frame));
-    if config.model_url.trim().is_empty() {
+    if config.model_url.trim().is_empty() && scene_mode == "configured" {
         return;
     }
     let motions: Vec<_> = config
@@ -208,7 +210,13 @@ fn sync_model_viewer(
             result
         })
         .collect();
-    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch,yaw,roll],"gps":frame.gps_for(gps_sender).map(|(lat,lon,alt)|[lat,lon,alt]),"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds,"replay_timestamp_ms":frame.at_ms}).to_string();
+    let components:Vec<_>=config.ground_systems.iter().chain(config.stages.iter().flat_map(|s|s.components.iter())).take(256).map(|c|{
+        let mut row=serde_json::to_value(c).unwrap_or_default();
+        row["value"]=serde_json::json!(c.binding.as_ref().and_then(|b|frame.value(b,false)));
+        row
+    }).collect();
+    let valves=replay_visual_valves(layout,frame);
+    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch,yaw,roll],"gps":frame.gps_for(gps_sender).map(|(lat,lon,alt)|[lat,lon,alt]),"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds,"replay_timestamp_ms":frame.at_ms,"replay_scene":scene_mode,"visual_components":components,"visual_valves":valves}).to_string();
     let payload = serde_json::to_string(&payload).unwrap();
     let src = serde_json::to_string(&backend_url(&config.model_url)).unwrap();
     let renderer =
@@ -223,6 +231,20 @@ fn sync_model_viewer(
         if(m.getAttribute('data-state')!=={payload})m.setAttribute('data-state',{payload});
     }})();"#
     ));
+}
+
+fn replay_visual_valves(layout:&serde_json::Value,frame:&super::vehicle_replay::Frame)->Vec<serde_json::Value>{
+    saved_valve_mappings(layout).as_array().into_iter().flatten().map(|mapping|{
+        let mut row=mapping.clone();
+        let value=serde_json::from_value::<VehicleTelemetryBinding>(mapping.clone()).ok().and_then(|b|frame.value(&b,false));
+        row["value"]=serde_json::json!(value);
+        row["state"]=serde_json::json!(match value {
+            Some(v) if v==1.0=>mapping["true_label"].as_str().unwrap_or("Open"),
+            Some(v) if v==0.0=>mapping["false_label"].as_str().unwrap_or("Closed"),
+            _=>mapping["unknown_label"].as_str().unwrap_or("Unknown"),
+        });
+        row
+    }).collect()
 }
 
 fn component_kind_label(kind: &str) -> &'static str {
@@ -264,6 +286,12 @@ fn component_readout(
         })
         .unwrap_or_else(|| "No data".to_string());
     (raw, display, fraction, active)
+}
+
+fn configured_tank_fraction(component:&VehicleComponentConfig,value:Option<f32>)->Option<f32>{
+    if component.kind!="tank" || !matches!(component.unit.trim().to_ascii_lowercase().as_str(),"%"|"percent"|"kg"|"g") || component.binding.as_ref().is_none_or(|b|b.data_type.trim().is_empty()){return None;}
+    let (value,min,max)=(value?,component.min?,component.max?);
+    (value.is_finite() && min.is_finite() && max.is_finite() && max>min).then(||((value-min)/(max-min)).clamp(0.0,1.0))
 }
 
 fn percent_component(value: &str) -> String {
@@ -352,6 +380,11 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
         Buffer, Frame, Index, Page, Recording, Snapshot, Trajectory, advance,
     };
     let mut station = use_signal(UrlConfig::base_http);
+    let mut scene_mode=use_signal(||"configured".to_string());
+    let scene_layout=use_resource(move||{
+        let origin=station.read().clone();
+        async move{saved_get::<serde_json::Value>(&origin,"/api/layout").await}
+    });
     let mut config = use_resource(move || {
         let origin = station.read().clone();
         async move {
@@ -710,7 +743,8 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                 })
                 .and_then(|(_, _, _, t)| t.source_sender_id.clone())
                 .unwrap_or_else(|| "FC".into());
-            sync_model_viewer(viewer_id, &cfg, &frame, at / 1000., &gps_sender);
+            let layout=scene_layout.read().as_ref().and_then(|r|r.as_ref().ok()).cloned().unwrap_or(serde_json::Value::Null);
+            sync_model_viewer(viewer_id, &cfg, &frame, at / 1000., &gps_sender, &scene_mode.read(), &layout);
         }
     });
     let button = format!(
@@ -722,6 +756,12 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
         div {class:"gs26-vehicle-shell",style:"height:100%;overflow-y:auto;padding:12px;box-sizing:border-box;color:{theme.text_primary};background:{theme.tab_shell_background};",
             h2 {"3D replay"}
             OfflineReplayImport {}
+            label {"Replay model " select {value:"{scene_mode}",onchange:move|e|scene_mode.set(e.value()),
+                option {value:"configured","Configured model"}
+                option {value:"flight","🚀 Illustrative flight vehicle"}
+                option {value:"test_fire","⚙ Illustrative motor on stand"}
+            }}
+            p {style:"color:{theme.text_muted};font-size:12px;","Scene selection changes the illustration only. Recorded values and current view mappings remain unchanged; imported files use their embedded configuration. 3D shows up to 16 valves and 8 tanks; all named values remain available below when geometry is unavailable."}
             div {style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;",
                 label {r#for:"replay-recording","Recording"}
                 select {id:"replay-recording",style:"{button}width:min(100%,480px);max-width:100%;",value:"{selected}",onchange:move|event|{playing.set(false);seek_preview.set(None);position.set(0.);selected.set(event.value());},
@@ -770,6 +810,10 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                 }
             }
             div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:10px;margin-top:12px;",
+                if !cfg.ground_systems.is_empty(){div {style:"padding:12px;border:1px solid {theme.border_soft};border-radius:12px;",
+                    strong {"Ground system"}
+                    for component in &cfg.ground_systems{{component_row(&theme,component,&frame)}}
+                }}
                 for stage in &cfg.stages {if !stage.components.is_empty() || stage.separation.is_some(){
                     div {style:"padding:12px;border:1px solid {theme.border_soft};border-radius:12px;",
                         strong {"{stage.label}"}
@@ -777,6 +821,13 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                         for component in &stage.components{{component_row(&theme,component,&frame)}}
                     }
                 }}
+            }
+            div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:12px;",
+                for row in replay_visual_valves(&scene_layout.read().as_ref().and_then(|r|r.as_ref().ok()).cloned().unwrap_or(serde_json::Value::Null),&frame){
+                    div {style:"padding:9px;border:1px solid {theme.border_soft};border-radius:9px;",
+                        {format!("{}: {}",row["label"].as_str().unwrap_or("Valve"),row["state"].as_str().unwrap_or("Unknown"))}
+                    }
+                }
             }
             if *show_error.read(){div {role:"dialog",aria_modal:"true",aria_label:"Replay details",style:"position:fixed;inset:0;background:rgba(0,0,0,.7);display:grid;place-items:center;z-index:10000;padding:16px;",
                 div {style:"max-width:560px;padding:20px;border-radius:14px;background:{theme.panel_background};color:{theme.text_primary};",
@@ -803,7 +854,8 @@ fn component_row(
     frame: &super::vehicle_replay::Frame,
 ) -> Element {
     let (raw, display, fraction, active) = component_readout(component, frame);
-    let width = format!("{:.1}%", fraction * 100.0);
+    let tank_fraction=configured_tank_fraction(component,raw);
+    let width = format!("{:.1}%", if component.kind=="tank"{tank_fraction.unwrap_or(0.0)}else{fraction} * 100.0);
     let status = if raw.is_none() {
         "NO DATA"
     } else if matches!(component.kind.as_str(), "motor" | "parachute" | "link") {
@@ -826,11 +878,15 @@ fn component_row(
                 span { style: "color:{status_color}; font-size:9px; font-weight:900;", "{status}" }
             }
             div { style: "display:flex; align-items:center; gap:8px; margin-top:6px;",
-                div { style: "height:5px; flex:1; overflow:hidden; border-radius:999px; background:{theme.border_soft};",
+                if component.kind=="tank" && tank_fraction.is_none(){span {style:"flex:1;font-size:11px;color:{theme.text_muted};","Fill unknown"}}
+                else{div { style: "height:5px; flex:1; overflow:hidden; border-radius:999px; background:{theme.border_soft};",
                     div { class: "gs26-vehicle-stage", style: "height:100%; width:{width}; border-radius:inherit; background:{status_color};" }
-                }
+                }}
                 span { style: "min-width:76px; text-align:right; color:{theme.text_secondary}; font:11px ui-monospace,SFMono-Regular,Menlo,monospace;", "{display}" }
             }
+            if component.kind=="tank" && tank_fraction.is_some(){small {style:"color:{theme.text_muted};",
+                if matches!(component.unit.trim().to_ascii_lowercase().as_str(),"kg"|"g"){"Configured mass range"}else{"Configured fill range"}
+            }}
         }
     }
 }
@@ -838,6 +894,26 @@ fn component_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn illustrative_tanks_require_explicit_mass_or_percent_mapping_and_range(){
+        let mut c=VehicleComponentConfig{kind:"tank".into(),unit:"kg".into(),min:Some(1.0),max:Some(11.0),binding:Some(VehicleTelemetryBinding{data_type:"FILL_MASS".into(),..Default::default()}),..Default::default()};
+        assert_eq!(configured_tank_fraction(&c,Some(6.0)),Some(0.5));
+        assert_eq!(configured_tank_fraction(&c,None),None);
+        for unit in ["psi","bar","kPa","V",""]{c.unit=unit.into();assert_eq!(configured_tank_fraction(&c,Some(6.0)),None);}
+        c.unit="%".into();assert_eq!(configured_tank_fraction(&c,Some(6.0)),Some(0.5));
+        c.min=None;assert_eq!(configured_tank_fraction(&c,Some(6.0)),None);
+    }
+
+    #[test]
+    fn shared_scene_and_text_valves_use_named_saved_states_and_expire_together(){
+        use super::super::vehicle_replay::{Frame,Index,Sample};
+        let mut frame=Frame{data:Some(std::rc::Rc::new(Index::new(vec![Sample{id:1,timestamp_ms:1000,source_timestamp_ms:Some(999),sender_id:"VB".into(),data_type:"VALVE_STATE".into(),values:vec![Some(1.0),Some(0.0),None],phase:None}]))),at_ms:1500};
+        let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":0,"label":"Saved pilot name"}]});
+        let rows=replay_visual_valves(&layout,&frame);
+        assert_eq!(rows[0]["label"],"Saved pilot name");assert_eq!(rows[0]["state"],"Open");assert_eq!(rows[1]["state"],"Closed");assert_eq!(rows[2]["state"],"Unknown");
+        frame.at_ms=9000;let stale=replay_visual_valves(&layout,&frame);assert!(stale.iter().all(|row|row["state"]=="Unknown" && row["value"].is_null()));
+    }
 
     #[test]
     fn recording_paths_and_filter_json_are_encoded_as_one_url_component() {
@@ -949,7 +1025,7 @@ fn OfflineReplayImport() -> Element {
                     if bytes.len()>64*1024*1024{return Err("Replay exceeds 64 MiB.".to_string());}
                     let text=std::str::from_utf8(&bytes).map_err(|e|e.to_string())?;
                     let encoded=serde_json::to_string(text).map_err(|e|e.to_string())?;
-                    let script=format!("{}\nconst root=document.getElementById('offline-replay-{id}');root.__player?.dispose();root.__player=GSOfflineReplay.mount(root,{encoded});return 'Offline replay loaded.';",include_str!("../../station_ui/rendering/three/offline-replay.js"));
+                    let script=format!("{}\nconst root=document.getElementById('offline-replay-{id}');root.__player?.dispose();root.__player=GSOfflineReplay.mount(root,{encoded});return 'Offline replay loaded.';",super::recording_download::offline_replay_script()?);
                     document::eval(&script).join::<String>().await.map_err(|e|e.to_string())
                 }.await;
                 message.set(result.unwrap_or_else(|e:String|format!("Import failed: {e}")));

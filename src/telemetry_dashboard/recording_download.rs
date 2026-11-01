@@ -464,10 +464,39 @@ pub(super) async fn save_replay_file(value: &serde_json::Value, standalone: bool
 
 /// The standalone file carries its player, data and config. It runs from file://
 /// without a web server, login, external models, scripts or network requests.
-fn portable_replay_html(value: &serde_json::Value) -> Result<String, String> {
-    let data=serde_json::to_string(value).map_err(|e|e.to_string())?.replace('<', "\\u003c");
+pub(super) fn offline_replay_script() -> Result<String, String> {
+    // Every module is shipped with the app/export. Imported recording files
+    // cannot select executable URLs or replace these assets.
+    let assets=serde_json::json!({
+        "core":include_str!("../../station_ui/rendering/three/three.core.js"),
+        "three":include_str!("../../station_ui/rendering/three/three.module.js"),
+        "scene":include_str!("../../station_ui/rendering/three/replay-scene.js"),
+        "software":include_str!("../../station_ui/rendering/three/software-renderer.js"),
+        "license":include_str!("../../station_ui/rendering/three/LICENSE")
+    });
+    let assets=serde_json::to_string(&assets).map_err(|e|e.to_string())?.replace('<',"\\u003c").replace('\u{2028}',"\\u2028").replace('\u{2029}',"\\u2029");
     let viewer=include_str!("../../station_ui/rendering/three/offline-replay.js");
-    Ok(format!(r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved vehicle replay</title><style>body{{font:16px system-ui;background:#101827;color:#f1f5f9;margin:20px;max-width:1100px}}button,select,input{{font:inherit;min-height:44px;margin:4px}}button,select{{background:#1e293b;color:white;border:1px solid #64748b;border-radius:6px;padding:6px 12px}}svg text{{font-family:system-ui}}</style><h1>Saved vehicle replay</h1><label>Import another portable JSON replay <input id="import" type="file" accept=".json"></label><p id="status" role="status"></p><main id="replay"></main><script type="application/json" id="recording">{data}</script><script>{viewer}
+    Ok(format!(r#"if(!globalThis.GSLoadReplay3D){{
+const assets={assets};let loading;const urls=[];
+const moduleURL=text=>{{const url=URL.createObjectURL(new Blob([text],{{type:'text/javascript'}}));urls.push(url);return url;}};
+globalThis.GSReplay3DLicense=assets.license;
+globalThis.GSLoadReplay3D=()=>loading||=(async()=>{{
+ const core=moduleURL(assets.core);
+ const three=moduleURL(assets.three.replaceAll("'./three.core.js'",JSON.stringify(core)));
+ const scene=moduleURL(assets.scene);
+ const software=moduleURL(assets.software.replaceAll("'./three.module.js'",JSON.stringify(three)));
+ const [T,visuals,fallback]=await Promise.all([import(three),import(scene),import(software)]);
+ return {{T,...visuals,SoftwareRenderer:fallback.SoftwareRenderer}};
+}})();
+addEventListener('pagehide',()=>{{for(const url of urls)URL.revokeObjectURL(url);}},{{once:true}});
+}}
+{viewer}"#))
+}
+
+fn portable_replay_html(value: &serde_json::Value) -> Result<String, String> {
+    let data=serde_json::to_string(value).map_err(|e|e.to_string())?.replace('<', "\\u003c").replace('\u{2028}',"\\u2028").replace('\u{2029}',"\\u2029");
+    let viewer=offline_replay_script()?;
+    Ok(format!(r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved vehicle replay</title><style>body{{font:16px system-ui;background:#101827;color:#f1f5f9;margin:20px;max-width:1100px}}button,select,input{{font:inherit;min-height:44px;margin:4px}}button,select{{background:#1e293b;color:white;border:1px solid #64748b;border-radius:6px;padding:6px 12px}}label{{display:block}}#import{{box-sizing:border-box;max-width:calc(100% - 8px)}}svg text{{font-family:system-ui}}</style><h1>Saved vehicle replay</h1><label>Import another portable JSON replay <input id="import" type="file" accept=".json"></label><p id="status" role="status"></p><main id="replay"></main><script type="application/json" id="recording">{data}</script><script>{viewer}
 let player;function load(text){{const next=GSOfflineReplay.validate(text);player?.dispose();player=GSOfflineReplay.mount(document.getElementById('replay'),next);document.getElementById('status').textContent='Offline file · no backend connection';}}load(document.getElementById('recording').textContent);document.getElementById('import').onchange=async e=>{{try{{const file=e.target.files[0];if(!file)return;if(file.size>GSOfflineReplay.MAX_BYTES)throw Error('Replay exceeds 64 MiB.');load(await file.text());}}catch(error){{document.getElementById('status').textContent='Import failed: '+error.message;}}}};</script></html>"#))
 }
 
@@ -480,6 +509,24 @@ fn portable_html_embeds_config_and_escapes_script_end_from_saved_labels() {
     assert!(html.contains("\\u003c/script>"));
     assert!(html.contains("Offline file · no backend connection"));
     assert!(html.contains("const MAX_BYTES"));
+}
+
+#[cfg(test)]
+#[test]
+fn offline_three_assets_and_license_are_embedded_without_recording_supplied_code() {
+    let script=offline_replay_script().unwrap();
+    let encoded=script.split("const assets=").nth(1).unwrap().split(";let loading;").next().unwrap();
+    let assets:serde_json::Value=serde_json::from_str(encoded).unwrap();
+    assert!(assets["license"].as_str().unwrap().contains("Permission is hereby granted"));
+    assert!(assets["core"].as_str().unwrap().contains("class Vector3"));
+    assert!(assets["scene"].as_str().unwrap().contains("ReplayMotorStand"));
+    assert!(script.contains("URL.createObjectURL(new Blob"));
+    assert!(!script.contains("</script>"));
+    let html=portable_replay_html(&serde_json::json!({"label":"</script>\u{2028}\u{2029}"})).unwrap();
+    assert!(!html.contains("</script>\u{2028}"));
+    assert!(!html.contains('\u{2028}'));
+    assert!(!html.contains('\u{2029}'));
+    assert!(html.contains("\\u003c/script>\\u2028\\u2029"));
 }
 
 #[cfg(test)]

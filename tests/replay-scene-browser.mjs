@@ -42,6 +42,17 @@ try {
  m.setAttribute('data-track','null');m.setAttribute('data-state',JSON.stringify({replay_time_seconds:2,attitude:[15,20,5],gps:null,motions:[]}));await new Promise(r=>setTimeout(r,150));
  checks.attitudeWithoutAnyGpsTrack=m.root.visible&&!m.origin&&!m.ground&&m.root.position.length()===0&&Math.abs(m.root.rotation.x-15*Math.PI/180)<1e-6&&m.status.textContent.includes('Reference attitude mode');
  m.setAttribute('data-track',savedTrack);m.setAttribute('data-state',JSON.stringify({replay_time_seconds:2,attitude:[15,20,5],gps:[45.004,-72.998,10000],motions:[]}));await new Promise(r=>setTimeout(r,150));
+ const savedFlightPosition=m.root.position.clone();
+ const visual={replay_time_seconds:2,attitude:[15,20,5],gps:[45.004,-72.998,10000],motions:[],replay_scene:'test_fire',visual_valves:[{label:'Saved pilot',value:1},{label:'Saved dump',value:null}],visual_components:[{kind:'tank',label:'Pressure alone',unit:'psi',min:0,max:1000,value:500,binding:{data_type:'FUEL_TANK_PRESSURE'}}]};
+ m.setAttribute('data-state',JSON.stringify(visual));await new Promise(r=>setTimeout(r,150));
+ checks.illustrativeStand=!!m.replayAssembly&&m.model.name==='ReplayMotorStand'&&!!m.model.getObjectByName('HorizontalMotor')&&m.root.position.length()===0;
+ checks.savedValveStates=m.replayAssembly.valves[0].part.userData.state==='open'&&m.replayAssembly.valves[1].part.userData.state==='unknown';
+ checks.pressureNotLiquid=!m.replayAssembly.tanks[0].fluid.visible&&m.replayAssembly.tanks[0].unknown.visible;
+ visual.replay_scene='flight';m.setAttribute('data-state',JSON.stringify(visual));await new Promise(r=>setTimeout(r,150));
+ checks.illustrativeFlight=m.model.name==='ReplayFlightVehicle'&&!!m.model.getObjectByName('Nose')&&savedFlightPosition.length()>0&&m.root.position.distanceTo(savedFlightPosition)<1e-6;
+ visual.replay_scene='configured';m.setAttribute('data-state',JSON.stringify(visual));
+ await new Promise((resolve,reject)=>{const timer=setInterval(()=>{if(m.model&&!m.replayAssembly){clearInterval(timer);resolve();}},25);setTimeout(()=>{clearInterval(timer);reject(Error('Configured GLB did not restore'));},10000);});
+ checks.configuredModelRestored=!!m.model&&!m.replayAssembly;
  checks.noOverflow=document.documentElement.scrollWidth<=innerWidth;document.body.dataset.renderer=m.software?'canvas':'webgl';
  finish();
 }catch(error){checks.error=error.message;document.body.dataset.pass='false';document.querySelector('#result').textContent=JSON.stringify(checks);}

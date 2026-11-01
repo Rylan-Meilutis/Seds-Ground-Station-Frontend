@@ -1,7 +1,7 @@
 import * as T from './three.module.js';
 import {GLTFLoader} from './GLTFLoader.js';
 import {SoftwareRenderer} from './software-renderer.js';
-import {EARTH_RADIUS_M, validGps, gpsToLocal, recordedPath, visibleSegmentCount} from './replay-scene.js';
+import {EARTH_RADIUS_M, validGps, gpsToLocal, recordedPath, visibleSegmentCount, createReplayAssembly} from './replay-scene.js';
 // Explicit named-node transforms; no dependence on model-viewer's private scene graph.
 class VehicleViewer extends HTMLElement {
  static observedAttributes=['src','data-state','data-track'];
@@ -98,8 +98,20 @@ class VehicleViewer extends HTMLElement {
   for(let ring=0;ring<rings;ring++)for(let i=0;i<slices;i++){const a=point(ring,i),b=point(ring+1,i),c=point(ring+1,i+1),d=point(ring,i+1);positions.push(...a,...b,...c,...a,...c,...d);}
   const geometry=new T.BufferGeometry();geometry.setAttribute('position',new T.Float32BufferAttribute(positions,3));this.ground=new T.Mesh(geometry,new T.MeshBasicMaterial({color:0x415e55,side:T.DoubleSide}));this.ground.userData.referenceGround=true;this.scene.add(this.ground);
  }
- disposeModel(){if(this.model){this.root.remove(this.pivot||this.model);this.pivot=null;this.model.traverse(n=>{n.geometry?.dispose();for(const m of Array.isArray(n.material)?n.material:n.material?[n.material]:[]){for(const v of Object.values(m))if(v?.isTexture)v.dispose();m.dispose();}});this.model=null;}}
- async load(){const src=this.getAttribute('src');if(!src)return;const generation=this.generation=(this.generation||0)+1;this.status.textContent='Loading model…';try{
+ ensureReplayAssembly(state){
+  const mode=Number.isFinite(state.replay_time_seconds)&&['flight','test_fire'].includes(state.replay_scene)?state.replay_scene:null;
+  if(mode){
+   if(this.replaySceneMode!==mode){
+    this.generation=(this.generation||0)+1;this.disposeModel();this.replayAssembly=createReplayAssembly(T,mode);this.replaySceneMode=mode;this.model=this.replayAssembly.group;this.root.add(this.model);this.mixer=new T.AnimationMixer(this.model);this.clips=[];this.activeClip=null;this.base=new Map();this.smooth=new Map();this.driven=[];
+    this.model.traverse(n=>this.base.set(n,{position:n.position.clone(),scale:n.scale.clone(),quaternion:n.quaternion.clone(),visible:n.visible}));this.modelDistance=mode==='test_fire'?11:10;this.distance=this.modelDistance;this.theta=.6;this.phi=1.2;this.follow=true;this.dataset.loaded='true';
+   }
+   this.replayAssembly.update({attitude:null,valves:state.visual_valves||[],components:state.visual_components||[]});this.dataset.replayScene=mode;return true;
+  }
+  if(this.replayAssembly){this.generation=(this.generation||0)+1;this.disposeModel();this.load();}
+  this.dataset.replayScene='configured';return false;
+ }
+ disposeModel(){if(this.model){this.root.remove(this.pivot||this.model);this.pivot=null;this.model.traverse(n=>{n.geometry?.dispose();for(const m of Array.isArray(n.material)?n.material:n.material?[n.material]:[]){for(const v of Object.values(m))if(v?.isTexture)v.dispose();m.dispose();}});this.model=null;}this.replayAssembly=null;this.replaySceneMode=null;}
+ async load(){if(Number.isFinite(this.state?.replay_time_seconds)&&['flight','test_fire'].includes(this.state?.replay_scene)){this.ensureReplayAssembly(this.state);return;}const src=this.getAttribute('src');if(!src)return;const generation=this.generation=(this.generation||0)+1;this.status.textContent='Loading model…';try{
    const gltf=await new GLTFLoader().loadAsync(src);if(!this.isConnected||generation!==this.generation){gltf.scene.traverse(n=>{n.geometry?.dispose();});return;}
    this.disposeModel();this.model=gltf.scene;const box=new T.Box3().setFromObject(this.model);const modelCenter=box.getCenter(new T.Vector3());const size=box.getSize(new T.Vector3());this.pivot=new T.Group();this.pivot.position.sub(modelCenter);this.pivot.add(this.model);this.center.set(0,0,0);this.root.add(this.pivot);this.base=new Map();this.smooth=new Map();this.model.traverse(n=>this.base.set(n,{position:n.position.clone(),scale:n.scale.clone(),quaternion:n.quaternion.clone(),visible:n.visible}));
    this.mixer=new T.AnimationMixer(this.model);this.clips=gltf.animations;this.activeClip=null;
@@ -109,14 +121,14 @@ class VehicleViewer extends HTMLElement {
  frame(){
   if(Number.isFinite(this.state?.replay_time_seconds)&&!this.dirty)return;
   const now=performance.now();if(document.hidden||!this.isConnected||!this.clientWidth||!this.clientHeight||now-(this.lastFrame||0)<(this.software?1000/12:1000/30))return;this.lastFrame=now;
-  if(!this.model)return;const dt=Math.min(this.clock.getDelta(),.1),state=this.state||{};
+  const state=this.state||{},procedural=this.ensureReplayAssembly(state);if(!this.model)return;const dt=Math.min(this.clock.getDelta(),.1);
   if(state.orbit&&state.orbit!==this.orbit){const parts=state.orbit.trim().split(/\s+/);const theta=parseFloat(parts[0]),phi=parseFloat(parts[1]),radius=parseFloat(parts[2]);if(Number.isFinite(theta))this.theta=T.MathUtils.degToRad(theta);if(Number.isFinite(phi))this.phi=T.MathUtils.clamp(T.MathUtils.degToRad(phi),.1,3);if(Number.isFinite(radius)&&radius>0)this.distance=radius;this.orbit=state.orbit;}
   if(state.clip!==this.activeClip){this.mixer.stopAllAction();const clip=this.clips.find(c=>c.name===state.clip);if(clip)this.mixer.clipAction(clip).play();this.activeClip=state.clip;}
   for(const node of this.driven||[]){const b=this.base.get(node);if(b){node.position.copy(b.position);node.quaternion.copy(b.quaternion);node.scale.copy(b.scale);node.visible=b.visible;}}
   const replay=Number.isFinite(state.replay_time_seconds);
   if(replay)this.mixer.setTime(Math.max(0,state.replay_time_seconds));else this.mixer.update(dt);
   const modified=new Set();let missing=0,unknown=0;
-  for(const motion of state.motions||[]){const node=this.model.getObjectByName(motion.node);if(!node){missing++;continue;}const base=this.base.get(node);if(!base)continue;
+  for(const motion of procedural?[]:state.motions||[]){const node=this.model.getObjectByName(motion.node);if(!node){missing++;continue;}const base=this.base.get(node);if(!base)continue;
    if(!modified.has(node)){node.position.copy(base.position);node.quaternion.copy(base.quaternion);node.scale.copy(base.scale);node.visible=base.visible;modified.add(node);}
    if(motion.value==null||!Number.isFinite(motion.value)){unknown++;continue;}
    const target=motion.from+(motion.to-motion.from)*T.MathUtils.clamp(motion.value,0,1),key=motion.node+':'+motion.transform+':'+motion.axis.join(',');
@@ -129,9 +141,9 @@ class VehicleViewer extends HTMLElement {
   }
   this.driven=modified;
   this.status.textContent=missing?missing+' mapped model node(s) missing':unknown?unknown+' component(s): no telemetry':this.software?'Compatibility preview: reduced-detail model':'';
-  this.updateFlightScene(state);
-  const a=state.attitude||[null,null,null];this.root.rotation.set(...a.map(v=>T.MathUtils.degToRad(Number.isFinite(v)?v:0)));this.dataset.attitudeAvailable=String(a.every(Number.isFinite));if(!a.every(Number.isFinite))this.status.textContent=[this.status.textContent,'Attitude unavailable · reference orientation'].filter(Boolean).join(' · ');
-  const note=!this.origin?'Reference attitude mode · no saved GPS track':!validGps(state.gps)?'Reference attitude mode · no fresh saved GPS':'Reference Earth surface · terrain unavailable'+(this.track?.sampled||this.track?.truncated?' · sampled path':'');this.status.textContent=[this.status.textContent,note].filter(Boolean).join(' · ');
+  const stand=procedural&&state.replay_scene==='test_fire';this.updateFlightScene(stand?{...state,gps:null}:state);
+  const a=stand?[0,0,0]:state.attitude||[null,null,null];this.root.rotation.set(...a.map(v=>T.MathUtils.degToRad(Number.isFinite(v)?v:0)));this.dataset.attitudeAvailable=String(a.every(Number.isFinite));if(!a.every(Number.isFinite))this.status.textContent=[this.status.textContent,'Attitude unavailable · reference orientation'].filter(Boolean).join(' · ');
+  const note=stand?'Illustrative fixed motor stand · saved component values':!this.origin?'Reference attitude mode · no saved GPS track':!validGps(state.gps)?'Reference attitude mode · no fresh saved GPS':'Reference Earth surface · terrain unavailable'+(this.track?.sampled||this.track?.truncated?' · sampled path':'');this.status.textContent=[this.status.textContent,note].filter(Boolean).join(' · ');
   const distance=this.viewDistance(),far=Math.max(20000000,distance*2);if(this.camera.far!==far){this.camera.far=far;this.camera.updateProjectionMatrix();}this.camera.position.set(this.target.x+distance*Math.sin(this.phi)*Math.sin(this.theta),this.target.y+distance*Math.cos(this.phi),this.target.z+distance*Math.sin(this.phi)*Math.cos(this.theta));this.camera.lookAt(this.target);this.renderer.render(this.scene,this.camera);this.updatePositionMarker();this.dirty=false;
  }
  disconnectedCallback(){this.generation++;this.resize?.disconnect();this.renderer?.setAnimationLoop(null);this.disposeModel();this.clearFlightScene();this.pointers?.clear();this.renderer?.dispose();this.renderer?.domElement.remove();this.status?.remove();this.positionMarker?.remove();this.renderer=null;}
