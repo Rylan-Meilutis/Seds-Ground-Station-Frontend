@@ -916,6 +916,18 @@ mod tests {
     }
 
     #[test]
+    fn saved_valve_labels_preserve_inverted_custom_and_unknown_raw_samples() {
+        use super::super::vehicle_replay::{Frame,Index,Sample};
+        let mut frame=Frame{data:Some(std::rc::Rc::new(Index::new(vec![Sample{id:1,timestamp_ms:1000,source_timestamp_ms:None,sender_id:"VB".into(),data_type:"VALVE_STATE".into(),values:vec![Some(1.0),Some(0.0),Some(1.0),Some(0.0),Some(1.0),None,Some(2.0)],phase:None}]))),at_ms:1500};
+        let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":0},{"index":1},{"index":2},{"index":3},{"index":4}],"valve_labels":[{"true_label":"Closed","false_label":"Open","unknown_label":"No saved sample"},{"true_label":"Closed","false_label":"Open"},{"true_label":"On","false_label":"Off"},{"true_label":"Ouvert","false_label":"Fermé"},{"true_label":" cLoSeD ","false_label":" OpEn "}]});
+        let rows=replay_visual_valves(&layout,&frame);
+        for (index,expected) in ["Closed","Open","On","Fermé"," cLoSeD ","Unknown","Unknown"].into_iter().enumerate(){assert_eq!(rows[index]["state"],expected);}
+        assert_eq!(rows[0]["value"],1.0);assert_eq!(rows[1]["value"],0.0);assert!(rows[5]["value"].is_null());assert_eq!(rows[6]["value"],2.0);
+        assert_eq!(rows[0]["true_label"],"Closed");assert_eq!(rows[2]["true_label"],"On");
+        frame.at_ms=9000;let stale=replay_visual_valves(&layout,&frame);assert!(stale.iter().all(|row|row["value"].is_null()));assert_eq!(stale[0]["state"],"No saved sample");assert!(stale[1..].iter().all(|row|row["state"]=="Unknown"));
+    }
+
+    #[test]
     fn recording_paths_and_filter_json_are_encoded_as_one_url_component() {
         assert_eq!(percent_component("a/b ?#é"), "a%2Fb%20%3F%23%C3%A9");
         assert_eq!(

@@ -1,0 +1,165 @@
+{
+  "format": "seds-replay",
+  "version": 1,
+  "recording": "configured-valve-semantics.db",
+  "mode": "flight",
+  "configuration_provenance": "Export-time configuration test fixture",
+  "schema": {
+    "types": [
+      {
+        "name": "VALVE_STATE",
+        "element": {
+          "kind": "Static",
+          "data_type": "Float32",
+          "count": 8
+        }
+      }
+    ]
+  },
+  "layout": {
+    "test_fire_mode": false,
+    "units": {
+      "pressure": "psi",
+      "fill": "%"
+    }
+  },
+  "view_config": {
+    "attitude": {
+      "roll": {
+        "data_type": "ROLL",
+        "index": 0
+      }
+    },
+    "stages": [],
+    "ground_systems": [
+      {
+        "id": "fuel",
+        "label": "Fuel tank",
+        "kind": "tank",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "binding": {
+          "data_type": "FILL",
+          "index": 0
+        }
+      }
+    ]
+  },
+  "valve_mappings": [
+    {
+      "label": "Inverted pilot",
+      "data_type": "VALVE_STATE",
+      "sender_id": "VB",
+      "index": 0,
+      "true_label": "Closed",
+      "false_label": "Open"
+    },
+    {
+      "label": "Inverted vent",
+      "data_type": "VALVE_STATE",
+      "sender_id": "VB",
+      "index": 1,
+      "true_label": "Closed",
+      "false_label": "Open"
+    },
+    {
+      "label": "Custom switch",
+      "data_type": "VALVE_STATE",
+      "sender_id": "VB",
+      "index": 2,
+      "true_label": "On",
+      "false_label": "Off"
+    },
+    {
+      "label": "Localized status",
+      "data_type": "VALVE_STATE",
+      "sender_id": "VB",
+      "index": 3,
+      "true_label": "Ouvert",
+      "false_label": "Ferm\u00e9"
+    },
+    {
+      "label": "Case and spacing",
+      "data_type": "VALVE_STATE",
+      "sender_id": "VB",
+      "index": 4,
+      "true_label": " cLoSeD ",
+      "false_label": " OpEn "
+    },
+    {
+      "label": "Missing sample",
+      "data_type": "VALVE_STATE",
+      "sender_id": "VB",
+      "index": 5,
+      "true_label": "Open",
+      "false_label": "Closed"
+    },
+    {
+      "label": "Nonbinary sample",
+      "data_type": "VALVE_STATE",
+      "sender_id": "VB",
+      "index": 6,
+      "true_label": "Open",
+      "false_label": "Closed"
+    },
+    {
+      "label": "Default mapping",
+      "data_type": "VALVE_STATE",
+      "sender_id": "VB",
+      "index": 7
+    }
+  ],
+  "samples": [
+    {
+      "id": 1,
+      "timestamp_ms": 1000,
+      "sender_id": "VB",
+      "data_type": "VALVE_STATE",
+      "values": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        null,
+        2,
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "timestamp_ms": 2000,
+      "sender_id": "VB",
+      "data_type": "VALVE_STATE",
+      "values": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        null,
+        2,
+        1
+      ]
+    },
+    {
+      "id": 3,
+      "timestamp_ms": 1000,
+      "sender_id": "VB",
+      "data_type": "FILL",
+      "values": [
+        42
+      ]
+    },
+    {
+      "id": 4,
+      "timestamp_ms": 9000,
+      "sender_id": "VB",
+      "data_type": "OTHER",
+      "values": [
+        0
+      ]
+    }
+  ]
+}

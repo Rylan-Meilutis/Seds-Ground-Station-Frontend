@@ -41,7 +41,14 @@ export function configuredTankFraction(c){
  if(c.kind!=='tank'||!['%','percent','kg','g'].includes(unit)||!c.binding||typeof c.binding.data_type!=='string'||!c.binding.data_type.trim()||!Number.isFinite(c.value)||!Number.isFinite(c.min)||!Number.isFinite(c.max)||c.max<=c.min)return null;
  return Math.max(0,Math.min(1,(c.value-c.min)/(c.max-c.min)));
 }
-export function replayValveState(value){return value===1?'open':value===0?'closed':'unknown';}
+// Raw validity is authoritative; only saved canonical position words orient a handle.
+export function replayValveState(value,row){
+ if(value!==0&&value!==1)return 'unknown';
+ const state=row?.state!==undefined?row.state:row?.[value===1?'true_label':'false_label'];
+ if(state===undefined)return value===1?'open':'closed';
+ const canonical=typeof state==='string'?state.trim().toLowerCase():'';
+ return canonical==='open'||canonical==='closed'?canonical:'unknown';
+}
 export function createReplayAssembly(T,mode='flight'){
  const group=new T.Group();group.name=mode==='test_fire'?'ReplayMotorStand':'ReplayFlightVehicle';
  const moving=new T.Group();moving.name='RecordedAttitude';group.add(moving);
@@ -95,7 +102,7 @@ export function createReplayAssembly(T,mode='flight'){
   }
   for(let i=0;i<valves.length;i++){
    const row=valveRows[i],v=valves[i];v.part.visible=!!row;if(!row)continue;
-   const status=replayValveState(row.value);v.part.userData={label:String(row.label||row.id||'Valve').slice(0,128),state:status};
+   const status=replayValveState(row.value,row);v.part.userData={label:String(row.label||row.id||'Valve').slice(0,128),state:status};
    setLabel(v,`${v.part.userData.label}: ${typeof row.state==='string'?row.state:status}`);
    v.handle.rotation.z=status==='open'?Math.PI/2:status==='closed'?0:Math.PI/4;
    v.handle.material.color.setHex(status==='open'?0x22c55e:status==='closed'?0xf59e0b:0x64748b);

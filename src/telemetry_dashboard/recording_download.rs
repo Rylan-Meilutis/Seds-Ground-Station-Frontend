@@ -539,3 +539,14 @@ fn actual_offline_html_export_contains_roundtrip_configuration_and_saved_samples
     assert_eq!(restored,data);
     if let Some(path)=std::env::var_os("GS_REPLAY_HTML_PROOF") { std::fs::write(path,html).unwrap(); }
 }
+
+#[cfg(test)]
+#[test]
+fn actual_inverted_valve_export_keeps_saved_labels_and_raw_values() {
+    let data:serde_json::Value=serde_json::from_str(include_str!("../../tests/fixtures/offline-valve-semantics.json")).unwrap();
+    let html=portable_replay_html(&data).unwrap();
+    let encoded=html.split("id=\"recording\">").nth(1).unwrap().split("</script>").next().unwrap();
+    let restored:serde_json::Value=serde_json::from_str(encoded).unwrap();
+    assert_eq!(restored,data);assert_eq!(restored["valve_mappings"][0]["true_label"],"Closed");assert_eq!(restored["valve_mappings"][2]["true_label"],"On");assert_eq!(restored["samples"][0]["values"][6],2);
+    if let Some(path)=std::env::var_os("GS_REPLAY_INVERTED_HTML_PROOF"){std::fs::write(path,html).unwrap();}
+}

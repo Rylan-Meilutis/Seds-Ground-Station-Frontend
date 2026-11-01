@@ -41,6 +41,13 @@ function tankFillFraction(c){
  if(c.kind!=='tank'||!['%','percent','kg','g'].includes(unit)||!c.binding||typeof c.binding.data_type!=='string'||!c.binding.data_type.trim()||!finite(c.value)||!finite(c.min)||!finite(c.max)||c.max<=c.min)return null;
  return Math.max(0,Math.min(1,(c.value-c.min)/(c.max-c.min)));
 }
+function replayValveState(value,row){
+ if(value!==0&&value!==1)return 'unknown';
+ const state=row?.state!==undefined?row.state:row?.[value===1?'true_label':'false_label'];
+ if(state===undefined)return value===1?'open':'closed';
+ const canonical=typeof state==='string'?state.trim().toLowerCase():'';
+ return canonical==='open'||canonical==='closed'?canonical:'unknown';
+}
 function state(p,at){
  const components=[...(p.view_config.ground_systems||[]),...(p.view_config.stages||[]).flatMap(s=>s.components||[])];
  return {valves:p.valve_mappings.map(v=>({...v,value:value(p,v,at),state:(()=>{const n=value(p,v,at);return n===1?(v.true_label||'Open'):n===0?(v.false_label||'Closed'):(v.unknown_label||'Unknown');})()})),
@@ -94,7 +101,7 @@ function mount(root,input){
   for(const old of [...scene.querySelectorAll('[data-valve]')])old.remove();rows.replaceChildren();
   for(const [i,v]of f.valves.entries()){
    const g=svg('g',{'data-valve':i,transform:`translate(390 ${40+i*44})`});
-   g.append(svg('circle',{cx:0,cy:0,r:12,fill:(v.value!==0&&v.value!==1)?'#64748b':v.value===1?'#22c55e':'#f59e0b'}));
+   g.append(svg('circle',{cx:0,cy:0,r:12,fill:replayValveState(v.value,v)==='open'?'#22c55e':replayValveState(v.value,v)==='closed'?'#f59e0b':'#64748b'}));
    const label=svg('text',{x:20,y:4,fill:'white','font-size':13});label.textContent=v.label.length>38?v.label.slice(0,37)+'…':v.label;g.setAttribute('aria-label',v.label+': '+v.state);g.append(label);
    const status=svg('text',{x:20,y:24,fill:'#cbd5e1','font-size':13});status.textContent=v.state;g.append(status);scene.append(g);
    const card=node('div',`${v.label}: ${v.state}`);card.dataset.valve=v.label;card.style.cssText='border:1px solid #64748b;padding:8px;border-radius:6px';rows.append(card);
@@ -114,5 +121,5 @@ function mount(root,input){
  timer=setInterval(()=>{if(!root.isConnected){disposed=true;clearInterval(timer);visual?.dispose();return;}const now=performance.now();if(playing){at=Math.min(p.end_ms,at+Math.max(0,Math.min(1000,now-last))*Number(speed.value));if(at>=p.end_ms){playing=false;play.textContent='Play';}render();}last=now;},50);
  render();return {package:p,get visual(){return visual;},seek:n=>{at=Math.max(p.start_ms,Math.min(p.end_ms,n));render();},dispose:()=>{disposed=true;clearInterval(timer);visual?.dispose();}};
 }
-globalThis.GSOfflineReplay={MAX_BYTES,validate,value,state,tankFillFraction,mount};
+globalThis.GSOfflineReplay={MAX_BYTES,validate,value,state,tankFillFraction,replayValveState,mount};
 })();
