@@ -18,6 +18,8 @@ struct Settings {
     fill_tolerance_kg: f32,
     #[serde(default = "default_fill_settle")]
     fill_settle_ms: u64,
+    #[serde(default)]
+    turbocharge_max_added_mass_kg: Option<f32>,
     pressure_ceiling_psi: Option<f32>,
     maximum_zero_offset_psi: Option<f32>,
     dry_self_test_confirmed: bool,
@@ -245,6 +247,10 @@ struct Status {
     self_test_locked: bool,
     current_step_psi: f32,
     pressure_psi: Option<f32>,
+    #[serde(default)]
+    valve_pressure: Option<serde_json::Value>,
+    #[serde(default)]
+    turbocharge: Option<serde_json::Value>,
     baseline: Option<Noise>,
     #[serde(default)]
     valves: [Option<bool>; 5],
@@ -376,6 +382,29 @@ pub(super) fn GsePanel(
         .pressure_psi
         .map(|v| format!("{v:.1} psi"))
         .unwrap_or_else(|| "—".into());
+    let valve_pressure_label = snapshot
+        .valve_pressure
+        .as_ref()
+        .and_then(|p| (p["age_ms"].as_u64()? <= 2000).then_some(p["psi"].as_f64()?))
+        .map(|p| format!("{p:.1} psi"))
+        .unwrap_or_else(|| "Unknown / stale".into());
+    let turbo_enabled = *online.read()
+        && !abort_only_mode
+        && !*busy.read()
+        && auth::can_send_command("Turbocharge")
+        && action_policy
+            .read()
+            .controls
+            .iter()
+            .any(|c| c.cmd == "Turbocharge" && c.enabled);
+    let turbo_reason = snapshot
+        .turbocharge
+        .as_ref()
+        .and_then(|v| v["disabled_reason"].as_str())
+        .unwrap_or(
+            "Requires paused qualified fill, fresh valve-board pressure, routes and interlocks",
+        )
+        .to_string();
     let rows = nitrogen_rows.read().clone();
     let step_error = validated_nitrogen_steps(&rows).err();
     let fill = fill_draft.read().clone();
@@ -402,8 +431,22 @@ pub(super) fn GsePanel(
                     if show_model {span {"Animation indicates sequence activity, not measured flow"}}
                 }
                 p {style:"margin:0;color:{theme.text_primary};", "{snapshot.message}"}
+                p {style:"margin:0;", "Valve-board pressure (psi): {valve_pressure_label}"}
+                button {r#type:"button",disabled:!turbo_enabled,onclick:move |_| {
+                    if !auth::can_send_command("Turbocharge") || !action_policy.read().controls.iter().any(|c|c.cmd=="Turbocharge"&&c.enabled) {return;}
+                    busy.set(true);
+                    spawn(async move {
+                        match http_post_json::<_,serde_json::Value>("/api/command", &"Turbocharge").await {
+                            Ok(_)=>message.set("Turbocharge requested; valve confirmations remain required".into()),
+                            Err(error)=>message.set(error),
+                        }
+                        busy.set(false);
+                    });
+                },"Turbocharge"}
+                p {style:"margin:0;font-size:12px;", "Turbocharge uses the configured nitrous pressure target. It confirms every valve closed, admits nitrogen only, then closes nitrogen and verifies settled mass. It never starts launch."}
+                if !turbo_enabled {p {style:"margin:0;font-size:12px;","{turbo_reason}"}}
                 div {style:"display:flex;gap:24px;flex-wrap:wrap;color:{theme.text_muted};font-size:12px;font-variant-numeric:tabular-nums;",
-                    span {"Tank: {pressure_label}"}
+                    span {"GS-calibrated PT: {pressure_label}"}
                     if *online.read() {span {"Test step: {snapshot.current_step_psi:.0} psi"}}
                     else {span {"Test step: unknown"}}
                     if snapshot.self_test_locked {span {"Self-test locked for this fill session"}}
@@ -450,7 +493,11 @@ pub(super) fn GsePanel(
                         }
                         div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:12px;padding-top:16px;max-width:880px;",
                             label {style:"display:grid;gap:5px;min-width:0;", "Maximum acceptable empty-tank PT offset (psi, required)" input {style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",r#type:"number",min:"0",step:"0.1",value:cfg.maximum_zero_offset_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.maximum_zero_offset_psi=e.value().parse().ok();}}}}
-                            label {style:"display:grid;gap:5px;min-width:0;", "Hardware pressure ceiling (psi, optional lower limit)" input {style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",r#type:"number",min:"0.1",step:"0.1",value:cfg.pressure_ceiling_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.pressure_ceiling_psi=e.value().parse().ok();}}}}
+                            label {style:"display:grid;gap:5px;min-width:0;", "Hardware pressure ceiling (psi; required for Turbocharge)" input {style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",r#type:"number",min:"0.1",step:"0.1",value:cfg.pressure_ceiling_psi.map(|v|v.to_string()).unwrap_or_default(),disabled:!can_edit,oninput:move |e|{if let Some(c)=settings.write().as_mut(){c.pressure_ceiling_psi=e.value().parse().ok();}}}}
+                        }
+                        label {style:"display:grid;gap:5px;max-width:440px;", "Maximum added nitrogen mass (kg, required for Turbocharge)"
+                            input {r#type:"number",min:"0.001",step:"0.01",disabled:!can_edit,value:cfg.turbocharge_max_added_mass_kg.map(|v|v.to_string()).unwrap_or_default(),oninput:move|event|{if let Some(c)=settings.write().as_mut(){c.turbocharge_max_added_mass_kg=event.value().parse().ok();}}}
+                            small {"Blank disables Turbocharge. This cumulative allowance is separate from liquid-fill tolerance."}
                         }
                         fieldset {style:"margin:16px 0 0;padding:12px;border:1px solid {theme.border};border-radius:10px;max-width:880px;min-width:0;box-sizing:border-box;",
                             legend {style:"padding:0 5px;font-size:13px;", "Nitrous fill precision"}
@@ -871,5 +918,17 @@ mod nitrogen_settings_tests {
             .is_err()
         );
         assert!(validated_nitrogen_steps(&[row("100", "1", "600")]).is_ok());
+    }
+    #[test]
+    fn turbocharge_allowance_is_explicit_and_roundtrips_without_liquid_tolerance_reuse() {
+        let mut settings = Settings::default();
+        assert!(settings.turbocharge_max_added_mass_kg.is_none());
+        settings.fill_tolerance_kg = 0.07;
+        settings.turbocharge_max_added_mass_kg = Some(0.3);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["turbocharge_max_added_mass_kg"], 0.3_f32);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.turbocharge_max_added_mass_kg, Some(0.3));
+        assert_eq!(restored.fill_tolerance_kg, 0.07);
     }
 }
