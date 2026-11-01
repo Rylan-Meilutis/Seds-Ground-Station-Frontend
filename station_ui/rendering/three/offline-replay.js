@@ -30,6 +30,13 @@ function latest(p,type,sender,at){
  let found=null;for(const rows of sources.values()){const r=previous(rows);if(r&&(!found||r.timestamp_ms>found.timestamp_ms||(r.timestamp_ms===found.timestamp_ms&&r.id>found.id)))found=r;}return found;
 }
 function value(p,b,at,hold=false){if(!b)return null;const r=latest(p,b.data_type,b.sender_id,at);if(!r||(!hold&&at-r.timestamp_ms>5000))return null;const v=r.values[b.index??0];if(!finite(v))return null;const n=v*(b.scale??1)+(b.offset??0);return finite(n)?n:null;}
+// A pressure range is not a liquid-level measurement. Only an explicitly
+// configured percentage or loadcell mass range can drive this indicator.
+function tankFillFraction(c){
+ const unit=typeof c.unit==='string'?c.unit.trim().toLowerCase():'';
+ if(c.kind!=='tank'||!['%','percent','kg','g'].includes(unit)||!c.binding||typeof c.binding.data_type!=='string'||!c.binding.data_type.trim()||!finite(c.value)||!finite(c.min)||!finite(c.max)||c.max<=c.min)return null;
+ return Math.max(0,Math.min(1,(c.value-c.min)/(c.max-c.min)));
+}
 function state(p,at){
  const components=[...(p.view_config.ground_systems||[]),...(p.view_config.stages||[]).flatMap(s=>s.components||[])];
  return {valves:p.valve_mappings.map(v=>({...v,value:value(p,v,at),state:(()=>{const n=value(p,v,at);return n===1?(v.true_label||'Open'):n===0?(v.false_label||'Closed'):(v.unknown_label||'Unknown');})()})),
@@ -70,7 +77,11 @@ function mount(root,input){
    const card=node('div',`${v.label}: ${v.state}`);card.dataset.valve=v.label;card.style.cssText='border:1px solid #64748b;padding:8px;border-radius:6px';rows.append(card);
   }
   for(const c of f.components){const card=node('div');card.textContent=`${c.label||c.id}: ${c.value===null?'Unknown':c.value.toFixed(2)+' '+(c.unit||'')}`;
-   if(c.kind==='tank'&&finite(c.min)&&finite(c.max)&&c.max>c.min){const fill=node('progress');fill.max=1;if(c.value!==null)fill.value=Math.max(0,Math.min(1,(c.value-c.min)/(c.max-c.min)));card.append(fill);}
+   if(c.kind==='tank'){
+    const fraction=tankFillFraction(c);
+    if(fraction===null){const unknown=node('span',' · Tank fill: Unknown');unknown.dataset.tankFill='unknown';card.append(unknown);}
+    else{const fill=node('progress');fill.max=1;fill.value=fraction;fill.dataset.tankFill='known';fill.setAttribute('aria-label',`${c.label||c.id}: configured ${['kg','g'].includes(c.unit.trim().toLowerCase())?'mass':'fill'} range`);card.append(fill);}
+   }
    rows.append(card);
   }
   root.dataset.timestamp=at;root.dataset.loaded='true';
@@ -80,5 +91,5 @@ function mount(root,input){
  timer=setInterval(()=>{if(!root.isConnected){clearInterval(timer);return;}const now=performance.now();if(playing){at=Math.min(p.end_ms,at+Math.max(0,Math.min(1000,now-last))*Number(speed.value));if(at>=p.end_ms){playing=false;play.textContent='Play';}render();}last=now;},50);
  render();return {package:p,seek:n=>{at=Math.max(p.start_ms,Math.min(p.end_ms,n));render();},dispose:()=>clearInterval(timer)};
 }
-globalThis.GSOfflineReplay={MAX_BYTES,validate,value,state,mount};
+globalThis.GSOfflineReplay={MAX_BYTES,validate,value,state,tankFillFraction,mount};
 })();

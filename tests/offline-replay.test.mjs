@@ -13,6 +13,16 @@ assert.equal(GSOfflineReplay.state(p,2000).valves[0].state,'Closed');
 assert.equal(GSOfflineReplay.state(p,2000).valves[1].state,'Open');
 assert.equal(GSOfflineReplay.state(p,1500).components[0].value,42);
 assert.equal(GSOfflineReplay.state(p,9000).components[0].value,null);
+const tank=GSOfflineReplay.state(p,1500).components[0];
+assert.equal(GSOfflineReplay.tankFillFraction(tank),.42);
+assert.equal(GSOfflineReplay.tankFillFraction({...tank,unit:'kg',min:1,max:11,value:6}),.5,'explicit mass range is usable without inventing capacity');
+assert.equal(GSOfflineReplay.tankFillFraction({...tank,unit:'g',min:1000,max:11000,value:6000}),.5);
+for(const unit of ['psi','bar','kPa','Pa','V','',undefined])assert.equal(GSOfflineReplay.tankFillFraction({...tank,unit}),null,`${unit} is not tank fill`);
+for(const change of [c=>delete c.min,c=>delete c.max,c=>c.max=c.min,c=>c.min=NaN,c=>c.binding=null,c=>c.binding={data_type:''},c=>c.value=null,c=>c.value=Infinity]){
+ const invalid=structuredClone(tank);change(invalid);assert.equal(GSOfflineReplay.tankFillFraction(invalid),null);
+}
+assert.equal(GSOfflineReplay.tankFillFraction(GSOfflineReplay.state(p,999).components[0]),null,'future sample cannot drive fill');
+assert.equal(GSOfflineReplay.tankFillFraction(GSOfflineReplay.state(p,9000).components[0]),null,'stale sample remains unknown');
 assert.deepEqual(GSOfflineReplay.validate(JSON.stringify(p)).layout,p.layout);
 for(const change of [x=>x.version=2,x=>x.schema=null,x=>x.valve_mappings[0].index=-1,x=>x.samples[1].id=1,x=>x.samples[0].values=[Infinity]]){
  const bad=structuredClone(fixture);change(bad);assert.throws(()=>GSOfflineReplay.validate(bad));
