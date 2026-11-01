@@ -27,6 +27,7 @@ mod gps_webview;
 #[cfg(target_os = "windows")]
 mod gps_windows;
 mod gse_panel;
+mod plumbing_drive;
 mod checklists;
 pub mod layout;
 mod layout_settings_tab;

@@ -454,7 +454,8 @@ pub(super) fn GsePanel(
                 if let Some(noise)=snapshot.baseline {
                     p {style:"margin:0;font-size:12px;color:{theme.text_muted};","PT baseline {noise.average_psi:.2} psi · range {noise.min_psi:.2}–{noise.max_psi:.2} · noise ±{noise.noise_psi:.2} · {noise.samples} samples"}
                 }
-                details {
+                super::plumbing_drive::PlumbingDriveSelector { theme: theme.clone() }
+                    details {
                     summary {style:"cursor:pointer;color:{theme.text_muted};font-size:13px;","Nitrogen test settings"}
                     if let Some(cfg)=settings.read().clone() {
                         div {style:"display:grid;gap:12px;padding-top:12px;max-width:880px;min-width:0;",
