@@ -393,6 +393,9 @@ mod tests {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TelemetryRow {
+    /// Canonical device UTC only when the backend has explicit source evidence.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub source_timestamp_ms:Option<i64>,
     pub timestamp_ms: i64,
     #[serde(default)]
     pub received_timestamp_ms: i64,

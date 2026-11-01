@@ -196,6 +196,11 @@ fn TelemetryDashboardInner() -> Element {
     let fill_targets = use_signal(|| None::<FillTargetsConfig>);
     let network_time = use_signal(|| None::<NetworkTimeSync>);
     let launch_clock = use_signal(|| None::<LaunchClockMsg>);
+    use_effect(move || {
+        let (session,anchor)=recovery_marker::dashboard_clock();
+        let layout=layout_config.read().clone();
+        if let Some(layout)=layout {observe_dashboard_launch(session,anchor,layout.test_fire_mode);}
+    });
     let flight_state = use_signal(|| "Startup".to_string());
     let board_status = use_signal(Vec::<BoardStatusEntry>::new);
     let network_topology = use_signal(NetworkTopologyMsg::default);

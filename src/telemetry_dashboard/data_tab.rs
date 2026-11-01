@@ -872,7 +872,7 @@ mod tests {
         let _guard = DATA_TAB_TEST_GUARD.lock().unwrap();
         reset_latest_telemetry(&[]);
         reset_latest_telemetry(&[TelemetryRow {
-            timestamp_ms: 1_700_000_050_000,
+            source_timestamp_ms: None, timestamp_ms: 1_700_000_050_000,
             received_timestamp_ms: 1_700_000_050_000,
             data_type: "BATTERY_VOLTAGE".to_string(),
             data_type_id: Default::default(),

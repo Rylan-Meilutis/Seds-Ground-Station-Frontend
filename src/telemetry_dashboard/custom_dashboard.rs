@@ -335,6 +335,7 @@ fn display_card(mut card: Card, test_fire: bool) -> Card {
 pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::DataTabLayout, #[props(default)] test_fire_mode: bool) -> Element {
     let mut cards = use_context::<Signal<Vec<Card>>>();
     let mut editing = use_signal(|| false);
+    let mut aggregate = use_signal(|| false);
     let mut cameras = use_signal(super::live_stream_tab::LiveStreamConfig::default);
     let mut camera_error = use_signal(|| "Loading cameras…".to_string());
     use_future(move || async move {
@@ -381,7 +382,14 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
             .gs26-custom-dashboard button:focus-visible, .gs26-custom-dashboard input:focus-visible, .gs26-custom-dashboard select:focus-visible { outline:2px solid #38bdf8; outline-offset:2px; }
         "#} }
         div {style:"display:flex;gap:10px;align-items:center;flex-wrap:wrap;",
-            button {onclick:move |_| {let next=!*editing.read();editing.set(next);}, if *editing.read(){"Done"}else{"Customize dashboard"}}
+            button {disabled:super::dashboard_launch_window().is_none(),onclick:move |_| {let next=!*aggregate.read();aggregate.set(next);},
+                if *aggregate.read() {"Show live 60s"}else{"Show launch aggregate"}
+            }
+            small {if super::dashboard_launch_window().is_none() {"Launch aggregate unavailable · admitted action time unknown"}else if *aggregate.read() {
+                if super::dashboard_launch_window().is_some_and(|(start,end)|end-start==30_000) {"30s after Launch admission · retained for this launch session"}
+                else {"10min after Launch admission · retained for this launch session"}
+            }else{"Live · last 60 seconds"}}
+            button {onclick:move |_| {let next=!*editing.read();editing.set(next); }, if *editing.read(){"Done"}else{"Customize dashboard"}}
             if *editing.read() {
                 button {onclick:move |_|{let next=defaults();save(&next);cards.set(next);},"Restore defaults"}
                 button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.label="New telemetry card".into();next.push(card);save(&next);cards.set(next);},"Add card"}
@@ -402,7 +410,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
                         }
                         if card.visible {
                             if card.display == "camera" { CameraCard {card:card.clone(),config:cameras.read().clone(),error:camera_error.read().clone()} }
-                            else { TelemetryCard {card:display_card(card.clone(),test_fire_mode), thrust:test_fire_mode && card.data_type=="LOADCELL_WEIGHT_KG"} }
+                            else { TelemetryCard {card:display_card(card.clone(),test_fire_mode), aggregate:*aggregate.read(), thrust:test_fire_mode && card.data_type=="LOADCELL_WEIGHT_KG"} }
                         }
                         if *editing.read() && card.display != "camera" {
                         button { disabled: !card.pinned && snapshot.iter().filter(|c| c.pinned).count() >= 8,
@@ -460,97 +468,54 @@ fn CardEditor(card: Card, type_choices: Vec<(String, String)>, cameras: Vec<supe
     }}
 }
 
-#[derive(Default)]
-struct TrendHistory {
-    source: Option<(String, String, usize, bool, u64)>,
-    samples: Vec<(i64, f32)>,
+/// Draw actual timestamps, breaking across telemetry outages. The launch view
+/// uses the full requested window, so absent portions remain visibly empty.
+fn trend_path(samples:&[super::dashboard_history::Sample], window:Option<(i64,i64)>) -> String {
+    let first = window.map(|w|w.0).or_else(||samples.first().map(|s|s.time)).unwrap_or(0);
+    let last = window.map(|w|w.1).or_else(||samples.last().map(|s|s.time)).unwrap_or(first+1);
+    let low = samples.iter().map(|s|s.value).reduce(f32::min).unwrap_or(0.);
+    let high = samples.iter().map(|s|s.value).reduce(f32::max).unwrap_or(1.);
+    let padding = ((high-low)*0.05).max(high.abs().max(low.abs())*0.001).max(0.000001);
+    let mut previous=None::<(i64,u64)>;
+    samples.iter().map(|s| {
+        let command=if previous.is_none_or(|(time,segment)|s.time.saturating_sub(time)>1_000 || segment!=s.segment) {"M"} else {"L"};
+        previous=Some((s.time,s.segment));
+        let x=s.time.saturating_sub(first) as f64*260./last.saturating_sub(first).max(1) as f64;
+        let y=60.-((s.value-low+padding)/(high-low+2.*padding))*60.;
+        format!("{command}{x:.2},{y:.2} ")
+    }).collect()
 }
-impl TrendHistory {
-    fn select(&mut self, (kind, sender, index, thrust, clear_epoch): (&str, &str, usize, bool, u64)) {
-        let next = (kind.to_owned(), sender.to_owned(), index, thrust, clear_epoch);
-        if self.source.as_ref() != Some(&next) {
-            self.source = Some(next);
-            self.samples.clear();
-        }
-    }
-    fn record(&mut self, timestamp: i64, value: f32) {
-        if !value.is_finite() { return; }
-        match self.samples.binary_search_by_key(&timestamp, |sample| sample.0) {
-            Ok(index) => self.samples[index].1 = value,
-            Err(index) => self.samples.insert(index, (timestamp, value)),
-        }
-        if self.samples.len() > 150 { self.samples.remove(0); }
-    }
-    fn measured_range(&self) -> Option<(f32, f32)> {
-        let low = self
-            .samples
-            .iter()
-            .map(|(_, value)| *value)
-            .reduce(f32::min)?;
-        let high = self
-            .samples
-            .iter()
-            .map(|(_, value)| *value)
-            .reduce(f32::max)?;
-        // Preserve small raw changes and negative tare offsets. A fixed
-        // 0..1000 kg plot otherwise turns every negative value into one line.
-        let padding = ((high - low) * 0.05)
-            .max(high.abs().max(low.abs()) * 0.001)
-            .max(0.000001);
-        Some((low - padding, high + padding))
-    }
-    fn points(&self, min: f32, max: f32) -> String {
-        let first = self.samples.first().map_or(0, |sample| sample.0);
-        let span = self.samples.last().map_or(1, |sample| sample.0.saturating_sub(first).max(1));
-        self.samples.iter().map(|&(timestamp, value)| format!("{},{}",
-            timestamp.saturating_sub(first) as f64 * 260.0 / span as f64,
-            60.0 - ((value-min)/(max-min)).clamp(0.0,1.0)*60.0,
-        )).collect::<Vec<_>>().join(" ")
-    }
-}
+
 #[cfg(test)]
 mod trend_tests {
-    use super::TrendHistory;
+    use super::*;
     #[test]
-    fn measured_loadcell_range_shows_negative_and_small_raw_changes() {
-        let mut history = TrendHistory::default();
-        assert!(history.measured_range().is_none());
-        for (timestamp, value) in [(1, -5.0), (2, -4.0), (3, -3.0)] {
-            history.record(timestamp, value);
-        }
-        let (low, high) = history.measured_range().unwrap();
-        assert!(low < -5.0 && high > -3.0);
-        let points = history.points(low, high);
-        let ys: Vec<f32> = points
-            .split_whitespace()
-            .map(|point| point.split_once(',').unwrap().1.parse().unwrap())
-            .collect();
-        assert!(ys[0] > ys[1] && ys[1] > ys[2]);
-        assert!(ys.iter().all(|value| (0.0..=60.0).contains(value)));
-        history.samples.clear();
-        history.record(1, 0.0117);
-        history.record(2, 0.0118);
-        let (low, high) = history.measured_range().unwrap();
-        assert!(high - low < 0.001);
-        history.samples.clear();
-        history.record(1, 0.0);
-        let (low, high) = history.measured_range().unwrap();
-        assert!(low.is_finite() && high.is_finite() && high > low);
+    fn gaps_are_broken_and_capture_has_fixed_time_axis() {
+        let samples=vec![super::super::dashboard_history::Sample{time:10_000,value:-5.,segment:0},
+            super::super::dashboard_history::Sample{time:10_001,value:100.,segment:0},
+            super::super::dashboard_history::Sample{time:30_000,value:0.,segment:0}];
+        let path=trend_path(&samples,Some((10_000,40_000)));
+        assert_eq!(path.matches('M').count(),2);
+        assert!(path.contains("M0.00,"));
+        assert!(path.contains("M173.33,"));
     }
     #[test]
-    fn source_time_order_and_bounded_history_are_independent_of_refresh_ticks() {
-        let mut history=TrendHistory::default();history.select(("X","FC",0,false,0));
-        history.record(100,1.0);history.record(300,3.0);history.record(200,2.0);history.record(300,4.0);history.record(400,f32::NAN);
-        assert_eq!(history.samples,vec![(100,1.0),(200,2.0),(300,4.0)]);
-        assert!(history.points(0.0,10.0).contains("130,"));
-        for n in 0..200 { history.record(1000+n,1.0); }
-        assert_eq!(history.samples.len(),150);
-        history.select(("X","PB",0,false,0));assert!(history.samples.is_empty());
+    fn short_missing_channel_gap_starts_new_subpath() {
+        let samples=vec![
+            super::super::dashboard_history::Sample {time:1000,value:1.,segment:1},
+            super::super::dashboard_history::Sample {time:1001,value:2.,segment:1},
+            super::super::dashboard_history::Sample {time:1003,value:3.,segment:2},
+            super::super::dashboard_history::Sample {time:1004,value:4.,segment:2},
+        ];
+        let path=trend_path(&samples,None);
+        assert_eq!(path.matches('M').count(),2);
+        assert_eq!(path.matches('L').count(),2);
     }
+
 }
 
 #[component]
-fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default = false)] compact: bool) -> Element {
+fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] aggregate: bool, #[props(default = false)] compact: bool) -> Element {
     // Share Data's ingress-driven render cadence. A per-card200ms sampler
     // delayed live values and discarded intermediate display updates.
     let _ = *super::TELEMETRY_RENDER_EPOCH.read();
@@ -590,32 +555,29 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default = f
     let fraction = value
         .map(|v| ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0))
         .unwrap_or(0.0);
-    let clear_epoch = *super::FRONTEND_DATA_CLEAR_EPOCH.read();
-    let history = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(TrendHistory::default())));
-    let points = {
-        let mut history = history.borrow_mut();
-        history.select((&card.data_type, &card.sender, card.index, thrust, clear_epoch));
-        if card.display == "trend" && !compact && let (Some(row), Some(value)) = (&row, value) {
-            history.record(row.timestamp_ms, value);
-        }
-        let range = if matches!(
-            card.data_type.as_str(),
-            "KG1000" | "KG50" | "LOADCELL_WEIGHT_KG" | "LOADCELL_50_WEIGHT_KG"
-        ) {
-            history.measured_range()
-        } else {
-            None
-        };
-        let (min, max) = range.unwrap_or((card.min, card.max));
-        history.points(min, max)
+    let _ = *super::FRONTEND_DATA_CLEAR_EPOCH.read();
+    let mut samples = if card.display == "trend" && !compact {
+        super::dashboard_trend_samples(&card.data_type,&card.sender,card.index,aggregate)
+    }else{Vec::new()};
+    if thrust {for sample in &mut samples {sample.value *= 9.80665;}}
+    let window=if aggregate {super::dashboard_launch_window()}else{
+        samples.last().map(|last|(last.time.saturating_sub(60_000),last.time))
     };
-    let has_trend = history.borrow().samples.len() >= 2;
+    let path=trend_path(&samples,window);
+    let has_trend=!samples.is_empty();
+    // Identical source/channel/retention semantics to the Data summary cards.
+    let minmax=if !compact && card.display == "trend" {
+        super::telemetry_channel_minmax(&card.data_type,if card.sender.is_empty(){None}else{Some(&card.sender)},card.index)
+            .map(|(min,max)|if thrust {(min*9.80665,max*9.80665)}else{(min,max)})
+    }else{None};
     rsx! {div { style: if compact { "display:flex;align-items:baseline;justify-content:center;gap:6px;flex-wrap:wrap;" } else { "" },
         strong {class:"gs26-card-label","{card.label}"}
         div {class:"gs26-card-value",style:if compact {"font-size:13px;font-variant-numeric:tabular-nums;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},"{text}"}
         if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
         if !compact && value.is_some() && card.display=="gauge" {div {role:"img","aria-label":text.clone(),style:"width:70px;height:70px;border-radius:50%;background:conic-gradient(#38bdf8 {fraction*360.0}deg,#334155 0);",div {style:"position:relative;top:12px;left:12px;width:46px;height:46px;border-radius:50%;background:#0f172a;"}}}
-        if !compact && value.is_some() && has_trend && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",polyline {points,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
+        if !compact && has_trend && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",role:"img","aria-label":format!("{} {} history",card.label,if aggregate {"launch"}else{"live 60 second"}),path {d:path,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
+        if let Some((min,max)) = minmax {small {style:"display:block;", {format!("Data history · Min {min:.precision$} · Max {max:.precision$} {}",card.unit,precision=card.precision)}}}
+        if aggregate && !compact && !has_trend && card.display=="trend" {small {"No samples with known source time in this launch window"}}
         if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
             if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago" if !card.sender.is_empty() {" · {card.sender}"}}else{"Waiting for telemetry"}
         }}

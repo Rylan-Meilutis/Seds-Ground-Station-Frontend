@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Deserialize)]
 #[serde(default)]
 struct Clock {
+    authority:String,
+    launch_action_utc_ms:Option<i64>,
     session: String,
     t0_utc_ms: Option<i64>,
 }
@@ -55,6 +57,13 @@ fn elapsed(ms: i64) -> String {
     )
 }
 static RECOVERY_STATUS: GlobalSignal<Status> = Signal::global(Status::default);
+
+pub(super) fn dashboard_clock()->(String,Option<i64>) {
+    let status=RECOVERY_STATUS.read();
+    let identity=format!("{}:{}:{}",super::UrlConfig::base_http(),status.clock.authority,status.clock.session);
+    let anchor=if status.clock_known==Some(true) {status.clock.launch_action_utc_ms}else{None};
+    (identity,anchor)
+}
 
 /// Keep protocol capability/current status live without rendering global controls.
 #[component]

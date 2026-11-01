@@ -17,6 +17,7 @@ function validate(input){
  const ids=new Set();
  for(const r of p.samples){
   if(!Number.isSafeInteger(r.id)||r.id<0||ids.has(r.id)||!Number.isSafeInteger(r.timestamp_ms)||r.timestamp_ms<0||r.timestamp_ms>8640000000000000||typeof r.data_type!=='string'||r.data_type.length>128||typeof r.sender_id!=='string'||r.sender_id.length>256||!Array.isArray(r.values)||r.values.length>1024||r.values.some(v=>v!==null&&!finite(v)))throw Error('Invalid saved sample; no replay data was loaded.');
+  if(r.valid_until_ms!=null&&(!Number.isSafeInteger(r.valid_until_ms)||r.valid_until_ms<r.timestamp_ms))throw Error('Invalid saved coverage boundary.');
   ids.add(r.id);
  }
  if(p.valve_mappings.length>128||p.valve_mappings.some(v=>!v||typeof v.label!=='string'||v.label.length>128||!validBinding(v)||!Number.isInteger(v.index)||v.index<0||v.index>1023||['true_label','false_label','unknown_label'].some(k=>v[k]!==undefined&&(typeof v[k]!=='string'||v[k].length>128))))throw Error('Invalid valve mappings.');
@@ -33,7 +34,7 @@ function latest(p,type,sender,at){
  if(sender)return sources.has(sender)?previous(sources.get(sender)):null;
  let found=null;for(const rows of sources.values()){const r=previous(rows);if(r&&(!found||r.timestamp_ms>found.timestamp_ms||(r.timestamp_ms===found.timestamp_ms&&r.id>found.id)))found=r;}return found;
 }
-function value(p,b,at,hold=false){if(!b)return null;const r=latest(p,b.data_type,b.sender_id,at);if(!r||(!hold&&at-r.timestamp_ms>5000))return null;const v=r.values[b.index??0];if(!finite(v))return null;const n=v*(b.scale??1)+(b.offset??0);return finite(n)?n:null;}
+function value(p,b,at,hold=false){if(!b)return null;const r=latest(p,b.data_type,b.sender_id,at);if(!r||(r.valid_until_ms!=null&&at>r.valid_until_ms)||(!hold&&at-r.timestamp_ms>5000))return null;const v=r.values[b.index??0];if(!finite(v))return null;const n=v*(b.scale??1)+(b.offset??0);return finite(n)?n:null;}
 // A pressure range is not a liquid-level measurement. Only an explicitly
 // configured percentage or loadcell mass range can drive this indicator.
 function tankFillFraction(c){
@@ -60,7 +61,7 @@ function node(tag,text){const e=document.createElement(tag);if(text!==undefined)
 function svg(tag,attrs){const e=document.createElementNS(svgNS,tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,String(v));return e;}
 function mount(root,input){
  const p=validate(input);root.replaceChildren();const title=node('h3',p.mode==='test_fire'?'Test-fire replay · motor on stand':'Flight replay · saved data');root.append(title);
- root.append(node('p',`${p.recording||'Imported recording'} · offline · configuration saved at export; no live values or commands`));
+ root.append(node('p',`${p.recording||'Imported recording'} · offline · ${p.configuration_provenance||'configuration saved at export'}; no live values or commands`));
  const controls=node('div');controls.style.cssText='display:flex;gap:8px;flex-wrap:wrap;align-items:center';root.append(controls);
  const play=node('button','Play'),rewind=node('button','Rewind'),resetView=node('button','Reset 3D view'),speed=node('select');resetView.disabled=true;for(const n of [.25,.5,1,2,4]){const o=node('option',n+'×');o.value=n;o.selected=n===1;speed.append(o);}controls.append(play,rewind,speed,resetView);
  const slider=node('input');slider.type='range';slider.min=p.start_ms;slider.max=p.end_ms;slider.step=1;slider.value=p.start_ms;slider.setAttribute('aria-label','Offline replay position');slider.style.width='100%';root.append(slider);

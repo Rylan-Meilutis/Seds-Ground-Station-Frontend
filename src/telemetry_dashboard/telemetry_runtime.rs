@@ -49,7 +49,7 @@ struct LatestTelemetrySample {
 mod backward_clock_latest_tests {
     use super::*;
     fn row(received: i64, value: f32) -> TelemetryRow {
-        let mut row = TelemetryRow { timestamp_ms:received, received_timestamp_ms:received,
+        let mut row = TelemetryRow { source_timestamp_ms: None, timestamp_ms:received, received_timestamp_ms:received,
             data_type:"KG1000".into(), sender_id:"DAQ".into(), data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(value)] };
         row.refresh_interned_ids(); row
     }
@@ -107,6 +107,7 @@ impl LatestTelemetryKey {
 
 #[derive(Default)]
 struct UiTelemetryStore {
+    dashboard_history: dashboard_history::History<(TelemetryTextId, TelemetryTextId, usize)>,
     rows: BTreeMap<UiRowKey, TelemetryRow>,
     // Index only valid GPS values. Fill-only sessions must not walk every
     // retained DAQ row twice on every UI drain looking for nonexistent GPS.
@@ -136,6 +137,17 @@ impl UiTelemetryStore {
     {
         let mut newest_received_ms = None::<i64>;
         for row in rows {
+            for (index,value) in row.values.iter().enumerate() {
+                let key=(row.interned_data_type_id(),row.interned_sender_id(),index);
+                if let Some(value) = value {
+                    self.dashboard_history.record_source(
+                        key,
+                        dashboard_history::Sample {time:row.timestamp_ms,value:*value,segment:0},row.source_timestamp_ms,
+                    );
+                } else {
+                    self.dashboard_history.gap(&key);
+                }
+            }
             // The UI only needs one representative row per bucket/sender/type tuple.
             newest_received_ms = Some(
                 newest_received_ms.map_or(telemetry_row_received_ms(&row), |current| {
@@ -688,7 +700,7 @@ pub(crate) fn latest_telemetry_row(
                 latest
                     .get(&LatestTelemetryKey::new(data_type_id, sender_id))
                     .map(|sample| TelemetryRow {
-                        timestamp_ms: sample.timestamp_ms,
+                        source_timestamp_ms: None, timestamp_ms: sample.timestamp_ms,
                         received_timestamp_ms: sample.received_timestamp_ms,
                         data_type: resolve_telemetry_text(sample.data_type).to_string(),
                         data_type_id: sample.data_type,
@@ -705,7 +717,7 @@ pub(crate) fn latest_telemetry_row(
                 latest_by_type
                     .get(&data_type_id)
                     .map(|sample| TelemetryRow {
-                        timestamp_ms: sample.timestamp_ms,
+                        source_timestamp_ms: None, timestamp_ms: sample.timestamp_ms,
                         received_timestamp_ms: sample.received_timestamp_ms,
                         data_type: resolve_telemetry_text(sample.data_type).to_string(),
                         data_type_id: sample.data_type,
@@ -728,6 +740,25 @@ pub(crate) fn latest_telemetry_value(
 ) -> Option<f32> {
     latest_telemetry_value_direct(data_type, sender_id, index)
         .or_else(|| fallback_latest_telemetry_value(data_type, sender_id, index))
+}
+
+/// Uses the same ingress/store lifetime as Data; never samples component renders.
+pub(crate) fn dashboard_trend_samples(data_type:&str, sender:&str, index:usize, aggregate:bool) -> Vec<dashboard_history::Sample> {
+    let Ok(store) = UI_TELEMETRY_STORE.lock() else { return Vec::new(); };
+    let data_type = intern_telemetry_text(data_type);
+    let sender = if sender.is_empty() {None} else {Some(intern_telemetry_text(sender))};
+    store.dashboard_history.matching_samples(|&(kind,source,channel)|
+        kind == data_type && sender.is_none_or(|sender|sender == source) && index == channel,aggregate)
+}
+
+fn observe_dashboard_launch(session:String,anchor:Option<i64>, test_fire:bool) {
+    if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+        store.dashboard_history.observe_launch(session,anchor,test_fire);
+    }
+}
+
+fn dashboard_launch_window() -> Option<(i64,i64)> {
+    UI_TELEMETRY_STORE.lock().ok().and_then(|store|store.dashboard_history.launch)
 }
 
 pub(crate) fn telemetry_channel_minmax(
@@ -809,7 +840,7 @@ mod latest_telemetry_tests {
         values: Vec<Option<f32>>,
     ) -> TelemetryRow {
         TelemetryRow {
-            timestamp_ms: ts,
+            source_timestamp_ms: None, timestamp_ms: ts,
             received_timestamp_ms: ts,
             data_type: kind.into(),
             sender_id: board.into(),
@@ -817,6 +848,48 @@ mod latest_telemetry_tests {
             sender_id_id: Default::default(),
             values,
         }
+    }
+
+    #[test]
+    fn dashboard_captures_every_ingress_extreme_and_reseed_preserves_capture() {
+        let mut store=super::UiTelemetryStore::default();
+        let kind=intern_telemetry_text("LOADCELL_WEIGHT_KG");
+        let source=intern_telemetry_text("DAQ");
+        store.dashboard_history.observe_launch("test".into(),Some(1000),true);
+        store.apply_rows([
+            {let mut row=indexed_test_row(1000,"LOADCELL_WEIGHT_KG","DAQ",vec![Some(-5.)]);row.source_timestamp_ms=Some(1000);row},
+            {let mut row=indexed_test_row(1001,"LOADCELL_WEIGHT_KG","DAQ",vec![Some(500.)]);row.source_timestamp_ms=Some(1001);row},
+            {let mut row=indexed_test_row(1002,"LOADCELL_WEIGHT_KG","DAQ",vec![Some(10.)]);row.source_timestamp_ms=Some(1002);row},
+        ]);
+        // Three samples in one Data bucket must still preserve the spike.
+        assert_eq!(store.rows.len(),1);
+        assert_eq!(store.channel_minmax(kind,Some(source),0),Some((10.,10.)));
+        let points=store.dashboard_history.samples(&(kind,source,0),true);
+        assert!(points.iter().any(|sample| sample.time==1001 && sample.value==500.));
+        store.replace_from_rows(&[]); // Existing reconnect/reseed lifecycle.
+        assert_eq!(store.dashboard_history.samples(&(kind,source,0),true),points);
+    }
+
+    #[test]
+    fn dashboard_none_and_nonfinite_values_preserve_short_gap_discontinuities() {
+        let mut store=super::UiTelemetryStore::default();
+        let kind=intern_telemetry_text("LOADCELL_WEIGHT_KG");
+        let sender=intern_telemetry_text("DAQ");
+        let rows=[(1000,Some(1.)),(1001,None),(1002,Some(10.)),(1003,Some(f32::NAN)),(1004,Some(-3.))]
+            .into_iter().map(|(time,value)|{
+                let mut row=indexed_test_row(time,"LOADCELL_WEIGHT_KG","DAQ",vec![value]);
+                row.source_timestamp_ms=Some(time);
+                row
+            });
+        store.apply_rows(rows);
+        let before=store.dashboard_history.samples(&(kind,sender,0),false);
+        assert_eq!(before.iter().map(|p|(p.time,p.value)).collect::<Vec<_>>(),vec![(1000,1.),(1002,10.),(1004,-3.)]);
+        assert_ne!(before[0].segment,before[1].segment);
+        assert_ne!(before[1].segment,before[2].segment);
+        store.replace_from_rows(&[]);
+        assert_eq!(store.dashboard_history.samples(&(kind,sender,0),false),before);
+        store.dashboard_history.reset_display_epoch();
+        assert!(store.dashboard_history.samples(&(kind,sender,0),false).is_empty());
     }
 
     #[test]
@@ -939,7 +1012,7 @@ mod latest_telemetry_tests {
     #[test]
     fn does_not_alias_raw_loadcell_samples_into_calibrated_labels() {
         reset_latest_telemetry(&[TelemetryRow {
-            timestamp_ms: 1_700_000_030_000,
+            source_timestamp_ms: None, timestamp_ms: 1_700_000_030_000,
             received_timestamp_ms: 1_700_000_030_000,
             data_type: "KG1000".to_string(),
             data_type_id: Default::default(),
@@ -979,7 +1052,7 @@ mod latest_telemetry_tests {
     fn drops_live_rows_that_arrive_too_late() {
         let now_ms = 1_700_000_100_000;
         let row = TelemetryRow {
-            timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
+            source_timestamp_ms: None, timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
             received_timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
             data_type: "BATTERY_VOLTAGE".to_string(),
             data_type_id: Default::default(),
@@ -994,7 +1067,7 @@ mod latest_telemetry_tests {
     fn keeps_live_rows_with_small_clock_skew() {
         let now_ms = 1_700_000_100_000;
         let row = TelemetryRow {
-            timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
+            source_timestamp_ms: None, timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             received_timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             data_type: "BATTERY_VOLTAGE".to_string(),
             data_type_id: Default::default(),
@@ -1013,7 +1086,7 @@ mod latest_telemetry_tests {
         let sender_id = "PB".to_string();
 
         let first = TelemetryRow {
-            timestamp_ms: 1_700_000_000_000 + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
+            source_timestamp_ms: None, timestamp_ms: 1_700_000_000_000 + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             received_timestamp_ms: 1_700_000_000_000,
             data_type: data_type.clone(),
             data_type_id: Default::default(),
@@ -1024,7 +1097,7 @@ mod latest_telemetry_tests {
         update_latest_telemetry_locked(&mut latest, &mut latest_by_type, &first);
 
         let second = TelemetryRow {
-            timestamp_ms: 1_700_000_000_100,
+            source_timestamp_ms: None, timestamp_ms: 1_700_000_000_100,
             received_timestamp_ms: 1_700_000_000_100,
             data_type,
             data_type_id: Default::default(),
@@ -1046,7 +1119,7 @@ mod latest_telemetry_tests {
         let newest_received_ms = 1_700_000_500_000;
         let mut rows = vec![
             TelemetryRow {
-                timestamp_ms: 1_699_000_000_000,
+                source_timestamp_ms: None, timestamp_ms: 1_699_000_000_000,
                 received_timestamp_ms: newest_received_ms - 1_000,
                 data_type: "GPS".to_string(),
                 data_type_id: Default::default(),
@@ -1055,7 +1128,7 @@ mod latest_telemetry_tests {
                 values: vec![Some(1.0)],
             },
             TelemetryRow {
-                timestamp_ms: 1_700_000_490_000,
+                source_timestamp_ms: None, timestamp_ms: 1_700_000_490_000,
                 received_timestamp_ms: newest_received_ms,
                 data_type: "GPS".to_string(),
                 data_type_id: Default::default(),
@@ -1120,7 +1193,7 @@ mod latest_telemetry_tests {
         let start_ts = 1_700_000_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
             .map(|i| TelemetryRow {
-                timestamp_ms: start_ts + (i as i64 * 17),
+                source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 17),
                 received_timestamp_ms: start_ts + (i as i64 * 17),
                 data_type: if i % 2 == 0 {
                     "BATTERY_VOLTAGE".to_string()
@@ -1177,7 +1250,7 @@ mod latest_telemetry_tests {
         let start_ts = 1_700_100_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
             .map(|i| TelemetryRow {
-                timestamp_ms: start_ts + (i as i64 * 20),
+                source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 20),
                 received_timestamp_ms: start_ts + (i as i64 * 20),
                 data_type: if i % 2 == 0 {
                     "BATTERY_VOLTAGE".to_string()
@@ -1236,7 +1309,7 @@ mod latest_telemetry_tests {
         let start_ts = 1_700_200_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
             .map(|i| TelemetryRow {
-                timestamp_ms: start_ts + (i as i64 * 20),
+                source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 20),
                 received_timestamp_ms: start_ts + (i as i64 * 20),
                 data_type: "BATTERY_VOLTAGE".to_string(),
                 data_type_id: Default::default(),
@@ -1290,7 +1363,7 @@ mod latest_telemetry_tests {
         let start_ts = 1_700_300_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
             .map(|i| TelemetryRow {
-                timestamp_ms: start_ts + (i as i64 * 20),
+                source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 20),
                 received_timestamp_ms: start_ts + (i as i64 * 20),
                 data_type: if i % 2 == 0 {
                     "BATTERY_VOLTAGE".to_string()
@@ -1344,7 +1417,7 @@ mod latest_telemetry_tests {
         let start_ts = 1_700_400_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
             .map(|i| TelemetryRow {
-                timestamp_ms: start_ts + (i as i64 * 17),
+                source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 17),
                 received_timestamp_ms: start_ts + (i as i64 * 17),
                 data_type: if i % 2 == 0 {
                     "BATTERY_VOLTAGE".to_string()

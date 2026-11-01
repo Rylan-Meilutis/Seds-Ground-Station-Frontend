@@ -389,6 +389,9 @@ fn clear_native_tile_cache() {
 }
 
 fn clear_frontend_data_caches() {
+    if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
+        store.dashboard_history = Default::default();
+    }
     charts_cache_clear_active();
     clear_telemetry_runtime_buffers();
     clear_visible_telemetry_history_without_bridge();
@@ -535,6 +538,9 @@ fn observe_display_wall_clock(now_ms: i64) {
 
 fn apply_pending_display_clock_reset() {
     if !DISPLAY_CLOCK_RESET_PENDING.swap(false, Ordering::Relaxed) { return; }
+    if let Ok(mut store)=UI_TELEMETRY_STORE.lock() {
+        store.dashboard_history.reset_display_epoch();
+    }
     persist::_remove(&graph_history_key());
     GRAPH_HISTORY_GENERATION.fetch_add(1, Ordering::Relaxed);
     charts_cache_cancel_reseed_build();

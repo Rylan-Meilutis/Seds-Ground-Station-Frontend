@@ -178,7 +178,7 @@ mod history_clock_tests {
 
     #[test]
     fn old_future_display_seed_is_excluded_without_rewriting_raw_timestamps() {
-        let row = |timestamp_ms| TelemetryRow {timestamp_ms, received_timestamp_ms:timestamp_ms, data_type:"KG50".into(), sender_id:"DAQ".into(), data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(1.0)]};
+        let row = |timestamp_ms| TelemetryRow {source_timestamp_ms: None, timestamp_ms, received_timestamp_ms:timestamp_ms, data_type:"KG50".into(), sender_id:"DAQ".into(), data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(1.0)]};
         let mut rows = vec![row(900), row(1_000), row(2_001), row(900_000)];
         discard_future_display_history(&mut rows, 1_000);
         assert_eq!(rows.iter().map(|row|row.timestamp_ms).collect::<Vec<_>>(), vec![900,1_000]);
@@ -190,7 +190,7 @@ mod history_clock_tests {
         let client_now = server_now + 86_400_000;
         let mut rows: Vec<TelemetryRow> = (0..=600)
             .map(|second| TelemetryRow {
-                timestamp_ms: server_now - 600_000 + second * 1000,
+                source_timestamp_ms: None, timestamp_ms: server_now - 600_000 + second * 1000,
                 received_timestamp_ms: 0,
                 data_type: "KG1000".into(),
                 sender_id: "DAQ".into(),

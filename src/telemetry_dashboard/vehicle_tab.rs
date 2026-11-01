@@ -908,7 +908,7 @@ mod tests {
     #[test]
     fn shared_scene_and_text_valves_use_named_saved_states_and_expire_together(){
         use super::super::vehicle_replay::{Frame,Index,Sample};
-        let mut frame=Frame{data:Some(std::rc::Rc::new(Index::new(vec![Sample{id:1,timestamp_ms:1000,source_timestamp_ms:Some(999),sender_id:"VB".into(),data_type:"VALVE_STATE".into(),values:vec![Some(1.0),Some(0.0),None],phase:None}]))),at_ms:1500};
+        let mut frame=Frame{data:Some(std::rc::Rc::new(Index::new(vec![Sample{id:1,timestamp_ms:1000,source_timestamp_ms:Some(999),sender_id:"VB".into(),data_type:"VALVE_STATE".into(),values:vec![Some(1.0),Some(0.0),None],phase:None,valid_until_ms:None}]))),at_ms:1500};
         let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":0,"label":"Saved pilot name"}]});
         let rows=replay_visual_valves(&layout,&frame);
         assert_eq!(rows[0]["label"],"Saved pilot name");assert_eq!(rows[0]["state"],"Open");assert_eq!(rows[1]["state"],"Closed");assert_eq!(rows[2]["state"],"Unknown");
@@ -918,7 +918,7 @@ mod tests {
     #[test]
     fn saved_valve_labels_preserve_inverted_custom_and_unknown_raw_samples() {
         use super::super::vehicle_replay::{Frame,Index,Sample};
-        let mut frame=Frame{data:Some(std::rc::Rc::new(Index::new(vec![Sample{id:1,timestamp_ms:1000,source_timestamp_ms:None,sender_id:"VB".into(),data_type:"VALVE_STATE".into(),values:vec![Some(1.0),Some(0.0),Some(1.0),Some(0.0),Some(1.0),None,Some(2.0)],phase:None}]))),at_ms:1500};
+        let mut frame=Frame{data:Some(std::rc::Rc::new(Index::new(vec![Sample{id:1,timestamp_ms:1000,source_timestamp_ms:None,sender_id:"VB".into(),data_type:"VALVE_STATE".into(),values:vec![Some(1.0),Some(0.0),Some(1.0),Some(0.0),Some(1.0),None,Some(2.0)],phase:None,valid_until_ms:None}]))),at_ms:1500};
         let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":0},{"index":1},{"index":2},{"index":3},{"index":4}],"valve_labels":[{"true_label":"Closed","false_label":"Open","unknown_label":"No saved sample"},{"true_label":"Closed","false_label":"Open"},{"true_label":"On","false_label":"Off"},{"true_label":"Ouvert","false_label":"Fermé"},{"true_label":" cLoSeD ","false_label":" OpEn "}]});
         let rows=replay_visual_valves(&layout,&frame);
         for (index,expected) in ["Closed","Open","On","Fermé"," cLoSeD ","Unknown","Unknown"].into_iter().enumerate(){assert_eq!(rows[index]["state"],expected);}
@@ -999,19 +999,21 @@ pub(super) fn ReplayFileExport(recording: String) -> Element {
     let mut standalone=use_signal(||true);
     let mut busy=use_signal(||false);
     let mut status=use_signal(String::new);
-    rsx! { div {
-        label { "Replay file format " select {value:if standalone(){"html"}else{"json"},onchange:move |e|standalone.set(e.value()=="html"),option {value:"html","Offline HTML — opens without an app or server"}option {value:"json","Portable JSON — import into replay"}}}
-        button {disabled:recording.is_empty() || busy(),onclick:move |_| {
+    rsx! { div {style:"min-width:0;max-width:100%;",
+        label {style:"display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;", "Replay file format " select {style:"min-width:0;max-width:100%;box-sizing:border-box;",value:if standalone(){"html"}else{"json"},onchange:move |e|standalone.set(e.value()=="html"),option {value:"html","Offline HTML — opens without an app or server"}option {value:"json","Portable JSON — import into replay"}}}
+        button {style:"max-width:100%;white-space:normal;",disabled:recording.is_empty() || busy(),onclick:move |_| {
             let id=recording.clone();let html=standalone();busy.set(true);status.set("Preparing portable replay…".into());
             spawn(async move {
                 let result=async {
                     let origin=UrlConfig::base_http();
                     let mut file=saved_get::<serde_json::Value>(&origin,&format!("/api/recordings/{}/replay/export",percent_component(&id))).await?;
-                    file["view_config"]=saved_get::<serde_json::Value>(&origin,"/api/vehicle_visualization").await?;
-                    file["layout"]=saved_get::<serde_json::Value>(&origin,"/api/layout").await?;
+                    let export_visual_config=file["view_config"].is_null()||file["layout"].is_null();
+                    if file["view_config"].is_null(){file["view_config"]=saved_get::<serde_json::Value>(&origin,"/api/vehicle_visualization").await?;}
+                    if file["layout"].is_null(){file["layout"]=saved_get::<serde_json::Value>(&origin,"/api/layout").await?;}
                     file["mode"]=if file["layout"]["test_fire_mode"].as_bool()==Some(true){"test_fire"}else{"flight"}.into();
-                    file["valve_mappings"]=saved_valve_mappings(&file["layout"]);
-                    file["configuration_provenance"]="Station configuration at export; not a claim of historical capture-time configuration.".into();
+                    if file["valve_mappings"].is_null(){file["valve_mappings"]=saved_valve_mappings(&file["layout"]);}
+                    if export_visual_config&&!file["sd_provenance"].is_null(){file["configuration_provenance"]="Imported source schema/configuration retained; missing view/layout supplied from station at export.".into();}
+                    if file["configuration_provenance"].is_null(){file["configuration_provenance"]="Station configuration at export; not a claim of historical capture-time configuration.".into();}
                     super::recording_download::save_replay_file(&file,html).await
                 }.await;
                 status.set(result.unwrap_or_else(|e:String|format!("Replay export failed: {e}")));busy.set(false);

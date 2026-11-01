@@ -51,7 +51,7 @@ mod tests {
     use super::*;
     fn row(index: i64, values: usize) -> TelemetryRow {
         TelemetryRow {
-            timestamp_ms: index,
+            source_timestamp_ms: None, timestamp_ms: index,
             received_timestamp_ms: index,
             data_type: "LOADCELL".into(),
             sender_id: "DAQ".into(),

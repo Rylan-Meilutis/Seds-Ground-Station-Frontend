@@ -16,6 +16,16 @@ struct Channel {
     #[serde(default)]
     label: String,
     count: usize,
+    #[serde(default)]
+    finite_count:Option<usize>,
+    #[serde(default)]
+    sender:String,
+    #[serde(default)]
+    data_type:String,
+    #[serde(default)]
+    unit:Option<String>,
+    #[serde(default)]
+    value_kind:String,
     points: Vec<(i64, Option<f64>)>,
     regression: serde_json::Value,
 }
@@ -38,6 +48,18 @@ fn report_path(
         .collect();
     format!("/api/recordings/report?request={encoded}")
 }
+fn visible(channel:&Channel,focus:&str)->bool {
+    let focus=focus.trim().to_lowercase();
+    focus.is_empty() || format!("{} {} {} {} {}",channel.label,channel.key,channel.sender,channel.data_type,channel.unit.as_deref().unwrap_or("")).to_lowercase().contains(&focus)
+}
+fn value_kind_label(kind:&str)->&str {
+    match kind {"recorded_derived"=>"Derived saved value","recorded_raw_input"=>"Raw saved input","recorded_state"=>"Saved state",_=>"Saved value; provenance unclassified"}
+}
+
+fn report_filename(format:&str)->String {
+    match format {"daq_csv"=>"telemetry-daq-sd.csv".into(),"daq_tsv"=>"telemetry-daq-sd.tsv".into(),_=>format!("telemetry-report.{format}")}
+}
+
 fn utc(ms: i64) -> String {
     time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000)
         .ok()
@@ -85,6 +107,7 @@ pub(super) fn ReportStudio(recording: String) -> Element {
     let mut busy = use_signal(|| false);
     let mut status = use_signal(String::new);
     let mut format = use_signal(|| "csv".to_string());
+    let mut focus=use_signal(String::new);
     let load_recording = recording.clone();
     let load = move |_| {
         if load_recording.is_empty() { status.set("Select a recording first.".into()); return; }
@@ -133,13 +156,20 @@ pub(super) fn ReportStudio(recording: String) -> Element {
                 label {"Window start: {utc(start())}" input {r#type:"range",style:"width:100%;",min:"{data.start_ms}",max:"{data.end_ms-1}",step:"1",value:"{start}",oninput:move |e|if let Ok(v)=e.value().parse::<i64>(){start.set(v.min(end()-1));}}}
                 label {"Window end (exclusive): {utc(end())}" input {r#type:"range",style:"width:100%;",min:"{data.start_ms+1}",max:"{data.end_ms}",step:"1",value:"{end}",oninput:move |e|if let Ok(v)=e.value().parse::<i64>(){end.set(v.max(start()+1));}}}
             }
+            small {"Units use recorded SD manifest metadata when present, otherwise this station’s export-time display configuration. Unknown units remain unknown."}
+            label {"Focus channels by name, source or units " input {r#type:"search",value:focus(),oninput:move |e|focus.set(e.value())}}
+            p {"{selected.read().len()} channels selected. Searching changes the list; use visible channels only to limit the export."}
             div {
                 button {onclick:move |_| {if let Some(p)=preview.read().as_ref(){selected.set(p.channels.iter().map(|c|c.key.clone()).collect());}},"Select all channels"}
+                button {onclick:move |_| {if let Some(p)=preview.read().as_ref(){selected.set(p.channels.iter().filter(|c|visible(c,&focus())).map(|c|c.key.clone()).collect());}},"Use visible channels only"}
                 button {onclick:move |_|selected.set(BTreeSet::new()),"Clear selection"}
             }
-            for channel in &data.channels {
+            for channel in data.channels.iter().filter(|channel|visible(channel,&focus())) {
                 div {key:"{channel.key}",style:"border:1px solid #475569;padding:8px;border-radius:6px;",
                     label {input {r#type:"checkbox",checked:selected.read().contains(&channel.key),onchange:{let key=channel.key.clone();move |e:Event<FormData>|{if e.checked(){selected.write().insert(key.clone());}else{selected.write().remove(&key);}}}} {format!("{} · {} samples",if channel.label.is_empty(){&channel.key}else{&channel.label},channel.count)}}
+                    small {style:"display:block;overflow-wrap:anywhere;",
+                        {format!("{} / {} · {} · {} · {}",channel.sender,channel.data_type,channel.unit.as_deref().unwrap_or("units unknown"),value_kind_label(&channel.value_kind),channel.finite_count.map(|n|format!("{n} values / {} observations",channel.count)).unwrap_or_else(||format!("{} observations",channel.count)))}
+                    }
                     if selected.read().contains(&channel.key) {
                         svg {view_box:"0 0 1000 100",style:"width:100%;height:110px;background:#0f172a;",role:"img","aria-label":format!("Recorded channel {}",channel.key),
                             path {d:trace(channel,data.start_ms,data.end_ms),stroke:"#38bdf8",stroke_width:"1",fill:"none"}
@@ -153,12 +183,13 @@ pub(super) fn ReportStudio(recording: String) -> Element {
             }
         }
         super::vehicle_tab::ReplayFileExport { recording:recording.clone() }
-        label {"File format " select {value:format(),onchange:move |e|format.set(e.value()),option {value:"csv","CSV — data and regression metadata"}option {value:"xlsx","Excel — charts, data and regressions"}option {value:"pdf","PDF — graphs, data appendix and regressions"}}}
+        label {"File format " select {value:format(),onchange:move |e|format.set(e.value()),option {value:"csv","CSV — data and regression metadata"}option {value:"daq_csv","DAQ SD column layout — CSV"}option {value:"daq_tsv","DAQ SD column layout — TSV"}option {value:"xlsx","Excel — charts, data and regressions"}option {value:"pdf","PDF — graphs, data appendix and regressions"}}}
+        if matches!(format().as_str(),"daq_csv"|"daq_tsv") {p {"Uses the DAQ’s thirteen columns. Missing ADC, uptime and sequence fields stay blank. Per-sample metadata preserves original receive/source timestamps; no current calibration is substituted."}}
         button {disabled:busy() || preview.read().is_none() || selected.read().is_empty(),onclick:move |_| {
             let kind=format();let window=if all_time(){loaded_window()}else{Some((start(),end()))};
             let path=report_path(&recording,&kind,window,Some(selected.read().iter().cloned().collect()));
             busy.set(true);status.set("Preparing export… Large PDFs can take up to two minutes.".into());
-            spawn(async move {status.set(match download_csv_path(&path,&format!("telemetry-report.{kind}")).await{Ok(s)=>s,Err(e)=>format!("Export failed: {e}")});busy.set(false);});
+            spawn(async move {status.set(match download_csv_path(&path,&report_filename(&kind)).await{Ok(s)=>s,Err(e)=>format!("Export failed: {e}")});busy.set(false);});
         },if busy(){"Working…"}else{"Export selected data"}}
         p {role:"status",style:"overflow-wrap:anywhere;","{status}"}
     }}
@@ -178,4 +209,13 @@ mod tests {
         assert!(!p.contains("a&b"));
         assert!(p.starts_with("/api/recordings/report?request=%7B"));
     }
+    #[test]
+    fn daq_download_extensions_remain_standard_and_selection_is_exact() {
+        assert_eq!(report_filename("daq_csv"),"telemetry-daq-sd.csv");
+        assert_eq!(report_filename("daq_tsv"),"telemetry-daq-sd.tsv");
+        let path=report_path("groundstation_recording_1.db","daq_tsv",Some((10,20)),Some(vec!["[\"DAQ\",\"KG1000\",0]".into()]));
+        assert!(path.contains("%64%61%71%5F%74%73%76"));
+        assert!(!path.contains("[\"DAQ\""));
+    }
+
 }

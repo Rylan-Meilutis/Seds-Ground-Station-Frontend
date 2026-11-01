@@ -304,7 +304,7 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
             h2 { "Data Export" }
             p { "Available in Test Fire, HITL, and normal mode. Use the recording actions to start or stop capture, then refresh this list." }
             p { style:"font-size:12px;color:{theme.text_muted};",
-                "Exports every recorded telemetry row, with source identity, receive/source timestamps, raw values and payload bytes. Active recordings download committed rows up to the request; stop recording first for a complete capture."
+                "Full recording CSV includes every saved row with source identity, receive/source timestamps, values and payload bytes. Select channels and a formatter below to focus the export. Active recordings include committed rows up to the request; stop recording first for a complete capture."
             }
             div { style:"display:flex;gap:8px;flex-wrap:wrap;",
                 select { aria_label:"Recording to download", value:"{selected}", disabled:loading() || downloading(),
@@ -329,12 +329,15 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
                         status.set(match download_csv(&id).await { Ok(message)=>message, Err(error)=>format!("Download failed: {error}") });
                         downloading.set(false);
                     });
-                }, if downloading() { "Downloading…" } else { "Download CSV" } }
+                }, if downloading() { "Downloading…" } else { "Download full recording CSV" } }
             }
             RecoveryHistoryExport {}
             ChecklistExport {}
             if !selected.read().is_empty() {
-                super::report_studio::ReportStudio { key:"{selected}", recording:selected() }
+                div {key:"recording-tools-{selected}",
+                    super::sd_recording_import::SDRecordingImport {recording:selected(),onimport:move |id:String| {selected.set(id);refresh+=1;}}
+                    super::report_studio::ReportStudio {recording:selected()}
+                }
             } else { p { "Select a recording first, then choose the data to export." } }
             details { summary { "Legacy CSV / clock settings" } RangeAndClock {} }
             p { role:"status", style:"overflow-wrap:anywhere;", "{status}" }

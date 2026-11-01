@@ -724,7 +724,7 @@ mod tests {
             .map(|i| {
                 let timestamp_ms = 1_700_000_000_000 + i * 200;
                 TelemetryRow {
-                    timestamp_ms,
+                    source_timestamp_ms: None, timestamp_ms,
                     received_timestamp_ms: timestamp_ms,
                     data_type: "ACCEL_DATA".into(),
                     data_type_id: Default::default(),
@@ -765,7 +765,7 @@ mod tests {
 
         for i in 0..3 {
             charts_cache_ingest_row(&TelemetryRow {
-                timestamp_ms: 1_700_000_000_000 + i * 40,
+                source_timestamp_ms: None, timestamp_ms: 1_700_000_000_000 + i * 40,
                 received_timestamp_ms: 1_700_000_000_000 + i * 40,
                 data_type: "KG1000".to_string(),
                 data_type_id: Default::default(),
@@ -799,7 +799,7 @@ mod tests {
         for i in 0..3 {
             let timestamp_ms = 1_700_000_010_000 + i * 40;
             charts_cache_ingest_row(&TelemetryRow {
-                timestamp_ms,
+                source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "FUEL_TANK_PRESSURE".to_string(),
                 data_type_id: Default::default(),
@@ -808,7 +808,7 @@ mod tests {
                 values: vec![Some(100.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
-                timestamp_ms,
+                source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "KG1000".to_string(),
                 data_type_id: Default::default(),
@@ -817,7 +817,7 @@ mod tests {
                 values: vec![Some(4.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
-                timestamp_ms,
+                source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "LOADCELL_WEIGHT_KG".to_string(),
                 data_type_id: Default::default(),
@@ -826,7 +826,7 @@ mod tests {
                 values: vec![Some(8.0 + i as f32)],
             });
             charts_cache_ingest_row(&TelemetryRow {
-                timestamp_ms,
+                source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "LOADCELL_FILL_PERCENT".to_string(),
                 data_type_id: Default::default(),
@@ -862,7 +862,7 @@ mod tests {
     fn sparse_timestamp_jumps_do_not_allocate_intermediate_buckets() {
         let mut chart = super::CachedChart::new();
         chart.ingest(&TelemetryRow {
-            timestamp_ms: 1_700_000_000_000,
+            source_timestamp_ms: None, timestamp_ms: 1_700_000_000_000,
             received_timestamp_ms: 1_700_000_000_000,
             data_type: "GPS".to_string(),
             data_type_id: Default::default(),
@@ -871,7 +871,7 @@ mod tests {
             values: vec![Some(1.0)],
         });
         chart.ingest(&TelemetryRow {
-            timestamp_ms: i64::MAX - 1_000,
+            source_timestamp_ms: None, timestamp_ms: i64::MAX - 1_000,
             received_timestamp_ms: i64::MAX - 1_000,
             data_type: "GPS".to_string(),
             data_type_id: Default::default(),
@@ -897,7 +897,7 @@ mod tests {
         for i in 0..3 {
             let timestamp_ms = 1_700_000_020_000 + i * 40;
             charts_cache_ingest_row(&TelemetryRow {
-                timestamp_ms,
+                source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "BATTERY_VOLTAGE".to_string(),
                 data_type_id: Default::default(),
@@ -906,7 +906,7 @@ mod tests {
                 values: vec![Some(14.0 + i as f32 * 0.1)],
             });
             charts_cache_ingest_row(&TelemetryRow {
-                timestamp_ms,
+                source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "BATTERY_VOLTAGE".to_string(),
                 data_type_id: Default::default(),
@@ -940,7 +940,7 @@ mod tests {
 
         for i in 0..3 {
             charts_cache_ingest_row(&TelemetryRow {
-                timestamp_ms: 1_700_000_030_000 + i * 40,
+                source_timestamp_ms: None, timestamp_ms: 1_700_000_030_000 + i * 40,
                 received_timestamp_ms: 1_700_000_030_000 + i * 40,
                 data_type: "BATTERY_VOLTAGE".to_string(),
                 data_type_id: Default::default(),
@@ -1041,7 +1041,7 @@ mod tests {
         let base_ts = 1_700_000_040_000;
         for i in 0..36 {
             chart.ingest(&TelemetryRow {
-                timestamp_ms: base_ts + i * 1_000,
+                source_timestamp_ms: None, timestamp_ms: base_ts + i * 1_000,
                 received_timestamp_ms: base_ts + i * 1_000,
                 data_type: "PRESSURE".to_string(),
                 data_type_id: Default::default(),

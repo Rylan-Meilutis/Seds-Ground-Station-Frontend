@@ -44,6 +44,8 @@ pub struct Sample {
     pub values: Vec<Option<f32>>,
     #[serde(default)]
     pub phase: Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub valid_until_ms:Option<i64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Page {
@@ -104,7 +106,7 @@ impl Frame {
             binding.sender_id.as_deref(),
             self.at_ms,
         )?;
-        if !hold && self.at_ms.saturating_sub(row.timestamp_ms) > 5000 {
+        if row.valid_until_ms.is_some_and(|end|self.at_ms>end)||(!hold && self.at_ms.saturating_sub(row.timestamp_ms) > 5000) {
             return None;
         }
         row.values
@@ -184,6 +186,7 @@ mod tests {
             data_type: "ROLL".into(),
             values: vec![Some(value)],
             phase: None,
+            valid_until_ms:None,
         }
     }
     fn binding() -> VehicleTelemetryBinding {
@@ -332,4 +335,12 @@ mod tests {
             Some((45., -73., 100.))
         );
     }
+    #[test]
+    fn sd_coverage_boundary_does_not_hold_values_across_recording_gaps(){
+        let mut row=sample(1,1000,5.);row.valid_until_ms=Some(1010);
+        let mut frame=Frame{data:Some(Rc::new(Index::new(vec![row]))),at_ms:1005};
+        assert_eq!(frame.value(&binding(),true),Some(11.));frame.at_ms=1011;
+        assert_eq!(frame.value(&binding(),true),None);
+    }
+
 }
