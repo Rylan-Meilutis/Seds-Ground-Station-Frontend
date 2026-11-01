@@ -145,6 +145,7 @@ fn value(binding: &VehicleTelemetryBinding, frame: &super::vehicle_replay::Frame
 }
 
 fn backend_url(path: &str) -> String {
+    if let Some(local)=crate::native_assets::station_asset_url(path) { return local; }
     if path.starts_with("http://") || path.starts_with("https://") {
         return path.to_string();
     }
@@ -720,6 +721,7 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
     rsx! {
         div {class:"gs26-vehicle-shell",style:"height:100%;overflow-y:auto;padding:12px;box-sizing:border-box;color:{theme.text_primary};background:{theme.tab_shell_background};",
             h2 {"3D replay"}
+            OfflineReplayImport {}
             div {style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;",
                 label {r#for:"replay-recording","Recording"}
                 select {id:"replay-recording",style:"{button}width:min(100%,480px);max-width:100%;",value:"{selected}",onchange:move|event|{playing.set(false);seek_preview.set(None);position.set(0.);selected.set(event.value());},
@@ -732,6 +734,7 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
             div {style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;",
                 button {style:"{button}",disabled:!available || duration<=0.,onclick:move |_|{if *position.read()>=duration{position.set(0.);}let next=!*playing.read();playing.set(next);},if *playing.read(){"Pause"}else{"Play"}}
                 button {style:"{button}",disabled:saved.is_none(),onclick:move |_|{playing.set(false);position.set(0.);},"Rewind"}
+                ReplayFileExport { recording:selected() }
                 label {r#for:"replay-speed","Speed"}
                 select {id:"replay-speed",style:"{button}",value:"{speed}",onchange:move |event|{if let Ok(value)=event.value().parse::<f64>(){speed.set(value.clamp(0.25,4.));}},
                     option {value:"0.25","0.25×"}option {value:"0.5","0.5×"}option {value:"1","1×"}option {value:"2","2×"}option {value:"4","4×"}
@@ -871,4 +874,99 @@ mod tests {
         assert_eq!(fraction, 0.0);
         assert!(!active);
     }
+}
+
+/// This mapping is the persisted VALVE_STATE order from telemetry_task. Preserve
+/// it in every portable file; the offline viewer never guesses channel order.
+fn saved_valve_mappings(layout: &serde_json::Value) -> serde_json::Value {
+    let mut mappings=serde_json::json!([
+        {"label":"Pilot valve","data_type":"VALVE_STATE","index":0,"true_label":"Open","false_label":"Closed"},
+        {"label":"Normally-open valve","data_type":"VALVE_STATE","index":1,"true_label":"Open","false_label":"Closed"},
+        {"label":"Dump valve","data_type":"VALVE_STATE","index":2,"true_label":"Open","false_label":"Closed"},
+        {"label":"Igniter","data_type":"VALVE_STATE","index":3,"true_label":"On","false_label":"Off"},
+        {"label":"Nitrogen valve","data_type":"VALVE_STATE","index":4,"true_label":"Open","false_label":"Closed"},
+        {"label":"Nitrous valve","data_type":"VALVE_STATE","index":5,"true_label":"Open","false_label":"Closed"},
+        {"label":"Plumbing","data_type":"VALVE_STATE","index":6,"true_label":"Retracted","false_label":"Extended"}
+    ]);
+    fn labels(value: &serde_json::Value, mappings: &mut serde_json::Value) {
+        if value["data_type"] == "VALVE_STATE" {
+            if let Some(items)=value.get("valves").and_then(|v|v.as_array()).or_else(||value.get("items").and_then(|v|v.as_array())) {
+                for (ordinal,item) in items.iter().enumerate() {
+                    if let Some(index)=item["index"].as_u64().filter(|i|*i<7) {
+                        if let Some(label)=item["label"].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mappings[index as usize]["label"]=label.into();}
+                        let labels=value.get("valve_labels").and_then(|v|v.get(ordinal)).filter(|v|v.is_object()).or_else(||value.get("boolean_labels"));
+                        if let Some(labels)=labels { for field in ["true_label","false_label","unknown_label"] { if let Some(text)=labels[field].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mappings[index as usize][field]=text.into();} } }
+                    }
+                }
+            }
+        }
+        match value { serde_json::Value::Object(m)=>{for child in m.values(){labels(child,mappings);}},serde_json::Value::Array(a)=>{for child in a{labels(child,mappings);}},_=>{} }
+    }
+    labels(layout,&mut mappings);
+    mappings
+}
+
+#[component]
+pub(super) fn ReplayFileExport(recording: String) -> Element {
+    let mut standalone=use_signal(||true);
+    let mut busy=use_signal(||false);
+    let mut status=use_signal(String::new);
+    rsx! { div {
+        label { "Replay file format " select {value:if standalone(){"html"}else{"json"},onchange:move |e|standalone.set(e.value()=="html"),option {value:"html","Offline HTML — opens without an app or server"}option {value:"json","Portable JSON — import into replay"}}}
+        button {disabled:recording.is_empty() || busy(),onclick:move |_| {
+            let id=recording.clone();let html=standalone();busy.set(true);status.set("Preparing portable replay…".into());
+            spawn(async move {
+                let result=async {
+                    let origin=UrlConfig::base_http();
+                    let mut file=saved_get::<serde_json::Value>(&origin,&format!("/api/recordings/{}/replay/export",percent_component(&id))).await?;
+                    file["view_config"]=saved_get::<serde_json::Value>(&origin,"/api/vehicle_visualization").await?;
+                    file["layout"]=saved_get::<serde_json::Value>(&origin,"/api/layout").await?;
+                    file["mode"]=if file["layout"]["test_fire_mode"].as_bool()==Some(true){"test_fire"}else{"flight"}.into();
+                    file["valve_mappings"]=saved_valve_mappings(&file["layout"]);
+                    file["configuration_provenance"]="Station configuration at export; not a claim of historical capture-time configuration.".into();
+                    super::recording_download::save_replay_file(&file,html).await
+                }.await;
+                status.set(result.unwrap_or_else(|e:String|format!("Replay export failed: {e}")));busy.set(false);
+            });
+        },if busy(){"Preparing replay…"}else{"Export portable replay (all saved channels)"}}
+        p {role:"status","{status}"}
+    }}
+}
+
+#[component]
+fn OfflineReplayImport() -> Element {
+    let mut message=use_signal(String::new);
+    let id=use_hook(||VIEWER_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed));
+    rsx! { section {style:"padding:12px;border:1px solid #64748b;border-radius:10px;margin-bottom:16px;",
+        h3 {"Import an offline replay"}
+        p {"Open a portable .seds-replay.json file. Samples, units, schema and valve mappings come from that file; no station connection is needed."}
+        input {r#type:"file",accept:".json,.seds-replay.json",aria_label:"Import offline replay file",onchange:move |event| {
+            let Some(file)=event.files().first().cloned() else{return;};
+            spawn(async move {
+                let result=async {
+                    if file.size()>64*1024*1024{return Err("Replay exceeds 64 MiB.".to_string());}
+                    let bytes=file.read_bytes().await.map_err(|e|e.to_string())?;
+                    if bytes.len()>64*1024*1024{return Err("Replay exceeds 64 MiB.".to_string());}
+                    let text=std::str::from_utf8(&bytes).map_err(|e|e.to_string())?;
+                    let encoded=serde_json::to_string(text).map_err(|e|e.to_string())?;
+                    let script=format!("{}\nconst root=document.getElementById('offline-replay-{id}');root.__player?.dispose();root.__player=GSOfflineReplay.mount(root,{encoded});return 'Offline replay loaded.';",include_str!("../../station_ui/rendering/three/offline-replay.js"));
+                    document::eval(&script).join::<String>().await.map_err(|e|e.to_string())
+                }.await;
+                message.set(result.unwrap_or_else(|e:String|format!("Import failed: {e}")));
+            });
+        }}
+        p {role:"status","{message}"}
+        div {id:"offline-replay-{id}",style:"min-width:0;"}
+    }}
+}
+
+#[cfg(test)]
+#[test]
+fn portable_valve_mapping_keeps_configured_names_and_state_words() {
+    let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":null,"items":[{"index":1,"label":"Saved vent"}],"valve_labels":[{"true_label":"Opened","false_label":"Shut","unknown_label":"No saved sample"}]});
+    let mappings=saved_valve_mappings(&layout);
+    assert_eq!(mappings[1]["label"],"Saved vent");
+    assert_eq!(mappings[1]["false_label"],"Shut");
+    assert_eq!(mappings[1]["unknown_label"],"No saved sample");
+    assert_eq!(mappings[4]["label"],"Nitrogen valve");
 }

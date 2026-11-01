@@ -1,4 +1,7 @@
 mod app;
+mod native_assets;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_navigation;
 mod auth;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_station;
@@ -170,6 +173,9 @@ fn main() {
             _handle_gs26_protocol_async(request, responder);
         });
     }
+    cfg = cfg.with_in_app_navigation_handler(|url| {
+        native_navigation::station_document_allowed(url, &telemetry_dashboard::persisted_base_http_for_native_io())
+    });
     cfg = cfg.with_custom_head(startup_custom_head());
     cfg = cfg.with_background_color((0x02, 0x06, 0x17, 0xff));
     let mut window = WindowBuilder::new().with_title(app::APP_DISPLAY_NAME);
@@ -360,6 +366,9 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         })
     }
 
+    if let Some((mime, bytes)) = native_assets::station_asset(request.uri().path()) {
+        return build_response(200, Some(mime), bytes.to_vec());
+    }
     let uri = request.uri().to_string();
     debug_log::append(&format!("[protocol] request uri={uri}"));
     let path = request.uri().path();

@@ -3,7 +3,7 @@ use dioxus_signals::Signal;
 use std::collections::HashMap;
 
 use super::layout::{ConnectionSectionKind, ConnectionTabLayout, ThemeConfig};
-use super::types::BoardStatusEntry;
+use super::types::{BoardStatusEntry, NetworkTopologyMsg};
 use super::{
     current_wallclock_ms, js_eval, reseed_note_banner, reseed_status_note, translate_text,
 };
@@ -30,6 +30,7 @@ struct LatencyPoint {
 #[component]
 pub fn ConnectionStatusTab(
     boards: Signal<Vec<BoardStatusEntry>>,
+    network_topology: Signal<NetworkTopologyMsg>,
     ws_connected: bool,
     expected_boards: Vec<String>,
     layout: ConnectionTabLayout,
@@ -132,6 +133,18 @@ pub fn ConnectionStatusTab(
     };
 
     let mut panels = Vec::new();
+    let topology = network_topology.read().clone();
+    panels.push(super::info_panels::InfoPanel::new(
+        "board-health",
+        "Board network health",
+        "Overview",
+        rsx! {
+            super::connectivity_health::ConnectivityHealthSection {
+                rows: topology.health, ws_connected, generated_ms: topology.generated_ms,
+                simulated: topology.simulated, theme: theme.clone(),
+            }
+        },
+    ));
     for (idx, section) in layout.sections.iter().enumerate() {
         let (id, default_title) = match section.kind {
             ConnectionSectionKind::BoardStatus => ("boards", "Board status"),
@@ -224,6 +237,7 @@ pub fn ConnectionStatusTab(
     rsx! {
         div { style: "padding:16px; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
             h2 { style: "margin:0 0 12px 0; color:{theme.text_primary};", "{title}" }
+            super::board_recovery_panel::BoardRecoveryPanel {ws_connected,theme:theme.clone()}
             super::info_panels::InfoPanels {page:"connections",panels,wide:true}
         }
 

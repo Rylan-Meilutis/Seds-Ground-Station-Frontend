@@ -29,7 +29,7 @@ fn choose_recording(records: &[Recording], current: &str) -> String {
     if records.iter().any(|r| r.id == current) {
         current.to_owned()
     } else {
-        records.first().map(|r| r.id.clone()).unwrap_or_default()
+        String::new()
     }
 }
 
@@ -309,7 +309,7 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
             div { style:"display:flex;gap:8px;flex-wrap:wrap;",
                 select { aria_label:"Recording to download", value:"{selected}", disabled:loading() || downloading(),
                     onchange:move |e| selected.set(e.value()),
-                    option { value:"", "All local recordings" }
+                    option { value:"", "1. Select a recording…" }
                     if recordings.read().is_empty() { option { value:"", "No recorded sessions yet" } }
                     for recording in recordings.read().iter() {
                         option { value:"{recording.id}",
@@ -333,7 +333,9 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
             }
             RecoveryHistoryExport {}
             ChecklistExport {}
-            super::report_studio::ReportStudio { key:selected(), recording:selected() }
+            if !selected.read().is_empty() {
+                super::report_studio::ReportStudio { key:"{selected}", recording:selected() }
+            } else { p { "Select a recording first, then choose the data to export." } }
             details { summary { "Legacy CSV / clock settings" } RangeAndClock {} }
             p { role:"status", style:"overflow-wrap:anywhere;", "{status}" }
         }
@@ -419,7 +421,7 @@ mod tests {
             bytes: 1,
             active: true,
         }];
-        assert_eq!(choose_recording(&records, ""), id);
+        assert_eq!(choose_recording(&records, ""), "");
         assert_eq!(choose_recording(&records, id), id);
         assert!(choose_recording(&[], id).is_empty());
     }
@@ -435,4 +437,58 @@ mod tests {
         assert!(clock.system_time_unavailable_reason.unwrap().contains("CAP_SYS_TIME"));
     }
 
+}
+
+/// Save a complete portable replay, without a subsequent backend request.
+pub(super) async fn save_replay_file(value: &serde_json::Value, standalone: bool) -> Result<String, String> {
+    let contents = if standalone { portable_replay_html(value)? } else { serde_json::to_string(value).map_err(|e| e.to_string())? };
+    let extension=if standalone { "html" } else { "json" };
+    if contents.len() > 64 * 1024 * 1024 { return Err("Replay exceeds 64 MiB. Select a smaller recording.".into()); }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let text = serde_json::to_string(&contents).map_err(|e| e.to_string())?;
+        document::eval(&format!(r#"const blob=new Blob([{text}],{{type:'application/json'}});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='recording.seds-replay.{extension}';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);return 'Replay exported. Import this file without a station connection.';"#)).join::<String>().await.map_err(|e|e.to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Write;
+        let directory = dirs::download_dir().or_else(dirs::document_dir).ok_or("No Downloads or Documents directory")?;
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_nanos();
+        let path=directory.join(format!("recording-{stamp}.seds-replay.{extension}"));
+        let mut file=std::fs::OpenOptions::new().create_new(true).write(true).open(&path).map_err(|e|e.to_string())?;
+        file.write_all(contents.as_bytes()).and_then(|_|file.flush()).map_err(|e|e.to_string())?;
+        Ok(format!("Replay saved to {}",path.display()))
+    }
+}
+
+/// The standalone file carries its player, data and config. It runs from file://
+/// without a web server, login, external models, scripts or network requests.
+fn portable_replay_html(value: &serde_json::Value) -> Result<String, String> {
+    let data=serde_json::to_string(value).map_err(|e|e.to_string())?.replace('<', "\\u003c");
+    let viewer=include_str!("../../station_ui/rendering/three/offline-replay.js");
+    Ok(format!(r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved vehicle replay</title><style>body{{font:16px system-ui;background:#101827;color:#f1f5f9;margin:20px;max-width:1100px}}button,select,input{{font:inherit;min-height:44px;margin:4px}}button,select{{background:#1e293b;color:white;border:1px solid #64748b;border-radius:6px;padding:6px 12px}}svg text{{font-family:system-ui}}</style><h1>Saved vehicle replay</h1><label>Import another portable JSON replay <input id="import" type="file" accept=".json"></label><p id="status" role="status"></p><main id="replay"></main><script type="application/json" id="recording">{data}</script><script>{viewer}
+let player;function load(text){{const next=GSOfflineReplay.validate(text);player?.dispose();player=GSOfflineReplay.mount(document.getElementById('replay'),next);document.getElementById('status').textContent='Offline file · no backend connection';}}load(document.getElementById('recording').textContent);document.getElementById('import').onchange=async e=>{{try{{const file=e.target.files[0];if(!file)return;if(file.size>GSOfflineReplay.MAX_BYTES)throw Error('Replay exceeds 64 MiB.');load(await file.text());}}catch(error){{document.getElementById('status').textContent='Import failed: '+error.message;}}}};</script></html>"#))
+}
+
+#[cfg(test)]
+#[test]
+fn portable_html_embeds_config_and_escapes_script_end_from_saved_labels() {
+    let value=serde_json::json!({"format":"seds-replay","schema":{"unit":"psi"},"valve_mappings":[{"label":"</script><script>bad()"}]});
+    let html=portable_replay_html(&value).unwrap();
+    assert!(!html.contains("</script><script>bad()"));
+    assert!(html.contains("\\u003c/script>"));
+    assert!(html.contains("Offline file · no backend connection"));
+    assert!(html.contains("const MAX_BYTES"));
+}
+
+#[cfg(test)]
+#[test]
+fn actual_offline_html_export_contains_roundtrip_configuration_and_saved_samples() {
+    let data:serde_json::Value=serde_json::from_str(include_str!("../../tests/fixtures/offline-flight.json")).unwrap();
+    let html=portable_replay_html(&data).unwrap();
+    let encoded=html.split("id=\"recording\">").nth(1).unwrap().split("</script>").next().unwrap();
+    let restored:serde_json::Value=serde_json::from_str(encoded).unwrap();
+    assert_eq!(restored,data);
+    if let Some(path)=std::env::var_os("GS_REPLAY_HTML_PROOF") { std::fs::write(path,html).unwrap(); }
 }

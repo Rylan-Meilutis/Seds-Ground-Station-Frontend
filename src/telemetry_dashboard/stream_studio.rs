@@ -133,7 +133,7 @@ pub(super) fn StreamStudio(
       details {summary {"OBS browser source"}
         p {"Use this address as an OBS Browser Source for the clean programme, without app navigation or playback controls."}
         input {r#type:"url",readonly:true,"aria-label":"OBS browser source URL",value:format!("{}{}&clean=1",super::UrlConfig::base_http().trim_end_matches('/'),program_url)}
-        a {href:format!("{}{}&clean=1",super::UrlConfig::base_http().trim_end_matches('/'),program_url),target:"_blank",rel:"noopener noreferrer","Open clean feed"}
+        CleanFeedLink {url:format!("{}{}&clean=1",super::UrlConfig::base_http().trim_end_matches('/'),program_url)}
       }
       LayoutDesigner {broadcast:broadcast.clone(),streams:streams.clone()}
       TranscodingHosts {}
@@ -351,6 +351,27 @@ mod layout_tests {
                             assert!(intersection<0.001||vertical<0.001);
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+
+#[component]
+fn CleanFeedLink(url: String) -> Element {
+    #[cfg(target_arch = "wasm32")]
+    { rsx! { a { href: url, target: "_blank", rel: "noopener noreferrer", "Open clean feed" } } }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut opened = use_signal(|| false);
+        rsx! {
+            button { onclick: move |_| opened.set(true), "Open clean feed" }
+            if opened() {
+                div { role: "dialog", "aria-modal": "true", "aria-label": "Clean broadcast feed",
+                    style: "position:fixed;inset:0;z-index:100000;display:flex;flex-direction:column;background:#080d15;color:white;",
+                    button { style: "align-self:flex-end;min-height:44px;padding:10px 18px;margin:8px;", onclick: move |_| opened.set(false), "Close clean feed" }
+                    iframe { src: url, title: "Clean broadcast feed", allow: "autoplay; fullscreen; screen-wake-lock", style: "flex:1;width:100%;min-height:0;border:0;" }
                 }
             }
         }

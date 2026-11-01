@@ -107,3 +107,34 @@ Linux Chromium WebGL tests cover the actual scene, including a synthetic 9 km
 apogee, visible ground and horizon, drag orbit, touch pinch, progressive trajectory,
 pause and recording switches. These checks do not replace physical Raspberry Pi,
 iOS or Android GPU testing. Ground is an Earth-radius reference, not terrain.
+
+## Portable offline replay and export
+
+In **Data Export**, explicitly select a saved recording first, load its preview,
+then select channels and the time window for CSV/Excel/PDF. Valve CSV updates keep
+the numeric value and include a readable channel/state label; unknowns remain
+unknown. Names/state words come from the station layout at export, not a claim
+about historical configuration.
+
+**Export portable replay** saves all saved channels in that recording (up to
+200,000 rows and 64 MiB; larger selections fail explicitly without truncation).
+Choose standalone HTML to open the saved file directly without a server, app
+login, external scripts or a connection. Choose portable JSON to import through
+**3D replay → Import an offline replay** or into the standalone HTML player.
+The file carries saved receive/source timestamps, decoded values, schema,
+export-time vehicle configuration, layout/units and explicit valve mappings.
+It does not replace historical values with live data or recalibration.
+
+The portable player is an illustrative flight-vehicle or test-fire motor-stand
+schematic, separate from the station's 3D model renderer. Valve labels update at
+each saved sample; missing/stale values remain unknown. Tank progress is shown
+only with a configured saved binding and valid min/max. No synthetic pressure,
+fill or GPS values are generated. The file stores export-time configuration;
+it cannot reconstruct configuration that was never recorded. External/custom
+3D model assets are not downloaded into the portable file. No replay control
+sends hardware commands.
+
+Tests: `node tests/offline-replay.test.mjs`; real offline Chromium test
+`tests/offline-replay-browser.mjs` consumes the actual Rust-produced HTML via
+`GS_REPLAY_HTML_PROOF`. It tests offline file import, named valve changes,
+configuration/units roundtrip, null data and flight/stand distinction.

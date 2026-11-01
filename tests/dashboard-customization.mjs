@@ -89,7 +89,7 @@ try{
   const choose=()=>page.getByRole('button',{name:/Choose tab/}).click();
   const openAdmin=async()=>{
     const settings=page.getByRole('link',{name:'Settings',exact:true}).or(page.getByRole('button',{name:/^Settings$/i}));
-    if(!await settings.isVisible())await page.getByRole('button',{name:'Menu',exact:true}).click();
+    if(!await settings.isVisible())await page.locator('.gs26-header-menu-toggle').filter({hasText:'Tools'}).click();
     await settings.click();
     await page.getByRole('button',{name:'Manage users & access',exact:true}).click();
   };
@@ -283,7 +283,7 @@ try{
   await page.screenshot({path:'/tmp/gs-export-mobile.png',fullPage:true});
   await page.setViewportSize({width:390,height:844});
   session.roles=['admin'];await page.reload();
-  await page.getByRole('button',{name:'Menu',exact:true}).click();
+  await page.locator('.gs26-header-menu-toggle').filter({hasText:'Tools'}).click();
   await openAdmin();
   await page.getByRole('heading',{name:'Administration',exact:true}).waitFor();
   assert.equal(await page.getByRole('button',{name:'Broadcast studio',exact:true}).count(),0,'admin has no stream redirect');
@@ -374,8 +374,7 @@ try{
   const commandPage=await commandContext.newPage();
   commandPage.on('console',message=>{if(message.type()==='error')fs.appendFileSync('/tmp/gs-command-inventory-console.log',message.text()+'\n');});
   commandPage.on('pageerror',error=>errors.push(error.message));
-  let approveRecovery=true;
-  commandPage.on('dialog',dialog=>approveRecovery?dialog.accept():dialog.dismiss());
+  commandPage.on('dialog', dialog => { errors.push('Unexpected platform JS dialog: '+dialog.message()); dialog.dismiss(); });
   await commandPage.goto(origin+'/dashboard');
   await commandPage.getByRole('button',{name:/Choose tab/}).click().catch(async error=>{
     fs.writeFileSync('/tmp/gs-command-inventory-errors.json',JSON.stringify(errors));
@@ -397,17 +396,29 @@ try{
     assert(await button.isEnabled(),`${cmd} remains permitted by the authoritative action policy`);
     if(unconfirmedOutputs.has(cmd))assert.match(await button.innerText(),/unconfirmed/i,`${cmd} has no invented output confirmation`);
     await button.click().catch(async error=>{fs.writeFileSync('/tmp/gs-command-inventory-body.txt',await commandPage.locator('body').innerText());throw error;});
+    if (['ResetFlightState','ResetTClock'].includes(cmd)) {
+      const dialog=commandPage.getByRole('alertdialog',{name:'Confirm reset'});
+      await dialog.waitFor({state:'visible'});
+      assert.equal(requests.length,count,'Opening confirmation cannot dispatch');
+      await dialog.getByRole('button',{name:'Confirm reset',exact:true}).click({clickCount:2});
+    }
     for(let attempt=0;attempt<100&&requests.length===count;attempt++)await new Promise(resolve=>setTimeout(resolve,20));
     assert.equal(requests.length,count+1,`${cmd} dispatches exactly one request`);
     assert.equal(requests[count],cmd,`${cmd} retains the backend command name`);
     if(unconfirmedOutputs.has(cmd))assert.match(await button.innerText(),/unconfirmed/i,`${cmd} dispatch cannot confirm physical output`);
   }
-  approveRecovery=false;
   for(const cmd of ['ResetFlightState','ResetTClock']){
     const count=requests.length;
     await actionButton(cmd).click();
+    const dialog=commandPage.getByRole('alertdialog',{name:'Confirm reset'});
+    await dialog.waitFor({state:'visible'});
+    await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+    await actionButton(cmd).click();
+    await dialog.waitFor({state:'visible'});
+    await commandPage.keyboard.press('Escape');
+    await dialog.waitFor({state:'detached'});
     await new Promise(resolve=>setTimeout(resolve,300));
-    assert.equal(requests.length,count,`${cmd} cancellation sends no request`);
+    assert.equal(requests.length,count,`${cmd} Cancel and Escape send no request`);
   }
   assert.equal(await commandPage.getByRole('alert').filter({hasText:'Command not sent:'}).count(),0);
   await commandPage.getByRole('button',{name:/Choose tab/}).click();

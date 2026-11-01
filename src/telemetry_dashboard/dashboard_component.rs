@@ -3673,6 +3673,7 @@ fn TelemetryDashboardInner() -> Element {
                                     style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                                     ConnectionStatusTab {
                                         boards: board_status,
+                                        network_topology: network_topology,
                                         ws_connected: *WS_CONNECTED_SIGNAL.read(),
                                         expected_boards: layout.network_tab.expected_boards.clone(),
                                         layout: layout.connection_tab.clone(),
@@ -3936,29 +3937,14 @@ fn TelemetryDashboardInner() -> Element {
                 {version_overlay}
             }
     })();
-    rsx! {media_tool_tab::MediaSurface {media_visible,voice_visible,stream_visible:surface_stream,{view}}}
+    rsx! {media_tool_tab::MediaSurface {media_visible,voice_visible,stream_visible:surface_stream,{view}} command_confirmation::CommandConfirmation {}}
 }
 
 fn send_cmd(cmd: &str) {
     confirm_command_dispatch(cmd, send_confirmed_cmd);
 }
 fn confirm_command_dispatch(cmd: &str, dispatch: fn(&str)) {
-    let confirmation = match cmd {
-        "ResetFlightState" => Some("Reset the shared flight state to Idle? This does not close valves or stop an active physical sequence. Confirm the system is safe first."),
-        "ResetTClock" => Some("Reset the displayed T-clock? Flight state and physical board sequences will not be changed."),
-        _ => None,
-    };
-    if let Some(message) = confirmation {
-        let cmd = cmd.to_string();
-        let script = format!("return window.confirm({});", serde_json::to_string(message).unwrap());
-        spawn(async move {
-            if dioxus::document::eval(&script).join::<bool>().await.unwrap_or(false) {
-                dispatch(&cmd);
-            }
-        });
-    } else {
-        dispatch(cmd);
-    }
+    command_confirmation::request(cmd, dispatch);
 }
 
 fn send_confirmed_cmd(cmd: &str) {

@@ -31,8 +31,13 @@ pub mod layout;
 mod layout_settings_tab;
 mod live_stream_tab;
 mod media_tool_tab;
+mod command_confirmation;
 mod messages_tab;
 mod network_health;
+mod connectivity_health;
+mod board_recovery_guard;
+mod board_recovery_model;
+mod board_recovery_panel;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod offline_preview;
 mod network_topology_tab;

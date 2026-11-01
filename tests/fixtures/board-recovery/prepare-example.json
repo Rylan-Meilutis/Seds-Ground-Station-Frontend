@@ -1,0 +1,19 @@
+{
+  "ticket": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "backend_instance": "0123456789abcdef0123456789abcdef",
+  "principal_context": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "reset_epoch": "0000000000000001",
+  "expires_in_ms": 30000,
+  "action": "reset_startup",
+  "targets": [
+    "RF",
+    "FC",
+    "PB",
+    "AB",
+    "VB",
+    "GB",
+    "DAQ"
+  ],
+  "summary": "Cancel queued sequences and return all supported boards to Startup. Turn igniter and actuator supplies OFF, put the stepper to sleep, turn the Valve pilot OFF, and restore the default OPEN vent/dump configuration. Preserve network power, clock/calibration and identity. Readback is commanded GPIO/servo registers, not physical valve position. Inhibition stays latched unless every required board confirms fresh safe Startup.",
+  "confirmation": "RESET ALL STARTUP"
+}

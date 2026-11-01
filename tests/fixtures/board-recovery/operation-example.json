@@ -1,0 +1,18 @@
+{
+  "id": "cccccccccccccccccccccccccccccccc",
+  "action": "reset_startup",
+  "phase": "verifying",
+  "targets": [
+    "RF",
+    "FC",
+    "PB",
+    "AB",
+    "VB",
+    "GB",
+    "DAQ"
+  ],
+  "completed": false,
+  "success": null,
+  "age_ms": 1000,
+  "message": "Awaiting fresh matching board boot/epoch/safe Startup readbacks; protocol ACK alone is insufficient."
+}

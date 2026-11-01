@@ -487,3 +487,35 @@ mod tests {
         assert!(msg.health.is_empty());
     }
 }
+
+/// General health stays in Detailed; individual boards live in Connectivity.
+#[component]
+pub fn GeneralNetworkHealthSummary(
+    rows: Vec<NetworkBoardHealthEntry>,
+    ws_connected: bool,
+    generated_ms: u64,
+    simulated: bool,
+    theme: ThemeConfig,
+) -> Element {
+    let now = super::connection_status_tab::use_board_age_clock();
+    let receipt = use_memo(use_reactive((&generated_ms,), move |(_generated,)| {
+        super::monotonic_now_ms()
+    }));
+    let elapsed = (now as f64 - receipt()).max(0.0) as u64;
+    let available = rows
+        .iter()
+        .filter(|row| healthy(row, ws_connected, elapsed))
+        .count();
+    let observed = rows.len();
+    rsx! {
+        section { style: "padding:16px; border:1px solid {theme.border_soft}; border-radius:12px; color:{theme.text_primary}; background:{theme.panel_background};",
+            h3 { "Network health" }
+            p { role: "status",
+                if !ws_connected { "GroundStation stream unavailable" }
+                else { "{available} of {observed} observed boards are currently communicating" }
+            }
+            if simulated { p { "Simulated network" } }
+            p { style: "color:{theme.text_secondary};", "Per-board diagnostics and recovery are in Connectivity." }
+        }
+    }
+}

@@ -1,0 +1,244 @@
+{
+  "version": 1,
+  "backend_instance": "0123456789abcdef0123456789abcdef",
+  "principal": {
+    "username": "operator",
+    "context": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "reset_epoch": "0000000000000001",
+  "flight_state": 0,
+  "automatic_actions_inhibited": true,
+  "permissions": {
+    "query": true,
+    "recover": true,
+    "reset_startup": true,
+    "change_mode": true
+  },
+  "mode_capability": {
+    "current": "normal",
+    "build_mode": "normal",
+    "supported_modes": [
+      "normal"
+    ],
+    "runtime_switch_supported": false,
+    "requires_restart": [
+      "hitl",
+      "test_fire",
+      "testing"
+    ],
+    "message": "Only real compiled capabilities are offered; unsupported modes require another server build/restart."
+  },
+  "boards": [
+    {
+      "id": "RF",
+      "label": "RF Board",
+      "network": {
+        "healthy": true,
+        "age_ms": 20,
+        "disconnects": 0,
+        "reconnects": 0
+      },
+      "state": null,
+      "state_label": "Unknown",
+      "boot": null,
+      "epoch": null,
+      "nonce": null,
+      "age_ms": null,
+      "abort_latched": null,
+      "safe_outputs": null,
+      "commanded_outputs": null,
+      "output_readback": "unknown",
+      "physical_position_verified": false,
+      "capabilities": {
+        "query": null,
+        "recover": null,
+        "resync": null,
+        "endpoint_verified": false,
+        "reset_startup": null
+      },
+      "operation": null,
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+    },
+    {
+      "id": "FC",
+      "label": "FC Board",
+      "network": {
+        "healthy": true,
+        "age_ms": 20,
+        "disconnects": 0,
+        "reconnects": 0
+      },
+      "state": null,
+      "state_label": "Unknown",
+      "boot": null,
+      "epoch": null,
+      "nonce": null,
+      "age_ms": null,
+      "abort_latched": null,
+      "safe_outputs": null,
+      "commanded_outputs": null,
+      "output_readback": "unknown",
+      "physical_position_verified": false,
+      "capabilities": {
+        "query": null,
+        "recover": null,
+        "resync": null,
+        "endpoint_verified": false,
+        "reset_startup": null
+      },
+      "operation": null,
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+    },
+    {
+      "id": "PB",
+      "label": "PB Board",
+      "network": {
+        "healthy": true,
+        "age_ms": 20,
+        "disconnects": 0,
+        "reconnects": 0
+      },
+      "state": null,
+      "state_label": "Unknown",
+      "boot": null,
+      "epoch": null,
+      "nonce": null,
+      "age_ms": null,
+      "abort_latched": null,
+      "safe_outputs": null,
+      "commanded_outputs": null,
+      "output_readback": "unknown",
+      "physical_position_verified": false,
+      "capabilities": {
+        "query": null,
+        "recover": null,
+        "resync": null,
+        "endpoint_verified": false,
+        "reset_startup": null
+      },
+      "operation": null,
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+    },
+    {
+      "id": "AB",
+      "label": "AB Board",
+      "network": {
+        "healthy": true,
+        "age_ms": 20,
+        "disconnects": 0,
+        "reconnects": 0
+      },
+      "state": 0,
+      "state_label": "Startup",
+      "boot": "0000000000000009",
+      "epoch": 10,
+      "nonce": "0000000000000011",
+      "age_ms": 50,
+      "abort_latched": true,
+      "safe_outputs": true,
+      "commanded_outputs": 0,
+      "output_readback": "gpio_servo_command_registers",
+      "physical_position_verified": false,
+      "capabilities": {
+        "query": true,
+        "recover": true,
+        "resync": true,
+        "endpoint_verified": true,
+        "reset_startup": true
+      },
+      "operation": null,
+      "message": null
+    },
+    {
+      "id": "VB",
+      "label": "VB Board",
+      "network": {
+        "healthy": true,
+        "age_ms": 20,
+        "disconnects": 0,
+        "reconnects": 0
+      },
+      "state": 0,
+      "state_label": "Startup",
+      "boot": "0000000000000009",
+      "epoch": 10,
+      "nonce": "0000000000000011",
+      "age_ms": 50,
+      "abort_latched": true,
+      "safe_outputs": true,
+      "commanded_outputs": 6,
+      "output_readback": "gpio_servo_command_registers",
+      "physical_position_verified": false,
+      "capabilities": {
+        "query": true,
+        "recover": true,
+        "resync": true,
+        "endpoint_verified": true,
+        "reset_startup": true
+      },
+      "operation": null,
+      "message": null
+    },
+    {
+      "id": "GB",
+      "label": "GB Board",
+      "network": {
+        "healthy": true,
+        "age_ms": 20,
+        "disconnects": 0,
+        "reconnects": 0
+      },
+      "state": null,
+      "state_label": "Unknown",
+      "boot": null,
+      "epoch": null,
+      "nonce": null,
+      "age_ms": null,
+      "abort_latched": null,
+      "safe_outputs": null,
+      "commanded_outputs": null,
+      "output_readback": "unknown",
+      "physical_position_verified": false,
+      "capabilities": {
+        "query": null,
+        "recover": null,
+        "resync": null,
+        "endpoint_verified": false,
+        "reset_startup": null
+      },
+      "operation": null,
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+    },
+    {
+      "id": "DAQ",
+      "label": "DAQ Board",
+      "network": {
+        "healthy": true,
+        "age_ms": 20,
+        "disconnects": 0,
+        "reconnects": 0
+      },
+      "state": null,
+      "state_label": "Unknown",
+      "boot": null,
+      "epoch": null,
+      "nonce": null,
+      "age_ms": null,
+      "abort_latched": null,
+      "safe_outputs": null,
+      "commanded_outputs": null,
+      "output_readback": "unknown",
+      "physical_position_verified": false,
+      "capabilities": {
+        "query": null,
+        "recover": null,
+        "resync": null,
+        "endpoint_verified": false,
+        "reset_startup": null
+      },
+      "operation": null,
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+    }
+  ],
+  "operation": null
+}

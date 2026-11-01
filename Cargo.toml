@@ -8,6 +8,7 @@ license-file = "LICENSE"
 repository = "https://github.com/Rylan-Meilutis/Seds-Ground-Station-Frontend"
 
 [patch.crates-io]
+dioxus-desktop = { path = "vendor-dioxus-desktop" }
 tao = { path = "vendor-tao" }
 block = { path = "vendor-block" }
 

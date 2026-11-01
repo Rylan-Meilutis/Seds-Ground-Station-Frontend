@@ -1,0 +1,105 @@
+{
+  "format": "seds-replay",
+  "version": 1,
+  "recording": "offline-flight.db",
+  "mode": "flight",
+  "configuration_provenance": "Export-time configuration test fixture",
+  "schema": {
+    "types": [
+      {
+        "name": "VALVE_STATE",
+        "element": {
+          "kind": "Static",
+          "data_type": "Float32",
+          "count": 2
+        }
+      }
+    ]
+  },
+  "layout": {
+    "test_fire_mode": false,
+    "units": {
+      "pressure": "psi",
+      "fill": "%"
+    }
+  },
+  "view_config": {
+    "attitude": {
+      "roll": {
+        "data_type": "ROLL",
+        "index": 0
+      }
+    },
+    "stages": [],
+    "ground_systems": [
+      {
+        "id": "fuel",
+        "label": "Fuel tank",
+        "kind": "tank",
+        "unit": "%",
+        "min": 0,
+        "max": 100,
+        "binding": {
+          "data_type": "FILL",
+          "index": 0
+        }
+      }
+    ]
+  },
+  "valve_mappings": [
+    {
+      "label": "Pilot (saved name)",
+      "data_type": "VALVE_STATE",
+      "index": 0
+    },
+    {
+      "label": "Dump valve",
+      "data_type": "VALVE_STATE",
+      "index": 1
+    }
+  ],
+  "samples": [
+    {
+      "id": 1,
+      "timestamp_ms": 1000,
+      "source_timestamp_ms": 900,
+      "sender_id": "VB",
+      "data_type": "VALVE_STATE",
+      "values": [
+        1,
+        null
+      ]
+    },
+    {
+      "id": 2,
+      "timestamp_ms": 2000,
+      "source_timestamp_ms": 1900,
+      "sender_id": "VB",
+      "data_type": "VALVE_STATE",
+      "values": [
+        0,
+        1
+      ]
+    },
+    {
+      "id": 3,
+      "timestamp_ms": 1000,
+      "source_timestamp_ms": 900,
+      "sender_id": "FC",
+      "data_type": "ROLL",
+      "values": [
+        30
+      ]
+    },
+    {
+      "id": 4,
+      "timestamp_ms": 1000,
+      "source_timestamp_ms": 900,
+      "sender_id": "DAQ",
+      "data_type": "FILL",
+      "values": [
+        42
+      ]
+    }
+  ]
+}

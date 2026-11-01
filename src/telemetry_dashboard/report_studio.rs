@@ -13,6 +13,8 @@ struct Preview {
 #[derive(Clone, Deserialize, PartialEq)]
 struct Channel {
     key: String,
+    #[serde(default)]
+    label: String,
     count: usize,
     points: Vec<(i64, Option<f64>)>,
     regression: serde_json::Value,
@@ -85,6 +87,7 @@ pub(super) fn ReportStudio(recording: String) -> Element {
     let mut format = use_signal(|| "csv".to_string());
     let load_recording = recording.clone();
     let load = move |_| {
+        if load_recording.is_empty() { status.set("Select a recording first.".into()); return; }
         let window = if from.read().is_empty() && to.read().is_empty() {
             None
         } else {
@@ -118,10 +121,11 @@ pub(super) fn ReportStudio(recording: String) -> Element {
         });
     };
     rsx! {section {style:"margin-top:20px;display:grid;gap:10px;",
-        h3 {"Preview and export"}
+        h3 {"2. Select data and export"}
+        p { "Recording: {recording}" }
         p {"Select a recording above, then load its graphs. Preview retains peaks but is downsampled; downloads contain the selected recorded samples without display filtering or recalibration."}
         div {label {"Optional from (UTC) " input {r#type:"datetime-local",value:from(),oninput:move |e|from.set(e.value())}} label {"to (UTC, exclusive) " input {r#type:"datetime-local",value:to(),oninput:move |e|to.set(e.value())}}}
-        button {disabled:busy(),onclick:load,"Load / refresh graphs"}
+        button {disabled:busy() || recording.is_empty(),onclick:load,"Load / refresh graphs"}
         if let Some(data)=preview.read().as_ref() {
             p {"{data.recorded_rows} recorded rows · {utc(data.start_ms)} to {utc(data.end_ms)}"}
             label {input {r#type:"checkbox",checked:all_time(),onchange:move |e|all_time.set(e.checked())} "Export entire loaded time span"}
@@ -135,7 +139,7 @@ pub(super) fn ReportStudio(recording: String) -> Element {
             }
             for channel in &data.channels {
                 div {key:"{channel.key}",style:"border:1px solid #475569;padding:8px;border-radius:6px;",
-                    label {input {r#type:"checkbox",checked:selected.read().contains(&channel.key),onchange:{let key=channel.key.clone();move |e:Event<FormData>|{if e.checked(){selected.write().insert(key.clone());}else{selected.write().remove(&key);}}}} "{channel.key} · {channel.count} samples"}
+                    label {input {r#type:"checkbox",checked:selected.read().contains(&channel.key),onchange:{let key=channel.key.clone();move |e:Event<FormData>|{if e.checked(){selected.write().insert(key.clone());}else{selected.write().remove(&key);}}}} {format!("{} · {} samples",if channel.label.is_empty(){&channel.key}else{&channel.label},channel.count)}}
                     if selected.read().contains(&channel.key) {
                         svg {view_box:"0 0 1000 100",style:"width:100%;height:110px;background:#0f172a;",role:"img","aria-label":format!("Recorded channel {}",channel.key),
                             path {d:trace(channel,data.start_ms,data.end_ms),stroke:"#38bdf8",stroke_width:"1",fill:"none"}
@@ -148,6 +152,7 @@ pub(super) fn ReportStudio(recording: String) -> Element {
                 }
             }
         }
+        super::vehicle_tab::ReplayFileExport { recording:recording.clone() }
         label {"File format " select {value:format(),onchange:move |e|format.set(e.value()),option {value:"csv","CSV — data and regression metadata"}option {value:"xlsx","Excel — charts, data and regressions"}option {value:"pdf","PDF — graphs, data appendix and regressions"}}}
         button {disabled:busy() || preview.read().is_none() || selected.read().is_empty(),onclick:move |_| {
             let kind=format();let window=if all_time(){loaded_window()}else{Some((start(),end()))};
