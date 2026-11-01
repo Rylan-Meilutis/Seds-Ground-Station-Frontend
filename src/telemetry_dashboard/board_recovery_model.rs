@@ -95,14 +95,15 @@ pub(super) struct Board {
 }
 fn hex(value: &str, length: usize) -> bool {
     value.len() == length
+        && value.bytes().any(|byte| byte != b'0')
         && value
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 impl Board {
     pub fn known_context(&self) -> bool {
-        self.state.is_some()
-            && self.epoch.is_some()
+        self.state.is_some_and(|state| state <= 15)
+            && self.epoch.is_some_and(|epoch| epoch != 0)
             && self.boot.as_deref().is_some_and(|x| hex(x, 16))
             && self.nonce.as_deref().is_some_and(|x| hex(x, 16))
             && self.capabilities.endpoint_verified
@@ -368,6 +369,28 @@ mod tests {
         assert!(s.reset_reason(0).unwrap().contains("RF"));
         assert!(!serde_json::from_str::<Status>("{}").unwrap().valid());
     }
+    #[test]
+    fn unpublished_or_invalid_board_identity_never_authorizes_recovery() {
+        let original = status().board("AB").unwrap().clone();
+        assert!(original.known_context());
+        for invalid in [
+            Board { boot: Some("0".repeat(16)), ..original.clone() },
+            Board { nonce: Some("0".repeat(16)), ..original.clone() },
+            Board { epoch: Some(0), ..original.clone() },
+            Board { state: Some(255), ..original.clone() },
+        ] {
+            assert!(!invalid.known_context());
+            assert!(!invalid.fresh(0));
+            assert!(status().board_reason(&invalid, "recover_abort", 0).is_some());
+        }
+        let mut invalid = status();
+        invalid.reset_epoch = "0".repeat(16);
+        assert!(!invalid.valid());
+        invalid = status();
+        invalid.backend_instance = "0".repeat(32);
+        assert!(!invalid.valid());
+    }
+
     #[test]
     fn query_requires_dedicated_endpoint_and_explicit_advertisement() {
         let mut b = status().board("AB").unwrap().clone();
