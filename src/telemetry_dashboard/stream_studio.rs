@@ -360,9 +360,6 @@ mod layout_tests {
 
 #[component]
 fn CleanFeedLink(url: String) -> Element {
-    #[cfg(target_arch = "wasm32")]
-    { rsx! { a { href: url, target: "_blank", rel: "noopener noreferrer", "Open clean feed" } } }
-    #[cfg(not(target_arch = "wasm32"))]
     {
         let mut opened = use_signal(|| false);
         rsx! {

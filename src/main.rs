@@ -156,7 +156,7 @@ fn main() {
     debug_log::append("[startup] native main entered");
     #[cfg(target_os = "android")]
     init_android_platform_tls_verifier();
-    let mut cfg = dioxus_desktop::Config::new();
+    let mut cfg = dioxus_desktop::Config::new().with_external_browser_enabled(false);
     #[cfg(target_os = "ios")]
     startup_diagnostics::mark(startup_diagnostics::Stage::ConfigCreated);
     #[cfg(target_os = "android")]

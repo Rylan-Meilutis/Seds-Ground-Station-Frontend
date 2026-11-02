@@ -272,7 +272,11 @@ impl App {
         self.webviews.insert(id, webview);
     }
 
-    pub fn handle_browser_open(&mut self, msg: IpcMessage) {
+    pub fn handle_browser_open(&mut self, msg: IpcMessage, id: WindowId) {
+        // Bind the policy to the originating live window, including IPC anchors.
+        if !self.webviews.get(&id).is_some_and(|view| view.external_browser_enabled) {
+            return;
+        }
         if let Some(temp) = msg.params().as_object() {
             if temp.contains_key("href") {
                 if let Some(href) = temp.get("href").and_then(|v| v.as_str()) {

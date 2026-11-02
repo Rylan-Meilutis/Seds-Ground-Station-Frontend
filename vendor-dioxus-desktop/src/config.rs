@@ -76,6 +76,7 @@ pub struct Config {
     pub(crate) tray_icon_show_window_on_click: bool,
     pub(crate) navigation_handler: Option<NavigationHandler>,
     pub(crate) in_app_navigation_handler: Option<NavigationHandler>,
+    pub(crate) external_browser_enabled: bool,
 
     #[allow(clippy::type_complexity)]
     pub(crate) on_window: Option<Box<dyn FnMut(Arc<Window>, &mut VirtualDom) + 'static>>,
@@ -132,6 +133,7 @@ impl Config {
             tray_icon_show_window_on_click: true,
             navigation_handler: None,
             in_app_navigation_handler: None,
+            external_browser_enabled: true,
         }
     }
 
@@ -364,6 +366,14 @@ impl Config {
     /// The caller must restrict this to trusted application documents.
     pub fn with_in_app_navigation_handler(mut self, f: impl Fn(&str) -> bool + 'static) -> Self {
         self.in_app_navigation_handler = Some(Box::new(f));
+        self
+    }
+
+    /// Allow links to launch the system browser. Defaults to true.
+    /// Set false for applications whose supported documents stay in app.
+    /// This applies both to webview navigation and browser-open IPC events.
+    pub fn with_external_browser_enabled(mut self, enabled: bool) -> Self {
+        self.external_browser_enabled = enabled;
         self
     }
 

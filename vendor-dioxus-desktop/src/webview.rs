@@ -199,6 +199,7 @@ pub(crate) struct WebviewInstance {
     pub dom: VirtualDom,
     pub edits: WebviewEdits,
     pub desktop_context: DesktopContext,
+    pub external_browser_enabled: bool,
     pub waker: Waker,
 
     // Wry assumes the webcontext is alive for the lifetime of the webview.
@@ -353,6 +354,7 @@ impl WebviewInstance {
             }
         };
 
+        let external_browser_enabled = cfg.external_browser_enabled;
         let navigation_handler = cfg.navigation_handler.take();
         let in_app_navigation_handler = cfg.in_app_navigation_handler.take();
         let page_loaded = AtomicBool::new(false);
@@ -389,7 +391,9 @@ impl WebviewInstance {
                     {
                         return true;
                     }
-                    _ = webbrowser::open(&var);
+                    if external_browser_enabled {
+                        _ = webbrowser::open(&var);
+                    }
                     return false;
                 }
 
@@ -535,6 +539,7 @@ impl WebviewInstance {
             edits,
             waker: tao_waker(shared.proxy.clone(), desktop_context.window.id()),
             desktop_context,
+            external_browser_enabled,
             _menu: menu,
             _web_context: web_context,
         }

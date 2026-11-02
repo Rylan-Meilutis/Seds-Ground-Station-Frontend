@@ -10,3 +10,9 @@ navigation_handler behavior is unchanged. The app restricts allowed documents
 to its configured station origin and known media routes. This is needed because
 upstream opens remote iframe navigation externally before invoking its public
 custom navigation handler. No JavaScript dialog/native permissions are bypassed.
+
+Ground Station disables system-browser launches per native window using
+`with_external_browser_enabled(false)`. The policy covers HTTP/mailto navigation
+fallbacks and browser-open IPC anchors; unknown or closed IPC window IDs cannot
+open the browser. Exact trusted station documents retain the in-app navigation
+allowlist. Other consumers retain the vendor default of true.
