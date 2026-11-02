@@ -2406,14 +2406,17 @@ fn TelemetryDashboardInner() -> Element {
                                 "{close_button_label}"
                             }
                         }
-                        if auth::current_status().roles.iter().any(|role|role=="admin") {
-                            section { class:"gs26-settings gs26-settings-administration",
-                                style:"--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:16px;",
-                                h2 { style:"font-size:16px;margin:0;", "Administration" }
-                                button { onclick:move |_|{let mut overlay=show_settings_overlay;overlay.set(false);admin_open.set(true);}, "Manage users & access" }
-                            }
-                        }
                         SettingsPage {
+                            station_settings: Some(rsx! {
+                                if let Some(layout) = layout_snapshot.as_ref() {
+                                    station_settings::GroundStationSettings {
+                                        layout: layout.actions_tab.clone(), action_policy, fill_targets,
+                                        abort_only_mode: *abort_only_mode.read(), theme: theme.clone(),
+                                        on_open_calibration: move |_| { let mut overlay=show_settings_overlay; overlay.set(false); let mut tab=active_main_tab; tab.set(MainTab::Calibration); },
+                                        on_manage_users: move |_| { let mut overlay=show_settings_overlay; overlay.set(false); admin_open.set(true); },
+                                    }
+                                } else { p { "Waiting for station configuration." } }
+                            }),
                             on_open_antenna: move |_| { let mut overlay = show_settings_overlay; overlay.set(false); antenna_aiming.set(true); },
                             distance_units_metric: distance_units_metric,
                             map_header_distance_visible: map_header_distance_visible,
@@ -3739,7 +3742,6 @@ fn TelemetryDashboardInner() -> Element {
                                     layout: layout.actions_tab.clone(),
                                     action_policy: action_policy,
                                     recording_status: recording_status,
-                                    backend_fill_targets: fill_targets,
                                     abort_only_mode: *abort_only_mode.read(),
                                     theme: theme.clone(),
                                 }

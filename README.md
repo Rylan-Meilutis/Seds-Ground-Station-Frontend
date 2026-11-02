@@ -2,6 +2,25 @@
 
 This repository contains the Dioxus-based frontend for the UBSEDS ground station UI.
 
+## Settings and calibration
+
+Settings has two scopes. **Client** contains presentation, units, navigation,
+maps, local history and cache preferences; existing user-account synchronization
+is unchanged. **Ground Station** contains shared fill targets and cutoff source,
+automatic zeroing, flight/weather profiles, the DAQ loadcell input selector,
+GSE limits, plumbing configuration, station clocks and paired-setting conflicts.
+Station editors retain backend permissions, interlocks and explicit save controls.
+The DAQ input selector is no longer duplicated in Data or Calibration.
+
+Calibration keeps sensor selection, guided capture, points and fit review together.
+Advanced fitting tools and temperature diagnostics are secondary sections.
+Changing the page layout does not alter captured samples or calibration math.
+
+Sequence buttons illuminate from fresh backend progress, independently of whether
+the button can be pressed again. In-progress, paused and completed observations
+have text labels; loss of status clears the indication. Sending a request does
+not establish sequence completion or a physical valve position.
+
 ## Custom State dashboard
 
 Live history uses indexed GPS and channel extrema lookups so those operations

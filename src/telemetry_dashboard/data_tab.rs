@@ -563,7 +563,7 @@ pub fn DataTab(
                 }
 
                 if selected_subtab_snapshot.as_ref().is_some_and(|s| s.data_type.as_deref() == Some("KG50")) {
-                    Kg50InputSelector { theme: theme.clone() }
+                    p { style: "font-size:12px;color:{theme.text_muted};", "50 kg input: Settings → Ground Station → DAQ inputs." }
                 }
                 div {
                     key: format!(

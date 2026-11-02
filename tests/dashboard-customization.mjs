@@ -87,10 +87,14 @@ try{
   await page.waitForTimeout(1000);
   if (!(await page.getByRole('button',{name:/Choose tab/}).count())) console.error('Startup:', await page.locator('body').innerText(), errors);
   const choose=()=>page.getByRole('button',{name:/Choose tab/}).click();
-  const openAdmin=async()=>{
+  const openStationSettings=async()=>{
     const settings=page.getByRole('link',{name:'Settings',exact:true}).or(page.getByRole('button',{name:/^Settings$/i}));
     if(!await settings.isVisible())await page.locator('.gs26-header-menu-toggle').filter({hasText:'Tools'}).click();
     await settings.click();
+    await page.getByRole('button',{name:'Ground Station',exact:true}).click();
+  };
+  const openAdmin=async()=>{
+    await openStationSettings();
     await page.getByRole('button',{name:'Manage users & access',exact:true}).click();
   };
   assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'tab preference excludes sidebar');
@@ -147,12 +151,14 @@ try{
   gseUnavailable=true;await page.getByText('Sequence and panel status unavailable',{exact:true}).waitFor();
   await panel.waitFor({state:'detached'});
   gseUnavailable=false;await page.getByText('Operation checks',{exact:true}).waitFor();
+  await openStationSettings();
   await page.getByRole('button',{name:'About automatic zero',exact:true}).click();
   const zeroHelp=page.getByRole('dialog',{name:'automatic zero',exact:true});
   await zeroHelp.waitFor();
   assert.match(await zeroHelp.innerText(),/200 fresh samples/);
   await zeroHelp.getByRole('button',{name:'Close help',exact:true}).click();
   await zeroHelp.waitFor({state:'detached'});
+  await page.getByRole('button',{name:'Close',exact:true}).click();
   await page.getByRole('button',{name:'About empty-tank pressure limit',exact:true}).click();
   const pressureHelp=page.getByRole('dialog',{name:'empty-tank pressure limit',exact:true});
   await pressureHelp.waitFor();

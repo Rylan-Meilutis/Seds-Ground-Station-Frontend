@@ -440,32 +440,39 @@ pub fn ActionsTab(
     layout: ActionsTabLayout,
     action_policy: Signal<ActionPolicyMsg>,
     recording_status: Signal<RecordingStatusMsg>,
-    backend_fill_targets: Signal<Option<FillTargetsConfig>>,
     abort_only_mode: bool,
     theme: ThemeConfig,
 ) -> Element {
-    let mut auto_zero = use_signal(|| None::<bool>);
-    let mut auto_zero_busy = use_signal(|| false);
-    let mut auto_zero_message = use_signal(String::new);
-    use_effect(move || {
-        spawn(async move {
-            match super::http_get_json::<serde_json::Value>("/api/auto_zero").await {
-                Ok(value) => auto_zero.set(value["enabled"].as_bool()),
-                Err(error) => {
-                    auto_zero_message.set(format!("Automatic zero settings unavailable: {error}"))
-                }
-            }
-        });
-    });
     let mut self_test_confirmed = use_signal(|| false);
     let mut self_test_busy = use_signal(|| false);
     let mut self_test_message = use_signal(String::new);
     let mut gse_request_gate = use_signal(String::new);
     let mut operational_status = use_signal(|| serde_json::Value::Null);
+    let mut operational_observed_at = use_signal(|| f64::NAN);
+    let mut sequence_now = use_signal(super::monotonic_now_ms);
     use_future(move || async move {
         loop {
-            let next = match super::http_get_json::<serde_json::Value>("/api/gse/status").await {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(250).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            sequence_now.set(super::monotonic_now_ms());
+        }
+    });
+    use_future(move || async move {
+        loop {
+            let request_started = super::monotonic_now_ms();
+            let backend = super::UrlConfig::base_http();
+            let principal = auth::current_token();
+            let response = super::http_get_json::<serde_json::Value>("/api/gse/status").await;
+            if backend != super::UrlConfig::base_http() || principal != auth::current_token() {
+                operational_status.set(serde_json::Value::Null);
+                operational_observed_at.set(f64::NAN);
+                continue;
+            }
+            let next = match response {
                 Ok(status) => {
+                    operational_observed_at.set(request_started);
                     operational_status.set(status.clone());
                     if !*self_test_busy.read()
                         && let Some(confirmed) = status["dry_self_test_confirmed"].as_bool()
@@ -499,49 +506,6 @@ pub fn ActionsTab(
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         }
     });
-    let mut flight_setup = use_signal(|| None::<FlightSetupConfig>);
-    let mut flight_setup_status = use_signal(String::new);
-    let mut flight_setup_busy = use_signal(|| false);
-    let mut fill_targets = use_signal(|| None::<FillTargetsConfig>);
-    let mut fill_targets_status = use_signal(String::new);
-    let mut fill_targets_busy = use_signal(|| false);
-    use_effect(move || {
-        spawn(async move {
-            match crate::telemetry_dashboard::http_get_json::<FlightSetupConfig>(
-                "/api/flight_setup",
-            )
-            .await
-            {
-                Ok(cfg) => flight_setup.set(Some(cfg)),
-                Err(err) => flight_setup_status.set(format!("Flight setup load failed: {err}")),
-            }
-        });
-    });
-    use_effect(move || {
-        spawn(async move {
-            match crate::telemetry_dashboard::http_get_json::<FillTargetsConfig>(
-                "/api/fill_targets",
-            )
-            .await
-            {
-                Ok(cfg) => {
-                    let mut backend_fill_targets = backend_fill_targets;
-                    backend_fill_targets.set(Some(cfg.clone()));
-                    let mut fill_targets = fill_targets;
-                    fill_targets.set(Some(cfg));
-                }
-                Err(err) => fill_targets_status.set(format!("Fill targets load failed: {err}")),
-            }
-        });
-    });
-    use_effect(move || {
-        if fill_targets_status.read().starts_with("Unsaved") {
-            return;
-        }
-        if let Some(cfg) = backend_fill_targets.read().clone() {
-            fill_targets.set(Some(cfg));
-        }
-    });
     let mut all_actions = layout.actions.clone();
     ensure_sequence_actions(&mut all_actions, &theme);
     for action in &mut all_actions {
@@ -561,11 +525,6 @@ pub fn ActionsTab(
     };
     let action_rows = build_action_rows(&visible_actions);
     let software_buttons_enabled = action_policy.read().software_buttons_enabled;
-    let fill_targets_editable = if layout.fill_targets_require_actions_enabled {
-        software_buttons_enabled && !abort_only_mode
-    } else {
-        true
-    };
     rsx! {
         div {
             style: "
@@ -712,19 +671,29 @@ pub fn ActionsTab(
                                                 let reason_text = disabled_reason.unwrap_or("");
                                                 let label_lines = if action.group == "GSE sequence actions" { 1 } else { 2 };
 
-                                                let blink = control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None);
-                                                let actuated = merged_actuated(
+                                                let sequence = super::sequence_indicator::progress(
+                                                    &action.cmd, &operational_status.read(),
+                                                    super::board_recovery_guard::status_age_ms(operational_observed_at(), sequence_now()),
+                                                    auth::current_status().station_role.as_deref() == Some("rrls"),
+                                                );
+                                                let blink = if sequence == Some(super::sequence_indicator::Progress::Unknown) {
+                                                    BlinkMode::None
+                                                } else { control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None) };
+                                                let actuated = sequence.map(|state| state.illuminated()).or_else(|| merged_actuated(
                                                     action.cmd.as_str(),
                                                     control.as_ref().and_then(|c| c.actuated),
                                                     &recording_status.read(),
-                                                );
+                                                ));
                                                 let unconfirmed = physical_output_action(&action.cmd) && actuated.is_none();
-                                                let badge_visibility = if !enabled || unconfirmed { "visible" } else { "hidden" };
-                                                let badge_label = if unconfirmed { "Unconfirmed" } else { "Disabled" };
+                                                let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
+                                                let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
+                                                let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { "Unconfirmed" } else { "Disabled" };
                                                 rsx! {
                                                     button {
                                                         style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\" && !physical_output_action(&action.cmd))}",
                                                         disabled: !enabled,
+                                                        aria_busy: sequence == Some(super::sequence_indicator::Progress::Running),
+                                                        "data-sequence-state": sequence_label,
                                                         onmousedown: {
                                                             let cmd = action.cmd.clone();
                                                             move |_| {
@@ -756,7 +725,7 @@ pub fn ActionsTab(
                                                             }
                                                         }
                                                             span {
-                                                                "aria-hidden": enabled && !unconfirmed,
+                                                                "aria-hidden": enabled && !unconfirmed && sequence_label.is_empty(),
                                                                 style: "visibility:{badge_visibility};flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
                                                                 "{translate_text(badge_label)}"
                                                             }
@@ -771,14 +740,93 @@ pub fn ActionsTab(
                     }
                 }
             }
-            NetworkUtcControls {}
             if operational_status.read()["unavailable"].as_bool()==Some(true) {
                 p {role:"alert","Sequence and panel status unavailable"}
             }
             super::gse_panel::PhysicalPanelStatus {status:operational_status}
+
+        }
+    }
+}
+
+/// Shared mission configuration lives in Ground Station Settings, not Actions.
+#[component]
+pub(super) fn MissionSettings(
+    mut layout: ActionsTabLayout,
+    action_policy: Signal<ActionPolicyMsg>,
+    backend_fill_targets: Signal<Option<FillTargetsConfig>>,
+    abort_only_mode: bool,
+    theme: ThemeConfig,
+) -> Element {
+    let abort_only_mode = abort_only_mode || !auth::can_view_actions();
+    layout.show_flight_setup = true;
+    layout.show_fill_targets = true;
+    let mut auto_zero = use_signal(|| None::<bool>);
+    let mut auto_zero_busy = use_signal(|| false);
+    let mut auto_zero_message = use_signal(String::new);
+    use_effect(move || {
+        spawn(async move {
+            match super::http_get_json::<serde_json::Value>("/api/auto_zero").await {
+                Ok(value) => auto_zero.set(value["enabled"].as_bool()),
+                Err(error) => {
+                    auto_zero_message.set(format!("Automatic zero settings unavailable: {error}"))
+                }
+            }
+        });
+    });
+    let mut flight_setup = use_signal(|| None::<FlightSetupConfig>);
+    let mut flight_setup_status = use_signal(String::new);
+    let mut flight_setup_busy = use_signal(|| false);
+    let mut fill_targets = use_signal(|| None::<FillTargetsConfig>);
+    let mut fill_targets_status = use_signal(String::new);
+    let mut fill_targets_busy = use_signal(|| false);
+    use_effect(move || {
+        spawn(async move {
+            match crate::telemetry_dashboard::http_get_json::<FlightSetupConfig>(
+                "/api/flight_setup",
+            )
+            .await
+            {
+                Ok(cfg) => flight_setup.set(Some(cfg)),
+                Err(err) => flight_setup_status.set(format!("Flight setup load failed: {err}")),
+            }
+        });
+    });
+    use_effect(move || {
+        spawn(async move {
+            match crate::telemetry_dashboard::http_get_json::<FillTargetsConfig>(
+                "/api/fill_targets",
+            )
+            .await
+            {
+                Ok(cfg) => {
+                    let mut backend_fill_targets = backend_fill_targets;
+                    backend_fill_targets.set(Some(cfg.clone()));
+                    let mut fill_targets = fill_targets;
+                    fill_targets.set(Some(cfg));
+                }
+                Err(err) => fill_targets_status.set(format!("Fill targets load failed: {err}")),
+            }
+        });
+    });
+    use_effect(move || {
+        if fill_targets_status.read().starts_with("Unsaved") {
+            return;
+        }
+        if let Some(cfg) = backend_fill_targets.read().clone() {
+            fill_targets.set(Some(cfg));
+        }
+    });
+    let software_buttons_enabled = action_policy.read().software_buttons_enabled;
+    let fill_targets_editable = !abort_only_mode
+        && (!layout.fill_targets_require_actions_enabled || software_buttons_enabled);
+    rsx! {
+        section { class: "gs26-station-mission-settings", style: "display:grid;gap:16px;min-width:0;",
+            h3 { style: "margin:0;", "Fill and launch" }
+            p { "Saved on the connected ground station and shared by its clients." }
             label {
                 input { r#type: "checkbox", checked: auto_zero().unwrap_or(false),
-                    disabled: auto_zero().is_none() || auto_zero_busy() || abort_only_mode,
+                    disabled: auto_zero().is_none() || auto_zero_busy() || abort_only_mode || !auth::can_edit_calibration(),
                     onchange: move |event| {
                         let enabled = event.checked();
                         auto_zero_busy.set(true);
@@ -826,7 +874,7 @@ pub fn ActionsTab(
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap:12px; align-items:start; width:100%; max-width:none; box-sizing:border-box;",
                 if layout.show_flight_setup {
                     div { style: "{setup_panel_style(&theme)}",
-                    h3 { style: "margin:0; color:{theme.text_primary};", "{translate_text(\"Flight Setup\")}" }
+                    h3 { style: "margin:0; color:{theme.text_primary};", "Flight and weather profile" }
                     if let Some(cfg) = flight_setup.read().clone() {
                         div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap:12px; align-items:start; min-width:0;",
                             div { style: "display:flex; flex-direction:column; gap:8px; min-width:0;",
@@ -834,6 +882,7 @@ pub fn ActionsTab(
                                 select {
                                     style: "{input_style(&theme)} max-width:100%; min-width:0;",
                                     value: "{cfg.selected_profile_id}",
+                                    disabled: abort_only_mode || flight_setup_busy(),
                                     onchange: {
                                         move |evt| {
                                             let next_id = evt.value();
@@ -1071,6 +1120,7 @@ fn FillTargetEditor(
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{translate_text(\"Target mass (kg)\")}" }
                 input {
+                    aria_label: "{title} target mass (kg)",
                     r#type: "text",
                     inputmode: "decimal",
                     disabled: !enabled,
@@ -1107,6 +1157,7 @@ fn FillTargetEditor(
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{translate_text(\"Target pressure (psi)\")}" }
                 input {
+                    aria_label: "{title} target pressure (psi)",
                     r#type: "text",
                     inputmode: "decimal",
                     disabled: !enabled,

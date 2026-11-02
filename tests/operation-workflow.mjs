@@ -197,6 +197,7 @@ try {
  await page.reload();await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
  await page.getByRole('link',{name:'Actions',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('[aria-label="Mission workflow"] [aria-current="step"]')?.textContent==='Fire');
+ await page.getByRole('link',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Ground Station',exact:true}).click();
  await page.getByLabel('UTC date and time',{exact:true}).fill('2026-10-26T22:00');
  const setUtc=page.getByRole('button',{name:'Set network UTC',exact:true});
  assert(await setUtc.isEnabled(),'UTC must remain available after launch');
@@ -212,8 +213,8 @@ try {
  assert.equal(networkUtcUpdates.length,2,'one client-time click sends one update');
  assert.equal(networkUtcUpdates[1].source,'client');
  assert(networkUtcUpdates[1].utc_ms>=beforeClientTime && networkUtcUpdates[1].utc_ms<=await page.evaluate(()=>Date.now()));
- const primaryAction=page.getByRole('button',{name:/Start fill/i}).first();
- assert((await primaryAction.boundingBox()).y < (await clientTime.boundingBox()).y,'main actions appear above network time controls');
+ assert.equal(await page.locator('.gs26-ground-station-settings').getByRole('button',{name:/Start fill/i}).count(),0,'configuration has no actuation buttons');
+ await page.getByRole('button',{name:'Close',exact:true}).click();
 
  assert.equal(await page.getByRole('button',{name:'Override cold-flow requirement',exact:true}).count(),0);
  assert(await page.getByRole('button',{name:'Reset operation checks',exact:true}).isDisabled());

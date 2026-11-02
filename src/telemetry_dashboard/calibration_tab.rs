@@ -1920,7 +1920,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     }
 
     rsx! {
-        div { style: "{shell_style}",
+        div { class: "gs26-calibration-workspace", style: "{shell_style}",
             style { {r#"
                 @media (max-width: 1100px) {
                     .gs26-calibration-plot-overlay-desktop { display: none !important; }
@@ -1934,10 +1934,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 div { style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;",
                     div {
                         h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
-                        div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Live load-cell captures retain ADC temperature and normalize raw values to the saved thermal reference before fitting." }
+                        div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Select a sensor, capture known loads, review the fit, then save." }
                         div { style: "margin-top:6px; color:{theme.text_secondary}; font-size:12px;",
                             if can_edit {
-                                "Save updates only the selected sensor. Save edits before switching sensors. Saved changes sync to other open frontends."
+                                "Save applies only to the selected sensor. DAQ inputs and station configuration are in Settings → Ground Station."
                             } else {
                                 "Current calibration data, active regression, and captured points are shown here."
                             }
@@ -2017,19 +2017,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 }
             }
 
-            if selected_sensor.as_ref().is_some_and(|s| s.data_type == "KG50") {
-                super::data_tab::Kg50InputSelector {
-                    theme: theme.clone(),
-                    disabled: !can_edit || *dirty.read() || *sequence_capture_busy.read() || *sequence_dialog_open.read() || *calibration_save_busy.read(),
-                    on_changed: { let mut cfg = cfg; let mut dirty = dirty; let mut status = status; move |value: serde_json::Value| {
-                        if let Ok(updated) = serde_json::from_value::<CalibrationFile>(value) {
-                            save_cached_calibration_file(&updated);
-                            cfg.set(Some(updated)); dirty.set(false); clear_calibration_draft();
-                            status.set("50 kg input changed; its own calibration is now active".into());
-                        }
-                    } },
-                }
-            }
             div { style: "display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));",
                 CalibrationLiveMetrics {
                     theme: theme.clone(),
@@ -2039,40 +2026,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 }
                 {metric_card(&theme, "Active Fit", fit_type_s.clone())}
             }
-            }
-
-            if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
-                section { style: "{section_style}",
-                    h2 { style: "margin:0; font-size:16px;", "Temperature compensation — {sensor.label}" }
-                    ThermalGeometryPreview { theme: theme.clone() }
-                    ThermalCompensationMetrics {
-                        theme: theme.clone(),
-                        selected_sensor: selected_sensor.clone(),
-                        calibration: cfg.read().clone(),
-                        channel_key: channel_key.clone(),
-                        dirty: *dirty.read(),
-                    }
-            if can_edit {
-                if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
-                    LongZeroPanel {
-                        theme: theme.clone(),
-                        sensor: sensor.data_type.clone(),
-                        dirty: *dirty.read(),
-                        on_applied: { let mut cfg = cfg; let mut dirty = dirty; move |updated: CalibrationFile| { cfg.set(Some(updated)); dirty.set(false); } },
-                    }
-                }
-            }
-                    if can_edit {
-                        ThermalPointCapture {
-                            key: "thermal-point-{sensor.id}",
-                            theme: theme.clone(),
-                            sensor: sensor.data_type.clone(),
-                            dirty: *dirty.read(),
-                            on_applied: { let mut cfg = cfg; move |saved: CalibrationFile| { cfg.set(Some(saved)); } },
-                        }
-                    }
-
-                }
             }
 
             div { style: "{section_style}",
@@ -2119,6 +2072,118 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "2  Stabilize load" }
                 span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "3  Capture point" }
                 span { style: "padding:6px 9px; border:1px solid {theme.border_soft}; border-radius:999px;", "4  Review & save" }
+            }
+
+            if can_edit {
+            div { style: "{toolbar_style}",
+                input {
+                    style: "{input_style}",
+                    r#type: "number",
+                    step: "0.01",
+                    placeholder: if *sequence_direction.read() == CaptureDirection::Decreasing { "Current mass — start high (kg)" } else { "Next known mass (kg)" },
+                    value: "{known_kg.read()}",
+                    disabled: !can_edit,
+                    oninput: {
+                        let mut known_kg = known_kg;
+                        move |e| known_kg.set(e.value())
+                    }
+                }
+                button {
+                    style: "{warning_button_style}",
+                    disabled: selected_sensor.is_none() || !can_edit,
+                    onclick: {
+                        let mut sequence_dialog_open = sequence_dialog_open;
+                        let mut sequence_dialog_mode = sequence_dialog_mode;
+                        let mut sequence_dialog_weight = sequence_dialog_weight;
+                        let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
+                        let mut sequence_dialog_status = sequence_dialog_status;
+                        let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
+                        let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
+                        let known_kg = known_kg;
+                        let sequence_direction = sequence_direction;
+                        move |_| {
+                            let descending = *sequence_direction.read() == CaptureDirection::Decreasing;
+                            sequence_dialog_mode.set(if descending { CaptureMode::SequencePoint } else { CaptureMode::SequenceZero });
+                            sequence_dialog_weight.set(if descending { known_kg.read().clone() } else { "0".to_string() });
+                            sequence_dialog_captured_raw.set(String::new());
+                            sequence_dialog_status.set(if descending {
+                                "Keep the highest known load applied and capture it first. Then remove weight and capture progressively lower points."
+                                    .to_string()
+                            } else {
+                                "Remove all load, allow the reading to settle, and capture zero first."
+                                    .to_string()
+                            });
+                            sequence_dialog_replace_existing.set(true);
+                            sequence_dialog_confirm_reset.set(false);
+                            sequence_dialog_open.set(true);
+                        }
+                    },
+                    "New sequence…"
+                }
+                if (*sequence_direction.read() == CaptureDirection::Increasing && sequence_has_zero)
+                    || (*sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points) {
+                    button {
+                        style: "{neutral_button_style}",
+                        disabled: selected_sensor.is_none() || !can_edit,
+                        onclick: {
+                            let mut sequence_dialog_open = sequence_dialog_open;
+                            let mut sequence_dialog_mode = sequence_dialog_mode;
+                            let mut sequence_dialog_weight = sequence_dialog_weight;
+                            let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
+                            let mut sequence_dialog_status = sequence_dialog_status;
+                            let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
+                            let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
+                            let known_kg = known_kg;
+                            move |_| {
+                                sequence_dialog_mode.set(CaptureMode::SequencePoint);
+                                sequence_dialog_weight.set(known_kg.read().clone());
+                                sequence_dialog_captured_raw.set(String::new());
+                                sequence_dialog_status.set(
+                                    if *sequence_direction.read() == CaptureDirection::Decreasing {
+                                        "Remove weight, let the reading settle, enter the lower remaining mass, and capture. Reusing a mass replaces that point."
+                                            .to_string()
+                                    } else {
+                                        "Add weight, let the reading settle, enter the total known mass, and capture. Reusing a mass replaces that point."
+                                            .to_string()
+                                    },
+                                );
+                                sequence_dialog_replace_existing.set(false);
+                                sequence_dialog_confirm_reset.set(false);
+                                sequence_dialog_open.set(true);
+                            }
+                        },
+                        "Continue existing…"
+                    }
+                }
+                if *sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points && !sequence_has_zero {
+                    button {
+                        style: "{success_button_style}",
+                        disabled: selected_sensor.is_none() || !can_edit,
+                        onclick: {
+                            let mut sequence_dialog_open = sequence_dialog_open;
+                            let mut sequence_dialog_mode = sequence_dialog_mode;
+                            let mut sequence_dialog_weight = sequence_dialog_weight;
+                            let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
+                            let mut sequence_dialog_status = sequence_dialog_status;
+                            let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
+                            let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
+                            move |_| {
+                                sequence_dialog_mode.set(CaptureMode::SequenceZero);
+                                sequence_dialog_weight.set("0".to_string());
+                                sequence_dialog_captured_raw.set(String::new());
+                                sequence_dialog_status.set(
+                                    "Remove all load, wait for a stable reading, then capture the final zero point. Existing weighted points will be kept."
+                                        .to_string(),
+                                );
+                                sequence_dialog_replace_existing.set(false);
+                                sequence_dialog_confirm_reset.set(false);
+                                sequence_dialog_open.set(true);
+                            }
+                        },
+                        "Finish at Zero..."
+                    }
+                }
+            }
             }
 
             details { style: "border:1px solid {theme.border_soft}; border-radius:14px; background:{theme.panel_background_alt};",
@@ -2375,118 +2440,6 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
             if can_edit {
             div { style: "{toolbar_style}",
-                input {
-                    style: "{input_style}",
-                    r#type: "number",
-                    step: "0.01",
-                    placeholder: if *sequence_direction.read() == CaptureDirection::Decreasing { "Current mass — start high (kg)" } else { "Next known mass (kg)" },
-                    value: "{known_kg.read()}",
-                    disabled: !can_edit,
-                    oninput: {
-                        let mut known_kg = known_kg;
-                        move |e| known_kg.set(e.value())
-                    }
-                }
-                button {
-                    style: "{warning_button_style}",
-                    disabled: selected_sensor.is_none() || !can_edit,
-                    onclick: {
-                        let mut sequence_dialog_open = sequence_dialog_open;
-                        let mut sequence_dialog_mode = sequence_dialog_mode;
-                        let mut sequence_dialog_weight = sequence_dialog_weight;
-                        let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
-                        let mut sequence_dialog_status = sequence_dialog_status;
-                        let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
-                        let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
-                        let known_kg = known_kg;
-                        let sequence_direction = sequence_direction;
-                        move |_| {
-                            let descending = *sequence_direction.read() == CaptureDirection::Decreasing;
-                            sequence_dialog_mode.set(if descending { CaptureMode::SequencePoint } else { CaptureMode::SequenceZero });
-                            sequence_dialog_weight.set(if descending { known_kg.read().clone() } else { "0".to_string() });
-                            sequence_dialog_captured_raw.set(String::new());
-                            sequence_dialog_status.set(if descending {
-                                "Keep the highest known load applied and capture it first. Then remove weight and capture progressively lower points."
-                                    .to_string()
-                            } else {
-                                "Remove all load, allow the reading to settle, and capture zero first."
-                                    .to_string()
-                            });
-                            sequence_dialog_replace_existing.set(true);
-                            sequence_dialog_confirm_reset.set(false);
-                            sequence_dialog_open.set(true);
-                        }
-                    },
-                    "New sequence…"
-                }
-                if (*sequence_direction.read() == CaptureDirection::Increasing && sequence_has_zero)
-                    || (*sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points) {
-                    button {
-                        style: "{neutral_button_style}",
-                        disabled: selected_sensor.is_none() || !can_edit,
-                        onclick: {
-                            let mut sequence_dialog_open = sequence_dialog_open;
-                            let mut sequence_dialog_mode = sequence_dialog_mode;
-                            let mut sequence_dialog_weight = sequence_dialog_weight;
-                            let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
-                            let mut sequence_dialog_status = sequence_dialog_status;
-                            let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
-                            let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
-                            let known_kg = known_kg;
-                            move |_| {
-                                sequence_dialog_mode.set(CaptureMode::SequencePoint);
-                                sequence_dialog_weight.set(known_kg.read().clone());
-                                sequence_dialog_captured_raw.set(String::new());
-                                sequence_dialog_status.set(
-                                    if *sequence_direction.read() == CaptureDirection::Decreasing {
-                                        "Remove weight, let the reading settle, enter the lower remaining mass, and capture. Reusing a mass replaces that point."
-                                            .to_string()
-                                    } else {
-                                        "Add weight, let the reading settle, enter the total known mass, and capture. Reusing a mass replaces that point."
-                                            .to_string()
-                                    },
-                                );
-                                sequence_dialog_replace_existing.set(false);
-                                sequence_dialog_confirm_reset.set(false);
-                                sequence_dialog_open.set(true);
-                            }
-                        },
-                        "Continue existing…"
-                    }
-                }
-                if *sequence_direction.read() == CaptureDirection::Decreasing && sequence_has_weighted_points && !sequence_has_zero {
-                    button {
-                        style: "{success_button_style}",
-                        disabled: selected_sensor.is_none() || !can_edit,
-                        onclick: {
-                            let mut sequence_dialog_open = sequence_dialog_open;
-                            let mut sequence_dialog_mode = sequence_dialog_mode;
-                            let mut sequence_dialog_weight = sequence_dialog_weight;
-                            let mut sequence_dialog_captured_raw = sequence_dialog_captured_raw;
-                            let mut sequence_dialog_status = sequence_dialog_status;
-                            let mut sequence_dialog_replace_existing = sequence_dialog_replace_existing;
-                            let mut sequence_dialog_confirm_reset = sequence_dialog_confirm_reset;
-                            move |_| {
-                                sequence_dialog_mode.set(CaptureMode::SequenceZero);
-                                sequence_dialog_weight.set("0".to_string());
-                                sequence_dialog_captured_raw.set(String::new());
-                                sequence_dialog_status.set(
-                                    "Remove all load, wait for a stable reading, then capture the final zero point. Existing weighted points will be kept."
-                                        .to_string(),
-                                );
-                                sequence_dialog_replace_existing.set(false);
-                                sequence_dialog_confirm_reset.set(false);
-                                sequence_dialog_open.set(true);
-                            }
-                        },
-                        "Finish at Zero..."
-                    }
-                }
-            }
-            }
-
-            if can_edit {
-            div { style: "{toolbar_style}",
                 button {
                     style: "{error_button_style}",
                     disabled: cfg.read().is_none() || selected_point.read().is_none() || !can_edit,
@@ -2731,6 +2684,40 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             }
                 }
             }
+            if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                details { class: "gs26-calibration-temperature", style: "{section_style}",
+                    summary { style: "cursor:pointer;font-weight:700;", "Temperature calibration and diagnostics — {sensor.label}" }
+                    ThermalGeometryPreview { theme: theme.clone() }
+                    ThermalCompensationMetrics {
+                        theme: theme.clone(),
+                        selected_sensor: selected_sensor.clone(),
+                        calibration: cfg.read().clone(),
+                        channel_key: channel_key.clone(),
+                        dirty: *dirty.read(),
+                    }
+            if can_edit {
+                if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
+                    LongZeroPanel {
+                        theme: theme.clone(),
+                        sensor: sensor.data_type.clone(),
+                        dirty: *dirty.read(),
+                        on_applied: { let mut cfg = cfg; let mut dirty = dirty; move |updated: CalibrationFile| { cfg.set(Some(updated)); dirty.set(false); } },
+                    }
+                }
+            }
+                    if can_edit {
+                        ThermalPointCapture {
+                            key: "thermal-point-{sensor.id}",
+                            theme: theme.clone(),
+                            sensor: sensor.data_type.clone(),
+                            dirty: *dirty.read(),
+                            on_applied: { let mut cfg = cfg; move |saved: CalibrationFile| { cfg.set(Some(saved)); } },
+                        }
+                    }
+
+                }
+            }
+
             if *sequence_dialog_open.read() {
                 div {
                     style: "position:fixed; inset:0; z-index:4200; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(0,0,0,0.45);",

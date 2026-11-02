@@ -30,6 +30,8 @@ mod gse_panel;
 mod plumbing_drive;
 mod checklists;
 pub mod layout;
+mod station_settings;
+mod sequence_indicator;
 mod layout_settings_tab;
 mod live_stream_tab;
 mod media_tool_tab;

@@ -124,7 +124,9 @@ pub fn SettingsPage(
     on_prefetch_map_tiles: EventHandler<()>,
     on_reset_app_data: EventHandler<()>,
     #[props(default)] title: Option<String>,
+    #[props(default)] station_settings: Option<Element>,
 ) -> Element {
+    let mut settings_scope = use_signal(|| "client".to_string());
     let mut maintenance_status = use_signal(String::new);
     let mut confirm_reset = use_signal(|| false);
     let mut active_settings_tab = use_signal(|| "general".to_string());
@@ -950,6 +952,15 @@ pub fn SettingsPage(
         style { {include_str!("controls.css")} }
         div { class:"gs26-settings", style: "--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};--gs-field-bg:{theme.panel_background_alt};--gs-field-text:{theme.text_primary};padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
             h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "{title}" }
+            nav { aria_label: "Settings scope", style: "display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;",
+                for (scope, label) in [("client", "Client"), ("station", "Ground Station")] {
+                    button { r#type: "button", aria_pressed: settings_scope.read().as_str() == scope,
+                        style: if settings_scope.read().as_str() == scope { chip_selected.clone() } else { chip_idle.clone() },
+                        onclick: move |_| { settings_scope.set(scope.into()); confirm_reset.set(false); }, "{label}" }
+                }
+            }
+            if settings_scope.read().as_str() == "client" {
+                p { style: "color:{theme.text_muted};", "Client preferences apply to this app or browser. Account-linked preferences keep their existing synchronization." }
             div { style: "{settings_tab_bar_style}",
                 button {
                     style: if active_settings_tab.read().as_str() == "general" { chip_selected.clone() } else { chip_idle.clone() },
@@ -985,9 +996,6 @@ pub fn SettingsPage(
 
             if active_settings_tab.read().as_str() == "general" {
             p {role:"status",class:"gs26-operating-mode", {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), crate::auth::current_status().station_role.as_deref() == Some("rrls"))} }
-            if crate::auth::can_view_data() {
-                super::paired_settings::PairedSettings { theme:theme.clone() }
-            }
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap:12px;",
                 div { style: "{card_style}",
                     h3 { style:"margin:0;font-size:15px;", "Antenna alignment" }
@@ -1036,7 +1044,6 @@ pub fn SettingsPage(
                             "{french_label}"
                         }
                     }
-                    super::actions_tab::NetworkUtcControls {}
                     div { style: "font-size:13px; color:{theme.text_muted}; margin-top:10px;", "{time_format_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{time_format_desc}" }
                     div { style: "display:flex; gap:8px; flex-wrap:wrap;",
@@ -1804,11 +1811,6 @@ pub fn SettingsPage(
             }
 
             if active_settings_tab.read().as_str() == "maintenance" {
-                div {
-                    style: "margin-top:12px; {card_style}",
-                    style { {include_str!("system_clock_settings.css")} }
-                    super::recording_download::SystemClockSettings {}
-                }
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_storage}" }
                 div { style: "display:flex; flex-direction:column; gap:12px;",
@@ -2049,6 +2051,22 @@ pub fn SettingsPage(
             }
             }
 
+            } else {
+                section { class: "gs26-ground-station-settings", style: "display:grid;gap:20px;min-width:0;",
+                    h3 { style: "margin:0;", "Ground Station settings" }
+                    p { style: "margin:0;color:{theme.text_muted};", "Shared configuration for the connected station. Changes require the existing station permissions and interlocks." }
+                    if let Some(content) = station_settings.clone() {
+                    {content}
+                    if crate::auth::can_view_data() { super::paired_settings::PairedSettings { theme: theme.clone() } }
+                    section { style: "{card_style}",
+                        h3 { style: "margin:0;", "Station clocks" }
+                        super::actions_tab::NetworkUtcControls {}
+                        style { {include_str!("system_clock_settings.css")} }
+                        super::recording_download::SystemClockSettings {}
+                    }
+                    } else { p { "Connect to a station and open its dashboard to configure shared settings." } }
+                }
+            }
             if *confirm_reset.read() {
                 div {
                     style: "position:fixed; inset:0; z-index:4100; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(0,0,0,0.45);",
