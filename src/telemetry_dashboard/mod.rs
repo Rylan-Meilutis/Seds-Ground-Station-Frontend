@@ -13,6 +13,7 @@ mod connection_status_tab;
 mod custom_dashboard;
 mod dashboard_history;
 pub mod data_chart;
+mod data_groups;
 pub mod data_tab;
 mod detailed_tab;
 mod info_panels;

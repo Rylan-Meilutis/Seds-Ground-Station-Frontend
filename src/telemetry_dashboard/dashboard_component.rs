@@ -301,12 +301,13 @@ fn TelemetryDashboardInner() -> Element {
             let Some(layout) = layout_config.read().clone() else {
                 return;
             };
-            if layout.data_tab.tabs.is_empty() {
+            let data_layout = data_groups::with_grouped_views(layout.data_tab);
+            if data_layout.tabs.is_empty() {
                 return;
             }
             let current = active_data_tab.read().clone();
-            if !layout.data_tab.tabs.iter().any(|t| t.id == current) {
-                active_data_tab.set(layout.data_tab.tabs[0].id.clone());
+            if !data_layout.tabs.iter().any(|t| t.id == current) {
+                active_data_tab.set(data_layout.tabs[0].id.clone());
             }
         });
     }

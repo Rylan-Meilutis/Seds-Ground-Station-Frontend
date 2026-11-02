@@ -37,8 +37,11 @@ Regression checks: `cargo test --bin groundstation_frontend` and
 
 Open **State → Customize dashboard** to add, hide, remove, reorder or configure
 telemetry cards. Cards support numbers, bars, gauges, short trends and binary
-state indicators. Choose a telemetry data type, optional board ID, zero-based
-channel index, label, unit and display range (maximum must exceed minimum).
+state indicators. Labels are the only free-text card fields. Choose section,
+source, board, named channel, unit label, precision, width and display range from
+dropdowns. Changing source resets its board/channel/unit/range defaults. Existing
+custom units, sections and ranges remain selectable; unit labels do not convert
+measurements.
 Layouts are saved locally per user and backend address; they do not synchronize
 between computers. **Restore defaults** restores the standard layout.
 

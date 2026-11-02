@@ -300,20 +300,24 @@ fn data_type_choices(
         if !id.is_empty() { types.entry(id.clone()).or_insert(id); }
     }
     let mut insert = |id: &str, label: &str| {
-        if !id.is_empty() { types.insert(id.to_string(), label.to_string()); }
+        if !id.is_empty() {
+            let entry = types.entry(id.to_string()).or_insert_with(|| label.to_string());
+            if entry == id { *entry = label.to_string(); }
+        }
     };
     for tab in &layout.tabs {
-        if !tab.channels.is_empty() || tab.subtabs.as_ref().is_none_or(Vec::is_empty) {
-            insert(&tab.id, &tab.label);
-        }
+        if !tab.channels.is_empty() { insert(&tab.id, &tab.label); }
         for group in tab.chart_groups.iter().flatten() {
             if let Some(id) = &group.data_type { insert(id, group.title.as_deref().unwrap_or(id)); }
+            for series in group.chart_series.iter().flatten() { insert(&series.data_type, series.label.as_deref().unwrap_or(&series.data_type)); }
         }
         for subtab in tab.subtabs.iter().flatten() {
-            let id = subtab.data_type.as_deref().unwrap_or(&tab.id);
-            insert(id, &subtab.label);
+            if let Some(id) = subtab.data_type.as_deref().or_else(|| (!tab.channels.is_empty()).then_some(tab.id.as_str())) {
+                insert(id, &subtab.label);
+            }
             for group in subtab.chart_groups.iter().flatten() {
                 if let Some(id) = &group.data_type { insert(id, group.title.as_deref().unwrap_or(id)); }
+            for series in group.chart_series.iter().flatten() { insert(&series.data_type, series.label.as_deref().unwrap_or(&series.data_type)); }
             }
             for item in subtab.summary_items.iter().flatten() { insert(&item.data_type, &item.label); }
         }
@@ -322,6 +326,70 @@ fn data_type_choices(
         let text = if id == label { id.clone() } else { format!("{label} ({id})") };
         (id, text)
     }).collect()
+}
+
+fn choice_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    values.into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+}
+
+fn card_ranges(card: &Card) -> Vec<(f32, f32)> {
+    let mut ranges = vec![(0., 1.), (0., 5.), (0., 10.), (0., 20.), (0., 50.),
+        (0., 100.), (0., 500.), (0., 1000.), (0., 5000.), (0., 10000.),
+        (-1., 1.), (-10., 10.), (-50., 50.), (-100., 100.), (-1000., 1000.)];
+    for range in defaults().iter().map(|card| (card.min, card.max)).chain([(card.min, card.max)]) {
+        if !ranges.contains(&range) { ranges.push(range); }
+    }
+    ranges
+}
+
+fn card_channels(layout: &super::layout::DataTabLayout, data_type: &str, saved_index: usize,
+    observed_count: usize) -> Vec<(usize, String)> {
+    use std::collections::BTreeMap;
+    fn labels(map: &mut BTreeMap<usize, String>, names: &[String]) {
+        for (index, name) in names.iter().take(128).enumerate() { map.entry(index).or_insert_with(|| name.clone()); }
+    }
+    fn group(map: &mut BTreeMap<usize, String>, group: &super::layout::DataChartGroup, inherited: &str, data_type: &str) {
+        if group.data_type.as_deref().unwrap_or(inherited) == data_type {
+            for (position, index) in group.channels.iter().copied().filter(|i| *i < 128).enumerate() {
+                let label = group.labels.as_ref().and_then(|names| names.get(position)).cloned()
+                    .unwrap_or_else(|| format!("Channel {index}"));
+                map.entry(index).or_insert(label);
+            }
+        }
+        for series in group.chart_series.iter().flatten().filter(|s| s.data_type == data_type && s.index < 128) {
+            map.entry(series.index).or_insert_with(|| series.label.clone().unwrap_or_else(|| format!("Channel {}", series.index)));
+        }
+    }
+    let mut channels = BTreeMap::new();
+    for tab in &layout.tabs {
+        if tab.id == data_type { labels(&mut channels, &tab.channels); }
+        for chart in tab.chart_groups.iter().flatten() { group(&mut channels, chart, &tab.id, data_type); }
+        for subtab in tab.subtabs.iter().flatten() {
+            let source = subtab.data_type.as_deref().unwrap_or(&tab.id);
+            if source == data_type { labels(&mut channels, subtab.channels.as_deref().unwrap_or(&tab.channels)); }
+            for chart in subtab.chart_groups.iter().flatten() { group(&mut channels, chart, source, data_type); }
+            for item in subtab.summary_items.iter().flatten().filter(|item| item.data_type == data_type && item.index < 128) {
+                channels.entry(item.index).or_insert_with(|| item.label.clone());
+            }
+        }
+    }
+    for source in defaults().into_iter().filter(|source| source.data_type == data_type) {
+        channels.entry(source.index).or_insert(source.label);
+    }
+    for index in 0..observed_count.min(128) { channels.entry(index).or_insert_with(|| format!("Channel {index}")); }
+    channels.entry(saved_index).or_insert_with(|| format!("Saved channel {saved_index}"));
+    channels.into_iter().map(|(index, label)| (index, format!("{label} [{index}]"))).collect()
+}
+
+fn card_with_source(mut card: Card, data_type: String) -> Card {
+    card.data_type = data_type;
+    card.index = 0;
+    if let Some(source) = defaults().into_iter().find(|source| source.data_type == card.data_type) {
+        card.sender = source.sender; card.unit = source.unit; card.min = source.min; card.max = source.max;
+    } else {
+        card.sender.clear(); card.unit.clear(); card.min = 0.; card.max = 100.;
+    }
+    card
 }
 
 fn display_card(mut card: Card, test_fire: bool) -> Card {
@@ -361,6 +429,16 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
         }).unwrap_or_default();
         data_type_choices(&data_layout, &snapshot, observed)
     } else { Vec::new() };
+    let (section_choices, sender_choices, unit_choices) = if *editing.read() {
+    let section_choices = choice_strings(defaults().into_iter().chain(snapshot.iter().cloned()).map(|card| card.section).chain(["Cameras".into()]));
+    let observed_senders = super::LATEST_TELEMETRY_BY_TYPE.lock().map(|latest| latest.values().map(|row| row.sender_id).collect::<Vec<_>>()).unwrap_or_default();
+    let sender_choices = choice_strings(defaults().into_iter().chain(snapshot.iter().cloned()).map(|card| card.sender)
+        .chain(observed_senders.into_iter().map(|id| super::resolve_telemetry_text(id).to_string()))
+        .chain(["", "GS", "RRLS", "RF", "FC", "PB", "AB", "VB", "GB", "DAQ"].map(str::to_string)));
+    let unit_choices = choice_strings(defaults().into_iter().chain(snapshot.iter().cloned()).map(|card| card.unit)
+        .chain(["", "%", "kg", "N", "psi", "psig", "bar", "kPa", "MPa", "V", "A", "°C", "m", "m/s", "m/s²", "g", "deg", "rad", "s", "ms"].map(str::to_string)));
+    (section_choices, sender_choices, unit_choices)
+    } else { (Vec::new(), Vec::new(), Vec::new()) };
     let mut sections = Vec::new();
     for card in &snapshot { if (card.visible || *editing.read()) && !sections.contains(&card.section) { sections.push(card.section.clone()); } }
     rsx! {section {class:"gs26-custom-dashboard",style:"color:{theme.text_primary};--card-button-bg:{theme.button_background};--card-button-border:{theme.button_border};--card-button-text:{theme.button_text};",
@@ -403,7 +481,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
                 for (index,card) in snapshot.iter().enumerate().filter(|(_,c)|c.section==section && (c.visible || *editing.read())) {
                     div {key:"card-{index}",class:"gs26-dashboard-card","data-width":card.width.clone(),"data-display":card.display.clone(),style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
                         if *editing.read() {
-                            CardEditor {card:card.clone(),type_choices:type_choices.clone(),cameras:cameras.read().streams.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
+                            CardEditor {card:card.clone(),data_layout:data_layout.clone(),section_choices:section_choices.clone(),sender_choices:sender_choices.clone(),unit_choices:unit_choices.clone(),type_choices:type_choices.clone(),cameras:cameras.read().streams.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
                             button {disabled:index==0,onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index-1);save(&all);cards.set(all);},"Move up"}
                             button {disabled:index+1==snapshot.len(),onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index+1);save(&all);cards.set(all);},"Move down"}
                             button {disabled:snapshot.len()==1,onclick:move |_|{let mut all=cards.read().clone();all.remove(index);save(&all);cards.set(all);},"Remove"}
@@ -439,31 +517,54 @@ fn CameraCard(card: Card, config: super::live_stream_tab::LiveStreamConfig, erro
 }
 
 #[component]
-fn CardEditor(card: Card, type_choices: Vec<(String, String)>, cameras: Vec<super::live_stream_tab::LiveStreamSpec>, onchange: EventHandler<Card>) -> Element {
-    rsx! {div {style:"display:grid;gap:6px;margin-bottom:10px;",
-        label {"Show " input {r#type:"checkbox",checked:card.visible,onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.visible=e.checked();onchange.call(c);}}}}
-        label {"Title " input {value:card.label.clone(),oninput:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.label=e.value();onchange.call(c);}}}}
-        label {"Section " input {value:card.section.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.section=e.value();onchange.call(c);}}}}
-        label {"Display " select {value:card.display.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.display=e.value();if c.display=="camera" {c.pinned=false;}onchange.call(c);}},
-            for kind in ["number","bar","gauge","trend","state","camera"] {option {value:kind,"{kind}"}}
+fn CardEditor(card: Card, data_layout: super::layout::DataTabLayout,
+    section_choices: Vec<String>, sender_choices: Vec<String>, unit_choices: Vec<String>,
+    type_choices: Vec<(String, String)>, cameras: Vec<super::live_stream_tab::LiveStreamSpec>,
+    onchange: EventHandler<Card>) -> Element {
+    let observed_count = latest_telemetry_row(&card.data_type, (!card.sender.is_empty()).then_some(card.sender.as_str()))
+        .map(|row| row.values.len()).unwrap_or(0);
+    let channels = card_channels(&data_layout, &card.data_type, card.index, observed_count);
+    let ranges = card_ranges(&card);
+    let selected_range = ranges.iter().position(|range| *range == (card.min, card.max)).unwrap_or(0);
+    rsx! {div {class:"gs26-card-editor",style:"display:grid;gap:6px;margin-bottom:10px;",
+        label {"Visibility " select {aria_label:"Visibility",value:if card.visible {"show"}else{"hide"},onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.visible=e.value()=="show";onchange.call(c);}},
+            option {selected:card.visible,value:"show","Show"} option {selected:!card.visible,value:"hide","Hide"}
         }}
-        label {"Card width " select {value:card.width.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.width=e.value();onchange.call(c);}},option {value:"normal","Normal"} option {value:"wide","Wide"} option {value:"full","Full width"}}}
+        label {"Title " input {value:card.label.clone(),maxlength:"127",oninput:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.label=e.value();onchange.call(c);}}}}
+        label {"Section " select {aria_label:"Section",value:card.section.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.section=e.value();onchange.call(c);}},
+            for name in section_choices {option {selected:name==card.section,value:name.clone(),"{name}"}}
+        }}
+        label {"Display " select {aria_label:"Display",value:card.display.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.display=e.value();if c.display=="camera" {c.pinned=false;}onchange.call(c);}},
+            for kind in ["number","bar","gauge","trend","state","camera"] {option {selected:kind==card.display,value:kind,"{kind}"}}
+        }}
+        label {"Card width " select {aria_label:"Card width",value:card.width.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.width=e.value();onchange.call(c);}},option {selected:card.width=="normal",value:"normal","Normal"} option {selected:card.width=="wide",value:"wide","Wide"} option {selected:card.width=="full",value:"full","Full width"}}}
         if card.display == "camera" {
-            label {"Camera source " select {value:card.stream_id.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.stream_id=e.value();onchange.call(c);}},
-                option {value:"","Choose a camera"}
-                if !card.stream_id.is_empty() && !cameras.iter().any(|c|c.id==card.stream_id) {option {value:card.stream_id.clone(),"{card.stream_id} (unavailable)"}}
-                for camera in cameras {option {value:camera.id.clone(),"{camera.label}"}}
+            label {"Camera source " select {aria_label:"Camera source",value:card.stream_id.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.stream_id=e.value();onchange.call(c);}},
+                option {selected:card.stream_id.is_empty(),value:"","Choose a camera"}
+                if !card.stream_id.is_empty() && !cameras.iter().any(|c|c.id==card.stream_id) {option {selected:true,value:card.stream_id.clone(),"{card.stream_id} (unavailable)"}}
+                for camera in cameras {option {selected:camera.id==card.stream_id,value:camera.id.clone(),"{camera.label}"}}
             }}
         } else {
-        label {"Data type " select {aria_label:"Data type",style:"min-height:44px;",value:card.data_type.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.data_type=e.value();onchange.call(c);}},
-            for (id, label) in type_choices {option {key:"{id}",value:id,"{label}"}}
-        }}
-        label {"Board ID (blank = any) " input {value:card.sender.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.sender=e.value();onchange.call(c);}}}}
-        label {"Channel index " input {r#type:"number",min:"0",max:"127",value:"{card.index}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.index=v;onchange.call(c);}}}}}
-        label {"Unit " input {value:card.unit.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.unit=e.value();onchange.call(c);}}}}
-        label {"Decimal places " input {r#type:"number",min:"0",max:"6",value:"{card.precision}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.precision=v;onchange.call(c);}}}}}
-        label {"Minimum " input {r#type:"number",value:"{card.min}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.min=v;onchange.call(c);}}}}}
-        label {"Maximum " input {r#type:"number",value:"{card.max}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(v)=e.value().parse(){let mut c=card.clone();c.max=v;onchange.call(c);}}}}}
+            label {"Data type " select {aria_label:"Data type",style:"min-height:44px;",value:card.data_type.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|onchange.call(card_with_source(card.clone(),e.value()))},
+                for (id, label) in type_choices {option {key:"{id}",selected:id==card.data_type,value:id.clone(),"{label}"}}
+            }}
+            small {"Changing source resets board, channel, unit label and range to its defaults."}
+            label {"Board " select {aria_label:"Board",value:card.sender.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.sender=e.value();onchange.call(c);}},
+                for sender in sender_choices {option {selected:sender==card.sender,value:sender.clone(),if sender.is_empty(){"Any board"}else{"{sender}"}}}
+            }}
+            label {"Channel " select {aria_label:"Channel",value:"{card.index}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(index)=e.value().parse(){let mut c=card.clone();c.index=index;onchange.call(c);}}},
+                for (index,label) in channels {option {selected:index==card.index,value:"{index}","{label}"}}
+            }}
+            label {"Unit label " select {aria_label:"Unit label",value:card.unit.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.unit=e.value();onchange.call(c);}},
+                for unit in unit_choices {option {selected:unit==card.unit,value:unit.clone(),if unit.is_empty(){"None"}else{"{unit}"}}}
+            }}
+            label {"Decimal places " select {aria_label:"Decimal places",value:"{card.precision}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(precision)=e.value().parse(){let mut c=card.clone();c.precision=precision;onchange.call(c);}}},
+                for precision in 0..=6 {option {selected:precision==card.precision,value:"{precision}","{precision}"}}
+            }}
+            label {"Display range " select {aria_label:"Display range",value:"{selected_range}",onchange:{let card=card.clone();let ranges=ranges.clone();move |e:Event<FormData>|{if let Ok(index)=e.value().parse::<usize>() && let Some(&(min,max))=ranges.get(index){let mut c=card.clone();c.min=min;c.max=max;onchange.call(c);}}},
+                for (index,(min,max)) in ranges.iter().enumerate() {option {selected:index==selected_range,value:"{index}","{min} to {max}"}}
+            }}
+            small {"Unit labels do not convert measurements. Saved custom units and ranges remain selectable."}
         }
     }}
 }
@@ -623,6 +724,42 @@ pub(super) fn HeaderPinSettings() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn overview_labels_are_not_offered_as_invented_telemetry_types() {
+        let layout:super::super::layout::DataTabLayout=serde_json::from_value(serde_json::json!({"tabs":[{"id":"UI_OVERVIEW","label":"Overview","channels":[],"subtabs":[{"id":"all","label":"All","chart_groups":[{"channels":[0],"chart_series":[{"data_type":"REAL_PRESSURE","index":0,"label":"Pressure"}]}],"summary_items":[{"label":"Mass","data_type":"REAL_MASS","index":0}]}]}]})).unwrap();
+        let choices=data_type_choices(&layout,&[],[]);
+        assert!(!choices.iter().any(|(id,_)|id=="UI_OVERVIEW"));
+        for required in ["REAL_PRESSURE","REAL_MASS"] {assert!(choices.iter().any(|(id,_)|id==required));}
+    }
+    #[test]
+    fn dropdown_ranges_keep_saved_custom_bounds_and_source_defaults() {
+        let mut card = defaults()[0].clone(); card.min = -12.25; card.max = 97.25;
+        let ranges = card_ranges(&card);
+        assert_eq!(ranges.iter().filter(|range| **range == (-12.25,97.25)).count(), 1);
+        assert!(ranges.contains(&(0.,16.8)));
+        assert!(ranges.iter().all(|(min,max)| min.is_finite() && max.is_finite() && max > min));
+    }
+    #[test]
+    fn source_change_resets_dependent_choices_without_losing_user_labels_or_pins() {
+        let mut card = defaults()[0].clone();card.label="My pressure".into();card.section="Offline custom".into();card.pinned=true;card.index=7;
+        let next=card_with_source(card,"COMBUSTION_CHAMBER_PRESSURE".into());
+        assert_eq!((next.sender.as_str(),next.index,next.unit.as_str(),next.min,next.max),("DAQ",0,"psig",0.,1000.));
+        assert_eq!((next.label.as_str(),next.section.as_str(),next.pinned),("My pressure","Offline custom",true));
+        assert!(valid(&[next]));
+    }
+    #[test]
+    fn channel_choices_use_configured_names_and_preserve_an_offline_saved_channel() {
+        let layout:super::super::layout::DataTabLayout=serde_json::from_value(serde_json::json!({"tabs":[{"id":"CUSTOM","label":"Custom","channels":["X","Y"],"chart_groups":[{"data_type":"OTHER","channels":[2],"labels":["Pressure"]}]}]})).unwrap();
+        let channels=card_channels(&layout,"CUSTOM",7,3);
+        assert_eq!(channels.iter().map(|(index,_)|*index).collect::<Vec<_>>(),vec![0,1,2,7]);
+        assert_eq!(channels[0].1,"X [0]");assert_eq!(channels[3].1,"Saved channel 7 [7]");
+        assert_eq!(card_channels(&layout,"OTHER",2,0),vec![(2,"Pressure [2]".into())]);
+    }
+    #[test]
+    fn dropdown_choices_preserve_custom_saved_labels_and_remove_duplicates() {
+        let choices=choice_strings(["Custom unit".into(),"kg".into(),"kg".into(),String::new()]);
+        assert_eq!(choices,vec!["","Custom unit","kg"]);
+    }
     #[test]
     fn type_choices_merge_layout_runtime_defaults_and_offline_saved_types() {
         let value: serde_json::Value = serde_json::from_str(include_str!("../../docs/api-examples/layout.full.json")).unwrap();

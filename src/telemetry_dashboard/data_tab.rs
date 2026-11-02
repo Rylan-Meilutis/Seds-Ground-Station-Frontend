@@ -281,7 +281,7 @@ pub fn DataTab(
             });
         }
     });
-    let layout = layout_for_fill_source(layout, fill_targets.read().as_ref().map(|cfg| cfg.fill_source.as_str()));
+    let layout = super::data_groups::with_grouped_views(layout_for_fill_source(layout, fill_targets.read().as_ref().map(|cfg| cfg.fill_source.as_str())));
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
     let active_subtabs = use_signal(HashMap::<String, String>::new);
