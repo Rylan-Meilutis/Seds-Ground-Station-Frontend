@@ -13,7 +13,7 @@ endpoint and explicit query capability. Legacy/unknown endpoints remain disabled
 SD retry remains a separate explicit operator action.
 
 Recover Abort and Resync require an advertised capability, a fresh two-second
-board readback and safe GS Startup/Idle. Reset ALL to Startup additionally
+board readback and safe GS Startup/Idle/Aborted. Reset ALL to Startup additionally
 requires all seven boards' fresh boot/epoch/nonce identities and explicit
 `capabilities.reset_startup == true`; query or resync support alone is insufficient.
 Unsupported boards are listed and prevent a misleading global success claim.
@@ -25,12 +25,19 @@ calibration. No control uses `window.confirm` or a native JavaScript dialog.
 An operator first prepares a server-owned 30-second ticket. The DOM dialog shows
 the exact targets, summary and confirmation phrase. Cancel sends no confirmation.
 Before Confirm, the client fetches current status and checks backend, principal,
-reset epoch, target boot/epoch/nonce, relevant state and capability context. It
+reset epoch, the server-owned ticket identity, exact targets and permissions. It
 also rechecks local station/session/permission and consumes the dialog once.
+Expiring two-second board readbacks do not cancel a still-valid ticket; they remain
+displayed as stale. Revoking or consuming the server ticket cancels confirmation.
 A changed context, failed status read or expired/non-monotonic ticket cancels the
 request; it is never automatically retried. The server remains authoritative and
 refreshes actual board readbacks before effects: an unchanged ticket identity
-is not a claim that an older two-second output sample remains fresh for30seconds.
+is not a claim that an older two-second output sample remains fresh for 30 seconds.
+
+An uncommissioned board and retained first-identity uncertainty are shown
+explicitly; neither counts as a completed reset. An incomplete earlier recovery
+retains its target scope. Reset success requires the server to report that Startup
+was applied; normal initialization can subsequently advance to Idle.
 
 Request acceptance is displayed as pending, not safe-state proof. Failed,
 cancelled and unconfirmed operations remain explicit. Active mode is read from

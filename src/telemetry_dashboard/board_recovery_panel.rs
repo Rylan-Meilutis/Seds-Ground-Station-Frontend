@@ -64,6 +64,9 @@ fn operation_view(operation: &Operation) -> Element {
     rsx! {div{role:"status",class:"gs26-recovery-operation",
         strong{"{operation.label()} — {operation.phase}"}
         p{"{operation.message}"}
+        if operation.completed && operation.success == Some(true) && operation.reset_applied_state == Some(0) {
+            p{"Reset applied Startup. Normal initialization may advance the station to Idle."}
+        }
         p{"Targets: {operation.targets.join(\", \")}. SDK acceptance alone is not device confirmation."}
     }}
 }
@@ -245,6 +248,11 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                             p{"Reset moves outputs: AB supplies and igniter OFF, stepper asleep; VB pilot OFF, vent and dump OPEN. It cancels queued automation. Clock, calibration and network power are preserved."}
                             if let Some(reason)=reset_reason.clone(){p{"{reason}"}}
                         }
+                        if let Some(recovery)=status.host_recovery.as_ref(){
+                            if !recovery.publication_acknowledged && (recovery.pending || recovery.verified){
+                                p{role:"status","Previous recovery is incomplete for {recovery.targets.join(\", \")}. Check board status and explicitly retry."}
+                            }
+                        }
                         if let Some(operation)=status.operation.as_ref(){{operation_view(operation)}}
                         div{style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px;",
                             for id in BOARD_IDS {
@@ -257,7 +265,7 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                                  let network_age=board.network.age_ms.saturating_add(current.elapsed());
                                  let network_label=if connected && board.network.healthy && network_age<=12000{"Healthy"}else{"Unconfirmed / stale"};
                                  let freshness=if board.fresh(current.elapsed()){"fresh"}else{"unconfirmed/stale"};
-                                 let boot_label=board.boot.clone().unwrap_or_else(||"Unknown".into());
+                                 let boot_label=if board.first_uncertainty_context(){"Identity verification pending".into()}else if board.commissioning_context(){"Not yet commissioned".into()}else{board.boot.clone().unwrap_or_else(||"Unknown".into())};
                                  let epoch_label=board.epoch.map(|v|v.to_string()).unwrap_or_else(||"Unknown".into());
                                  let bits=board.commanded_outputs.map(|n|format!("0x{n:08x}")).unwrap_or_else(||"Unknown".into());
                                  rsx!{article{class:"gs26-board-recovery-card","data-board":id,style:"border:1px solid {theme.border};padding:12px;border-radius:10px;",
@@ -266,6 +274,7 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                                     p{"Actual board state: {state} ({freshness})"}
                                     p{"Abort latched: {display_bool(board.abort_latched)}; commanded outputs safe: {display_bool(board.safe_outputs)}."}
                                     p{"Boot: {boot_label}; epoch: {epoch_label}."}
+                                    if board.commissioning_required {p{"Storage or identity setup requires explicit confirmation; it is not a completed reset."}}
                                     p{"Output readback: {board.output_readback}; register bits: {bits}. Physical valve position is not verified by GPIO/servo command registers."}
                                     if board.physical_position_verified {p{"Server claims physical verification; these command-register fields alone do not establish valve position."}}
                                     if let Some(text)=board.message.as_ref(){p{"{text}"}}
@@ -299,7 +308,7 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
         if let Some(dialog)=dialog {
             div{style:"position:fixed;inset:0;z-index:200000;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
                 onkeydown:move|e|{if e.key()==Key::Escape&&! *busy.peek(){pending.set(None);phrase.set(String::new());}},
-                div{role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);padding:22px;border-radius:14px;width:min(100%,620px);max-height:90vh;overflow:auto;box-sizing:border-box;overflow-wrap:anywhere;",
+                div{role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,620px);max-height:90vh;overflow:auto;box-sizing:border-box;overflow-wrap:anywhere;",
                     h2{id:"board-recovery-confirm-title","Confirm operator recovery action"}
                     p{"{dialog.challenge.summary}"}
                     p{"Frozen targets: {dialog.challenge.targets.join(\", \")}. Server refreshes board readbacks at confirmation; acceptance alone does not prove safe state."}
