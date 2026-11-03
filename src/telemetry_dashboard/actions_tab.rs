@@ -119,13 +119,12 @@ fn btn_style(
         "0 4px 12px rgba(0,0,0,0.16)"
     };
     let animation = action_animation_style(enabled, blink, actuated);
-    let ready_glow = if actuated == Some(true)
-        || (enabled && illuminate_enabled && actuated.is_none())
-    {
-        format!("box-shadow:0 0 14px {border};")
-    } else {
-        String::new()
-    };
+    let ready_glow =
+        if actuated == Some(true) || (enabled && illuminate_enabled && actuated.is_none()) {
+            format!("box-shadow:0 0 14px {border};")
+        } else {
+            String::new()
+        };
     format!(
         "padding:0.35rem 0.65rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; min-width:0; height:2.75rem; min-height:2.75rem; max-height:2.75rem; flex-shrink:0; box-sizing:border-box; overflow:hidden; \
          display:flex; align-items:center; justify-content:space-between; gap:0.4rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
@@ -169,7 +168,17 @@ mod physical_confirmation_tests {
     use super::*;
     #[test]
     fn confirmed_off_is_not_illuminated_by_action_availability() {
-        let style = |observed| btn_style("red", "black", "white", true, BlinkMode::None, observed, true);
+        let style = |observed| {
+            btn_style(
+                "red",
+                "black",
+                "white",
+                true,
+                BlinkMode::None,
+                observed,
+                true,
+            )
+        };
         assert!(style(Some(true)).contains("opacity:1.0; filter:none;"));
         assert!(style(Some(true)).contains("box-shadow:0 0 14px red;"));
         let off = style(Some(false));
@@ -178,8 +187,19 @@ mod physical_confirmation_tests {
         let unknown_output = btn_style("red", "black", "white", true, BlinkMode::None, None, false);
         assert!(unknown_output.contains("opacity:0.62;"));
         assert!(!unknown_output.contains("box-shadow:0 0 14px"));
-        let locked_on = btn_style("red", "black", "white", false, BlinkMode::None, Some(true), false);
-        assert!(locked_on.contains("box-shadow:0 0 14px red;"), "permissions do not change confirmed output state");
+        let locked_on = btn_style(
+            "red",
+            "black",
+            "white",
+            false,
+            BlinkMode::None,
+            Some(true),
+            false,
+        );
+        assert!(
+            locked_on.contains("box-shadow:0 0 14px red;"),
+            "permissions do not change confirmed output state"
+        );
     }
     #[test]
     fn sending_a_valve_request_does_not_confirm_a_physical_output() {
@@ -542,6 +562,7 @@ pub fn ActionsTab(
             p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
                 "Controls follow backend permissions and interlocks."
             }
+            super::board_abort_readiness::BoardAbortReadiness {show_hitl_interlocks:true}
             section {"aria-label":"Recovery actions",
                 super::recovery_status::RecoveryStatus {}
                 super::recovery_marker::RecoveryMarker {}
@@ -573,6 +594,9 @@ pub fn ActionsTab(
                     style: "margin:0; padding:6px 10px; border-radius:8px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:11px; line-height:1.25;",
                     "{translate_text(\"Disable Actions is enabled. All action and flight-state buttons except Abort are disabled.\")}"
                 }
+            }
+            if let Some(message) = super::BOARD_ABORT_SIGNAL.read().launch_message() {
+                p { role: "alert", style: "color:{theme.error_text};", "{message}" }
             }
             if !software_buttons_enabled {
                 div {
@@ -641,7 +665,8 @@ pub fn ActionsTab(
                                                 }
                                             },
                                             ActionRowItem::Action(action) => {
-                                                let action_policy_snapshot = action_policy.read().clone();
+                                                let mut action_policy_snapshot = action_policy.read().clone();
+                                                super::BOARD_ABORT_SIGNAL.read().constrain_launch_policy(&mut action_policy_snapshot);
                                                 let control = action_policy
                                                     .read()
                                                     .controls
@@ -1230,16 +1255,35 @@ fn primary_proxy_message(status: Option<&auth::CommandProxyStatus>) -> String {
         return "Primary command control is unavailable. This RRLS cannot take standalone hardware authority.".into();
     };
     if let Some(request) = &status.pending {
-        return format!("{}: queued at RRLS; waiting for the primary. Device state is unconfirmed.", request.operation);
+        return format!(
+            "{}: queued at RRLS; waiting for the primary. Device state is unconfirmed.",
+            request.operation
+        );
     }
     if let Some(request) = &status.last {
         return match request.phase.as_str() {
-            "accepted_by_primary" if request.primary_accepted => format!("{}: accepted by the primary. Await fresh board telemetry for device confirmation.", request.operation),
-            "rejected_by_primary" | "denied" => format!("{}: rejected. {}",request.operation,request.error.as_deref().unwrap_or("The primary did not accept this request.")),
-            _ => format!("{}: outcome unknown. Check board telemetry before retrying. {}",request.operation,request.error.as_deref().unwrap_or("")),
+            "accepted_by_primary" if request.primary_accepted => format!(
+                "{}: accepted by the primary. Await fresh board telemetry for device confirmation.",
+                request.operation
+            ),
+            "rejected_by_primary" | "denied" => format!(
+                "{}: rejected. {}",
+                request.operation,
+                request
+                    .error
+                    .as_deref()
+                    .unwrap_or("The primary did not accept this request.")
+            ),
+            _ => format!(
+                "{}: outcome unknown. Check board telemetry before retrying. {}",
+                request.operation,
+                request.error.as_deref().unwrap_or("")
+            ),
         };
     }
-    if !status.available { return format!("Primary command control unavailable: {}",status.reason); }
+    if !status.available {
+        return format!("Primary command control unavailable: {}", status.reason);
+    }
     "Commands are sent through the primary ground station. Button illumination follows fresh board reports.".into()
 }
 
@@ -1248,45 +1292,83 @@ mod primary_proxy_tests {
     use super::*;
     #[test]
     fn admission_and_primary_acceptance_never_claim_device_confirmation() {
-        let request=auth::CommandProxyRequest {request_id:"one".into(),operation:"Nitrogen".into(),phase:"pending_primary".into(),..Default::default()};
-        let mut status=auth::CommandProxyStatus {pending:Some(request.clone()),..Default::default()};
+        let request = auth::CommandProxyRequest {
+            request_id: "one".into(),
+            operation: "Nitrogen".into(),
+            phase: "pending_primary".into(),
+            ..Default::default()
+        };
+        let mut status = auth::CommandProxyStatus {
+            pending: Some(request.clone()),
+            ..Default::default()
+        };
         assert!(primary_proxy_message(Some(&status)).contains("waiting for the primary"));
-        status.pending=None;
-        status.last=Some(auth::CommandProxyRequest {phase:"accepted_by_primary".into(),primary_accepted:true,device_confirmed:true,..request});
-        let message=primary_proxy_message(Some(&status));
+        status.pending = None;
+        status.last = Some(auth::CommandProxyRequest {
+            phase: "accepted_by_primary".into(),
+            primary_accepted: true,
+            device_confirmed: true,
+            ..request
+        });
+        let message = primary_proxy_message(Some(&status));
         assert!(message.contains("Await fresh board telemetry"));
         assert!(!message.contains("device confirmed"));
-        status.last.as_mut().unwrap().phase="denied".into();
+        status.last.as_mut().unwrap().phase = "denied".into();
         assert!(primary_proxy_message(Some(&status)).contains("rejected"));
-        status.last.as_mut().unwrap().phase="unknown".into();
+        status.last.as_mut().unwrap().phase = "unknown".into();
         assert!(primary_proxy_message(Some(&status)).contains("outcome unknown"));
         assert!(primary_proxy_message(None).contains("cannot take standalone"));
-        assert!(primary_utc_proxy_response(serde_json::json!({"network_utc_ms":1})).contains("admission is unknown"));
+        assert!(
+            primary_utc_proxy_response(serde_json::json!({"network_utc_ms":1}))
+                .contains("admission is unknown")
+        );
     }
 }
 
 fn primary_utc_proxy_response(value: serde_json::Value) -> String {
-    let Ok(status)=serde_json::from_value::<auth::CommandProxyStatus>(value) else {
-        return "Network UTC admission is unknown; the RRLS returned an unsupported response.".into();
+    let Ok(status) = serde_json::from_value::<auth::CommandProxyStatus>(value) else {
+        return "Network UTC admission is unknown; the RRLS returned an unsupported response."
+            .into();
     };
-    let queued=status.supported && status.pending.as_ref().is_some_and(|request|
-        request.operation=="NetworkUtc" && request.phase=="pending_primary" && !request.primary_accepted);
-    if !queued { return "Network UTC admission is unknown; check primary status before retrying.".into(); }
+    let queued = status.supported
+        && status.pending.as_ref().is_some_and(|request| {
+            request.operation == "NetworkUtc"
+                && request.phase == "pending_primary"
+                && !request.primary_accepted
+        });
+    if !queued {
+        return "Network UTC admission is unknown; check primary status before retrying.".into();
+    }
     // The host-scoped poll publishes live status; this response only describes admission.
     "Network UTC request queued at RRLS; waiting for primary acceptance.".into()
 }
 
 #[component]
 fn PrimaryCommandRequest(abort_only_mode: bool) -> Element {
-    let mut selected=use_signal(String::new);
-    let status=super::COMMAND_PROXY_STATUS.read().clone();
-    let choices=status.as_ref().filter(|status|status.available).map(|status|
-        status.supported_commands.iter().filter(|command|auth::can_send_command(command)
-            && (!abort_only_mode || command.as_str()=="Abort")).cloned().collect::<Vec<_>>()
-    ).unwrap_or_default();
-    let no_choices=choices.is_empty();
-    let allowed=choices.iter().any(|command|command==selected.read().as_str());
-    let pending=status.as_ref().is_some_and(|status|status.pending.is_some());
+    let mut selected = use_signal(String::new);
+    let status = super::COMMAND_PROXY_STATUS.read().clone();
+    let choices = status
+        .as_ref()
+        .filter(|status| status.available)
+        .map(|status| {
+            status
+                .supported_commands
+                .iter()
+                .filter(|command| {
+                    auth::can_send_command(command)
+                        && (!abort_only_mode || command.as_str() == "Abort")
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let no_choices = choices.is_empty();
+    let allowed = choices
+        .iter()
+        .any(|command| command == selected.read().as_str());
+    let pending = status
+        .as_ref()
+        .is_some_and(|status| status.pending.is_some());
     rsx! {
         fieldset {
             legend {"Request execution at primary"}

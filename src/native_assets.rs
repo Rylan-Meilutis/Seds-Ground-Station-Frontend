@@ -1,4 +1,28 @@
-//! Bundled renderer assets: native module imports must not depend on backend TLS/CORS.
+//! Bundled renderer assets, served from the native document's own origin.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn use_station_assets() {
+    dioxus_desktop::use_asset_handler("station-assets", |request, responder| {
+        let asset = station_document_asset(request.uri().path());
+        let (status, mime, bytes) = match asset {
+            Some((mime, bytes)) => (200, mime, bytes),
+            None => (404, "text/plain; charset=utf-8", &b"Asset not found"[..]),
+        };
+        let response = dioxus_desktop::wry::http::Response::builder()
+            .status(status)
+            .header("Content-Type", mime)
+            .header("X-Content-Type-Options", "nosniff")
+            .body(bytes.to_vec())
+            .expect("static native asset response");
+        responder.respond(response);
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn station_document_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
+    let path = path.strip_prefix("/station-assets/")?;
+    station_asset(&format!("/assets/{path}"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn station_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
     match path {
@@ -50,11 +74,10 @@ pub(crate) fn station_asset_url(path: &str) -> Option<String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         station_asset(path)?;
-        #[cfg(any(target_os = "windows", target_os = "android"))]
-        let base = "http://gs26.station";
-        #[cfg(not(any(target_os = "windows", target_os = "android")))]
-        let base = "gs26://station";
-        Some(format!("{base}{path}"))
+        // Relative imports and GLTF requests stay on Dioxus's document origin.
+        // A separate custom scheme requires WebKit-specific Fetch/CORS support
+        // even when a protocol response carries permissive CORS headers.
+        Some(format!("/station-assets/{}", path.strip_prefix("/assets/")?))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -82,7 +105,9 @@ mod tests {
             let (mime, bytes) = station_asset(path).unwrap();
             assert!(!bytes.is_empty());
             assert!(!mime.is_empty());
-            assert!(station_asset_url(path).unwrap().ends_with(path));
+            let url = station_asset_url(path).unwrap();
+            assert_eq!(url, path.replacen("/assets/", "/station-assets/", 1));
+            assert_eq!(station_document_asset(&url), Some((mime, bytes)));
         }
         for path in [
             "/assets/three/../secret",
@@ -91,6 +116,15 @@ mod tests {
         ] {
             assert!(station_asset(path).is_none());
             assert!(station_asset_url(path).is_none());
+        }
+        for path in [
+            "/station-assets/three/../secret",
+            "/station-assets/three/%2e%2e/secret",
+            "/station-assets/three/unknown.js",
+            "/assets/three/vehicle-renderer.js",
+            "https://outside.test/station-assets/models/vehicle.glb",
+        ] {
+            assert!(station_document_asset(path).is_none());
         }
     }
 }

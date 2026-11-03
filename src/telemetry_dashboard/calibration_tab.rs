@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[path = "calibration_capture.rs"]
+mod calibration_capture;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 struct ChannelLinear {
     m: Option<f32>,
@@ -303,23 +306,47 @@ where
     let target = samples.clamp(1, 5_000);
     let mut captured_samples = Vec::with_capacity(target);
     let mut temperatures = Vec::with_capacity(target);
-    for idx in 0..target {
-        if matches!(data_type.as_str(), "KG1000" | "KG50") {
+    let load_cell = matches!(data_type.as_str(), "KG1000" | "KG50");
+    let mut observations = calibration_capture::CaptureObservations::new(super::monotonic_now_ms() as u64);
+    while captured_samples.len() < target {
+        let now_mono_ms = super::monotonic_now_ms() as u64;
+        if observations.stalled(now_mono_ms) {
+            return Err(format!(
+                "Capture stopped after {}/{} distinct samples: no new sensor reading for 2 seconds. Calibration was not changed.",
+                captured_samples.len(), target,
+            ));
+        }
+        let row = super::latest_telemetry_row(&data_type, load_cell.then_some("DAQ"));
+        let next_raw = if let Some(row) = row {
+            let raw = row.values.first().copied().flatten();
+            match raw {
+                Some(raw) if observations.accept(
+                    &row.sender_id, row.timestamp_ms, row.received_timestamp_ms,
+                    now_ms() as i64, now_mono_ms, raw,
+                )? => Some(raw),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some(raw) = next_raw else {
+            sleep_ms(20).await;
+            continue;
+        };
+        if load_cell {
             let temperature = fresh_temperature().ok_or("Fresh ADC temperature required for load-cell calibration")?;
-            let raw = super::fresh_daq_calibration_value(&data_type, now_ms() as i64)
-                .ok_or("Fresh DAQ load-cell readings required")?;
             let corrected = thermal_raw(&calibration, &data_type, raw, Some(temperature))
                 .ok_or("Invalid thermal calibration")?;
             captured_samples.push(corrected);
             temperatures.push(temperature);
-        } else if let Some(raw) = latest_raw(&data_type) {
+        } else {
             captured_samples.push(raw);
         }
-        let completed = idx + 1;
+        let completed = captured_samples.len();
         if completed == 1 || completed == target || completed % 5 == 0 {
             on_progress(completed, target);
         }
-        if idx + 1 < target {
+        if completed < target {
             sleep_ms(20).await;
         }
     }

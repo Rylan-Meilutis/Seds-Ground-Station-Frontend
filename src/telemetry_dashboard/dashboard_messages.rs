@@ -10,6 +10,7 @@ enum WsInMsg {
     Error(AlertMsg),
     AlertAckState(AlertAckStateMsg),
     BoardStatus(BoardStatusMsg),
+    BoardAbort(BoardAbortSnapshot),
     NetworkTopology(NetworkTopologyMsg),
     Notifications(Vec<PersistentNotification>),
     Notification(PersistentNotification),
@@ -138,7 +139,9 @@ pub(crate) struct FillTargetsConfig {
     pub nitrous: FluidFillTarget,
 }
 
-fn default_fill_source() -> String { "kg50".into() }
+fn default_fill_source() -> String {
+    "kg50".into()
+}
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -345,4 +348,261 @@ enum MainTab {
     Errors,
     Data,
     DataExport,
+}
+
+/// Active lifecycle errors are server-authoritative and separate from acknowledged history.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+struct BoardAbortSnapshot {
+    version: u64,
+    #[serde(default)]
+    active_errors: Vec<BoardAbortError>,
+    #[serde(default)]
+    required_boards: Vec<String>,
+    #[serde(default)]
+    missing_required_state: Option<Vec<String>>,
+    #[serde(default)]
+    history_error: HistoryErrorReport,
+    #[serde(default)]
+    history_unknown_boards: Vec<String>,
+    #[serde(default)]
+    retraction: Option<RetractionInterlock>,
+    #[serde(skip)]
+    source_epoch: Option<u64>,
+    #[serde(skip)]
+    local_revision: u64,
+}
+/// Missing is not a report that a previously active persistence fault cleared.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum HistoryErrorReport {
+    #[default]
+    Unreported,
+    Reported(Option<String>),
+}
+impl<'de> serde::Deserialize<'de> for HistoryErrorReport {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Option::<String>::deserialize(deserializer).map(Self::Reported)
+    }
+}
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+struct RetractionInterlock {
+    configured: bool,
+    enforced: bool,
+    allowed: bool,
+    phase: String,
+    remaining_ms: Option<u32>,
+    message: String,
+}
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+struct BoardAbortError {
+    source: String,
+    board: String,
+    board_label: String,
+    timestamp_ms: u64,
+    message: String,
+}
+impl BoardAbortSnapshot {
+    fn reconciled(mut self, previous: &Self, source_epoch: u64) -> Self {
+        if previous.source_epoch == Some(source_epoch) && self.version < previous.version {
+            return previous.clone();
+        }
+        if matches!(self.history_error, HistoryErrorReport::Unreported) {
+            self.history_error = previous.history_error.clone();
+        }
+        if self.missing_required_state.is_none() {
+            self.missing_required_state = previous.missing_required_state.clone();
+        }
+        self.source_epoch = Some(source_epoch);
+        self.local_revision = previous.local_revision.saturating_add(1);
+        self
+    }
+    fn history_error_message(&self) -> Option<&str> {
+        match &self.history_error {
+            HistoryErrorReport::Reported(Some(message)) => Some(if message.trim().is_empty() {
+                "The station cannot verify saved Abort history."
+            } else {
+                message
+            }),
+            _ => None,
+        }
+    }
+    fn active_error_count(&self) -> usize {
+        self.active_errors.len() + usize::from(self.history_error_message().is_some())
+    }
+    fn missing_required_state(&self) -> &[String] {
+        self.missing_required_state.as_deref().unwrap_or_default()
+    }
+    fn constrain_launch_policy(&self, policy: &mut ActionPolicyMsg) {
+        if self.active_errors.is_empty()
+            && self.history_error_message().is_none()
+            && self.missing_required_state().is_empty()
+            && !self
+                .retraction
+                .as_ref()
+                .is_some_and(|gate| gate.configured && !gate.allowed)
+        {
+            return;
+        }
+        for control in &mut policy.controls {
+            if matches!(
+                control.cmd.as_str(),
+                "Launch" | "GroundStationLaunch" | "AdvanceFlightState" | "RewindFlightState"
+            ) {
+                control.enabled = false;
+                control.blink = BlinkMode::None;
+            }
+        }
+    }
+    fn launch_message(&self) -> Option<String> {
+        if let Some(message) = self.history_error_message() {
+            return Some(format!(
+                "Launch disabled: Abort history unavailable: {message}"
+            ));
+        }
+        if !self.active_errors.is_empty() {
+            return Some(format!(
+                "Launch disabled: {} report Abort.",
+                self.active_errors
+                    .iter()
+                    .map(|e| e.board_label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        (!self.missing_required_state().is_empty()).then(|| {
+            format!(
+                "Launch disabled: fresh required board state is missing for {}.",
+                self.missing_required_state().join(", ")
+            )
+        })
+    }
+}
+#[cfg(test)]
+mod board_abort_message_tests {
+    use super::*;
+    fn snapshot(value: serde_json::Value) -> BoardAbortSnapshot {
+        serde_json::from_value(value).unwrap()
+    }
+    #[test]
+    fn history_absence_stale_report_and_explicit_current_clear_are_distinct() {
+        let active = snapshot(serde_json::json!({"version":9,"history_error":"Journal corrupt","missing_required_state":["FC"]}))
+            .reconciled(&BoardAbortSnapshot::default(), 1);
+        let absent = snapshot(serde_json::json!({"version":10})).reconciled(&active, 1);
+        assert_eq!(absent.history_error_message(), Some("Journal corrupt"));
+        assert_eq!(absent.missing_required_state(), ["FC"]);
+        let stale = snapshot(
+            serde_json::json!({"version":8,"history_error":null,"missing_required_state":[]}),
+        )
+        .reconciled(&absent, 1);
+        assert_eq!(stale, absent);
+        let clear = snapshot(
+            serde_json::json!({"version":11,"history_error":null,"missing_required_state":[]}),
+        )
+        .reconciled(&stale, 1);
+        assert!(clear.history_error_message().is_none());
+        assert!(clear.missing_required_state().is_empty());
+        assert!(clear.local_revision > active.local_revision);
+    }
+    #[test]
+    fn current_new_connection_can_report_a_new_revision_but_absence_does_not_clear_fault() {
+        let active = snapshot(serde_json::json!({"version":90,"history_error":"Storage failed"}))
+            .reconciled(&BoardAbortSnapshot::default(), 1);
+        let reconnect = snapshot(serde_json::json!({"version":1})).reconciled(&active, 2);
+        assert_eq!(reconnect.version, 1);
+        assert_eq!(reconnect.history_error_message(), Some("Storage failed"));
+        let clear = snapshot(serde_json::json!({"version":2,"history_error":null}))
+            .reconciled(&reconnect, 2);
+        assert!(clear.history_error_message().is_none());
+    }
+    #[test]
+    fn history_fault_or_applicable_missing_proof_constrains_every_launch_family_only() {
+        let policy = || {
+            let controls = [
+                "Launch",
+                "GroundStationLaunch",
+                "AdvanceFlightState",
+                "RewindFlightState",
+                "Abort",
+                "ToggleAvBayUnderglow",
+            ]
+            .map(
+                |cmd| serde_json::json!({"cmd":cmd,"enabled":true,"blink":"slow","actuated":false}),
+            );
+            serde_json::from_value::<ActionPolicyMsg>(serde_json::json!({
+                "key_enabled":true,"software_buttons_enabled":true,"controls":controls
+            }))
+            .unwrap()
+        };
+        for value in [
+            serde_json::json!({"version":1,"history_error":"Unreadable"}),
+            serde_json::json!({"version":1,"missing_required_state":["FC"]}),
+        ] {
+            let current = snapshot(value);
+            let mut next = policy();
+            current.constrain_launch_policy(&mut next);
+            assert!(next.controls[..4].iter().all(|c| !c.enabled));
+            assert!(next.controls[4..].iter().all(|c| c.enabled));
+            assert!(current.launch_message().is_some());
+        }
+        // HITL proof enforcement is server-scoped, never inferred from raw history.
+        let optional = snapshot(
+            serde_json::json!({"version":2,"history_unknown_boards":["FC"],"missing_required_state":[],"history_error":null}),
+        );
+        let mut next = policy();
+        optional.constrain_launch_policy(&mut next);
+        assert!(next.controls.iter().all(|c| c.enabled));
+        assert!(optional.launch_message().is_none());
+    }
+    #[test]
+    fn late_policy_cannot_override_retained_board_abort_or_incomplete_motion_and_other_controls_remain()
+     {
+        let mut snapshot:BoardAbortSnapshot=serde_json::from_value(serde_json::json!({"version":1,"active_errors":[
+            {"source":"board_abort:AB","board":"AB","board_label":"Actuator Board","timestamp_ms":1,"message":"Abort"}]})).unwrap();
+        let fresh = || {
+            serde_json::from_value::<ActionPolicyMsg>(
+                serde_json::json!({"key_enabled":true,"software_buttons_enabled":true,"controls":[
+            {"cmd":"Launch","enabled":true,"blink":"slow","actuated":false},
+            {"cmd":"Abort","enabled":true,"blink":"none","actuated":false},
+            {"cmd":"ToggleAvBayUnderglow","enabled":true,"blink":"none","actuated":false}]}),
+            )
+            .unwrap()
+        };
+        let mut policy = fresh();
+        snapshot.constrain_launch_policy(&mut policy);
+        assert!(!policy.controls[0].enabled);
+        assert!(policy.controls[1].enabled && policy.controls[2].enabled);
+        // An acknowledgment changes neither the separate live snapshot nor its
+        // authority, so a later enabled policy still cannot re-enable Launch.
+        let mut late = fresh();
+        snapshot.constrain_launch_policy(&mut late);
+        assert!(!late.controls[0].enabled);
+        snapshot.active_errors.clear();
+        snapshot.retraction = Some(RetractionInterlock {
+            configured: true,
+            allowed: false,
+            ..Default::default()
+        });
+        let mut late = fresh();
+        snapshot.constrain_launch_policy(&mut late);
+        assert!(!late.controls[0].enabled);
+        snapshot.retraction.as_mut().unwrap().allowed = true;
+        let mut fresh = fresh();
+        snapshot.constrain_launch_policy(&mut fresh);
+        assert!(fresh.controls[0].enabled);
+    }
+    #[test]
+    fn all_active_board_names_remain_until_individually_cleared() {
+        let mut snapshot:BoardAbortSnapshot=serde_json::from_value(serde_json::json!({"version":1,"active_errors":[
+            {"source":"board_abort:AB","board":"AB","board_label":"Actuator Board","timestamp_ms":1,"message":"Abort"},
+            {"source":"board_abort:DAQ","board":"DAQ","board_label":"DAQ Board","timestamp_ms":2,"message":"Abort"}]})).unwrap();
+        let text = snapshot.launch_message().unwrap();
+        assert!(text.contains("Actuator Board") && text.contains("DAQ Board"));
+        snapshot.active_errors.remove(0);
+        assert_eq!(
+            snapshot.launch_message().as_deref(),
+            Some("Launch disabled: DAQ Board report Abort.")
+        );
+        snapshot.active_errors.clear();
+        assert!(snapshot.launch_message().is_none());
+    }
 }

@@ -141,6 +141,7 @@ pub fn App() -> Element {
     crate::startup_diagnostics::mark(crate::startup_diagnostics::Stage::AppRendered);
     #[cfg(not(target_arch = "wasm32"))]
     {
+        crate::native_assets::use_station_assets();
         keep_awake::set_enabled(true);
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]

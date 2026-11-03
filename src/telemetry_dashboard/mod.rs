@@ -4,20 +4,22 @@
 
 mod accel_display_filter;
 mod actions_tab;
-mod station_mode;
 mod admin_console;
-mod station_positions_admin;
+mod board_abort_readiness;
+mod board_recovery_guard;
+mod board_recovery_model;
+mod board_recovery_panel;
 mod calibration_tab;
-mod paired_settings;
+mod checklists;
+mod command_confirmation;
 mod connection_status_tab;
+mod connectivity_health;
 mod custom_dashboard;
 mod dashboard_history;
 pub mod data_chart;
 mod data_groups;
 pub mod data_tab;
 mod detailed_tab;
-mod info_panels;
-mod navigation_rail;
 pub mod errors_tab;
 mod firmware_update_tab;
 mod gps;
@@ -28,35 +30,34 @@ mod gps_webview;
 #[cfg(target_os = "windows")]
 mod gps_windows;
 mod gse_panel;
-mod plumbing_drive;
-mod checklists;
+mod info_panels;
 pub mod layout;
-mod station_settings;
-mod sequence_indicator;
 mod layout_settings_tab;
 mod live_stream_tab;
 mod media_tool_tab;
-mod command_confirmation;
 mod messages_tab;
+mod navigation_rail;
 mod network_health;
-mod connectivity_health;
-mod board_recovery_guard;
-mod board_recovery_model;
-mod board_recovery_panel;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod offline_preview;
 mod network_topology_tab;
 mod notifications_tab;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod offline_preview;
+mod paired_settings;
+mod plumbing_drive;
 pub(crate) mod prelude;
+mod recorded_replay_controls;
 mod recording_download;
-mod sd_recording_import;
-mod recovery_status;
 mod recovery_marker;
+mod recovery_status;
 mod report_studio;
 mod reseed_buffer;
-mod stream_studio;
-mod recorded_replay_controls;
+mod sd_recording_import;
+mod sequence_indicator;
+mod station_mode;
+mod station_positions_admin;
+mod station_settings;
 mod stream_rundown;
+mod stream_studio;
 pub mod types;
 mod vehicle_replay;
 mod vehicle_tab;
@@ -405,6 +406,8 @@ pub(crate) static WS_CONNECTED_SIGNAL: GlobalSignal<bool> = Signal::global(|| fa
 static SOFTWARE_BUTTONS_ENABLED_SIGNAL: GlobalSignal<bool> = Signal::global(|| false);
 static ACTION_POLICY_SIGNAL: GlobalSignal<ActionPolicyMsg> =
     Signal::global(ActionPolicyMsg::default_locked);
+static BOARD_ABORT_SIGNAL: GlobalSignal<BoardAbortSnapshot> =
+    Signal::global(BoardAbortSnapshot::default);
 static ACTION_POLICY_RESYNC_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
@@ -693,8 +696,9 @@ fn flush_hidden_pending_ws_state(
     if let Some(next) = pending.messages {
         apply_messages_snapshot(next, message_history);
     }
-    if let Some(next) = pending.action_policy {
+    if let Some(mut next) = pending.action_policy {
         clear_command_feedback_latches();
+        BOARD_ABORT_SIGNAL.read().constrain_launch_policy(&mut next);
         set_signal_if_changed(action_policy, next);
     }
     if let Some(next) = pending.fill_targets {
@@ -1354,7 +1358,8 @@ fn refresh_layout_after_ws_reconnect(
                 layout_error.set(None);
                 layout_error_dismissed.set(None);
 
-                if let Ok(policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await {
+                if let Ok(mut policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await {
+                    BOARD_ABORT_SIGNAL.read().constrain_launch_policy(&mut policy);
                     set_signal_if_changed(&mut action_policy, policy);
                 }
 

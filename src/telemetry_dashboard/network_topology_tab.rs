@@ -622,6 +622,9 @@ fn install_drag_handlers(
             return clamp(Math.min(availW / state.graphWidth, availH / state.graphHeight) * 0.98, {zoom_min}, {zoom_max});
           }};
           const refreshSurfaceFrame = () => {{
+            // A Dioxus geometry update replaces the inline canvas style. Keep
+            // its transform in sync with the operator's preserved camera.
+            state.canvas.style.transform = `scale(${{state.scale}})`;
             const scaledWidth = Math.round(state.graphWidth * state.scale);
             const scaledHeight = Math.round(state.graphHeight * state.scale);
             const fitPadX = Math.max({fit_margin_px}, Math.round((state.viewport.clientWidth - scaledWidth) / 2));
@@ -1955,8 +1958,15 @@ fn compute_graph_layout(
         .filter(|node| !layer_map.contains_key(&node.id))
         .map(|node| node.id.clone())
         .collect::<Vec<_>>();
+    extra_roots.sort();
 
     for (branch_idx, id) in extra_roots.drain(..).enumerate() {
+        // An earlier detached root may already have visited this component.
+        // Reseeding every board flattens its observed chain and changes branch
+        // assignment when telemetry arrives in a different order.
+        if layer_map.contains_key(&id) {
+            continue;
+        }
         let synthetic_root = format!("__detached_{branch_idx}_{}", id);
         let start_layer = 1;
         layer_map.insert(id.clone(), start_layer);
@@ -2123,6 +2133,30 @@ fn compute_graph_layout(
 #[cfg(test)]
 mod timing_tests {
     use super::*;
+
+    #[test]
+    fn detached_observed_chain_keeps_its_layers_when_node_order_changes() {
+        let node = |id: &str, kind: &str| -> NetworkTopologyNode {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"label":id,"kind":kind,"status":"online","group":"board",
+                "sender_id":id,"detail":null
+            })).unwrap()
+        };
+        let mut nodes = vec![node("gs", "router"), node("a", "board"), node("b", "board"), node("c", "board")];
+        let links = [("a", "b"), ("b", "c")].map(|(source, target)| NetworkTopologyLink {
+            source: source.into(), target: target.into(), label: None, status: NetworkTopologyStatus::Online,
+        });
+        let first = compute_graph_layout(&nodes, &links, false);
+        assert!(first.placements["a"].x < first.placements["b"].x);
+        assert!(first.placements["b"].x < first.placements["c"].x);
+        nodes.reverse();
+        let reordered = compute_graph_layout(&nodes, &links, false);
+        for node in &nodes {
+            let a = first.placements[&node.id];
+            let b = reordered.placements[&node.id];
+            assert_eq!((a.x, a.y, a.size), (b.x, b.y, b.size));
+        }
+    }
 
     #[test]
     fn age_labels_distinguish_unknown_and_recent_boards() {

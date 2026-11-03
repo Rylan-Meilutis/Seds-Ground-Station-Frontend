@@ -251,6 +251,7 @@ try {
   }
   if(entry.name==='anonymous'){
    await menu.click();
+   assert(await authButton.evaluate(button=>{const rect=button.getBoundingClientRect();const hit=document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2);return hit===button||button.contains(hit);}), 'Tools authentication remains above the expanded mobile sidebar');
    await authButton.click();
    await mobile.waitForURL(/login/);
   }

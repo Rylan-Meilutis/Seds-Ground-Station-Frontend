@@ -1,6 +1,8 @@
 use super::{latest_telemetry_row, layout::ThemeConfig, persist};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+#[path = "dashboard_card_values.rs"]
+mod card_values;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct Card {
@@ -401,6 +403,9 @@ fn display_card(mut card: Card, test_fire: bool) -> Card {
 
 #[component]
 pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::DataTabLayout, #[props(default)] test_fire_mode: bool) -> Element {
+    // Launch metadata is installed by the parent's effect into the history
+    // store. Refresh availability even when no telemetry or editor is active.
+    let _ = *super::HEADER_CLOCK_TICK.read();
     let mut cards = use_context::<Signal<Vec<Card>>>();
     let mut editing = use_signal(|| false);
     let mut aggregate = use_signal(|| false);
@@ -423,7 +428,6 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
     let snapshot = cards.read().clone();
     let type_choices = if *editing.read() {
         // Refresh discovery at the editor heartbeat, not once per telemetry packet.
-        let _ = *super::HEADER_CLOCK_TICK.read();
         let observed = super::LATEST_TELEMETRY_BY_TYPE.lock().map(|latest| {
             latest.keys().map(|id| super::resolve_telemetry_text(*id).to_string()).collect::<Vec<_>>()
         }).unwrap_or_default();
@@ -571,20 +575,9 @@ fn CardEditor(card: Card, data_layout: super::layout::DataTabLayout,
 
 /// Draw actual timestamps, breaking across telemetry outages. The launch view
 /// uses the full requested window, so absent portions remain visibly empty.
+#[cfg(test)]
 fn trend_path(samples:&[super::dashboard_history::Sample], window:Option<(i64,i64)>) -> String {
-    let first = window.map(|w|w.0).or_else(||samples.first().map(|s|s.time)).unwrap_or(0);
-    let last = window.map(|w|w.1).or_else(||samples.last().map(|s|s.time)).unwrap_or(first+1);
-    let low = samples.iter().map(|s|s.value).reduce(f32::min).unwrap_or(0.);
-    let high = samples.iter().map(|s|s.value).reduce(f32::max).unwrap_or(1.);
-    let padding = ((high-low)*0.05).max(high.abs().max(low.abs())*0.001).max(0.000001);
-    let mut previous=None::<(i64,u64)>;
-    samples.iter().map(|s| {
-        let command=if previous.is_none_or(|(time,segment)|s.time.saturating_sub(time)>1_000 || segment!=s.segment) {"M"} else {"L"};
-        previous=Some((s.time,s.segment));
-        let x=s.time.saturating_sub(first) as f64*260./last.saturating_sub(first).max(1) as f64;
-        let y=60.-((s.value-low+padding)/(high-low+2.*padding))*60.;
-        format!("{command}{x:.2},{y:.2} ")
-    }).collect()
+    card_values::trend_geometry(samples, window).path
 }
 
 #[cfg(test)]
@@ -636,10 +629,20 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
             .saturating_sub(r.received_timestamp_ms)
             .max(0)
     });
-    let value = row
+    let live_value = row
         .as_ref()
         .and_then(|r| r.values.get(card.index).copied().flatten())
         .filter(|v| v.is_finite()).map(|v|if thrust {v*9.80665}else{v});
+    let _ = *super::FRONTEND_DATA_CLEAR_EPOCH.read();
+    let mut samples = if !compact && (aggregate || card.display == "trend") {
+        super::dashboard_trend_samples(&card.data_type,&card.sender,card.index,aggregate)
+    }else{Vec::new()};
+    if thrust {for sample in &mut samples {sample.value *= 9.80665;}}
+    let window=if aggregate {super::dashboard_launch_window()}else{
+        samples.last().map(|last|(last.time.saturating_sub(60_000),last.time))
+    };
+    let capture=if aggregate {card_values::capture_stats(&samples,window)}else{None};
+    let value=card_values::display_value(aggregate,live_value,capture);
     let text = value
         .map(|v| {
             if card.display == "state" {
@@ -656,30 +659,30 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
     let fraction = value
         .map(|v| ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0))
         .unwrap_or(0.0);
-    let _ = *super::FRONTEND_DATA_CLEAR_EPOCH.read();
-    let mut samples = if card.display == "trend" && !compact {
-        super::dashboard_trend_samples(&card.data_type,&card.sender,card.index,aggregate)
-    }else{Vec::new()};
-    if thrust {for sample in &mut samples {sample.value *= 9.80665;}}
-    let window=if aggregate {super::dashboard_launch_window()}else{
-        samples.last().map(|last|(last.time.saturating_sub(60_000),last.time))
-    };
-    let path=trend_path(&samples,window);
-    let has_trend=!samples.is_empty();
-    // Identical source/channel/retention semantics to the Data summary cards.
+    let geometry=if card.display=="trend" {card_values::trend_geometry(&samples,window)}else{card_values::TrendGeometry::default()};
+    let has_trend=!geometry.path.is_empty();
     let minmax=if !compact && card.display == "trend" {
-        super::telemetry_channel_minmax(&card.data_type,if card.sender.is_empty(){None}else{Some(&card.sender)},card.index)
-            .map(|(min,max)|if thrust {(min*9.80665,max*9.80665)}else{(min,max)})
+        if aggregate {capture.map(|stats|(stats.min,stats.max))}else{
+            super::telemetry_channel_minmax(&card.data_type,if card.sender.is_empty(){None}else{Some(&card.sender)},card.index)
+                .map(|(min,max)|if thrust {(min*9.80665,max*9.80665)}else{(min,max)})
+        }
     }else{None};
     rsx! {div { style: if compact { "display:flex;align-items:baseline;justify-content:center;gap:6px;flex-wrap:wrap;" } else { "" },
         strong {class:"gs26-card-label","{card.label}"}
         div {class:"gs26-card-value",style:if compact {"font-size:13px;font-variant-numeric:tabular-nums;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},"{text}"}
         if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
         if !compact && value.is_some() && card.display=="gauge" {div {role:"img","aria-label":text.clone(),style:"width:70px;height:70px;border-radius:50%;background:conic-gradient(#38bdf8 {fraction*360.0}deg,#334155 0);",div {style:"position:relative;top:12px;left:12px;width:46px;height:46px;border-radius:50%;background:#0f172a;"}}}
-        if !compact && has_trend && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",role:"img","aria-label":format!("{} {} history",card.label,if aggregate {"launch"}else{"live 60 second"}),path {d:path,fill:"none",stroke:"#38bdf8",stroke_width:"2"}}}
-        if let Some((min,max)) = minmax {small {style:"display:block;", {format!("Data history · Min {min:.precision$} · Max {max:.precision$} {}",card.unit,precision=card.precision)}}}
+        if !compact && has_trend && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",role:"img","aria-label":format!("{} {} history",card.label,if aggregate {"launch"}else{"live 60 second"}),path {d:geometry.path,fill:"none",stroke:"#38bdf8",stroke_width:"2"}
+            for (index,(x,y)) in geometry.isolated.iter().enumerate() {circle {key:"point-{index}",cx:"{x}",cy:"{y}",r:"2",fill:"#38bdf8"}}
+        }}
+        if let Some((min,max)) = minmax {small {style:"display:block;", {format!("{} · Min {min:.precision$} · Max {max:.precision$} {}",if aggregate {"Launch capture"}else{"Data history"},card.unit,precision=card.precision)}}}
         if aggregate && !compact && !has_trend && card.display=="trend" {small {"No samples with known source time in this launch window"}}
-        if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
+        if aggregate && !compact {
+            small {class:"gs26-card-capture-time",style:"color:#94a3b8;",
+                if let Some(stats)=capture {if let Some((start,_))=window { {format!("Launch capture · last sample +{:.1}s",stats.last.time.saturating_sub(start) as f64/1000.0)} }}
+                else {"Launch capture · no source-timed samples"}
+            }
+        } else if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
             if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago" if !card.sender.is_empty() {" · {card.sender}"}}else{"Waiting for telemetry"}
         }}
     }}

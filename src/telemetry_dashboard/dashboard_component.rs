@@ -30,7 +30,7 @@ fn TelemetryDashboardInner() -> Element {
     // Always valid; becomes “real” once outer publishes it.
     let mut antenna_aiming = use_signal(|| false);
     let mut stream_camera_tool = use_signal(|| false);
-    let mut admin_open = use_signal(||false);
+    let mut admin_open = use_signal(|| false);
     let alive = dashboard_alive();
     let _restored_cached_rows = use_signal(restore_cached_telemetry_rows_if_needed);
     let frontend_data_clear_epoch = frontend_data_clear_epoch();
@@ -171,11 +171,16 @@ fn TelemetryDashboardInner() -> Element {
             if auth::current_status().station_role.as_deref() == Some("rrls") {
                 let base = UrlConfig::base_http();
                 let token = auth::current_token();
-                let next = http_get_json::<auth::CommandProxyStatus>("/api/rrls/control").await.ok();
-                let policy = http_get_json::<ActionPolicyMsg>("/api/action_policy").await
-                    .unwrap_or_else(|_|ActionPolicyMsg::default_locked());
-                if UrlConfig::base_http() == base && auth::current_token() == token
-                    && auth::current_status().station_role.as_deref() == Some("rrls") {
+                let next = http_get_json::<auth::CommandProxyStatus>("/api/rrls/control")
+                    .await
+                    .ok();
+                let policy = http_get_json::<ActionPolicyMsg>("/api/action_policy")
+                    .await
+                    .unwrap_or_else(|_| ActionPolicyMsg::default_locked());
+                if UrlConfig::base_http() == base
+                    && auth::current_token() == token
+                    && auth::current_status().station_role.as_deref() == Some("rrls")
+                {
                     auth::update_command_proxy(next.clone());
                     *COMMAND_PROXY_STATUS.write() = next;
                     set_signal_if_changed(&mut action_policy, policy);
@@ -197,9 +202,11 @@ fn TelemetryDashboardInner() -> Element {
     let network_time = use_signal(|| None::<NetworkTimeSync>);
     let launch_clock = use_signal(|| None::<LaunchClockMsg>);
     use_effect(move || {
-        let (session,anchor)=recovery_marker::dashboard_clock();
-        let layout=layout_config.read().clone();
-        if let Some(layout)=layout {observe_dashboard_launch(session,anchor,layout.test_fire_mode);}
+        let (session, anchor) = recovery_marker::dashboard_clock();
+        let layout = layout_config.read().clone();
+        if let Some(layout) = layout {
+            observe_dashboard_launch(session, anchor, layout.test_fire_mode);
+        }
     });
     let flight_state = use_signal(|| "Startup".to_string());
     let board_status = use_signal(Vec::<BoardStatusEntry>::new);
@@ -207,7 +214,8 @@ fn TelemetryDashboardInner() -> Element {
     let frontend_network_metrics = use_signal(FrontendNetworkMetrics::default);
     let abort_only_mode = use_signal(|| false);
     let mut tabs_expanded = use_signal(|| false);
-    let mut rail_collapsed = use_signal(|| persist::get_string("navigation-rail-collapsed").as_deref()!=Some("false"));
+    let mut rail_collapsed =
+        use_signal(|| persist::get_string("navigation-rail-collapsed").as_deref() != Some("false"));
     let mut warning_toast_dismissed = use_signal(|| 0i64);
     let header_actions_expanded = use_signal(|| false);
     let last_applied_disable_actions_default = use_signal(|| None::<bool>);
@@ -218,14 +226,22 @@ fn TelemetryDashboardInner() -> Element {
     let mut return_main_tab = use_signal(|| {
         let current = _main_tab_from_str(st_main_tab.read().as_str());
         if matches!(current, MainTab::Mission | MainTab::StreamManager) {
-            _main_tab_from_str(&persist::get_or(&format!("{}-return", scoped_main_tab_key()), "state"))
-        } else { current }
+            _main_tab_from_str(&persist::get_or(
+                &format!("{}-return", scoped_main_tab_key()),
+                "state",
+            ))
+        } else {
+            current
+        }
     });
     use_effect(move || {
         let current = *active_main_tab.read();
         if !*streamer_mode.read() && !matches!(current, MainTab::Mission | MainTab::StreamManager) {
             return_main_tab.set(current);
-            persist::set_string(&format!("{}-return", scoped_main_tab_key()), _main_tab_to_str(current));
+            persist::set_string(
+                &format!("{}-return", scoped_main_tab_key()),
+                _main_tab_to_str(current),
+            );
         }
     });
 
@@ -634,7 +650,8 @@ fn TelemetryDashboardInner() -> Element {
         let mut displayed_primary_mode = use_signal(|| None::<String>);
         use_effect(move || {
             let mode = station_mode::OPERATING_MODE.read()["effective_mode"]
-                .as_str().map(str::to_owned);
+                .as_str()
+                .map(str::to_owned);
             if crate::auth::current_status().station_role.as_deref() != Some("rrls")
                 || *displayed_primary_mode.peek() == mode
             {
@@ -642,8 +659,13 @@ fn TelemetryDashboardInner() -> Element {
             }
             displayed_primary_mode.set(mode);
             refresh_layout_after_ws_reconnect(
-                layout_config, layout_loading, layout_error, layout_error_dismissed,
-                layout_request_base, calibration_has_sensors, calibration_request_base,
+                layout_config,
+                layout_loading,
+                layout_error,
+                layout_error_dismissed,
+                layout_request_base,
+                calibration_has_sensors,
+                calibration_request_base,
                 action_policy,
             );
         });
@@ -1340,7 +1362,10 @@ fn TelemetryDashboardInner() -> Element {
             let (tx, mut rx) = futures_channel::mpsc::unbounded::<DashboardRuntimeEvent>();
             let generation = NEXT_DASHBOARD_RUNTIME_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
             if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock() {
-                *slot = Some(DashboardRuntimePump { generation, sender: tx });
+                *slot = Some(DashboardRuntimePump {
+                    generation,
+                    sender: tx,
+                });
                 DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
                 DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED.store(false, Ordering::Release);
             }
@@ -1349,8 +1374,13 @@ fn TelemetryDashboardInner() -> Element {
                 use futures_util::StreamExt;
 
                 while let Some(DashboardRuntimeEvent::Pump) = rx.next().await {
-                    let owns_pump = DASHBOARD_RUNTIME_TX.lock().map(|slot|
-                        slot.as_ref().is_some_and(|pump| pump.generation == generation)).unwrap_or(false);
+                    let owns_pump = DASHBOARD_RUNTIME_TX
+                        .lock()
+                        .map(|slot| {
+                            slot.as_ref()
+                                .is_some_and(|pump| pump.generation == generation)
+                        })
+                        .unwrap_or(false);
                     if !owns_pump || !alive.load(Ordering::Relaxed) || *WS_EPOCH.read() != epoch {
                         break;
                     }
@@ -1540,10 +1570,11 @@ fn TelemetryDashboardInner() -> Element {
                 }
 
                 if let Ok(mut slot) = DASHBOARD_RUNTIME_TX.lock()
-                    && retire_dashboard_runtime_pump(&mut slot, generation) {
-                        DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
-                        DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED.store(false, Ordering::Release);
-                    }
+                    && retire_dashboard_runtime_pump(&mut slot, generation)
+                {
+                    DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
+                    DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED.store(false, Ordering::Release);
+                }
             });
         });
     }
@@ -1740,6 +1771,7 @@ fn TelemetryDashboardInner() -> Element {
     // Derived state
     let warn_count = warnings.read().len();
     let err_count = errors.read().len();
+    let active_board_error_count = BOARD_ABORT_SIGNAL.read().active_error_count();
     let format_capped_alert_count = |count: usize| {
         if count >= 500 {
             "500+".to_string()
@@ -1747,9 +1779,17 @@ fn TelemetryDashboardInner() -> Element {
             count.to_string()
         }
     };
-    let unacked_warning_count = warnings_tab::unacknowledged_warning_count(&warnings.read(), *ack_warning_ts.read());
+    let unacked_warning_count =
+        warnings_tab::unacknowledged_warning_count(&warnings.read(), *ack_warning_ts.read());
     let warn_count_label = format_capped_alert_count(unacked_warning_count);
-    let err_count_label = format_capped_alert_count(err_count);
+    let err_count_label = if active_board_error_count > 0 {
+        format!(
+            "{active_board_error_count} active / {} history",
+            format_capped_alert_count(err_count)
+        )
+    } else {
+        format_capped_alert_count(err_count)
+    };
 
     let latest_warning_ts = warnings
         .read()
@@ -1765,13 +1805,13 @@ fn TelemetryDashboardInner() -> Element {
         .unwrap_or(0);
 
     let has_warnings = warn_count > 0;
-    let has_errors = err_count > 0;
+    let has_errors = err_count > 0 || active_board_error_count > 0;
     let has_active_notifications = !notifications.read().is_empty();
     let has_unread_notifications = !unread_notification_ids.read().is_empty();
 
     let has_unacked_warnings = latest_warning_ts > *ack_warning_ts.read();
     let has_unacked_errors = latest_error_ts > *ack_error_ts.read();
-    let active_error_alert = has_unacked_errors && has_errors;
+    let active_error_alert = (has_unacked_errors && has_errors) || active_board_error_count > 0;
     let active_warning_alert = has_unacked_warnings && has_warnings;
     let border_style = "1px solid transparent";
     let app_alert_effect = "none";
@@ -2006,8 +2046,12 @@ fn TelemetryDashboardInner() -> Element {
         {
             let alive_for_click = alive.clone();
             let mut header_actions_expanded = header_actions_expanded;
-            let connect_button_label =
-                localized_copy(&current_language(), "Change station", "Cambiar estación", "Changer de station");
+            let connect_button_label = localized_copy(
+                &current_language(),
+                "Change station",
+                "Cambiar estación",
+                "Changer de station",
+            );
 
             rsx! {
 
@@ -2270,7 +2314,10 @@ fn TelemetryDashboardInner() -> Element {
     let layout_snapshot = layout_config.read().clone();
     let layout_error_snapshot = layout_error.read().clone();
     let layout_error_dismissed_snapshot = layout_error_dismissed.read().clone();
-    let layout_cached_error_banner = layout_error_snapshot.clone().filter(|msg| layout_snapshot.is_some() && layout_error_dismissed_snapshot.as_deref() != Some(msg.as_str()));
+    let layout_cached_error_banner = layout_error_snapshot.clone().filter(|msg| {
+        layout_snapshot.is_some()
+            && layout_error_dismissed_snapshot.as_deref() != Some(msg.as_str())
+    });
     let layout_loading_snapshot = *layout_loading.read();
     let version_overlay_open = *show_version_overlay.read();
     let version_overlay: Element = {
@@ -2549,68 +2596,99 @@ fn TelemetryDashboardInner() -> Element {
         }
     };
 
-    let surface_session=auth::current_status();
-    let surface_viewer=surface_session.roles.iter().any(|r|r=="stream_viewer") && !auth::can_manage_stream() && !auth::can_view_actions() && !auth::can_publish_camera() && !auth::can_join_voice() && !surface_session.permissions.set_system_time;
-    let surface_stream=*streamer_mode.read() || surface_viewer || matches!(*active_main_tab.read(),MainTab::Mission|MainTab::StreamManager);
-    let surface_manager=surface_stream && !surface_viewer && !*streamer_mode.read() && *active_main_tab.read()==MainTab::StreamManager;
-    let media_visible=(auth::can_publish_camera() || auth::can_manage_stream()) && !*antenna_aiming.read() && !*admin_open.read() && ((surface_manager && *stream_camera_tool.read()) || (!surface_stream && *active_main_tab.read()==MainTab::Media));
-    let voice_visible=auth::can_join_voice() && !*antenna_aiming.read() && !*admin_open.read() && !surface_stream && *active_main_tab.read()==MainTab::CrewVoice;
-    let view=(|| -> Element {
-    // Keep hooks stable, but unmount all normal data views while aiming.
-    if *antenna_aiming.read() {
-        return rsx! { antenna_aiming::AntennaAiming {on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
-    }
+    let surface_session = auth::current_status();
+    let surface_viewer = surface_session.roles.iter().any(|r| r == "stream_viewer")
+        && !auth::can_manage_stream()
+        && !auth::can_view_actions()
+        && !auth::can_publish_camera()
+        && !auth::can_join_voice()
+        && !surface_session.permissions.set_system_time;
+    let surface_stream = *streamer_mode.read()
+        || surface_viewer
+        || matches!(
+            *active_main_tab.read(),
+            MainTab::Mission | MainTab::StreamManager
+        );
+    let surface_manager = surface_stream
+        && !surface_viewer
+        && !*streamer_mode.read()
+        && *active_main_tab.read() == MainTab::StreamManager;
+    let media_visible = (auth::can_publish_camera() || auth::can_manage_stream())
+        && !*antenna_aiming.read()
+        && !*admin_open.read()
+        && ((surface_manager && *stream_camera_tool.read())
+            || (!surface_stream && *active_main_tab.read() == MainTab::Media));
+    let voice_visible = auth::can_join_voice()
+        && !*antenna_aiming.read()
+        && !*admin_open.read()
+        && !surface_stream
+        && *active_main_tab.read() == MainTab::CrewVoice;
+    let view = (|| -> Element {
+        // Keep hooks stable, but unmount all normal data views while aiming.
+        if *antenna_aiming.read() {
+            return rsx! { antenna_aiming::AntennaAiming {on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
+        }
 
-    // Dedicated media devices must not mount dashboard alerts, warnings or controls.
-    let stream_roles = auth::current_status();
-    let viewer_only = stream_roles.roles.iter().any(|r| r == "stream_viewer")
-        && !auth::can_manage_stream() && !auth::can_view_actions() && !auth::can_publish_camera() && !auth::can_join_voice() && !stream_roles.permissions.set_system_time;
-    let dedicated_stream = *streamer_mode.read() || viewer_only
-        || matches!(*active_main_tab.read(), MainTab::Mission | MainTab::StreamManager);
-    if dedicated_stream {
-        let managing = !viewer_only && !*streamer_mode.read() && *active_main_tab.read() == MainTab::StreamManager;
-        return rsx! {
-            div {style:"height:var(--gs26-app-height,100dvh);font-family:system-ui,sans-serif;display:flex;flex-direction:column;background:{theme.tab_shell_background};color:{theme.text_primary};",
-                if viewer_only {div {style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:.7;",{auth_button}}}
-                if !viewer_only {
-                    button {r#type:"button",style:"align-self:end;min-height:44px;margin:8px;padding:8px 16px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_| {
-                        let mut mode=streamer_mode;mode.set(false);active_main_tab.set(*return_main_tab.read());
-                    },"Exit stream mode"}
-                }
-                div {style:"flex:1;min-height:0;",
-                    if managing && *stream_camera_tool.read() {
-                        button {r#type:"button",style:"min-height:44px;padding:8px 12px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_|stream_camera_tool.set(false),"Back to stream controls"}
-                        div {id:"gs26-media-slot",style:"height:calc(100% - 44px);min-height:0;"}
-                    } else {
-                        LiveStreamTab {manager_mode:managing,program_only:!managing,dedicated:true,theme:theme.clone(),
-                            on_open_voice:move |_|{},on_open_media:move |_|stream_camera_tool.set(true)}
+        // Dedicated media devices must not mount dashboard alerts, warnings or controls.
+        let stream_roles = auth::current_status();
+        let viewer_only = stream_roles.roles.iter().any(|r| r == "stream_viewer")
+            && !auth::can_manage_stream()
+            && !auth::can_view_actions()
+            && !auth::can_publish_camera()
+            && !auth::can_join_voice()
+            && !stream_roles.permissions.set_system_time;
+        let dedicated_stream = *streamer_mode.read()
+            || viewer_only
+            || matches!(
+                *active_main_tab.read(),
+                MainTab::Mission | MainTab::StreamManager
+            );
+        if dedicated_stream {
+            let managing = !viewer_only
+                && !*streamer_mode.read()
+                && *active_main_tab.read() == MainTab::StreamManager;
+            return rsx! {
+                div {style:"height:var(--gs26-app-height,100dvh);font-family:system-ui,sans-serif;display:flex;flex-direction:column;background:{theme.tab_shell_background};color:{theme.text_primary};",
+                    if viewer_only {div {style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:.7;",{auth_button}}}
+                    if !viewer_only {
+                        button {r#type:"button",style:"align-self:end;min-height:44px;margin:8px;padding:8px 16px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_| {
+                            let mut mode=streamer_mode;mode.set(false);active_main_tab.set(*return_main_tab.read());
+                        },"Exit stream mode"}
+                    }
+                    div {style:"flex:1;min-height:0;",
+                        if managing && *stream_camera_tool.read() {
+                            button {r#type:"button",style:"min-height:44px;padding:8px 12px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_|stream_camera_tool.set(false),"Back to stream controls"}
+                            div {id:"gs26-media-slot",style:"height:calc(100% - 44px);min-height:0;"}
+                        } else {
+                            LiveStreamTab {manager_mode:managing,program_only:!managing,dedicated:true,theme:theme.clone(),
+                                on_open_voice:move |_|{},on_open_media:move |_|stream_camera_tool.set(true)}
+                        }
                     }
                 }
-            }
-        };
-    }
+            };
+        }
 
-    if *admin_open.read() {
-        return rsx! {admin_console::AdminConsole {
-            on_exit:move |_|{admin_open.set(false);let mut overlay=show_settings_overlay;overlay.set(true);},
-            on_navigate:move |page:String| {
-                let mut dashboard_edit_mode = dashboard_edit_mode;
-                admin_open.set(false);
-                if page.as_str() == "views" {active_main_tab.set(MainTab::State);dashboard_edit_mode.set(true);}
-            }
-        }};
-    }
-    // MAIN UI
-    rsx! {
-            style { {include_str!("controls.css")} }
-            gps::GpsDriver {
-                user_gps: user_gps,
-                user_altitude_m: Some(user_gps_altitude_m),
-                // Only needed if you want to gate geolocation until the JS is ready on wasm:
-                js_ready: Some(start_gps_js()),
-            }
-                style {
-                    "@keyframes gs26-blink-slow-off {{ 0%, 100% {{ opacity: 0.2; }} 18% {{ opacity: 1.0; }} }}
+        if *admin_open.read() {
+            return rsx! {admin_console::AdminConsole {
+                on_exit:move |_|{admin_open.set(false);let mut overlay=show_settings_overlay;overlay.set(true);},
+                on_navigate:move |page:String| {
+                    let mut dashboard_edit_mode = dashboard_edit_mode;
+                    admin_open.set(false);
+                    if page.as_str() == "views" {active_main_tab.set(MainTab::State);dashboard_edit_mode.set(true);}
+                }
+            }};
+        }
+        // MAIN UI
+        rsx! {
+                style { {include_str!("controls.css")} }
+                gps::GpsDriver {
+                    user_gps: user_gps,
+                    user_altitude_m: Some(user_gps_altitude_m),
+                    // Only needed if you want to gate geolocation until the JS is ready on wasm:
+                    js_ready: Some(start_gps_js()),
+                }
+                    style {
+                        "@keyframes gs26-blink-slow-off {{ 0%, 100% {{ opacity: 0.2; }} 18% {{ opacity: 1.0; }} }}
              @keyframes gs26-blink-slow-on  {{ 0%, 100% {{ opacity: 1.0; }} 82% {{ opacity: 0.25; }} }}
              @keyframes gs26-blink-fast-off {{ 0%, 100% {{ opacity: 0.15; }} 45% {{ opacity: 1.0; }} }}
              @keyframes gs26-blink-fast-on  {{ 0%, 100% {{ opacity: 1.0; }} 55% {{ opacity: 0.2; }} }}
@@ -3012,10 +3090,10 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-tab-shell .gs26-tab-nav {{ display:flex !important; flex-wrap:nowrap !important; overflow-x:auto; overflow-y:hidden; width:100%; max-width:100%; scrollbar-width:none; -ms-overflow-style:none; padding-bottom:4px; }}
              .gs26-tab-shell .gs26-tab-nav::-webkit-scrollbar {{ display:none; width:0; height:0; }}
              .gs26-tab-shell .gs26-tab-nav button {{ width:auto !important; flex:0 0 auto; white-space:nowrap; }}"
-                }
-                if layout_loading_snapshot && layout_snapshot.is_none() {
-                    div {
-                        style: "
+                    }
+                    if layout_loading_snapshot && layout_snapshot.is_none() {
+                        div {
+                            style: "
                     height:var(--gs26-app-height);
                     padding:clamp(8px, 2.5vw, 24px);
                     color:var(--gs26-app-text);
@@ -3028,18 +3106,18 @@ fn TelemetryDashboardInner() -> Element {
                     --gs26-alert-frame-shadow:none;
                     box-sizing:border-box;
                 ",
-                        div { style: "text-align:center; display:flex; flex-direction:column; gap:10px; align-items:center;",
-                            div { style: "font-size:22px; font-weight:800; color:{theme.info_accent};", "Loading layout..." }
-                            div { style: "font-size:14px; color:{theme.text_muted};", "Waiting for layout from Ground Station" }
-                            div { style: "display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:4px;",
-                                {version_button}
-                                {connect_button}
+                            div { style: "text-align:center; display:flex; flex-direction:column; gap:10px; align-items:center;",
+                                div { style: "font-size:22px; font-weight:800; color:{theme.info_accent};", "Loading layout..." }
+                                div { style: "font-size:14px; color:{theme.text_muted};", "Waiting for layout from Ground Station" }
+                                div { style: "display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:4px;",
+                                    {version_button}
+                                    {connect_button}
+                                }
                             }
                         }
-                    }
-                } else if layout_snapshot.is_none() {
-                    div {
-                        style: "
+                    } else if layout_snapshot.is_none() {
+                        div {
+                            style: "
                     height:var(--gs26-app-height);
                     padding:clamp(8px, 2.5vw, 24px);
                     color:var(--gs26-app-text);
@@ -3052,26 +3130,26 @@ fn TelemetryDashboardInner() -> Element {
                     --gs26-alert-frame-shadow:none;
                     box-sizing:border-box;
                 ",
-                        div { class:"gs26-layout-unavailable", style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
-                            div { style: "font-size:20px; font-weight:800; color:{theme.error_text};", "Dashboard layout unavailable" }
-                            if let Some(msg) = layout_error_snapshot.clone() {
-                                details {class:"gs26-layout-unavailable-details",summary {"Connection details"}pre {"{msg}"}}
-                            }
-                            div { class:"gs26-layout-notice-actions", style: "display:flex; gap:10px; flex-wrap:wrap; justify-content:center;",
-                                {reload_button}
-                                {version_button}
-                                {connect_button}
+                            div { class:"gs26-layout-unavailable", style: "text-align:center; display:flex; flex-direction:column; gap:12px; align-items:center;",
+                                div { style: "font-size:20px; font-weight:800; color:{theme.error_text};", "Dashboard layout unavailable" }
+                                if let Some(msg) = layout_error_snapshot.clone() {
+                                    details {class:"gs26-layout-unavailable-details",summary {"Connection details"}pre {"{msg}"}}
+                                }
+                                div { class:"gs26-layout-notice-actions", style: "display:flex; gap:10px; flex-wrap:wrap; justify-content:center;",
+                                    {reload_button}
+                                    {version_button}
+                                    {connect_button}
+                                }
                             }
                         }
-                    }
-                } else if let Some(layout) = layout_snapshot {
-                div {
-                    class: "gs26-dashboard-shell",
-                    "data-navigation":if *navigation_rail::SIDEBAR_NAVIGATION.read() {"sidebar"}else{"tabs"},
-                    "data-rail-collapsed":rail_collapsed.read().to_string(),
-                    "data-streamer": if *streamer_mode.read() { "true" } else { "false" },
+                    } else if let Some(layout) = layout_snapshot {
+                    div {
+                        class: "gs26-dashboard-shell",
+                        "data-navigation":if *navigation_rail::SIDEBAR_NAVIGATION.read() {"sidebar"}else{"tabs"},
+                        "data-rail-collapsed":rail_collapsed.read().to_string(),
+                        "data-streamer": if *streamer_mode.read() { "true" } else { "false" },
 
-                    style: "
+                        style: "
                 --gs-control-bg:{theme.button_background};
                 --gs-control-border:{theme.button_border};
                 --gs-control-text:{theme.button_text};
@@ -3094,59 +3172,59 @@ fn TelemetryDashboardInner() -> Element {
                 overflow:hidden;
             ",
 
-                    style {{include_str!("navigation_rail.css")}}
-                    if !*streamer_mode.read() && *navigation_rail::SIDEBAR_NAVIGATION.read() {
-                        navigation_rail::NavigationRail {
-                            items:_configured_main_tabs(&layout,*abort_only_mode.read(),*calibration_has_sensors.read(),&dashboard_customization.read()).into_iter().map(|tab|navigation_rail::NavigationItem{id:_main_tab_to_str(tab).into(),label:_main_tab_label(&layout,tab)}).collect(),
-                            collapsed:*rail_collapsed.read(),
-                            on_toggle:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next {"true"}else{"false"});},
-                            warning_alert:active_warning_alert,
-                            error_alert:active_error_alert,
-                            active:_main_tab_to_str(*active_main_tab.read()).to_string(),
-                            title:layout.branding.app_name.clone().unwrap_or_else(||"GroundStation".into()),
-                            on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);navigation_rail::close_after_mobile_selection(rail_collapsed);},
-                            on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);navigation_rail::close_after_mobile_selection(rail_collapsed);},
+                        style {{include_str!("navigation_rail.css")}}
+                        if !*streamer_mode.read() && *navigation_rail::SIDEBAR_NAVIGATION.read() {
+                            navigation_rail::NavigationRail {
+                                items:_configured_main_tabs(&layout,*abort_only_mode.read(),*calibration_has_sensors.read(),&dashboard_customization.read()).into_iter().map(|tab|navigation_rail::NavigationItem{id:_main_tab_to_str(tab).into(),label:_main_tab_label(&layout,tab)}).collect(),
+                                collapsed:*rail_collapsed.read(),
+                                on_toggle:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next {"true"}else{"false"});},
+                                warning_alert:active_warning_alert,
+                                error_alert:active_error_alert,
+                                active:_main_tab_to_str(*active_main_tab.read()).to_string(),
+                                title:layout.branding.app_name.clone().unwrap_or_else(||"GroundStation".into()),
+                                on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);navigation_rail::close_after_mobile_selection(rail_collapsed);},
+                                on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);navigation_rail::close_after_mobile_selection(rail_collapsed);},
+                            }
                         }
-                    }
-                    station_mode::OperatingModeNotice {visible:false}
-                    recovery_marker::RecoveryRuntime {}
-                    if !*WS_CONNECTED_SIGNAL.read() || layout_cached_error_banner.is_some() {
-                        aside {
-                            role:"alert", class:"gs26-connection-notice gs26-layout-notice",
-                            style:"border-color:{theme.error_border};background:{theme.error_background};color:{theme.error_text};",
-                            div {class:"gs26-layout-notice-body",
-                                strong {"Station connection"}
-                                if let Some(msg)=layout_cached_error_banner.clone() {
-                                    p {"Using a saved dashboard. The station layout could not be refreshed."}
-                                    details {summary {"Connection details"} pre {"{msg}"}}
-                                } else {
-                                    p {
-                                        if DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
-                                            {format!("{} disconnected. Reconnecting automatically; displayed data may be stale.", auth::station_name())}
-                                        } else { {format!("Connecting to {}…", auth::station_name())} }
+                        station_mode::OperatingModeNotice {visible:false}
+                        recovery_marker::RecoveryRuntime {}
+                        if !*WS_CONNECTED_SIGNAL.read() || layout_cached_error_banner.is_some() {
+                            aside {
+                                role:"alert", class:"gs26-connection-notice gs26-layout-notice",
+                                style:"border-color:{theme.error_border};background:{theme.error_background};color:{theme.error_text};",
+                                div {class:"gs26-layout-notice-body",
+                                    strong {"Station connection"}
+                                    if let Some(msg)=layout_cached_error_banner.clone() {
+                                        p {"Using a saved dashboard. The station layout could not be refreshed."}
+                                        details {summary {"Connection details"} pre {"{msg}"}}
+                                    } else {
+                                        p {
+                                            if DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
+                                                {format!("{} disconnected. Reconnecting automatically; displayed data may be stale.", auth::station_name())}
+                                            } else { {format!("Connecting to {}…", auth::station_name())} }
+                                        }
+                                    }
+                                }
+                                div {class:"gs26-layout-notice-actions",
+                                    if layout_cached_error_banner.is_some() { {reload_button.clone()} }
+                                    else {button {onclick:move |_|reconnect_and_reload_ui(),"Reconnect now"}}
+                                    {connect_button.clone()}
+                                    if let Some(msg)=layout_cached_error_banner.clone() {
+                                        button {onclick:move |_|layout_error_dismissed.set(Some(msg.clone())),"Dismiss"}
                                     }
                                 }
                             }
-                            div {class:"gs26-layout-notice-actions",
-                                if layout_cached_error_banner.is_some() { {reload_button.clone()} }
-                                else {button {onclick:move |_|reconnect_and_reload_ui(),"Reconnect now"}}
-                                {connect_button.clone()}
-                                if let Some(msg)=layout_cached_error_banner.clone() {
-                                    button {onclick:move |_|layout_error_dismissed.set(Some(msg.clone())),"Dismiss"}
-                                }
+                        }
+                        if *streamer_mode.read() {
+                            button { title:"Exit streamer mode", style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:0.65;border:1px solid #526071;border-radius:8px;background:#101923;color:white;padding:6px;cursor:pointer;",
+                                onclick:move |_| {let mut streamer_mode=streamer_mode;streamer_mode.set(false);let mut active_main_tab=active_main_tab;active_main_tab.set(*return_main_tab.read());}, "Exit streamer"
                             }
                         }
-                    }
-                    if *streamer_mode.read() {
-                        button { title:"Exit streamer mode", style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:0.65;border:1px solid #526071;border-radius:8px;background:#101923;color:white;padding:6px;cursor:pointer;",
-                            onclick:move |_| {let mut streamer_mode=streamer_mode;streamer_mode.set(false);let mut active_main_tab=active_main_tab;active_main_tab.set(*return_main_tab.read());}, "Exit streamer"
-                        }
-                    }
-                    if !*streamer_mode.read() {
-                    // Header row 1
-                    div {
-                        class: "gs26-header-row",
-                        style: "
+                        if !*streamer_mode.read() {
+                        // Header row 1
+                        div {
+                            class: "gs26-header-row",
+                            style: "
                     display:flex;
                     align-items:center;
                     justify-content:space-between;
@@ -3157,85 +3235,85 @@ fn TelemetryDashboardInner() -> Element {
                     position:relative;
                     z-index:2000;
                 ",
-                        div {
-                            class: "gs26-header-title",
-                            style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
-                            if *navigation_rail::SIDEBAR_NAVIGATION.read() {
-                                button {class:"gs26-mobile-sidebar-toggle","aria-controls":"gs26-sidebar-navigation",title:if *rail_collapsed.read(){"Show pages"}else{"Hide pages"},"aria-label":if *rail_collapsed.read(){"Show navigation sidebar"}else{"Hide navigation sidebar"},"aria-expanded":(!*rail_collapsed.read()).to_string(),onclick:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next{"true"}else{"false"});},svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:"M3 4h18v16H3z M9 4v16 M5 8h2 M5 12h2 M5 16h2"}}}
-                            }
-                            span {class:"gs26-desktop-tab-title", "{_main_tab_label(&layout, *active_main_tab.read())}"}
-                            button {
-                                class: "gs26-title-tab-toggle gs26-mobile-tab-picker",
-                                "aria-expanded": (*tabs_expanded.read() || *dashboard_edit_mode.read()).to_string(),
-                                "aria-controls": "dashboard-tab-picker-panel",
-                                "aria-label": if *tabs_expanded.read() || *dashboard_edit_mode.read() { "Close tab picker".to_string() } else { format!("Choose tab · {}", _main_tab_label(&layout, *active_main_tab.read())) },
-                                onclick: {
-                                    let mut editing = dashboard_edit_mode;
-                                    let mut actions = header_actions_expanded;
-                                    move |_| {
-                                        let next = !(*tabs_expanded.read() || *editing.read());
-                                        tabs_expanded.set(next);
+                            div {
+                                class: "gs26-header-title",
+                                style: "color:{theme.info_accent}; margin:0; font-size:22px; font-weight:800;",
+                                if *navigation_rail::SIDEBAR_NAVIGATION.read() {
+                                    button {class:"gs26-mobile-sidebar-toggle","aria-controls":"gs26-sidebar-navigation",title:if *rail_collapsed.read(){"Show pages"}else{"Hide pages"},"aria-label":if *rail_collapsed.read(){"Show navigation sidebar"}else{"Hide navigation sidebar"},"aria-expanded":(!*rail_collapsed.read()).to_string(),onclick:move |_|{let next=!*rail_collapsed.read();rail_collapsed.set(next);persist::set_string("navigation-rail-collapsed",if next{"true"}else{"false"});},svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:"M3 4h18v16H3z M9 4v16 M5 8h2 M5 12h2 M5 16h2"}}}
+                                }
+                                span {class:"gs26-desktop-tab-title", "{_main_tab_label(&layout, *active_main_tab.read())}"}
+                                button {
+                                    class: "gs26-title-tab-toggle gs26-mobile-tab-picker",
+                                    "aria-expanded": (*tabs_expanded.read() || *dashboard_edit_mode.read()).to_string(),
+                                    "aria-controls": "dashboard-tab-picker-panel",
+                                    "aria-label": if *tabs_expanded.read() || *dashboard_edit_mode.read() { "Close tab picker".to_string() } else { format!("Choose tab · {}", _main_tab_label(&layout, *active_main_tab.read())) },
+                                    onclick: {
+                                        let mut editing = dashboard_edit_mode;
+                                        let mut actions = header_actions_expanded;
+                                        move |_| {
+                                            let next = !(*tabs_expanded.read() || *editing.read());
+                                            tabs_expanded.set(next);
 
-                                        editing.set(false);
-                                        actions.set(false);
-                                    }
-                                },
-                                span { "{_main_tab_label(&layout, *active_main_tab.read())}" }
-                                span { "aria-hidden": "true", style: "font-size:12px;flex-shrink:0;", if *tabs_expanded.read() || *dashboard_edit_mode.read() { "▴" } else { "▾" } }
+                                            editing.set(false);
+                                            actions.set(false);
+                                        }
+                                    },
+                                    span { "{_main_tab_label(&layout, *active_main_tab.read())}" }
+                                    span { "aria-hidden": "true", style: "font-size:12px;flex-shrink:0;", if *tabs_expanded.read() || *dashboard_edit_mode.read() { "▴" } else { "▾" } }
+                                }
                             }
-                        }
 
-                        {
-                            let show_disable_actions = _actions_tab_has_visible_actions(&layout, *abort_only_mode.read());
-                            rsx! {
-                        div {
-                            class: "gs26-header-actions-shell",
-                            "data-expanded": if *header_actions_expanded.read() { "true" } else { "false" },
-                            style: "
+                            {
+                                let show_disable_actions = _actions_tab_has_visible_actions(&layout, *abort_only_mode.read());
+                                rsx! {
+                            div {
+                                class: "gs26-header-actions-shell",
+                                "data-expanded": if *header_actions_expanded.read() { "true" } else { "false" },
+                                style: "
                                 margin-left:auto;
                                 --gs26-header-menu-background:{theme.button_background};
                                 --gs26-header-menu-border:{theme.button_border};
                                 --gs26-header-menu-text:{theme.button_text};
                             ",
-                            button {
-                                r#type:"button",
-                                "aria-expanded":header_actions_expanded().to_string(),
-                                "aria-controls":"gs26-mobile-menu",
-                                class: "gs26-header-menu-toggle",
-                                onclick: {
-                                    let mut header_actions_expanded = header_actions_expanded;
-                                    let mut editing = dashboard_edit_mode;
-                                    move |_| {
-                                        let next = {
-                                            let current = *header_actions_expanded.read();
-                                            !current
-                                        };
-                                        header_actions_expanded.set(next);
+                                button {
+                                    r#type:"button",
+                                    "aria-expanded":header_actions_expanded().to_string(),
+                                    "aria-controls":"gs26-mobile-menu",
+                                    class: "gs26-header-menu-toggle",
+                                    onclick: {
+                                        let mut header_actions_expanded = header_actions_expanded;
+                                        let mut editing = dashboard_edit_mode;
+                                        move |_| {
+                                            let next = {
+                                                let current = *header_actions_expanded.read();
+                                                !current
+                                            };
+                                            header_actions_expanded.set(next);
 
-                                        tabs_expanded.set(false);
-                                        editing.set(false);
-                                    }
-                                },
-                                "Tools"
-                            }
-                            {
-                                let abort_control = action_policy
-                                    .read()
-                                    .controls
-                                    .iter()
-                                    .find(|c| c.cmd == "Abort")
-                                    .cloned();
-                                let abort_visible = auth::can_send_command("Abort");
-                                let abort_allowed =
-                                    abort_visible && action_policy_control_enabled(&action_policy.read(), "Abort");
-                                let abort_active = abort_control
-                                    .as_ref()
-                                    .and_then(|c| c.actuated)
-                                    .unwrap_or(false)
-                                    || command_feedback_active("Abort");
-                                let abort_style = if abort_allowed {
-                                    if abort_active {
-                                        "
+                                            tabs_expanded.set(false);
+                                            editing.set(false);
+                                        }
+                                    },
+                                    "Tools"
+                                }
+                                {
+                                    let abort_control = action_policy
+                                        .read()
+                                        .controls
+                                        .iter()
+                                        .find(|c| c.cmd == "Abort")
+                                        .cloned();
+                                    let abort_visible = auth::can_send_command("Abort");
+                                    let abort_allowed =
+                                        abort_visible && action_policy_control_enabled(&action_policy.read(), "Abort");
+                                    let abort_active = abort_control
+                                        .as_ref()
+                                        .and_then(|c| c.actuated)
+                                        .unwrap_or(false)
+                                        || command_feedback_active("Abort");
+                                    let abort_style = if abort_allowed {
+                                        if abort_active {
+                                            "
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
@@ -3246,8 +3324,8 @@ fn TelemetryDashboardInner() -> Element {
                                 font-weight:900;
                                 cursor:pointer;
                             "
-                                    } else {
-                                        "
+                                        } else {
+                                            "
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
@@ -3258,9 +3336,9 @@ fn TelemetryDashboardInner() -> Element {
                                 font-weight:900;
                                 cursor:pointer;
                             "
-                                    }
-                                } else {
-                                    "
+                                        }
+                                    } else {
+                                        "
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
@@ -3272,46 +3350,46 @@ fn TelemetryDashboardInner() -> Element {
                                 opacity:0.72;
                                 pointer-events:none;
                             "
-                                };
-                                rsx! {
-                                    if abort_visible {
-                                        button {
-                                            class: "gs26-header-abort-mobile",
-                                            style: "{abort_style} touch-action:manipulation;",
-                                            disabled: !abort_allowed,
-                                            onmousedown: move |_| {
-                                                if abort_allowed {
-                                                    send_cmd_from_press("Abort");
-                                                }
-                                            },
-                                            ontouchstart: move |_| {
-                                                if abort_allowed {
-                                                    send_cmd_from_press("Abort");
-                                                }
-                                            },
-                                            onclick: move |_| {
-                                                if abort_allowed {
-                                                    send_cmd_from_click("Abort");
-                                                }
-                                            },
-                                            span { style: "display:inline-flex; align-items:center; gap:8px;",
-                                                span { "{translate_text(\"ABORT\")}" }
-                                                if !abort_allowed {
-                                                    span {
-                                                        style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
-                                                        "{translate_text(\"Disabled\")}"
+                                    };
+                                    rsx! {
+                                        if abort_visible {
+                                            button {
+                                                class: "gs26-header-abort-mobile",
+                                                style: "{abort_style} touch-action:manipulation;",
+                                                disabled: !abort_allowed,
+                                                onmousedown: move |_| {
+                                                    if abort_allowed {
+                                                        send_cmd_from_press("Abort");
+                                                    }
+                                                },
+                                                ontouchstart: move |_| {
+                                                    if abort_allowed {
+                                                        send_cmd_from_press("Abort");
+                                                    }
+                                                },
+                                                onclick: move |_| {
+                                                    if abort_allowed {
+                                                        send_cmd_from_click("Abort");
+                                                    }
+                                                },
+                                                span { style: "display:inline-flex; align-items:center; gap:8px;",
+                                                    span { "{translate_text(\"ABORT\")}" }
+                                                    if !abort_allowed {
+                                                        span {
+                                                            style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
+                                                            "{translate_text(\"Disabled\")}"
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            }
-                        div { id:"gs26-mobile-menu",class: "gs26-header-actions-list",
-                            if show_disable_actions {
-                            button {
-                                style: if *abort_only_mode.read() {
-                                    "
+                            div { id:"gs26-mobile-menu",class: "gs26-header-actions-list",
+                                if show_disable_actions {
+                                button {
+                                    style: if *abort_only_mode.read() {
+                                        "
                                         padding:0.45rem 0.85rem;
                                         border-radius:0.75rem;
                                         border:1px solid {theme.error_border};
@@ -3321,8 +3399,8 @@ fn TelemetryDashboardInner() -> Element {
                                         font-weight:800;
                                         cursor:pointer;
                                     "
-                                } else {
-                                    "
+                                    } else {
+                                        "
                                         padding:0.45rem 0.85rem;
                                         border-radius:0.75rem;
                                         border:1px solid {theme.button_border};
@@ -3331,55 +3409,55 @@ fn TelemetryDashboardInner() -> Element {
                                         font-weight:800;
                                         cursor:pointer;
                                     "
-                                },
-                                onclick: {
-                                    let mut abort_only_mode = abort_only_mode;
-                                    let mut header_actions_expanded = header_actions_expanded;
-                                    move |_| {
-                                        let next = {
-                                            let current = *abort_only_mode.read();
-                                            !current
-                                        };
-                                        abort_only_mode.set(next);
-                                        header_actions_expanded.set(false);
-                                    }
-                                },
-                                "{disable_actions_label}"
-                            }
-                            }
-
-                            if !*navigation_rail::SIDEBAR_NAVIGATION.read() { {settings_button} }
-                            details {class:"gs26-utility-menu",open:*header_actions_expanded.read(),
-                                summary {"Tools"}
-                                div {
-                                    button {
-                                        r#type:"button",
-                                        title:"Clear every graph and exclude earlier data from future resyncs. Recordings are kept.",
-                                        onclick:move |_| { clear_current_dashboard_data_without_reseed(); },
-                                        "Clear all graphs"
-                                    }
-                                    {auth_button}{reload_button}{version_button}{connect_button}
+                                    },
+                                    onclick: {
+                                        let mut abort_only_mode = abort_only_mode;
+                                        let mut header_actions_expanded = header_actions_expanded;
+                                        move |_| {
+                                            let next = {
+                                                let current = *abort_only_mode.read();
+                                                !current
+                                            };
+                                            abort_only_mode.set(next);
+                                            header_actions_expanded.set(false);
+                                        }
+                                    },
+                                    "{disable_actions_label}"
                                 }
-                            }
+                                }
 
-                            {
-                                let abort_control = action_policy
-                                    .read()
-                                    .controls
-                                    .iter()
-                                    .find(|c| c.cmd == "Abort")
-                                    .cloned();
-                                let abort_visible = auth::can_send_command("Abort");
-                                let abort_allowed =
-                                    abort_visible && action_policy_control_enabled(&action_policy.read(), "Abort");
-                                let abort_active = abort_control
-                                    .as_ref()
-                                    .and_then(|c| c.actuated)
-                                    .unwrap_or(false)
-                                    || command_feedback_active("Abort");
-                                let abort_style = if abort_allowed {
-                                    if abort_active {
-                                        "
+                                if !*navigation_rail::SIDEBAR_NAVIGATION.read() { {settings_button} }
+                                details {class:"gs26-utility-menu",open:*header_actions_expanded.read(),
+                                    summary {"Tools"}
+                                    div {
+                                        button {
+                                            r#type:"button",
+                                            title:"Clear every graph and exclude earlier data from future resyncs. Recordings are kept.",
+                                            onclick:move |_| { clear_current_dashboard_data_without_reseed(); },
+                                            "Clear all graphs"
+                                        }
+                                        {auth_button}{reload_button}{version_button}{connect_button}
+                                    }
+                                }
+
+                                {
+                                    let abort_control = action_policy
+                                        .read()
+                                        .controls
+                                        .iter()
+                                        .find(|c| c.cmd == "Abort")
+                                        .cloned();
+                                    let abort_visible = auth::can_send_command("Abort");
+                                    let abort_allowed =
+                                        abort_visible && action_policy_control_enabled(&action_policy.read(), "Abort");
+                                    let abort_active = abort_control
+                                        .as_ref()
+                                        .and_then(|c| c.actuated)
+                                        .unwrap_or(false)
+                                        || command_feedback_active("Abort");
+                                    let abort_style = if abort_allowed {
+                                        if abort_active {
+                                            "
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
@@ -3390,8 +3468,8 @@ fn TelemetryDashboardInner() -> Element {
                                 font-weight:900;
                                 cursor:pointer;
                             "
-                                    } else {
-                                        "
+                                        } else {
+                                            "
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
@@ -3402,9 +3480,9 @@ fn TelemetryDashboardInner() -> Element {
                                 font-weight:900;
                                 cursor:pointer;
                             "
-                                    }
-                                } else {
-                                    "
+                                        }
+                                    } else {
+                                        "
                                 margin-left:clamp(20px, 6vw, 96px);
                                 padding:0.45rem 0.85rem;
                                 border-radius:0.75rem;
@@ -3416,534 +3494,534 @@ fn TelemetryDashboardInner() -> Element {
                                 opacity:0.72;
                                 pointer-events:none;
                             "
-                                };
-                                rsx! {
-                                    if abort_visible {
-                                        button {
-                                            class: "gs26-header-abort-menu",
-                                            style: "{abort_style} touch-action:manipulation;",
-                                            disabled: !abort_allowed,
-                                            onmousedown: {
-                                                let mut header_actions_expanded = header_actions_expanded;
-                                                move |_| {
-                                                    if abort_allowed {
-                                                        send_cmd_from_press("Abort");
-                                                    }
-                                                    header_actions_expanded.set(false);
-                                                }
-                                            },
-                                            ontouchstart: {
-                                                let mut header_actions_expanded = header_actions_expanded;
-                                                move |_| {
-                                                    if abort_allowed {
-                                                        send_cmd_from_press("Abort");
-                                                    }
-                                                    header_actions_expanded.set(false);
-                                                }
-                                            },
-                                            onclick: {
-                                                let mut header_actions_expanded = header_actions_expanded;
-                                                move |_| {
-                                                    if abort_allowed {
-                                                        send_cmd_from_click("Abort");
-                                                    }
-                                                    header_actions_expanded.set(false);
-                                                }
-                                            },
-                                            span { style: "display:inline-flex; align-items:center; gap:8px;",
-                                                span { "{translate_text(\"ABORT\")}" }
-                                                if !abort_allowed {
-                                                    span {
-                                                        style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
-                                                        "{translate_text(\"Disabled\")}"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        }
-                            }
-                        }
-                    }
-
-                    // Header row 2
-                    div {
-                        class: "gs26-header-secondary",
-                        style: "row-gap:3px;",
-
-                        div {
-                            class: "gs26-tab-picker-shell",
-                            style: "position:absolute;left:0;top:0;width:100%;min-width:0;height:0;z-index:2100;",
-                            if *tabs_expanded.read() || *dashboard_edit_mode.read() {
-                                div {
-                                    id: "dashboard-tab-picker-panel",
-                                    style:"position:absolute;top:0;left:0;width:min(820px,100%);max-height:70vh;overflow:auto;box-sizing:border-box;padding:10px;border:1px solid {theme.tab_shell_border};border-radius:10px;background:{theme.tab_shell_background};box-shadow:0 12px 32px rgba(0,0,0,0.45);",
-                                    div { style: "display:flex;align-items:center;justify-content:flex-end;gap:8px;",
-                                        button {
-                                            style: "min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
-                                            onclick: {
-                                                let mut editing = dashboard_edit_mode;
-                                                move |_| {
-                                                    let next = !*editing.read();
-                                                    editing.set(next);
-                                                    tabs_expanded.set(false);
-                                                }
-                                            },
-                                            if *dashboard_edit_mode.read() { "Done editing" } else { "Organize tabs" }
-                                        }
-                                    }
-                            if *tabs_expanded.read() {
-                                nav { id: "dashboard-tab-picker", "aria-label": "Dashboard tabs",
-                                    style: "display:grid;grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr));gap:8px;width:100%;padding-top:10px;",
-                                    for tab in _configured_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()) {
-                                        button {
-                                            key: "main-tab-{_main_tab_to_str(tab)}",
-                                            "data-alert":if tab==MainTab::Warnings && active_warning_alert {"warning"}else if tab==MainTab::Errors && active_error_alert {"error"}else{"none"},
-                                            "aria-current": if *active_main_tab.read() == tab { "page" } else { "false" },
-                                            style: if *active_main_tab.read() == tab { tab_style_active(&main_tab_accent(_main_tab_to_str(tab), "#38bdf8")) } else { tab_style_inactive.clone() },
-                                            onclick: move |_| { active_main_tab.set(tab); tabs_expanded.set(false); },
-                                            "{_main_tab_label(&layout, tab)}"
-                                            if tab == MainTab::Warnings { span { style:"{warnings_tab_icon_style}", " ⚠" } }
-                                            if tab == MainTab::Errors { span { style:"{errors_tab_icon_style}", " ⛔" } }
-                                            if tab == MainTab::Notifications { span { style:"{notifications_tab_icon_style}", " ●" } }
-                                        }
-                                    }
-                                }
-                            }
-                if *dashboard_edit_mode.read() {
-                    div {
-                        style: "flex:1 0 100%; max-height:55vh;overflow:auto;display:flex; flex-direction:column; gap:8px; margin-top:10px; padding:10px; box-sizing:border-box; border:1px dashed {theme.info_accent}; border-radius:12px; background:{theme.info_background};",
-                        div { style: "display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;",
-                            div {
-                                div { style: "font-size:13px; font-weight:800; color:{theme.info_text};", "Tabs and header" }
-                                div { style: "font-size:11px; color:{theme.text_muted};", "Saved for your account and this Ground Station on this device." }
-                            }
-                            button {
-                                style: "padding:5px 9px; border:1px solid {theme.button_border}; border-radius:9px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
-                                onclick: {
-                                    let mut dashboard_customization = dashboard_customization;
-                                    move |_| {
-                                        let next = DashboardCustomization::default();
-                                        save_dashboard_customization(&next);
-                                        dashboard_customization.set(next);
-                                    }
-                                },
-                                "Reset tab layout"
-                            }
-                        }
-                        custom_dashboard::HeaderPinSettings {}
-                        button { onclick: { let mut editing = dashboard_edit_mode; move |_| { open_dashboard_tool(MainTab::State, active_main_tab, dashboard_customization); editing.set(false); tabs_expanded.set(false); } }, "Edit dashboard cards and content" }
-                        h3 { "Visible tabs and order" }
-                        div { style: "display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:6px;",
-                            for (index, tab) in _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()).into_iter().enumerate() {
-                                {
-                                    let tab_id = _main_tab_to_str(tab).to_string();
-                                    let visible = !dashboard_customization.read().hidden.contains(&tab_id);
+                                    };
                                     rsx! {
-                                        div { style: "display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:5px; padding:7px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background_alt};",
-                                            label { style: "display:flex; align-items:center; gap:7px; min-width:0; font-size:12px;",
-                                                input {
-                                                    r#type: "checkbox",
-                                                    checked: visible || tab == MainTab::State,
-                                                    disabled: tab == MainTab::State,
-                                                    onchange: {
-                                                        let mut dashboard_customization = dashboard_customization;
-                                                        let tab_id = tab_id.clone();
-                                                        move |event| {
-                                                            let mut next = dashboard_customization.read().clone();
-                                                            next.hidden.retain(|id| id != &tab_id);
-                                                            if !event.checked() { next.hidden.push(tab_id.clone()); }
-                                                            save_dashboard_customization(&next);
-                                                            dashboard_customization.set(next);
+                                        if abort_visible {
+                                            button {
+                                                class: "gs26-header-abort-menu",
+                                                style: "{abort_style} touch-action:manipulation;",
+                                                disabled: !abort_allowed,
+                                                onmousedown: {
+                                                    let mut header_actions_expanded = header_actions_expanded;
+                                                    move |_| {
+                                                        if abort_allowed {
+                                                            send_cmd_from_press("Abort");
+                                                        }
+                                                        header_actions_expanded.set(false);
+                                                    }
+                                                },
+                                                ontouchstart: {
+                                                    let mut header_actions_expanded = header_actions_expanded;
+                                                    move |_| {
+                                                        if abort_allowed {
+                                                            send_cmd_from_press("Abort");
+                                                        }
+                                                        header_actions_expanded.set(false);
+                                                    }
+                                                },
+                                                onclick: {
+                                                    let mut header_actions_expanded = header_actions_expanded;
+                                                    move |_| {
+                                                        if abort_allowed {
+                                                            send_cmd_from_click("Abort");
+                                                        }
+                                                        header_actions_expanded.set(false);
+                                                    }
+                                                },
+                                                span { style: "display:inline-flex; align-items:center; gap:8px;",
+                                                    span { "{translate_text(\"ABORT\")}" }
+                                                    if !abort_allowed {
+                                                        span {
+                                                            style: "flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
+                                                            "{translate_text(\"Disabled\")}"
                                                         }
                                                     }
                                                 }
-                                                span { style: "overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{_main_tab_label(&layout, tab)}" }
-                                            }
-                                            button {
-                                                title: "Move earlier",
-                                                disabled: index <= 1,
-                                                style: "padding:3px 7px; border:1px solid {theme.button_border}; border-radius:7px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
-                                                onclick: {
-                                                    let mut dashboard_customization = dashboard_customization;
-                                                    let available = _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read());
-                                                    let tab_id = tab_id.clone();
-                                                    move |_| {
-                                                        let mut next = dashboard_customization.read().clone();
-                                                        let mut order = available.iter().map(|tab| _main_tab_to_str(*tab).to_string()).collect::<Vec<_>>();
-                                                        if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos > 1 { order.swap(pos, pos - 1); }
-                                                        next.order = order;
-                                                        save_dashboard_customization(&next);
-                                                        dashboard_customization.set(next);
-                                                    }
-                                                },
-                                                "↑"
-                                            }
-                                            button {
-                                                title: "Move later",
-                                                disabled: tab == MainTab::State,
-                                                style: "padding:3px 7px; border:1px solid {theme.button_border}; border-radius:7px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
-                                                onclick: {
-                                                    let mut dashboard_customization = dashboard_customization;
-                                                    let available = _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read());
-                                                    let tab_id = tab_id.clone();
-                                                    move |_| {
-                                                        let mut next = dashboard_customization.read().clone();
-                                                        let mut order = available.iter().map(|tab| _main_tab_to_str(*tab).to_string()).collect::<Vec<_>>();
-                                                        if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos + 1 < order.len() { order.swap(pos, pos + 1); }
-                                                        next.order = order;
-                                                        save_dashboard_customization(&next);
-                                                        dashboard_customization.set(next);
-                                                    }
-                                                },
-                                                "↓"
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
-                    }
-                }
+                            }
                                 }
                             }
-    }
+                        }
 
+                        // Header row 2
                         div {
-                            class: "gs26-status-shell",
-                            style: "background:{theme.button_background}; border:1px solid {theme.tab_shell_border};",
-                            div { class: "gs26-status-row",
-                                span { style: "color:{theme.text_soft};", {localized_copy(&language_snapshot, "Status:", "Estado:", "Statut:")} }
-                                span { class: "gs26-status-value", style: "{status_label_style}", "{status_label}" }
-                                button {
-                                    onclick:move |_|active_main_tab.set(MainTab::Errors),
-                                    "data-alert":if active_error_alert {"error"}else{"none"},
-                                    class: "gs26-status-count",
-                                    disabled:!has_errors,
-                                    "data-active": if has_errors { "true" } else { "false" },
-                                    style: "{errors_status_style}",
-                                    {format!("{}: {}", translate_text("Errors"), err_count_label)}
-                                }
-                                if active_warning_alert {
-                                button {
-                                    onclick:move |_|active_main_tab.set(MainTab::Warnings),
-                                    "data-alert":if active_warning_alert {"warning"}else{"none"},
-                                    class: "gs26-status-count",
-                                    disabled:!has_warnings,
-                                    "data-active": if has_warnings { "true" } else { "false" },
-                                    style: "{warnings_status_style}",
-                                    {format!("{}: {}", translate_text("Warnings"), warn_count_label)}
-                                }
-                                }
-                                if active_warning_alert {
-                                    warnings_tab::ClearWarningsButton {latest_warning_ts,ack_warning_ts}
-                                }
-                            }
-                            div { class: "gs26-status-flight", style: "color:{theme.info_text};",
-                                span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"Flight state\", \"Estado de vuelo\", \"Etat de vol\")}: " }
-                                span {
-                                    style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                    "{translate_text(&display_flight_state(&flight_state.read()))}"
-                                }
-                            }
-                            div { class: "gs26-status-network",
-                                NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
-                            }
-                            custom_dashboard::PinnedTelemetry {test_fire_mode:layout.test_fire_mode}
-                            div { class: "gs26-status-launch",
-                                LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
-                            }
-                        }
-                    }
+                            class: "gs26-header-secondary",
+                            style: "row-gap:3px;",
 
-                    }
-                    div {class:"gs26-page-content", style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
-                        div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
-                        div {id:"gs26-media-slot",style:if media_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
-                        match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
-                            MainTab::Checklists => rsx! {checklists::ChecklistsTab {theme:theme.clone()}},
-                            MainTab::State => rsx! {
-                                div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
-                                    custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:layout.test_fire_mode}
-                                    if *ground_station_view.read() && auth::can_view_actions() && flight_state.read().as_str() == "Aborted" {
-                                        gse_panel::ClearGseAbort {}
-                                    }
-                                    if *ground_station_view.read() && auth::can_view_actions() && (layout.test_fire_mode || gse_panel::ground_visible(&flight_state.read())) {
-                                        gse_panel::GsePanel {action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false}
-                                    }
-                                }
-                            },
-                            MainTab::ConnectionStatus => rsx! {
-                                div {
-                                    key: "connection-status-clear-{frontend_data_clear_epoch}",
-                                    style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
-                                    ConnectionStatusTab {
-                                        boards: board_status,
-                                        network_topology: network_topology,
-                                        ws_connected: *WS_CONNECTED_SIGNAL.read(),
-                                        expected_boards: layout.network_tab.expected_boards.clone(),
-                                        layout: layout.connection_tab.clone(),
-                                        title: _main_tab_label(&layout, MainTab::ConnectionStatus),
-                                        theme: theme.clone(),
-                                    }
-                                }
-                            },
-                            MainTab::Detailed => rsx! {
-                                DetailedTab {
-                                    metrics: frontend_network_metrics,
-                                    ws_connected: *WS_CONNECTED_SIGNAL.read(),
-                                    network_topology: network_topology,
-                                    flight_state: flight_state,
-                                    rocket_gps: rocket_gps,
-                                    user_gps: user_gps,
-                                    rocket_altitude_m: rocket_gps_altitude_m,
-                                    user_altitude_m: user_gps_altitude_m,
-                                    distance_units_metric: *distance_units_metric.read(),
-                                    warnings: warnings,
-                                    errors: errors,
-                                    notifications: notifications,
-                                    network_time: network_time,
-                                    cache_stats: cache_storage_stats_rows(),
-                                    theme: theme.clone(),
-                                }
-                            },
-                            MainTab::NetworkTopology => rsx! {
-                                div { key: "network-topology-clear-{frontend_data_clear_epoch}", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
-                                    NetworkTopologyTab {
-                                        topology: network_topology,
-                                        ws_connected: *WS_CONNECTED_SIGNAL.read(),
-                                        layout: layout.network_tab.clone(),
-                                        flow_animation_enabled: *network_flow_animation_enabled.read(),
-                                        vertical_layout: *network_topology_vertical.read(),
-                                        theme: theme.clone(),
-                                    }
-                                }
-                            },
-                            MainTab::Map => rsx! {
-                                MapTab {
-                                    rocket_gps: rocket_gps,
-                                    user_gps: user_gps,
-                                    user_location_manual: *user_location_manual.read(),
-                                    user_heading_manual: *user_heading_manual.read(),
-                                    rocket_altitude_m: Some(rocket_gps_altitude_m),
-                                    user_altitude_m: Some(user_gps_altitude_m),
-                                    show_header_distance: *map_header_distance_visible.read(),
-                                    show_header_altitude: *map_header_altitude_visible.read(),
-                                    distance_units_metric: *distance_units_metric.read(),
-                                    theme: theme.clone(),
-                                    title: _main_tab_label(&layout, MainTab::Map),
-                                }
-                            },
-                            MainTab::Actions => rsx! {
-                                div { style: "height:100%; width:100%; max-width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                ActionsTab {
-                                    layout: layout.actions_tab.clone(),
-                                    action_policy: action_policy,
-                                    recording_status: recording_status,
-                                    abort_only_mode: *abort_only_mode.read(),
-                                    theme: theme.clone(),
-                                }
-                                }
-                            },
-                            MainTab::FirmwareUpdate => rsx! {
-                                FirmwareUpdateTab { theme: theme.clone() }
-                            },
-                            MainTab::DataExport => rsx! {
-                                div { class: "gs26-export-scroll", style: "height:100%;min-height:0;min-width:0;overflow:auto;box-sizing:border-box;overscroll-behavior:contain;",
-                                    recording_download::RecordingDownloads { theme: theme.clone() }
-                                }
-                            },
-                            MainTab::Calibration => rsx! {
-                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    CalibrationTab {
-                                        theme: theme.clone(),
-                                        can_edit: auth::can_edit_calibration(),
-                                        capture_sample_count: *calibration_capture_sample_count.read(),
-                                    }
-                                }
-                            },
-                            MainTab::CrewVoice | MainTab::Media => rsx! {},
-                            MainTab::Mission | MainTab::StreamManager => rsx! {
-                                LiveStreamTab {
-                                    key: "broadcast-{_main_tab_to_str(*active_main_tab.read())}",
-                                    manager_mode: *active_main_tab.read() == MainTab::StreamManager,
-                                    on_open_voice: move |_| open_dashboard_tool(MainTab::CrewVoice, active_main_tab, dashboard_customization),
-                                    on_open_media: move |_| open_dashboard_tool(MainTab::Media, active_main_tab, dashboard_customization),
-                                    theme: theme.clone(),
-                                    program_only: *streamer_mode.read(),
-                                }
-                            },
-                            MainTab::Vehicle => rsx! {
-                                VehicleTab {
-                                    theme: theme.clone(),
-                                }
-                            },
-                            MainTab::Messages => rsx! {
-                                div { key: "messages-clear-{frontend_data_clear_epoch}", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    MessagesTab {
-                                        history: message_history,
-                                        theme: theme.clone(),
-                                    }
-                                }
-                            },
-                            MainTab::Notifications => rsx! {
-                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    NotificationsTab {
-                                        history: notification_history,
-                                        theme: theme.clone(),
-                                        on_clear: {
-                                            let notifications = notifications;
-                                            let notification_history = notification_history;
-                                            let dismissed_notifications = dismissed_notifications;
-                                            let unread_notification_ids = unread_notification_ids;
-                                            move |_| {
-                                                clear_all_notifications_local_and_remote(
-                                                    notifications,
-                                                    notification_history,
-                                                    dismissed_notifications,
-                                                    unread_notification_ids,
-                                                );
+                            div {
+                                class: "gs26-tab-picker-shell",
+                                style: "position:absolute;left:0;top:0;width:100%;min-width:0;height:0;z-index:2100;",
+                                if *tabs_expanded.read() || *dashboard_edit_mode.read() {
+                                    div {
+                                        id: "dashboard-tab-picker-panel",
+                                        style:"position:absolute;top:0;left:0;width:min(820px,100%);max-height:70vh;overflow:auto;box-sizing:border-box;padding:10px;border:1px solid {theme.tab_shell_border};border-radius:10px;background:{theme.tab_shell_background};box-shadow:0 12px 32px rgba(0,0,0,0.45);",
+                                        div { style: "display:flex;align-items:center;justify-content:flex-end;gap:8px;",
+                                            button {
+                                                style: "min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid {theme.button_border};background:{theme.button_background};color:{theme.button_text};cursor:pointer;",
+                                                onclick: {
+                                                    let mut editing = dashboard_edit_mode;
+                                                    move |_| {
+                                                        let next = !*editing.read();
+                                                        editing.set(next);
+                                                        tabs_expanded.set(false);
+                                                    }
+                                                },
+                                                if *dashboard_edit_mode.read() { "Done editing" } else { "Organize tabs" }
+                                            }
+                                        }
+                                if *tabs_expanded.read() {
+                                    nav { id: "dashboard-tab-picker", "aria-label": "Dashboard tabs",
+                                        style: "display:grid;grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr));gap:8px;width:100%;padding-top:10px;",
+                                        for tab in _configured_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()) {
+                                            button {
+                                                key: "main-tab-{_main_tab_to_str(tab)}",
+                                                "data-alert":if tab==MainTab::Warnings && active_warning_alert {"warning"}else if tab==MainTab::Errors && active_error_alert {"error"}else{"none"},
+                                                "aria-current": if *active_main_tab.read() == tab { "page" } else { "false" },
+                                                style: if *active_main_tab.read() == tab { tab_style_active(&main_tab_accent(_main_tab_to_str(tab), "#38bdf8")) } else { tab_style_inactive.clone() },
+                                                onclick: move |_| { active_main_tab.set(tab); tabs_expanded.set(false); },
+                                                "{_main_tab_label(&layout, tab)}"
+                                                if tab == MainTab::Warnings { span { style:"{warnings_tab_icon_style}", " ⚠" } }
+                                                if tab == MainTab::Errors { span { style:"{errors_tab_icon_style}", " ⛔" } }
+                                                if tab == MainTab::Notifications { span { style:"{notifications_tab_icon_style}", " ●" } }
                                             }
                                         }
                                     }
                                 }
-                            },
-                            MainTab::Warnings => rsx! {
-                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    WarningsTab {
-                                        warnings,
-                                        ack_warning_ts,
-                                        theme: theme.clone(),
-                                    }
+                    if *dashboard_edit_mode.read() {
+                        div {
+                            style: "flex:1 0 100%; max-height:55vh;overflow:auto;display:flex; flex-direction:column; gap:8px; margin-top:10px; padding:10px; box-sizing:border-box; border:1px dashed {theme.info_accent}; border-radius:12px; background:{theme.info_background};",
+                            div { style: "display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;",
+                                div {
+                                    div { style: "font-size:13px; font-weight:800; color:{theme.info_text};", "Tabs and header" }
+                                    div { style: "font-size:11px; color:{theme.text_muted};", "Saved for your account and this Ground Station on this device." }
                                 }
-                            },
-                            MainTab::Errors => rsx! {
-                                div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    ErrorsTab {
-                                        errors: errors,
-                                        ack_timestamp_ms: *ack_error_ts.read(),
-                                        theme: theme.clone(),
-                                        on_ack: {
-                                            let mut ack_warning_ts = ack_warning_ts;
-                                            let mut ack_error_ts = ack_error_ts;
-                                            let latest_warning_ts = latest_warning_ts;
-                                            let latest_error_ts = latest_error_ts;
-                                            let remote_alert_acks_enabled = remote_alert_acks_enabled;
-                                            move |_| {
-                                                if *remote_alert_acks_enabled.read() {
-                                                    ack_warning_ts.set(latest_warning_ts);
-                                                    ack_error_ts.set(latest_error_ts);
-                                                    spawn(async move {
-                                                        let _ = post_remote_alert_ack(
-                                                            latest_warning_ts,
-                                                            latest_error_ts,
-                                                        )
-                                                        .await;
-                                                    });
-                                                } else {
-                                                    ack_error_ts.set(latest_error_ts);
+                                button {
+                                    style: "padding:5px 9px; border:1px solid {theme.button_border}; border-radius:9px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
+                                    onclick: {
+                                        let mut dashboard_customization = dashboard_customization;
+                                        move |_| {
+                                            let next = DashboardCustomization::default();
+                                            save_dashboard_customization(&next);
+                                            dashboard_customization.set(next);
+                                        }
+                                    },
+                                    "Reset tab layout"
+                                }
+                            }
+                            custom_dashboard::HeaderPinSettings {}
+                            button { onclick: { let mut editing = dashboard_edit_mode; move |_| { open_dashboard_tool(MainTab::State, active_main_tab, dashboard_customization); editing.set(false); tabs_expanded.set(false); } }, "Edit dashboard cards and content" }
+                            h3 { "Visible tabs and order" }
+                            div { style: "display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:6px;",
+                                for (index, tab) in _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read()).into_iter().enumerate() {
+                                    {
+                                        let tab_id = _main_tab_to_str(tab).to_string();
+                                        let visible = !dashboard_customization.read().hidden.contains(&tab_id);
+                                        rsx! {
+                                            div { style: "display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:5px; padding:7px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background_alt};",
+                                                label { style: "display:flex; align-items:center; gap:7px; min-width:0; font-size:12px;",
+                                                    input {
+                                                        r#type: "checkbox",
+                                                        checked: visible || tab == MainTab::State,
+                                                        disabled: tab == MainTab::State,
+                                                        onchange: {
+                                                            let mut dashboard_customization = dashboard_customization;
+                                                            let tab_id = tab_id.clone();
+                                                            move |event| {
+                                                                let mut next = dashboard_customization.read().clone();
+                                                                next.hidden.retain(|id| id != &tab_id);
+                                                                if !event.checked() { next.hidden.push(tab_id.clone()); }
+                                                                save_dashboard_customization(&next);
+                                                                dashboard_customization.set(next);
+                                                            }
+                                                        }
+                                                    }
+                                                    span { style: "overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{_main_tab_label(&layout, tab)}" }
+                                                }
+                                                button {
+                                                    title: "Move earlier",
+                                                    disabled: index <= 1,
+                                                    style: "padding:3px 7px; border:1px solid {theme.button_border}; border-radius:7px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
+                                                    onclick: {
+                                                        let mut dashboard_customization = dashboard_customization;
+                                                        let available = _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read());
+                                                        let tab_id = tab_id.clone();
+                                                        move |_| {
+                                                            let mut next = dashboard_customization.read().clone();
+                                                            let mut order = available.iter().map(|tab| _main_tab_to_str(*tab).to_string()).collect::<Vec<_>>();
+                                                            if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos > 1 { order.swap(pos, pos - 1); }
+                                                            next.order = order;
+                                                            save_dashboard_customization(&next);
+                                                            dashboard_customization.set(next);
+                                                        }
+                                                    },
+                                                    "↑"
+                                                }
+                                                button {
+                                                    title: "Move later",
+                                                    disabled: tab == MainTab::State,
+                                                    style: "padding:3px 7px; border:1px solid {theme.button_border}; border-radius:7px; background:{theme.button_background}; color:{theme.button_text}; cursor:pointer;",
+                                                    onclick: {
+                                                        let mut dashboard_customization = dashboard_customization;
+                                                        let available = _ordered_available_main_tabs(&layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read());
+                                                        let tab_id = tab_id.clone();
+                                                        move |_| {
+                                                            let mut next = dashboard_customization.read().clone();
+                                                            let mut order = available.iter().map(|tab| _main_tab_to_str(*tab).to_string()).collect::<Vec<_>>();
+                                                            if let Some(pos) = order.iter().position(|id| id == &tab_id) && pos + 1 < order.len() { order.swap(pos, pos + 1); }
+                                                            next.order = order;
+                                                            save_dashboard_customization(&next);
+                                                            dashboard_customization.set(next);
+                                                        }
+                                                    },
+                                                    "↓"
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            },
-                            MainTab::Data => rsx! {
-                                DataTab {
-                                    active_tab: active_data_tab,
-                                    fill_targets,
-                                    layout: layout.data_tab.clone(),
-                                    state_chart_labels_vertical: *state_chart_labels_vertical.read(),
-                                    theme: theme.clone(),
-                                }
-                            },
+                            }
                         }
                     }
-                }
-                }
-                if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && *active_main_tab.read()!=MainTab::Warnings {
-                    aside {role:"alert",class:"gs26-warning-toast gs26-message-card",style:"font-family:{dashboard_font_stack};position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
-                        div {class:"gs26-message-body",style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
-                        button {style:"font-family:inherit;",onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
-                        button {style:"font-family:inherit;","aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
-                    }
-                }
-                if *active_main_tab.read() != MainTab::Notifications && !notifications.read().is_empty() {
-                    div {
-                        class:"gs26-notification-stack",
-                        style: "position:fixed; top:88px; right:16px; z-index:2000; width:min(420px, calc(100vw - 32px)); max-height:min(40vh, 280px); display:flex; flex-direction:column; gap:8px; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; pointer-events:none; font-family:{dashboard_font_stack};",
-                        for n in notifications.read().iter() {
-                            div {
-                                class:"gs26-message-card",
-                                style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0; box-shadow:0 16px 40px rgba(0,0,0,0.35); pointer-events:auto; font-family:{dashboard_font_stack};",
-                                span { class:"gs26-message-body", style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
-                                if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
-                                    && auth::can_send_command(action_cmd)
-                                {
-                                    button {
-                                        style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer; touch-action:manipulation;",
-                                        onmousedown: {
-                                            let cmd = action_cmd.to_string();
-                                            move |_| {
-                                                send_cmd_from_press(&cmd);
-                                            }
-                                        },
-                                        ontouchstart: {
-                                            let cmd = action_cmd.to_string();
-                                            move |_| {
-                                                send_cmd_from_press(&cmd);
-                                            }
-                                        },
-                                        onclick: {
-                                            let cmd = action_cmd.to_string();
-                                            move |_| {
-                                                send_cmd_from_click(&cmd);
-                                            }
-                                        },
-                                        {translate_text(action_label)}
                                     }
                                 }
-                                button {
-                                    style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer;",
-                                    onclick: {
-                                        let id = n.id;
-                                        let ts = n.timestamp_ms;
-                                        let mut notifications = notifications;
-                                        let mut dismissed_notifications = dismissed_notifications;
-                                        let mut unread_notification_ids = unread_notification_ids;
-                                        move |_| {
-                                            let mut v = notifications.read().clone();
-                                            v.retain(|x| x.id != id);
-                                            notifications.set(v);
-                                            let mut unread = unread_notification_ids.read().clone();
-                                            unread.retain(|x| *x != id);
-                                            unread_notification_ids.set(unread);
-                                            let mut ids = dismissed_notifications.read().clone();
-                                            let item = DismissedNotification {
-                                                id,
-                                                timestamp_ms: ts,
-                                            };
-                                            if !ids.contains(&item) {
-                                                ids.push(item);
-                                                ids.sort_by_key(|x| (x.id, x.timestamp_ms));
-                                                dismissed_notifications.set(ids.clone());
-                                                persist_dismissed_notifications(&ids);
-                                            }
+        }
 
+                            div {
+                                class: "gs26-status-shell",
+                                style: "background:{theme.button_background}; border:1px solid {theme.tab_shell_border};",
+                                div { class: "gs26-status-row",
+                                    span { style: "color:{theme.text_soft};", {localized_copy(&language_snapshot, "Status:", "Estado:", "Statut:")} }
+                                    span { class: "gs26-status-value", style: "{status_label_style}", "{status_label}" }
+                                    button {
+                                        onclick:move |_|active_main_tab.set(MainTab::Errors),
+                                        "data-alert":if active_error_alert {"error"}else{"none"},
+                                        class: "gs26-status-count",
+                                        disabled:!has_errors,
+                                        "data-active": if has_errors { "true" } else { "false" },
+                                        style: "{errors_status_style}",
+                                        {format!("{}: {}", translate_text("Errors"), err_count_label)}
+                                    }
+                                    if active_warning_alert {
+                                    button {
+                                        onclick:move |_|active_main_tab.set(MainTab::Warnings),
+                                        "data-alert":if active_warning_alert {"warning"}else{"none"},
+                                        class: "gs26-status-count",
+                                        disabled:!has_warnings,
+                                        "data-active": if has_warnings { "true" } else { "false" },
+                                        style: "{warnings_status_style}",
+                                        {format!("{}: {}", translate_text("Warnings"), warn_count_label)}
+                                    }
+                                    }
+                                    if active_warning_alert {
+                                        warnings_tab::ClearWarningsButton {latest_warning_ts,ack_warning_ts}
+                                    }
+                                }
+                                div { class: "gs26-status-flight", style: "color:{theme.info_text};",
+                                    span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"Flight state\", \"Estado de vuelo\", \"Etat de vol\")}: " }
+                                    span {
+                                        style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                        "{translate_text(&display_flight_state(&flight_state.read()))}"
+                                    }
+                                }
+                                div { class: "gs26-status-network",
+                                    NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
+                                }
+                                custom_dashboard::PinnedTelemetry {test_fire_mode:layout.test_fire_mode}
+                                div { class: "gs26-status-launch",
+                                    LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
+                                }
+                            }
+                        }
+
+                        }
+                        div {class:"gs26-page-content", style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
+                            div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
+                            div {id:"gs26-media-slot",style:if media_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
+                            match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
+                                MainTab::Checklists => rsx! {checklists::ChecklistsTab {theme:theme.clone()}},
+                                MainTab::State => rsx! {
+                                    div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
+                                        custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:layout.test_fire_mode}
+                                        if *ground_station_view.read() && auth::can_view_actions() && flight_state.read().as_str() == "Aborted" {
+                                            gse_panel::ClearGseAbort {}
                                         }
-                                    },
-                                    {translate_text("Dismiss")}
+                                        if *ground_station_view.read() && auth::can_view_actions() && (layout.test_fire_mode || gse_panel::ground_visible(&flight_state.read())) {
+                                            gse_panel::GsePanel {action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false}
+                                        }
+                                    }
+                                },
+                                MainTab::ConnectionStatus => rsx! {
+                                    div {
+                                        key: "connection-status-clear-{frontend_data_clear_epoch}",
+                                        style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
+                                        ConnectionStatusTab {
+                                            boards: board_status,
+                                            network_topology: network_topology,
+                                            ws_connected: *WS_CONNECTED_SIGNAL.read(),
+                                            expected_boards: layout.network_tab.expected_boards.clone(),
+                                            layout: layout.connection_tab.clone(),
+                                            title: _main_tab_label(&layout, MainTab::ConnectionStatus),
+                                            theme: theme.clone(),
+                                        }
+                                    }
+                                },
+                                MainTab::Detailed => rsx! {
+                                    DetailedTab {
+                                        metrics: frontend_network_metrics,
+                                        ws_connected: *WS_CONNECTED_SIGNAL.read(),
+                                        network_topology: network_topology,
+                                        flight_state: flight_state,
+                                        rocket_gps: rocket_gps,
+                                        user_gps: user_gps,
+                                        rocket_altitude_m: rocket_gps_altitude_m,
+                                        user_altitude_m: user_gps_altitude_m,
+                                        distance_units_metric: *distance_units_metric.read(),
+                                        warnings: warnings,
+                                        errors: errors,
+                                        notifications: notifications,
+                                        network_time: network_time,
+                                        cache_stats: cache_storage_stats_rows(),
+                                        theme: theme.clone(),
+                                    }
+                                },
+                                MainTab::NetworkTopology => rsx! {
+                                    div { key: "network-topology-clear-{frontend_data_clear_epoch}", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
+                                        NetworkTopologyTab {
+                                            topology: network_topology,
+                                            ws_connected: *WS_CONNECTED_SIGNAL.read(),
+                                            layout: layout.network_tab.clone(),
+                                            flow_animation_enabled: *network_flow_animation_enabled.read(),
+                                            vertical_layout: *network_topology_vertical.read(),
+                                            theme: theme.clone(),
+                                        }
+                                    }
+                                },
+                                MainTab::Map => rsx! {
+                                    MapTab {
+                                        rocket_gps: rocket_gps,
+                                        user_gps: user_gps,
+                                        user_location_manual: *user_location_manual.read(),
+                                        user_heading_manual: *user_heading_manual.read(),
+                                        rocket_altitude_m: Some(rocket_gps_altitude_m),
+                                        user_altitude_m: Some(user_gps_altitude_m),
+                                        show_header_distance: *map_header_distance_visible.read(),
+                                        show_header_altitude: *map_header_altitude_visible.read(),
+                                        distance_units_metric: *distance_units_metric.read(),
+                                        theme: theme.clone(),
+                                        title: _main_tab_label(&layout, MainTab::Map),
+                                    }
+                                },
+                                MainTab::Actions => rsx! {
+                                    div { style: "height:100%; width:100%; max-width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                    ActionsTab {
+                                        layout: layout.actions_tab.clone(),
+                                        action_policy: action_policy,
+                                        recording_status: recording_status,
+                                        abort_only_mode: *abort_only_mode.read(),
+                                        theme: theme.clone(),
+                                    }
+                                    }
+                                },
+                                MainTab::FirmwareUpdate => rsx! {
+                                    FirmwareUpdateTab { theme: theme.clone() }
+                                },
+                                MainTab::DataExport => rsx! {
+                                    div { class: "gs26-export-scroll", style: "height:100%;min-height:0;min-width:0;overflow:auto;box-sizing:border-box;overscroll-behavior:contain;",
+                                        recording_download::RecordingDownloads { theme: theme.clone() }
+                                    }
+                                },
+                                MainTab::Calibration => rsx! {
+                                    div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                        CalibrationTab {
+                                            theme: theme.clone(),
+                                            can_edit: auth::can_edit_calibration(),
+                                            capture_sample_count: *calibration_capture_sample_count.read(),
+                                        }
+                                    }
+                                },
+                                MainTab::CrewVoice | MainTab::Media => rsx! {},
+                                MainTab::Mission | MainTab::StreamManager => rsx! {
+                                    LiveStreamTab {
+                                        key: "broadcast-{_main_tab_to_str(*active_main_tab.read())}",
+                                        manager_mode: *active_main_tab.read() == MainTab::StreamManager,
+                                        on_open_voice: move |_| open_dashboard_tool(MainTab::CrewVoice, active_main_tab, dashboard_customization),
+                                        on_open_media: move |_| open_dashboard_tool(MainTab::Media, active_main_tab, dashboard_customization),
+                                        theme: theme.clone(),
+                                        program_only: *streamer_mode.read(),
+                                    }
+                                },
+                                MainTab::Vehicle => rsx! {
+                                    VehicleTab {
+                                        theme: theme.clone(),
+                                    }
+                                },
+                                MainTab::Messages => rsx! {
+                                    div { key: "messages-clear-{frontend_data_clear_epoch}", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                        MessagesTab {
+                                            history: message_history,
+                                            theme: theme.clone(),
+                                        }
+                                    }
+                                },
+                                MainTab::Notifications => rsx! {
+                                    div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                        NotificationsTab {
+                                            history: notification_history,
+                                            theme: theme.clone(),
+                                            on_clear: {
+                                                let notifications = notifications;
+                                                let notification_history = notification_history;
+                                                let dismissed_notifications = dismissed_notifications;
+                                                let unread_notification_ids = unread_notification_ids;
+                                                move |_| {
+                                                    clear_all_notifications_local_and_remote(
+                                                        notifications,
+                                                        notification_history,
+                                                        dismissed_notifications,
+                                                        unread_notification_ids,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                MainTab::Warnings => rsx! {
+                                    div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                        WarningsTab {
+                                            warnings,
+                                            ack_warning_ts,
+                                            theme: theme.clone(),
+                                        }
+                                    }
+                                },
+                                MainTab::Errors => rsx! {
+                                    div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                        ErrorsTab {
+                                            errors: errors,
+                                            ack_timestamp_ms: *ack_error_ts.read(),
+                                            theme: theme.clone(),
+                                            on_ack: {
+                                                let mut ack_warning_ts = ack_warning_ts;
+                                                let mut ack_error_ts = ack_error_ts;
+                                                let latest_warning_ts = latest_warning_ts;
+                                                let latest_error_ts = latest_error_ts;
+                                                let remote_alert_acks_enabled = remote_alert_acks_enabled;
+                                                move |_| {
+                                                    if *remote_alert_acks_enabled.read() {
+                                                        ack_warning_ts.set(latest_warning_ts);
+                                                        ack_error_ts.set(latest_error_ts);
+                                                        spawn(async move {
+                                                            let _ = post_remote_alert_ack(
+                                                                latest_warning_ts,
+                                                                latest_error_ts,
+                                                            )
+                                                            .await;
+                                                        });
+                                                    } else {
+                                                        ack_error_ts.set(latest_error_ts);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                MainTab::Data => rsx! {
+                                    DataTab {
+                                        active_tab: active_data_tab,
+                                        fill_targets,
+                                        layout: layout.data_tab.clone(),
+                                        state_chart_labels_vertical: *state_chart_labels_vertical.read(),
+                                        theme: theme.clone(),
+                                    }
+                                },
+                            }
+                        }
+                    }
+                    }
+                    if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && *active_main_tab.read()!=MainTab::Warnings {
+                        aside {role:"alert",class:"gs26-warning-toast gs26-message-card",style:"font-family:{dashboard_font_stack};position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
+                            div {class:"gs26-message-body",style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
+                            button {style:"font-family:inherit;",onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
+                            button {style:"font-family:inherit;","aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
+                        }
+                    }
+                    if *active_main_tab.read() != MainTab::Notifications && !notifications.read().is_empty() {
+                        div {
+                            class:"gs26-notification-stack",
+                            style: "position:fixed; top:88px; right:16px; z-index:2000; width:min(420px, calc(100vw - 32px)); max-height:min(40vh, 280px); display:flex; flex-direction:column; gap:8px; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; pointer-events:none; font-family:{dashboard_font_stack};",
+                            for n in notifications.read().iter() {
+                                div {
+                                    class:"gs26-message-card",
+                                    style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0; box-shadow:0 16px 40px rgba(0,0,0,0.35); pointer-events:auto; font-family:{dashboard_font_stack};",
+                                    span { class:"gs26-message-body", style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
+                                    if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
+                                        && auth::can_send_command(action_cmd)
+                                    {
+                                        button {
+                                            style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer; touch-action:manipulation;",
+                                            onmousedown: {
+                                                let cmd = action_cmd.to_string();
+                                                move |_| {
+                                                    send_cmd_from_press(&cmd);
+                                                }
+                                            },
+                                            ontouchstart: {
+                                                let cmd = action_cmd.to_string();
+                                                move |_| {
+                                                    send_cmd_from_press(&cmd);
+                                                }
+                                            },
+                                            onclick: {
+                                                let cmd = action_cmd.to_string();
+                                                move |_| {
+                                                    send_cmd_from_click(&cmd);
+                                                }
+                                            },
+                                            {translate_text(action_label)}
+                                        }
+                                    }
+                                    button {
+                                        style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer;",
+                                        onclick: {
+                                            let id = n.id;
+                                            let ts = n.timestamp_ms;
+                                            let mut notifications = notifications;
+                                            let mut dismissed_notifications = dismissed_notifications;
+                                            let mut unread_notification_ids = unread_notification_ids;
+                                            move |_| {
+                                                let mut v = notifications.read().clone();
+                                                v.retain(|x| x.id != id);
+                                                notifications.set(v);
+                                                let mut unread = unread_notification_ids.read().clone();
+                                                unread.retain(|x| *x != id);
+                                                unread_notification_ids.set(unread);
+                                                let mut ids = dismissed_notifications.read().clone();
+                                                let item = DismissedNotification {
+                                                    id,
+                                                    timestamp_ms: ts,
+                                                };
+                                                if !ids.contains(&item) {
+                                                    ids.push(item);
+                                                    ids.sort_by_key(|x| (x.id, x.timestamp_ms));
+                                                    dismissed_notifications.set(ids.clone());
+                                                    persist_dismissed_notifications(&ids);
+                                                }
+
+                                            }
+                                        },
+                                        {translate_text("Dismiss")}
+                                    }
                                 }
                             }
                         }
                     }
+                    {settings_overlay}
+                    {version_overlay}
                 }
-                {settings_overlay}
-                {version_overlay}
-            }
     })();
     rsx! {media_tool_tab::MediaSurface {media_visible,voice_visible,stream_visible:surface_stream,{view}} command_confirmation::CommandConfirmation {}}
 }
@@ -4104,18 +4182,30 @@ fn log(msg: &str) {
 /// This is explicitly an execution request, independent of stale presentation policy.
 /// The primary performs current permissions/interlocks; no local execution is possible.
 pub(super) fn request_primary_command(cmd: &str) {
-    if !auth::command_uses_primary_proxy(&auth::current_status(), cmd) || !auth::can_send_command(cmd) { return; }
+    if !auth::command_uses_primary_proxy(&auth::current_status(), cmd)
+        || !auth::can_send_command(cmd)
+    {
+        return;
+    }
     confirm_command_dispatch(cmd, send_primary_request);
 }
 fn send_primary_request(cmd: &str) {
-    if !auth::command_uses_primary_proxy(&auth::current_status(), cmd) || !auth::can_send_command(cmd) { return; }
+    if !auth::command_uses_primary_proxy(&auth::current_status(), cmd)
+        || !auth::can_send_command(cmd)
+    {
+        return;
+    }
     let command = cmd.to_owned();
     let base = UrlConfig::base_http();
     let token = auth::current_token();
-    *COMMAND_PROXY_MESSAGE.write() = Some(format!("{command}: submitting to RRLS; primary acceptance is pending."));
+    *COMMAND_PROXY_MESSAGE.write() = Some(format!(
+        "{command}: submitting to RRLS; primary acceptance is pending."
+    ));
     spawn(async move {
         let result = http_post_json::<_, auth::CommandProxyStatus>("/api/command", &command).await;
-        if UrlConfig::base_http() != base || auth::current_token() != token { return; }
+        if UrlConfig::base_http() != base || auth::current_token() != token {
+            return;
+        }
         match result {
             Ok(status) => {
                 // HTTP 202 acknowledges local admission only. Never change actuated here.
@@ -4127,7 +4217,9 @@ fn send_primary_request(cmd: &str) {
             }
             Err(error) => {
                 *COMMAND_PROXY_MESSAGE.write() = None;
-                *COMMAND_SEND_ERROR.write() = Some(format!("{command}: primary request was not admitted: {error}"));
+                *COMMAND_SEND_ERROR.write() = Some(format!(
+                    "{command}: primary request was not admitted: {error}"
+                ));
                 clear_command_feedback_latches();
             }
         }

@@ -1,3 +1,11 @@
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "native_session_channel_tests.rs"]
+mod native_session_channel_tests;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "native_session.rs"]
+mod native_session;
+
 // HTTP seeding, notification synchronization, WebSocket transport, and JS bridges.
 
 fn ws_activity_expired(elapsed_ms: f64) -> bool {
@@ -178,10 +186,22 @@ mod history_clock_tests {
 
     #[test]
     fn old_future_display_seed_is_excluded_without_rewriting_raw_timestamps() {
-        let row = |timestamp_ms| TelemetryRow {source_timestamp_ms: None, timestamp_ms, received_timestamp_ms:timestamp_ms, data_type:"KG50".into(), sender_id:"DAQ".into(), data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(1.0)]};
+        let row = |timestamp_ms| TelemetryRow {
+            source_timestamp_ms: None,
+            timestamp_ms,
+            received_timestamp_ms: timestamp_ms,
+            data_type: "KG50".into(),
+            sender_id: "DAQ".into(),
+            data_type_id: Default::default(),
+            sender_id_id: Default::default(),
+            values: vec![Some(1.0)],
+        };
         let mut rows = vec![row(900), row(1_000), row(2_001), row(900_000)];
         discard_future_display_history(&mut rows, 1_000);
-        assert_eq!(rows.iter().map(|row|row.timestamp_ms).collect::<Vec<_>>(), vec![900,1_000]);
+        assert_eq!(
+            rows.iter().map(|row| row.timestamp_ms).collect::<Vec<_>>(),
+            vec![900, 1_000]
+        );
     }
 
     #[test]
@@ -190,7 +210,8 @@ mod history_clock_tests {
         let client_now = server_now + 86_400_000;
         let mut rows: Vec<TelemetryRow> = (0..=600)
             .map(|second| TelemetryRow {
-                source_timestamp_ms: None, timestamp_ms: server_now - 600_000 + second * 1000,
+                source_timestamp_ms: None,
+                timestamp_ms: server_now - 600_000 + second * 1000,
                 received_timestamp_ms: 0,
                 data_type: "KG1000".into(),
                 sender_id: "DAQ".into(),
@@ -664,7 +685,6 @@ fn dismiss_all_active_notifications_local(
         dismissed_notifications.set(ids.clone());
         persist_dismissed_notifications(&ids);
     }
-
 }
 
 fn clear_all_notifications_local_and_remote(
@@ -719,21 +739,42 @@ mod notification_replay_tests {
     #[test]
     fn only_live_events_create_popups_even_for_legacy_persistent_flags() {
         let mut notice = PersistentNotification {
-            id:42, timestamp_ms:1000, message:"T clock reset".into(),
-            persistent:false, action_label:None, action_cmd:None,
+            id: 42,
+            timestamp_ms: 1000,
+            message: "T clock reset".into(),
+            persistent: false,
+            action_label: None,
+            action_cmd: None,
         };
         let empty = HashSet::new();
         let seen = HashSet::from([notification_identity(&notice)]);
         for persistent in [false, true] {
             notice.persistent = persistent;
-            assert!(!notification_visible_on_snapshot(&notice, &empty, &empty, false), "first load and new clients restore only history");
-            assert!(!notification_visible_on_snapshot(&notice, &seen, &empty, false), "reconnects never replay popups");
-            assert!(notification_visible_on_snapshot(&notice, &empty, &empty, true), "new live events appear");
-            assert!(!notification_visible_on_snapshot(&notice, &seen, &empty, true), "duplicate live events do not replay");
-            assert!(!notification_visible_on_snapshot(&notice, &empty, &seen, true), "dismissed events stay dismissed");
+            assert!(
+                !notification_visible_on_snapshot(&notice, &empty, &empty, false),
+                "first load and new clients restore only history"
+            );
+            assert!(
+                !notification_visible_on_snapshot(&notice, &seen, &empty, false),
+                "reconnects never replay popups"
+            );
+            assert!(
+                notification_visible_on_snapshot(&notice, &empty, &empty, true),
+                "new live events appear"
+            );
+            assert!(
+                !notification_visible_on_snapshot(&notice, &seen, &empty, true),
+                "duplicate live events do not replay"
+            );
+            assert!(
+                !notification_visible_on_snapshot(&notice, &empty, &seen, true),
+                "dismissed events stay dismissed"
+            );
         }
         notice.timestamp_ms += 1;
-        assert!(notification_visible_on_snapshot(&notice, &seen, &empty, true));
+        assert!(notification_visible_on_snapshot(
+            &notice, &seen, &empty, true
+        ));
     }
 
     #[test]
@@ -789,13 +830,19 @@ fn apply_notifications_snapshot(
         .unwrap_or_default();
     let dismissed: HashSet<_> = dismissed_notifications.read().iter().copied().collect();
     let mut unique = HashSet::new();
-    let mut active: Vec<PersistentNotification> = notifications.read().iter()
+    let mut active: Vec<PersistentNotification> = notifications
+        .read()
+        .iter()
         .filter(|n| !dismissed.contains(&notification_identity(n)))
-        .cloned().collect();
-    active.extend(incoming.iter()
-        .filter(|n| unique.insert(notification_identity(n)))
-        .filter(|n| notification_visible_on_snapshot(n, &seen, &dismissed, live_event))
-        .cloned());
+        .cloned()
+        .collect();
+    active.extend(
+        incoming
+            .iter()
+            .filter(|n| unique.insert(notification_identity(n)))
+            .filter(|n| notification_visible_on_snapshot(n, &seen, &dismissed, live_event))
+            .cloned(),
+    );
     let mut remembered = seen.clone();
     remembered.extend(incoming.iter().map(notification_identity));
     if remembered != seen {
@@ -892,7 +939,6 @@ fn apply_notifications_snapshot(
                 dismissed_notifications.set(ids.clone());
                 persist_dismissed_notifications(&ids);
             }
-
         });
     }
 }
@@ -1146,10 +1192,11 @@ async fn seed_from_db(
         apply_messages_snapshot(list, *message_history);
     }
 
-    if let Ok(policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await
+    if let Ok(mut policy) = http_get_json::<ActionPolicyMsg>("/api/action_policy").await
         && alive.load(Ordering::Relaxed)
     {
         clear_command_feedback_latches();
+        BOARD_ABORT_SIGNAL.read().constrain_launch_policy(&mut policy);
         action_policy.set(policy);
     }
 
@@ -1365,11 +1412,13 @@ async fn connect_ws_supervisor(
         if last_station_sweep.elapsed() >= std::time::Duration::from_secs(5) {
             last_station_sweep = std::time::Instant::now();
             if let Some(mut session) = auth::current_session()
-                && let Some((base,status)) = crate::native_station::find(&session,UrlConfig::_skip_tls_verify()).await
-                && alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch
+                && let Some((base, status)) =
+                    crate::native_station::find(&session, UrlConfig::_skip_tls_verify()).await
+                && alive.load(Ordering::Relaxed)
+                && *WS_EPOCH.read() == epoch
             {
                 let skip_tls = UrlConfig::_skip_tls_verify();
-                UrlConfig::_set_skip_tls_verify_for_base(&base,skip_tls);
+                UrlConfig::_set_skip_tls_verify_for_base(&base, skip_tls);
                 auth::init_from_storage(&base);
                 session.session = status;
                 auth::set_current_session(session);
@@ -1442,7 +1491,10 @@ async fn connect_ws_once_wasm(
     let base_ws = UrlConfig::base_ws();
     let ws_url = auth_ws_url(&base_ws);
 
-    log!("[WS] connecting to {} (epoch={epoch})", network_metrics::redact_ws_url_for_display(&ws_url));
+    log!(
+        "[WS] connecting to {} (epoch={epoch})",
+        network_metrics::redact_ws_url_for_display(&ws_url)
+    );
 
     let ws = WebSocket::new(&ws_url).map_err(|_| "failed to create websocket".to_string())?;
     let last_activity_ms = std::rc::Rc::new(std::cell::Cell::new(monotonic_now_ms()));
@@ -1478,9 +1530,10 @@ async fn connect_ws_once_wasm(
             }
             last_activity_ms.set(monotonic_now_ms());
             if let Some(s) = e.data().as_string()
-                && !queue_live_telemetry_from_ws_message(&s) {
-                    queue_ws_message_event(epoch, s);
-                }
+                && !queue_live_telemetry_from_ws_message(&s)
+            {
+                queue_ws_message_event(epoch, s);
+            }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     }
@@ -1720,14 +1773,24 @@ async fn connect_ws_once_native(
     }
 
     let base_ws = UrlConfig::base_ws();
+    let owner = native_session::Owner::new(epoch, base_ws.clone(), auth::current_token());
+    let owns_session = || owner.is_current(
+        alive.load(Ordering::Relaxed),
+        *WS_EPOCH.peek(),
+        &UrlConfig::base_ws(),
+        auth::current_token().as_deref(),
+    );
     let ws_url = auth_ws_url(&base_ws);
 
-    log!("[WS] connecting to {} (epoch={epoch})", network_metrics::redact_ws_url_for_display(&ws_url));
+    log!(
+        "[WS] connecting to {} (epoch={epoch})",
+        network_metrics::redact_ws_url_for_display(&ws_url)
+    );
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     *WS_SENDER.write() = Some(WsSender { tx });
     let connect_timeout = native_ws_connect_timeout();
-    let connect_result = timeout(connect_timeout, async {
+    let connect_result = native_session::await_owned(timeout(connect_timeout, async {
         if UrlConfig::_skip_tls_verify() && ws_url.starts_with("wss://") {
             let tls = insecure_rustls_connector()
                 .map_err(|e| format!("[WS] rustls connector build failed: {e}"))?;
@@ -1764,19 +1827,20 @@ async fn connect_ws_once_native(
                 .await
                 .map_err(|e| format!("[WS] connect failed: {e}"))
         }
-    })
+    }), &owns_session)
     .await;
+    let Some(connect_result) = connect_result else { return Ok(()); };
 
     let mut ws_stream = match connect_result {
         Ok(Ok((stream, _response))) => stream,
         Ok(Err(err)) => {
-            if *WS_EPOCH.read() == epoch {
+            if owns_session() {
                 *WS_SENDER.write() = None;
             }
             return Err(err);
         }
         Err(_) => {
-            if *WS_EPOCH.read() == epoch {
+            if owns_session() {
                 *WS_SENDER.write() = None;
             }
             return Err(format!(
@@ -1818,19 +1882,23 @@ async fn connect_ws_once_native(
     }
 
     let mut last_activity = std::time::Instant::now();
-    while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
+    while owns_session() {
         if ws_activity_expired(last_activity.elapsed().as_secs_f64() * 1000.0) {
             log!("[WS] activity timeout; reconnecting and reseeding");
             break;
         }
-        let event = timeout(Duration::from_millis(250), async {
+        let event = native_session::await_owned(timeout(Duration::from_millis(250), async {
             tokio::select! {
                 outgoing = rx.recv() => NativeWsEvent::Outgoing(outgoing),
                 incoming = ws_stream.next() => NativeWsEvent::Incoming(incoming),
             }
-        })
+        }), &owns_session)
         .await;
 
+        // The selected frame/command belongs to the captured session, never
+        // whichever station or authentication happens to be current now.
+        if !owns_session() { break; }
+        let Some(event) = event else { break; };
         let Ok(next_event) = event else {
             continue;
         };
@@ -1841,12 +1909,12 @@ async fn connect_ws_once_native(
         match next_event {
             NativeWsEvent::Outgoing(Some(msg)) => {
                 if !matches!(
-                    timeout(
+                    native_session::await_owned(timeout(
                         Duration::from_secs(5),
                         ws_stream.send(Message::Text(msg.into()))
-                    )
+                    ), &owns_session)
                     .await,
-                    Ok(Ok(()))
+                    Some(Ok(Ok(())))
                 ) {
                     log!("[WS] write failed or timed out; command will not be replayed");
                     break;
@@ -1884,12 +1952,12 @@ async fn connect_ws_once_native(
             }
             NativeWsEvent::Incoming(Some(Ok(Message::Ping(payload)))) => {
                 if !matches!(
-                    timeout(
+                    native_session::await_owned(timeout(
                         Duration::from_secs(5),
                         ws_stream.send(Message::Pong(payload))
-                    )
+                    ), &owns_session)
                     .await,
-                    Ok(Ok(()))
+                    Some(Ok(Ok(())))
                 ) {
                     log!("[WS] pong failed or timed out");
                     break;
@@ -1905,12 +1973,11 @@ async fn connect_ws_once_native(
         }
     }
 
-    // Only clear sender if this task still owns the active epoch.
-    // Prevents old-epoch teardown from clobbering a freshly reconnected sender.
-    if *WS_EPOCH.read() == epoch {
-        note_ws_connection_state(false, ws_url, Some("websocket closed".to_string()), epoch);
-        *WS_SENDER.write() = None;
-    }
+    // Retired work must neither clear a replacement sender nor report a
+    // connection failure against the newly selected station/authentication.
+    if !owns_session() { return Ok(()); }
+    note_ws_connection_state(false, ws_url, Some("websocket closed".to_string()), epoch);
+    *WS_SENDER.write() = None;
 
     Err("websocket closed".to_string())
 }
@@ -2208,8 +2275,12 @@ fn handle_ws_message(
 
         WsInMsg::Notification(event) => {
             apply_notifications_snapshot(
-                vec![event], notifications, notification_history,
-                dismissed_notifications, unread_notification_ids, page_visible,
+                vec![event],
+                notifications,
+                notification_history,
+                dismissed_notifications,
+                unread_notification_ids,
+                page_visible,
             );
         }
 
@@ -2217,8 +2288,19 @@ fn handle_ws_message(
             apply_messages_snapshot(list, message_history);
         }
 
-        WsInMsg::ActionPolicy(policy) => {
+        WsInMsg::BoardAbort(snapshot) => {
+            let snapshot = snapshot.reconciled(&BOARD_ABORT_SIGNAL.read(), *WS_EPOCH.peek());
+            let mut blocked = action_policy.read().clone();
+            snapshot.constrain_launch_policy(&mut blocked);
+            set_signal_if_changed(&mut action_policy, blocked);
+            let mut signal = BOARD_ABORT_SIGNAL.signal();
+            set_signal_if_changed(&mut signal, snapshot);
+        }
+        WsInMsg::ActionPolicy(mut policy) => {
             clear_command_feedback_latches();
+            BOARD_ABORT_SIGNAL
+                .read()
+                .constrain_launch_policy(&mut policy);
             set_signal_if_changed(&mut action_policy, policy);
         }
 

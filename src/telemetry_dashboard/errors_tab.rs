@@ -7,6 +7,11 @@ pub fn ErrorsTab(
     theme: ThemeConfig,
     on_ack: EventHandler<()>,
 ) -> Element {
+    let active = super::BOARD_ABORT_SIGNAL.read().active_errors.clone();
+    let history_error = super::BOARD_ABORT_SIGNAL
+        .read()
+        .history_error_message()
+        .map(str::to_owned);
     let has_errors = !errors.read().is_empty();
     let ack_button_style = format!(
         "padding:0.25rem 0.65rem; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.75rem; cursor:{}; opacity:{};",
@@ -32,6 +37,22 @@ pub fn ErrorsTab(
             }
 
             div { style: "display:flex; flex-direction:column; gap:6px;",
+                if let Some(message)=history_error.as_deref() {
+                    div {role:"alert",class:"gs26-active-history-error",
+                        style:"border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; padding:10px; border-radius:10px;",
+                        strong {"Active: Abort history unavailable"}
+                        p {"{message}"}
+                        small {"A current station report must confirm that saved history is healthy. Acknowledging messages does not clear this error."}
+                    }
+                }
+                for error in active.iter() {
+                    div { key: "{error.source}", role: "alert",
+                        style: "border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; padding:10px; border-radius:10px;",
+                        strong { "Active: {error.board_label}" }
+                        p { "{error.message}" }
+                        small { "Clears only after a fresh confirmed report from this board. Acknowledging history does not clear it." }
+                    }
+                }
                 for e in errors.read().iter() {
                     {
                         let acknowledged = e.timestamp_ms <= ack_timestamp_ms;
@@ -55,7 +76,7 @@ pub fn ErrorsTab(
                         }
                     }
                 }
-                if errors.read().is_empty() {
+                if errors.read().is_empty() && active.is_empty() && history_error.is_none() {
                     div { style: "color:{theme.text_muted};", "{translate_text(\"No errors.\")}" }
                 }
             }

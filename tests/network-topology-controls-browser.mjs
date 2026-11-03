@@ -21,7 +21,12 @@ try{
  await page.evaluate(()=>window.__gs26NetworkGraphZoomDelta(.4));const zoomed=await state();
  await page.setViewportSize({width:1100,height:850});await page.waitForTimeout(100);
  assert.equal((await state()).scale,zoomed.scale,'window resize preserves manual zoom');
+ // A real Dioxus size change replaces the inline style, including scale(1).
+ // Reconcile that DOM replacement with the preserved operator camera state.
+ await page.evaluate(()=>document.getElementById('canvas').style.cssText='position:absolute;width:2160px;height:1440px;transform:scale(1);transform-origin:top left');
  await page.evaluate(script(2160,1440,false));
+ const drawnScale=await page.locator('#canvas').evaluate(e=>new DOMMatrix(getComputedStyle(e).transform).a);
+ assert.ok(Math.abs(drawnScale-zoomed.scale)<.00001,'telemetry layout change reapplies the preserved camera scale');
  // Existing one-time wheel listeners must use NEW geometry, not initial dimensions.
  await page.locator('#viewport').hover({position:{x:200,y:200}});await page.mouse.wheel(0,-80);await page.waitForTimeout(100);
  const expanded=await state();assert.equal(expanded.width,2160);assert.equal(expanded.frameWidth,Math.round(2160*expanded.scale)+expanded.pad*2,'wheel uses current graph width');

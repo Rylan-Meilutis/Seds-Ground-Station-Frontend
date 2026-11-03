@@ -50,7 +50,9 @@
   grid-template-rows:auto auto auto auto auto minmax(0,1fr);
   grid-template-areas:"mode" "connection" "toolbar" "summary" "recovery" "content";
  }
- .gs26-dashboard-shell .gs26-navigation-rail{grid-area:auto;grid-row:summary-start / -1;grid-column:1;position:absolute;inset:0 0 auto;width:100% !important;height:min(360px,100%);min-height:0;margin:0;padding:8px !important;z-index:2300;box-shadow:0 12px 28px #0008}
+ /* Overlay page content while staying below the toolbar's layer 2000, so
+    an expanded navigation rail cannot intercept the Tools dropdown. */
+ .gs26-dashboard-shell .gs26-navigation-rail{grid-area:auto;grid-row:summary-start / -1;grid-column:1;position:absolute;inset:0 0 auto;width:100% !important;height:min(360px,100%);min-height:0;margin:0;padding:8px !important;z-index:1900;box-shadow:0 12px 28px #0008}
  .gs26-navigation-rail[data-collapsed=true]{display:none}
  .gs26-navigation-rail[data-collapsed=false] a>span{display:block;min-width:0;overflow-wrap:anywhere}
  .gs26-navigation-rail[data-collapsed=false] .gs26-navigation-group>p{display:block}

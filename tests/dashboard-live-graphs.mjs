@@ -89,7 +89,7 @@ try {
    const before=await page.locator('.gs26-dashboard-card').count();
    await page.getByRole('button',{name:'Customize dashboard',exact:true}).click();await page.getByRole('button',{name:'Add card',exact:true}).click();
    let added=page.locator('.gs26-dashboard-card').filter({has:page.getByText('New telemetry card',{exact:true})});
-   await added.getByLabel(/^Display/).selectOption('trend');
+   await added.getByLabel('Display',{exact:true}).selectOption('trend');
    await added.getByLabel(/^Card width/).selectOption('full');
    await added.getByLabel('Title',{exact:true}).fill('Saved live trend');
    await page.getByRole('button',{name:'Done',exact:true}).click();
