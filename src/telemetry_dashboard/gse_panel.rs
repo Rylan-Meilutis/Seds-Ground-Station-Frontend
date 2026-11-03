@@ -1,3 +1,5 @@
+#[path = "gse_config_compatibility.rs"]
+mod config_compatibility;
 use super::{
     ActionPolicyMsg, UrlConfig, http_get_json, http_post_json, js_eval, layout::ThemeConfig,
 };
@@ -7,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Settings {
+    #[serde(default)]
+    cold_flow_target_psi: Option<f32>,
     nitrogen_target_psi: f32,
     #[serde(default = "default_pressure_step")]
     pressure_step_psi: f32,
@@ -84,7 +88,7 @@ struct NitrogenStep {
     settle_ms: u64,
     hold_ms: u64,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct NitrogenStepDraft {
     pressure: String,
     settle: String,
@@ -130,6 +134,19 @@ fn nitrogen_drafts(config: &Settings) -> Vec<NitrogenStepDraft> {
         })
         .collect()
 }
+// A Cold Flow-only edit must preserve the legacy empty-plan representation.
+fn install_nitrogen_drafts(
+    config: &mut Settings,
+    rows: &[NitrogenStepDraft],
+) -> Result<(), String> {
+    if rows != nitrogen_drafts(config) {
+        let steps = validated_nitrogen_steps(rows)?;
+        config.nitrogen_target_psi = steps.last().unwrap().target_psi;
+        config.nitrogen_steps = steps;
+    }
+    Ok(())
+}
+
 fn validated_nitrogen_steps(rows: &[NitrogenStepDraft]) -> Result<Vec<NitrogenStep>, String> {
     if rows.is_empty() || rows.len() > 32 {
         return Err("Add 1–32 pressure steps.".into());
@@ -622,6 +639,23 @@ pub(super) fn ClearGseAbort() -> Element {
 #[cfg(test)]
 mod nitrogen_settings_tests {
     use super::*;
+    #[test]
+    fn cold_target_save_preserves_legacy_nitrogen_plan_and_explicit_edit_still_installs() {
+        let mut config: Settings =
+            serde_json::from_value(serde_json::json!({"nitrogen_target_psi":100.,"dry_self_test_confirmed":false,"grouped_panel":true})).unwrap();
+        let before = serde_json::to_value(&config).unwrap();
+        let rows = nitrogen_drafts(&config);
+        config.cold_flow_target_psi = Some(90.);
+        install_nitrogen_drafts(&mut config, &rows).unwrap();
+        let after = serde_json::to_value(&config).unwrap();
+        assert_eq!(before["nitrogen_steps"], after["nitrogen_steps"]);
+        assert_eq!(before["nitrogen_target_psi"], after["nitrogen_target_psi"]);
+        let mut changed = rows;
+        changed[0].pressure = "45".into();
+        install_nitrogen_drafts(&mut config, &changed).unwrap();
+        assert!(!config.nitrogen_steps.is_empty());
+        assert_eq!(config.nitrogen_steps[0].target_psi, 45.);
+    }
     fn row(pressure: &str, settle: &str, hold: &str) -> NitrogenStepDraft {
         NitrogenStepDraft {
             pressure: pressure.into(),
@@ -691,6 +725,7 @@ mod nitrogen_settings_tests {
     #[test]
     fn viewing_legacy_profile_does_not_modify_it() {
         let config = Settings {
+            cold_flow_target_psi: None,
             nitrogen_target_psi: 125.0,
             pressure_step_psi: 50.0,
             ..Settings::default()
@@ -747,6 +782,23 @@ mod nitrogen_settings_tests {
         assert!(validated_nitrogen_steps(&[row("100", "1", "600")]).is_ok());
     }
     #[test]
+    fn cold_flow_optional_target_roundtrips_without_changing_other_settings() {
+        let mut settings = Settings {
+            nitrogen_target_psi: 120.,
+            turbocharge_max_added_mass_kg: Some(0.3),
+            fill_tolerance_kg: 0.07,
+            ..Default::default()
+        };
+        assert!(settings.cold_flow_target_psi.is_none());
+        settings.cold_flow_target_psi = Some(95.);
+        let json = serde_json::to_value(&settings).unwrap();
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.cold_flow_target_psi, Some(95.));
+        assert_eq!(restored.nitrogen_target_psi, 120.);
+        assert_eq!(restored.turbocharge_max_added_mass_kg, Some(0.3));
+        assert_eq!(restored.fill_tolerance_kg, 0.07);
+    }
+    #[test]
     fn turbocharge_allowance_is_explicit_and_roundtrips_without_liquid_tolerance_reuse() {
         let mut settings = Settings::default();
         assert!(settings.turbocharge_max_added_mass_kg.is_none());
@@ -764,6 +816,7 @@ mod nitrogen_settings_tests {
 #[component]
 pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Element {
     let mut settings = use_signal(|| None::<Settings>);
+    let mut config_grant = use_signal(|| None::<config_compatibility::Grant>);
     let mut nitrogen_rows = use_signal(Vec::<NitrogenStepDraft>::new);
     let mut fill_draft = use_signal(FillDraft::default);
     let mut status = use_signal(Status::default);
@@ -771,26 +824,41 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
     let mut busy = use_signal(|| false);
     let mut online = use_signal(|| false);
     use_future(move || async move {
-        match http_get_json::<Settings>("/api/gse/config").await {
-            Ok(cfg) => { nitrogen_rows.set(nitrogen_drafts(&cfg)); fill_draft.set(FillDraft::from(&cfg)); settings.set(Some(cfg)); }
-            Err(error) => message.set(format!("GSE configuration unavailable: {error}")),
-        }
         loop {
-            match http_get_json::<Status>("/api/gse/status").await {
-                Ok(next) => {
+            if config_grant.peek().as_ref().is_none_or(|grant| !grant.current()) {
+                // Retire the old schema capability BEFORE obtaining another
+                // station/session's actual configuration. Never reuse a draft.
+                config_grant.set(None); settings.set(None); online.set(false); message.set(String::new());
+                match config_compatibility::Grant::load().await {
+                    Ok((cfg, grant)) => {
+                        nitrogen_rows.set(nitrogen_drafts(&cfg));
+                        fill_draft.set(FillDraft::from(&cfg));
+                        settings.set(Some(cfg)); config_grant.set(Some(grant));
+                    }
+                    Err(error) => { message.set(format!("GSE configuration unavailable: {error}")); delay().await; continue; }
+                }
+            }
+            let Some(grant) = config_grant.peek().clone() else { continue; };
+            match grant.status::<Status>().await {
+                Ok(next) if grant.current() => {
                     if !["idle", "passed", "cancelled", "fault"].contains(&next.phase.as_str())
-                        && let Some(cfg) = settings.write().as_mut()
-                    { cfg.dry_self_test_confirmed = false; }
+                        && let Some(cfg) = settings.write().as_mut() { cfg.dry_self_test_confirmed = false; }
                     status.set(next); online.set(true);
                 }
-                Err(_) => online.set(false),
+                _ => online.set(false),
             }
             delay().await;
         }
     });
     let active = !["idle", "passed", "cancelled", "fault"].contains(&status.read().phase.as_str());
-    let can_edit = online() && auth::current_status().station_role.as_deref() != Some("rrls")
-        && auth::can_view_actions() && !active && !abort_only_mode && !busy();
+    let can_edit = online()
+        && config_grant.read().as_ref().is_some_and(|grant| grant.current())
+        && auth::current_status().station_role.as_deref() != Some("rrls")
+        && auth::can_view_actions()
+        && !active
+        && !abort_only_mode
+        && !busy();
+    let cold_flow_supported = config_grant.read().as_ref().is_some_and(|grant| grant.cold_flow_supported());
     let rows = nitrogen_rows.read().clone();
     let step_error = validated_nitrogen_steps(&rows).err();
     let fill = fill_draft.read().clone();
@@ -845,6 +913,11 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
                             input {r#type:"number",min:"0.001",step:"0.01",disabled:!can_edit,value:cfg.turbocharge_max_added_mass_kg.map(|v|v.to_string()).unwrap_or_default(),oninput:move|event|{if let Some(c)=settings.write().as_mut(){c.turbocharge_max_added_mass_kg=event.value().parse().ok();}}}
                             small {"Blank disables Turbocharge. This cumulative allowance is separate from liquid-fill tolerance."}
                         }
+                        label {style:"display:grid;gap:6px;margin-top:16px;max-width:400px;min-width:0;", "Cold Flow nitrogen target (psi)"
+                            input {r#type:"number",min:"0.001",step:"0.1",disabled:!can_edit||!cold_flow_supported,value:cfg.cold_flow_target_psi.map(|v|v.to_string()).unwrap_or_default(),style:"width:100%;min-height:44px;box-sizing:border-box;",oninput:move|event|{if let Some(c)=settings.write().as_mut(){c.cold_flow_target_psi=event.value().parse().ok();}}}
+                            small {"Blank disables Auto Cold Flow. This target is separate from nitrogen tests, fill and Turbocharge."}
+                            if !cold_flow_supported {small {role:"status","Cold Flow configuration is unavailable on this ground station; other settings can still be saved."}}
+                        }
                         fieldset {style:"margin:16px 0 0;padding:12px;border:1px solid {theme.border};border-radius:10px;max-width:880px;min-width:0;box-sizing:border-box;",
                             legend {style:"padding:0 5px;font-size:13px;", "Nitrous fill precision"}
                             div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:10px;",
@@ -863,13 +936,17 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
                         }
                         button {style:"margin-top:12px;padding:10px 14px;min-height:44px;width:auto;max-width:100%;",disabled:!can_edit||step_error.is_some()||fill_error.is_some(),onclick:move |_|{
                             let Some(mut cfg)=settings.read().clone() else{return;};
-                            let steps=match validated_nitrogen_steps(&nitrogen_rows.read()) {Ok(steps)=>steps,Err(error)=>{message.set(error);return;}};
-                            cfg.nitrogen_target_psi=steps.last().unwrap().target_psi;
-                            cfg.nitrogen_steps=steps;
+                            if let Err(error)=install_nitrogen_drafts(&mut cfg,&nitrogen_rows.read()) {message.set(error);return;}
                             let (overfill,tolerance,settle)=match validated_fill(&fill_draft.read()) {Ok(next)=>next,Err(error)=>{message.set(error);return;}};
                             cfg.fill_overfill_kg=overfill;cfg.fill_tolerance_kg=tolerance;cfg.fill_settle_ms=settle;
+                            let Some(grant)=config_grant.peek().clone().filter(|grant|grant.current()) else {message.set("Ground station configuration changed; reload it before saving.".into());return;};
                             busy.set(true);
-                            spawn(async move {match http_post_json::<Settings,Settings>("/api/gse/config",&cfg).await{Ok(next)=>{nitrogen_rows.set(nitrogen_drafts(&next));fill_draft.set(FillDraft::from(&next));settings.set(Some(next));message.set("GSE configuration saved".into());},Err(err)=>message.set(err)}busy.set(false);});
+                            spawn(async move {
+                                let result=grant.save(&cfg).await;
+                                if !grant.current(){busy.set(false);return;}
+                                match result {Ok((next,next_grant))=>{nitrogen_rows.set(nitrogen_drafts(&next));fill_draft.set(FillDraft::from(&next));settings.set(Some(next));config_grant.set(Some(next_grant));message.set("GSE configuration saved".into());},Err(err)=>message.set(err)}
+                                busy.set(false);
+                            });
                         },"Save GSE configuration"}
                     }
                 }

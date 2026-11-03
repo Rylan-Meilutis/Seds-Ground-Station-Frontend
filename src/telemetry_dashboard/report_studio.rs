@@ -1,4 +1,4 @@
-use super::{http_get_json, recording_download::download_csv_path};
+use super::recording_download::{ExportOwner, saved_json, download_csv_path_owned};
 use dioxus::prelude::*;
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -108,6 +108,38 @@ pub(super) fn ReportStudio(recording: String) -> Element {
     let mut status = use_signal(String::new);
     let mut format = use_signal(|| "csv".to_string());
     let mut focus=use_signal(String::new);
+    let mut query_epoch = use_signal(|| 1u64);
+    let mut owner_state = use_signal(|| None::<std::rc::Rc<ExportOwner>>);
+    let mut current_recording = use_signal(|| recording.clone());
+    let alive = use_hook(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    let drop_alive = alive.clone();
+    use_drop(move || drop_alive.store(false, std::sync::atomic::Ordering::Release));
+    use_effect(use_reactive((&recording,), move |(next,)| {
+        if *current_recording.peek() != next {
+            current_recording.set(next);
+            query_epoch.set(query_epoch.with_peek(|epoch| epoch.saturating_add(1)));
+            owner_state.set(None); preview.set(None); selected.set(BTreeSet::new());
+            loaded_window.set(None); from.set(String::new()); to.set(String::new());
+            start.set(0); end.set(0); busy.set(false);
+        }
+    }));
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(200).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let retired = owner_state.peek().as_ref().is_some_and(|owner| !owner.is_current());
+            if retired {
+                owner_state.set(None); preview.set(None); selected.set(BTreeSet::new());
+                loaded_window.set(None); from.set(String::new()); to.set(String::new());
+                start.set(0); end.set(0); busy.set(false);
+                status.set("Recording or station session changed. Load the selected recording again.".into());
+            }
+        }
+    });
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    renderer_tests::capture(renderer_tests::Handle { preview, selected, loaded_window, owner_state, busy });
     let load_recording = recording.clone();
     let load = move |_| {
         if load_recording.is_empty() { status.set("Select a recording first.".into()); return; }
@@ -125,11 +157,24 @@ pub(super) fn ReportStudio(recording: String) -> Element {
                 }
             }
         };
+        let expected_query = (*query_epoch.peek()).saturating_add(1);
+        query_epoch.set(expected_query);
+        let original_recording = load_recording.clone();
+        let alive = alive.clone();
+        let owner = match ExportOwner::capture_selected(move || {
+            alive.load(std::sync::atomic::Ordering::Acquire) && expected_query != u64::MAX
+                && query_epoch.try_peek().is_ok_and(|epoch| *epoch == expected_query)
+                && current_recording.try_peek().is_ok_and(|current| *current == original_recording)
+        }) { Ok(owner) => owner, Err(error) => {status.set(error);return;} };
+        owner_state.set(Some(owner.clone())); preview.set(None); selected.set(BTreeSet::new());
+        loaded_window.set(None);
         let path = report_path(&load_recording, "preview", window, None);
         busy.set(true);
         status.set("Loading recorded data…".into());
         spawn(async move {
-            match http_get_json::<Preview>(&path).await {
+            let result = saved_json::<Preview>(&path, owner.clone()).await;
+            if !owner.is_current() { return; }
+            match result {
                 Ok(next) => {
                     loaded_window.set(window);
                     start.set(next.start_ms);
@@ -185,11 +230,14 @@ pub(super) fn ReportStudio(recording: String) -> Element {
         super::vehicle_tab::ReplayFileExport { recording:recording.clone() }
         label {"File format " select {value:format(),onchange:move |e|format.set(e.value()),option {value:"csv","CSV — data and regression metadata"}option {value:"daq_csv","DAQ SD column layout — CSV"}option {value:"daq_tsv","DAQ SD column layout — TSV"}option {value:"xlsx","Excel — charts, data and regressions"}option {value:"pdf","PDF — graphs, data appendix and regressions"}}}
         if matches!(format().as_str(),"daq_csv"|"daq_tsv") {p {"Uses the DAQ’s thirteen columns. Missing ADC, uptime and sequence fields stay blank. Per-sample metadata preserves original receive/source timestamps; no current calibration is substituted."}}
-        button {disabled:busy() || preview.read().is_none() || selected.read().is_empty(),onclick:move |_| {
+        button {disabled:busy() || preview.read().is_none() || selected.read().is_empty() || owner_state.read().as_ref().is_none_or(|owner| !owner.is_current()),onclick:move |_| {
+            let Some(owner) = owner_state.peek().clone() else {status.set("Load this recording first.".into());return;};
+            if let Err(error) = owner.check() {status.set(error);return;}
+            if *current_recording.peek() != recording {status.set("Load the selected recording again.".into());return;}
             let kind=format();let window=if all_time(){loaded_window()}else{Some((start(),end()))};
             let path=report_path(&recording,&kind,window,Some(selected.read().iter().cloned().collect()));
             busy.set(true);status.set("Preparing export… Large PDFs can take up to two minutes.".into());
-            spawn(async move {status.set(match download_csv_path(&path,&report_filename(&kind)).await{Ok(s)=>s,Err(e)=>format!("Export failed: {e}")});busy.set(false);});
+            spawn(async move {let result=download_csv_path_owned(&path,&report_filename(&kind),owner.clone()).await;if owner.is_current(){status.set(result.unwrap_or_else(|error|format!("Export failed: {error}")));busy.set(false);}});
         },if busy(){"Working…"}else{"Export selected data"}}
         p {role:"status",style:"overflow-wrap:anywhere;","{status}"}
     }}
@@ -219,3 +267,7 @@ mod tests {
     }
 
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "recording_export_renderer_tests.rs"]
+mod renderer_tests;

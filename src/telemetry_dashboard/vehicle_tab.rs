@@ -999,24 +999,26 @@ pub(super) fn ReplayFileExport(recording: String) -> Element {
     let mut standalone=use_signal(||true);
     let mut busy=use_signal(||false);
     let mut status=use_signal(String::new);
+    let lifetime=super::recording_download::use_export_lifetime();
     rsx! { div {style:"min-width:0;max-width:100%;",
         label {style:"display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;", "Replay file format " select {style:"min-width:0;max-width:100%;box-sizing:border-box;",value:if standalone(){"html"}else{"json"},onchange:move |e|standalone.set(e.value()=="html"),option {value:"html","Offline HTML — opens without an app or server"}option {value:"json","Portable JSON — import into replay"}}}
         button {style:"max-width:100%;white-space:normal;",disabled:recording.is_empty() || busy(),onclick:move |_| {
+            let lifetime=lifetime.clone();
+            let owner=match super::recording_download::ExportOwner::capture_selected(move||lifetime.load(std::sync::atomic::Ordering::Acquire)){Ok(owner)=>owner,Err(error)=>{status.set(error);return;}};
             let id=recording.clone();let html=standalone();busy.set(true);status.set("Preparing portable replay…".into());
             spawn(async move {
                 let result=async {
-                    let origin=UrlConfig::base_http();
-                    let mut file=saved_get::<serde_json::Value>(&origin,&format!("/api/recordings/{}/replay/export",percent_component(&id))).await?;
+                    let mut file=super::recording_download::saved_json::<serde_json::Value>(&format!("/api/recordings/{}/replay/export",percent_component(&id)),owner.clone()).await?;
                     let export_visual_config=file["view_config"].is_null()||file["layout"].is_null();
-                    if file["view_config"].is_null(){file["view_config"]=saved_get::<serde_json::Value>(&origin,"/api/vehicle_visualization").await?;}
-                    if file["layout"].is_null(){file["layout"]=saved_get::<serde_json::Value>(&origin,"/api/layout").await?;}
+                    if file["view_config"].is_null(){file["view_config"]=super::recording_download::saved_json::<serde_json::Value>("/api/vehicle_visualization",owner.clone()).await?;}
+                    if file["layout"].is_null(){file["layout"]=super::recording_download::saved_json::<serde_json::Value>("/api/layout",owner.clone()).await?;}
                     file["mode"]=if file["layout"]["test_fire_mode"].as_bool()==Some(true){"test_fire"}else{"flight"}.into();
                     if file["valve_mappings"].is_null(){file["valve_mappings"]=saved_valve_mappings(&file["layout"]);}
                     if export_visual_config&&!file["sd_provenance"].is_null(){file["configuration_provenance"]="Imported source schema/configuration retained; missing view/layout supplied from station at export.".into();}
                     if file["configuration_provenance"].is_null(){file["configuration_provenance"]="Station configuration at export; not a claim of historical capture-time configuration.".into();}
-                    super::recording_download::save_replay_file(&file,html).await
+                    super::recording_download::save_replay_file(&file,html,owner.clone()).await
                 }.await;
-                status.set(result.unwrap_or_else(|e:String|format!("Replay export failed: {e}")));busy.set(false);
+                if owner.is_current(){status.set(result.unwrap_or_else(|e:String|format!("Replay export failed: {e}")));}busy.set(false);
             });
         },if busy(){"Preparing replay…"}else{"Export portable replay (all saved channels)"}}
         p {role:"status","{status}"}

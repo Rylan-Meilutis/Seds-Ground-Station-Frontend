@@ -49,6 +49,11 @@ futures-util = "0.3.34"
 wasm-bindgen-futures = "0.4.79"
 web-sys = { version = "0.3.106", features = [
     "Window",
+    "Blob",
+    "Url",
+    "Response",
+    "Document",
+    "HtmlAnchorElement",
     "AbortController",
     "AbortSignal",
     "Location",

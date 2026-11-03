@@ -176,4 +176,21 @@ mod tests {
             Some(Progress::Inactive)
         );
     }
+    #[test]
+    fn completed_fill_stays_paused_without_showing_a_new_running_fill() {
+        let completed = serde_json::json!({
+            "phase": "paused",
+            "qualification": {"fill_target": true},
+            "primary_observation": {"fresh": true, "age_ms": 0}
+        });
+        for rrls in [false, true] {
+            // No-op Fill preserves this exact server phase/qualification.
+            let fill = progress("StartFill", &completed, 0, rrls).unwrap();
+            assert_eq!(fill, Progress::Complete);
+            assert_ne!(fill, Progress::Running);
+            assert_eq!(progress("PauseFill", &completed, 0, rrls), Some(Progress::Paused));
+            assert_ne!(fill.label(), "In progress");
+        }
+    }
+
 }

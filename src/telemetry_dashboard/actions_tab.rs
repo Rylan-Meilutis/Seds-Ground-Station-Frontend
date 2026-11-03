@@ -612,6 +612,7 @@ pub fn ActionsTab(
                                     }} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
                                     p {role:"status","{self_test_message}"}
                                     super::gse_panel::QualificationStatus {status:operational_status,disabled:abort_only_mode}
+                                    super::cold_flow::AutoColdFlow {status:shared_sequence_status,disabled:abort_only_mode}
                                     details {summary {"Sequence diagnostics"} p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}}
                                 }
                             },

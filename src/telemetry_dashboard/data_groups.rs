@@ -16,7 +16,7 @@ fn family(source: &str) -> Option<Family> {
     if source.starts_with("BATTERY_")
         || source.contains("_BATTERY_")
         || source.starts_with("FILL_BOX_POWER_")
-        || matches!(source, "DAQ_CURRENT_SENSE" | "DAQ_POWER_MONITOR")
+        || matches!(source, "DAQ_CURRENT_SENSE" | "DAQ_POWER_MONITOR" | "IGNITER_SENSE_SIGNAL")
     {
         Some(Family::Power)
     } else if source.starts_with("LOADCELL")

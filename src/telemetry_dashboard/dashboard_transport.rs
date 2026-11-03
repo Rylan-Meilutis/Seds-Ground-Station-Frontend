@@ -2,7 +2,6 @@
 #[path = "native_session_channel_tests.rs"]
 mod native_session_channel_tests;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_session.rs"]
 mod native_session;
 

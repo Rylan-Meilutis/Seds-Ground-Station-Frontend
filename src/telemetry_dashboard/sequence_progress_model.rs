@@ -34,6 +34,7 @@ pub enum Kind {
     NitrogenTest,
     Fill,
     Turbocharge,
+    ColdFlow,
     ContinueFillSequence,
     IgniterSequence,
 }
@@ -41,7 +42,11 @@ impl Kind {
     pub fn has_gse_safe_cancel(self) -> bool {
         matches!(
             self,
-            Self::ValveSelfTest | Self::NitrogenTest | Self::Fill | Self::Turbocharge
+            Self::ValveSelfTest
+                | Self::NitrogenTest
+                | Self::Fill
+                | Self::Turbocharge
+                | Self::ColdFlow
         )
     }
 }
@@ -134,6 +139,8 @@ pub struct Snapshot {
     #[serde(default)]
     pub cancel_allowed: bool,
     #[serde(default)]
+    pub cold_flow_release_allowed: bool,
+    #[serde(default)]
     pub notification_id: Option<u64>,
     #[serde(default)]
     pub notification_timestamp_ms: Option<i64>,
@@ -176,6 +183,7 @@ impl Snapshot {
             observed_age_ms: self.observed_age_ms,
             valid_for_ms: self.valid_for_ms,
             cancel_allowed: false,
+            cold_flow_release_allowed: false,
             notification_id: self.notification_id,
             notification_timestamp_ms: self.notification_timestamp_ms,
             reporting_error: self.reporting_error.clone(),
@@ -281,6 +289,11 @@ impl Snapshot {
                 return Err(Error::Invalid);
             }
         }
+        if self.cold_flow_release_allowed
+            && (self.kind != Kind::ColdFlow || self.outcome != Outcome::Running)
+        {
+            return Err(Error::Invalid);
+        }
         if self.outcome.terminal() && self.cancel_allowed {
             return Err(Error::Invalid);
         }
@@ -336,6 +349,15 @@ impl Panel {
         }
         watch.observed.as_ref()
     }
+    pub fn can_release(&self, now: u64, permission: bool) -> bool {
+        permission
+            && self.fresh(now)
+            && !self.cancel_pending
+            && !self.historical
+            && self.snapshot.kind == Kind::ColdFlow
+            && self.snapshot.outcome == Outcome::Running
+            && self.snapshot.cold_flow_release_allowed
+    }
     pub fn can_cancel(&self, now: u64, permission: bool, api_version: Option<u16>) -> bool {
         permission
             && api_version == Some(VERSION)
@@ -377,6 +399,7 @@ pub struct Model {
     pub unavailable: bool,
     pub result_error: Option<String>,
     requested_details: VecDeque<RunKey>,
+    release_pending: Vec<RunKey>,
 }
 impl Model {
     /// A single authenticated station observation. Validate the whole envelope
@@ -545,6 +568,7 @@ impl Model {
             self.expected_scope = None;
             self.result_error = None;
             self.requested_details.clear();
+            self.release_pending.clear();
         }
     }
     pub fn set_scope(&mut self, epoch: u64, backend_instance: String, reset_epoch: String) {
@@ -557,6 +581,7 @@ impl Model {
             self.expected_scope = Some((backend_instance, reset_epoch));
             self.result_error = None;
             self.requested_details.clear();
+            self.release_pending.clear();
         }
     }
     pub fn set_surface(&mut self, actions: bool) {
@@ -729,6 +754,32 @@ impl Model {
         }
         false
     }
+    pub fn can_release(&self, key: &RunKey, now: u64, permission: bool) -> bool {
+        !self.unavailable
+            && !self.release_pending.contains(key)
+            && self
+                .panels
+                .iter()
+                .any(|p| &p.snapshot.key == key && p.can_release(now, permission))
+    }
+    pub fn request_release(
+        &mut self,
+        key: &RunKey,
+        now: u64,
+        permission: bool,
+    ) -> Result<RunKey, Error> {
+        if !self.can_release(key, now, permission) {
+            return Err(Error::Permission);
+        }
+        if self.release_pending.len() >= MAX_ACTIVE {
+            return Err(Error::NoCapacity);
+        }
+        self.release_pending.push(key.clone());
+        Ok(key.clone())
+    }
+    pub fn release_failed(&mut self, key: &RunKey) {
+        self.release_pending.retain(|k| k != key);
+    }
     pub fn request_cancel(
         &mut self,
         key: &RunKey,
@@ -757,6 +808,12 @@ impl Model {
         }
     }
     pub fn tick(&mut self, now: u64) {
+        let panels = &self.panels;
+        self.release_pending.retain(|key| {
+            panels
+                .iter()
+                .any(|p| &p.snapshot.key == key && p.snapshot.cold_flow_release_allowed)
+        });
         for panel in &mut self.panels {
             if panel.snapshot.outcome.terminal()
                 && panel
@@ -792,7 +849,7 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn run() -> Snapshot {
+    pub(super) fn run() -> Snapshot {
         serde_json::from_value(serde_json::json!({"version":1,"key":{"backend_instance":"11111111111111111111111111111111","reset_epoch":"2222222222222222","run_id":"33333333333333333333333333333333"},"revision":1,"kind":"nitrogen_test","outcome":"running","origin_client":"origin-a","title":"Nitrogen test","message":"Watching tank pressure","current_step":"raise-0","next_step":"hold-0","steps":[{"id":"raise-0","label":"Raise pressure","state":"watching","watch":[{"id":"tank-pt","label":"Tank pressure","target":50.0,"observed":42.0,"unit":"psi","age_ms":0,"valid_for_ms":2000,"evidence":"measured"}]},{"id":"hold-0","label":"Verify hold","state":"planned","watch":[]}],"observed_age_ms":0,"valid_for_ms":2000,"cancel_allowed":true})).unwrap()
     }
     #[test]
@@ -1031,5 +1088,43 @@ mod envelope_tests {
             model.accept_envelope(4, envelope(value), 100, 100),
             Err(Error::Stale)
         );
+    }
+    #[test]
+    fn cold_flow_release_is_server_flag_permission_source_and_run_bound_without_launch_fallback() {
+        let mut snapshot = super::tests::run();
+        snapshot.kind = Kind::ColdFlow;
+        snapshot.title = "Auto Cold Flow".into();
+        snapshot.cold_flow_release_allowed = true;
+        let key = snapshot.key.clone();
+        let mut model = Model::default();
+        model.set_surface(true);
+        model.accept(0, snapshot.clone(), 100, 100).unwrap();
+        assert!(model.request_release(&key, 101, false).is_err());
+        assert_eq!(model.request_release(&key, 101, true).unwrap(), key);
+        assert!(model.request_release(&key, 101, true).is_err());
+        assert!(
+            model.panels()[0].can_cancel(101, true, Some(1)),
+            "safe cancel stays available while release is pending"
+        );
+        let mut stale = snapshot.clone();
+        stale.revision = 0;
+        stale.cold_flow_release_allowed = false;
+        assert!(model.accept(0, stale, 101, 101).is_err());
+        assert!(!model.can_release(&key, 101, true));
+        snapshot.revision = 2;
+        snapshot.cold_flow_release_allowed = false;
+        model.accept(0, snapshot.clone(), 102, 102).unwrap();
+        model.tick(102);
+        assert!(!model.can_release(&key, 102, true));
+        snapshot.revision = 3;
+        snapshot.cold_flow_release_allowed = true;
+        model.accept(0, snapshot, 103, 103).unwrap();
+        assert!(!model.can_release(&key, 2104, true));
+        model.set_source(1);
+        assert!(!model.can_release(&key, 104, true));
+        let old = super::tests::run();
+        let mut model = Model::default();
+        model.accept(0, old.clone(), 100, 100).unwrap();
+        assert!(!model.can_release(&old.key, 101, true));
     }
 }

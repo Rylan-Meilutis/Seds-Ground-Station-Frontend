@@ -78,6 +78,8 @@ pub fn SequenceProgressView(
     on_restore: EventHandler<RunKey>,
     on_cancel: EventHandler<RunKey>,
     on_dismiss: EventHandler<RunKey>,
+    #[props(default = false)] can_release_cold_flow: bool,
+    #[props(default)] on_release_cold_flow: EventHandler<RunKey>,
 ) -> Element {
     if !panel.visible {
         return rsx! {};
@@ -86,6 +88,7 @@ pub fn SequenceProgressView(
     let restore_key = key.clone();
     let minimize_key = key.clone();
     let cancel_key = key.clone();
+    let release_key = key.clone();
     let dismiss_key = key.clone();
     let keyboard_key = key.clone();
     let terminal = panel.snapshot.outcome.terminal();
@@ -119,6 +122,7 @@ pub fn SequenceProgressView(
         Kind::NitrogenTest => "nitrogen-test",
         Kind::Fill => "fill",
         Kind::Turbocharge => "turbocharge",
+        Kind::ColdFlow => "cold-flow",
         Kind::ContinueFillSequence => "fill-sequence",
         Kind::IgniterSequence => "igniter-sequence",
     };
@@ -182,6 +186,12 @@ pub fn SequenceProgressView(
                     }
                 }
                 footer {
+                    if panel.snapshot.kind==Kind::ColdFlow && !terminal {
+                        p {class:"gs26-sequence-legend","Cold Flow opens PILOT/main only. No igniter or launch countdown. Cancel closes supplies/main, then dump and vent."}
+                        if panel.snapshot.cold_flow_release_allowed {
+                            button {class:"gs26-sequence-cancel",r#type:"button",disabled:!fresh||!can_release_cold_flow,onclick:move |_|on_release_cold_flow.call(release_key.clone()),"Cold Flow · open PILOT/main"}
+                        }
+                    }
                     if panel.cancel_pending {p {role:"status","Cancellation requested. Waiting for the station's safe-cancel result."}}
                     if !terminal {button {class:"gs26-sequence-cancel",r#type:"button",disabled:!can_cancel,onclick:move |_|on_cancel.call(cancel_key.clone()),"Cancel sequence"}}
                     p {class:"gs26-sequence-legend","Planned · Command accepted · Board reported · Measured · Unknown"}
@@ -277,5 +287,25 @@ mod tests {
         assert!(value.contains("gs26-sequence-chip"));
         assert!(!value.contains("role=\"dialog\""));
         assert!(!value.contains("Cancel sequence"));
+    }
+    fn cold_fixture() -> Element {
+        let snapshot:Snapshot=serde_json::from_value(serde_json::json!({"version":1,"key":{"backend_instance":"11111111111111111111111111111111","reset_epoch":"2222222222222222","run_id":"33333333333333333333333333333333"},"revision":1,"kind":"cold_flow","outcome":"running","title":"Auto Cold Flow","message":"Isolated hold; explicit release required","current_step":"cold-await","next_step":"cold-release","steps":[{"id":"cold-await","label":"Await operator release","state":"watching","watch":[{"id":"pt","label":"Tank pressure","target":100.,"observed":100.,"unit":"psi","age_ms":0,"valid_for_ms":2000,"evidence":"measured"}]},{"id":"cold-release","label":"Open PILOT/main","state":"planned","watch":[]}],"observed_age_ms":0,"valid_for_ms":2000,"cancel_allowed":true,"cold_flow_release_allowed":true})).unwrap();
+        let mut model = Model::default();
+        model.set_surface(true);
+        model.accept(0, snapshot, 0, 0).unwrap();
+        let panel = model.panels()[0].clone();
+        rsx! {SequenceProgressView{panel,now_ms:0,can_send_commands:true,cancel_api_version:Some(1),can_release_cold_flow:true,on_release_cold_flow:move|_|{},on_minimize:move|_|{},on_restore:move|_|{},on_cancel:move|_|{},on_dismiss:move|_|{}}}
+    }
+    #[test]
+    fn actual_cold_flow_modal_has_explicit_release_and_safe_cancel_without_launch_control() {
+        let mut dom = VirtualDom::new(cold_fixture);
+        dom.rebuild_in_place();
+        let value = dioxus::ssr::render(&dom);
+        assert!(value.contains("Cold Flow · open PILOT/main"));
+        assert!(value.contains("Cancel sequence"));
+        assert!(value.contains("No igniter or launch countdown"));
+        assert!(value.contains("100.00"));
+        assert!(!value.contains("Close sequence result"));
+        assert!(value.contains("Minimize sequence progress"));
     }
 }

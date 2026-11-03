@@ -29,11 +29,11 @@ fixture+=`try {
  await page.getByRole('link',{name:'Connection',exact:true}).click();await page.getByRole('heading',{name:'Board state and recovery'}).waitFor();
  const panel=page.locator('.gs26-board-recovery'),ab=panel.locator('[data-board="AB"]'),rf=panel.locator('[data-board="RF"]');
  await ab.getByText('Actual board state: Startup (fresh)',{exact:true}).waitFor();await rf.getByText('Actual board state: Unknown (unconfirmed/stale)',{exact:true}).waitFor();
- assert(await rf.getByRole('button',{name:'Query board'}).isDisabled());assert(await rf.getByRole('button',{name:'Recover Abort…'}).isDisabled());
+ assert(await rf.getByRole('button',{name:'Query board'}).isDisabled());assert(await rf.getByRole('button',{name:'Reset metadata to Startup…'}).isDisabled());assert.match(await rf.innerText(),/Cached application metadata only; no physical recovery/);
  assert(await panel.getByRole('button',{name:'Reset ALL to Startup…'}).isDisabled());assert(await panel.getByRole('combobox',{name:'Supported runtime mode'}).isDisabled());
  assert.equal(prepared.length+confirmed.length+queried.length,0,'mount/poll must not send queries or actions');
  await ab.getByRole('button',{name:'Query board'}).click();await page.getByText(/Synthetic query accepted/).waitFor();assert.deepEqual(queried,[{board:'AB'}]);
- await ab.getByRole('button',{name:'Recover Abort…'}).click();let modal=page.getByRole('alertdialog');await modal.waitFor();
+ await ab.getByRole('button',{name:'Recover to Idle…'}).click();let modal=page.getByRole('alertdialog');await modal.waitFor();
  assert.match(await modal.innerText(),/Frozen targets: AB/);assert.equal(confirmed.length,0);assert(await modal.getByRole('button',{name:'Confirm recovery action'}).isDisabled());
  // Expiring actual state/capability fields cannot destroy a live server ticket.
  const liveAB=boardRecovery.boards.find(b=>b.id==='AB'),savedAB=JSON.parse(JSON.stringify(liveAB));
@@ -44,9 +44,9 @@ fixture+=`try {
  await modal.getByRole('button',{name:'Cancel',exact:true}).click();await modal.waitFor({state:'detached'});assert.equal(confirmed.length,0);
  // Server revocation cancels the frozen confirmation; no silent reprepare/retry.
  await ab.getByRole('button',{name:'Resync…'}).click();await modal.waitFor();boardRecovery.confirmation=null;await modal.waitFor({state:'detached'});assert.equal(confirmed.length,0);const before=prepared.length;
- await page.reload();await page.getByRole('link',{name:'Connection',exact:true}).click();await panel.waitFor();await ab.getByRole('button',{name:'Recover Abort…'}).waitFor();assert.equal(prepared.length,before,'reconnect must not repeat preparation/action');
+ await page.reload();await page.getByRole('link',{name:'Connection',exact:true}).click();await panel.waitFor();await ab.getByRole('button',{name:'Recover to Idle…'}).waitFor();assert.equal(prepared.length,before,'reconnect must not repeat preparation/action');
  // Explicit confirmation returns a pending result, never a fictitious safe position.
- await ab.getByRole('button',{name:'Recover Abort…'}).click();await modal.waitFor();await modal.getByLabel('Type RECOVER AB to confirm').fill('RECOVER AB');await modal.getByRole('button',{name:'Confirm recovery action'}).click();await page.getByText(/Request accepted; awaiting fresh device confirmation/).waitFor();assert.equal(confirmed.length,1);assert((await panel.innerText()).includes('Pending / not confirmed'));assert.doesNotMatch(await panel.innerText(),/Confirmed by board readbacks/);
+ await ab.getByRole('button',{name:'Recover to Idle…'}).click();await modal.waitFor();await modal.getByLabel('Type RECOVER AB to confirm').fill('RECOVER AB');await modal.getByRole('button',{name:'Confirm recovery action'}).click();await page.getByText(/Request accepted; awaiting fresh device confirmation/).waitFor();assert.equal(confirmed.length,1);assert((await panel.innerText()).includes('Pending / not confirmed'));assert.doesNotMatch(await panel.innerText(),/Confirmed by board readbacks/);
  boardRecovery.operation=null;
  // All seven supported/fresh identities are required before Reset ALL is offered.
  const template=JSON.parse(JSON.stringify(boardRecovery.boards.find(b=>b.id==='AB')));for(const b of boardRecovery.boards){Object.assign(b,JSON.parse(JSON.stringify(template)),{id:b.id,label:b.label});}
@@ -63,7 +63,7 @@ fixture+=`try {
  }
  // A response held in transport beyond the2sreadback bound must not
  // reappear as fresh merely because it has just reached the client.
- delayStatusMs=2500;await ab.getByRole('heading',{name:'AB delayed fixture (AB)',exact:true}).waitFor();assert(await ab.getByRole('button',{name:'Recover Abort…'}).isDisabled(),'transport delay must be included in readback age');delayStatusMs=0;
+ delayStatusMs=2500;await ab.getByRole('heading',{name:'AB delayed fixture (AB)',exact:true}).waitFor();assert(await ab.getByRole('button',{name:'Recover to Idle…'}).isDisabled(),'transport delay must be included in readback age');delayStatusMs=0;
  for(const width of[320,390,844,1280]){await page.setViewportSize({width,height:1000});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'populated board cards fit '+width);}
  // An older backend removes capability; the UI never guesses a recovery write.
  boardRecovery={};await panel.getByText('Recovery status unavailable. No control action is enabled.',{exact:true}).waitFor();assert.equal(confirmed.length,3);

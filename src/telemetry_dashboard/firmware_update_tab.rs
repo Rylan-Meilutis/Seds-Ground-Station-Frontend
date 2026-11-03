@@ -1,7 +1,13 @@
 use super::prelude::*;
-use super::{UrlConfig, http_get_json};
+use super::recording_download::ExportOwner;
+use super::recording_download::{saved_json, use_export_lifetime};
 use crate::auth;
 use serde::Deserialize;
+use std::rc::Rc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 struct FirmwareTarget {
@@ -32,7 +38,25 @@ struct FirmwareUpdateStatus {
 }
 
 fn terminal_phase(phase: &str) -> bool {
-    matches!(phase, "completed" | "cancelled" | "failed")
+    matches!(
+        phase,
+        "prepared_reboot_unverified" | "completed" | "cancelled" | "failed"
+    )
+}
+
+fn phase_label(phase: &str) -> &str {
+    match phase {
+        "prepared_reboot_unverified" => "Prepared — reboot not verified",
+        "completed" => "Transfer accepted — reboot not verified (legacy status)",
+        "rebooting" => "Reboot requested — not verified",
+        _ => phase,
+    }
+}
+fn capture_owner(
+    alive: Arc<AtomicBool>,
+    selected: impl Fn() -> bool + 'static,
+) -> Result<Rc<ExportOwner>, String> {
+    ExportOwner::capture_selected(move || alive.load(Ordering::Acquire) && selected())
 }
 
 fn is_seds_filename(filename: &str) -> bool {
@@ -49,13 +73,14 @@ fn human_bytes(bytes: usize) -> String {
     }
 }
 
-fn firmware_url(path: &str) -> Result<String, String> {
+fn firmware_url(owner: &ExportOwner, path: &str) -> Result<String, String> {
     let path = if path.starts_with('/') {
         path.to_string()
     } else {
         format!("/{path}")
     };
-    let base = UrlConfig::base_http();
+    owner.check()?;
+    let base = owner.base();
     if !base.trim().is_empty() {
         return Ok(format!("{}{path}", base.trim_end_matches('/')));
     }
@@ -72,107 +97,103 @@ fn firmware_url(path: &str) -> Result<String, String> {
     Ok(format!("http://localhost:3000{path}"))
 }
 
-#[cfg(target_arch = "wasm32")]
+async fn firmware_post(
+    path: &str,
+    filename: Option<&str>,
+    bytes: Vec<u8>,
+    owner: Rc<ExportOwner>,
+) -> Result<FirmwareUpdateStatus, String> {
+    owner.check()?;
+    if !auth::can_send_command("FirmwareUpdate") {
+        return Err("FirmwareUpdate permission is required.".into());
+    }
+    let url = firmware_url(&owner, path)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (status, text) = {
+        let client = auth::build_native_http_client(
+            owner.skip_tls(),
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(120),
+        )?;
+        let mut request = client.post(url).body(bytes);
+        if let Some(filename) = filename {
+            request = request
+                .header("Content-Type", "application/octet-stream")
+                .header("X-Firmware-Filename", filename);
+        }
+        if let Some(token) = owner.token() {
+            request = request.bearer_auth(token.to_owned());
+        }
+        let response = owner
+            .wait(request.send())
+            .await?
+            .map_err(|err| err.to_string())?;
+        let status = response.status().as_u16();
+        let text = owner
+            .wait(response.text())
+            .await?
+            .map_err(|err| err.to_string())?;
+        (status, text)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let (status, text) = {
+        let controller = web_sys::AbortController::new()
+            .map_err(|_| "Firmware request cancellation unavailable")?;
+        let _cancel = super::HttpAbortOnDrop(controller.clone());
+        let signal = controller.signal();
+        let mut request = gloo_net::http::Request::post(&url).abort_signal(Some(&signal));
+        if let Some(filename) = filename {
+            request = request
+                .header("Content-Type", "application/octet-stream")
+                .header("X-Firmware-Filename", filename);
+        }
+        if let Some(token) = owner.token() {
+            request = request.header("Authorization", &format!("Bearer {token}"));
+        }
+        let request = request.body(bytes).map_err(|err| err.to_string())?;
+        let response = owner
+            .wait(request.send())
+            .await?
+            .map_err(|err| err.to_string())?;
+        let status = response.status();
+        let text = owner
+            .wait(response.text())
+            .await?
+            .map_err(|err| err.to_string())?;
+        (status, text)
+    };
+    owner.check()?;
+    // This response never clears a possibly newer account's global session.
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "HTTP {status}: {}",
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    serde_json::from_str(&text).map_err(|err| err.to_string())
+}
 async fn upload_firmware(
     board: &str,
     filename: &str,
     bytes: Vec<u8>,
+    owner: Rc<ExportOwner>,
 ) -> Result<FirmwareUpdateStatus, String> {
-    use gloo_net::http::Request;
-
-    let url = firmware_url(&format!("/api/firmware/flash/{board}"))?;
-    let mut request = Request::post(&url)
-        .header("Content-Type", "application/octet-stream")
-        .header("X-Firmware-Filename", filename);
-    if let Some(token) = auth::current_token() {
-        request = request.header("Authorization", &format!("Bearer {token}"));
-    }
-    let response = request
-        .body(bytes)
-        .map_err(|err| err.to_string())?
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    if status == 401 {
-        auth::clear_current_session();
-    }
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {status}: {}", body.trim()));
-    }
-    serde_json::from_str(&body).map_err(|err| err.to_string())
+    firmware_post(
+        &format!("/api/firmware/flash/{board}"),
+        Some(filename),
+        bytes,
+        owner,
+    )
+    .await
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn upload_firmware(
-    board: &str,
-    filename: &str,
-    bytes: Vec<u8>,
-) -> Result<FirmwareUpdateStatus, String> {
-    let url = firmware_url(&format!("/api/firmware/flash/{board}"))?;
-    let client = auth::build_native_http_client(
-        UrlConfig::_skip_tls_verify(),
-        std::time::Duration::from_secs(10),
-        std::time::Duration::from_secs(120),
-    )?;
-    let mut request = client
-        .post(url)
-        .header("Content-Type", "application/octet-stream")
-        .header("X-Firmware-Filename", filename)
-        .body(bytes);
-    if let Some(token) = auth::current_token() {
-        request = request.bearer_auth(token);
-    }
-    let response = request.send().await.map_err(|err| err.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        auth::clear_current_session();
-    }
-    if !status.is_success() {
-        return Err(format!("HTTP {status}: {}", body.trim()));
-    }
-    serde_json::from_str(&body).map_err(|err| err.to_string())
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn cancel_firmware(id: u64) -> Result<FirmwareUpdateStatus, String> {
-    use gloo_net::http::Request;
-
-    let url = firmware_url(&format!("/api/firmware/updates/{id}/cancel"))?;
-    let mut request = Request::post(&url);
-    if let Some(token) = auth::current_token() {
-        request = request.header("Authorization", &format!("Bearer {token}"));
-    }
-    let response = request.send().await.map_err(|err| err.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {status}: {}", body.trim()));
-    }
-    serde_json::from_str(&body).map_err(|err| err.to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn cancel_firmware(id: u64) -> Result<FirmwareUpdateStatus, String> {
-    let url = firmware_url(&format!("/api/firmware/updates/{id}/cancel"))?;
-    let client = auth::build_native_http_client(
-        UrlConfig::_skip_tls_verify(),
-        std::time::Duration::from_secs(8),
-        std::time::Duration::from_secs(15),
-    )?;
-    let mut request = client.post(url);
-    if let Some(token) = auth::current_token() {
-        request = request.bearer_auth(token);
-    }
-    let response = request.send().await.map_err(|err| err.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    if !status.is_success() {
-        return Err(format!("HTTP {status}: {}", body.trim()));
-    }
-    serde_json::from_str(&body).map_err(|err| err.to_string())
+async fn cancel_firmware(id: u64, owner: Rc<ExportOwner>) -> Result<FirmwareUpdateStatus, String> {
+    firmware_post(
+        &format!("/api/firmware/updates/{id}/cancel"),
+        None,
+        Vec::new(),
+        owner,
+    )
+    .await
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -185,22 +206,42 @@ async fn poll_delay() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
 
-async fn poll_update(id: u64, mut status_signal: Signal<Option<FirmwareUpdateStatus>>) {
+async fn poll_update(
+    id: u64,
+    mut status_signal: Signal<Option<FirmwareUpdateStatus>>,
+    owner: Rc<ExportOwner>,
+) {
     loop {
-        match http_get_json::<FirmwareUpdateStatus>(&format!("/api/firmware/updates/{id}")).await {
-            Ok(status) => {
+        if !owner.is_current() {
+            return;
+        }
+        match saved_json::<FirmwareUpdateStatus>(
+            &format!("/api/firmware/updates/{id}"),
+            owner.clone(),
+        )
+        .await
+        {
+            Ok(status) if owner.is_current() => {
                 let done = terminal_phase(&status.phase);
                 status_signal.set(Some(status));
                 if done {
                     return;
                 }
             }
+            Ok(_) => return,
             Err(err) => {
+                if !owner.is_current() {
+                    return;
+                }
+                let terminal_auth = err.contains("(401)") || err.contains("(403)");
                 let mut current = status_signal.read().clone();
                 if let Some(status) = current.as_mut() {
                     status.message = format!("Progress refresh failed: {err}");
                 }
                 status_signal.set(current);
+                if terminal_auth {
+                    return;
+                }
             }
         }
         poll_delay().await;
@@ -218,46 +259,98 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
     let mut target_error = use_signal(|| None::<String>);
     let mut upload_error = use_signal(String::new);
     let mut update = use_signal(|| None::<FirmwareUpdateStatus>);
+    let lifetime = use_export_lifetime();
+    let mut target_owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let mut job_owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let mut operation_epoch = use_signal(|| 0_u64);
+    let mut submitting = use_signal(|| false);
+    use_effect(move || {
+        if update
+            .read()
+            .as_ref()
+            .is_some_and(|status| terminal_phase(&status.phase))
+        {
+            // An unverified transfer never carries consent into another update.
+            acknowledged.set(false);
+        }
+    });
 
     // Discovery continues after this tab mounts. Keep the address-book snapshot
     // current, without switching an operator's selected firmware destination.
-    use_future(move || async move {
-        loop {
-            match http_get_json::<Vec<FirmwareTarget>>("/api/firmware/targets").await {
-                Ok(found) => {
-                    if selected_board.read().is_empty()
-                        && let Some(first) = found
-                            .iter()
-                            .find(|target| target.supported && target.discovered)
-                    {
-                        selected_board.set(first.board.clone());
+    let discovery_lifetime = lifetime.clone();
+    use_future(move || {
+        let alive = discovery_lifetime.clone();
+        async move {
+            loop {
+                let owner = match capture_owner(alive.clone(), || true) {
+                    Ok(owner) => owner,
+                    Err(_) => {
+                        poll_delay().await;
+                        continue;
                     }
-                    targets.set(found);
-                    target_error.set(None);
+                };
+                match saved_json::<Vec<FirmwareTarget>>("/api/firmware/targets", owner.clone())
+                    .await
+                {
+                    Ok(found) if owner.is_current() => {
+                        if target_owner
+                            .peek()
+                            .as_ref()
+                            .is_some_and(|prior| !prior.is_current())
+                        {
+                            selected_board.set(String::new());
+                            selected_filename.set(String::new());
+                            selected_bytes.set(None);
+                            acknowledged.set(false);
+                            update.set(None);
+                            job_owner.set(None);
+                            submitting.set(false);
+                            operation_epoch.set(operation_epoch().saturating_add(1));
+                        }
+                        if selected_board.peek().is_empty()
+                            && let Some(first) = found
+                                .iter()
+                                .find(|target| target.supported && target.discovered)
+                        {
+                            selected_board.set(first.board.clone());
+                        }
+                        targets.set(found);
+                        target_owner.set(Some(owner));
+                        target_error.set(None);
+                        loading.set(false);
+                    }
+                    Ok(_) => {}
+                    Err(err) if owner.is_current() => {
+                        targets.set(Vec::new());
+                        target_error
+                            .set(Some(format!("Unable to refresh firmware targets: {err}")));
+                        loading.set(false);
+                    }
+                    Err(_) => {}
                 }
-                Err(err) => {
-                    targets.set(Vec::new());
-                    target_error.set(Some(format!("Unable to refresh firmware targets: {err}")));
+                for _ in 0..4 {
+                    poll_delay().await;
                 }
-            }
-            loading.set(false);
-            for _ in 0..4 {
-                poll_delay().await;
             }
         }
     });
 
     let can_flash = auth::can_send_command("FirmwareUpdate");
-    let active = update
-        .read()
-        .as_ref()
-        .is_some_and(|status| !terminal_phase(&status.phase));
+    let active = submitting()
+        || update
+            .read()
+            .as_ref()
+            .is_some_and(|status| !terminal_phase(&status.phase));
     let selected_target = targets
         .read()
         .iter()
         .find(|target| target.board == *selected_board.read())
         .cloned();
     let ready = can_flash
+        && target_owner
+            .read()
+            .as_ref()
+            .is_some_and(|owner| owner.is_current())
         && acknowledged()
         && selected_bytes
             .read()
@@ -290,6 +383,8 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
         .map(String::as_str)
         .unwrap_or(theme.info_accent.as_str());
 
+    let file_lifetime = lifetime.clone();
+    let upload_lifetime = lifetime.clone();
     rsx! {
         div { style: "height:100%; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:14px; background:{theme.app_background};",
             div { style: "{panel_style}",
@@ -309,7 +404,7 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                         style: "{input_style}",
                         value: "{selected_board}",
                         disabled: active || loading(),
-                        onchange: move |event| selected_board.set(event.value()),
+                        onchange: move |event| { operation_epoch.set(operation_epoch().saturating_add(1)); acknowledged.set(false); selected_board.set(event.value()); },
                         if selected_board.read().is_empty() {
                             option { value: "", disabled: true, "No supported online OTA targets" }
                         }
@@ -348,15 +443,19 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                                 upload_error.set("Only .seds firmware files can be uploaded.".to_string());
                                 return;
                             }
+                            let Some(source) = target_owner.peek().clone().filter(|owner| owner.is_current()) else { upload_error.set("Refresh targets for the current station before selecting firmware.".into()); return; };
+                            let Some(epoch) = operation_epoch().checked_add(1) else { upload_error.set("Firmware selection ownership exhausted; reopen the dashboard.".into()); return; };
+                            operation_epoch.set(epoch);
+                            let board = selected_board();
+                            let owner = match capture_owner(file_lifetime.clone(), move || source.is_current() && operation_epoch() == epoch && selected_board() == board) { Ok(owner) => owner, Err(_) => return };
                             spawn(async move {
-                                match file.read_bytes().await {
-                                    Ok(bytes) => {
-                                        selected_filename.set(filename);
-                                        selected_bytes.set(Some(bytes.to_vec()));
-                                        upload_error.set(String::new());
-                                        acknowledged.set(false);
+                                match owner.wait(file.read_bytes()).await {
+                                    Ok(Ok(bytes)) if owner.is_current() => {
+                                        selected_filename.set(filename); selected_bytes.set(Some(bytes.to_vec()));
+                                        upload_error.set(String::new()); acknowledged.set(false);
                                     }
-                                    Err(err) => upload_error.set(format!("Failed to read the selected firmware file: {err}")),
+                                    Ok(Err(err)) if owner.is_current() => upload_error.set(format!("Failed to read the selected firmware file: {err}")),
+                                    _ => {}
                                 }
                             });
                         }
@@ -379,7 +478,7 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
 
                 div { style: "padding:12px; border:1px solid {theme.warning_border}; border-radius:10px; background:{theme.warning_background}; color:{theme.warning_text}; line-height:1.45;",
                     strong { "Warning: " }
-                    "Only a live-update delta .seds artifact is accepted. It must be generated against the firmware currently installed on this board. Full-image recovery .seds files require the board's UART recovery tool. A successful live transfer reboots the target immediately."
+                    "Only a live-update delta .seds artifact is accepted. It must match the installed firmware base. Full-image recovery files require the UART recovery tool. An accepted transfer requests a reset; it does not verify a reboot or the running image. Launch may prevent the reset."
                 }
                 label { style: "display:flex; align-items:flex-start; gap:9px; color:{theme.text_secondary};",
                     input {
@@ -388,7 +487,7 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                         disabled: active,
                         onchange: move |event| acknowledged.set(event.checked()),
                     }
-                    span { "I selected the correct board and firmware base, and I understand that the board will reboot." }
+                    span { "I selected the correct board and firmware base, and I understand that this requests a board reset." }
                 }
 
                 if !can_flash {
@@ -406,15 +505,20 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                         let Some(bytes) = selected_bytes.read().clone() else {
                             return;
                         };
-                        upload_error.set(String::new());
+                        let Some(source) = target_owner.peek().clone().filter(|owner| owner.is_current()) else { upload_error.set("Refresh firmware targets for the current station.".into()); return; };
+                        let Some(epoch) = operation_epoch().checked_add(1) else { upload_error.set("Firmware operation ownership exhausted; reopen the dashboard.".into()); return; };
+                        operation_epoch.set(epoch);
+                        let selected = board.clone();
+                        let owner = match capture_owner(upload_lifetime.clone(), move || source.is_current() && operation_epoch() == epoch && selected_board() == selected && auth::can_send_command("FirmwareUpdate")) { Ok(owner) => owner, Err(_) => return };
+                        job_owner.set(Some(owner.clone())); submitting.set(true); upload_error.set(String::new());
                         spawn(async move {
-                            match upload_firmware(&board, &filename, bytes).await {
-                                Ok(status) => {
-                                    let id = status.id;
-                                    update.set(Some(status));
-                                    poll_update(id, update).await;
+                            match upload_firmware(&board, &filename, bytes, owner.clone()).await {
+                                Ok(status) if owner.is_current() => {
+                                    submitting.set(false); let id = status.id;
+                                    update.set(Some(status)); poll_update(id, update, owner).await;
                                 }
-                                Err(err) => upload_error.set(err),
+                                Err(err) if owner.is_current() => { submitting.set(false); upload_error.set(err); }
+                                _ => {}
                             }
                         });
                     },
@@ -429,7 +533,7 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
             if let Some(status) = update.read().as_ref() {
                 div { style: "{panel_style} display:grid; gap:10px;",
                     div { style: "display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;",
-                        strong { "{status.board_label} — {status.phase}" }
+                        strong { "{status.board_label} — {phase_label(&status.phase)}" }
                         span { style: "color:{theme.text_secondary};", "Job #{status.id}" }
                     }
                     progress {
@@ -437,7 +541,7 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                         max: "100",
                         value: "{status.progress_percent.clamp(0.0, 100.0)}",
                     }
-                    div { style: "color:{theme.text_secondary};", "{human_bytes(status.bytes_sent)} / {human_bytes(status.total_bytes)} ({status.progress_percent:.1}%)" }
+                    div { style: "color:{theme.text_secondary};", "{human_bytes(status.bytes_sent)} / {human_bytes(status.total_bytes)} ({status.progress_percent:.1}% transferred)" }
                     div { style: "color:{theme.text_secondary};", "{status.message}" }
                     if let Some(maximum) = status.board_max_bytes {
                         div { style: "color:{theme.text_muted}; font-size:0.9rem;", "Board capacity: {human_bytes(maximum as usize)}" }
@@ -448,10 +552,12 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
                             onclick: {
                                 let id = status.id;
                                 move |_| {
+                                    let Some(owner) = job_owner.peek().clone().filter(|owner| owner.is_current()) else { upload_error.set("This update belongs to an earlier station or session; refresh targets.".into()); return; };
                                     spawn(async move {
-                                        match cancel_firmware(id).await {
-                                            Ok(status) => update.set(Some(status)),
-                                            Err(err) => upload_error.set(err),
+                                        match cancel_firmware(id, owner.clone()).await {
+                                            Ok(status) if owner.is_current() => update.set(Some(status)),
+                                            Err(err) if owner.is_current() => upload_error.set(err),
+                                            _ => {}
                                         }
                                     });
                                 }
@@ -464,3 +570,7 @@ pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "firmware_update_owner_tests.rs"]
+mod owner_tests;

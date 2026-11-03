@@ -281,7 +281,7 @@ pub fn DataTab(
             });
         }
     });
-    let layout = super::data_groups::with_grouped_views(layout_for_fill_source(layout, fill_targets.read().as_ref().map(|cfg| cfg.fill_source.as_str())));
+    let layout = super::data_groups::with_grouped_views(layout_for_fill_source(super::igniter_sense_panel::with_tab(layout), fill_targets.read().as_ref().map(|cfg| cfg.fill_source.as_str())));
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
     let active_subtabs = use_signal(HashMap::<String, String>::new);
@@ -431,6 +431,9 @@ pub fn DataTab(
         div {
             style: "padding:8px 0 8px 0; height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; display:flex; flex-direction:column; gap:8px; --gs26-data-toggle-background:{theme.tab_shell_background}; --gs26-data-toggle-border:{theme.tab_shell_border}; --gs26-data-toggle-text:{theme.button_text};",
 
+            if current == "IGNITER_SENSE_SIGNAL" {
+                super::igniter_sense_panel::IgniterSensePanel {theme:theme.clone()}
+            }
             div { style: "display:flex; flex-direction:column; gap:6px; width:100%; min-width:0; align-self:stretch;",
 
                 div {

@@ -57,7 +57,7 @@ pub fn BoardAbortReadiness(#[props(default = false)] show_hitl_interlocks: bool)
     });
     let _ = tick();
     let current = report.read().clone();
-    let mode = super::station_mode::OPERATING_MODE.read().clone();
+    let mode = super::station_mode::current_snapshot();
     let hitl = mode["effective_mode"].as_str() == Some("hitl");
     let synchronized = mode["synchronized"].as_bool() == Some(true);
     let rendered_source = (UrlConfig::base_http(), crate::auth::current_token());
@@ -106,12 +106,16 @@ pub fn BoardAbortReadiness(#[props(default = false)] show_hitl_interlocks: bool)
         if show_hitl_interlocks&&hitl {
             fieldset {legend {"HITL enforcement at the primary"}
                 p {"Changing enforcement does not sign off checklists or change their history. Launch still requires current primary authority."}
-                for (name,label) in [("TogglePlumbingDelayInterlock","Retraction minimum 45 seconds"),("ToggleChecklistInterlock","Checklist enforcement"),("ToggleSupplyInterlock","Nitrogen/nitrous one at a time"),("ToggleBoardStateProofInterlock","Board state checks")] {
+                if crate::auth::current_status().station_role.as_deref()==Some("rrls") {
+                    p {role:"status","{super::station_mode::configuration_description(&mode)}"}
+                }
+                for (index,(name,label)) in [("TogglePlumbingDelayInterlock","Retraction minimum 45 seconds"),("ToggleChecklistInterlock","Checklist enforcement"),("ToggleSupplyInterlock","Nitrogen/nitrous one at a time"),("ToggleBoardStateProofInterlock","Board state checks")].into_iter().enumerate() {
                     {
                         let policy=ACTION_POLICY_SIGNAL.read();
                         let control=policy.controls.iter().find(|control|control.cmd==name);
-                        let known=control.and_then(|control|control.actuated);
-                        let enabled=synchronized&&known.is_some()&&control.is_some_and(|control|control.enabled)
+                        let current_known=control.and_then(|control|control.actuated);
+                        let known=current_known.or_else(||super::station_mode::configuration_setting(&mode,index));
+                        let enabled=synchronized&&current_known.is_some()&&control.is_some_and(|control|control.enabled)
                             &&crate::auth::can_send_command(name)&&WS_SENDER.read().is_some();
                         let state=known.map_or("unknown",|value|if value{"on"}else{"off"});
                         let source=rendered_source.clone();

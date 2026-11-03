@@ -1,4 +1,12 @@
-use super::{UrlConfig, http_get_json, layout::ThemeConfig};
+#[path = "recording_export_owner.rs"]
+mod export_owner;
+pub(super) use export_owner::ExportOwner;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "recording_download_file.rs"]
+mod local_file;
+
+use super::{http_get_json, layout::ThemeConfig};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::auth;
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -33,112 +41,186 @@ fn choose_recording(records: &[Recording], current: &str) -> String {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-async fn download_csv(id: &str) -> Result<String, String> {
-    let path = download_path(id)?;
-    download_csv_path(&path, &format!("{}.csv", id.trim_end_matches(".db"))).await
-}
+
+
+
 
 #[cfg(target_arch = "wasm32")]
-pub(super) async fn download_csv_path(path: &str, filename: &str) -> Result<String, String> {
-    let url = format!("{}{}", UrlConfig::base_http().trim_end_matches('/'), path);
-    let token = auth::current_token();
-    let script = format!(
-        r#"
-        return await (async () => {{
-            const token = {token};
-            const response = await fetch({url}, {{
-                headers: token ? {{Authorization: "Bearer " + token}} : {{}},
-                cache: "no-store"
-            }});
-            if (!response.ok) throw new Error("Export failed (" + response.status + "): " + await response.text());
-            const blob = await response.blob();
-            const address = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = address;
-            link.download = {filename};
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            setTimeout(() => URL.revokeObjectURL(address), 60000);
-            return "Export ready. Check your downloads.";
-        }})();
-    "#,
-        token = serde_json::to_string(&token).unwrap(),
-        url = serde_json::to_string(&url).unwrap(),
-        filename = serde_json::to_string(&filename).unwrap()
-    );
-    document::eval(&script)
-        .join::<String>()
-        .await
-        .map_err(|e| e.to_string())
+pub(super) async fn download_csv_path_owned(path: &str, filename: &str, owner: std::rc::Rc<ExportOwner>) -> Result<String, String> {
+    use wasm_bindgen::JsCast;
+    owner.check()?;
+    let url = export_url(&owner, path)?;
+    let controller = web_sys::AbortController::new().map_err(|_| "Export cancellation is unavailable")?;
+    let _cancel = super::HttpAbortOnDrop(controller.clone());
+    let signal = controller.signal();
+    let mut request = gloo_net::http::Request::get(&url).abort_signal(Some(&signal));
+    if let Some(token) = owner.token() { request = request.header("Authorization", &format!("Bearer {token}")); }
+    let response = owner.wait(request.send()).await?.map_err(|e| e.to_string())?;
+    if !response.ok() {
+        let status = response.status();
+        let body = owner.wait(response.text()).await?.unwrap_or_default();
+        return Err(format!("Export failed ({status}): {}", body.chars().take(200).collect::<String>()));
+    }
+    let response: web_sys::Response = response.into();
+    owner.check()?;
+    let promise = response.blob().map_err(|_| "Export body is unavailable")?;
+    let value = owner.wait(wasm_bindgen_futures::JsFuture::from(promise)).await?
+        .map_err(|_| "Export body could not be read")?;
+    let blob: web_sys::Blob = value.dyn_into().map_err(|_| "Invalid export body")?;
+    save_browser_blob(&owner, &blob, filename)?;
+    Ok("Export ready. Check your downloads.".into())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn download_csv(id: &str) -> Result<String, String> {
-    let path = download_path(id)?;
-    download_csv_path(&path, &format!("{}.csv", id.trim_end_matches(".db"))).await
+#[cfg(target_arch = "wasm32")]
+fn save_browser_blob(owner: &ExportOwner, blob: &web_sys::Blob, filename: &str) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    struct ObjectUrl(Option<String>);
+    impl Drop for ObjectUrl {
+        fn drop(&mut self) { if let Some(url) = self.0.take() { let _ = web_sys::Url::revoke_object_url(&url); } }
+    }
+    owner.check()?;
+    let address = web_sys::Url::create_object_url_with_blob(blob).map_err(|_| "Cannot create export download")?;
+    let mut object = ObjectUrl(Some(address.clone()));
+    let document = web_sys::window().and_then(|w| w.document()).ok_or("Document is unavailable")?;
+    let link: web_sys::HtmlAnchorElement = document.create_element("a").map_err(|_| "Cannot create download")?
+        .dyn_into().map_err(|_| "Invalid download element")?;
+    link.set_href(&address);
+    link.set_download(filename);
+    let body = document.body().ok_or("Document body is unavailable")?;
+    owner.check()?;
+    body.append_child(&link).map_err(|_| "Cannot attach download")?;
+    link.click();
+    link.remove();
+    let address = object.0.take().ok_or("Export download was retired")?;
+    gloo_timers::callback::Timeout::new(60_000, move || { let _ = web_sys::Url::revoke_object_url(&address); }).forget();
+    Ok(())
 }
 
+
+
+
+
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) async fn download_csv_path(path: &str, filename: &str) -> Result<String, String> {
-    use std::io::Write;
-    let base = UrlConfig::base_http();
-    let base = if base.is_empty() {
-        "http://localhost:3000"
-    } else {
-        base.trim_end_matches('/')
-    };
-    let client = auth::build_native_http_client(
-        UrlConfig::_skip_tls_verify(),
-        std::time::Duration::from_secs(10),
-        std::time::Duration::from_secs(600),
-    )?;
-    let mut request = client.get(format!("{base}{path}"));
-    if let Some(token) = auth::current_token() {
-        request = request.bearer_auth(token);
-    }
-    let mut response = request.send().await.map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Export failed ({}): {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        ));
-    }
-    let dir = dirs::download_dir()
-        .or_else(dirs::document_dir)
+pub(super) async fn download_csv_path_owned(
+    path: &str, filename: &str, owner: std::rc::Rc<ExportOwner>,
+) -> Result<String, String> {
+    owner.check()?;
+    let directory = dirs::download_dir().or_else(dirs::document_dir)
         .ok_or("No Downloads or Documents directory is available")?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let name = std::path::Path::new(filename);
-    let stem = name.file_stem().and_then(|s| s.to_str()).unwrap_or("telemetry");
-    let extension = name.extension().and_then(|s| s.to_str()).unwrap_or("csv");
-    let target = dir.join(format!("{stem}-{stamp}.{extension}"));
-    let partial = target.with_extension(format!("{extension}.part"));
-    let mut file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&partial)
-        .map_err(|e| e.to_string())?;
-    let result = async {
-        while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-            file.write_all(&chunk).map_err(|e| e.to_string())?;
-        }
-        file.flush().map_err(|e| e.to_string())?;
-        Ok::<_, String>(())
+    download_csv_to_directory(path, filename, owner, &directory).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn download_csv_to_directory(
+    path: &str, filename: &str, owner: std::rc::Rc<ExportOwner>, directory: &std::path::Path,
+) -> Result<String, String> {
+    owner.check()?;
+    let base = if owner.base().is_empty() { "http://localhost:3000" } else { owner.base().trim_end_matches('/') };
+    let client = auth::build_native_http_client(owner.skip_tls(), std::time::Duration::from_secs(10), std::time::Duration::from_secs(600))?;
+    let mut request = client.get(format!("{base}{path}"));
+    if let Some(token) = owner.token() { request = request.bearer_auth(token.to_owned()); }
+    let mut response = owner.wait(request.send()).await?.map_err(|e| e.to_string())?;
+    owner.check()?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = owner.wait(response.text()).await?.unwrap_or_default();
+        owner.check()?;
+        return Err(format!("Export failed ({status}): {}", body.chars().take(200).collect::<String>()));
     }
-    .await;
-    drop(file);
-    if let Err(error) = result {
-        let _ = std::fs::remove_file(&partial);
-        return Err(error);
+    owner.check()?;
+    let mut output = local_file::Output::create(directory, filename).map_err(|e| e.to_string())?;
+    while let Some(chunk) = owner.wait(response.chunk()).await?.map_err(|e| e.to_string())? {
+        owner.check()?;
+        output.write(&chunk).map_err(|e| e.to_string())?;
     }
-    std::fs::rename(partial, &target).map_err(|e| e.to_string())?;
+    owner.check()?;
+    let target = output.finish(|| owner.check().map_err(std::io::Error::other)).map_err(|e| format!("Cannot publish export without replacing an existing file: {e}"))?;
+    owner.check()?;
     Ok(format!("Saved export to {}", target.display()))
+}
+
+fn export_url(owner: &ExportOwner, path: &str) -> Result<String, String> {
+    owner.check()?;
+    if !path.starts_with('/') || path.starts_with("//") || path.contains('\r') || path.contains('\n') {
+        return Err("Invalid station export path".into());
+    }
+    if owner.base().is_empty() {
+        #[cfg(not(target_arch = "wasm32"))]
+        return Ok(format!("http://localhost:3000{path}"));
+        #[cfg(target_arch = "wasm32")]
+        return Ok(path.to_owned());
+    }
+    Ok(format!("{}{path}", owner.base().trim_end_matches('/')))
+}
+
+pub(super) async fn saved_json<T: serde::de::DeserializeOwned>(path: &str, owner: std::rc::Rc<ExportOwner>) -> Result<T, String> {
+    let url = export_url(&owner, path)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (status, text) = {
+        let (connect, timeout) = super::native_http_timeouts(path);
+        let client = auth::build_native_http_client(owner.skip_tls(), connect, timeout)?;
+        let mut request = client.get(url);
+        if let Some(token) = owner.token() { request = request.bearer_auth(token.to_owned()); }
+        let response = owner.wait(request.send()).await?.map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        let text = owner.wait(response.text()).await?.map_err(|e| e.to_string())?;
+        (status, text)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let (status, text) = {
+        let controller = web_sys::AbortController::new().map_err(|_| "Export cancellation is unavailable")?;
+        let _cancel = super::HttpAbortOnDrop(controller.clone());
+        let signal = controller.signal();
+        let mut request = gloo_net::http::Request::get(&url).abort_signal(Some(&signal));
+        if let Some(token) = owner.token() { request = request.header("Authorization", &format!("Bearer {token}")); }
+        let response = owner.wait(request.send()).await?.map_err(|e| e.to_string())?;
+        let status = response.status();
+        let text = owner.wait(response.text()).await?.map_err(|e| e.to_string())?;
+        (status, text)
+    };
+    owner.check()?;
+    if !(200..300).contains(&status) {
+        // A stale export response must never clear a newer account's session.
+        return Err(format!("Export request failed ({status}): {}", text.chars().take(200).collect::<String>()));
+    }
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+/// The JS operation asks this original owner before/after its awaits. Retirement
+/// also sends an abort to its exact controller; no current credential is substituted.
+pub(super) async fn eval_owned(script: &str, owner: std::rc::Rc<ExportOwner>) -> Result<String, String> {
+    #[derive(Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum Message { Check { id: u64 }, Complete { value: String }, Failed { message: String } }
+    owner.check()?;
+    let mut evaluation = document::eval(script);
+    loop {
+        let message = match owner.wait(evaluation.recv::<Message>()).await {
+            Ok(result) => result.map_err(|e| e.to_string())?,
+            Err(error) => { let _ = evaluation.send(serde_json::json!({"abort":true})); return Err(error); }
+        };
+        if let Err(error) = owner.check() {
+            let _ = evaluation.send(serde_json::json!({"abort":true}));
+            return Err(error);
+        }
+        match message {
+            Message::Check { id } => evaluation.send(serde_json::json!({"id":id,"allowed":true})).map_err(|e| e.to_string())?,
+            Message::Complete { value } => return Ok(value),
+            Message::Failed { message } => return Err(message),
+        }
+    }
+}
+
+pub(super) fn use_export_lifetime() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let alive = use_hook(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    let retire = alive.clone();
+    use_drop(move || retire.store(false, std::sync::atomic::Ordering::Release));
+    alive
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(super) async fn test_download_to_directory(path: &str, filename: &str, owner: std::rc::Rc<ExportOwner>, directory: &std::path::Path) -> Result<String, String> {
+    download_csv_to_directory(path, filename, owner, directory).await
 }
 
 pub(super) fn input_utc_ms(value: &str) -> Result<i64, String> {
@@ -197,8 +279,9 @@ fn RangeAndClock() -> Element {
             button { disabled:busy(), onclick:move |_| {
                 match range_path(&start(), &end()) {
                     Err(e) => message.set(e),
-                    Ok(path) => { busy.set(true); spawn(async move {
-                        message.set(match download_csv_path(&path, "telemetry-range.csv").await { Ok(s)=>s,Err(e)=>format!("Export failed: {e}") }); busy.set(false);
+                    Ok(path) => { let owner=match ExportOwner::capture(){Ok(owner)=>owner,Err(error)=>{message.set(error);return;}}; busy.set(true); spawn(async move {
+                        let result=download_csv_path_owned(&path, "telemetry-range.csv",owner.clone()).await;
+                        if owner.is_current(){message.set(result.unwrap_or_else(|error|format!("Export failed: {error}")));} busy.set(false);
                     }); }
                 }
             }, "Download date-range CSV" }
@@ -283,13 +366,42 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
     let mut loading = use_signal(|| false);
     let mut downloading = use_signal(|| false);
     let mut refresh = use_signal(|| 0u32);
+    let mut selection_epoch = use_signal(|| 1u64);
+    let mut list_owner = use_signal(|| None::<std::rc::Rc<ExportOwner>>);
+    let mut query_epoch = use_signal(|| 1u64);
+    use_future(move || async move {
+        loop {
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(200).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let retired = list_owner.peek().as_ref().is_some_and(|owner| !owner.is_current());
+            if retired {
+                list_owner.set(None);
+                query_epoch.set(query_epoch.with_peek(|epoch| epoch.saturating_add(1)));
+                loading.set(false);
+                downloading.set(false);
+                selection_epoch.set(selection_epoch().saturating_add(1));
+                selected.set(String::new());
+                recordings.set(Vec::new());
+                status.set("Station or login changed. Refresh recordings before exporting.".into());
+            }
+        }
+    });
     use_effect(move || {
         let _ = refresh();
+        let expected_query = (*query_epoch.peek()).saturating_add(1);
+        query_epoch.set(expected_query);
+        let owner = match ExportOwner::capture_selected(move || expected_query != u64::MAX && query_epoch.try_peek().is_ok_and(|epoch| *epoch == expected_query)) { Ok(owner) => owner, Err(error) => { status.set(error); return; } };
+        list_owner.set(Some(owner.clone()));
         loading.set(true);
         spawn(async move {
-            match http_get_json::<Vec<Recording>>("/api/recordings").await {
+            let result = saved_json::<Vec<Recording>>("/api/recordings", owner.clone()).await;
+            if !owner.is_current() { return; }
+            match result {
                 Ok(next) => {
                     let choice = choose_recording(&next, &selected.read());
+                    if choice != selected() { downloading.set(false); selection_epoch.set(selection_epoch().saturating_add(1)); }
                     selected.set(choice);
                     recordings.set(next);
                     status.set(String::new());
@@ -308,7 +420,10 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
             }
             div { style:"display:flex;gap:8px;flex-wrap:wrap;",
                 select { aria_label:"Recording to download", value:"{selected}", disabled:loading() || downloading(),
-                    onchange:move |e| selected.set(e.value()),
+                    onchange:move |e| {
+                        let next = e.value();
+                        if next != selected() { downloading.set(false); selection_epoch.set(selection_epoch().saturating_add(1)); selected.set(next); }
+                    },
                     option { value:"", "1. Select a recording…" }
                     if recordings.read().is_empty() { option { value:"", "No recorded sessions yet" } }
                     for recording in recordings.read().iter() {
@@ -323,19 +438,27 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
                 }
                 button { disabled:selected.read().is_empty() || downloading(), onclick:move |_| {
                     let id = selected();
+                    let original_id = id.clone();
+                    let original_epoch = selection_epoch();
+                    let owner = match ExportOwner::capture_selected(move || {
+                        original_epoch != u64::MAX
+                            && selection_epoch.try_peek().is_ok_and(|epoch| *epoch == original_epoch)
+                            && selected.try_peek().is_ok_and(|current| *current == original_id)
+                    }) { Ok(owner) => owner, Err(error) => { status.set(error); return; } };
                     downloading.set(true);
                     status.set("Downloading CSV…".into());
                     spawn(async move {
-                        status.set(match download_csv(&id).await { Ok(message)=>message, Err(error)=>format!("Download failed: {error}") });
-                        downloading.set(false);
+                        let path = download_path(&id);
+                        let result = match path { Ok(path) => download_csv_path_owned(&path, &format!("{}.csv", id.trim_end_matches(".db")), owner.clone()).await, Err(error) => Err(error) };
+                        if owner.is_current() { status.set(result.unwrap_or_else(|error| format!("Download failed: {error}"))); downloading.set(false); }
                     });
                 }, if downloading() { "Downloading…" } else { "Download full recording CSV" } }
             }
             RecoveryHistoryExport {}
             ChecklistExport {}
             if !selected.read().is_empty() {
-                div {key:"recording-tools-{selected}",
-                    super::sd_recording_import::SDRecordingImport {recording:selected(),onimport:move |id:String| {selected.set(id);refresh+=1;}}
+                div {key:"recording-tools-{selected}-{selection_epoch}",
+                    super::sd_recording_import::SDRecordingImport {recording:selected(),onimport:move |id:String| {if id != selected() {downloading.set(false);selection_epoch.set(selection_epoch().saturating_add(1));selected.set(id);}refresh+=1;}}
                     super::report_studio::ReportStudio {recording:selected()}
                 }
             } else { p { "Select a recording first, then choose the data to export." } }
@@ -354,9 +477,11 @@ fn ChecklistExport() -> Element {
         div {style:"display:flex;gap:8px;flex-wrap:wrap;",
             for (path, file, label) in [("/api/checklists/export", "checklists.json", "Export checklists"), ("/api/checklists/export.csv", "checklist-signoffs.csv", "Export sign-offs CSV")] {
                 button {disabled:busy(),onclick:move |_| {
+                    let owner=match ExportOwner::capture(){Ok(owner)=>owner,Err(error)=>{message.set(error);return;}};
                     busy.set(true);
                     spawn(async move {
-                        message.set(match download_csv_path(path, file).await {Ok(text)=>text, Err(error)=>format!("Export failed: {error}")});
+                        let result=download_csv_path_owned(path,file,owner.clone()).await;
+                        if owner.is_current(){message.set(result.unwrap_or_else(|error|format!("Export failed: {error}")));}
                         busy.set(false);
                     });
                 }, "{label}"}
@@ -376,11 +501,11 @@ fn RecoveryHistoryExport() -> Element {
         div { style:"display:flex;gap:8px;flex-wrap:wrap;",
             for kind in ["json", "csv"] {
                 button { disabled:busy(), onclick:move |_| {
+                    let owner=match ExportOwner::capture(){Ok(owner)=>owner,Err(error)=>{message.set(error);return;}};
                     busy.set(true);
                     spawn(async move {
-                        message.set(match download_csv_path(&format!("/api/recovery/export.{kind}"), &format!("launch-recovery-history.{kind}")).await {
-                            Ok(text) => text, Err(error) => format!("Export failed: {error}"),
-                        });
+                        let result=download_csv_path_owned(&format!("/api/recovery/export.{kind}"), &format!("launch-recovery-history.{kind}"),owner.clone()).await;
+                        if owner.is_current(){message.set(result.unwrap_or_else(|error|format!("Export failed: {error}")));}
                         busy.set(false);
                     });
                 }, "Export recovery {kind}" }
@@ -443,24 +568,28 @@ mod tests {
 }
 
 /// Save a complete portable replay, without a subsequent backend request.
-pub(super) async fn save_replay_file(value: &serde_json::Value, standalone: bool) -> Result<String, String> {
+pub(super) async fn save_replay_file(value: &serde_json::Value, standalone: bool, owner: std::rc::Rc<ExportOwner>) -> Result<String, String> {
+    owner.check()?;
     let contents = if standalone { portable_replay_html(value)? } else { serde_json::to_string(value).map_err(|e| e.to_string())? };
     let extension=if standalone { "html" } else { "json" };
     if contents.len() > 64 * 1024 * 1024 { return Err("Replay exceeds 64 MiB. Select a smaller recording.".into()); }
+    owner.check()?;
     #[cfg(target_arch = "wasm32")]
     {
-        let text = serde_json::to_string(&contents).map_err(|e| e.to_string())?;
-        document::eval(&format!(r#"const blob=new Blob([{text}],{{type:'application/json'}});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='recording.seds-replay.{extension}';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);return 'Replay exported. Import this file without a station connection.';"#)).join::<String>().await.map_err(|e|e.to_string())
+        let sequence = js_sys::Array::new();
+        sequence.push(&wasm_bindgen::JsValue::from_str(&contents));
+        let blob = web_sys::Blob::new_with_str_sequence(&sequence).map_err(|_| "Cannot create replay file")?;
+        save_browser_blob(&owner, &blob, &format!("recording.seds-replay.{extension}"))?;
+        Ok("Replay exported. Import this file without a station connection.".into())
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use std::io::Write;
         let directory = dirs::download_dir().or_else(dirs::document_dir).ok_or("No Downloads or Documents directory")?;
-        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_nanos();
-        let path=directory.join(format!("recording-{stamp}.seds-replay.{extension}"));
-        let mut file=std::fs::OpenOptions::new().create_new(true).write(true).open(&path).map_err(|e|e.to_string())?;
-        file.write_all(contents.as_bytes()).and_then(|_|file.flush()).map_err(|e|e.to_string())?;
+        let mut output = local_file::Output::create(&directory, &format!("recording.seds-replay.{extension}")).map_err(|e|e.to_string())?;
+        output.write(contents.as_bytes()).map_err(|e|e.to_string())?;
+        owner.check()?;
+        let path = output.finish(|| owner.check().map_err(std::io::Error::other)).map_err(|e|e.to_string())?;
+        owner.check()?;
         Ok(format!("Replay saved to {}",path.display()))
     }
 }

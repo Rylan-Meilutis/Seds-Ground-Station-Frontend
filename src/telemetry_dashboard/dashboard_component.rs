@@ -322,7 +322,7 @@ fn TelemetryDashboardInner() -> Element {
             let Some(layout) = layout_config.read().clone() else {
                 return;
             };
-            let data_layout = data_groups::with_grouped_views(layout.data_tab);
+            let data_layout = data_groups::with_grouped_views(igniter_sense_panel::with_tab(layout.data_tab));
             if data_layout.tabs.is_empty() {
                 return;
             }

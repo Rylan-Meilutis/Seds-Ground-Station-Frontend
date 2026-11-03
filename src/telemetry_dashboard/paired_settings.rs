@@ -164,6 +164,7 @@ fn summary(key: &str, value: &Value) -> Vec<(String, String)> {
         }
         "mission/gse_limits" => {
             return vec![
+                ("Cold Flow nitrogen target".into(),if value["cold_flow_target_psi"].is_null(){"Unset · Auto Cold Flow disabled".into()}else{number(&value["cold_flow_target_psi"],1," psi")}),
                 (
                     "Nitrogen target".into(),
                     number(&value["nitrogen_target_psi"], 1, " psi"),
@@ -489,8 +490,15 @@ mod tests {
             vec![("Automatic zeroing".into(), "Enabled".into())]
         );
         assert!(short(&"😀".repeat(100)).chars().count() <= 81);
-        for rows in [fill, limits, setup] {
+        assert_eq!(limits.len(), 5);
+        assert!(limits.contains(&(
+            "Cold Flow nitrogen target".into(),
+            "Unset · Auto Cold Flow disabled".into(),
+        )));
+        for rows in [&fill, &setup] {
             assert!(rows.len() <= 4);
+        }
+        for rows in [fill, limits, setup] {
             assert!(!rows.iter().any(|(name, _)| name == "Fit"));
         }
     }

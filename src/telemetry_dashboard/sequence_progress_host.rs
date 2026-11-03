@@ -17,7 +17,7 @@ pub struct StatusObservation {
 fn now_ms() -> u64 {
     super::monotonic_now_ms().max(0.0) as u64
 }
-async fn delay(ms: u32) {
+pub(super) async fn delay(ms: u32) {
     #[cfg(target_arch = "wasm32")]
     gloo_timers::future::TimeoutFuture::new(ms).await;
     #[cfg(not(target_arch = "wasm32"))]
@@ -202,7 +202,19 @@ pub fn SequenceProgressHost(
             }
         });
     });
-    let panels = state.read().panels().to_vec();
+    let panels: Vec<_> = state
+        .read()
+        .panels()
+        .iter()
+        .map(|panel| {
+            let can_release = state.read().can_release(
+                &panel.snapshot.key,
+                clock(),
+                auth::can_send_command("ColdFlow"),
+            );
+            (panel.clone(), can_release)
+        })
+        .collect();
     let unavailable = state.read().unavailable;
     let result_error = state.read().result_error.clone();
     rsx! {
@@ -213,10 +225,23 @@ pub fn SequenceProgressHost(
                     button {r#type:"button",onclick:move |_|state.write().result_error=None,"Close result notice"}
                 }
             }
-            for (index,panel) in panels.into_iter().enumerate() {
+            for (index,(panel,can_release_cold_flow)) in panels.into_iter().enumerate() {
                 div {key:"{panel.snapshot.key.run_id}",style:"--sequence-panel-index:{index};",
                     SequenceProgressView {
                         panel,now_ms:clock(),can_send_commands:auth::can_send_command("CancelFill"),cancel_api_version:cancel_api(),unavailable,
+                        can_release_cold_flow,
+                        on_release_cold_flow:move |key:RunKey|{
+                            let origin=source();
+                            let release = { state.write().request_release(&key,now_ms(),auth::can_send_command("ColdFlow")) };
+                            if let Ok(intent)=release {
+                                spawn(async move {
+                                    let result=super::http_post_json::<RunKey,serde_json::Value>("/api/gse/cold-flow/release",&intent).await;
+                                    if source()!=origin{return;}
+                                    if let Err(error)=result{state.write().release_failed(&intent);state.write().result_error=Some(format!("Cold Flow release refused: {error}"));}
+                                    // Acceptance is not reported output or measured fluid flow.
+                                });
+                            }
+                        },
                         on_minimize:move |key|state.write().minimize(&key),
                         on_restore:move |key|state.write().restore(&key),
                         on_dismiss:move |key|{state.write().dismiss(&key);},

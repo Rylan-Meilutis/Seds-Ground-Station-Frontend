@@ -15,8 +15,8 @@ async function scenario(mode){
   return response({recording:'groundstation_recording_123.db'});
  }};
  vm.runInNewContext(script,context);
- if(mode==='ok')assert.equal(JSON.parse(await context.GSSDImport.upload(input,'/imports',{manifest:{}},'token')).recording,'groundstation_recording_123.db');
- else await assert.rejects(context.GSSDImport.upload(input,'/imports',{manifest:{}},'token'));
+ if(mode==='ok')assert.equal(JSON.parse(await context.GSSDImport.upload(input,'/imports',{manifest:{}},'token',async()=>{},()=>{})).recording,'groundstation_recording_123.db');
+ else await assert.rejects(context.GSSDImport.upload(input,'/imports',{manifest:{}},'token',async()=>{},()=>{}));
  assert.equal(input.__sdAbort,null);
  assert.equal(calls.at(-1).method,mode==='ok'?'PUT':'DELETE');
  if(mode==='limit')assert.equal(calls.length,2);
@@ -24,8 +24,9 @@ async function scenario(mode){
 await scenario('ok');await scenario('limit');await scenario('cancel');
 console.log('3 SD browser upload protocol scenarios passed; raw File object preserved');
 {
- const target={},state={saved:false};
- const context={AbortController,showSaveFilePicker:async()=>({createWritable:async()=>target}),fetch:async()=>({ok:true,body:{pipeTo:async out=>{assert.equal(out,target);state.saved=true;}},arrayBuffer(){throw Error('No whole-file read');},blob(){throw Error('No whole-file blob');}})};
- vm.runInNewContext(script,context);await context.GSSDImport.saveSource('/source','token','source.csv');assert.equal(state.saved,true);
- console.log('Original SD save streams response body directly to the selected file');
+ const chunks=[new Uint8Array([1,2]),new Uint8Array([3])],state={saved:false,seen:[],released:false};let index=0;
+ const target={write:async bytes=>state.seen.push(...bytes),close:async()=>{state.saved=true;},abort:async()=>{throw Error('Unexpected abort');}};
+ const context={AbortController,showSaveFilePicker:async()=>({createWritable:async()=>target}),fetch:async()=>({ok:true,body:{getReader:()=>({read:async()=>index<chunks.length?{done:false,value:chunks[index++]}:{done:true},releaseLock(){state.released=true;}})},arrayBuffer(){throw Error('No whole-file read');},blob(){throw Error('No whole-file blob');}})};
+ vm.runInNewContext(script,context);await context.GSSDImport.saveSource('/source','token','source.csv',async()=>{},()=>{});assert.equal(state.saved,true);assert.deepEqual(state.seen,[1,2,3]);assert.equal(state.released,true);
+ console.log('Original SD save retains exact streaming bytes, closes and releases reader without whole-file buffering');
 }

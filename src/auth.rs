@@ -11,6 +11,11 @@ use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
 const AUTH_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
+#[path = "auth_request_identity.rs"]
+mod request_identity;
+pub(crate) use request_identity::Identity as RequestIdentity;
+static REQUEST_REVISION: request_identity::Revision = request_identity::Revision::new();
+
 static CURRENT_SESSION: Lazy<Mutex<Option<StoredAuthSession>>> = Lazy::new(|| Mutex::new(None));
 static CURRENT_STATUS: Lazy<Mutex<SessionStatus>> =
     Lazy::new(|| Mutex::new(SessionStatus::default()));
@@ -205,6 +210,7 @@ pub fn init_from_storage(base: &str) {
     }
     let restored = read_storage_session(&host_scope);
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
+        REQUEST_REVISION.invalidate();
         *slot = restored.clone();
     }
     if let Ok(mut status) = CURRENT_STATUS.lock() {
@@ -221,6 +227,25 @@ pub fn current_session() -> Option<StoredAuthSession> {
 
 pub fn current_token() -> Option<String> {
     current_session().map(|session| session.token)
+}
+
+/// Capture a credential/revision pair under its actual mutation owner.
+pub(crate) fn request_identity() -> Option<RequestIdentity> {
+    let session = CURRENT_SESSION.lock().ok()?;
+    REQUEST_REVISION.capture(session.as_ref().map(|session| session.token.clone()))
+}
+pub(crate) fn request_identity_is_current(identity: &RequestIdentity) -> bool {
+    let Ok(session) = CURRENT_SESSION.lock() else { return false; };
+    REQUEST_REVISION.matches(identity, session.as_ref().map(|session| session.token.as_str()))
+}
+fn authority_changed(before: &SessionStatus, after: &SessionStatus) -> bool {
+    before.authenticated != after.authenticated || before.anonymous != after.anonymous
+        || before.username != after.username || before.roles != after.roles
+        || before.permissions != after.permissions || before.session_type != after.session_type
+        || before.expires_at_ms != after.expires_at_ms || before.station_role != after.station_role
+        || before.allowed_commands != after.allowed_commands
+        || before.can_view_calibration != after.can_view_calibration
+        || before.can_edit_calibration != after.can_edit_calibration
 }
 
 pub fn current_status() -> SessionStatus {
@@ -342,6 +367,7 @@ pub fn can_join_voice() -> bool {
 pub fn set_current_session(session: StoredAuthSession) {
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
+        REQUEST_REVISION.invalidate();
         *slot = Some(session.clone());
     }
     if let Ok(mut status) = CURRENT_STATUS.lock() {
@@ -358,6 +384,7 @@ pub fn set_current_session(session: StoredAuthSession) {
 pub fn set_logged_out_status(status: SessionStatus) {
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
+        REQUEST_REVISION.invalidate();
         *slot = None;
     }
     if let Ok(mut current) = CURRENT_STATUS.lock() {
@@ -370,6 +397,7 @@ pub fn clear_current_session() {
     let old_token = current_token();
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
+        REQUEST_REVISION.invalidate();
         *slot = None;
     }
     if let Ok(mut status) = CURRENT_STATUS.lock() {
@@ -398,6 +426,7 @@ pub fn clear_current_session() {
 
 pub fn clear_all_stored_sessions() {
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
+        REQUEST_REVISION.invalidate();
         *slot = None;
     }
     if let Ok(mut status) = CURRENT_STATUS.lock() {
@@ -424,17 +453,18 @@ pub async fn fetch_session_status(
         .map_err(|e| format!("invalid auth JSON: {e}"))?;
     #[cfg(target_arch = "wasm32")]
     configure_browser_discovery(status.station_pairing.as_ref());
-    if let Ok(mut slot) = CURRENT_STATUS.lock() {
-        *slot = status.clone();
-    }
-    if let Ok(mut session_slot) = CURRENT_SESSION.lock()
-        && let Some(session) = session_slot.as_mut()
-    {
-        session.session = status.clone();
-        if session.remember_me {
-            let host_scope = current_host_scope();
-            if !host_scope.is_empty() {
-                write_storage_session(&host_scope, Some(session));
+    if let Ok(mut session_slot) = CURRENT_SESSION.lock() {
+        if let Ok(mut current) = CURRENT_STATUS.lock() {
+            if authority_changed(&current, &status) { REQUEST_REVISION.invalidate(); }
+            *current = status.clone();
+        }
+        if let Some(session) = session_slot.as_mut() {
+            session.session = status.clone();
+            if session.remember_me {
+                let host_scope = current_host_scope();
+                if !host_scope.is_empty() {
+                    write_storage_session(&host_scope, Some(session));
+                }
             }
         }
     }

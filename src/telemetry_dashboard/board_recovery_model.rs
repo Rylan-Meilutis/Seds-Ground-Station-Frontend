@@ -1,4 +1,14 @@
 //! API v1 recovery DTOs. Missing capabilities/identity always fail closed.
+/// Presentation only. Server capability and fresh proof still decide admission.
+pub(super) fn targeted_recovery_label(id: &str) -> Option<(&'static str, &'static str)> {
+    match id {
+        "AB" | "VB" => Some(("Recover to Idle…", "Verified safe-output application recovery; no physical-position proof.")),
+        "FC" => Some(("Recover to Startup…", "Verified FC evaluator and safe-output reset. Deployment history is preserved; a separate new flight is required.")),
+        "RF" | "PB" | "GB" | "DAQ" => Some(("Reset metadata to Startup…", "Cached application metadata only; no physical recovery, power cycling, acquisition reset or resync.")),
+        _ => None,
+    }
+}
+
 use serde::{Deserialize, Serialize};
 
 pub(super) const BOARD_IDS: [&str; 7] = ["RF", "FC", "PB", "AB", "VB", "GB", "DAQ"];
@@ -334,7 +344,7 @@ impl Challenge {
         }
         let phrase = match (action, board, mode) {
             ("recover_abort", Some(id), None)
-                if matches!(id, "AB" | "VB") && self.targets == [id] =>
+                if targeted_recovery_label(id).is_some() && self.targets == [id] =>
             {
                 format!("RECOVER {id}")
             }
@@ -423,6 +433,35 @@ mod tests {
         ))
         .unwrap()
     }
+    #[test]
+    fn targeted_recovery_labels_and_confirmation_remain_exact_board_scopes() {
+        for id in BOARD_IDS {
+            let (label, description) = targeted_recovery_label(id).unwrap();
+            match id {
+                "AB" | "VB" => assert_eq!(label, "Recover to Idle…"),
+                "FC" => {assert_eq!(label, "Recover to Startup…"); assert!(description.contains("history is preserved"));},
+                _ => {assert_eq!(label, "Reset metadata to Startup…"); assert!(description.contains("no physical recovery"));},
+            }
+            let mut status = all_boards();
+            let mut ticket = challenge();
+            ticket.action = "recover_abort".into();
+            ticket.targets = vec![id.into()];
+            ticket.confirmation = format!("RECOVER {id}");
+            let identity = status.confirmation.as_mut().unwrap();
+            identity.action = ticket.action.clone();
+            identity.targets = ticket.targets.clone();
+            assert!(ticket.matches(&status, "recover_abort", Some(id), None));
+            assert!(!ticket.matches(&status, "recover_abort", Some("GS"), None));
+            ticket.confirmation.push_str(" COMMISSION");
+            assert!(ticket.matches(&status, "recover_abort", Some(id), None));
+            ticket.targets.push("AB".into());
+            assert!(!ticket.matches(&status, "recover_abort", Some(id), None));
+        }
+        for id in ["GS", "GW", "DAQB", "", "fc", "unknown"] {
+            assert!(targeted_recovery_label(id).is_none());
+        }
+    }
+
     #[test]
     fn actual_v1_unknown_boards_do_not_inherit_global_startup_or_capabilities() {
         let s = status();
