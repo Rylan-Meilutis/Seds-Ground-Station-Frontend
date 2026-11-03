@@ -2184,14 +2184,16 @@ mod timing_tests {
             node("fc", "board"),
         ];
         let visible = nodes.iter().map(|n| n.id.clone()).collect();
-        let mut snapshot = NetworkTopologyMsg::default();
-        snapshot.nodes = nodes.clone();
-        snapshot.links = vec![NetworkTopologyLink {
-            source: "gs".into(),
-            target: "rrls".into(),
-            label: Some("standby".into()),
-            status: NetworkTopologyStatus::Online,
-        }];
+        let mut snapshot = NetworkTopologyMsg {
+            nodes: nodes.clone(),
+            links: vec![NetworkTopologyLink {
+                source: "gs".into(),
+                target: "rrls".into(),
+                label: Some("standby".into()),
+                status: NetworkTopologyStatus::Online,
+            }],
+            ..NetworkTopologyMsg::default()
+        };
         let edges = collapse_visible_links(&nodes, &snapshot.links, &visible);
         assert_eq!(edges.len(), 1); // Isolated RF/FC get no fabricated edge.
         assert_eq!(edges[0].label.as_deref(), Some("standby"));

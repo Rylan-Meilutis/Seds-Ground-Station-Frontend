@@ -223,6 +223,11 @@ fn TelemetryDashboardInner() -> Element {
     let show_version_overlay = use_signal(|| false);
 
     let mut active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
+    let sequence_progress = use_signal(sequence_progress_model::Model::default);
+    let sequence_status = use_signal(sequence_progress_host::StatusObservation::default);
+    let mut sequence_result_request = use_signal(||None::<sequence_progress_model::RunKey>);
+    use_context_provider(|| sequence_status);
+
     let mut return_main_tab = use_signal(|| {
         let current = _main_tab_from_str(st_main_tab.read().as_str());
         if matches!(current, MainTab::Mission | MainTab::StreamManager) {
@@ -1418,18 +1423,19 @@ fn TelemetryDashboardInner() -> Element {
                         );
                     }
 
-                    let ws_messages: Vec<(u64, String)> =
+                    let ws_messages: Vec<(u64,u64,String)> =
                         if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
                             std::mem::take(&mut *q).into_iter().collect()
                         } else {
                             Vec::new()
                         };
-                    for (event_epoch, payload) in ws_messages {
+                    for (event_epoch, condition_connection, payload) in ws_messages {
                         if event_epoch != epoch {
                             continue;
                         }
                         handle_ws_message(
                             &payload,
+                            condition_connection,
                             warnings,
                             errors,
                             ack_warning_ts,
@@ -1779,17 +1785,22 @@ fn TelemetryDashboardInner() -> Element {
             count.to_string()
         }
     };
-    let unacked_warning_count =
-        warnings_tab::unacknowledged_warning_count(&warnings.read(), *ack_warning_ts.read());
-    let warn_count_label = format_capped_alert_count(unacked_warning_count);
-    let err_count_label = if active_board_error_count > 0 {
-        format!(
-            "{active_board_error_count} active / {} history",
-            format_capped_alert_count(err_count)
-        )
-    } else {
-        format_capped_alert_count(err_count)
-    };
+    let condition_view=ALERT_CONDITION_VIEW.read().clone();
+    let unacked_warning_count=if warnings.read().iter().all(|event|event.condition.is_none()) {warnings_tab::unacknowledged_warning_count(&warnings.read(),*ack_warning_ts.read())}else{warnings.read().iter().filter(|event|condition_view.event_projection(event.condition.as_ref(),event.timestamp_ms<=*ack_warning_ts.read()).attention()).count()};
+    let unacked_error_count=errors.read().iter().filter(|event|condition_view.event_projection(event.condition.as_ref(),event.timestamp_ms<=*ack_error_ts.read()).attention()).count();
+    let condition_status=condition_view.summary(active_board_error_count>0,unacked_warning_count+unacked_error_count>0);
+    let condition_warning_count=condition_status.active_warnings+condition_status.unknown_warnings;
+    let condition_error_count=condition_status.active_errors+condition_status.unknown_errors;
+    let condition_unknown_event=warnings.read().iter().chain(errors.read().iter()).any(|event|condition_view.event_projection(event.condition.as_ref(),true).unknown());
+    let condition_records=condition_view.snapshot().map(|snapshot|snapshot.records.as_slice()).unwrap_or(&[]);
+    let condition_warning_history=condition_records.iter().filter(|record|record.severity==alert_conditions::Severity::Warning).count();
+    let condition_error_history=condition_records.iter().filter(|record|record.severity==alert_conditions::Severity::Error).count();
+    let board_abort_overlap=condition_records.iter().filter(|record|record.state==alert_conditions::ConditionState::Active && record.severity==alert_conditions::Severity::Error && BOARD_ABORT_SIGNAL.read().active_errors.iter().any(|error|error.source==record.key&&error.board==record.source)).count();
+    let active_error_count=active_board_error_count+condition_error_count-board_abort_overlap;
+    let warn_count_label = if !condition_status.snapshot_current && unacked_warning_count+condition_warning_count==0 {"?".into()}else{format_capped_alert_count(unacked_warning_count+condition_warning_count)};
+    let err_count_label = if active_error_count > 0 {
+        format!("{active_error_count} active / {} history",format_capped_alert_count(err_count+condition_error_history))
+    } else {format_capped_alert_count(err_count+condition_error_history)};
 
     let latest_warning_ts = warnings
         .read()
@@ -1804,15 +1815,15 @@ fn TelemetryDashboardInner() -> Element {
         .max()
         .unwrap_or(0);
 
-    let has_warnings = warn_count > 0;
-    let has_errors = err_count > 0 || active_board_error_count > 0;
+    let has_warnings = warn_count > 0 || condition_warning_history>0;
+    let has_errors = err_count > 0 || active_board_error_count > 0 || condition_error_history>0;
     let has_active_notifications = !notifications.read().is_empty();
     let has_unread_notifications = !unread_notification_ids.read().is_empty();
 
-    let has_unacked_warnings = latest_warning_ts > *ack_warning_ts.read();
-    let has_unacked_errors = latest_error_ts > *ack_error_ts.read();
-    let active_error_alert = (has_unacked_errors && has_errors) || active_board_error_count > 0;
-    let active_warning_alert = has_unacked_warnings && has_warnings;
+    let has_unacked_warnings = unacked_warning_count>0;
+    let has_unacked_errors = unacked_error_count>0;
+    let active_error_alert = (has_unacked_errors && has_errors) || active_board_error_count > 0 || condition_error_count>0;
+    let active_warning_alert = (has_unacked_warnings && has_warnings) || condition_warning_count>0 || !condition_status.snapshot_current || condition_unknown_event;
     let border_style = "1px solid transparent";
     let app_alert_effect = "none";
     let app_alert_animation = "";
@@ -3871,6 +3882,8 @@ fn TelemetryDashboardInner() -> Element {
                                     div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                         NotificationsTab {
                                             history: notification_history,
+                                            sequence_results: sequence_progress.read().notices().iter().cloned().collect(),
+                                            on_sequence_result: move |key| sequence_result_request.set(Some(key)),
                                             theme: theme.clone(),
                                             on_clear: {
                                                 let notifications = notifications;
@@ -4023,7 +4036,17 @@ fn TelemetryDashboardInner() -> Element {
                     {version_overlay}
                 }
     })();
-    rsx! {media_tool_tab::MediaSurface {media_visible,voice_visible,stream_visible:surface_stream,{view}} command_confirmation::CommandConfirmation {}}
+    rsx! {
+        media_tool_tab::MediaSurface {media_visible,voice_visible,stream_visible:surface_stream,{view}}
+        command_confirmation::CommandConfirmation {}
+        style {{include_str!("sequence_progress.css")}}
+        if (auth::can_view_data() || auth::can_view_actions()) && !surface_viewer {
+            sequence_progress_host::SequenceProgressHost {
+                state:sequence_progress,status:sequence_status,open_result:sequence_result_request,
+                on_actions:*active_main_tab.read()==MainTab::Actions && !*antenna_aiming.read() && !*admin_open.read() && !*show_settings_overlay.read() && !*show_version_overlay.read() && !surface_stream,
+            }
+        }
+    }
 }
 
 fn send_cmd(cmd: &str) {

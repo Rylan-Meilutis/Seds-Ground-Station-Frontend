@@ -140,6 +140,11 @@
       "name": "STAY_AWAKE_JS",
       "path": "station_ui/scripts/stay-awake.js",
       "kind": "text"
+    },
+    {
+      "name": "STREAM_SEQUENCE_VISUALS_JS",
+      "path": "station_ui/scripts/stream-sequence-visuals.js",
+      "kind": "text"
     }
   ]
 }

@@ -479,52 +479,26 @@ pub fn ActionsTab(
             sequence_now.set(super::monotonic_now_ms());
         }
     });
-    use_future(move || async move {
-        loop {
-            let request_started = super::monotonic_now_ms();
-            let backend = super::UrlConfig::base_http();
-            let principal = auth::current_token();
-            let response = super::http_get_json::<serde_json::Value>("/api/gse/status").await;
-            if backend != super::UrlConfig::base_http() || principal != auth::current_token() {
-                operational_status.set(serde_json::Value::Null);
-                operational_observed_at.set(f64::NAN);
-                continue;
-            }
-            let next = match response {
-                Ok(status) => {
-                    operational_observed_at.set(request_started);
-                    operational_status.set(status.clone());
-                    if !*self_test_busy.read()
-                        && let Some(confirmed) = status["dry_self_test_confirmed"].as_bool()
-                    {
-                        if *self_test_confirmed.read() && !confirmed {
-                            self_test_message.set("Confirmation consumed by the last run. Confirm isolation again before retrying self-test.".into());
-                        }
-                        self_test_confirmed.set(confirmed);
-                    }
-                    request_gate_diagnostics(
-                        &status,
-                        auth::current_status().station_role.as_deref() == Some("rrls"),
-                    )
-                }
-                Err(error) => {
-                    operational_status.set(serde_json::json!({"unavailable":true}));
-                    let scope = if auth::current_status().station_role.as_deref() == Some("rrls") {
-                        "RRLS local backend"
-                    } else {
-                        "backend"
-                    };
-                    format!("Cannot read {scope} GSE gate: {error}")
-                }
-            };
-            if *gse_request_gate.read() != next {
-                gse_request_gate.set(next);
-            }
-            #[cfg(target_arch = "wasm32")]
-            gloo_timers::future::TimeoutFuture::new(1000).await;
-            #[cfg(not(target_arch = "wasm32"))]
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let shared_sequence_status=use_context::<Signal<super::sequence_progress_host::StatusObservation>>();
+    use_effect(move || {
+        let observation=shared_sequence_status.read().clone();
+        if observation.source_epoch!=*super::WS_EPOCH.read() {
+            operational_status.set(serde_json::Value::Null);
+            operational_observed_at.set(f64::NAN);
+            return;
         }
+        let status=observation.value;
+        operational_observed_at.set(observation.requested_at_ms);
+        operational_status.set(status.clone());
+        if !*self_test_busy.read() && let Some(confirmed)=status["dry_self_test_confirmed"].as_bool() {
+            if *self_test_confirmed.peek() && !confirmed {
+                self_test_message.set("Confirmation consumed by the last run. Confirm isolation again before retrying self-test.".into());
+            }
+            self_test_confirmed.set(confirmed);
+        }
+        let next=if let Some(error)=observation.error {format!("Cannot read backend GSE gate: {error}")}
+        else {request_gate_diagnostics(&status,auth::current_status().station_role.as_deref()==Some("rrls"))};
+        if *gse_request_gate.peek()!=next {gse_request_gate.set(next);}
     });
     let mut all_actions = layout.actions.clone();
     ensure_sequence_actions(&mut all_actions, &theme);
@@ -629,7 +603,7 @@ pub fn ActionsTab(
                                         p {"Pressure limits, dry self-test confirmation and qualification changes must be made at the primary ground station."}
                                     }
                                     if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
-                                    super::gse_panel::SelfTestPtOffset {disabled:auth::current_status().station_role.as_deref()==Some("rrls") || abort_only_mode || *self_test_busy.read() || !auth::can_send_command("ValveSelfTest"),theme:theme.clone()}
+                                    p { "Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test." }
                                     label {input {r#type:"checkbox",checked:*self_test_confirmed.read(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||*self_test_busy.read()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:move |event| {
                                         let confirmed=event.checked();self_test_confirmed.set(false);self_test_busy.set(true);
                                         spawn(async move {match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":confirmed})).await {

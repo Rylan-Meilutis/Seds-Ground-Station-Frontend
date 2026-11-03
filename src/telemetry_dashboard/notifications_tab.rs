@@ -5,6 +5,8 @@ pub fn NotificationsTab(
     history: Signal<Vec<PersistentNotification>>,
     theme: ThemeConfig,
     on_clear: EventHandler<()>,
+    #[props(default)] sequence_results: Vec<super::sequence_progress_model::ResultNotice>,
+    #[props(default)] on_sequence_result: Option<EventHandler<super::sequence_progress_model::RunKey>>,
 ) -> Element {
     let entries = history
         .read()
@@ -43,6 +45,16 @@ pub fn NotificationsTab(
                         style: "border:1px solid {theme.notification_border}; background:{theme.notification_background}; color:{theme.notification_text}; padding:8px 10px 10px 10px; border-radius:10px; font-family:{font_stack};",
                         div { style: "font-size:12px; opacity:0.85; line-height:1.25;", "{format_timestamp_ms_clock(n.timestamp_ms)}" }
                         div { style: "font-size:14px; line-height:1.3; padding-bottom:1px;", "{translate_text(&n.message)}" }
+                        if let Some(result) = sequence_results.iter().find(|result| result.notification_id == n.id && result.timestamp_ms == n.timestamp_ms) {
+                            if let Some(open) = on_sequence_result {
+                                button {
+                                    r#type: "button",
+                                    style: "margin-top:6px; border:1px solid currentColor; border-radius:7px; padding:5px 9px; background:transparent; color:inherit; cursor:pointer;",
+                                    onclick: { let key=result.key.clone(); move |_| open.call(key.clone()) },
+                                    "View sequence results"
+                                }
+                            }
+                        }
                     }
                 }
                 if entries.is_empty() {

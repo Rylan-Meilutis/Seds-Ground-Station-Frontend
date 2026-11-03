@@ -310,10 +310,10 @@ pub fn with_grouped_views(mut layout: DataTabLayout) -> DataTabLayout {
         }
     }
     for overview in overviews {
-        if !layout.tabs.iter().any(|t| t.id == overview.id) {
-            if let Some(tab) = overview.into_tab() {
-                layout.tabs.push(tab);
-            }
+        if !layout.tabs.iter().any(|t| t.id == overview.id)
+            && let Some(tab) = overview.into_tab()
+        {
+            layout.tabs.push(tab);
         }
     }
     layout

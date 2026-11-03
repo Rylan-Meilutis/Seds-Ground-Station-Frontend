@@ -178,7 +178,7 @@ fn collect_public_hints(
         match socket.recv_from(&mut buffer) {
             Ok((n, from)) => {
                 received += 1;
-                if let Some(hint) = public_hint(&buffer[..n], &nonce, from) {
+                if let Some(hint) = public_hint(&buffer[..n], nonce, from) {
                     if !stations.iter().any(|s: &StationHint| s.base == hint.base) {
                         stations.push(hint);
                     }

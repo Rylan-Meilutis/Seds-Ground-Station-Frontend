@@ -61,7 +61,7 @@ mod backward_clock_latest_tests {
         update_latest_telemetry_locked(&mut latest, &mut by_type, &future);
         update_latest_telemetry_with_provenance(&mut latest, &mut by_type, &live, Some(500));
         assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(25.0)]);
-        rebuild_latest_preserving_live(&mut latest, &mut by_type, &[future.clone()], 600);
+        rebuild_latest_preserving_live(&mut latest, &mut by_type, std::slice::from_ref(&future), 600);
         assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(25.0)]);
         // A second live receipt wins even when the CLIENT wall clock also moves backward.
         let newer = row(500_000, 26.0);
@@ -668,8 +668,8 @@ fn update_latest_telemetry_with_provenance(
 }
 
 fn normalize_alert_list(alerts: &mut Vec<AlertMsg>) {
-    let mut seen = HashSet::<(i64, String)>::new();
-    alerts.retain(|alert| seen.insert((alert.timestamp_ms, alert.message.clone())));
+    let mut seen = HashSet::<(i64, String,Option<alert_conditions::ConditionLink>)>::new();
+    alerts.retain(|alert| seen.insert((alert.timestamp_ms, alert.message.clone(),alert.condition.clone())));
     alerts.sort_by_key(|alert| -alert.timestamp_ms);
     if alerts.len() > 500 {
         alerts.truncate(500);
@@ -678,7 +678,7 @@ fn normalize_alert_list(alerts: &mut Vec<AlertMsg>) {
 
 fn push_alert_deduped(alerts: &mut Vec<AlertMsg>, next: AlertMsg) -> bool {
     if alerts.iter().any(|existing| {
-        existing.timestamp_ms == next.timestamp_ms && existing.message == next.message
+        existing.timestamp_ms == next.timestamp_ms && existing.message == next.message && existing.condition==next.condition
     }) {
         return false;
     }
@@ -1148,7 +1148,7 @@ mod latest_telemetry_tests {
     fn duplicate_warning_is_not_added_twice() {
         let warning = AlertMsg {
             timestamp_ms: 1_700_000_100_000,
-            message: "low battery".to_string(),
+            message: "low battery".to_string(), condition:None
         };
         let mut alerts = vec![warning.clone()];
         assert!(!push_alert_deduped(&mut alerts, warning));
@@ -1160,15 +1160,15 @@ mod latest_telemetry_tests {
         let mut alerts = vec![
             AlertMsg {
                 timestamp_ms: 20,
-                message: "b".to_string(),
+                message: "b".to_string(), condition:None
             },
             AlertMsg {
                 timestamp_ms: 10,
-                message: "a".to_string(),
+                message: "a".to_string(), condition:None
             },
             AlertMsg {
                 timestamp_ms: 20,
-                message: "b".to_string(),
+                message: "b".to_string(), condition:None
             },
         ];
         normalize_alert_list(&mut alerts);

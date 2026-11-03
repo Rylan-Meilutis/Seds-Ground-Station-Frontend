@@ -9,6 +9,7 @@ enum WsInMsg {
     Warning(AlertMsg),
     Error(AlertMsg),
     AlertAckState(AlertAckStateMsg),
+    AlertConditions(alert_conditions::Snapshot),
     BoardStatus(BoardStatusMsg),
     BoardAbort(BoardAbortSnapshot),
     NetworkTopology(NetworkTopologyMsg),
@@ -37,6 +38,8 @@ struct FlightStateMsg {
 pub struct AlertMsg {
     pub timestamp_ms: i64,
     pub message: String,
+    #[serde(default,flatten)]
+    pub condition:Option<alert_conditions::ConditionLink>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -324,6 +327,8 @@ struct AlertDto {
     pub timestamp_ms: i64,
     pub severity: String, // "warning" | "error"
     pub message: String,
+    #[serde(default,flatten)]
+    pub condition:Option<alert_conditions::ConditionLink>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

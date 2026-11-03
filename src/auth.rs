@@ -1119,9 +1119,11 @@ mod recovery_command_permissions {
     use super::*;
     #[test]
     fn recovery_admin_retains_recording_but_cannot_run_live_outputs() {
-        let mut status = SessionStatus::default();
-        status.roles = vec!["admin".into()];
-        status.station_role = Some("rrls".into());
+        let mut status = SessionStatus {
+            roles: vec!["admin".into()],
+            station_role: Some("rrls".into()),
+            ..SessionStatus::default()
+        };
         for cmd in ["Pilot", "Nitrogen", "NitrogenClose", "NitrousClose", "DeployChutes", "ResetFlightState", "ResetTClock", "Abort"] {
             assert!(!can_send_command_for_status(&status, cmd), "{cmd}");
         }

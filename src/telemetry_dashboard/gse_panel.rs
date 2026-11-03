@@ -434,80 +434,6 @@ pub(super) fn GsePanel(
     }
 }
 
-/// Keep the required baseline limit beside the action that needs it.
-#[component]
-pub(super) fn SelfTestPtOffset(disabled: bool, theme: ThemeConfig) -> Element {
-    let mut value = use_signal(String::new);
-    let mut message = use_signal(String::new);
-    let mut busy = use_signal(|| true);
-    use_future(move || async move {
-        match http_get_json::<Settings>("/api/gse/config").await {
-            Ok(cfg) => {
-                value.set(
-                    cfg.maximum_zero_offset_psi
-                        .map(|v| v.to_string())
-                        .unwrap_or_default(),
-                );
-                message.set(if cfg.maximum_zero_offset_psi.is_some() {
-                    "Saved empty-tank PT limit loaded.".into()
-                } else {
-                    "Enter and save this limit before unlocking self-test.".into()
-                });
-            }
-            Err(err) => message.set(format!("Could not load PT limit: {err}. Save will retry.")),
-        }
-        busy.set(false);
-    });
-    rsx! {
-        div { class:"gs26-pt-limit", style:"display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;padding:12px;border:1px solid {theme.border};border-radius:10px;min-width:0;width:100%;max-width:32rem;box-sizing:border-box;",
-            label { style:"display:grid;gap:6px;font-size:13px;grid-column:1/-1;",
-                "Maximum acceptable empty-tank PT offset (psi)"
-                input {
-                    r#type:"number", min:"0", step:"any", placeholder:"Required",
-                    style:"width:8rem;max-width:100%;min-width:0;box-sizing:border-box;",
-                    value:"{value}", disabled:disabled || *busy.read(),
-                    oninput:move |event| {value.set(event.value());message.set("Unsaved PT limit.".into());}
-                }
-            }
-            ControlHelp {compact:true,title:"empty-tank pressure limit",paragraphs:vec![
-                "Allowed pressure reading above or below zero with an empty, depressurized tank.".into(),
-                "This is a test acceptance limit, not a calibration offset. Save it before starting the valve self-test.".into()
-            ]}
-            button {
-                style:"width:auto;min-height:44px;justify-self:end;",
-                disabled:disabled || *busy.read(),
-                onclick:move |_| {
-                    let limit = match value.read().trim().parse::<f32>() {
-                        Ok(v) if v.is_finite() && v >= 0.0 => v,
-                        _ => {message.set("Enter a finite, nonnegative PT limit in psi.".into());return;}
-                    };
-                    busy.set(true);
-                    spawn(async move {
-                        // Read immediately before saving so other GSE settings and
-                        // the current dry-test confirmation are preserved.
-                        let result = async {
-                            let mut cfg = http_get_json::<Settings>("/api/gse/config").await?;
-                            cfg.maximum_zero_offset_psi = Some(limit);
-                            http_post_json::<Settings,Settings>("/api/gse/config", &cfg).await
-                        }.await;
-                        match result {
-                            Ok(cfg) => {
-                                value.set(cfg.maximum_zero_offset_psi.map(|v| v.to_string()).unwrap_or_default());
-                                message.set("PT limit saved.".into());
-                            }
-                            Err(err) => message.set(format!("PT limit was not saved: {err}")),
-                        }
-                        busy.set(false);
-                    });
-                },
-                if *busy.read() {"Please wait…"} else {"Save PT limit"}
-            }
-            p { role:"status", style:"margin:0;font-size:12px;grid-column:1/-1;", "{message}" }
-        }
-    }
-}
-
-/// Historical checks and live connectivity are deliberately displayed separately.
 #[component]
 pub(super) fn PhysicalPanelStatus(status: Signal<serde_json::Value>) -> Element {
     let value = status.read();
@@ -673,7 +599,7 @@ pub(super) fn ClearGseAbort() -> Element {
                 "Clear GSE abort"
             }
             if *confirming.read() {
-                p { style:"margin:0;max-width:48ch;", "Confirm the system is safe. This returns GroundStation to Idle and resets operation checks. No outputs are commanded. Fully power-cycle locally aborted boards separately." }
+                p { style:"margin:0;max-width:48ch;", "Confirm the system is safe. This clears the ground station operation abort, returns it to Idle and resets operation checks. It does not clear individual board aborts or command outputs. In Connectivity → Board state and recovery, request fresh status and use Recover Abort for boards that support it. Unsupported or unavailable board recovery requires local servicing." }
                 div { style:"display:flex;gap:8px;flex-wrap:wrap;",
                     button { r#type:"button", disabled:*busy.read(), onclick:move |_| {
                         busy.set(true);

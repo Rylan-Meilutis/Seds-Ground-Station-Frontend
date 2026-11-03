@@ -8,6 +8,7 @@ pub fn WarningsTab(
 ) -> Element {
     let latest_warning_ts = warnings.read().iter().map(|w| w.timestamp_ms).max().unwrap_or(0);
     let ack_timestamp_ms = *ack_warning_ts.read();
+    let condition_view=super::ALERT_CONDITION_VIEW.read().clone();
 
     rsx! {
         div { class:"gs26-message-history", style: "padding:4px 0 0 0; color:{theme.text_primary}; height:100%; box-sizing:border-box;",
@@ -18,10 +19,12 @@ pub fn WarningsTab(
             }
 
             div { style: "display:flex; flex-direction:column; gap:6px;",
-                for w in warnings.read().iter() {
+                super::alert_condition_panel::ConditionRows {severity:super::alert_conditions::Severity::Warning,theme:theme.clone()}
+                for w in warnings.read().iter().filter(|event|!matches!(condition_view.event_projection(event.condition.as_ref(),event.timestamp_ms<=ack_timestamp_ms),super::alert_conditions::EventProjection::Represented)) {
                     {
                         let acknowledged = w.timestamp_ms <= ack_timestamp_ms;
-                        let row_style = if acknowledged {
+                        let projection=condition_view.event_projection(w.condition.as_ref(),acknowledged);
+                        let row_style = if projection.history_gray(acknowledged) {
                             format!(
                                 "border:1px solid {}; background:{}; color:{}; padding:8px 10px 10px 10px; border-radius:10px;",
                                 theme.border, theme.panel_background, theme.text_secondary
@@ -36,12 +39,13 @@ pub fn WarningsTab(
                             div {
                                 style: "{row_style}",
                                 div { style: "font-size:12px; opacity:0.85; line-height:1.25;", "{format_timestamp_ms_clock(w.timestamp_ms)}" }
+                                small {"{projection.event_label(acknowledged)}"}
                                 div { style: "font-size:14px; line-height:1.3; padding-bottom:1px;", "{translate_text(&w.message)}" }
                             }
                         }
                     }
                 }
-                if warnings.read().is_empty() {
+                if warnings.read().is_empty() && condition_view.may_show_empty_history(super::alert_conditions::Severity::Warning) {
                     div { style: "color:{theme.text_muted};", "{translate_text(\"No warnings.\")}" }
                 }
             }
@@ -85,7 +89,7 @@ mod badge_tests {
     use super::*;
     #[test]
     fn cleared_history_does_not_reappear_in_badge_and_new_warnings_do() {
-        let warning = |timestamp_ms| AlertMsg { timestamp_ms, message: "fixture".into() };
+        let warning = |timestamp_ms| AlertMsg { timestamp_ms, message: "fixture".into(), condition:None };
         let rows = vec![warning(90), warning(100), warning(110)];
         assert_eq!(unacknowledged_warning_count(&rows, 0), 3);
         assert_eq!(unacknowledged_warning_count(&rows, 100), 1);

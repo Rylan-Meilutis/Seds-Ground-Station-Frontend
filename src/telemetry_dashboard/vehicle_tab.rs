@@ -239,8 +239,8 @@ fn replay_visual_valves(layout:&serde_json::Value,frame:&super::vehicle_replay::
         let value=serde_json::from_value::<VehicleTelemetryBinding>(mapping.clone()).ok().and_then(|b|frame.value(&b,false));
         row["value"]=serde_json::json!(value);
         row["state"]=serde_json::json!(match value {
-            Some(v) if v==1.0=>mapping["true_label"].as_str().unwrap_or("Open"),
-            Some(v) if v==0.0=>mapping["false_label"].as_str().unwrap_or("Closed"),
+            Some(1.0)=>mapping["true_label"].as_str().unwrap_or("Open"),
+            Some(0.0)=>mapping["false_label"].as_str().unwrap_or("Closed"),
             _=>mapping["unknown_label"].as_str().unwrap_or("Unknown"),
         });
         row
@@ -977,14 +977,14 @@ fn saved_valve_mappings(layout: &serde_json::Value) -> serde_json::Value {
         {"label":"Plumbing","data_type":"VALVE_STATE","index":6,"true_label":"Retracted","false_label":"Extended"}
     ]);
     fn labels(value: &serde_json::Value, mappings: &mut serde_json::Value) {
-        if value["data_type"] == "VALVE_STATE" {
-            if let Some(items)=value.get("valves").and_then(|v|v.as_array()).or_else(||value.get("items").and_then(|v|v.as_array())) {
-                for (ordinal,item) in items.iter().enumerate() {
-                    if let Some(index)=item["index"].as_u64().filter(|i|*i<7) {
-                        if let Some(label)=item["label"].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mappings[index as usize]["label"]=label.into();}
-                        let labels=value.get("valve_labels").and_then(|v|v.get(ordinal)).filter(|v|v.is_object()).or_else(||value.get("boolean_labels"));
-                        if let Some(labels)=labels { for field in ["true_label","false_label","unknown_label"] { if let Some(text)=labels[field].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mappings[index as usize][field]=text.into();} } }
-                    }
+        if value["data_type"] == "VALVE_STATE"
+            && let Some(items)=value.get("valves").and_then(|v|v.as_array()).or_else(||value.get("items").and_then(|v|v.as_array()))
+        {
+            for (ordinal,item) in items.iter().enumerate() {
+                if let Some(index)=item["index"].as_u64().filter(|i|*i<7) {
+                    if let Some(label)=item["label"].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mappings[index as usize]["label"]=label.into();}
+                    let labels=value.get("valve_labels").and_then(|v|v.get(ordinal)).filter(|v|v.is_object()).or_else(||value.get("boolean_labels"));
+                    if let Some(labels)=labels { for field in ["true_label","false_label","unknown_label"] { if let Some(text)=labels[field].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mappings[index as usize][field]=text.into();} } }
                 }
             }
         }

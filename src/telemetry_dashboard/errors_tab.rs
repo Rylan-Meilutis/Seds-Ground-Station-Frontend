@@ -13,6 +13,7 @@ pub fn ErrorsTab(
         .history_error_message()
         .map(str::to_owned);
     let has_errors = !errors.read().is_empty();
+    let condition_view=super::ALERT_CONDITION_VIEW.read().clone();
     let ack_button_style = format!(
         "padding:0.25rem 0.65rem; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.75rem; cursor:{}; opacity:{};",
         theme.button_border,
@@ -45,6 +46,7 @@ pub fn ErrorsTab(
                         small {"A current station report must confirm that saved history is healthy. Acknowledging messages does not clear this error."}
                     }
                 }
+                super::alert_condition_panel::ConditionRows {severity:super::alert_conditions::Severity::Error,theme:theme.clone()}
                 for error in active.iter() {
                     div { key: "{error.source}", role: "alert",
                         style: "border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; padding:10px; border-radius:10px;",
@@ -53,10 +55,11 @@ pub fn ErrorsTab(
                         small { "Clears only after a fresh confirmed report from this board. Acknowledging history does not clear it." }
                     }
                 }
-                for e in errors.read().iter() {
+                for e in errors.read().iter().filter(|event|!matches!(condition_view.event_projection(event.condition.as_ref(),event.timestamp_ms<=ack_timestamp_ms),super::alert_conditions::EventProjection::Represented)) {
                     {
                         let acknowledged = e.timestamp_ms <= ack_timestamp_ms;
-                        let row_style = if acknowledged {
+                        let projection=condition_view.event_projection(e.condition.as_ref(),acknowledged);
+                        let row_style = if projection.history_gray(acknowledged) {
                             format!(
                                 "border:1px solid {}; background:{}; color:{}; padding:8px 10px 10px 10px; border-radius:10px;",
                                 theme.border, theme.panel_background, theme.text_secondary
@@ -71,12 +74,13 @@ pub fn ErrorsTab(
                             div {
                                 style: "{row_style}",
                                 div { style: "font-size:12px; opacity:0.85; line-height:1.25;", "{format_timestamp_ms_clock(e.timestamp_ms)}" }
+                                small {"{projection.event_label(acknowledged)}"}
                                 div { style: "font-size:14px; line-height:1.3; padding-bottom:1px;", "{translate_text(&e.message)}" }
                             }
                         }
                     }
                 }
-                if errors.read().is_empty() && active.is_empty() && history_error.is_none() {
+                if errors.read().is_empty() && active.is_empty() && history_error.is_none() && condition_view.may_show_empty_history(super::alert_conditions::Severity::Error) {
                     div { style: "color:{theme.text_muted};", "{translate_text(\"No errors.\")}" }
                 }
             }

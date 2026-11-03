@@ -49,7 +49,7 @@ pub fn Connect() -> Element {
             discovering.set(false);
         });
     };
-    use_effect(move || discover_stations());
+    use_effect(discover_stations);
 
     use_effect({
         let scheme_edit = scheme_edit;

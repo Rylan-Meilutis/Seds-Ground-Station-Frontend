@@ -176,7 +176,7 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
                         section {class:"gs26-preview-panel",h2 {"Practice checklist"}
                             p {class:"gs26-preview-note","These practice checks stay here and are discarded when you exit. They never complete a real station checklist."}
                             for (index,label) in CHECKS.iter().enumerate() {
-                                label {class:"gs26-preview-check",input {r#type:"checkbox",checked:checks()[index],onchange:move|_|{let mut next=checks();next[index]=!next[index];checks.set(next);}}span {"{label}"}}
+                                label {class:"gs26-preview-check",input {r#type:"checkbox",checked:checks()[index],onchange:move|_|{let mut next=checks();next[index] = !next[index];checks.set(next);}}span {"{label}"}}
                             }
                             button {r#type:"button",onclick:move|_|checks.set(vec![false;CHECKS.len()]),"Reset practice checks"}
                         }

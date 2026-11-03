@@ -51,17 +51,10 @@ mod tests {
         cell::Cell,
         pin::Pin,
         rc::Rc,
-        sync::Arc,
-        task::{Context, Wake, Waker},
+        task::{Context, Waker},
     };
-    #[derive(Default)]
-    struct Noop;
-    impl Wake for Noop {
-        fn wake(self: Arc<Self>) {}
-    }
     fn poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
-        let waker = Waker::from(Arc::new(Noop));
-        future.poll(&mut Context::from_waker(&waker))
+        future.poll(&mut Context::from_waker(Waker::noop()))
     }
     struct Held {
         ready: Rc<Cell<bool>>,

@@ -92,9 +92,9 @@ pub fn BoardAbortReadiness(#[props(default = false)] show_hitl_interlocks: bool)
                     if request()!=id{return;}
                     if UrlConfig::base_http()!=base||crate::auth::current_token()!=token||*WS_EPOCH.peek()!=epoch{busy.set(false);message.set("Connection changed; check current readiness again.".into());return;}
                     let revision=BOARD_ABORT_SIGNAL.read().local_revision;
-                    if let Ok(snapshot)=http_get_json::<BoardAbortSnapshot>("/api/board_abort").await {
-                        if UrlConfig::base_http()==base&&crate::auth::current_token()==token&&*WS_EPOCH.peek()==epoch {accept_http_snapshot(snapshot,revision,epoch);}
-                    }
+                    if let Ok(snapshot)=http_get_json::<BoardAbortSnapshot>("/api/board_abort").await
+                        && UrlConfig::base_http()==base&&crate::auth::current_token()==token&&*WS_EPOCH.peek()==epoch
+                    {accept_http_snapshot(snapshot,revision,epoch);}
                 }
                 if request()==id{busy.set(false);}
             });

@@ -1159,10 +1159,12 @@ async fn seed_from_db(
                 "warning" => w.push(AlertMsg {
                     timestamp_ms: a.timestamp_ms,
                     message: a.message,
+                    condition:a.condition,
                 }),
                 "error" => e.push(AlertMsg {
                     timestamp_ms: a.timestamp_ms,
                     message: a.message,
+                    condition:a.condition,
                 }),
                 _ => {}
             }
@@ -1488,6 +1490,7 @@ async fn connect_ws_once_wasm(
         return Ok(());
     }
 
+    let condition_connection=ALERT_CONDITION_VIEW.write().begin_connection();
     let base_ws = UrlConfig::base_ws();
     let ws_url = auth_ws_url(&base_ws);
 
@@ -1532,7 +1535,7 @@ async fn connect_ws_once_wasm(
             if let Some(s) = e.data().as_string()
                 && !queue_live_telemetry_from_ws_message(&s)
             {
-                queue_ws_message_event(epoch, s);
+                queue_ws_message_event(epoch, condition_connection, s);
             }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
@@ -1630,6 +1633,7 @@ async fn connect_ws_once_wasm(
         *WS_RAW.write() = None;
     }
 
+    ALERT_CONDITION_VIEW.write().disconnect(condition_connection);
     Err("websocket closed".to_string())
 }
 
@@ -1772,6 +1776,7 @@ async fn connect_ws_once_native(
         return Ok(());
     }
 
+    let condition_connection=ALERT_CONDITION_VIEW.write().begin_connection();
     let base_ws = UrlConfig::base_ws();
     let owner = native_session::Owner::new(epoch, base_ws.clone(), auth::current_token());
     let owns_session = || owner.is_current(
@@ -1924,6 +1929,7 @@ async fn connect_ws_once_native(
             NativeWsEvent::Incoming(Some(Ok(Message::Text(s)))) => {
                 handle_ws_message(
                     &s,
+                    condition_connection,
                     warnings,
                     errors,
                     ack_warning_ts,
@@ -1979,6 +1985,7 @@ async fn connect_ws_once_native(
     note_ws_connection_state(false, ws_url, Some("websocket closed".to_string()), epoch);
     *WS_SENDER.write() = None;
 
+    ALERT_CONDITION_VIEW.write().disconnect(condition_connection);
     Err("websocket closed".to_string())
 }
 
@@ -2069,6 +2076,7 @@ fn try_handle_ws_telemetry_message_fast(
 #[allow(clippy::too_many_arguments)]
 fn handle_ws_message(
     s: &str,
+    condition_connection:u64,
     warnings: Signal<Vec<AlertMsg>>,
     errors: Signal<Vec<AlertMsg>>,
     ack_warning_ts: Signal<i64>,
@@ -2135,6 +2143,9 @@ fn handle_ws_message(
     let _user_gps = user_gps;
 
     let Ok(msg) = serde_json::from_str::<WsInMsg>(s) else {
+        if serde_json::from_str::<serde_json::Value>(s).ok().and_then(|value|value.get("ty").and_then(|kind|kind.as_str()).map(|kind|kind=="AlertConditions")).unwrap_or(false) {
+            ALERT_CONDITION_VIEW.write().invalidate(condition_connection);
+        }
         return;
     };
     note_incoming_ws_message(s.len());
@@ -2239,6 +2250,7 @@ fn handle_ws_message(
             }
         }
 
+        WsInMsg::AlertConditions(snapshot)=>{ALERT_CONDITION_VIEW.write().ingest(condition_connection,snapshot);}
         WsInMsg::AlertAckState(ack_state) => {
             if *remote_alert_acks_enabled.read() {
                 let next_warning_ack =

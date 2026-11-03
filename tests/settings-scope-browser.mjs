@@ -22,6 +22,7 @@ fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(req.method==
   }
   if(pathname==='/api/gse/config'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({nitrogen_target_psi:100,pressure_step_psi:50,pressure_ceiling_psi:650,maximum_zero_offset_psi:20,dry_self_test_confirmed:false,grouped_panel:false}));return;}
   if(pathname==='/api/checklists'||`);
+fixture=fixture.replace("await new Promise(resolve=>server.listen","const serverSockets=new Set();server.on('connection',socket=>{serverSockets.add(socket);socket.on('close',()=>serverSockets.delete(socket));});\nawait new Promise(resolve=>server.listen");
 fixture+=`try {
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
  await context.addInitScript(({session,origin})=>{if(!URL.parse)URL.parse=(a,b)=>{try{return new URL(a,b)}catch{return null}};localStorage.setItem('navigation-style','sidebar');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
@@ -36,6 +37,7 @@ fixture+=`try {
  const station=page.locator('.gs26-ground-station-settings');await station.getByLabel('50 kg input',{exact:true}).waitFor();
  await station.getByLabel('Nitrous target mass (kg)',{exact:true}).waitFor();
  assert.equal(await station.getByLabel('50 kg input',{exact:true}).count(),1,'one shared input editor');
+ assert.equal(await station.getByLabel('Maximum acceptable empty-tank PT offset (psi, required)',{exact:true}).count(),1,'one station PT limit editor');
  assert.deepEqual(writes,[],'opening settings never changes station configuration; dedicated read-only capability queries are tracked separately');assert(queries.every(p=>['/api/actuator/plumbing/query','/api/board-recovery/query'].includes(p)));
  await station.getByLabel('50 kg input',{exact:true}).selectOption('p6_differential');await station.getByText('Selection saved. Waiting for fresh readings from the selected input.',{exact:true}).waitFor();
  assert.equal(calibration.kg50_input,'p6_differential');assert.deepEqual(writes,['/api/calibration/kg50_input']);
@@ -52,9 +54,17 @@ fixture+=`try {
  assert.equal(await page.locator('.gs26-calibration-temperature').getAttribute('open'),null,'thermal diagnostics stay secondary');
  const before=commands.length;await page.getByRole('link',{name:'Actions',exact:true}).click();await page.getByRole('heading',{name:'Actions',exact:true}).waitFor();
  assert.equal(await page.getByRole('button',{name:'Save Fill Targets',exact:true}).count(),0,'Actions contains no duplicate station editor');
+ assert.equal(await page.getByRole('button',{name:'Save PT limit',exact:true}).count(),0,'Actions has no duplicate PT editor');
+ assert.equal(await page.getByLabel('Maximum acceptable empty-tank PT offset (psi)',{exact:true}).count(),0);
+ assert(await page.getByText('Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test.',{exact:true}).isVisible());
+ assert.equal(await page.getByLabel(/Unlock dry valve self-test/).count(),1,'per-run isolation confirmation remains');
  gseStatus.phase='filling';await page.locator('button[data-sequence-state="In progress"]').filter({hasText:'Start fill'}).waitFor();
  const running=page.locator('button[data-sequence-state="In progress"]').filter({hasText:'Start fill'});assert.match(await running.getAttribute('style'),/box-shadow:0 0 14px/);assert.equal(await running.getAttribute('aria-busy'),'true');assert.equal(commands.length,before,'illumination follows observations without sending a command');
  gseUnavailable=true;await page.locator('button[data-sequence-state="Status unavailable"]').filter({hasText:'Start fill'}).waitFor();assert.equal(await running.count(),0,'lost sequence status clears running illumination');const lost=page.locator('button[data-sequence-state=\"Status unavailable\"]').filter({hasText:'Start fill'});assert.doesNotMatch(await lost.getAttribute('style'),/box-shadow:0 0 14px/,'a stale recommended policy cannot keep sequence illumination');assert.match(await lost.getAttribute('style'),/animation:none/,'stale recommended policy cannot keep a sequence progress pulse');
+ gseUnavailable=false;gseStatus.phase='fault';gseStatus.request_gate={flight_state:'Aborted'};await page.getByRole('button',{name:'Clear GSE abort',exact:true}).first().waitFor();await page.getByRole('button',{name:'Clear GSE abort',exact:true}).first().click();
+ await page.getByText(/This clears the ground station operation abort/).first().waitFor();
+ assert.match(await page.getByText(/This clears the ground station operation abort/).first().innerText(),/does not clear individual board aborts.*Recover Abort.*Unsupported or unavailable board recovery requires local servicing/);
+ assert.equal(commands.length,before,'reviewing recovery guidance does not send a command');
  assert.deepEqual(errors,[]);await context.close();console.log('PASS actual Wasm: Client/station split, one loadcell input editor, explicit saved fill targets, no mount effects, guided calibration, sequence progress/loss and responsive settings');
-}finally{await browser.close();await new Promise(r=>server.close(r));}`;
+}finally{await browser.close();for(const socket of serverSockets)socket.destroy();await new Promise(r=>server.close(r));}`;
 try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}

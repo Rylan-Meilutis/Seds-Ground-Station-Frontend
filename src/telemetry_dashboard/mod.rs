@@ -4,6 +4,8 @@
 
 mod accel_display_filter;
 mod actions_tab;
+mod alert_conditions;
+mod alert_condition_panel;
 mod admin_console;
 mod board_abort_readiness;
 mod board_recovery_guard;
@@ -32,6 +34,9 @@ mod gps_windows;
 mod gse_panel;
 mod info_panels;
 pub mod layout;
+mod sequence_progress_model;
+mod sequence_progress_view;
+mod sequence_progress_host;
 mod layout_settings_tab;
 mod live_stream_tab;
 mod media_tool_tab;
@@ -406,6 +411,8 @@ pub(crate) static WS_CONNECTED_SIGNAL: GlobalSignal<bool> = Signal::global(|| fa
 static SOFTWARE_BUTTONS_ENABLED_SIGNAL: GlobalSignal<bool> = Signal::global(|| false);
 static ACTION_POLICY_SIGNAL: GlobalSignal<ActionPolicyMsg> =
     Signal::global(ActionPolicyMsg::default_locked);
+static ALERT_CONDITION_VIEW: GlobalSignal<alert_conditions::View> = Signal::global(alert_conditions::View::default);
+
 static BOARD_ABORT_SIGNAL: GlobalSignal<BoardAbortSnapshot> =
     Signal::global(BoardAbortSnapshot::default);
 static ACTION_POLICY_RESYNC_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
@@ -467,7 +474,7 @@ fn old_connection_cleanup_cannot_remove_restarted_dashboard_pump() {
 }
 static PENDING_WS_OPEN_EVENTS: Lazy<Mutex<VecDeque<(u64, String)>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
-static PENDING_WS_MESSAGE_EVENTS: Lazy<Mutex<VecDeque<(u64, String)>>> =
+static PENDING_WS_MESSAGE_EVENTS: Lazy<Mutex<VecDeque<(u64,u64,String)>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
 static SEED_WATCHER_TX: Lazy<Mutex<Option<futures_channel::mpsc::UnboundedSender<()>>>> =
     Lazy::new(|| Mutex::new(None));
@@ -820,9 +827,9 @@ fn queue_ws_open_event(epoch: u64, ws_url: String) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn queue_ws_message_event(epoch: u64, payload: String) {
+fn queue_ws_message_event(epoch: u64, condition_connection:u64, payload: String) {
     if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
-        q.push_back((epoch, payload));
+        q.push_back((epoch, condition_connection, payload));
         while q.len() > 512 {
             q.pop_front();
         }

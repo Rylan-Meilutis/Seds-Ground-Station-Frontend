@@ -206,12 +206,11 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
                     loaded.set(false);
                 }
             }
-            if ticks.is_multiple_of(5) {
-                if let Ok(value) = http_get_json::<SyncStatus>("/api/checklists/sync").await {
-                    if value != *sync_state.read() {
-                        sync_state.set(value);
-                    }
-                }
+            if ticks.is_multiple_of(5)
+                && let Ok(value) = http_get_json::<SyncStatus>("/api/checklists/sync").await
+                && value != *sync_state.read()
+            {
+                sync_state.set(value);
             }
             ticks = ticks.wrapping_add(1);
             #[cfg(target_arch = "wasm32")]

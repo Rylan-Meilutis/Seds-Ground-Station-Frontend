@@ -307,7 +307,7 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
         }
         if let Some(dialog)=dialog {
             div{style:"position:fixed;inset:0;z-index:200000;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
-                onkeydown:move|e|{if e.key()==Key::Escape&&! *busy.peek(){pending.set(None);phrase.set(String::new());}},
+                onkeydown:move|e|{if e.key()==Key::Escape && !*busy.peek(){pending.set(None);phrase.set(String::new());}},
                 div{role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,620px);max-height:90vh;overflow:auto;box-sizing:border-box;overflow-wrap:anywhere;",
                     h2{id:"board-recovery-confirm-title","Confirm operator recovery action"}
                     p{"{dialog.challenge.summary}"}

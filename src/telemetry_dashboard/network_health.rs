@@ -11,22 +11,21 @@ fn temperature(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> 
     if !connected {
         return "Unavailable".to_owned();
     }
-    if let Some(value) = row.cpu_temperature_centi_c {
-        if row.cpu_temperature_age_ms.saturating_add(elapsed) <= 15_000
-            && (-4000..=15000).contains(&value)
-        {
-            return format!("CPU {:.2} °C", f64::from(value) / 100.0);
-        }
+    if let Some(value) = row.cpu_temperature_centi_c
+        && row.cpu_temperature_age_ms.saturating_add(elapsed) <= 15_000
+        && (-4000..=15000).contains(&value)
+    {
+        return format!("CPU {:.2} °C", f64::from(value) / 100.0);
     }
     if let Some(report) = &row.diagnostics {
         let age = report
             .received_age_ms
             .saturating_add(elapsed)
             .saturating_add(u64::from(report.die_temperature_sample_age_ms));
-        if let Some(value) = report.die_temperature_centi_c {
-            if age <= 15_000 && (-4000..=15000).contains(&value) {
-                return format!("MCU die {:.2} °C", f64::from(value) / 100.0);
-            }
+        if let Some(value) = report.die_temperature_centi_c
+            && age <= 15_000 && (-4000..=15000).contains(&value)
+        {
+            return format!("MCU die {:.2} °C", f64::from(value) / 100.0);
         }
     }
     "Unavailable".to_owned()
