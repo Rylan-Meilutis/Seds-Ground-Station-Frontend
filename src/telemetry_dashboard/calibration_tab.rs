@@ -2753,6 +2753,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         move |_| sequence_dialog_open.set(false)
                     },
                     div {
+                        class: "gs26-modal",
                         style: "width:min(560px, 100%); display:flex; flex-direction:column; gap:12px; padding:16px; border-radius:16px; border:1px solid {theme.tab_shell_border}; background:{theme.panel_background}; box-shadow:0 16px 40px rgba(0,0,0,0.35);",
                         onclick: move |evt| evt.stop_propagation(),
                         div {

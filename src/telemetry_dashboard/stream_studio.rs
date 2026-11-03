@@ -365,7 +365,7 @@ fn CleanFeedLink(url: String) -> Element {
         rsx! {
             button { onclick: move |_| opened.set(true), "Open clean feed" }
             if opened() {
-                div { role: "dialog", "aria-modal": "true", "aria-label": "Clean broadcast feed",
+                div { class: "gs26-modal", role: "dialog", "aria-modal": "true", "aria-label": "Clean broadcast feed",
                     style: "position:fixed;inset:0;z-index:100000;display:flex;flex-direction:column;background:#080d15;color:white;",
                     button { style: "align-self:flex-end;min-height:44px;padding:10px 18px;margin:8px;", onclick: move |_| opened.set(false), "Close clean feed" }
                     iframe { src: url, title: "Clean broadcast feed", allow: "autoplay; fullscreen; screen-wake-lock", style: "flex:1;width:100%;min-height:0;border:0;" }

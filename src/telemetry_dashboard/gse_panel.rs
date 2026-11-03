@@ -200,8 +200,8 @@ pub(super) fn ControlHelp(
         if open() {
             div {style:"position:fixed;inset:0;z-index:6100;background:#000b;display:grid;place-items:center;padding:16px;",
                 onkeydown:move |event| {if event.key()==Key::Escape {open.set(false);}},
-                div {role:"dialog","aria-modal":"true","aria-label":"{title}",
-                    style:"background:#122231;color:#edf3fa;border:1px solid #526579;border-radius:14px;padding:20px;width:min(100%,480px);max-height:80dvh;overflow:auto;box-sizing:border-box;display:grid;gap:12px;",
+                div {class:"gs26-modal",role:"dialog","aria-modal":"true","aria-label":"{title}",
+                    style:"background:var(--gs26-panel-background,#122231);color:var(--gs26-app-text,#edf3fa);border:1px solid var(--gs26-border,#526579);border-radius:14px;padding:20px;width:min(100%,480px);max-height:80dvh;overflow:auto;box-sizing:border-box;display:grid;gap:12px;",
                     h3 {style:"margin:0;","{title}"}
                     for paragraph in paragraphs {p {style:"margin:0;line-height:1.5;","{paragraph}"}}
                     button {r#type:"button",autofocus:true,style:"min-height:44px;",onclick:move |_|open.set(false),"Close help"}
@@ -554,14 +554,14 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
             p {role:"status",style:"margin:0;","{message}"}
             if *override_open.read() {
                 div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
-                    div {role:"dialog","aria-modal":"true","aria-label":"Override nitrogen cold flow",
-                        style:"background:#122231;color:#edf3fa;border:1px solid #526579;border-radius:14px;padding:20px;width:min(100%,420px);box-sizing:border-box;display:grid;gap:16px;",
+                    div {class:"gs26-modal",role:"dialog","aria-modal":"true","aria-label":"Override nitrogen cold flow",
+                        style:"background:var(--gs26-panel-background,#122231);color:var(--gs26-app-text,#edf3fa);border:1px solid var(--gs26-border,#526579);border-radius:14px;padding:20px;width:min(100%,420px);box-sizing:border-box;display:grid;gap:16px;",
                         h3 {style:"margin:0;","Override cold-flow requirement?"}
                         p {style:"margin:0;","This records an operator override, not a passed test. Fresh pressure, valve and connection checks still apply."}
                         label {"Reason" textarea {"aria-label":"Cold-flow override reason",maxlength:"500",value:override_reason(),oninput:move |event|override_reason.set(event.value()),style:"width:100%;min-height:88px;box-sizing:border-box;"}}
                         div {style:"display:flex;gap:12px;flex-wrap:wrap;",
                             button {disabled:*busy.read(),onclick:move |_|override_open.set(false),"Cancel override"}
-                            button {disabled:*busy.read()||override_reason.read().trim().is_empty(),onclick:move |_|{
+                            button {class:"gs26-modal-danger",disabled:*busy.read()||override_reason.read().trim().is_empty(),onclick:move |_|{
                                 let reason=override_reason.read().trim().to_string();busy.set(true);
                                 spawn(async move {
                                     match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/cold-flow/override",&serde_json::json!({"reason":reason})).await {
@@ -577,13 +577,13 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
             }
             if *confirm.read() {
                 div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
-                    div {role:"dialog","aria-modal":"true","aria-label":"Reset operation checks",
-                        style:"background:#122231;color:#edf3fa;border:1px solid #526579;border-radius:14px;padding:20px;max-width:420px;display:grid;gap:16px;",
+                    div {class:"gs26-modal",role:"dialog","aria-modal":"true","aria-label":"Reset operation checks",
+                        style:"background:var(--gs26-panel-background,#122231);color:var(--gs26-app-text,#edf3fa);border:1px solid var(--gs26-border,#526579);border-radius:14px;padding:20px;max-width:420px;display:grid;gap:16px;",
                         h3 {style:"margin:0;","Reset operation checks?"}
                         p {style:"margin:0;","Valve test, nitrogen test and fill qualification will be cleared. Outputs will not be actuated."}
                         div {style:"display:flex;gap:12px;flex-wrap:wrap;",
                             button {style:"min-height:44px;",disabled:*busy.read(),onclick:move |_|confirm.set(false),"Cancel"}
-                            button {style:"min-height:44px;",disabled:*busy.read(),onclick:move |_| {
+                            button {class:"gs26-modal-danger",style:"min-height:44px;",disabled:*busy.read(),onclick:move |_| {
                                 busy.set(true);
                                 spawn(async move {
                                     match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/qualification/reset",&serde_json::json!({})).await {

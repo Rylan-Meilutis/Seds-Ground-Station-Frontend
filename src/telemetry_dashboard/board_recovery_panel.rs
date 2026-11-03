@@ -26,6 +26,7 @@ struct Pending {
 impl Pending {
     fn valid(&self, current: &Snapshot) -> bool {
         self.snapshot.binding == ConnectionBinding::current()
+            && (current.status.reset_startup_policy.is_none() || current.elapsed() <= 2_000)
             && current.binding == self.snapshot.binding
             && challenge_unexpired(
                 self.received,
@@ -60,6 +61,25 @@ fn display_bool(value: Option<bool>) -> &'static str {
         None => "Unknown",
     }
 }
+fn acceptance_message(value: &Accepted) -> &'static str {
+    if !value.accepted {
+        return "Request refused / not confirmed.";
+    }
+    if let Some(operation) = value.operation.as_ref()
+        && operation.global_startup_best_effort == Some(true)
+    {
+        if operation.targets.is_empty() && operation.selected_proof_count == Some(0) {
+            return "Request accepted for host reset; no board proof requested.";
+        }
+        if !operation.targets.is_empty()
+            && operation.selected_proof_count == Some(operation.targets.len())
+        {
+            return "Request accepted; selected board proof is required. Global broadcast is best effort.";
+        }
+        return "Request accepted; awaiting server result. Board proof is not confirmed.";
+    }
+    "Request accepted; awaiting fresh device confirmation."
+}
 fn operation_view(operation: &Operation) -> Element {
     rsx! {div{role:"status",class:"gs26-recovery-operation",
         strong{"{operation.label()} — {operation.phase}"}
@@ -67,7 +87,26 @@ fn operation_view(operation: &Operation) -> Element {
         if operation.completed && operation.success == Some(true) && operation.reset_applied_state == Some(0) {
             p{"Reset applied Startup. Normal initialization may advance the station to Idle."}
         }
-        p{"Targets: {operation.targets.join(\", \")}. SDK acceptance alone is not device confirmation."}
+        if operation.global_startup_best_effort == Some(true) {
+            p{"Global Startup broadcast: best effort. Unselected boards remain unverified."}
+            if operation.targets.is_empty() {p{"Proof targets: none. This result claims no board completion or readback."}}
+            else {p{"Selected proof targets: {operation.targets.join(\", \")}."}}
+        } else {p{"Targets: {operation.targets.join(\", \")}."}}
+        p{"SDK acceptance alone is not device confirmation."}
+    }}
+}
+fn challenge_scope_view(challenge: &Challenge) -> Element {
+    rsx! {div{class:"gs26-recovery-confirm-scope",
+                    if challenge.action=="reset_startup" && challenge.global_startup_best_effort==Some(true) {
+                        p{"A GLOBAL Startup request targets ALL boards on a best-effort basis. The server summary describes this attempt; commissioning or identity reconciliation alone does not complete a reset. Only the frozen proof targets below are verified; unselected boards remain unverified."}
+                        if challenge.targets.is_empty(){p{"Proof targets: NONE (explicit HITL host-only policy). No board completion or readback is claimed."}}
+                        else {p{"Frozen proof targets: {challenge.targets.join(\", \")}."}}
+                    }else{
+                        p{"Frozen targets: {challenge.targets.join(\", \")}. Server refreshes board readbacks at confirmation; acceptance alone does not prove safe state."}
+                        p{"Only the frozen targets above are requested."}
+                    }
+                    p{"Physical valve position is not measured by command-register readbacks."}
+                    if challenge.action=="reset_startup" {p{"The reset request asks for VB vent/dump OPEN, pilot/supplies/igniter OFF and stepper asleep. Confirm the area is safe. A best-effort request does not prove unselected outputs changed."}}
     }}
 }
 fn begin_prepare(
@@ -245,7 +284,7 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                                 onclick:{let current=current.clone();move |_|begin_prepare("reset_startup".into(),None,None,current.clone(),busy,pending,message)},
                                 "Reset ALL to Startup…"
                             }
-                            p{"Reset moves outputs: AB supplies and igniter OFF, stepper asleep; VB pilot OFF, vent and dump OPEN. It cancels queued automation. Clock, calibration and network power are preserved."}
+                            p{"Reset requests AB supplies and igniter OFF, stepper asleep; VB pilot OFF, vent and dump OPEN, plus cancellation of queued automation. Unselected boards are best effort under a scoped policy. Clock, calibration and network power are preserved."}
                             if let Some(reason)=reset_reason.clone(){p{"{reason}"}}
                         }
                         if let Some(recovery)=status.host_recovery.as_ref(){
@@ -312,9 +351,7 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                 div{role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,620px);max-height:90vh;overflow:auto;box-sizing:border-box;overflow-wrap:anywhere;",
                     h2{id:"board-recovery-confirm-title","Confirm operator recovery action"}
                     p{"{dialog.challenge.summary}"}
-                    p{"Frozen targets: {dialog.challenge.targets.join(\", \")}. Server refreshes board readbacks at confirmation; acceptance alone does not prove safe state."}
-                    if dialog.challenge.action=="reset_startup" {p{"Reset ALL opens the VB vent and dump, turns pilot/supplies/igniter OFF and puts the stepper to sleep. Confirm the area is safe."}}
-                    p{"Only the frozen targets above are requested. Physical valve position is not measured by command-register readbacks."}
+                    {challenge_scope_view(&dialog.challenge)}
                     label{r#for:"board-recovery-confirm-phrase","Type {dialog.challenge.confirmation} to confirm"}
                     input{style:"width:100%;box-sizing:border-box;min-height:44px;",id:"board-recovery-confirm-phrase",value:"{phrase}",oninput:move|e|phrase.set(e.value()),disabled:*busy.read(),autocomplete:"off"}
                     button{autofocus:true,disabled:*busy.read(),onclick:move |_|{pending.set(None);phrase.set(String::new());},"Cancel"}
@@ -333,7 +370,7 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                                         match super::http_post_json::<_,Accepted>("/api/board-recovery/confirm",&body).await{
                                             Ok(value)=>{
                                                 if owned.snapshot.binding==ConnectionBinding::current(){
-                                                    let result=if value.accepted{"Request accepted; awaiting fresh device confirmation."}else{"Request refused / not confirmed."};
+                                                    let result=acceptance_message(&value);
                                                     let op=value.operation.map(|op|format!(" {}: {}",op.label(),op.message)).unwrap_or_default();
                                                     message.set(format!("{result} {}{op}",value.message));
                                                 }
@@ -351,5 +388,89 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn result(host_only: bool) -> Operation {
+        serde_json::from_value(serde_json::json!({
+            "action":"reset_startup","completed":true,"success":true,"phase":"completed",
+            "targets":if host_only {vec![]} else {vec!["AB","VB","GB","DAQ"]},
+            "reset_applied_state":0,"global_startup_best_effort":true,
+            "selected_proof_count":if host_only {0} else {4},
+            "unselected_board_verification":"unverified_best_effort"
+        }))
+        .unwrap()
+    }
+    fn host_result() -> Element {
+        operation_view(&result(true))
+    }
+    fn selected_result() -> Element {
+        operation_view(&result(false))
+    }
+    fn host_scope() -> Element {
+        let ticket: Challenge = serde_json::from_value(serde_json::json!({
+            "ticket":"a","backend_instance":"b","principal_context":"c","reset_epoch":"d",
+            "expires_in_ms":30000,"action":"reset_startup","targets":[],"summary":"Fixture only",
+            "confirmation":"RESET ALL STARTUP; VERIFY NONE","global_startup_best_effort":true,
+            "required_proof_boards":[],"unselected_board_verification":"unverified_best_effort"
+        }))
+        .unwrap();
+        challenge_scope_view(&ticket)
+    }
+    fn render(component: fn() -> Element) -> String {
+        let mut dom = VirtualDom::new(component);
+        dom.rebuild_in_place();
+        dioxus::ssr::render(&dom)
+    }
+    #[test]
+    fn actual_host_only_result_never_renders_board_readback_confirmation() {
+        let html = render(host_result);
+        assert!(html.contains("Host Startup reset; no board proof"));
+        assert!(html.contains("Unselected boards remain unverified"));
+        assert!(!html.contains("Confirmed by board readbacks"));
+    }
+    #[test]
+    fn actual_selected_result_keeps_global_request_separate_from_selected_proof() {
+        let html = render(selected_result);
+        assert!(html.contains("Selected boards verified; global broadcast best effort"));
+        assert!(html.contains("Selected proof targets: AB, VB, GB, DAQ"));
+        assert!(html.contains("Unselected boards remain unverified"));
+    }
+    #[test]
+    fn actual_confirmation_scope_discloses_global_best_effort_and_host_only_none() {
+        let html = render(host_scope);
+        assert!(html.contains("GLOBAL Startup request targets ALL boards"));
+        assert!(html.contains("NONE (explicit HITL host-only policy)"));
+        assert!(!html.contains("Only the frozen targets above are requested"));
+        assert!(html.contains("does not prove unselected outputs changed"));
+    }
+    #[test]
+    fn acceptance_copy_never_promises_board_proof_for_host_only_reset() {
+        let mut accepted: Accepted =
+            serde_json::from_value(serde_json::json!({"accepted":true,"message":"fixture"}))
+                .unwrap();
+        accepted.operation = Some(result(true));
+        assert_eq!(
+            acceptance_message(&accepted),
+            "Request accepted for host reset; no board proof requested."
+        );
+        accepted.operation = Some(result(false));
+        assert_eq!(
+            acceptance_message(&accepted),
+            "Request accepted; selected board proof is required. Global broadcast is best effort."
+        );
+        accepted.operation = None;
+        assert_eq!(
+            acceptance_message(&accepted),
+            "Request accepted; awaiting fresh device confirmation."
+        );
+        accepted.accepted = false;
+        assert_eq!(
+            acceptance_message(&accepted),
+            "Request refused / not confirmed."
+        );
     }
 }

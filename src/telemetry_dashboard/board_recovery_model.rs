@@ -2,9 +2,18 @@
 /// Presentation only. Server capability and fresh proof still decide admission.
 pub(super) fn targeted_recovery_label(id: &str) -> Option<(&'static str, &'static str)> {
     match id {
-        "AB" | "VB" => Some(("Recover to Idle…", "Verified safe-output application recovery; no physical-position proof.")),
-        "FC" => Some(("Recover to Startup…", "Verified FC evaluator and safe-output reset. Deployment history is preserved; a separate new flight is required.")),
-        "RF" | "PB" | "GB" | "DAQ" => Some(("Reset metadata to Startup…", "Cached application metadata only; no physical recovery, power cycling, acquisition reset or resync.")),
+        "AB" | "VB" => Some((
+            "Recover to Idle…",
+            "Verified safe-output application recovery; no physical-position proof.",
+        )),
+        "FC" => Some((
+            "Recover to Startup…",
+            "Verified FC evaluator and safe-output reset. Deployment history is preserved; a separate new flight is required.",
+        )),
+        "RF" | "PB" | "GB" | "DAQ" => Some((
+            "Reset metadata to Startup…",
+            "Cached application metadata only; no physical recovery, power cycling, acquisition reset or resync.",
+        )),
         _ => None,
     }
 }
@@ -12,6 +21,43 @@ pub(super) fn targeted_recovery_label(id: &str) -> Option<(&'static str, &'stati
 use serde::{Deserialize, Serialize};
 
 pub(super) const BOARD_IDS: [&str; 7] = ["RF", "FC", "PB", "AB", "VB", "GB", "DAQ"];
+fn canonical_targets(targets: &[String]) -> bool {
+    targets.len() <= BOARD_IDS.len()
+        && BOARD_IDS
+            .iter()
+            .copied()
+            .filter(|id| targets.iter().any(|target| target == id))
+            .eq(targets.iter().map(String::as_str))
+}
+#[derive(Clone, Default, Deserialize, PartialEq)]
+pub(super) struct ResetStartupPolicy {
+    pub version: u8,
+    pub global_startup_best_effort: bool,
+    pub mode: String,
+    pub base_required_boards: Vec<String>,
+    pub optional_proofs: bool,
+}
+impl ResetStartupPolicy {
+    fn valid_for(&self, mode: &ModeCapability) -> bool {
+        let expected: &[&str] = match self.mode.as_str() {
+            "normal" | "testing" => &BOARD_IDS,
+            "test_fire" => &["AB", "VB", "GB", "DAQ"],
+            "hitl" => &[],
+            _ => return false,
+        };
+        self.version == 1
+            && self.global_startup_best_effort
+            && self.optional_proofs
+            && self.mode == mode.current
+            && self.mode == mode.build_mode
+            && mode.supported_modes.contains(&self.mode)
+            && self
+                .base_required_boards
+                .iter()
+                .map(String::as_str)
+                .eq(expected.iter().copied())
+    }
+}
 #[derive(Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub(super) struct Principal {
@@ -66,6 +112,9 @@ pub(super) struct Operation {
     pub age_ms: u64,
     pub message: String,
     pub reset_applied_state: Option<u8>,
+    pub global_startup_best_effort: Option<bool>,
+    pub selected_proof_count: Option<usize>,
+    pub unselected_board_verification: Option<String>,
 }
 impl Operation {
     pub fn pending(&self) -> bool {
@@ -80,9 +129,36 @@ impl Operation {
             (_, _, "cancelled") => "Cancelled",
             (_, Some(false), _) | (_, _, "failed") => "Failed",
             (true, Some(true), _)
-                if self.action == "reset_startup" && self.reset_applied_state != Some(0) =>
+                if matches!(self.action.as_str(), "reset_startup" | "reset_startup_all7")
+                    && self.reset_applied_state != Some(0) =>
             {
                 "Reset result is not confirmed"
+            }
+            (true, Some(true), _)
+                if matches!(self.action.as_str(), "reset_startup" | "reset_startup_all7") =>
+            {
+                if self.global_startup_best_effort == Some(true) {
+                    if self.selected_proof_count != Some(self.targets.len())
+                        || !canonical_targets(&self.targets)
+                        || self.unselected_board_verification.as_deref()
+                            != Some("unverified_best_effort")
+                    {
+                        "Reset result is not confirmed"
+                    } else if self.targets.is_empty() {
+                        "Host Startup reset; no board proof"
+                    } else {
+                        "Selected boards verified; global broadcast best effort"
+                    }
+                } else if self.global_startup_best_effort.is_none()
+                    && self.selected_proof_count.is_none()
+                    && self.unselected_board_verification.is_none()
+                    && self.targets.len() == 7
+                    && canonical_targets(&self.targets)
+                {
+                    "Confirmed by board readbacks"
+                } else {
+                    "Reset result is not confirmed"
+                }
             }
             (true, Some(true), _) => "Confirmed by board readbacks",
             _ => "Pending / not confirmed",
@@ -194,6 +270,7 @@ pub(super) struct Status {
     pub automatic_actions_inhibited: bool,
     pub permissions: Permissions,
     pub mode_capability: ModeCapability,
+    pub reset_startup_policy: Option<ResetStartupPolicy>,
     pub boards: Vec<Board>,
     pub operation: Option<Operation>,
     pub confirmation: Option<ConfirmationIdentity>,
@@ -222,6 +299,24 @@ impl Status {
         }
         if !matches!(self.flight_state, Some(0 | 1 | 15)) {
             return Some("Stop the active operation before resetting the boards.".into());
+        }
+        if self.pending() {
+            return Some("Another operation is pending; wait for its actual result.".into());
+        }
+        if let Some(policy) = self.reset_startup_policy.as_ref() {
+            if !policy.valid_for(&self.mode_capability) {
+                return Some(
+                    "This server advertised an unsupported or inconsistent reset policy.".into(),
+                );
+            }
+            if elapsed > 2_000 {
+                return Some(
+                    "Refresh current server reset policy before preparing a reset.".into(),
+                );
+            }
+            // Capability permits preparation/query only. The returned server
+            // ticket must still bind exact selected proof targets and policy.
+            return None;
         }
         let missing: Vec<_> = BOARD_IDS
             .iter()
@@ -309,6 +404,12 @@ pub(super) struct Challenge {
     pub targets: Vec<String>,
     pub summary: String,
     pub confirmation: String,
+    #[serde(default)]
+    pub global_startup_best_effort: Option<bool>,
+    #[serde(default)]
+    pub required_proof_boards: Option<Vec<String>>,
+    #[serde(default)]
+    pub unselected_board_verification: Option<String>,
 }
 impl Challenge {
     fn identity_matches(&self, status: &Status) -> bool {
@@ -339,8 +440,47 @@ impl Challenge {
             || self.expires_in_ms == 0
             || self.expires_in_ms > 30_000
             || !self.identity_matches(status)
+            || (action == "reset_startup"
+                && (!status.permissions.reset_startup
+                    || !matches!(status.flight_state, Some(0 | 1 | 15))))
         {
             return false;
+        }
+        if action == "reset_startup" && board.is_none() && mode.is_none() {
+            if let Some(policy) = status.reset_startup_policy.as_ref() {
+                if !policy.valid_for(&status.mode_capability)
+                    || self.global_startup_best_effort != Some(true)
+                    || self.required_proof_boards.as_ref() != Some(&policy.base_required_boards)
+                    || self.unselected_board_verification.as_deref()
+                        != Some("unverified_best_effort")
+                    || !canonical_targets(&self.targets)
+                    || !policy
+                        .base_required_boards
+                        .iter()
+                        .all(|id| self.targets.contains(id))
+                    || !self.targets.iter().all(|id| status.board(id).is_some())
+                    || (self.targets.is_empty() && policy.mode != "hitl")
+                {
+                    return false;
+                }
+                let scope = if self.targets.is_empty() {
+                    "NONE".to_string()
+                } else {
+                    self.targets.join(" ")
+                };
+                let phrase = format!("RESET ALL STARTUP; VERIFY {scope}");
+                return self.confirmation == phrase
+                    || (!self.targets.is_empty()
+                        && self.confirmation == format!("{phrase} COMMISSION"));
+            }
+            // An old server has no scoped-reset contract. Do not interpret
+            // partial/new metadata or a narrowed phrase as legacy authority.
+            if self.global_startup_best_effort.is_some()
+                || self.required_proof_boards.is_some()
+                || self.unselected_board_verification.is_some()
+            {
+                return false;
+            }
         }
         let phrase = match (action, board, mode) {
             ("recover_abort", Some(id), None)
@@ -390,6 +530,10 @@ impl Challenge {
                 .is_some_and(|op| op.pending() && op.phase != "awaiting_confirmation")
             && original.permissions == current.permissions
             && original.mode_capability == current.mode_capability
+            && original.reset_startup_policy == current.reset_startup_policy
+            && (self.action != "reset_startup"
+                || (current.permissions.reset_startup
+                    && matches!(current.flight_state, Some(0 | 1 | 15))))
             && self.identity_matches(original)
             && self.identity_matches(current)
             && original.mode_capability.current == current.mode_capability.current
@@ -439,8 +583,14 @@ mod tests {
             let (label, description) = targeted_recovery_label(id).unwrap();
             match id {
                 "AB" | "VB" => assert_eq!(label, "Recover to Idle…"),
-                "FC" => {assert_eq!(label, "Recover to Startup…"); assert!(description.contains("history is preserved"));},
-                _ => {assert_eq!(label, "Reset metadata to Startup…"); assert!(description.contains("no physical recovery"));},
+                "FC" => {
+                    assert_eq!(label, "Recover to Startup…");
+                    assert!(description.contains("history is preserved"));
+                }
+                _ => {
+                    assert_eq!(label, "Reset metadata to Startup…");
+                    assert!(description.contains("no physical recovery"));
+                }
             }
             let mut status = all_boards();
             let mut ticket = challenge();
@@ -851,6 +1001,232 @@ mod tests {
             assert!(s.reset_reason(0).is_none());
             assert!(!s.mode_capability.runtime_switch_supported);
             assert!(s.mode_reason("hitl").is_some());
+        }
+    }
+    fn scoped_reset(mode: &str) -> (Status, Challenge) {
+        let mut status = all_boards();
+        status.mode_capability.current = mode.into();
+        status.mode_capability.build_mode = mode.into();
+        status.mode_capability.supported_modes = vec![mode.into()];
+        let required: Vec<String> = match mode {
+            "normal" | "testing" => BOARD_IDS.iter().map(|x| (*x).into()).collect(),
+            "test_fire" => ["AB", "VB", "GB", "DAQ"]
+                .iter()
+                .map(|x| (*x).into())
+                .collect(),
+            "hitl" => vec![],
+            _ => panic!("test mode"),
+        };
+        status.reset_startup_policy = Some(
+            serde_json::from_value(serde_json::json!({
+                "version":1,"global_startup_best_effort":true,"mode":mode,
+                "base_required_boards":required,"optional_proofs":true
+            }))
+            .unwrap(),
+        );
+        let mut ticket = challenge();
+        ticket.targets = required.clone();
+        ticket.global_startup_best_effort = Some(true);
+        ticket.required_proof_boards = Some(required);
+        ticket.unselected_board_verification = Some("unverified_best_effort".into());
+        ticket.confirmation = format!(
+            "RESET ALL STARTUP; VERIFY {}",
+            if ticket.targets.is_empty() {
+                "NONE".into()
+            } else {
+                ticket.targets.join(" ")
+            }
+        );
+        status.confirmation.as_mut().unwrap().targets = ticket.targets.clone();
+        (status, ticket)
+    }
+    #[test]
+    fn explicit_mode_policy_allows_preparation_then_exact_scoped_confirmation() {
+        for mode in ["normal", "test_fire", "hitl", "testing"] {
+            let (mut status, ticket) = scoped_reset(mode);
+            for board in &mut status.boards {
+                board.age_ms = None;
+                board.capabilities.reset_startup = None;
+            }
+            assert!(
+                status.reset_reason(0).is_none(),
+                "prepare queries must be allowed under explicit {mode} capability"
+            );
+            assert!(status.reset_reason(2_000).is_none());
+            assert!(
+                status.reset_reason(2_001).is_some(),
+                "stale policy cannot prepare"
+            );
+            assert!(ticket.matches(&status, "reset_startup", None, None));
+            assert!(ticket.context_unchanged(&status, &status));
+        }
+        let mut legacy = all_boards();
+        legacy.boards[0].age_ms = None;
+        assert!(
+            legacy.reset_reason(0).is_some(),
+            "legacy all-seven freshness stays required"
+        );
+    }
+    #[test]
+    fn scoped_optional_abort_proofs_are_exact_unique_canonical_supersets() {
+        let (mut status, mut ticket) = scoped_reset("test_fire");
+        ticket.targets = vec![
+            "FC".into(),
+            "AB".into(),
+            "VB".into(),
+            "GB".into(),
+            "DAQ".into(),
+        ];
+        status.confirmation.as_mut().unwrap().targets = ticket.targets.clone();
+        ticket.confirmation = format!("RESET ALL STARTUP; VERIFY {}", ticket.targets.join(" "));
+        assert!(ticket.matches(&status, "reset_startup", None, None));
+        for targets in [
+            vec!["FC", "AB", "VB", "GB"],
+            vec!["AB", "VB", "GB", "DAQ", "DAQ"],
+            vec!["VB", "AB", "GB", "DAQ"],
+            vec!["AB", "VB", "GB", "UNKNOWN"],
+        ] {
+            ticket.targets = targets.into_iter().map(str::to_string).collect();
+            status.confirmation.as_mut().unwrap().targets = ticket.targets.clone();
+            ticket.confirmation = format!("RESET ALL STARTUP; VERIFY {}", ticket.targets.join(" "));
+            assert!(!ticket.matches(&status, "reset_startup", None, None));
+        }
+    }
+    #[test]
+    fn incomplete_or_changed_policy_never_falls_back_to_legacy() {
+        for change in 0..9 {
+            let (mut status, mut ticket) = scoped_reset("normal");
+            match change {
+                0 => status.reset_startup_policy.as_mut().unwrap().version = 2,
+                1 => {
+                    status
+                        .reset_startup_policy
+                        .as_mut()
+                        .unwrap()
+                        .global_startup_best_effort = false
+                }
+                2 => {
+                    status
+                        .reset_startup_policy
+                        .as_mut()
+                        .unwrap()
+                        .optional_proofs = false
+                }
+                3 => status.reset_startup_policy.as_mut().unwrap().mode = "unknown".into(),
+                4 => {
+                    status
+                        .reset_startup_policy
+                        .as_mut()
+                        .unwrap()
+                        .base_required_boards
+                        .pop();
+                }
+                5 => status.mode_capability.build_mode = "hitl".into(),
+                6 => ticket.global_startup_best_effort = None,
+                7 => ticket.required_proof_boards = None,
+                _ => ticket.unselected_board_verification = Some("verified".into()),
+            }
+            assert!(
+                !ticket.matches(&status, "reset_startup", None, None),
+                "mutation {change}"
+            );
+        }
+        let (status, mut ticket) = scoped_reset("normal");
+        for phrase in [
+            "RESET ALL STARTUP",
+            "RESET STARTUP RF FC PB AB VB GB DAQ",
+            "RESET ALL STARTUP; VERIFY NONE",
+            "RESET ALL STARTUP; VERIFY RF FC PB AB VB GB DAQ EXTRA",
+        ] {
+            ticket.confirmation = phrase.into();
+            assert!(!ticket.matches(&status, "reset_startup", None, None));
+        }
+    }
+    #[test]
+    fn empty_scope_is_only_explicit_hitl_none_and_no_phantom_c11_space() {
+        let (status, mut ticket) = scoped_reset("hitl");
+        assert!(ticket.matches(&status, "reset_startup", None, None));
+        for phrase in [
+            "RESET ALL STARTUP; VERIFY ",
+            "RESET ALL STARTUP; VERIFY",
+            "RESET ALL STARTUP; VERIFY NONE COMMISSION",
+            "anything",
+        ] {
+            ticket.confirmation = phrase.into();
+            assert!(!ticket.matches(&status, "reset_startup", None, None));
+        }
+        let (mut status, mut ticket) = scoped_reset("hitl");
+        status.reset_startup_policy = None;
+        assert!(!ticket.matches(&status, "reset_startup", None, None));
+        ticket.global_startup_best_effort = None;
+        ticket.required_proof_boards = None;
+        ticket.unselected_board_verification = None;
+        ticket.confirmation = "RESET ALL STARTUP".into();
+        assert!(!ticket.matches(&status, "reset_startup", None, None));
+    }
+    #[test]
+    fn scoped_policy_remains_bound_to_current_identity_auth_mode_and_safe_state() {
+        let (original, ticket) = scoped_reset("test_fire");
+        for change in 0..7 {
+            let mut current = original.clone();
+            match change {
+                0 => current.backend_instance = "ffffffffffffffffffffffffffffffff".into(),
+                1 => current.principal.context = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                2 => current.reset_epoch = "0000000000000002".into(),
+                3 => current.permissions.reset_startup = false,
+                4 => current.mode_capability.current = "normal".into(),
+                5 => {
+                    current
+                        .reset_startup_policy
+                        .as_mut()
+                        .unwrap()
+                        .optional_proofs = false
+                }
+                _ => current.flight_state = Some(8),
+            }
+            assert!(!ticket.matches(&current, "reset_startup", None, None));
+            assert!(!ticket.context_unchanged(&original, &current));
+        }
+    }
+    #[test]
+    fn host_only_and_selected_results_never_claim_unselected_board_readbacks() {
+        let mut operation: Operation = serde_json::from_value(serde_json::json!({
+            "action":"reset_startup","completed":true,"success":true,"phase":"completed",
+            "targets":[],"reset_applied_state":0,"global_startup_best_effort":true,
+            "selected_proof_count":0,"unselected_board_verification":"unverified_best_effort"
+        }))
+        .unwrap();
+        assert_eq!(operation.label(), "Host Startup reset; no board proof");
+        operation.targets = vec!["AB".into(), "VB".into(), "GB".into(), "DAQ".into()];
+        operation.selected_proof_count = Some(4);
+        assert_eq!(
+            operation.label(),
+            "Selected boards verified; global broadcast best effort"
+        );
+        operation.selected_proof_count = Some(0);
+        assert_eq!(operation.label(), "Reset result is not confirmed");
+        operation.targets.clear();
+        operation.global_startup_best_effort = None;
+        operation.selected_proof_count = None;
+        operation.unselected_board_verification = None;
+        assert_eq!(operation.label(), "Reset result is not confirmed");
+    }
+    #[test]
+    fn present_hitl_capability_requires_every_field_without_guessing_empty_base() {
+        let complete = serde_json::json!({"version":1,"global_startup_best_effort":true,"mode":"hitl","base_required_boards":[],"optional_proofs":true});
+        for field in [
+            "base_required_boards",
+            "version",
+            "global_startup_best_effort",
+            "mode",
+            "optional_proofs",
+        ] {
+            let mut partial = complete.clone();
+            partial.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<ResetStartupPolicy>(partial).is_err(),
+                "present capability must explicitly include {field}"
+            );
         }
     }
 }

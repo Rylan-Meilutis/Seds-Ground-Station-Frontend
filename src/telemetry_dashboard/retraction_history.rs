@@ -65,13 +65,13 @@ pub(super) fn RetractionHistoryRepair() -> Element {
                 });
             },"Inspect retraction history"}
             if let Some(context)=context {
-                div {role:"dialog","aria-modal":"true","aria-label":"Reset retraction history to closed",
-                    style:"position:fixed; inset:10% 8%; z-index:1600; overflow:auto; padding:24px; background:var(--panel-bg,#17212b); color:inherit; border:2px solid #e0a535; border-radius:12px; box-shadow:0 0 0 100vmax #0009;",
+                div {class:"gs26-modal",role:"dialog","aria-modal":"true","aria-label":"Reset retraction history to closed",
+                    style:"position:fixed; inset:10% 8%; z-index:1600; overflow:auto; padding:24px; background:var(--gs26-panel-background,#17212b); color:var(--gs26-app-text,#edf3fa); border:2px solid #e0a535; border-radius:12px; box-shadow:0 0 0 100vmax #0009;",
                     h2 {"Preserve evidence and reset history to CLOSED"}
                     p {"This preserves the damaged evidence and writes a verified CLOSED record. It does not retract plumbing, change the drive, reset the T-clock, or unlock Launch. A new explicit retraction and fresh checks are still required."}
                     if !context.current(&source()){p {role:"alert","This station or fault context is unavailable or changed. Close and inspect again; no reset is authorized."}}
                     label {"Type RESET RETRACTION JOURNAL",input {value:"{typed}",disabled:busy(),oninput:move |event|typed.set(event.value())}}
-                    button {disabled:!can_reset,onclick:move |_|{
+                    button {class:"gs26-modal-danger",disabled:!can_reset,onclick:move |_|{
                         if !context.current(&source())||typed()!="RESET RETRACTION JOURNAL"||!crate::auth::can_send_command("RetractPlumbing"){return;}
                         let original=context.source.clone();let body=context.body();busy.set(true);
                         spawn(async move {

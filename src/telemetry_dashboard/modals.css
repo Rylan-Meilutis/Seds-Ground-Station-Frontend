@@ -1,0 +1,78 @@
+/* In-app dialogs can be siblings of the dashboard shell. Keep their controls
+   explicitly scoped and use the document's active application theme. */
+.gs26-modal,
+[aria-labelledby="board-recovery-confirm-title"],
+.gs26-sequence-view,
+.gs26-sequence-chip {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont;
+  line-height: 1.5;
+}
+.gs26-modal :is(h1,h2,h3,h4,p,label),
+[aria-labelledby="board-recovery-confirm-title"] :is(h1,h2,h3,h4,p,label) {
+  font-family: inherit;
+  overflow-wrap: anywhere;
+}
+.gs26-modal button,
+[aria-labelledby="board-recovery-confirm-title"] button,
+.gs26-sequence-view[role="dialog"] button {
+  appearance: none;
+  box-sizing: border-box;
+  min-height: 44px;
+  min-width: 44px;
+  max-width: 100%;
+  padding: 10px 16px;
+  border: 1px solid var(--gs26-button-border, var(--gs26-border, #526579));
+  border-radius: 9px;
+  background: var(--gs26-button-background, #172638);
+  color: var(--gs26-button-text, #edf3fa);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.gs26-modal button:not(:disabled):hover,
+[aria-labelledby="board-recovery-confirm-title"] button:not(:disabled):hover,
+.gs26-sequence-view[role="dialog"] button:not(:disabled):hover { filter: brightness(1.12); }
+.gs26-modal button:disabled,
+[aria-labelledby="board-recovery-confirm-title"] button:disabled,
+.gs26-sequence-view[role="dialog"] button:disabled { cursor: not-allowed; opacity: .5; }
+.gs26-modal :is(button,input,select,textarea):focus-visible,
+[aria-labelledby="board-recovery-confirm-title"] :is(button,input,select,textarea):focus-visible {
+  outline: 3px solid #57bde8;
+  outline-offset: 3px;
+}
+.gs26-modal .gs26-modal-danger,
+[aria-labelledby="board-recovery-confirm-title"] #board-recovery-confirm-phrase ~ button:last-child {
+  background: #9e2636;
+  border-color: #dd7180;
+  color: #fff;
+}
+.gs26-modal .gs26-modal-primary {
+  background: #155e88;
+  border-color: #67b5de;
+  color: #fff;
+}
+.gs26-modal :is(input,select,textarea),
+[aria-labelledby="board-recovery-confirm-title"] :is(input,select,textarea) {
+  font-family: inherit;
+  font-size: 16px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.gs26-modal :is(input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea),
+[aria-labelledby="board-recovery-confirm-title"] input {
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--gs26-button-border, var(--gs26-border, #526579));
+  border-radius: 8px;
+  background: var(--gs26-panel-alt-background, #101c2b);
+  color: var(--gs26-app-text, #edf3fa);
+}
+@media (max-width: 420px) {
+  .gs26-modal button,
+  [aria-labelledby="board-recovery-confirm-title"] button { padding: 10px 12px; }
+}

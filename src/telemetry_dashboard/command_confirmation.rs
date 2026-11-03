@@ -57,6 +57,7 @@ pub(super) fn CommandConfirmation() -> Element {
             style: "position:fixed;inset:0;z-index:200000;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
             onkeydown: move |event| { if event.key() == Key::Escape { cancel_pending(); } },
             div {
+                class: "gs26-modal",
                 role: "alertdialog", "aria-modal": "true", "aria-labelledby": "gs26-command-confirm-title", "aria-describedby": "gs26-command-confirm-message",
                 style: "width:min(100%,480px);max-height:90vh;overflow:auto;background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);border:1px solid var(--gs26-border,#526579);border-radius:14px;padding:22px;box-sizing:border-box;box-shadow:0 12px 60px #0008;",
                 h2 { id: "gs26-command-confirm-title", style: "margin:0 0 14px;font-size:20px;", "Confirm reset" }
@@ -72,6 +73,7 @@ pub(super) fn CommandConfirmation() -> Element {
                         onclick: move |_| { cancel_pending(); }, "Cancel"
                     }
                     button {
+                        class: "gs26-modal-danger",
                         style: "min-height:44px;padding:10px 18px;border-radius:8px;cursor:pointer;",
                         onclick: move |_| {
                             // Consume before dispatch: repeated clicks cannot submit twice.

@@ -4037,6 +4037,7 @@ fn TelemetryDashboardInner() -> Element {
                 }
     })();
     rsx! {
+        style {{include_str!("modals.css")}}
         media_tool_tab::MediaSurface {media_visible,voice_visible,stream_visible:surface_stream,{view}}
         command_confirmation::CommandConfirmation {}
         style {{include_str!("sequence_progress.css")}}

@@ -389,7 +389,7 @@ pub(super) fn PairedSettings(theme: ThemeConfig) -> Element {
             }
             if let Some((title,value))=detail {
                 div {class:"paired-modal-shade",role:"presentation",
-                    section {class:"paired-modal",role:"dialog","aria-modal":"true","aria-label":"Saved values",
+                    section {class:"paired-modal gs26-modal",role:"dialog","aria-modal":"true","aria-label":"Saved values",
                         onkeydown:move |event| {if event.key()==Key::Escape {details.set(None);}},
                         header {h3 {"{title}"}button {autofocus:true,onclick:move |_|details.set(None),"Close"}}
                         pre {"{serde_json::to_string_pretty(&value).unwrap_or_default()}"}

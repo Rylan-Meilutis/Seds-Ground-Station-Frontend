@@ -21,13 +21,26 @@ fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
         ("StartFill", "Start fill"),
         ("PauseFill", "Pause fill"),
         ("CancelFill", "Cancel fill"),
-        ("NitrogenClose", "Close nitrogen"),
-        ("NitrousClose", "Close nitrous"),
     ] {
         if !actions.iter().any(|action| action.cmd == cmd) {
             actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
         }
     }
+}
+
+// The main supply control also owns idempotent closing. Unknown/pending feedback
+// must never turn a click into an inferred Open request.
+fn supply_dispatch_command(cmd: &str, observed: Option<bool>) -> &str {
+    match (cmd, observed) {
+        ("Nitrogen", Some(false)) | ("Nitrous", Some(false)) => cmd,
+        ("Nitrogen", _) => "NitrogenClose",
+        ("Nitrous", _) => "NitrousClose",
+        _ => cmd,
+    }
+}
+
+fn redundant_supply_close(cmd: &str) -> bool {
+    matches!(cmd, "NitrogenClose" | "NitrousClose")
 }
 
 #[cfg(test)]
@@ -66,7 +79,8 @@ mod sequence_action_tests {
         let theme = ThemeConfig::default();
         let mut actions = Vec::new();
         ensure_sequence_actions(&mut actions, &theme);
-        assert_eq!(actions.len(), 7);
+        assert_eq!(actions.len(), 5);
+        assert!(!actions.iter().any(|a| redundant_supply_close(&a.cmd)), "No extra per-supply Close action");
         for cmd in [
             "StartFill",
             "PauseFill",
@@ -81,6 +95,24 @@ mod sequence_action_tests {
         ensure_sequence_actions(&mut actions, &theme);
         assert_eq!(actions, original);
     }
+    #[test]
+    fn primary_supply_button_closes_unknown_and_never_borrows_close_illumination() {
+        for (cmd, close) in [("Nitrogen", "NitrogenClose"), ("Nitrous", "NitrousClose")] {
+            assert_eq!(supply_dispatch_command(cmd, Some(false)), cmd);
+            assert_eq!(supply_dispatch_command(cmd, Some(true)), close);
+            assert_eq!(supply_dispatch_command(cmd, None), close);
+            let policy: ActionPolicyMsg = serde_json::from_value(serde_json::json!({"key_enabled":true,"software_buttons_enabled":true,"controls":[{"cmd":cmd,"enabled":false,"blink":"none","actuated":null},{"cmd":close,"enabled":true,"blink":"none","actuated":true}]})).unwrap();
+            assert!(action_policy_control_enabled(&policy,supply_dispatch_command(cmd,None)));
+            assert_eq!(merge_command_feedback(cmd,None,false),None,"CLOSE policy's inverse position is never physical ON proof");
+            let missing: ActionPolicyMsg = serde_json::from_value(serde_json::json!({"key_enabled":true,"software_buttons_enabled":true,"controls":[{"cmd":cmd,"enabled":true,"blink":"none","actuated":null}]})).unwrap();
+            assert!(!action_policy_control_enabled(&missing,supply_dispatch_command(cmd,None)));
+        }
+        assert_eq!(supply_dispatch_command("Abort",None),"Abort");
+        assert!(!redundant_supply_close("CancelFill"));
+        assert!(!redundant_supply_close("Abort"));
+        assert!(!redundant_supply_close("CloseAll"));
+    }
+
 }
 
 fn btn_style(
@@ -502,6 +534,7 @@ pub fn ActionsTab(
     });
     let mut all_actions = layout.actions.clone();
     ensure_sequence_actions(&mut all_actions, &theme);
+    all_actions.retain(|action| !redundant_supply_close(&action.cmd));
     for action in &mut all_actions {
         if matches!(action.cmd.as_str(), "Igniter" | "IgniterSequence") {
             action.group = "Manual GSE valves".into();
@@ -642,28 +675,29 @@ pub fn ActionsTab(
                                             ActionRowItem::Action(action) => {
                                                 let mut action_policy_snapshot = action_policy.read().clone();
                                                 super::BOARD_ABORT_SIGNAL.read().constrain_launch_policy(&mut action_policy_snapshot);
-                                                let control = action_policy
-                                                    .read()
+                                                let control = action_policy_snapshot
                                                     .controls
                                                     .iter()
                                                     .find(|c| c.cmd == action.cmd)
                                                     .cloned();
-                                                let enabled = action_policy_control_enabled(&action_policy_snapshot, action.cmd.as_str())
-                                                    && auth::can_send_command(action.cmd.as_str())
+                                                let dispatch_cmd = supply_dispatch_command(&action.cmd, control.as_ref().and_then(|c| c.actuated)).to_owned();
+                                                let dispatch_control = action_policy_snapshot.controls.iter().find(|c| c.cmd == dispatch_cmd);
+                                                let enabled = action_policy_control_enabled(&action_policy_snapshot, &dispatch_cmd)
+                                                    && auth::can_send_command(&dispatch_cmd)
                                                     && (action.cmd!="ValveSelfTest" || *self_test_confirmed.read())
                                                     && (!abort_only_mode || action.cmd == "Abort")
                                                 ;
                                                 let disabled_reason = if action.group != "GSE sequence actions" || enabled {
                                                     None
-                                                } else if !auth::can_send_command(action.cmd.as_str()) {
+                                                } else if !auth::can_send_command(&dispatch_cmd) {
                                                     Some("Not permitted by your account")
                                                 } else if abort_only_mode {
                                                     Some("Abort-only mode is enabled")
                                                 } else if !action_policy_snapshot.software_buttons_enabled {
                                                     Some("Software controls disabled by backend")
-                                                } else if control.is_none() {
+                                                } else if dispatch_control.is_none() {
                                                     Some("Command missing from backend policy")
-                                                } else if !control.as_ref().unwrap().enabled {
+                                                } else if !dispatch_control.unwrap().enabled {
                                                     Some("Sequence request disabled by backend")
                                                 } else {
                                                     Some("Confirm dry valve self-test first")
@@ -694,8 +728,9 @@ pub fn ActionsTab(
                                                         disabled: !enabled,
                                                         aria_busy: sequence == Some(super::sequence_indicator::Progress::Running),
                                                         "data-sequence-state": sequence_label,
+                                                        "data-dispatch-command": "{dispatch_cmd}",
                                                         onmousedown: {
-                                                            let cmd = action.cmd.clone();
+                                                            let cmd = dispatch_cmd.clone();
                                                             move |_| {
                                                                 if enabled {
                                                                     crate::telemetry_dashboard::send_cmd_from_press(&cmd)
@@ -703,7 +738,7 @@ pub fn ActionsTab(
                                                             }
                                                         },
                                                         ontouchstart: {
-                                                            let cmd = action.cmd.clone();
+                                                            let cmd = dispatch_cmd.clone();
                                                             move |_| {
                                                                 if enabled {
                                                                     crate::telemetry_dashboard::send_cmd_from_press(&cmd)
@@ -711,7 +746,7 @@ pub fn ActionsTab(
                                                             }
                                                         },
                                                         onclick: {
-                                                            let cmd = action.cmd.clone();
+                                                            let cmd = dispatch_cmd.clone();
                                                             move |_| {
                                                                 if enabled {
                                                                     crate::telemetry_dashboard::send_cmd_from_click(&cmd)
