@@ -64,6 +64,8 @@ mod sequence_indicator;
 mod station_mode;
 mod station_positions_admin;
 mod station_settings;
+mod settings_navigation;
+mod station_settings_request;
 mod stream_rundown;
 mod stream_studio;
 pub mod types;

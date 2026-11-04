@@ -223,6 +223,20 @@ fn TelemetryDashboardInner() -> Element {
     let show_version_overlay = use_signal(|| false);
 
     let mut active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
+    // Saved/custom Calibration navigation remains a shortcut to its one shared
+    // configuration home, rather than mounting another independent editor.
+    use_effect(move || {
+        if *active_main_tab.read() == MainTab::Calibration {
+            settings_navigation::open_calibration();
+        }
+    });
+    use_effect(move || {
+        if *settings_navigation::CALIBRATION_REQUEST.read() != 0 {
+            let mut overlay = show_settings_overlay;
+            overlay.set(true);
+        }
+    });
+
     let sequence_progress = use_signal(sequence_progress_model::Model::default);
     let sequence_status = use_signal(sequence_progress_host::StatusObservation::default);
     let mut sequence_result_request = use_signal(||None::<sequence_progress_model::RunKey>);
@@ -2471,7 +2485,7 @@ fn TelemetryDashboardInner() -> Element {
                                     station_settings::GroundStationSettings {
                                         layout: layout.actions_tab.clone(), action_policy, fill_targets,
                                         abort_only_mode: *abort_only_mode.read(), theme: theme.clone(),
-                                        on_open_calibration: move |_| { let mut overlay=show_settings_overlay; overlay.set(false); let mut tab=active_main_tab; tab.set(MainTab::Calibration); },
+                                        capture_sample_count: calibration_capture_sample_count,
                                         on_manage_users: move |_| { let mut overlay=show_settings_overlay; overlay.set(false); admin_open.set(true); },
                                     }
                                 } else { p { "Waiting for station configuration." } }
@@ -3847,11 +3861,9 @@ fn TelemetryDashboardInner() -> Element {
                                 },
                                 MainTab::Calibration => rsx! {
                                     div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                        CalibrationTab {
-                                            theme: theme.clone(),
-                                            can_edit: auth::can_edit_calibration(),
-                                            capture_sample_count: *calibration_capture_sample_count.read(),
-                                        }
+                                        h2 { "Calibration" }
+                                        p { "Sensor calibration and loadcell configuration are together in Ground Station settings." }
+                                        button { r#type: "button", onclick: move |_| settings_navigation::open_calibration(), "Open loadcells & calibration" }
                                     }
                                 },
                                 MainTab::CrewVoice | MainTab::Media => rsx! {},

@@ -2119,14 +2119,17 @@ pub(super) fn Kg50InputSelector(
     theme: ThemeConfig,
     #[props(default = false)] disabled: bool,
     #[props(default)] on_changed: EventHandler<serde_json::Value>,
+    #[props(default)] on_changing: EventHandler<()>,
+    #[props(default)] on_settled: EventHandler<()>,
 ) -> Element {
+    let settings_owner = super::station_settings_request::use_factory();
     let mut input = use_signal(|| None::<String>);
     let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
     use_future(move || async move {
         loop {
             if !*busy.peek()
-                && let Ok(cfg) = super::http_get_json::<serde_json::Value>("/api/calibration").await
+                && let Ok(cfg) = settings_owner.get::<serde_json::Value>("/api/calibration").await
                     && !*busy.peek() {
                         input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
                     }
@@ -2147,20 +2150,23 @@ pub(super) fn Kg50InputSelector(
                 style: "padding:8px; border-radius:6px; background:{theme.button_background}; color:{theme.text_primary}; border:1px solid {theme.border}; font:inherit; max-width:100%;",
                 onchange: move |event| {
                     let requested = event.value();
-                    if !matches!(requested.as_str(), "amp2" | "p6_differential") || *busy.peek() { return; }
+                    if disabled || !matches!(requested.as_str(), "amp2" | "p6_differential") || *busy.peek() { return; }
                     busy.set(true);
+                    on_changing.call(());
                     message.set("Saving input selection…".into());
                     spawn(async move {
                         let body = serde_json::json!({"input":requested});
-                        match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/kg50_input", &body).await {
+                        match settings_owner.post::<serde_json::Value,serde_json::Value>("/api/calibration/kg50_input", &body).await {
                             Ok(cfg) => {
                                 input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
                                 on_changed.call(cfg);
                                 message.set("Selection saved. Waiting for fresh readings from the selected input.".into());
                             }
+                            Err(_) if !settings_owner.current() => return,
                             Err(error) => message.set(format!("Input change failed: {error}")),
                         }
                         busy.set(false);
+                        on_settled.call(());
                     });
                 },
                 option { value: "amp2", "Normal · AMP2 / P8" }
@@ -2168,7 +2174,7 @@ pub(super) fn Kg50InputSelector(
             }
             p { style: "margin:0; font-size:12px; color:{theme.text_muted};", "Selected input uses the fast load-cell scan with a 250 Hz reporting target. Each input keeps its own calibration." }
             if selected == "p6_differential" {
-                p { style: "margin:0; font-size:12px; color:{theme.text_secondary};", "P6 raw readings are differential volts. Calibrate this input in the Calibration tab before using kilograms. SD records retain differential ADC samples in volts." }
+                p { style: "margin:0; font-size:12px; color:{theme.text_secondary};", "P6 raw readings are differential volts. Calibrate this input below before using kilograms. SD records retain differential ADC samples in volts." }
             }
             if !message.read().is_empty() {
                 p { role: "status", style: "margin:0; font-size:12px; color:{theme.text_secondary};", "{message}" }

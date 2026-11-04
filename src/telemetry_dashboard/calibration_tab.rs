@@ -1,7 +1,7 @@
 #![allow(clippy::redundant_locals)]
 
 use super::{
-    TELEMETRY_RENDER_EPOCH, UrlConfig, http_get_json, http_post_json, latest_telemetry_value,
+    TELEMETRY_RENDER_EPOCH, UrlConfig, latest_telemetry_value,
     layout::{ThemeConfig, ValueFormatter},
     persist, translate_text,
 };
@@ -1320,7 +1320,14 @@ mod calibration_eval_tests {
 }
 
 #[component]
-pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: usize) -> Element {
+pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: usize,
+    #[props(default)] context_epoch: Option<Signal<u64>>,
+    #[props(default)] on_context_locked: EventHandler<bool>,
+) -> Element {
+    let original_epoch = context_epoch.map(|epoch| *epoch.peek());
+    let settings_owner = super::station_settings_request::use_factory_selected(move || {
+        context_epoch.zip(original_epoch).is_none_or(|(epoch, original)| original != u64::MAX && *epoch.peek() == original)
+    });
     let layout_cfg = use_signal(|| None::<CalibrationTabLayout>);
     let sensors = layout_cfg
         .read()
@@ -1340,6 +1347,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     };
 
     let cfg = use_signal(|| None::<CalibrationFile>);
+    let mut context_loaded = use_signal(|| false);
+    let mut confirm_discard = use_signal(|| false);
+    let can_edit = can_edit && (context_epoch.is_none() || context_loaded());
     let selected_sensor_id = use_signal(|| {
         persist::get_string(CALIBRATION_SELECTED_SENSOR_STORAGE_KEY).unwrap_or_default()
     });
@@ -1354,6 +1364,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let dirty = use_signal(|| false);
     let preserve_regression_on_zero_change =
         use_signal(|| persist::get_or(CALIBRATION_PRESERVE_REGRESSION_STORAGE_KEY, "on") != "off");
+    let mut manual_capture_busy = use_signal(|| false);
     let manual_capture_progress = use_signal(String::new);
     let manual_capture_progress_epoch = use_signal(|| 0u64);
     let last_sync_poll_ms = use_signal(now_ms);
@@ -1367,6 +1378,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let sequence_direction = use_signal(|| CaptureDirection::Increasing);
     let sequence_capture_busy = use_signal(|| false);
     let calibration_save_busy = use_signal(|| false);
+    use_effect(move || on_context_locked.call(!context_loaded() || *dirty.read() || manual_capture_busy() || *sequence_capture_busy.read() || *calibration_save_busy.read()));
+
 
     {
         let mut layout_cfg = layout_cfg;
@@ -1375,11 +1388,12 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             if let Some(cached_layout) = load_cached_calibration_layout() {
                 layout_cfg.set(Some(cached_layout));
             }
-            match http_get_json::<CalibrationTabLayout>("/api/calibration_config").await {
+            match settings_owner.get::<CalibrationTabLayout>("/api/calibration_config").await {
                 Ok(v) => {
                     save_cached_calibration_layout(&v);
                     layout_cfg.set(Some(v));
                 }
+                Err(_) if !settings_owner.current() => (),
                 Err(e) => {
                     if layout_cfg.read().is_some() {
                         status.set(format!(
@@ -1446,8 +1460,15 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 dirty.set(true);
                 status.set("Restored unsaved calibration changes from this device".to_string());
             }
-            match http_get_json::<CalibrationFile>("/api/calibration").await {
+            match settings_owner.get::<CalibrationFile>("/api/calibration").await {
                 Ok(mut v) => {
+                    let input_mismatch = context_epoch.is_some() && *dirty.peek()
+                        && cfg.peek().as_ref().is_some_and(|draft| draft.kg50_input != v.kg50_input);
+                    context_loaded.set(!input_mismatch);
+                    if input_mismatch {
+                        status.set("The saved draft belongs to a different DAQ input. It was kept on this client. Discard and reload before capturing or saving this input.".into());
+                        return;
+                    }
                     sanitize_calibration_file(&mut v);
                     save_cached_calibration_file(&v);
                     if *dirty.read() {
@@ -1465,6 +1486,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         status.set("Calibration loaded".to_string());
                     }
                 }
+                Err(_) if !settings_owner.current() => (),
                 Err(e) => {
                     if cfg.read().is_some() {
                         if !*dirty.read() {
@@ -1518,6 +1540,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         let fit_mode = fit_mode;
         let preserve_regression_on_zero_change = preserve_regression_on_zero_change;
         use_effect(move || {
+            if !settings_owner.current() { return; }
             if *dirty.read() {
                 if let Some(calibration) = cfg.read().clone() {
                     save_calibration_draft(&CalibrationDraft {
@@ -1551,7 +1574,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             last_sync_poll_ms.set(now);
             let current_cfg = cfg.read().clone();
             spawn(async move {
-                match http_get_json::<CalibrationFile>("/api/calibration").await {
+                match settings_owner.get::<CalibrationFile>("/api/calibration").await {
                     Ok(mut remote_cfg) => {
                         if *dirty.read()
                             || *sequence_dialog_open.read()
@@ -1559,6 +1582,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         {
                             return;
                         }
+                        context_loaded.set(true);
                         sanitize_calibration_file(&mut remote_cfg);
                         if current_cfg.as_ref() != Some(&remote_cfg) {
                             save_cached_calibration_file(&remote_cfg);
@@ -1566,6 +1590,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             status.set("Calibration synced from backend".to_string());
                         }
                     }
+                    Err(_) if !settings_owner.current() => (),
                     Err(err) => {
                         if current_cfg.is_none() {
                             status.set(format!("Failed to load: {err}"));
@@ -1948,6 +1973,27 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
 
     rsx! {
         div { class: "gs26-calibration-workspace", style: "{shell_style}",
+            if confirm_discard() {
+                div {role:"alertdialog",aria_label:"Discard calibration changes",aria_modal:true,style:"position:fixed;inset:0;z-index:4300;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.45);",
+                    section {style:"width:min(460px,100%);padding:18px;border-radius:14px;background:{theme.panel_background};color:{theme.text_primary};display:grid;gap:12px;",
+                        h3 {style:"margin:0;","Discard unsaved calibration changes?"}
+                        p {"This removes this client’s draft only after the current station calibration has loaded. No station calibration is changed."}
+                        button {r#type:"button",onclick:move |_|confirm_discard.set(false),"Keep editing"}
+                        button {r#type:"button",onclick:move |_|{
+                            confirm_discard.set(false);
+                            let mut cfg=cfg;let mut dirty=dirty;let mut status=status;
+                            spawn(async move {
+                                match settings_owner.get::<CalibrationFile>("/api/calibration").await {
+                                    Ok(mut current)=>{sanitize_calibration_file(&mut current);save_cached_calibration_file(&current);cfg.set(Some(current));dirty.set(false);clear_calibration_draft();context_loaded.set(true);status.set("Draft discarded; current station calibration loaded".into());},
+                                    Err(_) if !settings_owner.current()=>(),
+                                    Err(error)=>status.set(format!("Draft kept: station calibration could not be loaded: {error}")),
+                                }
+                            });
+                        },"Discard and reload"}
+                    }
+                }
+            }
+
             style { {r#"
                 @media (max-width: 1100px) {
                     .gs26-calibration-plot-overlay-desktop { display: none !important; }
@@ -1962,6 +2008,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     div {
                         h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
                         div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Select a sensor, capture known loads, review the fit, then save." }
+                        div { role:"status", style:"margin-top:6px;color:{theme.text_secondary};font-size:13px;", "{status.read()}" }
                         div { style: "margin-top:6px; color:{theme.text_secondary}; font-size:12px;",
                             if can_edit {
                                 "Save applies only to the selected sensor. DAQ inputs and station configuration are in Settings → Ground Station."
@@ -1973,8 +2020,14 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     div { style: "display:flex; align-items:center; gap:8px; flex-wrap:wrap;",
                         if *dirty.read() {
                             div { style: "padding:8px 10px; border-radius:12px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;", "Unsaved" }
+                        } else if context_epoch.is_some() && !context_loaded() {
+                            div {role:"status","Loading station calibration"}
                         } else {
                             div { style: "padding:8px 10px; border-radius:12px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;", "Saved" }
+                        }
+                        if *dirty.read() {
+                            button {r#type:"button",style:"{neutral_button_style}",disabled:*sequence_capture_busy.read()||manual_capture_busy()||*calibration_save_busy.read(),
+                                onclick:move |_|confirm_discard.set(true),"Discard unsaved changes"}
                         }
                         if can_edit {
                             button {
@@ -1998,7 +2051,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                         status.set(format!("Saving {} calibration…", sensor.label));
                                         calibration_save_busy.set(true);
                                         spawn(async move {
-                                            match http_post_json::<CalibrationSaveRequest, CalibrationFile>("/api/calibration", &request).await {
+                                            match settings_owner.post::<CalibrationSaveRequest, CalibrationFile>("/api/calibration", &request).await {
                                                 Ok(mut saved_cfg) => {
                                                     sanitize_calibration_file(&mut saved_cfg);
                                                     save_cached_calibration_file(&saved_cfg);
@@ -2012,6 +2065,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         status.set("Earlier calibration saved; newer local edits are preserved. Save again to publish them.".to_string());
                                                     }
                                                 }
+                                                Err(_) if !settings_owner.current() => return,
                                                 Err(e) => status.set(format!("Save failed: {e}")),
                                             }
                                             calibration_save_busy.set(false);
@@ -2117,7 +2171,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 }
                 button {
                     style: "{warning_button_style}",
-                    disabled: selected_sensor.is_none() || !can_edit,
+                    disabled: selected_sensor.is_none() || !can_edit || manual_capture_busy(),
                     onclick: {
                         let mut sequence_dialog_open = sequence_dialog_open;
                         let mut sequence_dialog_mode = sequence_dialog_mode;
@@ -2262,6 +2316,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                         dirty.set(true);
                                         status.set("Refit preview updated locally".to_string());
                                     }
+                                    Err(_) if !settings_owner.current() => (),
                                     Err(e) => status.set(format!("Refit failed: {e}")),
                                 }
                             }
@@ -2406,6 +2461,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             manual_capture_progress.set(initial_message.clone());
                             status.set(initial_message);
                             let sensor_label = sensor.label.clone();
+                            let capture_selection = selected_sensor_id.peek().clone();
+                            manual_capture_busy.set(true);
                             spawn(async move {
                                 let capture_calibration = cfg.read().clone().unwrap_or_default();
                                 match capture_average_raw_sample(
@@ -2423,6 +2480,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 )
                                 .await
                                 {
+                                    Ok(_) if !settings_owner.current() || *selected_sensor_id.peek() != capture_selection => return,
                                     Ok((raw, captured, temperature)) => {
                                         manual_temperature.set(temperature);
                                         manual_raw.set(format_sensor_raw_value(
@@ -2438,11 +2496,13 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                         manual_capture_progress.set(done.clone());
                                         status.set(done);
                                     }
+                                    Err(_) if !settings_owner.current() => return,
                                     Err(err) => {
                                         manual_capture_progress.set(err.clone());
                                         status.set(err);
                                     }
                                 }
+                                manual_capture_busy.set(false);
                             });
                         }
                     },
@@ -2724,7 +2784,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     }
             if can_edit {
                 if let Some(sensor) = selected_sensor.as_ref().filter(|s| matches!(s.data_type.as_str(), "KG1000" | "KG50")) {
-                    LongZeroPanel {
+                    LongZeroPanel { key:"long-zero-{sensor.id}",
                         theme: theme.clone(),
                         sensor: sensor.data_type.clone(),
                         dirty: *dirty.read(),
@@ -2863,6 +2923,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             sensor.label
                                         ));
                                         let sensor_label = sensor.label.clone();
+                                        let capture_selection = selected_sensor_id.peek().clone();
                                         spawn(async move {
                                             let capture_calibration = cfg.read().clone().unwrap_or_default();
                                             match capture_average_raw_sample(
@@ -2878,6 +2939,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             )
                                             .await
                                             {
+                                                Ok(_) if !settings_owner.current() || *selected_sensor_id.peek() != capture_selection => return,
                                                 Ok((raw, captured, temperature)) => {
                                                     let mut next = cfg.read().clone().unwrap_or_default();
                                                     if let Err(error) = apply_sequence_capture(
@@ -2955,6 +3017,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         ));
                                                     }
                                                 }
+                                                Err(_) if !settings_owner.current() => return,
                                                 Err(err) => sequence_dialog_status.set(err),
                                             }
                                             sequence_capture_busy.set(false);
@@ -3151,6 +3214,7 @@ fn thermal_control_style(theme: &ThemeConfig) -> String {
 
 #[component]
 fn ThermalPointCapture(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: EventHandler<CalibrationFile>) -> Element {
+    let settings_owner = super::station_settings_request::use_factory();
     let mut status = use_signal(|| serde_json::Value::Null);
     let mut message = use_signal(String::new);
     let mut confirmed = use_signal(|| false);
@@ -3160,9 +3224,10 @@ fn ThermalPointCapture(theme: ThemeConfig, sensor: String, dirty: bool, on_appli
         let sensor=polling_sensor.clone();
         async move {
             loop {
-                match http_get_json::<serde_json::Value>(&format!("/api/calibration/thermal_settling?sensor_id={sensor}")).await {
+                match settings_owner.get::<serde_json::Value>(&format!("/api/calibration/thermal_settling?sensor_id={sensor}")).await {
                     Ok(value)=>status.set(value),
-                    Err(e)=>{status.set(serde_json::Value::Null);message.set(format!("Settling status unavailable: {e}"));},
+                    Err(_) if !settings_owner.current() => return,
+                    Err(e) =>{status.set(serde_json::Value::Null);message.set(format!("Settling status unavailable: {e}"));},
                 }
                 sleep_ms(2000).await;
             }
@@ -3191,9 +3256,10 @@ fn ThermalPointCapture(theme: ThemeConfig, sensor: String, dirty: bool, on_appli
                     busy.set(true);let sensor=sensor.clone();
                     spawn(async move {
                         let body=serde_json::json!({"sensor_id":sensor});
-                        match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/capture_thermal_zero",&body).await {
+                        match settings_owner.post::<serde_json::Value,CalibrationFile>("/api/calibration/capture_thermal_zero",&body).await {
                             Ok(saved)=>{on_applied.call(saved);message.set("Settled point saved. A consistent fit needs six points across ≥0.25 °C including intermediate temperatures; until then the previous correction is retained. Verify zero and a known mass after fitting.".into());},
-                            Err(e)=>message.set(e),
+                            Err(_) if !settings_owner.current() => return,
+                            Err(e) =>message.set(e),
                         }
                         busy.set(false);
                     });
@@ -3208,6 +3274,7 @@ fn ThermalPointCapture(theme: ThemeConfig, sensor: String, dirty: bool, on_appli
 
 #[component]
 fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: EventHandler<CalibrationFile>) -> Element {
+    let settings_owner = super::station_settings_request::use_factory();
     let mut status = use_signal(|| serde_json::Value::Null);
     let mut message = use_signal(String::new);
     let mut duration = use_signal(|| "1800".to_string());
@@ -3216,7 +3283,7 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
     let mut thermal = use_signal(|| true);
     use_future(move || async move {
         loop {
-            if let Ok(value) = http_get_json::<serde_json::Value>("/api/calibration/long_zero").await { status.set(value); }
+            if let Ok(value) = settings_owner.get::<serde_json::Value>("/api/calibration/long_zero").await { status.set(value); }
             sleep_ms(1000).await;
         }
     });
@@ -3257,16 +3324,18 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
                     button { style:"{control}", disabled:running || !*known_zero.read() || dirty,
                         onclick:move |_| {
                             let body=serde_json::json!({"sensor_id":sensor,"duration_s":duration.read().parse::<u64>().unwrap_or(0),"known_zero":*known_zero.read()});
-                            spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero",&body).await {
-                                Ok(v)=>{status.set(v);message.set("Recording raw data. Keep unloaded and hold each temperature until settled.".into());},Err(e)=>message.set(e),
+                            spawn(async move {match settings_owner.post::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero",&body).await {
+                                Ok(v)=>{status.set(v);message.set("Recording raw data. Keep unloaded and hold each temperature until settled.".into());},Err(_) if !settings_owner.current() => (),
+Err(e) =>message.set(e),
                             }});
                         }, "Start capture"
                     }
                     button { style:"{control}", disabled:!running,
                         onclick:{let id=id.clone();move |_| {
                             let body=serde_json::json!({"session_id":id});
-                            spawn(async move {match http_post_json::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero/stop",&body).await {
-                                Ok(v)=>{status.set(v);message.set("Finishing capture and saving analysis…".into());},Err(e)=>message.set(e),
+                            spawn(async move {match settings_owner.post::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero/stop",&body).await {
+                                Ok(v)=>{status.set(v);message.set("Finishing capture and saving analysis…".into());},Err(_) if !settings_owner.current() => (),
+Err(e) =>message.set(e),
                             }});
                         }}, "Stop & analyze"
                     }
@@ -3307,8 +3376,9 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
                         button { style:"{control}", disabled:!ready || dirty || (*thermal.read() && !thermal_ready),
                             onclick:move |_| {
                                 let body=serde_json::json!({"session_id":id,"apply_thermal":*thermal.read(),"tau_ms":tau.read().parse::<f32>().unwrap_or(-1.)});
-                                spawn(async move {match http_post_json::<serde_json::Value,CalibrationFile>("/api/calibration/long_zero/apply",&body).await {
-                                    Ok(v)=>{on_applied.call(v);message.set("Calibration saved and sent to DAQ. Verify zero and a known mass.".into());},Err(e)=>message.set(e),
+                                spawn(async move {match settings_owner.post::<serde_json::Value,CalibrationFile>("/api/calibration/long_zero/apply",&body).await {
+                                    Ok(v)=>{on_applied.call(v);message.set("Calibration saved and sent to DAQ. Verify zero and a known mass.".into());},Err(_) if !settings_owner.current() => (),
+Err(e) =>message.set(e),
                                 }});
                             }, if *thermal.read() { "Apply temperature, zero & filter" } else { "Apply zero & filter" }
                         }

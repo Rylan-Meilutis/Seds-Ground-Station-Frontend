@@ -126,7 +126,7 @@ pub fn SettingsPage(
     #[props(default)] title: Option<String>,
     #[props(default)] station_settings: Option<Element>,
 ) -> Element {
-    let mut settings_scope = use_signal(|| "client".to_string());
+    let settings_scope = &super::settings_navigation::SCOPE;
     let mut maintenance_status = use_signal(String::new);
     let mut confirm_reset = use_signal(|| false);
     let mut active_settings_tab = use_signal(|| "general".to_string());
@@ -956,7 +956,7 @@ pub fn SettingsPage(
                 for (scope, label) in [("client", "Client"), ("station", "Ground Station")] {
                     button { r#type: "button", aria_pressed: settings_scope.read().as_str() == scope,
                         style: if settings_scope.read().as_str() == scope { chip_selected.clone() } else { chip_idle.clone() },
-                        onclick: move |_| { settings_scope.set(scope.into()); confirm_reset.set(false); }, "{label}" }
+                        onclick: move |_| { super::settings_navigation::select_scope(scope); confirm_reset.set(false); }, "{label}" }
                 }
             }
             if settings_scope.read().as_str() == "client" {
@@ -1678,7 +1678,7 @@ pub fn SettingsPage(
 
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_calibration}" }
-                div { style: "font-size:13px; color:{theme.text_muted};", "{calibration_samples_title}" }
+                div { style: "font-size:13px; color:{theme.text_muted};", "{calibration_samples_title} — this client" }
                 div { style: "font-size:13px; color:{theme.text_soft};", "{calibration_samples_desc}" }
                 input {
                     style: "padding:8px 10px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; color:{theme.text_primary}; width:140px;",
@@ -2057,13 +2057,6 @@ pub fn SettingsPage(
                     p { style: "margin:0;color:{theme.text_muted};", "Shared configuration for the connected station. Changes require the existing station permissions and interlocks." }
                     if let Some(content) = station_settings.clone() {
                     {content}
-                    if crate::auth::can_view_data() { super::paired_settings::PairedSettings { theme: theme.clone() } }
-                    section { style: "{card_style}",
-                        h3 { style: "margin:0;", "Station clocks" }
-                        super::actions_tab::NetworkUtcControls {}
-                        style { {include_str!("system_clock_settings.css")} }
-                        super::recording_download::SystemClockSettings {}
-                    }
                     } else { p { "Connect to a station and open its dashboard to configure shared settings." } }
                 }
             }

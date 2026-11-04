@@ -5,7 +5,7 @@ pub(super) use export_owner::ExportOwner;
 #[path = "recording_download_file.rs"]
 mod local_file;
 
-use super::{http_get_json, layout::ThemeConfig};
+use super::layout::ThemeConfig;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::auth;
 use dioxus::prelude::*;
@@ -293,6 +293,7 @@ fn RangeAndClock() -> Element {
 
 #[component]
 pub fn SystemClockSettings() -> Element {
+    let settings_owner=super::station_settings_request::use_factory();
     let mut message = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut clock = use_signal(|| None::<ClockStatus>);
@@ -302,8 +303,9 @@ pub fn SystemClockSettings() -> Element {
     use_effect(move || {
         let _ = refresh();
         spawn(async move {
-            match http_get_json::<ClockStatus>("/api/system/time").await {
+            match settings_owner.get::<ClockStatus>("/api/system/time").await {
                 Ok(c) => clock.set(Some(c)),
+                Err(_) if !settings_owner.current() => (),
                 Err(e) => message.set(format!("Could not read station clock: {e}")),
             }
         });
@@ -316,12 +318,13 @@ pub fn SystemClockSettings() -> Element {
     let mut sync = move |body: serde_json::Value| {
         busy.set(true);
         spawn(async move {
-            match super::http_post_json::<_, ClockStatus>("/api/system/time", &body).await {
+            match settings_owner.post::<_, ClockStatus>("/api/system/time", &body).await {
                 Ok(c) => {
                     clock.set(Some(c));
                     confirmed.set(false);
                     message.set("OS clock updated immediately. Network UTC source accepted; network time synchronizes gradually.".into());
                 }
+                Err(_) if !settings_owner.current() => return,
                 Err(e) => message.set(format!("Clock update failed: {e}")),
             }
             busy.set(false);
@@ -346,7 +349,8 @@ pub fn SystemClockSettings() -> Element {
                 button { disabled:busy() || !confirmed() || !has_network, onclick:move |_| sync(serde_json::json!({"source":"network"})), "Set OS from current network UTC" }
                 label { "Set date/time (UTC) " input { r#type:"datetime-local", value:"{manual}", oninput:move |e| manual.set(e.value()) } }
                 button { disabled:busy() || !confirmed(), onclick:move |_| {
-                    match input_utc_ms(&manual()) { Ok(ms)=>sync(serde_json::json!({"source":"client","utc_ms":ms})), Err(e)=>message.set(e) }
+                    match input_utc_ms(&manual()) { Ok(ms)=>sync(serde_json::json!({"source":"client","utc_ms":ms})), Err(_) if !settings_owner.current() => (),
+ Err(e) =>message.set(e) }
                 }, "Set selected date/time" }
             } else if let Some(c) = clock.read().as_ref() {
                 if !c.set_system_time_permission { p { "Set System Date/Time permission is required." } }

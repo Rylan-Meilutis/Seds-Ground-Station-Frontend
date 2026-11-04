@@ -214,6 +214,14 @@ fn recording_command_active(cmd: &str, status: &RecordingStatusMsg) -> Option<bo
     }
 }
 
+fn cosmetic_output_action(cmd: &str) -> bool {
+    matches!(cmd, "ToggleAvBayUnderglow" | "ToggleFlightBuzzer")
+}
+
+fn cosmetic_requested(cmd: &str, requested: Option<bool>, legacy_actuated: Option<bool>) -> Option<bool> {
+    cosmetic_output_action(cmd).then_some(requested.or(legacy_actuated)).flatten()
+}
+
 fn physical_output_action(cmd: &str) -> bool {
     matches!(
         cmd,
@@ -230,6 +238,8 @@ fn physical_output_action(cmd: &str) -> bool {
 }
 
 fn merge_command_feedback(cmd: &str, observed: Option<bool>, sent: bool) -> Option<bool> {
+    // Neither legacy desired-as-actuated nor local send feedback proves owner state.
+    if cosmetic_output_action(cmd) { return None; }
     if physical_output_action(cmd) {
         return observed;
     }
@@ -753,7 +763,7 @@ pub fn ActionsTab(
                                                     super::board_recovery_guard::status_age_ms(operational_observed_at(), sequence_now()),
                                                     auth::current_status().station_role.as_deref() == Some("rrls"),
                                                 );
-                                                let blink = if sequence == Some(super::sequence_indicator::Progress::Unknown) {
+                                                let blink = if cosmetic_output_action(&action.cmd) || sequence == Some(super::sequence_indicator::Progress::Unknown) {
                                                     BlinkMode::None
                                                 } else { control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None) };
                                                 let actuated = sequence.map(|state| state.illuminated()).or_else(|| merged_actuated(
@@ -761,7 +771,9 @@ pub fn ActionsTab(
                                                     control.as_ref().and_then(|c| c.actuated),
                                                     &recording_status.read(),
                                                 ));
-                                                let unconfirmed = physical_output_action(&action.cmd) && actuated.is_none();
+                                                let unconfirmed = (physical_output_action(&action.cmd) || cosmetic_output_action(&action.cmd)) && actuated.is_none();
+                                                let requested = cosmetic_requested(&action.cmd, control.as_ref().and_then(|c| c.requested), control.as_ref().and_then(|c| c.actuated));
+                                                let requested_label = match requested { Some(true) => "Requested: On", Some(false) => "Requested: Off", None => "Requested: unknown" };
                                                 let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
                                                 let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
                                                 let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { "Unconfirmed" } else { "Disabled" };
@@ -838,6 +850,9 @@ pub fn ActionsTab(
                                                         },
                                                         span { style: "min-width:0; flex:1 1 auto;",
                                                             span {title:"{action.label}",style:"display:-webkit-box;-webkit-line-clamp:{label_lines};-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;white-space:normal;line-height:1.25;", "{action.label}"}
+                                                            if cosmetic_output_action(&action.cmd) {
+                                                                span {style:"display:block;font-size:11px;font-weight:400;line-height:1.3;", "{requested_label}; owner unconfirmed"}
+                                                            }
                                                             if action.group == "GSE sequence actions" {
                                                                 span {title:disabled_reason.unwrap_or(""),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;", "{reason_text}"}
                                                             }
@@ -876,6 +891,7 @@ pub(super) fn MissionSettings(
     abort_only_mode: bool,
     theme: ThemeConfig,
 ) -> Element {
+    let settings_owner = super::station_settings_request::use_factory();
     let abort_only_mode = abort_only_mode || !auth::can_view_actions();
     layout.show_flight_setup = true;
     layout.show_fill_targets = true;
@@ -883,9 +899,11 @@ pub(super) fn MissionSettings(
     let mut auto_zero_busy = use_signal(|| false);
     let mut auto_zero_message = use_signal(String::new);
     use_effect(move || {
+        if !settings_owner.current() { return; }
         spawn(async move {
-            match super::http_get_json::<serde_json::Value>("/api/auto_zero").await {
+            match settings_owner.get::<serde_json::Value>("/api/auto_zero").await {
                 Ok(value) => auto_zero.set(value["enabled"].as_bool()),
+                Err(_) if !settings_owner.current() => (),
                 Err(error) => {
                     auto_zero_message.set(format!("Automatic zero settings unavailable: {error}"))
                 }
@@ -899,20 +917,23 @@ pub(super) fn MissionSettings(
     let mut fill_targets_status = use_signal(String::new);
     let mut fill_targets_busy = use_signal(|| false);
     use_effect(move || {
+        if !settings_owner.current() { return; }
         spawn(async move {
-            match crate::telemetry_dashboard::http_get_json::<FlightSetupConfig>(
+            match settings_owner.get::<FlightSetupConfig>(
                 "/api/flight_setup",
             )
             .await
             {
                 Ok(cfg) => flight_setup.set(Some(cfg)),
+                Err(_) if !settings_owner.current() => (),
                 Err(err) => flight_setup_status.set(format!("Flight setup load failed: {err}")),
             }
         });
     });
     use_effect(move || {
+        if !settings_owner.current() { return; }
         spawn(async move {
-            match crate::telemetry_dashboard::http_get_json::<FillTargetsConfig>(
+            match settings_owner.get::<FillTargetsConfig>(
                 "/api/fill_targets",
             )
             .await
@@ -923,11 +944,13 @@ pub(super) fn MissionSettings(
                     let mut fill_targets = fill_targets;
                     fill_targets.set(Some(cfg));
                 }
+                Err(_) if !settings_owner.current() => (),
                 Err(err) => fill_targets_status.set(format!("Fill targets load failed: {err}")),
             }
         });
     });
     use_effect(move || {
+        if !settings_owner.current() { return; }
         if fill_targets_status.read().starts_with("Unsaved") {
             return;
         }
@@ -949,8 +972,9 @@ pub(super) fn MissionSettings(
                         let enabled = event.checked();
                         auto_zero_busy.set(true);
                         spawn(async move {
-                            match super::http_post_json::<_, serde_json::Value>("/api/auto_zero", &serde_json::json!({"enabled": enabled})).await {
+                            match settings_owner.post::<_, serde_json::Value>("/api/auto_zero", &serde_json::json!({"enabled": enabled})).await {
                                 Ok(saved) => { auto_zero.set(saved["enabled"].as_bool()); auto_zero_message.set("Automatic zero setting saved".into()); }
+                                Err(_) if !settings_owner.current() => return,
                                 Err(error) => auto_zero_message.set(format!("Setting not changed: {error}")),
                             }
                             auto_zero_busy.set(false);
@@ -964,31 +988,6 @@ pub(super) fn MissionSettings(
                 "Turning this off preserves the existing tare. Offsets beyond ±0.8 kg require inspection and manual tare.".into()
             ]}
             if !auto_zero_message().is_empty() { p { "{auto_zero_message}" } }
-            if let Some(cfg) = fill_targets() {
-                label { "Fill cutoff source: "
-                    select {
-                        value: "{cfg.fill_source}", disabled: fill_targets_busy() || abort_only_mode,
-                        onchange: move |event| {
-                            let Some(mut cfg) = fill_targets() else { return; };
-                            cfg.fill_source = event.value();
-                            fill_targets_busy.set(true);
-                            spawn(async move {
-                                match super::http_post_json::<_, FillTargetsConfig>("/api/fill_targets", &cfg).await {
-                                    Ok(saved) => {
-                                        backend_fill_targets.set(Some(saved.clone()));
-                                        fill_targets.set(Some(saved));
-                                        fill_targets_status.set("Fill source saved".into());
-                                    }
-                                    Err(error) => fill_targets_status.set(format!("Fill source not changed: {error}")),
-                                }
-                                fill_targets_busy.set(false);
-                            });
-                        },
-                        option { value: "kg50", "50 kg loadcell (signed calibrated value)" }
-                        option { value: "kg1000_absolute", "1000 kg loadcell (absolute calibrated value)" }
-                    }
-                }
-            }
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap:12px; align-items:start; width:100%; max-width:none; box-sizing:border-box;",
                 if layout.show_flight_setup {
                     div { style: "{setup_panel_style(&theme)}",
@@ -1011,7 +1010,7 @@ pub(super) fn MissionSettings(
                                             flight_setup.set(Some(next_cfg.clone()));
                                             flight_setup_status.set("Saving flight setup…".to_string());
                                             spawn(async move {
-                                                match crate::telemetry_dashboard::http_post_json::<FlightSetupConfig, FlightSetupConfig>(
+                                                match settings_owner.post::<FlightSetupConfig, FlightSetupConfig>(
                                                     "/api/flight_setup",
                                                     &next_cfg,
                                                 ).await {
@@ -1019,6 +1018,7 @@ pub(super) fn MissionSettings(
                                                         flight_setup.set(Some(saved));
                                                         flight_setup_status.set(format!("Selected profile {next_id}."));
                                                     }
+                                                    Err(_) if !settings_owner.current() => (),
                                                     Err(err) => {
                                                         flight_setup_status.set(format!("Flight setup save failed: {err}"));
                                                     }
@@ -1045,7 +1045,7 @@ pub(super) fn MissionSettings(
                                         flight_setup_status.set("Applying flight setup…".to_string());
                                         spawn(async move {
                                             let body = EmptyApplyReq {};
-                                            match crate::telemetry_dashboard::http_post_json::<EmptyApplyReq, FlightSetupApplyResponse>(
+                                            match settings_owner.post::<EmptyApplyReq, FlightSetupApplyResponse>(
                                                 "/api/flight_setup/apply",
                                                 &body,
                                             ).await {
@@ -1055,6 +1055,7 @@ pub(super) fn MissionSettings(
                                                         resp.wind_level, resp.payload_bytes
                                                     ));
                                                 }
+                                                Err(_) if !settings_owner.current() => return,
                                                 Err(err) => {
                                                     flight_setup_status.set(format!("Flight setup apply failed: {err}"));
                                                 }
@@ -1107,7 +1108,7 @@ pub(super) fn MissionSettings(
                                 fill_targets_busy.set(true);
                                 fill_targets_status.set("Saving fill targets…".to_string());
                                 spawn(async move {
-                                    match crate::telemetry_dashboard::http_post_json::<FillTargetsConfig, FillTargetsConfig>(
+                                    match settings_owner.post::<FillTargetsConfig, FillTargetsConfig>(
                                         "/api/fill_targets",
                                         &next_cfg,
                                         ).await {
@@ -1116,6 +1117,7 @@ pub(super) fn MissionSettings(
                                                 fill_targets.set(Some(saved));
                                                 fill_targets_status.set("Fill targets saved.".to_string());
                                             }
+                                        Err(_) if !settings_owner.current() => return,
                                         Err(err) => {
                                             fill_targets_status.set(format!("Fill targets save failed: {err}"));
                                         }
@@ -1474,5 +1476,24 @@ fn PrimaryCommandRequest(abort_only_mode: bool) -> Element {
             }
             button {disabled:!allowed||pending,onclick:move |_|super::request_primary_command(&selected()),"Request execution if primary permits"}
         }
+    }
+}
+
+#[cfg(test)]
+mod cosmetic_request_truth_tests {
+    use super::*;
+    #[test]
+    fn cosmetic_desire_and_local_send_never_illuminate_as_physical_feedback() {
+        for cmd in ["ToggleAvBayUnderglow", "ToggleFlightBuzzer"] {
+            for observed in [None, Some(false), Some(true)] {
+                for sent in [false, true] {
+                    assert_eq!(merge_command_feedback(cmd, observed, sent), None);
+                }
+            }
+            assert_eq!(cosmetic_requested(cmd, Some(false), Some(true)), Some(false));
+            assert_eq!(cosmetic_requested(cmd, None, Some(true)), Some(true));
+        }
+        assert_eq!(merge_command_feedback("NitrogenClose", Some(false), true), Some(false));
+        assert_eq!(merge_command_feedback("NitrogenClose", None, true), None);
     }
 }

@@ -14,13 +14,22 @@ pub(super) fn current_snapshot() -> Value {
     }
 }
 
+fn is_flight_sim(mode: &Value) -> bool {
+    mode["execution_mode"].as_str() == Some("flight_sim")
+        && mode["output_domain"].as_str() == Some("simulated")
+}
 pub(super) fn description(mode: &Value, observer: bool) -> String {
-    let name = match mode["effective_mode"].as_str() {
+    let simulated_flight = is_flight_sim(mode);
+    let name = if simulated_flight {
+        "FlightSim · simulated outputs"
+    } else {
+        match mode["effective_mode"].as_str() {
         Some("normal") => "Normal",
         Some("hitl") => "HITL",
         Some("test_fire") => "Test fire",
         Some("testing") => "Testing",
         _ => "unavailable",
+        }
     };
     let scope = if observer {
         "Primary operating mode"
@@ -130,7 +139,7 @@ pub(super) fn OperatingModeNotice(#[props(default = true)] visible: bool) -> Ele
     });
     let mode = current_snapshot();
     // Preserve compatibility with older primary servers that have no mode API.
-    if !visible || (!observer && mode.is_null()) {
+    if (!visible && !is_flight_sim(&mode)) || (!observer && mode.is_null()) {
         return rsx! {};
     }
     let text = description(&mode, observer);
@@ -173,4 +182,23 @@ mod tests {
         mode["synchronized"] = Value::Bool(false);
         assert!(description(&mode, true).contains("last known; not synchronized"));
     }
+    #[test]
+    fn flight_sim_notice_requires_both_current_execution_domain_fields() {
+        let legacy = serde_json::json!({"effective_mode":"testing","synchronized":true});
+        assert!(description(&legacy, false).contains("Operating mode: Testing"));
+        let mut mode=legacy.clone();
+        mode["execution_mode"]=serde_json::json!("flight_sim");
+        assert!(!description(&mode,false).contains("FlightSim"));
+        mode["output_domain"]=serde_json::json!("build_defined");
+        assert!(!description(&mode,false).contains("FlightSim"));
+        mode["output_domain"]=serde_json::json!("simulated");
+        assert!(description(&mode,false).contains("Operating mode: FlightSim · simulated outputs"));
+        assert!(is_flight_sim(&mode),"isolated execution remains conspicuous even when generic notice is hidden");
+        assert_eq!(mode["effective_mode"],"testing","display never changes compiled/proof mode");
+        assert!(description(&mode,true).contains("read-only"));
+        mode["execution_mode"]=serde_json::json!("compiled_mode");
+        assert!(description(&mode,false).contains("Operating mode: Testing"));
+        assert!(!is_flight_sim(&mode));
+    }
+
 }

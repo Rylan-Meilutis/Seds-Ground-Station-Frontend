@@ -1,5 +1,5 @@
 //! Review paired calibration and saved mission settings with per-document access.
-use super::{http_get_json, http_post_json, layout::ThemeConfig};
+use super::layout::ThemeConfig;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -291,6 +291,7 @@ async fn sleep() {
 }
 #[component]
 pub(super) fn PairedSettings(theme: ThemeConfig) -> Element {
+    let settings_owner=super::station_settings_request::use_factory();
     let mut status = use_signal(Status::default);
     let mut documents = use_signal(BTreeMap::<String, Document>::new);
     let mut message = use_signal(String::new);
@@ -302,16 +303,17 @@ pub(super) fn PairedSettings(theme: ThemeConfig) -> Element {
             if !crate::auth::can_view_data() {
                 break;
             }
-            match http_get_json::<Status>("/api/mission-settings").await {
+            match settings_owner.get::<Status>("/api/mission-settings").await {
                 Ok(current) => {
                     poll_error.set(String::new());
                     if current.conflicts > 0 {
-                        match http_get_json::<BTreeMap<String, Document>>(
+                        match settings_owner.get::<BTreeMap<String, Document>>(
                             "/api/mission-settings/conflicts",
                         )
                         .await
                         {
                             Ok(items) => documents.set(items),
+                            Err(_) if !settings_owner.current() => return,
                             Err(_) => poll_error.set("Could not load settings conflicts".into()),
                         }
                     } else {
@@ -319,6 +321,7 @@ pub(super) fn PairedSettings(theme: ThemeConfig) -> Element {
                     }
                     status.set(current);
                 }
+                Err(_) if !settings_owner.current() => return,
                 Err(_) => {
                     poll_error.set("Shared settings are unavailable on this station".into());
                 }
@@ -372,8 +375,9 @@ pub(super) fn PairedSettings(theme: ThemeConfig) -> Element {
                                             let request=Resolution {key:request.key.clone(),expected:request.expected.clone(),value:request.value.clone()};
                                             busy.set(true);message.set(String::new());
                                             spawn(async move {
-                                                match http_post_json::<_,Resolved>("/api/mission-settings/resolve",&request).await {
+                                                match settings_owner.post::<_,Resolved>("/api/mission-settings/resolve",&request).await {
                                                     Ok(reply) if reply.resolved=>message.set("Choice saved. Settings apply when safe.".into()),
+                                                    Err(_) if !settings_owner.current()=>return,
                                                     _=>message.set("Settings changed elsewhere. Review the latest versions.".into()),
                                                 }
                                                 busy.set(false);

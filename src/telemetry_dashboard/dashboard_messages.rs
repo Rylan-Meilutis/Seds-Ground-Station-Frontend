@@ -62,6 +62,9 @@ pub struct ActionControl {
     pub enabled: bool,
     pub blink: BlinkMode,
     pub actuated: Option<bool>,
+    /// Requested setting, separate from owner-confirmed physical state.
+    #[serde(default)]
+    pub requested: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -609,5 +612,21 @@ mod board_abort_message_tests {
         );
         snapshot.active_errors.clear();
         assert!(snapshot.launch_message().is_none());
+    }
+}
+
+#[cfg(test)]
+mod cosmetic_requested_decode_tests {
+    #[test]
+    fn requested_field_is_optional_and_does_not_become_actuation() {
+        let legacy: super::ActionControl = serde_json::from_str(
+            r#"{"cmd":"ToggleAvBayUnderglow","enabled":true,"blink":"none","actuated":true}"#,
+        ).unwrap();
+        assert_eq!(legacy.requested, None);
+        let current: super::ActionControl = serde_json::from_str(
+            r#"{"cmd":"ToggleAvBayUnderglow","enabled":true,"blink":"none","actuated":null,"requested":false}"#,
+        ).unwrap();
+        assert_eq!(current.requested, Some(false));
+        assert_eq!(current.actuated, None);
     }
 }

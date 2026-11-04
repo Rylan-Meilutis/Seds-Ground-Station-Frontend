@@ -81,6 +81,37 @@ async fn http_post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
         Err("browser fixture only".into())
     }
 }
+// Preview-only transport shim: this example intentionally supplies synthetic
+// auth/HTTP above. Actual original-owner behavior is tested in the main app.
+mod station_settings_request {
+    use serde::{Serialize, de::DeserializeOwned};
+    #[derive(Clone, Copy)]
+    pub struct Factory;
+    pub fn use_factory() -> Factory {
+        Factory
+    }
+    impl Factory {
+        pub fn current(self) -> bool {
+            true
+        }
+        pub fn get<T: DeserializeOwned + 'static>(
+            self,
+            path: &str,
+        ) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+            let path = path.to_owned();
+            async move { super::http_get_json(&path).await }
+        }
+        pub fn post<B: Serialize, T: DeserializeOwned + 'static>(
+            self,
+            path: &str,
+            body: &B,
+        ) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+            let path = path.to_owned();
+            let body = serde_json::to_value(body).map_err(|e| e.to_string());
+            async move { super::http_post_json(&path, &body?).await }
+        }
+    }
+}
 #[component]
 fn App() -> Element {
     rsx! {main {style:"padding:12px; font-family:system-ui;background:#060b12;min-height:100vh;box-sizing:border-box",
