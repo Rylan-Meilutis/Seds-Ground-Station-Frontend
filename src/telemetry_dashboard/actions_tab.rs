@@ -43,6 +43,47 @@ fn redundant_supply_close(cmd: &str) -> bool {
     matches!(cmd, "NitrogenClose" | "NitrousClose")
 }
 
+#[derive(Clone)]
+enum SupplyGesture {
+    Armed {
+        base: String,
+        command: String,
+        started_ms: f64,
+        owner: Option<std::rc::Rc<super::recording_download::ExportOwner>>,
+    },
+    Cancelled,
+}
+impl SupplyGesture {
+    fn current(&self, base: &str, command: &str, now_ms: f64) -> bool {
+        match self {
+            Self::Armed { base: original, command: chosen, started_ms, owner } => {
+                let elapsed = now_ms - started_ms;
+                original == base && chosen == command && elapsed.is_finite()
+                    && (0. ..=super::COMMAND_MAX_PRESS_RELEASE_MS).contains(&elapsed)
+                    && owner.as_ref().is_some_and(|owner| owner.is_current())
+            }
+            Self::Cancelled => false,
+        }
+    }
+}
+fn arm_supply_gesture(gesture: &mut Signal<Option<SupplyGesture>>, base: &str, command: &str) -> bool {
+    // Touch compatibility mouse events must not replace the first chosen intent.
+    if matches!(gesture.peek().as_ref(), Some(SupplyGesture::Armed { .. })) {
+        return false;
+    }
+    gesture.set(Some(SupplyGesture::Armed {
+        base: base.into(), command: command.into(), started_ms: super::monotonic_now_ms(),
+        owner: super::recording_download::ExportOwner::capture().ok(),
+    }));
+    true
+}
+
+fn cancel_supply_gesture(gesture: &mut Signal<Option<SupplyGesture>>, base: &str) {
+    // Blur from a previously focused valve must not cancel another valve's new press.
+    let owned = matches!(gesture.peek().as_ref(), Some(SupplyGesture::Armed { base: original, .. }) if original == base);
+    if owned { gesture.set(Some(SupplyGesture::Cancelled)); }
+}
+
 #[cfg(test)]
 mod sequence_action_tests {
     use super::*;
@@ -495,6 +536,7 @@ pub fn ActionsTab(
     abort_only_mode: bool,
     theme: ThemeConfig,
 ) -> Element {
+    let mut supply_gesture = use_signal(|| None::<SupplyGesture>);
     let mut self_test_confirmed = use_signal(|| false);
     let mut self_test_busy = use_signal(|| false);
     let mut self_test_message = use_signal(String::new);
@@ -680,6 +722,7 @@ pub fn ActionsTab(
                                                     .iter()
                                                     .find(|c| c.cmd == action.cmd)
                                                     .cloned();
+                                                let is_supply = matches!(action.cmd.as_str(), "Nitrogen" | "Nitrous");
                                                 let dispatch_cmd = supply_dispatch_command(&action.cmd, control.as_ref().and_then(|c| c.actuated)).to_owned();
                                                 let dispatch_control = action_policy_snapshot.controls.iter().find(|c| c.cmd == dispatch_cmd);
                                                 let enabled = action_policy_control_enabled(&action_policy_snapshot, &dispatch_cmd)
@@ -729,25 +772,65 @@ pub fn ActionsTab(
                                                         aria_busy: sequence == Some(super::sequence_indicator::Progress::Running),
                                                         "data-sequence-state": sequence_label,
                                                         "data-dispatch-command": "{dispatch_cmd}",
+                                                        onpointerdown: {
+                                                            let cmd = dispatch_cmd.clone();
+                                                            let base = action.cmd.clone();
+                                                            move |event| {
+                                                                if is_supply && enabled && event.is_primary()
+                                                                    && arm_supply_gesture(&mut supply_gesture, &base, &cmd) {
+                                                                    crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                                                                }
+                                                            }
+                                                        },
                                                         onmousedown: {
                                                             let cmd = dispatch_cmd.clone();
                                                             move |_| {
-                                                                if enabled {
+                                                                // Supply compatibility mouse events are not new intent.
+                                                                // Only primary pointer, touch, or keyboard can arm them.
+                                                                if enabled && !is_supply {
                                                                     crate::telemetry_dashboard::send_cmd_from_press(&cmd)
                                                                 }
                                                             }
                                                         },
                                                         ontouchstart: {
                                                             let cmd = dispatch_cmd.clone();
-                                                            move |_| {
-                                                                if enabled {
+                                                            let base = action.cmd.clone();
+                                                            move |event| {
+                                                                if enabled && (!is_supply || (event.touches().len() == 1 && arm_supply_gesture(&mut supply_gesture, &base, &cmd))) {
                                                                     crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                                                                }
+                                                            }
+                                                        },
+                                                        ontouchcancel: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
+                                                        onmouseleave: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
+                                                        onblur: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
+                                                        onkeydown: {
+                                                            let cmd = dispatch_cmd.clone();
+                                                            let base = action.cmd.clone();
+                                                            move |event| {
+                                                                if !is_supply { return; }
+                                                                let key = event.key();
+                                                                if matches!(key, Key::Escape | Key::Tab) {
+                                                                    cancel_supply_gesture(&mut supply_gesture, &base);
+                                                                } else if !event.is_auto_repeating() && (key == Key::Enter || key.to_string() == " ")
+                                                                    && enabled && arm_supply_gesture(&mut supply_gesture, &base, &cmd) {
+                                                                    crate::telemetry_dashboard::send_cmd_from_press(&cmd);
                                                                 }
                                                             }
                                                         },
                                                         onclick: {
                                                             let cmd = dispatch_cmd.clone();
+                                                            let base = action.cmd.clone();
                                                             move |_| {
+                                                                if is_supply {
+                                                                    let original = supply_gesture.write().take();
+                                                                    // An unarmed click may be a delayed compatibility
+                                                                    // event from a retired component; never infer intent.
+                                                                    if original.is_none_or(|gesture| !gesture.current(&base, &cmd, super::monotonic_now_ms())) {
+                                                                        super::clear_command_feedback_latches();
+                                                                        return;
+                                                                    }
+                                                                }
                                                                 if enabled {
                                                                     crate::telemetry_dashboard::send_cmd_from_click(&cmd)
                                                                 }
