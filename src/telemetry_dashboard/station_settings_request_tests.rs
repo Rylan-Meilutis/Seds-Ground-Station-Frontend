@@ -238,3 +238,64 @@ async fn actual_input_epoch_selection_retires_queued_http_before_io() {
     assert!(in_dom(&dom, request.as_mut()).await.is_err());
     assert!(server.requests.lock().unwrap().is_empty());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn captured_confirmation_retains_exact_api_body_and_original_token() {
+    let server = Server::new(200, false);
+    let dom = dom(&server.base);
+    let owner = dom.in_scope(ScopeId::ROOT, ExportOwner::capture).unwrap();
+    let mut request = Box::pin(post_captured::<_, serde_json::Value>(
+        "/api/gse/self-test-confirmation",
+        &serde_json::json!({"confirmed":true}),
+        Ok(owner),
+    ));
+    in_dom(&dom, request.as_mut()).await.unwrap();
+    let rows = server.requests.lock().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0]
+            .0
+            .starts_with("POST /api/gse/self-test-confirmation ")
+    );
+    assert!(
+        rows[0]
+            .0
+            .to_ascii_lowercase()
+            .contains("authorization: bearer settings-original")
+    );
+    assert_eq!(rows[0].1, r#"{"confirmed":true}"#);
+}
+#[tokio::test(flavor = "current_thread")]
+async fn captured_confirmation_held_response_cannot_confirm_new_actor_or_clear_login() {
+    for status in [200, 401] {
+        let server = Server::new(status, true);
+        let dom = dom(&server.base);
+        let selected = Rc::new(std::cell::Cell::new(1_u64));
+        let original = selected.clone();
+        let owner = dom
+            .in_scope(ScopeId::ROOT, || {
+                ExportOwner::capture_selected(move || original.get() == 1)
+            })
+            .unwrap();
+        let completion_owner = owner.clone();
+        let mut request = Box::pin(post_captured::<_, serde_json::Value>(
+            "/api/gse/self-test-confirmation",
+            &serde_json::json!({"confirmed":true}),
+            Ok(owner),
+        ));
+        tokio::time::timeout(Duration::from_secs(4),async{while !server.seen.load(Ordering::Acquire){tokio::select!{result=in_dom(&dom,request.as_mut())=>panic!("held confirmation returned:{result:?}"),_=tokio::time::sleep(Duration::from_millis(5))=>{}}}}).await.unwrap();
+        dom.in_scope(ScopeId::ROOT, || {
+            selected.set(2);
+            session("confirmation-replacement");
+        });
+        server.release.store(true, Ordering::Release);
+        assert!(in_dom(&dom, request.as_mut()).await.is_err());
+        dom.in_scope(ScopeId::ROOT, || {
+            assert!(!completion_owner.is_current());
+            assert_eq!(
+                auth::current_token().as_deref(),
+                Some("confirmation-replacement")
+            );
+        });
+    }
+}

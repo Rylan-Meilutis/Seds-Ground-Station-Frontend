@@ -547,9 +547,9 @@ pub fn ActionsTab(
     theme: ThemeConfig,
 ) -> Element {
     let mut supply_gesture = use_signal(|| None::<SupplyGesture>);
-    let mut self_test_confirmed = use_signal(|| false);
-    let mut self_test_busy = use_signal(|| false);
-    let mut self_test_message = use_signal(String::new);
+    let mut self_test_confirmation = use_signal(|| super::self_test_confirmation::Model::new(*super::WS_EPOCH.peek()));
+    let mut self_test_owner = use_signal(|| None::<std::rc::Rc<super::recording_download::ExportOwner>>);
+    let self_test_alive = super::recording_download::use_export_lifetime();
     let mut gse_request_gate = use_signal(String::new);
     let mut operational_status = use_signal(|| serde_json::Value::Null);
     let mut operational_observed_at = use_signal(|| f64::NAN);
@@ -566,7 +566,19 @@ pub fn ActionsTab(
     let shared_sequence_status=use_context::<Signal<super::sequence_progress_host::StatusObservation>>();
     use_effect(move || {
         let observation=shared_sequence_status.read().clone();
-        if observation.source_epoch!=*super::WS_EPOCH.read() {
+        let current_source=*super::WS_EPOCH.read();
+        let _tick=*sequence_now.read();
+        let now=super::monotonic_now_ms();
+        let mut confirmation=self_test_confirmation.peek().clone();
+        let owner_retired=self_test_owner.peek().as_ref().is_some_and(|owner|!owner.is_current());
+        if owner_retired {
+            confirmation.retire(current_source,now);
+            self_test_owner.set(None);
+        }
+        confirmation.observe(current_source,observation.source_epoch,observation.requested_at_ms,now,
+            observation.error.is_none().then(||observation.value["dry_self_test_confirmed"].as_bool()).flatten());
+        if *self_test_confirmation.peek()!=confirmation {self_test_confirmation.set(confirmation);}
+        if observation.source_epoch!=current_source {
             operational_status.set(serde_json::Value::Null);
             operational_observed_at.set(f64::NAN);
             return;
@@ -574,12 +586,6 @@ pub fn ActionsTab(
         let status=observation.value;
         operational_observed_at.set(observation.requested_at_ms);
         operational_status.set(status.clone());
-        if !*self_test_busy.read() && let Some(confirmed)=status["dry_self_test_confirmed"].as_bool() {
-            if *self_test_confirmed.peek() && !confirmed {
-                self_test_message.set("Confirmation consumed by the last run. Confirm isolation again before retrying self-test.".into());
-            }
-            self_test_confirmed.set(confirmed);
-        }
         let next=if let Some(error)=observation.error {format!("Cannot read backend GSE gate: {error}")}
         else {request_gate_diagnostics(&status,auth::current_status().station_role.as_deref()==Some("rrls"))};
         if *gse_request_gate.peek()!=next {gse_request_gate.set(next);}
@@ -689,13 +695,26 @@ pub fn ActionsTab(
                                     }
                                     if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
                                     p { "Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test." }
-                                    label {input {r#type:"checkbox",checked:*self_test_confirmed.read(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||*self_test_busy.read()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:move |event| {
-                                        let confirmed=event.checked();self_test_confirmed.set(false);self_test_busy.set(true);
-                                        spawn(async move {match super::http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":confirmed})).await {
-                                            Ok(_)=>{self_test_confirmed.set(confirmed);self_test_message.set(if confirmed {"Self-test confirmation accepted. Backend interlocks still apply."}else{"Self-test locked."}.into());},Err(error)=>self_test_message.set(error)
-                                        }self_test_busy.set(false);});
-                                    }} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
-                                    p {role:"status","{self_test_message}"}
+                                    label {input {r#type:"checkbox",checked:self_test_confirmation.read().confirmed(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||self_test_confirmation.read().busy()||self_test_confirmation.read().exhausted()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:{let self_test_alive=self_test_alive.clone();move |event| {
+                                        if abort_only_mode||auth::current_status().station_role.as_deref()==Some("rrls")||!auth::can_send_command("ValveSelfTest") {return;}
+                                        let mut next=self_test_confirmation.peek().clone();
+                                        let ticket=next.begin(event.checked(),*super::WS_EPOCH.peek(),super::monotonic_now_ms());
+                                        self_test_confirmation.set(next);
+                                        let Some(ticket)=ticket else{return;};
+                                        let alive=self_test_alive.clone();
+                                        let selected=self_test_confirmation;
+                                        let owner=super::recording_download::ExportOwner::capture_selected(move || alive.load(std::sync::atomic::Ordering::Acquire)&&selected.try_peek().is_ok_and(|model|model.owns(ticket)));
+                                        let owner=match owner {Ok(owner)=>owner,Err(error)=>{let mut next=self_test_confirmation.peek().clone();next.finish(ticket,Err(error),super::monotonic_now_ms());self_test_confirmation.set(next);return;}};
+                                        self_test_owner.set(Some(owner.clone()));
+                                        let request=super::station_settings_request::post_captured::<_,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":ticket.desired}),Ok(owner.clone()));
+                                        spawn(async move {
+                                            let result=request.await;
+                                            if !owner.is_current(){return;}
+                                            let mut next=self_test_confirmation.peek().clone();
+                                            if next.finish(ticket,result.map(|_|()),super::monotonic_now_ms()){self_test_confirmation.set(next);}
+                                        });
+                                    }}} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
+                                    p {role:"status","{self_test_confirmation.read().notice.text()}"}
                                     super::gse_panel::QualificationStatus {status:operational_status,disabled:abort_only_mode}
                                     super::cold_flow::AutoColdFlow {status:shared_sequence_status,disabled:abort_only_mode}
                                     details {summary {"Sequence diagnostics"} p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}}
@@ -737,7 +756,7 @@ pub fn ActionsTab(
                                                 let dispatch_control = action_policy_snapshot.controls.iter().find(|c| c.cmd == dispatch_cmd);
                                                 let enabled = action_policy_control_enabled(&action_policy_snapshot, &dispatch_cmd)
                                                     && auth::can_send_command(&dispatch_cmd)
-                                                    && (action.cmd!="ValveSelfTest" || *self_test_confirmed.read())
+                                                    && (action.cmd!="ValveSelfTest" || self_test_confirmation.read().confirmed())
                                                     && (!abort_only_mode || action.cmd == "Abort")
                                                 ;
                                                 let disabled_reason = if action.group != "GSE sequence actions" || enabled {

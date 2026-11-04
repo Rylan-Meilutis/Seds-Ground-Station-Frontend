@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import {verifyOwnedResetShield,verifyRetiredResetAuth} from './reset-confirmation-owned-shield.mjs';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const root=path.resolve(process.env.GS_UI_BUNDLE || 'target/dx/groundstation_frontend/debug/web/public');
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
@@ -10,7 +11,14 @@ const session={...example('auth-session.anonymous'),authenticated:true,anonymous
 let cameraOnline=true;
 let broadcastState=example('live-streams').broadcast;
 const alertSockets=new Set(); const alertAckRequests=[]; let alertAckFailure=false;
+// Actual current backend alert snapshot contract, independent of legacy event ACKs.
+let conditionSnapshot={version:1,authority:'fixture.condition.history',revision:1,complete:true,evaluated:[],awaiting_evidence:[],persistence_error:null,history_integrity:null,records:[]};
+let conditionFramesEnabled=false;
+const conditionChecks=[];
+const publishConditions=snapshot=>{conditionSnapshot=snapshot;conditionFramesEnabled=true;for(const socket of alertSockets)socket.send(JSON.stringify({ty:'AlertConditions',data:snapshot}));};
 let fillSource='kg50';
+let gseConfig={cold_flow_target_psi:null,nitrogen_target_psi:100,pressure_step_psi:50,nitrogen_steps:[],fill_overfill_kg:0.05,fill_tolerance_kg:0.07,fill_settle_ms:3000,turbocharge_max_added_mass_kg:null,pressure_ceiling_psi:650,maximum_zero_offset_psi:20,dry_self_test_confirmed:false,grouped_panel:false,future_limit:{preserved:true}};
+const configSaves=[],calibrationRequests=[],selfTestConfirmations=[];
 let gseStatus=null, qualificationResets=0,gseUnavailable=false;
 let actionPolicy=example('action-policy');
 let adminAccounts=[{username:'test-admin',roles:['admin'],permissions:{view_data:true,send_commands:false,set_system_time:false,voice_transmit:false},command_access:{allowed_commands:[]},calibration_access:{view:false,edit:false},disabled:false}];
@@ -22,6 +30,12 @@ for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label
 
 const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
+  if(pathname.startsWith('/api/calibration'))calibrationRequests.push({path:pathname,method:req.method});
+  if(pathname==='/api/gse/config'){
+    res.setHeader('Content-Type','application/json');
+    if(req.method==='POST'){let raw='';for await(const part of req)raw+=part;assert.equal(req.headers.authorization,'Bearer ui-token');gseConfig=JSON.parse(raw);configSaves.push(structuredClone(gseConfig));}
+    res.end(JSON.stringify(gseConfig));return;
+  }
   if(pathname==='/test-camera') {res.setHeader('Content-Type','text/html');res.end('<p>Live camera fixture</p>');return;}
   if(pathname==='/radio'||pathname==='/media') {res.setHeader('Content-Type','text/html');res.end(`<p>Media tool fixture</p><script>window.received=[];setTimeout(()=>addEventListener('message',e=>{if(e.source===parent)received.push(e.data)}),900)</script>`);return;}
   if(pathname==='/api/admin/users'||pathname==='/api/admin/users/create'){
@@ -40,7 +54,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/gse/status' && gseUnavailable){res.statusCode=503;res.end('offline fixture');return;}
   if(pathname==='/api/gse/self-test-confirmation'){
-    let body='';for await(const data of req)body+=data;gseStatus.dry_self_test_confirmed=JSON.parse(body).confirmed;
+    let body='';for await(const data of req)body+=data;gseStatus.dry_self_test_confirmed=JSON.parse(body).confirmed;selfTestConfirmations.push(JSON.parse(body));gseStatus.message='Fixture isolation '+selfTestConfirmations.length+':'+gseStatus.dry_self_test_confirmed;
     res.setHeader('Content-Type','application/json');res.end('{}');return;
   }
   if(pathname==='/api/alerts/ack') {
@@ -51,6 +65,7 @@ const server=http.createServer(async(req,res)=>{
     for(const socket of alertSockets)socket.send(JSON.stringify({ty:'AlertAckState',data:state}));
     res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;
   }
+  if(pathname==='/api/alert_conditions'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(conditionSnapshot));return;}
   if(pathname==='/api/action_policy'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(actionPolicy));return;}
   if(pathname==='/api/gse/status' && gseStatus){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(gseStatus));return;}
   if(pathname==='/api/gse/qualification/reset'){
@@ -95,6 +110,7 @@ try{
   };
   const openAdmin=async()=>{
     await openStationSettings();
+    await page.getByRole('navigation',{name:'Ground Station settings sections'}).getByRole('button',{name:'Administration',exact:true}).click();
     await page.getByRole('button',{name:'Manage users & access',exact:true}).click();
   };
   assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'tab preference excludes sidebar');
@@ -129,7 +145,7 @@ try{
     await page.screenshot({path:`/tmp/gs-ui-detailed-${width}.png`,fullPage:true});
   }
   await page.setViewportSize({width:1440,height:1000});
-  gseStatus={phase:'idle',message:'Ready',dry_self_test_confirmed:false,configuration_error:null,
+  gseStatus={phase:'idle',message:'Ready',nitrogen_passed:false,self_test_locked:false,current_step_psi:0,pressure_psi:null,baseline:null,dry_self_test_confirmed:false,configuration_error:null,
     qualification:{self_test:true,nitrogen_test:true,fill_target:false,fault:null},topology_stable:true,
     request_gate:{hitl_mode:false,flight_state:'Idle',prelaunch:true,button_interlock_satisfied:true},launch_queued:false,qd:'NotStarted'};
   await choose();await page.getByRole('button',{name:'Actions',exact:true}).click();
@@ -158,13 +174,15 @@ try{
   assert.match(await zeroHelp.innerText(),/200 fresh samples/);
   await zeroHelp.getByRole('button',{name:'Close help',exact:true}).click();
   await zeroHelp.waitFor({state:'detached'});
+  await page.getByRole('navigation',{name:'Ground Station settings sections'}).getByRole('button',{name:'Sequences & limits',exact:true}).click();
+  await page.getByText('Nitrogen test settings',{exact:true}).click();
+  const pressureLimit=page.getByLabel('Maximum acceptable empty-tank PT offset (psi, required)',{exact:true});
+  await pressureLimit.waitFor();const originalConfig=structuredClone(gseConfig),beforeCalibration=calibrationRequests.length;
+  await pressureLimit.fill('12.5');await pressureLimit.blur();assert.deepEqual(gseConfig,originalConfig,'draft pressure acceptance limit does not publish');
+  await page.getByRole('button',{name:'Save GSE configuration',exact:true}).click();await page.getByText('GSE configuration saved',{exact:true}).waitFor();
+  assert.equal(configSaves.length,1);assert.deepEqual(gseConfig,{...originalConfig,maximum_zero_offset_psi:12.5},'only requested acceptance limit changes, not calibration or unrelated settings');
+  assert.equal(calibrationRequests.length,beforeCalibration,'pressure acceptance setting never calls calibration APIs');
   await page.getByRole('button',{name:'Close',exact:true}).click();
-  await page.getByRole('button',{name:'About empty-tank pressure limit',exact:true}).click();
-  const pressureHelp=page.getByRole('dialog',{name:'empty-tank pressure limit',exact:true});
-  await pressureHelp.waitFor();
-  assert.match(await pressureHelp.innerText(),/not a calibration offset/);
-  await pressureHelp.getByRole('button',{name:'Close help',exact:true}).press('Escape');
-  await pressureHelp.waitFor({state:'detached'});
   await page.getByRole('button',{name:'Reset operation checks',exact:true}).click();
   await page.getByRole('dialog',{name:'Reset operation checks'}).getByRole('button',{name:'Cancel',exact:true}).click();
   assert.equal(qualificationResets,0,'cancelling must preserve saved checks');
@@ -361,9 +379,9 @@ try{
   // isolated WebSocket mock. Nothing connects to a GroundStation or board.
   const commands=['StartWritingNow','StartWritingLastTwoMinutes','PauseWritingDb','StopWritingDb','Postinit','Launch','GroundStationLaunch','ToggleButtonInterlock','ToggleGroundStationControl','ToggleLaunchInterlock','TogglePhysicalLaunchMode','ResetLaunchLatch','ToggleAvBayUnderglow','ToggleFlightBuzzer','Igniter','IgniterSequence','RetractPlumbing','AdvanceFlightState','RewindFlightState','DeployParachute','ExpandParachute','ReinitSensors','EvaluationRelax','EvaluationFocus','EvaluationAbort','ReinitBarometer','EnableIMU','DisableIMU','MonitorAltitude','RevokeMonitorAltitude','ConsecutiveSamples','RevokeConsecutiveSamples','ResetFailures','RevokeResetFailures','ValidateMeasms','RevokeValidateMeasms','AbortAfter100','AbortAfter40','AbortAfter250','ReinitAfter15','ReinitAfter30','ReinitAfter50','Dump','Pilot','NormallyOpen','Nitrogen','Nitrous','Abort','StartFill','PauseFill','CancelFill','NitrogenTest','ValveSelfTest','ResetFlightState','ResetTClock'];
   dashboardLayout.actions_tab.actions=commands.map(cmd=>({label:cmd,cmd,group:['StartFill','PauseFill','CancelFill','NitrogenTest','ValveSelfTest'].includes(cmd)?'GSE sequence actions':'Command acceptance',border:'#53657c',bg:'#142033',fg:'#ffffff'}));
-  actionPolicy={key_enabled:true,software_buttons_enabled:true,controls:commands.map(cmd=>({cmd,enabled:true,blink:'none'}))};
+  actionPolicy={key_enabled:true,software_buttons_enabled:true,controls:commands.map(cmd=>({cmd,enabled:true,blink:'none',...(['Nitrogen','Nitrous'].includes(cmd)?{actuated:false}:{})}))};
   session.permissions.send_commands=true;
-  gseStatus={phase:'idle',message:'Isolated test',dry_self_test_confirmed:false,configuration_error:null,request_gate:{hitl_mode:true,flight_state:'Startup',prelaunch:true,button_interlock_satisfied:true}};
+  gseStatus={phase:'idle',message:'Isolated test',nitrogen_passed:false,self_test_locked:false,current_step_psi:0,pressure_psi:null,baseline:null,dry_self_test_confirmed:false,configuration_error:null,request_gate:{hitl_mode:true,flight_state:'Startup',prelaunch:true,button_interlock_satisfied:true}};
   const commandContext=await browser.newContext({viewport:{width:1280,height:900}});
   await commandContext.addInitScript(({session,origin})=>{if(!localStorage.getItem('navigation-style'))localStorage.setItem('navigation-style','tabs');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
   // New Playwright's WebSocket mock uses URL.parse, absent in older system Chrome.
@@ -373,6 +391,7 @@ try{
   await commandContext.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
   await commandContext.routeWebSocket(url=>url.pathname==='/ws'&&url.searchParams.get('token')==='ui-token',socket=>{
     commandSocket=socket;alertSockets.add(socket);
+    if(conditionFramesEnabled)socket.send(JSON.stringify({ty:'AlertConditions',data:conditionSnapshot}));
     socket.onMessage(message=>requests.push(JSON.parse(String(message)).cmd));
     const timer=setInterval(()=>socket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy})),500);
     socket.onClose(()=>{clearInterval(timer);alertSockets.delete(socket);});
@@ -394,13 +413,32 @@ try{
   // feedback arrives, so their accessible name is not only the action label.
   // Select the actual action label without hiding or fabricating that feedback.
   const actionButton=cmd=>commandPage.locator('button').filter({has:commandPage.locator(`span[title="${cmd}"]`)}).last();
-  const unconfirmedOutputs=new Set(['Dump','NormallyOpen','Nitrogen','NitrogenClose','Nitrous','NitrousClose','Pilot','Igniter','RetractPlumbing']);
+  // Missing/malformed/incomplete history is uncertainty. A successful event
+  // acknowledgement is never substituted for this current server evidence.
+  const statusValue=commandPage.locator('.gs26-status-value');
+  await statusValue.getByText('Attention',{exact:true}).waitFor();
+  conditionChecks.push({case:'missing-current-history',status:await statusValue.innerText()});
+  const emptyCurrent=revision=>({version:1,authority:'fixture.condition.history',revision,complete:true,evaluated:[],awaiting_evidence:[],persistence_error:null,history_integrity:null,records:[]});
+  publishConditions(emptyCurrent(1));await statusValue.getByText('Nominal',{exact:true}).waitFor();
+  assert.deepEqual(await (await commandPage.request.get(origin+'/api/alert_conditions')).json(),conditionSnapshot,'HTTP and WS use the actual same current snapshot DTO');
+  publishConditions({version:'malformed'});await statusValue.getByText('Attention',{exact:true}).waitFor();
+  conditionChecks.push({case:'malformed-history',status:await statusValue.innerText()});
+  publishConditions(emptyCurrent(2));await statusValue.getByText('Nominal',{exact:true}).waitFor();
+  publishConditions({...emptyCurrent(3),complete:false,awaiting_evidence:['fixture.pending']});
+  await statusValue.getByText('Attention',{exact:true}).waitFor();
+  conditionChecks.push({case:'incomplete-history',status:await statusValue.innerText()});
+  publishConditions(emptyCurrent(4));await statusValue.getByText('Nominal',{exact:true}).waitFor();
+  conditionChecks.push({case:'complete-empty-current-history',status:await statusValue.innerText()});
+  if(process.env.GS_TYPED_ALERT_RESULT)fs.writeFileSync(process.env.GS_TYPED_ALERT_RESULT,JSON.stringify(conditionChecks,null,2));
+  const unconfirmedOutputs=new Set(['Dump','NormallyOpen','NitrogenClose','NitrousClose','Pilot','Igniter','RetractPlumbing']);
   for(const cmd of commands){
-    if(cmd==='ValveSelfTest'){await commandPage.getByRole('checkbox',{name:/gas supplies are isolated/}).check();await commandPage.getByText('Self-test confirmation accepted. Backend interlocks still apply.',{exact:true}).waitFor();}
+    if(cmd==='ValveSelfTest'){const isolated=commandPage.getByRole('checkbox',{name:/gas supplies are isolated/});await isolated.uncheck();await commandPage.getByText('Self-test locked.',{exact:true}).waitFor();await commandPage.getByText(/Fixture isolation 2:false/).waitFor({state:'attached'});assert.equal(await isolated.isChecked(),false,'current locked status has reached this UI before renewed confirmation');await isolated.check();await commandPage.getByText('Self-test confirmation accepted. Backend interlocks still apply.',{exact:true}).waitFor();}
+    if(cmd==='ValveSelfTest')assert.deepEqual(selfTestConfirmations,[{confirmed:true},{confirmed:false},{confirmed:true}],'renewing isolation sends a fresh actual confirmation, not an already-checked no-op');
     const count=requests.length;
     const button=actionButton(cmd);
     assert(await button.isEnabled(),`${cmd} remains permitted by the authoritative action policy`);
     if(unconfirmedOutputs.has(cmd))assert.match(await button.innerText(),/unconfirmed/i,`${cmd} has no invented output confirmation`);
+    if(['Nitrogen','Nitrous'].includes(cmd)){assert.equal(await button.getAttribute('data-dispatch-command'),cmd,`${cmd} known OFF selects explicit OPEN`);assert.equal(await button.getByText('Unconfirmed',{exact:true}).count(),0,'explicit OFF feedback is known');assert(!(await button.evaluate(e=>getComputedStyle(e).boxShadow)).includes('0px 0px 14px'),'known OFF is dark');}
     await button.click().catch(async error=>{fs.writeFileSync('/tmp/gs-command-inventory-body.txt',await commandPage.locator('body').innerText());throw error;});
     if (['ResetFlightState','ResetTClock'].includes(cmd)) {
       const dialog=commandPage.getByRole('alertdialog',{name:'Confirm reset'});
@@ -412,7 +450,9 @@ try{
     assert.equal(requests.length,count+1,`${cmd} dispatches exactly one request`);
     assert.equal(requests[count],cmd,`${cmd} retains the backend command name`);
     if(unconfirmedOutputs.has(cmd))assert.match(await button.innerText(),/unconfirmed/i,`${cmd} dispatch cannot confirm physical output`);
+    if(['Nitrogen','Nitrous'].includes(cmd))assert(!(await button.evaluate(e=>getComputedStyle(e).boxShadow)).includes('0px 0px 14px'),'OPEN request without new owner feedback cannot invent physical ON');
   }
+  await verifyOwnedResetShield({commandPage,commandContext,actionButton,requests});
   for(const cmd of ['ResetFlightState','ResetTClock']){
     const count=requests.length;
     await actionButton(cmd).click();
@@ -490,6 +530,7 @@ try{
   assert.equal(await commandPage.locator('.gs26-status-value').innerText(),'Attention','clearing warnings must not clear independent errors');
   assert(alertAckRequests.every(request=>request.error_timestamp_ms===0));
   await observer.close();
+  await verifyRetiredResetAuth({commandPage,actionButton,requests});
   await commandContext.close();
   session.roles=['admin'];session.username='ui-test';session.permissions.send_commands=true;await page.reload();
   // Dedicated navigation restores the actual last tab, including after reload.

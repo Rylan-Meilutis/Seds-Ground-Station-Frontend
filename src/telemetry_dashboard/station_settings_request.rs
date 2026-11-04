@@ -46,10 +46,19 @@ impl Factory {
     ) -> impl std::future::Future<Output = Result<T, String>> + 'static {
         // Capture/serialize synchronously before the returned future can yield.
         let owner = self.capture();
-        let path = path.to_owned();
-        let body = serde_json::to_string(body).map_err(|e| e.to_string());
-        async move { bounded(post_owned(&path, body?, owner?)).await }
+        post_captured(path, body, owner)
     }
+}
+/// Original request owner captured by the caller before its first yield.
+/// Reuses the same bounded transport as mounted settings without rebinding it.
+pub(super) fn post_captured<B: Serialize, T: DeserializeOwned + 'static>(
+    path: &str,
+    body: &B,
+    owner: Result<Rc<ExportOwner>, String>,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+    let path = path.to_owned();
+    let body = serde_json::to_string(body).map_err(|e| e.to_string());
+    async move { bounded(post_owned(&path, body?, owner?)).await }
 }
 #[cfg(not(target_arch = "wasm32"))]
 async fn post_owned<T: DeserializeOwned>(

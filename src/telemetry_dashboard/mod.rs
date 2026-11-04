@@ -4,6 +4,7 @@
 
 mod accel_display_filter;
 mod actions_tab;
+mod self_test_confirmation;
 mod alert_conditions;
 mod alert_condition_panel;
 mod admin_console;
