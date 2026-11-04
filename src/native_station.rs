@@ -3,7 +3,7 @@ use crate::auth::{SessionStatus, StoredAuthSession};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use serde::Deserialize;
 use std::{
-    net::{SocketAddr, UdpSocket},
+    net::{IpAddr, SocketAddr, UdpSocket},
     time::{Duration, Instant},
 };
 pub type Pairing = crate::auth::StationPairing;
@@ -20,6 +20,15 @@ struct Discovery {
     role: String,
     port: u16,
     scheme: String,
+}
+fn discovery_base(scheme: &str, ip: IpAddr, port: u16) -> String {
+    let default_port = matches!((scheme, port), ("https", 443) | ("http", 80));
+    let authority = match (ip, default_port) {
+        (IpAddr::V6(address), true) => format!("[{address}]"),
+        (_, true) => ip.to_string(),
+        (_, false) => SocketAddr::new(ip, port).to_string(),
+    };
+    format!("{scheme}://{authority}")
 }
 fn verified(bytes: &[u8], nonce: &str, trust: &Pairing) -> Option<Discovery> {
     if bytes.len() > 8192 {
@@ -79,7 +88,7 @@ fn sweep(nonce: &str, trust: &Pairing) -> Vec<String> {
         };
         received += 1;
         if let Some(d) = verified(&buf[..n], nonce, trust) {
-            let base = format!("{}://{}:{}", d.scheme, from.ip(), d.port);
+            let base = discovery_base(&d.scheme, from.ip(), d.port);
             if !result.iter().any(|b| b == &base) {
                 result.push(base);
             }
@@ -128,7 +137,7 @@ fn public_hint(bytes: &[u8], nonce: &str, from: SocketAddr) -> Option<StationHin
     Some(StationHint {
         name: r.name,
         role: r.role,
-        base: format!("{}://{}", r.scheme, SocketAddr::new(from.ip(), r.port)),
+        base: discovery_base(&r.scheme, from.ip(), r.port),
     })
 }
 fn discover_lan() -> Result<Vec<StationHint>, String> {
@@ -331,6 +340,25 @@ mod tests {
     use super::*;
     use crate::auth::StationPeer as Peer;
     use ring::signature::KeyPair;
+    #[test]
+    fn discovered_origins_omit_only_the_matching_default_port() {
+        for (scheme, port, ipv4, ipv6) in [
+            ("https", 443, "https://192.0.2.8", "https://[2001:db8::8]"),
+            ("http", 80, "http://192.0.2.8", "http://[2001:db8::8]"),
+            ("https", 8443, "https://192.0.2.8:8443", "https://[2001:db8::8]:8443"),
+            ("http", 3000, "http://192.0.2.8:3000", "http://[2001:db8::8]:3000"),
+            ("https", 80, "https://192.0.2.8:80", "https://[2001:db8::8]:80"),
+            ("http", 443, "http://192.0.2.8:443", "http://[2001:db8::8]:443"),
+        ] {
+            for (source, expected) in [("192.0.2.8:49363", ipv4), ("[2001:db8::8]:49363", ipv6)] {
+                let from: SocketAddr = source.parse().unwrap();
+                assert_eq!(discovery_base(scheme, from.ip(), port), expected);
+                let reply = serde_json::json!({"protocol":"GS26-FIND1","nonce":"test","name":"Station","role":"rrls","scheme":scheme,"port":port});
+                let hint = public_hint(&serde_json::to_vec(&reply).unwrap(), "test", from).unwrap();
+                assert_eq!(hint.base, expected);
+            }
+        }
+    }
     #[test]
     fn public_hint_collection_uses_udp_reply_address_deduplicates_and_times_out() {
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
