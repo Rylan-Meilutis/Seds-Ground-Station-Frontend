@@ -257,6 +257,10 @@ pub fn app_shell_theme() -> layout::ThemeConfig {
 #[cfg(not(target_arch = "wasm32"))]
 #[component]
 pub fn NativeSettingsPage() -> Element {
+    // Connect's Settings route is outside TelemetryDashboardInner. Give its
+    // pin editor the same persisted card model without requiring a dashboard.
+    let cards = use_signal(custom_dashboard::load_cards);
+    use_context_provider(|| cards);
     let mut aiming = use_signal(|| false);
     let distance_units_metric = use_signal(|| {
         persist::get_string(MAP_DISTANCE_UNITS_STORAGE_KEY)
@@ -788,6 +792,159 @@ pub fn NativeSettingsPage() -> Element {
             on_reset_app_data,
             title,
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_settings_mount_tests {
+    use super::*;
+
+    fn isolated(name: &str) -> bool {
+        if std::env::var("GS_SETTINGS_MOUNT_CHILD").as_deref() == Ok(name) {
+            std::fs::write(std::env::var("GS_SETTINGS_MOUNT_PROOF").unwrap(), name).unwrap();
+            return false;
+        }
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("gs-settings-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let test_module = module_path!().split_once("::").unwrap().1;
+        let proof = root.join("reached");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("{test_module}::{name}"),
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("GS_SETTINGS_MOUNT_CHILD", name)
+            .env("GS_SETTINGS_MOUNT_PROOF", &proof)
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .spawn()
+            .unwrap();
+        let began = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if began.elapsed() > std::time::Duration::from_secs(30) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let reached = std::fs::read_to_string(proof).ok();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            status.is_some_and(|status| status.success()),
+            "isolated Settings test failed: {status:?}"
+        );
+        assert_eq!(
+            reached.as_deref(),
+            Some(name),
+            "exact child test must execute"
+        );
+        true
+    }
+
+    #[test]
+    fn disconnected_native_settings_mounts_pin_preferences_without_dashboard_context() {
+        if isolated("disconnected_native_settings_mounts_pin_preferences_without_dashboard_context")
+        {
+            return;
+        }
+        // The Connect route supplies no dashboard Card context. Mount the same
+        // native Settings component directly, without a dashboard or WebView.
+        let mut dom = VirtualDom::new(NativeSettingsPage);
+        dom.rebuild_in_place();
+        let html = dioxus::ssr::render(&dom);
+        eprintln!("DISCONNECTED_NATIVE_SETTINGS_RENDER {html}");
+        assert!(html.contains("Pin telemetry to the top bar"), "{html}");
+        assert!(!html.contains("Encountered panic"), "{html}");
+    }
+
+    fn existing_dashboard_pin_editor() -> Element {
+        let cards = use_signal(custom_dashboard::load_cards);
+        use_context_provider(|| cards);
+        rsx! { custom_dashboard::HeaderPinSettings {} }
+    }
+
+    #[test]
+    fn saved_card_pin_edits_roundtrip_between_native_settings_and_dashboard() {
+        if isolated("saved_card_pin_edits_roundtrip_between_native_settings_and_dashboard") {
+            return;
+        }
+        let mut native = VirtualDom::new(NativeSettingsPage);
+        let (key, mut expected) = native.in_scope(ScopeId::ROOT, || {
+            let mut saved: serde_json::Value = serde_json::from_str(
+                &serde_json::to_string(&custom_dashboard::load_cards()).unwrap(),
+            )
+            .unwrap();
+            for card in saved.as_array_mut().unwrap() {
+                card["pinned"] = false.into();
+            }
+            saved[0]["pinned"] = true.into();
+            saved[0]["label"] = "Saved disconnected pin".into();
+            let key = custom_dashboard::storage_key();
+            persist::set_string(&key, &saved.to_string());
+            persist::set_string(&format!("{key}_defaults_version"), "3");
+            (key, saved)
+        });
+        native.rebuild_in_place();
+        let html = dioxus::ssr::render(&native);
+        assert!(html.contains("Saved disconnected pin"), "{html}");
+        assert!(
+            html.contains("Pin telemetry to the top bar (1/8)"),
+            "{html}"
+        );
+        drop(native);
+
+        // Existing dashboard pin controls must keep their current context and
+        // actual persistence handler; a Settings-only fallback must not mask it.
+        let mut dashboard = VirtualDom::new(existing_dashboard_pin_editor);
+        let mutations = dashboard.rebuild_to_vec();
+        let checkbox = mutations
+            .edits
+            .iter()
+            .find_map(|edit| match edit {
+                dioxus::core::Mutation::NewEventListener { name, id } if name == "change" => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .expect("actual first card checkbox change handler");
+        dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let data = dioxus::html::PlatformEventData::new(Box::new(
+            dioxus::html::SerializedFormData::new("false".into(), Vec::new()),
+        ));
+        let event = Event::new(
+            std::rc::Rc::new(data) as std::rc::Rc<dyn std::any::Any>,
+            true,
+        );
+        dashboard.runtime().handle_event("change", event, checkbox);
+        expected[0]["pinned"] = false.into();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&persist::get_string(&key).unwrap()).unwrap();
+        assert_eq!(persisted, expected);
+        drop(dashboard);
+
+        let mut reopened = VirtualDom::new(NativeSettingsPage);
+        reopened.rebuild_in_place();
+        let html = dioxus::ssr::render(&reopened);
+        assert!(html.contains("Saved disconnected pin"), "{html}");
+        assert!(
+            html.contains("Pin telemetry to the top bar (0/8)"),
+            "{html}"
+        );
+        let persisted: serde_json::Value =
+            serde_json::from_str(&persist::get_string(&key).unwrap()).unwrap();
+        assert_eq!(persisted, expected);
     }
 }
 
