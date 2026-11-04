@@ -2419,6 +2419,9 @@ fn TelemetryDashboardInner() -> Element {
     let settings_overlay_open = *show_settings_overlay.read();
     let settings_overlay: Element = {
         if settings_overlay_open {
+            // A filter on this scrolling overlay would contain nested fixed
+            // dialogs, moving them off-screen with the Settings scroll offset.
+            // Keep the opaque background without a backdrop-filter here.
             rsx! {
                 div {
                     style: "
@@ -2433,7 +2436,6 @@ fn TelemetryDashboardInner() -> Element {
                         overflow-x:hidden;
                         background:{theme.app_background};
                         font-family:{dashboard_font_stack};
-                        backdrop-filter:blur(6px);
                         overscroll-behavior:contain;
                         -webkit-overflow-scrolling:touch;
                     ",

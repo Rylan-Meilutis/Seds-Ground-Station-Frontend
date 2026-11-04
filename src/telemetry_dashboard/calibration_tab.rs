@@ -1975,11 +1975,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         div { class: "gs26-calibration-workspace", style: "{shell_style}",
             if confirm_discard() {
                 div {role:"alertdialog",aria_label:"Discard calibration changes",aria_modal:true,style:"position:fixed;inset:0;z-index:4300;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.45);",
-                    section {style:"width:min(460px,100%);padding:18px;border-radius:14px;background:{theme.panel_background};color:{theme.text_primary};display:grid;gap:12px;",
+                    section {class:"gs26-modal",style:"width:min(460px,100%);max-height:calc(var(--gs26-app-height,100dvh) - 40px);overflow:auto;box-sizing:border-box;padding:18px;border-radius:14px;background:{theme.panel_background};color:{theme.text_primary};display:grid;gap:12px;",
                         h3 {style:"margin:0;","Discard unsaved calibration changes?"}
                         p {"This removes this client’s draft only after the current station calibration has loaded. No station calibration is changed."}
                         button {r#type:"button",onclick:move |_|confirm_discard.set(false),"Keep editing"}
-                        button {r#type:"button",onclick:move |_|{
+                        button {class:"gs26-modal-danger",r#type:"button",onclick:move |_|{
                             confirm_discard.set(false);
                             let mut cfg=cfg;let mut dirty=dirty;let mut status=status;
                             spawn(async move {

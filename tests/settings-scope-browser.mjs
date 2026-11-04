@@ -24,10 +24,11 @@ fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(req.method==
   if(pathname==='/api/checklists'||`);
 fixture=fixture.replace("await new Promise(resolve=>server.listen","const serverSockets=new Set();server.on('connection',socket=>{serverSockets.add(socket);socket.on('close',()=>serverSockets.delete(socket));});\nawait new Promise(resolve=>server.listen");
 fixture+=`try {
+ const theme=process.env.GS_SETTINGS_THEME||'default';assert(['default','light'].includes(theme));
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
- await context.addInitScript(({session,origin})=>{if(!URL.parse)URL.parse=(a,b)=>{try{return new URL(a,b)}catch{return null}};localStorage.setItem('navigation-style','sidebar');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
+ await context.addInitScript(({session,origin,theme})=>{localStorage.setItem('gs_theme_preset',theme);if(!URL.parse)URL.parse=(a,b)=>{try{return new URL(a,b)}catch{return null}};localStorage.setItem('navigation-style','sidebar');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin,theme});
  const commands=[],errors=[];await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(data=>commands.push(data)));
- const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/dashboard');
+ const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',dialog=>{errors.push('Unexpected platform dialog');dialog.dismiss();});page.on('popup',popup=>{errors.push('Unexpected browser popup');popup.close();});await page.goto(origin+'/dashboard');
  await page.getByRole('link',{name:'Settings',exact:true}).click();
  const scope=page.getByRole('navigation',{name:'Settings scope'});await scope.getByRole('button',{name:'Client',exact:true}).waitFor();
  assert.equal(await scope.getByRole('button',{name:'Client',exact:true}).getAttribute('aria-pressed'),'true');
@@ -63,7 +64,20 @@ fixture+=`try {
  await page.waitForFunction(()=>document.getElementById('kg50-input').disabled);
  assert.equal(writes.length,3,'local point not published');
  await station.getByRole('button',{name:'Discard unsaved changes',exact:true}).click();
- await page.getByRole('alertdialog',{name:'Discard calibration changes',exact:true}).waitFor();
+ const discard=page.getByRole('alertdialog',{name:'Discard calibration changes',exact:true});await discard.waitFor();
+ const beforeDiscardWrites=[...writes],beforeDiscardCommands=commands.length;
+ for(const viewport of [{width:844,height:240},{width:320,height:320}]){
+  await page.setViewportSize(viewport);
+  const surface=discard.locator('section');
+  const bounds=await surface.boundingBox();assert(bounds&&bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=viewport.width&&bounds.y+bounds.height<=viewport.height,'Discard dialog fits short/narrow viewport');
+  const styles=await surface.evaluate(el=>{const css=e=>getComputedStyle(e);return{font:css(el).fontFamily,shellFont:css(document.querySelector('.gs26-dashboard-shell')).fontFamily,headingFont:css(el.querySelector('h3')).fontFamily,overflow:css(el).overflowY,buttons:[...el.querySelectorAll('button')].map(e=>({font:css(e).fontFamily,appearance:css(e).appearance,minHeight:parseFloat(css(e).minHeight)}))};});
+  assert.equal(styles.font,styles.shellFont);assert.equal(styles.headingFont,styles.shellFont);assert.equal(styles.overflow,'auto');
+  for(const button of styles.buttons){assert.equal(button.font,styles.shellFont);assert.equal(button.appearance,'none');assert(button.minHeight>=44);}
+  for(const name of ['Keep editing','Discard and reload']){const button=discard.getByRole('button',{name,exact:true});await button.scrollIntoViewIfNeeded();const box=await button.boundingBox();assert(box&&box.y>=0&&box.y+box.height<=viewport.height,'Each dialog action remains reachable');}
+  const danger=await discard.getByRole('button',{name:'Discard and reload',exact:true}).evaluate(e=>{const s=getComputedStyle(e);return{background:s.backgroundColor,color:s.color};});assert.equal(danger.background,'rgb(158, 38, 54)');assert.equal(danger.color,'rgb(255, 255, 255)');
+ }
+ await page.setViewportSize({width:1440,height:1000});
+ assert.deepEqual(writes,beforeDiscardWrites,'Opening, resizing and reviewing the dialog sends no station mutation');assert.equal(commands.length,beforeDiscardCommands,'Dialog review sends no control command');
  await page.getByRole('button',{name:'Keep editing',exact:true}).click();assert.equal(await input.isDisabled(),true);
  await station.getByRole('button',{name:'Discard unsaved changes',exact:true}).click();
  await page.getByRole('button',{name:'Discard and reload',exact:true}).click();
