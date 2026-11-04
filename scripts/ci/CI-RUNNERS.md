@@ -1,0 +1,25 @@
+# Frontend CI runners
+
+Both providers run the SAME actual `build.py --target <target> --debug|--release --no-sign` through `scripts/ci/frontend.py`. Coverage is every12 target in `scripts/build_targets.py`,24jobs/provider. This means supported architecture/build variants, not every historical OS/Xcode version. iOSdevice builds an unsigned app; simulators are built, never launched. Android builds APK variants. This is not distribution signing, notarization, device acceptance or store upload. Missing platform capability is a failed/pending gate, never successful Linux emulation.
+
+GitHub uses real hosted labels Ubuntu24.04 x64/ARM64, Windows2022/MSVC, macOS15 ARM64 and macOS15-intel. Native host+architecture is checked before bootstrap and build. GitLab needs these provisioned tags (unavailable runners remain pending):
+
+| Tag | Required native host |
+|---|---|
+| gs-ui-linux-x64 | Linux x86_64, plus AndroidSDK for Android jobs |
+| gs-ui-linux-arm64 | Linux aarch64 |
+| gs-ui-windows-x64 | Windows x86_64 with MSVC environment/WindowsSDK/WebView2 tooling |
+| gs-ui-macos-arm64 | AppleSilicon macOS15+full Xcode/device+simulatorSDKs |
+| gs-ui-macos-x64 | Intel macOS15+full Xcode/device+simulatorSDKs |
+
+These GitLab registrations have NOT been inspected or executed by this patch. Configure isolated ephemeral shell runners with Python3.11 (`python` on PATH), Rustup/Cargo, Node22/npm and git. No hardware/devices, Apple signing identities, provisioning profiles, upload/signing/notary credentials or production secrets should be installed. Untrusted merge requests must not execute on a privileged persistent crew workstation. Jobs deliberately contain no signing/deployment secrets or token printing. Both normaljob andfailure logs/artifacts are retained7days; inspect before sharing if upstream tools unexpectedly print sensitive host state.
+
+Linux prerequisites: build-essential/pkg-config, GTK3/WebKit2GTK4.1, appindicator/librsvg/libxdo/libssl/libclang dev packages, cmake/ninja/patchelf, file/zip/unzip, FUSE2. Ubuntu24.04 package name is libfuse2t64. GitHub installs them explicitly; provision the equivalent on GitLab. Android jobs require JDK17, platformsandroid35, buildtools35.0.0, platform-tools and NDK27.2.12479018 with accepted SDK licences; export ANDROID_HOME and ANDROID_NDK_HOME. GitHub sets these through setup-java/setup-android+sdkmanager. macOS requires completed Xcode first-launch/licence; no signing required. Windows runner must initialize the MSVC developer environment; GitHub does so through msvc-dev-cmd.
+
+Each fresh job installs Rust1.99.0+Clippy, resolves the application Cargo.lock only when absent, and derives exact DioxusCLI and wasm-bindgenCLI versions from its resolved dioxus/wasm-bindgen packages. The resolved versions and lock SHA256 are retained in ci-results/resolved-tools.json. CLI installation pins those versions with =version while resolving the CLI's own dependencies afresh, matching the application bootstrap policy for published CLI locks containing yanked dependencies. Jobs also install esbuild0.25.12; Binaryen133 native archives have hardcoded upstream SHA256 pins. No feature/queue/precision changes or platform-flag overrides. Archive/tool download availability, runner packages and third-party action versions still require real CI qualification; this is not a reproducible-image claim. Never put a stale `.ci-tools` or `artifacts/<target>` into a new job. No Cargo/target caches are configured by this first patch. Each job uses2 build jobs, incremental off; GitHub max4matrix jobs at once,120min timeout. GitLab concurrency is configured on the runners; eachjob2h.
+
+RUSTFLAGS/RUSTDOCFLAGS deny warnings. Inherited CARGO_ENCODED_RUSTFLAGS, CARGO_ENCODED_RUSTDOCFLAGS and target-specific CARGO_TARGET_*_RUSTFLAGS are refused, including empty values, so they cannot silently override the warning policy. The shared subprocess driver also preserves unfiltered tool output and fails nonzero exits OR recognized warning diagnostics; no upstream-warning whitelist or blanket lint suppression. Exact failed logs and build artifacts are uploaded even on failure. An empty platform stagingdirectory is a failure, not a successful build. Actual project/upstream warnings discovered by real CI are blockers to resolve, not pre-waived. The application build.py host-tool/iOS flag separation fix is already part of the reviewed base; this CI patch does not modify it.
+
+Fast contracts validate both matrices against actual target registry, correct native routing, all24 commands/profile flags, no skip/final/sign/deploy commands, fatal warnings/nonzero behavior using real Python subprocesses, and actualartifact retention configuration. They do not compile/launch frontend apps or prove runner availability. Local execution does not establish any Apple/Windows/Android build pass.
+
+References: https://docs.github.com/en/actions/reference/runners/github-hosted-runners ; https://docs.gitlab.com/ci/jobs/job_control/#parallelize-large-jobs ; https://github.com/WebAssembly/binaryen/releases/expanded_assets/version_133 .

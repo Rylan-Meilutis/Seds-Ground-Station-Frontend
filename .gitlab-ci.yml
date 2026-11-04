@@ -1,0 +1,98 @@
+stages:
+- contracts
+- build
+workflow:
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - if: $CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "main"
+  - if: $CI_PIPELINE_SOURCE == "web"
+variables:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+ci-contracts:
+  stage: contracts
+  tags:
+  - gs-ui-linux-x64
+  timeout: 5m
+  script:
+  - python -m pip install PyYAML==6.0.3
+  - python -W error -m unittest discover -s tests -p test_ci_platforms.py -v
+frontend-build:
+  stage: build
+  needs:
+  - ci-contracts
+  tags:
+  - $UI_RUNNER
+  timeout: 2h
+  parallel:
+    matrix:
+    - CI_FRONTEND_TARGET: web
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-linux-x64
+    - CI_FRONTEND_TARGET: linux
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-linux-x64
+    - CI_FRONTEND_TARGET: linux-arm64
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-linux-arm64
+    - CI_FRONTEND_TARGET: windows
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-windows-x64
+    - CI_FRONTEND_TARGET: macos
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-macos-arm64
+    - CI_FRONTEND_TARGET: macos-intel
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-macos-x64
+    - CI_FRONTEND_TARGET: ios
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-macos-arm64
+    - CI_FRONTEND_TARGET: android
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-linux-x64
+    - CI_FRONTEND_TARGET: android-armv7
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-linux-x64
+    - CI_FRONTEND_TARGET: ios_sim
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-macos-arm64
+    - CI_FRONTEND_TARGET: ios_sim_intel
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-macos-x64
+    - CI_FRONTEND_TARGET: android_sim
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-linux-x64
+  script:
+  - python scripts/ci/frontend.py bootstrap
+  - python scripts/ci/frontend.py build
+  artifacts:
+    when: always
+    expire_in: 7 days
+    name: frontend-$CI_FRONTEND_TARGET-$CI_FRONTEND_PROFILE
+    paths:
+    - artifacts/
+    - ci-results/
