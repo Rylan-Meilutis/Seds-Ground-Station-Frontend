@@ -1,6 +1,21 @@
 //! Execute the actual vendor navigation closure and IPC handler headlessly.
 //! Only the GUI window container and OS browser spawn are replaced by fixtures.
 use std::{fs, process::Command};
+#[path = "../src/native_navigation.rs"]
+mod native_navigation;
+
+#[test]
+fn actual_station_media_documents_are_allowed_in_app() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("../docs/api-examples/live-streams.json")).unwrap();
+    let base="https://station.invalid:3443";
+    let mut documents=vec![fixture["program_url"].as_str().unwrap()];
+    documents.extend(fixture["streams"].as_array().unwrap().iter().map(|s|s["url"].as_str().unwrap()));
+    documents.push("/api/media-assets/recorded-vehicle?ticket=EXAMPLE_REPLAY_TICKET");
+    for path in documents {
+        assert!(native_navigation::station_document_allowed(&format!("{base}{path}"),base), "station document path {}", path.split('?').next().unwrap());
+    }
+}
+
 fn body(source: &str, signature: &str) -> String {
     let start = source.find(signature).expect("actual vendor entry point");
     let open = start + source[start..].find('{').unwrap();
@@ -17,6 +32,17 @@ fn native_navigation_and_ipc_respect_each_originating_window_policy() {
     let webview = include_str!("../vendor-dioxus-desktop/src/webview.rs");
     let ipc = body(app, "pub fn handle_browser_open(");
     let navigation = body(webview, ".with_navigation_handler(move |var|");
+    let station = "https://station.invalid:3443";
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("../docs/api-examples/live-streams.json")).unwrap();
+    let mut paths = vec![fixture["program_url"].as_str().unwrap(), "/api/media-assets/recorded-vehicle?ticket=EXAMPLE"];
+    paths.extend(fixture["streams"].as_array().unwrap().iter().map(|s| s["url"].as_str().unwrap()));
+    let document_decisions: Vec<_> = paths.into_iter().map(|path| {
+        let url=format!("{station}{path}");
+        let allowed=native_navigation::station_document_allowed(&url, station);
+        assert!(allowed, "actual document path {}", path.split('?').next().unwrap());
+        (url, allowed)
+    }).collect();
+    let document_decisions = format!("{document_decisions:?}");
     let code = format!(r##"
 #![allow(dead_code)]
 use std::{{collections::HashMap,sync::atomic::{{AtomicBool,AtomicUsize,Ordering}}}};
@@ -38,6 +64,9 @@ fn navigate(external_browser_enabled:bool,url:&str,trusted:bool)->bool {{
  let actual=move |var:String| {navigation}; actual(url.into())
 }}
 fn main() {{
+ for (url, allowed) in {document_decisions} {{
+  for enabled in [false,true] {{let before=OPENS.load(Ordering::SeqCst);assert!(navigate(enabled,url,allowed));assert_eq!(OPENS.load(Ordering::SeqCst),before);}}
+ }}
  for url in ["https://station.invalid/program","https://external.invalid/","http://external.invalid/","mailto:user@example.invalid"] {{
   let before=OPENS.load(Ordering::SeqCst);assert!(!navigate(false,url,false));assert_eq!(OPENS.load(Ordering::SeqCst),before);
   assert!(!navigate(true,url,false));assert_eq!(OPENS.load(Ordering::SeqCst),before+1);
