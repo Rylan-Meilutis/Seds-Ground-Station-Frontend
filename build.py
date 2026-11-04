@@ -5188,6 +5188,10 @@ def build_frontend(
             clear_app_bundle(frontend_dir)
 
         env = _dx_bundle_env(frontend_dir) if (is_container() or in_docker_build()) else None
+        # CLI tools execute on the build host. Preserve this environment before
+        # adding application target flags (in particular the iOS linker target).
+        host_tool_env = os.environ.copy()
+        host_tool_env.update(env or {})
         if platform_name == "android":
             env = _ensure_android_env(frontend_dir, env)
         elif platform_name == "ios":
@@ -5210,7 +5214,7 @@ def build_frontend(
             env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
             env.setdefault("NO_STRIP", "1")
 
-        ensured_wasm_bindgen = _ensure_wasm_bindgen_cli(frontend_dir, env)
+        ensured_wasm_bindgen = _ensure_wasm_bindgen_cli(frontend_dir, host_tool_env)
         if env is not None and ensured_wasm_bindgen is not None:
             env["WASM_BINDGEN"] = str(ensured_wasm_bindgen)
             env["DIOXUS_WASM_BINDGEN"] = str(ensured_wasm_bindgen)
@@ -5293,7 +5297,7 @@ def build_frontend(
                 if hinted:
                     os.environ["GS_WASM_BINDGEN_CLI_VERSION"] = hinted
                 try:
-                    ensured = _ensure_wasm_bindgen_cli(frontend_dir, env)
+                    ensured = _ensure_wasm_bindgen_cli(frontend_dir, host_tool_env)
                     if env is not None and ensured is not None:
                         env["WASM_BINDGEN"] = str(ensured)
                         env["DIOXUS_WASM_BINDGEN"] = str(ensured)
