@@ -1,5 +1,7 @@
 #[path = "recording_export_owner.rs"]
 mod export_owner;
+#[path = "recording_diagnostics_view.rs"]
+mod recording_diagnostics_view;
 pub(super) use export_owner::ExportOwner;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "recording_download_file.rs"]
@@ -464,6 +466,7 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
                 div {key:"recording-tools-{selected}-{selection_epoch}",
                     super::sd_recording_import::SDRecordingImport {recording:selected(),onimport:move |id:String| {if id != selected() {downloading.set(false);selection_epoch.set(selection_epoch().saturating_add(1));selected.set(id);}refresh+=1;}}
                     super::report_studio::ReportStudio {recording:selected()}
+                    recording_diagnostics_view::RecordedDiagnostics {recording:selected()}
                 }
             } else { p { "Select a recording first, then choose the data to export." } }
             details { summary { "Legacy CSV / clock settings" } RangeAndClock {} }
@@ -632,8 +635,10 @@ addEventListener('pagehide',()=>{{for(const url of urls)URL.revokeObjectURL(url)
 fn portable_replay_html(value: &serde_json::Value) -> Result<String, String> {
     let data=serde_json::to_string(value).map_err(|e|e.to_string())?.replace('<', "\\u003c").replace('\u{2028}',"\\u2028").replace('\u{2029}',"\\u2029");
     let viewer=offline_replay_script()?;
-    Ok(format!(r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved vehicle replay</title><style>body{{font:16px system-ui;background:#101827;color:#f1f5f9;margin:20px;max-width:1100px}}button,select,input{{font:inherit;min-height:44px;margin:4px}}button,select{{background:#1e293b;color:white;border:1px solid #64748b;border-radius:6px;padding:6px 12px}}label{{display:block}}#import{{box-sizing:border-box;max-width:calc(100% - 8px)}}svg text{{font-family:system-ui}}</style><h1>Saved vehicle replay</h1><label>Import another portable JSON replay <input id="import" type="file" accept=".json"></label><p id="status" role="status"></p><main id="replay"></main><script type="application/json" id="recording">{data}</script><script>{viewer}
-let player;function load(text){{const next=GSOfflineReplay.validate(text);player?.dispose();player=GSOfflineReplay.mount(document.getElementById('replay'),next);document.getElementById('status').textContent='Offline file · no backend connection';}}load(document.getElementById('recording').textContent);document.getElementById('import').onchange=async e=>{{try{{const file=e.target.files[0];if(!file)return;if(file.size>GSOfflineReplay.MAX_BYTES)throw Error('Replay exceeds 64 MiB.');load(await file.text());}}catch(error){{document.getElementById('status').textContent='Import failed: '+error.message;}}}};</script></html>"#))
+    let diagnostic_viewer=include_str!("recording_diagnostics.js");
+    Ok(format!(r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved vehicle replay</title><style>body{{font:16px system-ui;background:#101827;color:#f1f5f9;margin:20px;max-width:1100px}}button,select,input{{font:inherit;min-height:44px;margin:4px}}button,select{{background:#1e293b;color:white;border:1px solid #64748b;border-radius:6px;padding:6px 12px}}label{{display:block}}#import{{box-sizing:border-box;max-width:calc(100% - 8px)}}svg text{{font-family:system-ui}}</style><h1>Saved vehicle replay</h1><label>Import another portable JSON replay <input id="import" type="file" accept=".json"></label><p id="status" role="status"></p><main id="replay"></main><section id="diagnostics"></section><script type="application/json" id="recording">{data}</script><script>{viewer}
+{diagnostic_viewer}
+let player,diagnosticViewer;function load(text){{const next=GSOfflineReplay.validate(text);GSRecordedDiagnostics.validate(next);player?.dispose();diagnosticViewer?.dispose();player=GSOfflineReplay.mount(document.getElementById('replay'),next);diagnosticViewer=GSRecordedDiagnostics.mount(document.getElementById('diagnostics'),next);document.getElementById('status').textContent='Offline file · no backend connection';}}load(document.getElementById('recording').textContent);document.getElementById('import').onchange=async e=>{{try{{const file=e.target.files[0];if(!file)return;if(file.size>GSOfflineReplay.MAX_BYTES)throw Error('Replay exceeds 64 MiB.');load(await file.text());}}catch(error){{document.getElementById('status').textContent='Import failed: '+error.message;}}}};</script></html>"#))
 }
 
 #[cfg(test)]
