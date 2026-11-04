@@ -26,6 +26,16 @@ fn step_label(value: StepState) -> &'static str {
         StepState::Unknown => "Unknown",
     }
 }
+fn step_glyph(value: StepState) -> &'static str {
+    match value {
+        StepState::Planned => "○",
+        StepState::Current | StepState::Watching => "◌",
+        StepState::Passed => "✓",
+        StepState::Failed => "×",
+        StepState::Skipped => "–",
+        StepState::Unknown => "?",
+    }
+}
 fn evidence_label(value: Evidence) -> &'static str {
     match value {
         Evidence::Planned => "Planned",
@@ -170,10 +180,10 @@ pub fn SequenceProgressView(
                 if panel.snapshot.watch_history_truncated {p {class:"gs26-sequence-legend","Some earlier step readings are not retained. All step results are retained."}}
                 ol {class:"gs26-sequence-steps","aria-label":"Sequence steps",
                     for step in &panel.snapshot.steps {
-                        {let state=if !terminal&&!fresh&&matches!(step.state,StepState::Current|StepState::Watching){StepState::Unknown}else{step.state};let label=step_label(state);
+                        {let state=if !terminal&&!fresh&&matches!(step.state,StepState::Current|StepState::Watching){StepState::Unknown}else{step.state};let label=step_label(state);let glyph=step_glyph(state);
                         rsx!{li {key:"{step.id}","data-step-state":label,
                             if terminal && !step.watch.is_empty() {
-                                details {summary {span {"{step.label}"}small {"{label}"}}
+                                details {summary {span {"{step.label}"}small {span {class:"gs26-sequence-step-glyph","aria-hidden":"true","{glyph}"} span {class:"gs26-sequence-step-label","{label}"}}}
                                     for watch in &step.watch {
                                         div {class:"gs26-sequence-watch",key:"{watch.id}",
                                             span {"{watch.label}"}strong {"{value_label(recorded_value(watch))}" if let Some(unit)=&watch.unit{" {unit}"}}
@@ -181,7 +191,7 @@ pub fn SequenceProgressView(
                                         }
                                     }
                                 }
-                            } else {span {"{step.label}"}small {"{label}"}}
+                            } else {span {"{step.label}"}small {span {class:"gs26-sequence-step-glyph","aria-hidden":"true","{glyph}"} span {class:"gs26-sequence-step-label","{label}"}}}
                         }}}
                     }
                 }
@@ -251,12 +261,18 @@ mod tests {
         assert!(value.contains("Cancel sequence"));
         assert!(value.contains("42.00"));
         assert!(value.contains("Watching"));
+        assert!(value.contains("gs26-sequence-step-glyph"));
+        assert!(value.contains("◌"));
+        assert!(value.contains("○"));
+        assert!(value.contains("aria-hidden=\"true\""));
     }
     #[test]
     fn stale_actual_view_blanks_readback_and_terminal_result_can_close() {
         let stale = html(false, false, 2001);
         assert!(stale.contains("Progress unknown"));
         assert!(!stale.contains("42.00"));
+        assert!(!stale.contains("◌"), "stale work must not keep a working glyph");
+        assert!(stale.contains("?"));
         let result = html(true, false, 100);
         assert!(result.contains("Close sequence result"));
         assert!(!result.contains("Cancel sequence"));

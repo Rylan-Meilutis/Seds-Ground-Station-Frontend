@@ -24,3 +24,10 @@
 .gs26-sequence-summary:is([data-outcome=Cancelled],[data-outcome=Interrupted],[data-outcome=Failed]) :is(strong,span){color:inherit}
 .gs26-sequence-steps [data-step-state=Passed]>small,.gs26-sequence-steps [data-step-state=Passed] summary>small{color:#065f46;background:#d1fae5;padding:2px 5px;border-radius:4px}
 .gs26-sequence-steps [data-step-state=Failed]>small,.gs26-sequence-steps [data-step-state=Failed] summary>small{color:#8b1e3f;background:#ffe1e7;padding:2px 5px;border-radius:4px}
+
+/* Redundant glyphs supplement, never replace, the readable step state. */
+.gs26-sequence-steps small{display:inline-flex;align-items:center;gap:5px}
+.gs26-sequence-step-glyph{display:inline-flex;align-items:center;justify-content:center;flex:0 0 1em;width:1em;font:inherit;font-weight:700;line-height:1;color:inherit}
+.gs26-sequence-steps :is([data-step-state=Current],[data-step-state=Watching]) .gs26-sequence-step-glyph{animation:gs26-sequence-step-working 1.6s linear infinite}
+@keyframes gs26-sequence-step-working{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.gs26-sequence-step-glyph{animation:none!important}}
