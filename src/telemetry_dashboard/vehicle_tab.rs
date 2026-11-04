@@ -830,7 +830,7 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                 }
             }
             if *show_error.read(){div {role:"dialog",aria_modal:"true",aria_label:"Replay details",style:"position:fixed;inset:0;background:rgba(0,0,0,.7);display:grid;place-items:center;z-index:10000;padding:16px;",
-                div {class:"gs26-modal",style:"max-width:560px;padding:20px;border-radius:14px;background:{theme.panel_background};color:{theme.text_primary};",
+                div {class:"gs26-modal",style:"max-width:560px;max-height:calc(var(--gs26-app-height,100dvh) - 32px);overflow:auto;box-sizing:border-box;padding:20px;border-radius:14px;background:{theme.panel_background};color:{theme.text_primary};",
                     h3 {"Saved replay"}p {style:"white-space:pre-wrap;overflow-wrap:anywhere;","{error.clone().unwrap_or_default()}"}
                     button {style:"{button}",onclick:move |_|show_error.set(false),"Close"}
                 }
