@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -19,6 +20,44 @@ spec.loader.exec_module(ci)
 
 
 class HostedFailures(unittest.TestCase):
+    def test_real_cp1252_console_preserves_utf8_diagnostics_and_fatal_warning(self):
+        script = r"""
+import importlib.util,json,os,pathlib,sys
+spec=importlib.util.spec_from_file_location('driver',sys.argv[1]);ci=importlib.util.module_from_spec(spec);spec.loader.exec_module(ci)
+ci.ROOT=pathlib.Path(sys.argv[2])
+assert sys.stdout.encoding.lower()=='cp1252'
+assert sys.stderr.encoding.lower()=='cp1252'
+ci.checked([sys.executable,'-c',"print('\\ufffd \\u2713',flush=True); import sys; print('stderr \\u03a9',file=sys.stderr)"],ci.ci_env(),'unicode')
+try:ci.checked([sys.executable,'-c',"print('warning: diagnostic \\ufffd')"],ci.ci_env(),'warning')
+except RuntimeError:pass
+else:raise AssertionError('Warning must remain fatal')
+assert sys.stdout.encoding.lower()=='utf-8' and sys.stderr.encoding.lower()=='utf-8'
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            env = os.environ.copy()
+            env.update(PYTHONUTF8="0", PYTHONIOENCODING="cp1252:strict")
+            result = subprocess.run([sys.executable, "-c", script, str(ROOT / "scripts/ci/frontend.py"), directory],
+                                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+            self.assertIn("\ufffd \u2713".encode("utf-8"), result.stdout)
+            self.assertIn("stderr \u03a9".encode("utf-8"), result.stdout)
+            self.assertEqual((Path(directory) / "ci-results/unicode.log").read_text(), "\ufffd \u2713\nstderr \u03a9\n")
+            self.assertEqual(json.loads((Path(directory) / "ci-results/warning.json").read_text())["warning_lines"], 1)
+
+    def test_utf8_configuration_respects_nonreconfigurable_test_streams(self):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(ci.sys, "stdout", out), patch.object(ci.sys, "stderr", err):
+            ci.configure_utf8_console()
+            print("\ufffd \u2713")
+        self.assertEqual(out.getvalue(), "\ufffd \u2713\n")
+
+    def test_child_utf8_environment_preserves_other_inherited_values(self):
+        with patch.dict(os.environ, {"CI_FIXTURE_MARKER": "retained", "PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"}):
+            env = ci.ci_env()
+        self.assertEqual(env["CI_FIXTURE_MARKER"], "retained")
+        self.assertEqual(env["PYTHONUTF8"], "1")
+        self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
+
     def test_actual_subprocess_uses_absolute_tool_resolved_from_child_path(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)):
             root = Path(directory)

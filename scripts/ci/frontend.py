@@ -77,8 +77,17 @@ def build_command(name, profile):
     return [sys.executable, "build.py", "--target", name, "--" + profile, "--no-sign"]
 
 
+def configure_utf8_console():
+    """Keep UTF-8 child diagnostics printable on Windows redirected consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="strict")
+
+
 def checked(argv, env, label, *, dioxus_progress=False):
     """Preserve full output and fail warnings as well as nonzero exits; no whitelist."""
+    configure_utf8_console()
     logs = ROOT / "ci-results"
     logs.mkdir(exist_ok=True)
     warning_lines = 0
@@ -110,6 +119,7 @@ def checked(argv, env, label, *, dioxus_progress=False):
 
 def ci_env():
     env = os.environ.copy()
+    env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     overrides = [name for name in env
                  if name in {"CARGO_ENCODED_RUSTFLAGS", "CARGO_ENCODED_RUSTDOCFLAGS"}
                  or (name.startswith("CARGO_TARGET_") and name.endswith("_RUSTFLAGS"))]
@@ -344,6 +354,7 @@ def run(name, profile):
 
 
 def main():
+    configure_utf8_console()
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["bootstrap", "build"])
     parser.add_argument("--target", choices=[p["target"] for p in PLATFORMS], default=os.environ.get("CI_FRONTEND_TARGET"), required=not bool(os.environ.get("CI_FRONTEND_TARGET")))
