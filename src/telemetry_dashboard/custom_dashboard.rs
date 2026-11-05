@@ -608,27 +608,25 @@ mod trend_tests {
 
 }
 
-// Reserve the configured operating range, rather than every possible float.
-// Values outside it retain the existing scrollable full-precision slot.
-fn pinned_number_chars(card: &Card) -> usize {
-    if card.display == "state" { return "Closed / Off".len(); }
-    let mut magnitude = card.min.abs().max(card.max.abs()).ceil().max(1.0);
-    let mut digits = 1;
-    while magnitude >= 10.0 && digits < 12 { magnitude /= 10.0; digits += 1; }
-    1 + digits + if card.precision == 0 {0} else {1 + card.precision}
+fn pinned_details(card: &Card, value: Option<f32>, age_ms: Option<i64>) -> String {
+    let value = value.map(|value| format!("{value} {}", card.unit)).unwrap_or_else(|| "No sample".into());
+    let age = age_ms.map(|age| format!("received {age} ms ago")).unwrap_or_else(|| "waiting for telemetry".into());
+    let sender = if card.sender.is_empty() { "any sender" } else { card.sender.as_str() };
+    format!("{}: {value}; {age}; source {} / {sender}", card.label, card.data_type)
 }
 #[cfg(test)]
 mod pinned_size_tests {
     use super::*;
     #[test]
-    fn range_and_precision_reserve_digits_without_reserving_screen_width() {
-        let mut card=defaults()[0].clone();card.min=0.0;card.max=50.0;card.precision=2;
-        assert_eq!(pinned_number_chars(&card),6);
-        card.min=-1000.0;card.max=1000.0;card.precision=1;
-        assert_eq!(pinned_number_chars(&card),7);
-        card.precision=0;assert_eq!(pinned_number_chars(&card),5);
-        card.min=-99.999;card.max=99.999;card.precision=2;assert_eq!(pinned_number_chars(&card),7);
-        card.display="state".into();assert_eq!(pinned_number_chars(&card),12);
+    fn compact_details_preserve_value_source_and_exact_age_without_reserved_digits() {
+        let mut card=defaults()[0].clone();card.unit="kg".into();card.sender="DAQ".into();
+        let value=-123456.789_f32;
+        let details=pinned_details(&card,Some(value),Some(12345));
+        assert!(details.contains(&format!("{value} kg")));
+        assert!(details.contains("12345 ms"));
+        assert!(details.contains("DAQ"));
+        let missing=pinned_details(&card,None,None);
+        assert!(missing.contains("No sample"));assert!(missing.contains("waiting for telemetry"));
     }
 }
 #[component]
@@ -679,13 +677,12 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
             }
         })
         .unwrap_or_else(|| "—".into());
-    // Reserve digits independently of the current sample; unit/label positions
-    // remain stable as a value gains digits or changes sign. Very large values
-    // remain readable by scrolling their numeric slot rather than truncation.
+    // Compact pins use their actual content width. Only exceptionally long
+    // numbers scroll; no configured range creates empty space before the unit.
     let compact_number = value.map(|v| if card.display == "state" { text.clone() }
         else { format!("{v:.precision$}", precision=card.precision) }).unwrap_or_else(|| "—".into());
-    let compact_chars = pinned_number_chars(&card);
-    let compact_value_style = format!("inline-size:{compact_chars}ch;flex:0 0 {compact_chars}ch;overflow-x:auto;white-space:nowrap;text-align:left;font-variant-numeric:tabular-nums;");
+    let compact_details = pinned_details(&card, value, age);
+    let compact_stale = age.is_none_or(|age|age>10000);
     let fraction = value
         .map(|v| ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0))
         .unwrap_or(0.0);
@@ -697,12 +694,12 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
                 .map(|(min,max)|if thrust {(min*9.80665,max*9.80665)}else{(min,max)})
         }
     }else{None};
-    rsx! {div { style: if compact { "display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px;flex:0 0 auto;min-width:0;max-width:100%;" } else { "" },
+    rsx! {div { title:compact.then_some(compact_details.clone()), aria_label:compact.then_some(compact_details.clone()), tabindex:compact.then_some("0"), style: if compact { "display:inline-flex;flex-wrap:nowrap;align-items:baseline;gap:5px;flex:0 1 auto;min-width:0;max-width:100%;" } else { "" },
         strong {class:"gs26-card-label",style:if compact {"min-width:0;max-width:100%;overflow-wrap:anywhere;"}else{""},"{card.label}"}
-        div {class:"gs26-card-value",style:if compact {"font-size:13px;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 4px;min-width:0;max-width:100%;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},
+        div {class:"gs26-card-value",style:if compact {"font-size:13px;display:inline-flex;flex-wrap:nowrap;align-items:baseline;gap:4px;min-width:0;max-width:100%;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},
             if compact {
-                span {class:"gs26-pinned-number",style:"{compact_value_style}","{compact_number}"}
-                if card.display != "state" {span {class:"gs26-pinned-unit",style:if value.is_some(){"visibility:visible;"}else{"visibility:hidden;"}," {card.unit}"}}
+                span {class:"gs26-pinned-number",style:"flex:0 1 auto;min-width:0;max-inline-size:18ch;overflow-x:auto;white-space:nowrap;font-variant-numeric:tabular-nums;","{compact_number}"}
+                if card.display != "state" && value.is_some() {span {class:"gs26-pinned-unit",style:"flex:0 0 auto;white-space:nowrap;","{card.unit}"}}
             } else {"{text}"}
         }
         if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
@@ -717,7 +714,9 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
                 if let Some(stats)=capture {if let Some((start,_))=window { {format!("Launch capture · last sample +{:.1}s",stats.last.time.saturating_sub(start) as f64/1000.0)} }}
                 else {"Launch capture · no source-timed samples"}
             }
-        } else if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:format!("{}color:{};",if compact {"flex-basis:100%;inline-size:0;min-inline-size:100%;white-space:normal;overflow-wrap:anywhere;"}else{""},if age.is_none_or(|a|a>10000){"#fbbf24"}else{"#94a3b8"}),
+        } else if compact {
+            if compact_stale {span {class:"gs26-pinned-stale",style:"color:#fbbf24;flex:0 0 auto;font-size:10px;",aria_label:if age.is_some(){"Stale telemetry"}else{"No telemetry"},"●"}}
+        } else {small {class:"gs26-card-freshness",style:format!("color:{};",if age.is_none_or(|a|a>10000){"#fbbf24"}else{"#94a3b8"}),
             if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago" if !card.sender.is_empty() {" · {card.sender}"}}else{"Waiting for telemetry"}
         }}
     }}

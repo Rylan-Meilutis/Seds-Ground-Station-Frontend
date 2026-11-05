@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
+if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base)}catch{return null}};
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
 const root=path.resolve(process.env.GS_UI_BUNDLE || 'target/dx/groundstation_frontend/debug/web/public');
 const example=name=>JSON.parse(fs.readFileSync(`docs/api-examples/${name}.json`,'utf8'));
@@ -66,22 +67,22 @@ try {
  const card=page.locator('.gs26-dashboard-card').filter({has:page.getByText('50 kg loadcell',{exact:true})});
  await card.getByRole('button',{name:'Pin to top bar',exact:true}).click();await page.getByRole('button',{name:'Done',exact:true}).click();
  const strip=page.locator('[aria-label="Pinned telemetry"]'),point=strip.locator(':scope > div').first();await strip.waitFor();
- async function reading(value){const now=Date.now();recentRows=[{data_type:'LOADCELL_50_WEIGHT_KG',sender_id:'DAQ',values:[value],timestamp_ms:now,received_timestamp_ms:now}];broadcast({ty:'TelemetryBatch',data:recentRows});await page.waitForFunction(expected=>document.querySelector('[aria-label="Pinned telemetry"] .gs26-card-value')?.textContent.trim().replace(/\s+/g,' ')===expected,value.toFixed(2)+' kg');await page.waitForTimeout(70);return point.evaluate(element=>{const value=element.querySelector('.gs26-card-value'),unit=element.querySelector('.gs26-pinned-unit'),number=element.querySelector('.gs26-pinned-number');const rect=e=>{const r=e.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height};};return{point:rect(element),value:rect(value),unit:unit?rect(unit):null,number:number?rect(number):null,text:value.textContent,scrollWidth:value.scrollWidth,clientWidth:value.clientWidth};});}
+ async function reading(value){const now=Date.now();recentRows=[{data_type:'LOADCELL_50_WEIGHT_KG',sender_id:'DAQ',values:[value],timestamp_ms:now,received_timestamp_ms:now}];broadcast({ty:'TelemetryBatch',data:recentRows});await page.waitForFunction(expected=>{const point=document.querySelector('[aria-label="Pinned telemetry"]>div');return point?.querySelector('.gs26-pinned-number')?.textContent.trim()===expected&&point?.querySelector('.gs26-pinned-unit')?.textContent.trim()==='kg'},value.toFixed(2)).catch(async error=>{console.error('PIN DOM',await point.evaluate(e=>({html:e.outerHTML,title:e.title})));throw error;});await page.waitForTimeout(70);return point.evaluate(element=>{const value=element.querySelector('.gs26-card-value'),unit=element.querySelector('.gs26-pinned-unit'),number=element.querySelector('.gs26-pinned-number');const rect=e=>{const r=e.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height};};return{point:rect(element),value:rect(value),unit:unit?rect(unit):null,number:number?rect(number):null,text:value.textContent,numberText:number?.textContent,unitText:unit?.textContent,tooltip:element.title,gap:getComputedStyle(value).columnGap,scrollWidth:value.scrollWidth,clientWidth:value.clientWidth};});}
  for(const width of [1280,844,390,320]){
   await page.setViewportSize({width,height:900});const rows=[];
   for(const value of [0,20,0,-20,123456.78,-123456.78,0])rows.push(await reading(value));
   measurements.push({kind:'pinned',width,rows});if(process.env.GS_LAYOUT_RESULTS)fs.writeFileSync(process.env.GS_LAYOUT_RESULTS,JSON.stringify({measurements,phase:'pinned'},null,2)+'\n');
-  assert(rows.every(row=>Math.abs(row.point.width-rows[0].point.width)<0.1),'pinned point width stays fixed at '+width);
-  assert(rows.every(row=>row.number&&Math.abs(row.number.width-rows[0].number.width)<0.1),'numeric slot fixed at '+width);
-  assert(rows.every(row=>row.unit&&Math.abs(row.unit.x-rows[0].unit.x)<0.1),'unit stays fixed at '+width);
+  assert(rows[1].point.width>rows[0].point.width,'pins use actual value width rather than a reserved range at '+width);
+  assert(rows.every(row=>row.number&&row.unit&&row.unit.x-row.number.x-row.number.width>=-0.1&&row.unit.x-row.number.x-row.number.width<=6),'number and unit stay contiguous at '+width);
+  assert.equal(await strip.locator('.gs26-card-freshness').count(),0,'compact pins never add verbose freshness rows');
   assert(rows.every(row=>row.number.width>0&&row.text.includes('kg')),'full precision and unit remain present');
   const beforeOverflow=rows[0];const large=2**54;const overflow=await reading(large);
-  assert.equal(overflow.text.trim().replace(/\s+/g,' '),large.toFixed(2)+' kg','full finite overflow value keeps originalprecision');
-  assert(Math.abs(overflow.point.width-beforeOverflow.point.width)<0.1&&Math.abs(overflow.unit.x-beforeOverflow.unit.x)<0.1,'overflow does not resize point or move unit');
+  assert.equal(overflow.numberText.trim(),large.toFixed(2),'full finite overflow number keeps originalprecision');assert.equal(overflow.unitText.trim(),'kg','separate unit remains present');assert.equal(overflow.gap,'4px','visual separation is the CSS gap, not a text-space contract');
+  assert(overflow.point.width<=width,'huge full-precision value remains contained');assert(overflow.unit.x-overflow.number.x-overflow.number.width<=6,'huge value keeps adjacent unit');
   const scroll=await point.locator('.gs26-pinned-number').evaluate(element=>{const box=element.getBoundingClientRect(),text=element.firstChild;const charBox=index=>{const range=document.createRange();range.setStart(text,index);range.setEnd(text,index+1);const r=range.getBoundingClientRect();return{x:r.x,right:r.right};};element.scrollLeft=0;const first=charBox(0);element.scrollLeft=element.scrollWidth;const last=charBox(text.textContent.length-1);const result={clientWidth:element.clientWidth,scrollWidth:element.scrollWidth,firstVisible:first.x>=box.x-.1&&first.right<=box.right+.1,lastVisible:last.x>=box.x-.1&&last.right<=box.right+.1,scrollLeft:element.scrollLeft};element.scrollLeft=0;return result;});
   measurements.push({kind:'true-overflow',width,overflow,scroll});if(process.env.GS_LAYOUT_RESULTS)fs.writeFileSync(process.env.GS_LAYOUT_RESULTS,JSON.stringify({measurements,phase:'overflow'},null,2)+'\n');
   assert(scroll.scrollWidth>scroll.clientWidth&&scroll.firstVisible&&scroll.lastVisible,'overflow number is fully readable through horizontal scroll');
-  await reading(0);
+  await reading(0);assert.match(await point.getAttribute('title'),/0 kg; received [0-9]+ ms ago; source .*DAQ/,'full value/source/age remain available without second line');
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'page contains pinned strip at '+width);
  }
  await page.setViewportSize({width:1280,height:900});await page.getByRole('button',{name:'Customize dashboard',exact:true}).click();
