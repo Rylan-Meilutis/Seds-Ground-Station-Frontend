@@ -656,6 +656,12 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
             }
         })
         .unwrap_or_else(|| "—".into());
+    // Reserve digits independently of the current sample; unit/label positions
+    // remain stable as a value gains digits or changes sign. Very large values
+    // remain readable by scrolling their numeric slot rather than truncation.
+    let compact_number = value.map(|v| if card.display == "state" { text.clone() }
+        else { format!("{v:.precision$}", precision=card.precision) }).unwrap_or_else(|| "—".into());
+    let compact_value_style = format!("inline-size:{}ch;flex:0 0 {}ch;overflow-x:auto;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;", 14 + card.precision, 14 + card.precision);
     let fraction = value
         .map(|v| ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0))
         .unwrap_or(0.0);
@@ -667,9 +673,14 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
                 .map(|(min,max)|if thrust {(min*9.80665,max*9.80665)}else{(min,max)})
         }
     }else{None};
-    rsx! {div { style: if compact { "display:flex;align-items:baseline;justify-content:center;gap:6px;flex-wrap:wrap;" } else { "" },
+    rsx! {div { style: if compact { "display:grid;grid-template-columns:max-content max-content;align-items:baseline;gap:2px 6px;flex:0 0 auto;white-space:nowrap;" } else { "" },
         strong {class:"gs26-card-label","{card.label}"}
-        div {class:"gs26-card-value",style:if compact {"font-size:13px;font-variant-numeric:tabular-nums;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},"{text}"}
+        div {class:"gs26-card-value",style:if compact {"font-size:13px;display:flex;align-items:baseline;gap:0.35em;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},
+            if compact {
+                span {class:"gs26-pinned-number",style:"{compact_value_style}","{compact_number}"}
+                if card.display != "state" {span {class:"gs26-pinned-unit",style:if value.is_some(){"visibility:visible;"}else{"visibility:hidden;"}," {card.unit}"}}
+            } else {"{text}"}
+        }
         if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
         if !compact && value.is_some() && card.display=="gauge" {div {role:"img","aria-label":text.clone(),style:"width:70px;height:70px;border-radius:50%;background:conic-gradient(#38bdf8 {fraction*360.0}deg,#334155 0);",div {style:"position:relative;top:12px;left:12px;width:46px;height:46px;border-radius:50%;background:#0f172a;"}}}
         if !compact && has_trend && card.display=="trend" {svg {view_box:"0 0 260 60",style:"width:100%;height:60px;",role:"img","aria-label":format!("{} {} history",card.label,if aggregate {"launch"}else{"live 60 second"}),path {d:geometry.path,fill:"none",stroke:"#38bdf8",stroke_width:"2"}
@@ -682,7 +693,7 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
                 if let Some(stats)=capture {if let Some((start,_))=window { {format!("Launch capture · last sample +{:.1}s",stats.last.time.saturating_sub(start) as f64/1000.0)} }}
                 else {"Launch capture · no source-timed samples"}
             }
-        } else if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:if age.is_none_or(|a|a>10000){"color:#fbbf24"}else{"color:#94a3b8"},
+        } else if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:format!("{}color:{};",if compact {"grid-column:1 / -1;inline-size:0;min-inline-size:100%;white-space:normal;overflow-wrap:anywhere;"}else{""},if age.is_none_or(|a|a>10000){"#fbbf24"}else{"#94a3b8"}),
             if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago" if !card.sender.is_empty() {" · {card.sender}"}}else{"Waiting for telemetry"}
         }}
     }}
@@ -693,7 +704,7 @@ pub(super) fn PinnedTelemetry(#[props(default)] test_fire_mode: bool) -> Element
     let cards = use_context::<Signal<Vec<Card>>>();
     rsx! {
         if cards.read().iter().any(|card| card.pinned) {
-            div { style:"grid-column:1 / -1;grid-row:5;display:flex;flex-wrap:wrap;justify-content:center;align-items:center;text-align:center;gap:8px 16px;padding:6px 0;font-size:12px;",
+            div { style:"grid-column:1 / -1;grid-row:5;display:flex;flex-wrap:nowrap;justify-content:flex-start;align-items:start;text-align:center;gap:8px 16px;padding:6px 0;font-size:12px;min-width:0;max-width:100%;overflow-x:auto;",
                 "aria-label":"Pinned telemetry",
                 for (index, card) in cards.read().iter().enumerate().filter(|(_,card)|card.pinned) {
                     TelemetryCard {key:"pinned-{index}", card:display_card(card.clone(),test_fire_mode), compact:true, thrust:test_fire_mode && card.data_type=="LOADCELL_WEIGHT_KG"}

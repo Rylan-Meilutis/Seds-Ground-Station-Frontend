@@ -265,8 +265,8 @@ pub(super) fn btn_style(
             String::new()
         };
     format!(
-        "padding:0.35rem 0.65rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; min-width:0; height:2.75rem; min-height:2.75rem; max-height:2.75rem; flex-shrink:0; box-sizing:border-box; overflow:hidden; \
-         display:flex; align-items:center; justify-content:space-between; gap:0.4rem; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
+        "padding:0.35rem 0.65rem; border-radius:0.75rem; cursor:{cursor}; opacity:{opacity}; filter:{filter}; width:100%; min-width:0; height:auto; min-height:2.75rem; flex-shrink:0; box-sizing:border-box; \
+         display:flex; align-items:center; justify-content:space-between; gap:0.4rem; flex-wrap:wrap; text-align:left; border:1px solid {border}; background:{bg}; color:{fg}; \
          font-weight:800; box-shadow:{box_shadow}; touch-action:manipulation; pointer-events:{pointer_events}; {animation} {ready_glow}"
     )
 }
@@ -850,7 +850,6 @@ pub fn ActionsTab(
                                                     Some("Confirm dry valve self-test first")
                                                 };
                                                 let reason_text = disabled_reason.unwrap_or("");
-                                                let label_lines = if action.group == "GSE sequence actions" { 1 } else { 2 };
 
                                                 let sequence = super::sequence_indicator::progress(
                                                     &action.cmd, &operational_status.read(),
@@ -945,7 +944,7 @@ pub fn ActionsTab(
                                                             }
                                                         },
                                                         span { style: "min-width:0; flex:1 1 auto;",
-                                                            span {title:"{action.label}",style:"display:-webkit-box;-webkit-line-clamp:{label_lines};-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;white-space:normal;line-height:1.25;", "{action.label}"}
+                                                            span {title:"{action.label}",style:if cosmetic_output_action(&action.cmd) {"display:block;white-space:nowrap;line-height:1.25;"} else {"display:block;overflow-wrap:break-word;white-space:normal;line-height:1.25;"}, "{action.label}"}
                                                             if cosmetic_output_action(&action.cmd) {
                                                                 span {style:"display:block;font-size:11px;font-weight:400;line-height:1.3;", "{requested_label}; owner unconfirmed"}
                                                             }
