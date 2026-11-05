@@ -58,7 +58,8 @@
         "prepare_recover": null
       },
       "operation": null,
-      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
+      "readback_valid_for_ms": null
     },
     {
       "id": "FC",
@@ -89,7 +90,8 @@
         "prepare_recover": null
       },
       "operation": null,
-      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
+      "readback_valid_for_ms": null
     },
     {
       "id": "PB",
@@ -120,7 +122,8 @@
         "prepare_recover": null
       },
       "operation": null,
-      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
+      "readback_valid_for_ms": null
     },
     {
       "id": "AB",
@@ -151,7 +154,8 @@
         "prepare_recover": true
       },
       "operation": null,
-      "message": null
+      "message": null,
+      "readback_valid_for_ms": 4950
     },
     {
       "id": "VB",
@@ -182,7 +186,8 @@
         "prepare_recover": true
       },
       "operation": null,
-      "message": null
+      "message": null,
+      "readback_valid_for_ms": 4950
     },
     {
       "id": "GB",
@@ -213,7 +218,8 @@
         "prepare_recover": null
       },
       "operation": null,
-      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
+      "readback_valid_for_ms": null
     },
     {
       "id": "DAQ",
@@ -244,7 +250,8 @@
         "prepare_recover": null
       },
       "operation": null,
-      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
+      "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
+      "readback_valid_for_ms": null
     }
   ],
   "operation": null

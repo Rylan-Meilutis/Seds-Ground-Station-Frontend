@@ -11,7 +11,6 @@ fn selection_context(value: &Value) -> Value {
         value["board"]["generation"],
         value["board"]["epoch"],
         value["board"]["mode"],
-        value["board"]["result"],
         value["board"]["capabilities"]
     ])
 }
@@ -225,13 +224,20 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
             .unwrap_or("stepper")
             .to_string()
     });
-    let allowed = auth::can_send_command("RetractPlumbing")
+    let can_edit = auth::can_send_command("RetractPlumbing")
         && snapshot_source
             .read()
             .as_ref()
             .is_some_and(|source| *source == SourceContext::current())
-        && current["can_configure"] == true
+        && current["board"].is_object()
         && !*busy.read();
+    let can_save =
+        can_edit && current["can_configure"] == true && current["board"]["fresh"] == true;
+    let blocked_reason = current["blocked_reason"]
+        .as_str()
+        .filter(|reason| !reason.is_empty())
+        .map(|reason| reason.chars().take(180).collect::<String>())
+        .unwrap_or_else(|| "Waiting for safe actuator readback before saving.".into());
     let releases_hold = current["board"]["mode"] != "auxiliary" && selected == "auxiliary";
     let board_mode = current["board"]["mode"]
         .as_str()
@@ -243,7 +249,7 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
         section { aria_label: "Fill-line drive", style: "display:grid;gap:10px;min-width:0;padding:12px;border:1px solid {theme.border_soft};border-radius:10px;background:{theme.panel_background};color:{theme.text_primary};font:inherit;",
             strong { "Fill-line drive" }
             label { r#for: "plumbing-drive", "Use for fill-line retraction" }
-            select { id: "plumbing-drive", value: "{selected}", disabled: !allowed,
+            select { id: "plumbing-drive", value: "{selected}", disabled: !can_edit,
                 style: "box-sizing:border-box;width:100%;min-width:0;min-height:44px;padding:8px;font:inherit;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};border-radius:6px;",
                 onchange: move |event| { draft.set(Some(event.value())); release.set(false); },
                 option { value: "stepper", disabled: current["board"]["capabilities"]["stepper"] != true, "Stepper · existing travel profile" }
@@ -266,12 +272,12 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
             }
             if releases_hold {
                 label { style: "display:flex;align-items:flex-start;gap:8px;min-width:0;",
-                    input { r#type: "checkbox", checked: *release.read(), disabled: !allowed,
+                    input { r#type: "checkbox", checked: *release.read(), disabled: !can_edit,
                         onchange: move |event| release.set(event.checked()) }
                     span { "Release the idle stepper’s holding torque when switching drives." }
                 }
             }
-            button { r#type: "button", disabled: !allowed || (releases_hold && !*release.read()),
+            button { r#type: "button", disabled: !can_save || (releases_hold && !*release.read()),
                 style: "min-height:44px;max-width:100%;width:auto;padding:10px 14px;white-space:normal;font:inherit;",
                 onclick: move |_| {
                     let Some(before) = snapshot.peek().clone() else { return; };
@@ -294,6 +300,9 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
                     });
                 },
                 if releases_hold { "Switch drive and release stepper holding torque" } else { "Save drive selection" }
+            }
+            if can_edit && !can_save {
+                p { role: "status", style: "margin:0;color:{theme.text_muted};", "{blocked_reason}" }
             }
             if !message.read().is_empty() { p { role: "status", style: "margin:0;overflow-wrap:anywhere;", "{message}" } }
         }
@@ -341,6 +350,27 @@ mod tests {
             let mut after = value.clone();
             after[field] = next;
             assert_ne!(selection_context(&after), before);
+        }
+    }
+    #[test]
+    fn temporary_readback_expiry_and_result_do_not_discard_the_selected_drive() {
+        let value = snapshot();
+        let authority = selection_context(&value);
+        let mut expired = value.clone();
+        expired["can_configure"] = json!(false);
+        expired["board"]["fresh"] = json!(false);
+        expired["board"]["result"] = json!("pending");
+        expired["blocked_reason"] = json!("Waiting for matching readback.");
+        assert_eq!(selection_context(&expired), authority);
+        assert!(settings_request(&expired, "auxiliary", true).is_err());
+        expired["can_configure"] = json!(true);
+        expired["board"]["fresh"] = json!(true);
+        assert!(settings_request(&expired, "auxiliary", true).is_ok());
+        assert!(settings_request(&expired, "auxiliary", false).is_err());
+        for field in ["mode", "epoch", "generation", "capabilities"] {
+            let mut changed = value.clone();
+            changed["board"][field] = Value::Null;
+            assert_ne!(selection_context(&changed), authority, "{field}");
         }
     }
     #[test]

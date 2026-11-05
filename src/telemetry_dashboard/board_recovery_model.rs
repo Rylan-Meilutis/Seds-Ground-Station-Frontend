@@ -179,6 +179,8 @@ pub(super) struct Board {
     pub epoch: Option<u32>,
     pub nonce: Option<String>,
     pub age_ms: Option<u64>,
+    /// Remaining server-issued readback lease at response time.
+    pub readback_valid_for_ms: Option<u64>,
     pub abort_latched: Option<bool>,
     pub safe_outputs: Option<bool>,
     pub commanded_outputs: Option<u32>,
@@ -233,8 +235,8 @@ impl Board {
     pub fn fresh(&self, elapsed: u64) -> bool {
         self.known_context()
             && self
-                .age_ms
-                .is_some_and(|age| age.saturating_add(elapsed) <= 2_000)
+                .readback_valid_for_ms
+                .is_some_and(|remaining| elapsed < remaining)
     }
     pub fn query_allowed(&self) -> bool {
         self.capabilities.endpoint_verified && self.capabilities.query == Some(true)
@@ -650,6 +652,7 @@ mod tests {
         board.capabilities.prepare_recover = Some(true);
         board.capabilities.recover = Some(false);
         board.age_ms = Some(20_000);
+        board.readback_valid_for_ms = Some(0);
         let board = s.board("AB").unwrap();
         assert!(!board.fresh(60_000));
         assert!(
@@ -744,11 +747,31 @@ mod tests {
         assert!(!rf.known_context());
         assert!(!rf.query_allowed());
         assert!(s.board("AB").unwrap().query_allowed());
-        assert!(s.board("AB").unwrap().fresh(1950));
-        assert!(!s.board("AB").unwrap().fresh(1951));
+        assert!(s.board("AB").unwrap().fresh(4949));
+        assert!(!s.board("AB").unwrap().fresh(4950));
         assert!(s.reset_reason(0).unwrap().contains("RF"));
         assert!(!serde_json::from_str::<Status>("{}").unwrap().valid());
     }
+    #[test]
+    fn board_readback_uses_only_the_server_issued_remaining_lease() {
+        let mut board = status().board("AB").unwrap().clone();
+        board.readback_valid_for_ms = Some(123);
+        assert!(board.fresh(122));
+        assert!(!board.fresh(123));
+        // The server owns TTL and transport-age accounting; the browser must
+        // neither impose its own fixed window nor re-add diagnostic age.
+        board.age_ms = Some(90_000);
+        board.readback_valid_for_ms = Some(12_345);
+        assert!(board.fresh(12_344));
+        assert!(!board.fresh(12_345));
+        board.readback_valid_for_ms = Some(0);
+        assert!(!board.fresh(0));
+        board.readback_valid_for_ms = None;
+        assert!(!board.fresh(0));
+        board.readback_valid_for_ms = Some(u64::MAX);
+        assert!(!board.fresh(u64::MAX));
+    }
+
     #[test]
     fn unpublished_or_invalid_board_identity_never_authorizes_recovery() {
         let original = status().board("AB").unwrap().clone();
@@ -843,7 +866,8 @@ mod tests {
         s.boards[0].nonce = None;
         assert!(s.reset_reason(0).is_some());
         s = all_boards();
-        s.boards[3].age_ms = Some(2001);
+        s.boards[3].age_ms = Some(5001);
+        s.boards[3].readback_valid_for_ms = Some(0);
         assert!(s.reset_reason(0).is_some());
         s = all_boards();
         s.boards[1].capabilities.endpoint_verified = false;
@@ -890,12 +914,13 @@ mod tests {
         assert!(!c.context_unchanged(&original, &changed));
     }
     #[test]
-    fn thirty_second_confirmation_does_not_claim_two_second_readback_stays_fresh() {
+    fn thirty_second_confirmation_does_not_claim_expired_readback_stays_fresh() {
         let original = all_boards();
         let c = challenge();
         let mut later = original.clone();
         for board in &mut later.boards {
             board.age_ms = Some(15_000);
+            board.readback_valid_for_ms = Some(0);
             board.state = None;
             board.abort_latched = None;
             board.safe_outputs = None;
@@ -996,6 +1021,7 @@ mod tests {
         let mut later = original.clone();
         for board in &mut later.boards {
             board.age_ms = Some(15_000);
+            board.readback_valid_for_ms = Some(0);
             board.state = None;
             board.abort_latched = None;
             board.safe_outputs = None;
@@ -1051,7 +1077,8 @@ mod tests {
         assert!(b.first_uncertainty_context());
         assert!(!b.commissioning_context());
         assert!(b.fresh(0));
-        assert!(!b.fresh(2_001));
+        assert!(b.fresh(4_949));
+        assert!(!b.fresh(4_950));
         for field in 0..5 {
             let mut bad = b.clone();
             match field {
@@ -1167,6 +1194,7 @@ mod tests {
             let (mut status, ticket) = scoped_reset(mode);
             for board in &mut status.boards {
                 board.age_ms = None;
+                board.readback_valid_for_ms = None;
                 board.capabilities.reset_startup = None;
             }
             assert!(
@@ -1183,6 +1211,7 @@ mod tests {
         }
         let mut legacy = all_boards();
         legacy.boards[0].age_ms = None;
+        legacy.boards[0].readback_valid_for_ms = None;
         assert!(
             legacy.reset_reason(0).is_some(),
             "legacy all-seven freshness stays required"

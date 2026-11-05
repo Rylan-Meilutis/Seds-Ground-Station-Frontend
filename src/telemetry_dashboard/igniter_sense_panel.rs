@@ -125,14 +125,20 @@ pub(super) fn IgniterSensePanel(theme: ThemeConfig) -> Element {
             "data-testid":"igniter-sense-panel",
             style:"padding:12px;border:1px solid {theme.border};border-radius:10px;background:{theme.panel_background};color:{theme.text_primary};font:inherit;",
             strong {"Igniter current sense"}
-            p {style:"margin:6px 0;color:{theme.text_secondary};","{capability}"}
-            div {role:"status","{data.label}"}
+            p {style:"margin:6px 0;color:{theme.text_secondary};", "Current not calibrated"}
             div {style:"display:flex;gap:20px;flex-wrap:wrap;margin-top:8px;",
                 span {"ADC: {data.counts}"}
                 span {"Signal: {data.volts}"}
-                span {"Current: unavailable"}
             }
-            p {style:"font-size:0.85em;color:{theme.text_muted};margin-bottom:0;","Measured signal is separate from the ignition command and continuity. It does not confirm firing."}
+            small {style:"display:block;margin-top:6px;color:{theme.text_muted};",
+                if data.counts=="—" && data.volts=="—" {"Signal unconfirmed"}else{"Last reported signal"}
+            }
+            details {style:"margin-top:8px;",
+                summary {style:"cursor:pointer;min-height:44px;display:flex;align-items:center;", "Signal details"}
+                div {role:"status","{data.label}"}
+                p {style:"margin:6px 0;color:{theme.text_secondary};","{capability}"}
+                p {style:"font-size:0.85em;color:{theme.text_muted};margin-bottom:0;","Measured signal is separate from the ignition command and continuity. It does not confirm firing."}
+            }
         }
     }
 }

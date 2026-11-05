@@ -611,6 +611,29 @@ fn request_gate_diagnostics(status: &serde_json::Value, recovery: bool) -> Strin
     )
 }
 
+const SEQUENCE_INDICATOR_COMMANDS: [&str; 6] = ["ValveSelfTest", "NitrogenTest", "StartFill", "PauseFill", "CancelFill", "Turbocharge"];
+type SequenceIndicators = [Option<super::sequence_indicator::Progress>; 6];
+fn sequence_indicators(status: &serde_json::Value, age_ms: u64, rrls: bool) -> SequenceIndicators {
+    core::array::from_fn(|index| super::sequence_indicator::progress(SEQUENCE_INDICATOR_COMMANDS[index], status, age_ms, rrls))
+}
+#[cfg(test)]
+mod actions_refresh_tests {
+    use super::*;
+    #[test]
+    fn unchanged_clock_ticks_do_not_change_render_projection_but_expiry_does() {
+        let status=serde_json::json!({"phase":"filling","primary_observation":{"fresh":true,"age_ms":400}});
+        let initial=sequence_indicators(&status,0,false);
+        for age in [0,250,500,750,1000,1250,1500,1750,2000] {assert_eq!(sequence_indicators(&status,age,false),initial);}
+        assert_ne!(sequence_indicators(&status,2001,false),initial);
+        let remote=sequence_indicators(&status,1600,true);
+        assert_eq!(remote,initial);
+        assert_ne!(sequence_indicators(&status,1601,true),remote);
+        assert_ne!(sequence_indicators(&serde_json::Value::Null,0,false),initial);
+        let paused=serde_json::json!({"phase":"paused"});
+        assert_ne!(sequence_indicators(&paused,0,false),initial);
+    }
+}
+
 #[component]
 pub fn ActionsTab(
     layout: ActionsTabLayout,
@@ -625,7 +648,7 @@ pub fn ActionsTab(
     let self_test_alive = super::recording_download::use_export_lifetime();
     let mut gse_request_gate = use_signal(String::new);
     let mut operational_status = use_signal(|| serde_json::Value::Null);
-    let mut operational_observed_at = use_signal(|| f64::NAN);
+    let mut displayed_sequence = use_signal(|| [None; 6]);
     let mut sequence_now = use_signal(super::monotonic_now_ms);
     use_future(move || async move {
         loop {
@@ -638,7 +661,7 @@ pub fn ActionsTab(
     });
     let shared_sequence_status=use_context::<Signal<super::sequence_progress_host::StatusObservation>>();
     use_effect(move || {
-        let observation=shared_sequence_status.read().clone();
+        let observation=shared_sequence_status.read();
         let current_source=*super::WS_EPOCH.read();
         let _tick=*sequence_now.read();
         let now=super::monotonic_now_ms();
@@ -652,15 +675,18 @@ pub fn ActionsTab(
             observation.error.is_none().then(||observation.value["dry_self_test_confirmed"].as_bool()).flatten());
         if *self_test_confirmation.peek()!=confirmation {self_test_confirmation.set(confirmation);}
         if observation.source_epoch!=current_source {
-            operational_status.set(serde_json::Value::Null);
-            operational_observed_at.set(f64::NAN);
+            if !operational_status.peek().is_null() {operational_status.set(serde_json::Value::Null);}
+            let next=sequence_indicators(&serde_json::Value::Null,u64::MAX,false);
+            if *displayed_sequence.peek()!=next {displayed_sequence.set(next);}
             return;
         }
-        let status=observation.value;
-        operational_observed_at.set(observation.requested_at_ms);
-        operational_status.set(status.clone());
-        let next=if let Some(error)=observation.error {format!("Cannot read backend GSE gate: {error}")}
-        else {request_gate_diagnostics(&status,auth::current_status().station_role.as_deref()==Some("rrls"))};
+        let status=&observation.value;
+        if *operational_status.peek()!=*status {operational_status.set(status.clone());}
+        let recovery=auth::current_status().station_role.as_deref()==Some("rrls");
+        let indicators=sequence_indicators(status,super::board_recovery_guard::status_age_ms(observation.requested_at_ms,now),recovery);
+        if *displayed_sequence.peek()!=indicators {displayed_sequence.set(indicators);}
+        let next=if let Some(error)=observation.error.as_ref() {format!("Cannot read backend GSE gate: {error}")}
+        else {request_gate_diagnostics(status,recovery)};
         if *gse_request_gate.peek()!=next {gse_request_gate.set(next);}
     });
     let mut all_actions = layout.actions.clone();
@@ -682,7 +708,9 @@ pub fn ActionsTab(
         Vec::new()
     };
     let action_rows = build_action_rows(&visible_actions);
-    let software_buttons_enabled = action_policy.read().software_buttons_enabled;
+    let mut action_policy_snapshot = action_policy.read().clone();
+    super::BOARD_ABORT_SIGNAL.read().constrain_launch_policy(&mut action_policy_snapshot);
+    let software_buttons_enabled = action_policy_snapshot.software_buttons_enabled;
     rsx! {
         div {
             style: "
@@ -819,8 +847,6 @@ pub fn ActionsTab(
                                                 }
                                             },
                                             ActionRowItem::Action(action) => {
-                                                let mut action_policy_snapshot = action_policy.read().clone();
-                                                super::BOARD_ABORT_SIGNAL.read().constrain_launch_policy(&mut action_policy_snapshot);
                                                 let control = action_policy_snapshot
                                                     .controls
                                                     .iter()
@@ -851,11 +877,8 @@ pub fn ActionsTab(
                                                 };
                                                 let reason_text = disabled_reason.unwrap_or("");
 
-                                                let sequence = super::sequence_indicator::progress(
-                                                    &action.cmd, &operational_status.read(),
-                                                    super::board_recovery_guard::status_age_ms(operational_observed_at(), sequence_now()),
-                                                    auth::current_status().station_role.as_deref() == Some("rrls"),
-                                                );
+                                                let sequence = SEQUENCE_INDICATOR_COMMANDS.iter().position(|command| *command==action.cmd)
+                                                    .and_then(|index| displayed_sequence.read()[index]);
                                                 let blink = if cosmetic_output_action(&action.cmd) || sequence == Some(super::sequence_indicator::Progress::Unknown) {
                                                     BlinkMode::None
                                                 } else { control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None) };

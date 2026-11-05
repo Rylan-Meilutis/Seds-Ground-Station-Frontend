@@ -32,11 +32,11 @@ try {
  async function open(){await page.getByRole('navigation',{name:'Mission navigation'}).waitFor({timeout:15000});await page.getByRole('link',{name:dashboardLayout.branding.tab_labels.data||'Data',exact:true}).click();await page.getByRole('button',{name:'Igniter current sense',exact:true}).click();await page.getByTestId('igniter-sense-panel').waitFor({timeout:10000}).catch(async error=>{console.log((await page.locator('body').innerText()).slice(0,3500));console.log(errors);throw error;});}
  await page.goto(origin+'/dashboard');await open();
  const panel=page.getByTestId('igniter-sense-panel');
- assert((await panel.innerText()).includes('ADC: —'),'missing source cannot fabricate zero');assert((await panel.innerText()).includes('No igniter ADC report received'),'missing report is explicit');assert.equal(await page.getByText('Current (unavailable)',{exact:true}).count(),0,'old empty amperes card removed; capability stays visible');
+ assert((await panel.innerText()).includes('ADC: —'),'missing source cannot fabricate zero');assert((await panel.innerText()).includes('Signal unconfirmed'),'missing signal stays unconfirmed');assert(!(await panel.innerText()).includes('Source clock'),'collapsed main card has no clock jargon');await panel.getByText('Signal details',{exact:true}).click();assert((await panel.innerText()).includes('No igniter ADC report received'),'missing report diagnostics are explicit');assert.equal(await page.getByText('Current (unavailable)',{exact:true}).count(),0,'old empty amperes card removed; capability stays visible');
  push(rows(1));await panel.getByText('Live measured signal',{exact:true}).waitFor();
  assert((await panel.innerText()).includes('ADC: 2048 counts'));
  assert((await panel.innerText()).includes('Signal: 1.6504 V'));
- assert((await panel.innerText()).includes('Current: unavailable'));
+ assert((await panel.innerText()).includes('Current not calibrated'));
  assert((await panel.innerText()).includes('no supported current conversion'));
  await page.screenshot({path:process.env.GS_IGNITER_SCREENSHOT?.replace('.png','-live.png')||'/tmp/igniter-sense-live.png',fullPage:true});
  await panel.getByText('Stale · last signal retained',{exact:true}).waitFor({timeout:4000});
@@ -47,7 +47,7 @@ try {
  push(rows(4,Date.now()+5000));await panel.getByText('Source clock unavailable · last signal retained',{exact:true}).waitFor();
  senseHistory=rows(5,Date.now()-5000);await page.reload();await open();
  await panel.getByText('ADC: 2048 counts',{exact:true}).waitFor({timeout:15000});
- await panel.getByText('Recorded or unavailable · no fresh live source',{exact:true}).waitFor();
+ await panel.getByText('Signal details',{exact:true}).click();await panel.getByText('Recorded or unavailable · no fresh live source',{exact:true}).waitFor();
  assert(!commands.some(command=>{try{const message=JSON.parse(command);return ['Abort','Launch','IgniterOn','DeployChutes'].includes(message.cmd);}catch{return false;}}),'read-only viewing emitted command');
  assert.deepEqual(errors,[]);
  await page.screenshot({path:process.env.GS_IGNITER_SCREENSHOT||'/tmp/igniter-sense-browser.png',fullPage:true});
