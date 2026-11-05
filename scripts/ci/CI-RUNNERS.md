@@ -40,7 +40,9 @@ application Cargo work during the build is offline.
 Every prepared tool is resolved to an absolute executable using the child PATH
 before spawning, including `wasm-opt.exe` on Windows. Wasm-bindgen, Binaryen and
 linuxdeploy downloads retry transient transport/408/429/5xx failures at most
-three times (1s/2s backoff); each attempt retains the 120s/64MiB bounds. Checksum,
+three times (1s/2s backoff); each attempt retains its 120s bound. Downloads
+retain the 64MiB default, except Binaryen133's compressed Linux/Windows archives
+(105,577,739 to 111,200,018 bytes) use a bounded 128MiB cap. Checksum,
 archive and version failures remain fatal and are never retry success. HTTP
 error responses are closed before retry. Official linuxdeploy release 430855031
 (November 1, 2026) bytes are pinned separately for x86_64/aarch64; a moved

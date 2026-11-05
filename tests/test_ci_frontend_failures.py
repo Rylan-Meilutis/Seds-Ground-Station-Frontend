@@ -95,6 +95,50 @@ class HostedFailures(unittest.TestCase):
                 self.assertEqual(receipt["external_metadata_progress_warnings"], ["warning: (Try 1) Taking a while..."])
                 self.assertEqual(receipt["warning_lines"], 1)
 
+    @staticmethod
+    def binaryen_archive():
+        import tarfile
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w:gz") as bundle:
+            member = tarfile.TarInfo("binaryen-version_133/bin/wasm-opt")
+            body = b"verified binary fixture"
+            member.size = len(body)
+            member.mode = 0o755
+            bundle.addfile(member, io.BytesIO(body))
+        return output.getvalue()
+
+    def test_binaryen_bound_covers_exact_pinned_official_sizes_without_changing_other_caps(self):
+        official_sizes = {
+            ("Linux", "x86_64"): 111200018,
+            ("Linux", "aarch64"): 105577739,
+            ("Darwin", "aarch64"): 7810532,
+            ("Darwin", "x86_64"): 9276271,
+            ("Windows", "x86_64"): 111045528,
+        }
+        self.assertEqual(ci.download.__kwdefaults__["limit"], 64 * 1024 * 1024)
+        for host, official_bytes in official_sizes.items():
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)):
+                root = Path(directory)
+                raw = self.binaryen_archive()
+                suffix, _ = ci.BINARYEN[host]
+                def prepared_download(_url, archive, *, limit):
+                    self.assertEqual(limit, 128 * 1024 * 1024)
+                    self.assertGreaterEqual(limit, official_bytes)
+                    archive.write_bytes(raw)
+                with patch.dict(ci.BINARYEN, {host: (suffix, hashlib.sha256(raw).hexdigest())}), patch.object(ci, "download", side_effect=prepared_download) as fetch:
+                    ci.install_binaryen(host)
+                fetch.assert_called_once()
+                self.assertEqual((root / ".ci-tools/binaryen/bin/wasm-opt").read_bytes(), b"verified binary fixture")
+
+    def test_binaryen_larger_cap_still_refuses_checksum_before_extract_or_execution(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), patch.object(ci, "checked") as execute:
+            root = Path(directory)
+            with patch.object(ci.urllib.request, "urlopen", return_value=io.BytesIO(self.binaryen_archive())):
+                with self.assertRaisesRegex(RuntimeError, "Binaryen archive checksum mismatch"):
+                    ci.install_binaryen(("Linux", "x86_64"))
+            self.assertFalse((root / ".ci-tools/binaryen").exists())
+            execute.assert_not_called()
+
     def test_linuxdeploy_mismatch_never_publishes_or_executes(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
              patch.object(ci.urllib.request, "urlopen", return_value=io.BytesIO(b"wrong binary")):

@@ -222,7 +222,9 @@ def install_binaryen(host):
     tools.mkdir(exist_ok=True)
     archive = tools / "binaryen.tar.gz"
     url = f"https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-{suffix}.tar.gz"
-    download(url, archive)
+    # Official version133 Linux/Windows archives are 105-112 MB compressed.
+    # Keep other tools' 64-MiB default; this bound still rejects oversized data.
+    download(url, archive, limit=128 * 1024 * 1024)
     if file_sha256(archive) != expected:
         raise RuntimeError("Binaryen archive checksum mismatch")
     dest = tools / "binaryen"
