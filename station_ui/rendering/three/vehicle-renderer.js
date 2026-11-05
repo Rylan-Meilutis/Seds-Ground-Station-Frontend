@@ -21,6 +21,21 @@ class VehicleViewer extends HTMLElement {
   this.scene.add(new T.HemisphereLight(0xffffff,0x34404b,2.8));const light=new T.DirectionalLight(0xffffff,3);light.position.set(6,10,8);this.scene.add(light);
   this.camera=new T.PerspectiveCamera(48,1,.05,20000000);this.theta=.6;this.phi=1.2;this.distance=14;this.center=new T.Vector3();this.target=new T.Vector3();this.follow=true;this.pointers=new Map();
   this.resize=new ResizeObserver(()=>{const w=this.clientWidth,h=this.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h);this.status.style.top=w<=440?'100px':'64px';this.dirty=true;this.camera.aspect=w/h;this.camera.updateProjectionMatrix();});this.resize.observe(this);
+  // Keep accepting state and advancing animations while out of view; only
+  // avoid submitting an unseen scene to the renderer. Older browsers stay live.
+  this.inViewport=true;
+  if(typeof IntersectionObserver==='function'){
+   const observer=new IntersectionObserver(entries=>{
+    if(this.visibilityObserver!==observer||!this.isConnected||!this.renderer)return;
+    for(const entry of entries){
+     if(entry.target!==this)continue;
+     const visible=entry.isIntersecting&&entry.intersectionRatio>0;
+     if(visible&&!this.inViewport)this.dirty=true;
+     this.inViewport=visible;
+    }
+   });
+   this.visibilityObserver=observer;observer.observe(this);
+  }
   this.oncontextmenu=e=>e.preventDefault();
   this.onpointerdown=e=>{if(e.target!==this.renderer.domElement)return;this.focus({preventScroll:true});this.setPointerCapture(e.pointerId);this.pointers.set(e.pointerId,[e.clientX,e.clientY]);this.dragPan=e.button===2||e.shiftKey;};
   this.onpointerup=this.onpointercancel=e=>{this.pointers.delete(e.pointerId);};
@@ -144,8 +159,8 @@ class VehicleViewer extends HTMLElement {
   const stand=procedural&&state.replay_scene==='test_fire';this.updateFlightScene(stand?{...state,gps:null}:state);
   const a=stand?[0,0,0]:state.attitude||[null,null,null];this.root.rotation.set(...a.map(v=>T.MathUtils.degToRad(Number.isFinite(v)?v:0)));this.dataset.attitudeAvailable=String(a.every(Number.isFinite));if(!a.every(Number.isFinite))this.status.textContent=[this.status.textContent,'Attitude unavailable · reference orientation'].filter(Boolean).join(' · ');
   const note=stand?'Illustrative fixed motor stand · saved component values':!this.origin?'Reference attitude mode · no saved GPS track':!validGps(state.gps)?'Reference attitude mode · no fresh saved GPS':'Reference Earth surface · terrain unavailable'+(this.track?.sampled||this.track?.truncated?' · sampled path':'');this.status.textContent=[this.status.textContent,note].filter(Boolean).join(' · ');
-  const distance=this.viewDistance(),far=Math.max(20000000,distance*2);if(this.camera.far!==far){this.camera.far=far;this.camera.updateProjectionMatrix();}this.camera.position.set(this.target.x+distance*Math.sin(this.phi)*Math.sin(this.theta),this.target.y+distance*Math.cos(this.phi),this.target.z+distance*Math.sin(this.phi)*Math.cos(this.theta));this.camera.lookAt(this.target);this.renderer.render(this.scene,this.camera);this.updatePositionMarker();this.dirty=false;
+  const distance=this.viewDistance(),far=Math.max(20000000,distance*2);if(this.camera.far!==far){this.camera.far=far;this.camera.updateProjectionMatrix();}this.camera.position.set(this.target.x+distance*Math.sin(this.phi)*Math.sin(this.theta),this.target.y+distance*Math.cos(this.phi),this.target.z+distance*Math.sin(this.phi)*Math.cos(this.theta));this.camera.lookAt(this.target);if(this.inViewport!==false)this.renderer.render(this.scene,this.camera);this.updatePositionMarker();this.dirty=false;
  }
- disconnectedCallback(){this.generation++;this.resize?.disconnect();this.renderer?.setAnimationLoop(null);this.disposeModel();this.clearFlightScene();this.pointers?.clear();this.renderer?.dispose();this.renderer?.domElement.remove();this.status?.remove();this.positionMarker?.remove();this.renderer=null;}
+ disconnectedCallback(){this.generation++;this.visibilityObserver?.unobserve(this);this.visibilityObserver?.disconnect();this.visibilityObserver=null;this.resize?.disconnect();this.renderer?.setAnimationLoop(null);this.disposeModel();this.clearFlightScene();this.pointers?.clear();this.renderer?.dispose();this.renderer?.domElement.remove();this.status?.remove();this.positionMarker?.remove();this.renderer=null;}
 }
 if(!customElements.get('gs-vehicle-viewer'))customElements.define('gs-vehicle-viewer',VehicleViewer);
