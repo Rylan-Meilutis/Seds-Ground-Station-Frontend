@@ -1,11 +1,19 @@
 #[path = "gse_config_compatibility.rs"]
 mod config_compatibility;
 use super::{
-    ActionPolicyMsg, UrlConfig, http_get_json, http_post_json, js_eval, layout::ThemeConfig,
+    ActionPolicyMsg, UrlConfig, http_post_json, js_eval, layout::ThemeConfig,
 };
 use crate::auth;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::{rc::Rc, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+use super::recording_download::ExportOwner;
+
+// Capture at the actual gesture, never inside an async task's first poll.
+fn capture_fill_owner(alive: Arc<AtomicBool>) -> Result<Rc<ExportOwner>, String> {
+    ExportOwner::capture_selected(move || alive.load(Ordering::Acquire))
+}
+
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Settings {
@@ -337,17 +345,33 @@ pub(super) fn GsePanel(
     let mut message = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut online = use_signal(|| false);
-    use_future(move || async move {
+    let mut command_owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let mut observation_owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let alive = super::recording_download::use_export_lifetime();
+    let polling_alive = alive.clone();
+    use_future(move || { let alive = polling_alive.clone(); async move {
         loop {
-            let base = UrlConfig::base_http();
-            let token = auth::current_token();
-            let response = http_get_json::<Status>("/api/gse/status").await;
-            if UrlConfig::base_http() != base || auth::current_token() != token {
+            if !alive.load(Ordering::Acquire) { return; }
+            if command_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
+                command_owner.set(None);
+                busy.set(false);
+                message.set("Station, login or connection changed; the previous request was retired.".into());
+            }
+            // Invalidate only the previously accepted observation's actual
+            // context, independently of any pending response or its contents.
+            if observation_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
+                observation_owner.set(None);
                 online.set(false);
-                status.set(Status {
-                    phase: "unknown".into(),
-                    ..Status::default()
-                });
+                status.set(Status {phase: "unknown".into(), ..Status::default()});
+            }
+            let owner = capture_fill_owner(alive.clone());
+            let response = match &owner {
+                Ok(owner) => super::recording_download::saved_json::<Status>("/api/gse/status", owner.clone()).await,
+                Err(error) => Err(error.clone()),
+            };
+            if !alive.load(Ordering::Acquire) { return; }
+            if owner.as_ref().is_ok_and(|owner| !owner.is_current()) {
+                // No response from a retired owner may publish or clear UI.
                 continue;
             }
             match response {
@@ -366,6 +390,7 @@ pub(super) fn GsePanel(
                     message.set("Fresh primary GSE observations are unavailable; local RRLS settings are not primary evidence.".into());
                 }
                 Ok(next) => {
+                    observation_owner.set(owner.as_ref().ok().cloned());
                     status.set(next);
                     online.set(true);
                 }
@@ -382,7 +407,7 @@ pub(super) fn GsePanel(
             }
             delay().await;
         }
-    });
+    }});
     let snapshot = status.read().clone();
     use_effect(move || {
         if show_model {
@@ -440,10 +465,21 @@ pub(super) fn GsePanel(
                 p {style:"margin:0;color:{theme.text_primary};", "{snapshot.message}"}
                 p {style:"margin:0;", "Valve-board pressure (psi): {valve_pressure_label}"}
                 button {r#type:"button",disabled:!turbo_enabled,onclick:move |_| {
-                    if !auth::can_send_command("Turbocharge") || !action_policy.read().controls.iter().any(|c|c.cmd=="Turbocharge"&&c.enabled) {return;}
+                    if !alive.load(Ordering::Acquire) || *busy.peek() || !*online.peek() || abort_only_mode || !auth::can_send_command("Turbocharge") || !action_policy.read().controls.iter().any(|c|c.cmd=="Turbocharge"&&c.enabled) {return;}
+                    let owner = match capture_fill_owner(alive.clone()) {
+                        Ok(owner) => owner,
+                        Err(error) => {message.set(error); return;}
+                    };
+                    let request = super::station_settings_request::post_captured_no_redirect::<_,serde_json::Value>("/api/command", &"Turbocharge", Ok(owner.clone()));
+                    let alive = alive.clone();
+                    command_owner.set(Some(owner.clone()));
                     busy.set(true);
                     spawn(async move {
-                        match http_post_json::<_,serde_json::Value>("/api/command", &"Turbocharge").await {
+                        let result = request.await;
+                        if !alive.load(Ordering::Acquire) {return;}
+                        if !owner.is_current() {return;}
+                        command_owner.set(None);
+                        match result {
                             Ok(_)=>message.set("Turbocharge requested; valve confirmations remain required".into()),
                             Err(error)=>message.set(error),
                         }
@@ -623,28 +659,62 @@ pub(super) fn ClearGseAbort() -> Element {
     let mut confirming = use_signal(|| false);
     let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
+    let mut confirmation_owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let alive = super::recording_download::use_export_lifetime();
+    let opening_alive = alive.clone();
+    let watching_alive = alive.clone();
+    use_future(move || {let alive = watching_alive.clone(); async move {
+        loop {
+            if !alive.load(Ordering::Acquire) {return;}
+            if confirmation_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
+                confirmation_owner.set(None);
+                confirming.set(false);
+                busy.set(false);
+                message.set("Station, login or connection changed. Review a new clear-abort confirmation.".into());
+            }
+            delay().await;
+        }
+    }});
     rsx! {
         div { style: "display:grid;gap:8px;justify-items:start;",
             button {
                 r#type:"button",
                 disabled: *busy.read() || !auth::can_send_command("ValveSelfTest"),
-                onclick: move |_| confirming.set(true),
+                onclick: move |_| {
+                    if !opening_alive.load(Ordering::Acquire) || *busy.peek() || !auth::can_send_command("ValveSelfTest") {return;}
+                    match capture_fill_owner(opening_alive.clone()) {
+                        Ok(owner) => {confirmation_owner.set(Some(owner)); confirming.set(true); message.set(String::new());},
+                        Err(error) => message.set(error),
+                    }
+                },
                 "Clear GSE abort"
             }
             if *confirming.read() {
                 p { style:"margin:0;max-width:48ch;", "Confirm the system is safe. This clears the ground station operation abort, returns it to Idle and resets operation checks. It does not clear individual board aborts or command outputs. In Connectivity → Board state and recovery, request fresh status and use Recover Abort for boards that support it. Unsupported or unavailable board recovery requires local servicing." }
                 div { style:"display:flex;gap:8px;flex-wrap:wrap;",
                     button { r#type:"button", disabled:*busy.read(), onclick:move |_| {
+                        if !alive.load(Ordering::Acquire) || *busy.peek() || !auth::can_send_command("ValveSelfTest") {return;}
+                        let Some(owner) = confirmation_owner.peek().clone().filter(|owner| owner.is_current()) else {
+                            confirming.set(false);
+                            confirmation_owner.set(None);
+                            message.set("Station, login or connection changed. Review a new clear-abort confirmation.".into());
+                            return;
+                        };
+                        let request = super::station_settings_request::post_captured_no_redirect::<_,serde_json::Value>("/api/gse/abort/clear", &serde_json::json!({}), Ok(owner.clone()));
+                        let alive = alive.clone();
                         busy.set(true);
                         spawn(async move {
-                            match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/abort/clear", &serde_json::json!({})).await {
-                                Ok(_) => {confirming.set(false);message.set("GSE abort cleared. Repeat operation checks before filling.".into());},
+                            let result = request.await;
+                            if !alive.load(Ordering::Acquire) {return;}
+                            if !owner.is_current() {return;}
+                            match result {
+                                Ok(_) => {confirming.set(false);confirmation_owner.set(None);message.set("GSE abort cleared. Repeat operation checks before filling.".into());},
                                 Err(error) => message.set(error),
                             }
                             busy.set(false);
                         });
                     }, "Confirm clear abort" }
-                    button {r#type:"button",disabled:*busy.read(),onclick:move |_|confirming.set(false),"Cancel"}
+                    button {r#type:"button",disabled:*busy.read(),onclick:move |_|{confirming.set(false);confirmation_owner.set(None);},"Cancel"}
                 }
             }
             if !message.read().is_empty() {p {role:"status",style:"margin:0;","{message}"}}

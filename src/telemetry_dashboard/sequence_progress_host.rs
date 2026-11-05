@@ -57,17 +57,23 @@ pub fn SequenceProgressHost(
             delay(250).await;
         }
     });
-    use_future(move || async move {
+    let status_alive = super::recording_download::use_export_lifetime();
+    use_future(move || { let alive = status_alive.clone(); async move {
         loop {
+            if !alive.load(std::sync::atomic::Ordering::Acquire) {return;}
             let origin = source();
             state.write().set_source(origin.epoch);
             if auth::can_view_data() {
                 let started = super::monotonic_now_ms();
                 let observation = super::telemetry_reseed_continuity::begin_observation();
-                let response = super::http_get_json::<serde_json::Value>("/api/gse/status").await;
-                if source() != origin || observation.as_ref().is_none_or(|request| !request.current()) {
-                    state.write().set_source(source().epoch);
-                    cancel_api.set(None);
+                let request_alive = alive.clone();
+                let owner = super::recording_download::ExportOwner::capture_selected(move || request_alive.load(std::sync::atomic::Ordering::Acquire));
+                let response = match &owner {
+                    Ok(owner) => super::recording_download::saved_json::<serde_json::Value>("/api/gse/status", owner.clone()).await,
+                    Err(error) => Err(error.clone()),
+                };
+                if !alive.load(std::sync::atomic::Ordering::Acquire) {return;}
+                if owner.as_ref().is_ok_and(|owner| !owner.is_current()) || source() != origin || observation.as_ref().is_none_or(|request| !request.current()) {
                     continue;
                 }
                 match response {
@@ -165,7 +171,7 @@ pub fn SequenceProgressHost(
             }
             delay(1000).await;
         }
-    });
+    }});
     use_effect(move || {
         let Some(key) = open_result.read().clone() else {
             return;

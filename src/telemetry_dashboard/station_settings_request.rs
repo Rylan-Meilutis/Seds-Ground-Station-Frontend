@@ -60,6 +60,25 @@ pub(super) fn post_captured<B: Serialize, T: DeserializeOwned + 'static>(
     let body = serde_json::to_string(body).map_err(|e| e.to_string());
     async move { bounded(post_owned(&path, body?, owner?)).await }
 }
+/// Critical commands reject redirects as well as retaining their gesture owner.
+pub(super) fn post_captured_no_redirect<B: Serialize, T: DeserializeOwned + 'static>(
+    path: &str,
+    body: &B,
+    owner: Result<Rc<ExportOwner>, String>,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+    let path = path.to_owned();
+    let body = serde_json::to_string(body).map_err(|e| e.to_string());
+    async move {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            bounded(post_owned(&path, body?, owner?)).await
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            bounded(post_owned_policy(&path, body?, owner?, true)).await
+        }
+    }
+}
 #[cfg(not(target_arch = "wasm32"))]
 async fn post_owned<T: DeserializeOwned>(
     path: &str,
@@ -106,6 +125,15 @@ async fn post_owned<T: DeserializeOwned>(
     body: String,
     owner: Rc<ExportOwner>,
 ) -> Result<T, String> {
+    post_owned_policy(path, body, owner, false).await
+}
+#[cfg(target_arch = "wasm32")]
+async fn post_owned_policy<T: DeserializeOwned>(
+    path: &str,
+    body: String,
+    owner: Rc<ExportOwner>,
+    reject_redirects: bool,
+) -> Result<T, String> {
     owner.check()?;
     let base = if owner.base().is_empty() {
         web_sys::window()
@@ -123,6 +151,9 @@ async fn post_owned<T: DeserializeOwned>(
     let mut request = gloo_net::http::Request::post(&format!("{base}{path}"))
         .abort_signal(Some(&signal))
         .header("Content-Type", "application/json");
+    if reject_redirects {
+        request = request.redirect(web_sys::RequestRedirect::Error);
+    }
     if let Some(token) = owner.token() {
         request = request.header("Authorization", &format!("Bearer {token}"));
     }

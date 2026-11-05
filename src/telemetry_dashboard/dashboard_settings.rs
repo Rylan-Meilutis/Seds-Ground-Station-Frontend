@@ -1424,16 +1424,29 @@ fn LaunchClockBadge(
 ) -> Element {
     let fallback_tplus_anchor_ms = use_signal(|| None::<i64>);
     let mut queued = use_signal(|| false);
-    use_future(move || async move {
+    let mut queued_owner = use_signal(|| None::<std::rc::Rc<recording_download::ExportOwner>>);
+    let queued_alive = recording_download::use_export_lifetime();
+    use_future(move || {let alive = queued_alive.clone(); async move {
         loop {
-            let pending = http_get_json::<serde_json::Value>("/api/gse/status")
-                .await
-                .ok()
-                .is_some_and(|status| status["launch_queued"].as_bool() == Some(true));
+            if !alive.load(std::sync::atomic::Ordering::Acquire) {return;}
+            if queued_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
+                queued_owner.set(None);
+                queued.set(false);
+            }
+            let request_alive = alive.clone();
+            let owner = recording_download::ExportOwner::capture_selected(move || request_alive.load(std::sync::atomic::Ordering::Acquire));
+            let response = match &owner {
+                Ok(owner) => recording_download::saved_json::<serde_json::Value>("/api/gse/status", owner.clone()).await,
+                Err(error) => Err(error.clone()),
+            };
+            if !alive.load(std::sync::atomic::Ordering::Acquire) {return;}
+            if owner.as_ref().is_ok_and(|owner| !owner.is_current()) {continue;}
+            let pending = response.ok().is_some_and(|status| status["launch_queued"].as_bool() == Some(true));
+            queued_owner.set(owner.as_ref().ok().cloned());
             queued.set(pending);
             gse_panel::delay().await;
         }
-    });
+    }});
     {
         let launch_clock = launch_clock;
         let network_time = network_time;
