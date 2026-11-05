@@ -16,7 +16,7 @@ ci-contracts:
   timeout: 5m
   script:
   - python -m pip install PyYAML==6.0.3
-  - python -W error -m unittest discover -s tests -p test_ci_platforms.py -v
+  - python -W error -m unittest discover -s tests -p 'test_ci*.py' -v
 frontend-build:
   stage: build
   needs:

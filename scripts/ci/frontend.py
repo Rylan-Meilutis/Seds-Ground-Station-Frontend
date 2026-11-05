@@ -16,6 +16,7 @@ import tempfile
 import time
 import tomllib
 import urllib.request
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[2]
 PLATFORMS = json.loads((Path(__file__).parent / "platforms.json").read_text())
@@ -34,7 +35,17 @@ BINARYEN = {
     ("Darwin", "x86_64"): ("x86_64-macos", "13a9b90be775c6389ce3d1f879cb8627bea56708ba8c122983941d53a8199b95"),
     ("Windows", "x86_64"): ("x86_64-windows", "17a2cbeac6b5693c5fbafab3838d3c65fd9c1eb38b05f5baec6c657e8c84995b"),
 }
+# Official linuxdeploy continuous release published 2026-11-01; pinned bytes,
+# not trust in a mutable tag. A moved tag fails until explicitly reviewed.
+LINUXDEPLOY = {
+    "x86_64": ("linuxdeploy-x86_64.AppImage", "df908b19f1ed1cdafa79508d415aa12d6c56ce4d56d4149aa8c09286718706e5"),
+    "aarch64": ("linuxdeploy-aarch64.AppImage", "f38e4d7cebf20d8073ec4e00e0a167ac146cd8585fe2f8fe82df27d74f2bd8e1"),
+}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+# Upstream Dioxus 0.7.10 workspace.rs emits these exact timer messages while
+# successful metadata is pending. Preserve and report them separately from
+# compiler/tool diagnostics; every other warning remains fatal.
+DIOXUS_METADATA_PROGRESS = re.compile(r"^warning: (?:Waiting for cargo-metadata\.\.\.|\(Try (?:[1-9]|[1-9][0-9]|100)\) Taking a while\.\.\.)$")
 WARNING = re.compile(r"(?i)(?:^|\s)(?:warning(?:\[[^]]+\])?:|warn(?:ing)?\s+(?!0\b)\S|w:\s)")
 
 
@@ -66,22 +77,33 @@ def build_command(name, profile):
     return [sys.executable, "build.py", "--target", name, "--" + profile, "--no-sign"]
 
 
-def checked(argv, env, label):
+def checked(argv, env, label, *, dioxus_progress=False):
     """Preserve full output and fail warnings as well as nonzero exits; no whitelist."""
     logs = ROOT / "ci-results"
     logs.mkdir(exist_ok=True)
     warning_lines = 0
+    progress_lines = []
+    resolved = list(argv)
+    if not Path(resolved[0]).is_absolute():
+        executable = shutil.which(resolved[0], path=env.get("PATH", ""))
+        if not executable:
+            raise RuntimeError(f"Missing prepared executable: {resolved[0]}")
+        resolved[0] = executable
     with (logs / (label + ".log")).open("w", encoding="utf-8") as log:
-        child = subprocess.Popen(argv, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+        child = subprocess.Popen(resolved, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         assert child.stdout is not None
         with child.stdout:
             for line in child.stdout:
                 print(line, end="", flush=True)
                 log.write(line)
-                warning_lines += bool(WARNING.search(ANSI.sub("", line)))
+                plain = ANSI.sub("", line).strip()
+                if dioxus_progress and DIOXUS_METADATA_PROGRESS.fullmatch(plain):
+                    progress_lines.append(plain)
+                else:
+                    warning_lines += bool(WARNING.search(plain))
         result = child.wait()
-    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "exit": result, "warning_lines": warning_lines}, indent=2) + "\n")
+    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": warning_lines, "external_metadata_progress_warnings": progress_lines}, indent=2) + "\n")
     if result or warning_lines:
         raise RuntimeError(f"{label}: exit={result}, warning_lines={warning_lines}; inspect preserved log")
 
@@ -100,7 +122,7 @@ def ci_env():
     for key in list(env):
         if key.startswith(("NOTARY_", "IOS_DISTRIBUTION_", "IOS_DEVELOPMENT_", "ANDROID_KEY")):
             env.pop(key)
-    bins = [ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
+    bins = [ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/linuxdeploy/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
     env["PATH"] = os.pathsep.join(map(str, bins)) + os.pathsep + env.get("PATH", "")
     return env
 
@@ -110,6 +132,31 @@ def wasm_bindgen_asset(host, version):
         return WASM_BINDGEN[version][host]
     except KeyError:
         raise RuntimeError(f"No pinned official wasm-bindgen {version} binary for {host}; update release checksums") from None
+
+
+def download(url, archive, *, limit=64 * 1024 * 1024):
+    """Bounded retries for transient transport failures; pins are checked by callers."""
+    if archive.exists() or archive.is_symlink():
+        raise RuntimeError("Refusing stale download path")
+    for attempt in range(3):
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response, archive.open("xb") as out:
+                total = 0
+                while chunk := response.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > limit or time.monotonic() - started > 120:
+                        raise RuntimeError("Tool download exceeds its size bound or 120 seconds")
+                    out.write(chunk)
+            return
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            archive.unlink(missing_ok=True)
+            transient = not isinstance(error, urllib.error.HTTPError) or error.code in {408, 429, 500, 502, 503, 504}
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            if not transient or attempt == 2:
+                raise
+            time.sleep(1 << attempt)
 
 
 def install_wasm_bindgen(host, version, env):
@@ -127,14 +174,7 @@ def install_wasm_bindgen(host, version, env):
     with tempfile.TemporaryDirectory(prefix="wasm-bindgen-", dir=tools) as temporary:
         stage = Path(temporary)
         archive = stage / "download.tar.gz"
-        started = time.monotonic()
-        with urllib.request.urlopen(url, timeout=120) as response, archive.open("xb") as out:
-            total = 0
-            while chunk := response.read(1024 * 1024):
-                total += len(chunk)
-                if total > 64 * 1024 * 1024 or time.monotonic() - started > 120:
-                    raise RuntimeError("wasm-bindgen download exceeds 64 MiB or 120 seconds")
-                out.write(chunk)
+        download(url, archive)
         actual = file_sha256(archive)
         if actual != expected:
             raise RuntimeError("wasm-bindgen archive checksum mismatch")
@@ -182,8 +222,7 @@ def install_binaryen(host):
     tools.mkdir(exist_ok=True)
     archive = tools / "binaryen.tar.gz"
     url = f"https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-{suffix}.tar.gz"
-    with urllib.request.urlopen(url, timeout=120) as response, archive.open("wb") as out:
-        shutil.copyfileobj(response, out)
+    download(url, archive)
     if file_sha256(archive) != expected:
         raise RuntimeError("Binaryen archive checksum mismatch")
     dest = tools / "binaryen"
@@ -210,6 +249,27 @@ def install_binaryen(host):
     archive.unlink()
 
 
+def install_linuxdeploy(host):
+    name, expected = LINUXDEPLOY[host[1]]
+    tools = ROOT / ".ci-tools"
+    destination = tools / "linuxdeploy"
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError("Refusing stale linuxdeploy directory")
+    with tempfile.TemporaryDirectory(prefix="linuxdeploy-", dir=tools) as temporary:
+        binary = Path(temporary) / "linuxdeploy"
+        url = "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/" + name
+        download(url, binary)
+        if file_sha256(binary) != expected:
+            raise RuntimeError("linuxdeploy checksum mismatch")
+        binary.chmod(0o755)
+        (destination / "bin").mkdir(parents=True)
+        binary.rename(destination / "bin/linuxdeploy")
+    (ROOT / "ci-results/linuxdeploy-release.json").write_text(json.dumps({
+        "url": url, "host": host, "binary_sha256": expected,
+        "upstream_release_id": 430855031,
+    }, indent=2) + "\n")
+
+
 def resolved_tool_versions():
     """Match host CLI ABIs to the repository's actual resolved application crates."""
     lock = ROOT / "Cargo.lock"
@@ -234,7 +294,11 @@ def bootstrap(name):
     # fresh CI checkout, then pin host CLI versions to the resulting crate ABIs.
     if not (ROOT / "Cargo.lock").exists():
         checked(["cargo", "generate-lockfile"], env, "resolve-application-lock")
+    checked([sys.executable, "-m", "pip", "install", "Pillow==12.0.0"], env, "pillow")
     versions = resolved_tool_versions()
+    # Resolve/download the exact application lock before dx's timer-based
+    # metadata spinner; subsequent application Cargo work is offline/locked.
+    checked(["cargo", "fetch", "--locked"], env, "application-fetch")
     wasm_bindgen_asset(host, versions["wasm-bindgen"])
     receipt = ROOT / "ci-results/resolved-tools.json"
     receipt.parent.mkdir(exist_ok=True)
@@ -248,6 +312,11 @@ def bootstrap(name):
     npm = shutil.which("npm")
     checked([npm, "install", "--prefix", str(ROOT / ".ci-tools/node"), "esbuild@0.25.12"], env, "esbuild")
     install_binaryen(host)
+    if name in {"linux", "linux-arm64"}:
+        for tool in ["makepkg", "fakeroot", "flatpak", "rpmbuild", "desktop-file-validate"]:
+            if not shutil.which(tool, path=env["PATH"]):
+                raise RuntimeError(f"Missing Linux packaging prerequisite: {tool}; see CI-RUNNERS.md")
+        install_linuxdeploy(host)
     checked(["wasm-opt", "--version"], env, "binaryen")
     # Needed by both the actual web target and common browser/tool bootstrap.
     checked(["rustup", "target", "add", "wasm32-unknown-unknown"], env, "wasm-target")
@@ -256,12 +325,13 @@ def bootstrap(name):
 def run(name, profile):
     validate_host(name)
     env = ci_env()
+    env["CARGO_NET_OFFLINE"] = "true"
     for tool in ["dx", "wasm-bindgen", "wasm-opt", "esbuild"]:
         if not shutil.which(tool, path=env["PATH"]):
             raise RuntimeError(f"Missing prepared tool: {tool}")
     if (ROOT / "artifacts" / name).exists():
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh CI checkout")
-    checked(build_command(name, profile), env, "build-" + name + "-" + profile)
+    checked(build_command(name, profile), env, "build-" + name + "-" + profile, dioxus_progress=True)
     output = ROOT / "artifacts" / name
     files = sorted(p for p in output.rglob("*") if p.is_file())
     if not files:

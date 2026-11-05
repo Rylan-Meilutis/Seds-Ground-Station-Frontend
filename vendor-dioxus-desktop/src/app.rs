@@ -594,7 +594,10 @@ impl App {
 
     /// Wire up a receiver to sigkill that lets us preserve the window state
     /// Whenever sigkill is sent, we shut down the app and save the window state
-    #[cfg(debug_assertions)]
+    #[cfg(all(
+        debug_assertions,
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     fn connect_preserve_window_state_handler(&self) {
         // TODO: make this work on windows
         #[cfg(unix)]

@@ -23,3 +23,52 @@ RUSTFLAGS/RUSTDOCFLAGS deny warnings. Inherited CARGO_ENCODED_RUSTFLAGS, CARGO_E
 Fast contracts validate both matrices against actual target registry, correct native routing, all24 commands/profile flags, no skip/final/sign/deploy commands, fatal warnings/nonzero behavior using real Python subprocesses, and actualartifact retention configuration. They do not compile/launch frontend apps or prove runner availability. Local execution does not establish any Apple/Windows/Android build pass.
 
 References: https://docs.github.com/en/actions/reference/runners/github-hosted-runners ; https://docs.gitlab.com/ci/jobs/job_control/#parallelize-large-jobs ; https://github.com/WebAssembly/binaryen/releases/expanded_assets/version_133 .
+
+
+## Hosted b237 CI corrections
+
+The pipeline keeps Rust and rustdoc `-D warnings` and preserves full tool output.
+Dioxus CLI 0.7.10 emits timer-only `warning: Waiting for cargo-metadata...` and
+`warning: (Try N) Taking a while...` messages even when metadata succeeds. Only
+those exact upstream lines, only during the application build, are separately
+recorded as `external_metadata_progress_warnings`; they remain visible in the
+console and log. They are not a zero-emitted-warnings claim. Compiler warnings,
+SDK/resource/tool warnings and the upstream network/build-lock diagnostic still
+fail. Application packages are fetched with the resolved lock before the build;
+application Cargo work during the build is offline.
+
+Every prepared tool is resolved to an absolute executable using the child PATH
+before spawning, including `wasm-opt.exe` on Windows. Wasm-bindgen, Binaryen and
+linuxdeploy downloads retry transient transport/408/429/5xx failures at most
+three times (1s/2s backoff); each attempt retains the 120s/64MiB bounds. Checksum,
+archive and version failures remain fatal and are never retry success. HTTP
+error responses are closed before retry. Official linuxdeploy release 430855031
+(November 1, 2026) bytes are pinned separately for x86_64/aarch64; a moved
+continuous tag fails verification instead of silently changing the tool.
+
+Native icon generation requires Pillow12.0.0. Linux workers need `rpm makepkg
+fakeroot flatpak desktop-file-utils zstd` in addition to the existing GUI/build
+packages; GitHub installs these and GitLab tagged runners must provision them.
+The driver fails early on missing Linux packagers. The explicitly prepared
+native linuxdeploy wins over a stale home cache; ARM fallback selects ARM bytes. Android setup installs
+`platform-tools`, not the removed legacy SDK `tools` package, before the existing
+explicit SDK35/NDK installation. Neither provider changes application features,
+precision, queues, signing or deployment authority.
+
+References: pinned upstream Dioxus timer implementation:
+https://github.com/DioxusLabs/dioxus/blob/v0.7.10/packages/cli/src/workspace.rs ;
+Ubuntu24.04 makepkg package: https://packages.ubuntu.com/noble/makepkg ;
+official linuxdeploy release: https://github.com/linuxdeploy/linuxdeploy/releases/tag/continuous .
+
+
+Pinned Dioxus0.7.10 copies custom `bundle.resources` entries as literal files,
+not glob patterns. The two old literal globs copied no files; they are removed.
+Actual scripts/maps are Rust `include_str!`, replay models/renderers use native
+`include_bytes!`, theme presets compile into OUT_DIR, and iOS Assets.car keeps
+its existing explicit bundle-copy path. The common icon list retains PNG/ICO;
+macOS still generates ICNS from PNG and the existing repo ICNS patch is retained.
+No runtime asset or branding source is removed. Legacy artifact renaming now
+reports an informational no-op only after no legacy filesystem input exists;
+actual rename errors propagate. The mobile debug-only unused vendor helper now
+has exactly the desktop/debug cfg predicate of its only caller, with no lint
+suppression or function-body change.

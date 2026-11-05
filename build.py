@@ -794,6 +794,7 @@ def rename_windows_linux_artifacts(frontend_dir: Path, platform_name: str) -> No
         return
 
     target_name = WINDOWS_APP_NAME if platform_name == "windows" else APP_NAME
+    legacy_inputs = [item for item in dist.iterdir() if item.name.startswith(LEGACY_APP_NAME)]
     renamed_any = False
     for item in sorted(dist.iterdir()):
         name = item.name
@@ -837,7 +838,9 @@ def rename_windows_linux_artifacts(frontend_dir: Path, platform_name: str) -> No
     _rename_binary_in_dir(dist, platform_name)
 
     if not renamed_any:
-        print(f"Warning: no {platform_name} artifacts matched legacy name for rename.", file=sys.stderr)
+        if legacy_inputs:
+            raise RuntimeError(f"Legacy {platform_name} artifacts were not renamed")
+        print(f"No legacy {platform_name} artifact names require renaming.")
 
 
 def patch_linux_bundle_metadata(frontend_dir: Path) -> None:
@@ -1322,12 +1325,15 @@ def _flatpak_arch(rust_target: Optional[str]) -> str:
 
 
 def _resolve_linuxdeploy() -> Optional[Path]:
-    cache_candidate = Path.home() / ".cache" / "tauri" / "linuxdeploy-x86_64.AppImage"
-    if cache_candidate.is_file():
-        return cache_candidate
+    # Prefer an explicitly prepared native tool (including the checksum-pinned
+    # CI tool) over a different or stale downloader's home-directory cache.
     binary = _which_in_path("linuxdeploy", os.environ.get("PATH", ""))
     if binary is not None:
         return Path(binary)
+    arch = "aarch64" if platform.machine().lower() in {"aarch64", "arm64"} else "x86_64"
+    cache_candidate = Path.home() / ".cache" / "tauri" / f"linuxdeploy-{arch}.AppImage"
+    if cache_candidate.is_file():
+        return cache_candidate
     return None
 
 
