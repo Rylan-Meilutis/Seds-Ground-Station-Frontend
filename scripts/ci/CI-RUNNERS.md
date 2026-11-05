@@ -48,8 +48,8 @@ error responses are closed before retry. Official linuxdeploy release 430855031
 (November 1, 2026) bytes are pinned separately for x86_64/aarch64; a moved
 continuous tag fails verification instead of silently changing the tool.
 
-Native icon generation requires Pillow12.0.0. Linux workers need `rpm makepkg
-fakeroot flatpak desktop-file-utils zstd` in addition to the existing GUI/build
+Native icon generation requires Pillow12.0.0. Linux workers need `rpm makepkg pacman-package-manager
+fakeroot flatpak desktop-file-utils appstream gnupg zstd` in addition to the existing GUI/build
 packages; GitHub installs these and GitLab tagged runners must provision them.
 The driver fails early on missing Linux packagers. The explicitly prepared
 native linuxdeploy wins over a stale home cache; ARM fallback selects ARM bytes. Android setup installs
@@ -74,3 +74,51 @@ reports an informational no-op only after no legacy filesystem input exists;
 actual rename errors propagate. The mobile debug-only unused vendor helper now
 has exactly the desktop/debug cfg predicate of its only caller, with no lint
 suppression or function-body change.
+
+
+## Ubuntu packaging readiness
+
+Ubuntu24's makepkg6 needs the actual `pacman` executable even with `--nodeps`:
+its startup resolves that executable before processing PKGBUILD. Provision
+`pacman-package-manager` with makepkg; the driver checks `pacman` explicitly.
+Missing it was reproduced as SIGUSR1/exit-10 using the unchanged generated
+PKGBUILD, then resolved by installing that one package.
+
+AppImage packaging uses its already-owned hicolor icon instead of deploying the
+same staged file again as an external `--icon-file`. Only AppDir omits the
+redundant size-less pixmaps copy; other Linux packages retain it. Normal strip
+processing applies to the staged copy, leaving the original build executable
+untouched. Explicit user `NO_STRIP` remains honored, with its real warning still
+fatal under CI; the builder no longer forces it.
+
+Generated AppStream metadata derives its identifier, description, project URL
+and project license from existing Dioxus/Cargo/LICENSE inputs. AppStream's
+lowercase identifier projection and matching AppImage desktop/metainfo filenames
+do not change the runtime/Dioxus identifier, desktop contents, binary or icon.
+Other Linux package desktop filenames retain their existing names. The newly
+generated metadata is CC0-1.0; the application license stays the existing GPL2.
+Unknown license-file formats require an explicit SPDX package.license instead
+of inventing a claim. No release dates, release history or screenshots are
+fabricated. Provision appstreamcli (`appstream`) and GnuPG (`gnupg`). GitHub
+`::warning::` annotations are recognized as warnings, including packaging tools'
+AppStream diagnostics; no missing-metadata or packaging warning is filtered.
+
+### Version-bound Arch payload packaging
+
+The manual Arch recipe only copies already-built frontend files. It deliberately
+contains no source, prepare, build or check stages. Ubuntu24's qualified
+makepkg/pacman6.0.2 toolchain runs its internal `-F` fakeroot package phase with
+an empty owned `pkg/` directory. Other makepkg versions fail explicitly pending
+qualification; this is not a general PKGBUILD/source-build entry point. No
+`--nodeps` or signature-skip flags are used. Runtime dependencies remain in the
+package metadata and are resolved by the target's package manager at install.
+
+An empty owned temporary pacman database is initialized by makepkg's official
+`pacman -Qi` metadata query, without legacy database migration, invented
+installed-package records or changes to the host database. Both makepkg's
+metadata query and `pacman -Qip` use it. Before copying a gzip Arch package to
+`dist`, Python verifies every payload path, type, content hash, mode and root
+ownership, plus package identity, architecture and dependency metadata. The
+package's own metadata files are permitted; unexpected/missing payload is fatal.
+The AppImage/Flatpak package controls use dummy payloads and never establish
+application-runtime success. Actual hosted native builds remain the final gate.

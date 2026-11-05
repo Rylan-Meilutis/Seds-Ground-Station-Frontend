@@ -209,13 +209,23 @@ class PlatformPrerequisites(unittest.TestCase):
         android = next(step for step in steps if step.get("uses") == "android-actions/setup-android@v3")
         self.assertEqual(android["with"]["packages"], "platform-tools")
         linux = next(step for step in steps if step.get("name") == "Linux native libraries")["run"]
-        for package in ["makepkg", "fakeroot", "flatpak", "rpm", "desktop-file-utils", "zstd"]:
+        for package in ["makepkg", "pacman-package-manager", "fakeroot", "flatpak", "rpm", "desktop-file-utils", "appstream", "gnupg", "zstd"]:
             self.assertIn(package, linux.split())
         self.assertIn("fuse3", linux.split())
         self.assertIn("libfuse2t64", linux.split())
         self.assertNotIn("fuse", linux.split(), "legacy fuse conflicts with Flatpak's fuse3 dependency")
         for config in [".github/workflows/platforms.yml", ".gitlab-ci.yml"]:
             self.assertIn("-p 'test_ci*.py'", (ROOT / config).read_text())
+
+    def test_actual_github_warning_annotations_are_fatal_and_preserved(self):
+        for message in ["::warning::AppStream metadata missing", "::warning file=build.py,line=1::fixture"]:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), contextlib.redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(RuntimeError, "warning_lines=1"):
+                    ci.checked([sys.executable, "-c", f"print({message!r})"], os.environ.copy(), "annotation", dioxus_progress=True)
+                self.assertEqual(output.getvalue(), message + "\n")
+                result = json.loads((Path(directory) / "ci-results/annotation.json").read_text())
+                self.assertEqual(result["warning_lines"], 1)
+                self.assertEqual(result["external_metadata_progress_warnings"], [])
 
     def test_window_state_method_cfg_exactly_matches_desktop_debug_caller(self):
         source = (ROOT / "vendor-dioxus-desktop/src/app.rs").read_text()
@@ -237,6 +247,107 @@ class RuntimeResourcesAndPackaging(unittest.TestCase):
         sys.modules[spec.name] = builder
         spec.loader.exec_module(builder)
         return builder
+
+    @staticmethod
+    def arch_fixture_archive(builder, payload, archive, *, corruption=None):
+        import tarfile
+        with tarfile.open(archive, "w:gz") as package:
+            for original in sorted(payload.rglob("*")):
+                name = original.relative_to(payload).as_posix()
+                member = package.gettarinfo(str(original), arcname=name)
+                member.uid = member.gid = 0
+                if corruption == "owner":
+                    member.uid = 1000
+                if corruption == "mode":
+                    member.mode ^= 0o001
+                if member.isfile():
+                    raw = original.read_bytes() + (b"changed" if corruption == "bytes" else b"")
+                    member.size = len(raw)
+                    package.addfile(member, io.BytesIO(raw))
+                else:
+                    package.addfile(member)
+            info = ("pkgname = ubseds-groundstation\npkgver = 0.3.1-1\narch = x86_64\n"
+                    "depend = gtk3\ndepend = webkit2gtk-4.1\n")
+            if corruption == "metadata":
+                info = info.replace("depend = gtk3", "depend = invented")
+            for name, raw in [(".PKGINFO", info.encode()), (".MTREE", b"fixture"), (".BUILDINFO", b"fixture")]:
+                member = tarfile.TarInfo(name)
+                member.uid = member.gid = 0
+                member.size = len(raw)
+                package.addfile(member, io.BytesIO(raw))
+            if corruption == "extra":
+                member = tarfile.TarInfo("unexpected")
+                member.size = 0
+                package.addfile(member, io.BytesIO())
+
+    def test_arch_archive_validation_checks_real_bytes_paths_modes_ownership_and_metadata(self):
+        builder = self.builder()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = root / "payload"
+            (payload / "usr/bin").mkdir(parents=True)
+            (payload / "usr/bin/frontend").write_bytes(b"retained app payload")
+            (payload / "usr/bin/frontend").chmod(0o755)
+            for corruption in [None, "owner", "mode", "bytes", "metadata", "extra"]:
+                with self.subTest(corruption=corruption):
+                    archive = root / "fixture.pkg.tar.gz"
+                    self.arch_fixture_archive(builder, payload, archive, corruption=corruption)
+                    if corruption is None:
+                        builder._validate_arch_payload_archive(archive, payload, "0.3.1", "x86_64")
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            builder._validate_arch_payload_archive(archive, payload, "0.3.1", "x86_64")
+
+    def test_arch_internal_phase_refuses_unqualified_makepkg_before_staging(self):
+        builder = self.builder()
+        with patch.object(builder, "_which_in_path", side_effect=lambda name, _path: Path("/tools") / name), \
+             patch.object(builder, "run_capture", return_value="makepkg (pacman) 7.0.0\n"), \
+             patch.object(builder, "_stage_linux_app_payload") as stage:
+            with self.assertRaisesRegex(RuntimeError, "qualified makepkg 6.0.2"):
+                builder.build_manual_arch_package(ROOT, None, False)
+            stage.assert_not_called()
+
+    def test_arch_recipe_contains_only_prebuilt_copy_stage_and_real_dependencies(self):
+        import re
+        builder = self.builder()
+        recipe = builder._arch_payload_recipe("0.3.1", "quoted ' description", "x86_64", Path("/owned/payload"))
+        self.assertEqual(re.findall(r"^(\w+)\(\) \{", recipe, re.MULTILINE), ["package"])
+        self.assertNotRegex(recipe, r"(?m)^source(?:_[^=]+)?=")
+        self.assertIn('depends=("gtk3" "webkit2gtk-4.1")', recipe)
+        self.assertIn('cp -a /owned/payload/. "$pkgdir/"', recipe)
+
+    def test_arch_generator_uses_owned_db_and_validates_before_dist_copy(self):
+        builder = self.builder()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls = []
+            def stage(*_args):
+                lease = tempfile.TemporaryDirectory(dir=root)
+                payload = Path(lease.name) / "payload"
+                (payload / "usr/bin").mkdir(parents=True)
+                (payload / "usr/bin/frontend").write_bytes(b"original payload")
+                return lease, payload
+            def tool(argv, cwd, env=None):
+                calls.append((argv, cwd, env))
+                if argv[0].endswith("fakeroot"):
+                    self.assertEqual(argv[1:], ["--", "/tools/makepkg", "-F", "--force"])
+                    self.assertEqual(list((cwd / "pkg").iterdir()), [])
+                    self.assertEqual(list((cwd / "validation-db/local").iterdir()), [])
+                    self.assertIn('--dbpath', (cwd / "owned-pacman").read_text())
+                    self.assertEqual(env["PKGEXT"], ".pkg.tar.gz")
+                    self.arch_fixture_archive(builder, cwd / "pkgsrc", cwd / "ubseds-groundstation-0.3.1-1-x86_64.pkg.tar.gz")
+            with patch.object(builder, "_which_in_path", side_effect=lambda name, _path: Path("/tools") / name), \
+                 patch.object(builder, "run_capture", return_value="makepkg (pacman) 6.0.2\n"), \
+                 patch.object(builder, "_stage_linux_app_payload", side_effect=stage), \
+                 patch.object(builder, "_read_frontend_version", return_value="0.3.1"), \
+                 patch.object(builder, "_read_workspace_description", return_value="frontend"), \
+                 patch.object(builder, "_linux_pkg_arch", return_value="x86_64"), \
+                 patch.object(builder, "dist_dir", return_value=root / "dist"), \
+                 patch.object(builder, "run", side_effect=tool):
+                builder.build_manual_arch_package(ROOT, None, False)
+            self.assertEqual([Path(c[0][0]).name for c in calls], ["fakeroot", "pacman"])
+            self.assertIn("-Qip", calls[-1][0])
+            self.assertEqual(len(list((root / "dist").glob("*.pkg.tar.gz"))), 1)
 
     def test_literal_resource_globs_are_removed_but_actual_embedded_paths_remain(self):
         import re
@@ -307,6 +418,83 @@ class RuntimeResourcesAndPackaging(unittest.TestCase):
                 self.assertEqual(builder._resolve_linuxdeploy(), prepared)
             with patch.object(Path, "home", return_value=home), patch.object(builder, "_which_in_path", return_value=None), patch.object(builder.platform, "machine", return_value="arm64"):
                 self.assertEqual(builder._resolve_linuxdeploy(), cache / "linuxdeploy-aarch64.AppImage")
+
+    def test_actual_linux_payload_metadata_preserves_app_desktop_and_icon_contents(self):
+        import tomllib
+        import xml.etree.ElementTree as ET
+        builder = self.builder()
+        cargo = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]
+        component_id = tomllib.loads((ROOT / "Dioxus.toml").read_text())["bundle"]["identifier"].lower()
+        desktop_bytes = []
+        icons = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "input/groundstation_frontend"
+            executable.parent.mkdir()
+            executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            for appimage in [False, True]:
+                with self.subTest(appimage=appimage), patch.object(builder, "_find_linux_app_binary", return_value=executable), patch.object(builder, "dist_dir", return_value=root / "empty-dist"), contextlib.redirect_stdout(io.StringIO()):
+                    lease, package = builder._stage_linux_app_payload(ROOT, "x86_64-unknown-linux-gnu", False, appimage_mode=appimage)
+                try:
+                    desktop_name = component_id + ".desktop" if appimage else "ubseds-groundstation.desktop"
+                    desktop = package / "usr/share/applications" / desktop_name
+                    desktop_bytes.append(desktop.read_bytes())
+                    binary = package / ("usr/bin/ubseds-groundstation" if appimage else "opt/ubseds-groundstation/ubseds-groundstation")
+                    self.assertEqual(binary.read_bytes(), executable.read_bytes())
+                    icon = package / "usr/share/icons/hicolor/256x256/apps/ubseds-groundstation.png"
+                    icons.append(icon.read_bytes())
+                    self.assertEqual((package / "usr/share/pixmaps/ubseds-groundstation.png").exists(), not appimage)
+                    metadata = package / "usr/share/metainfo" / (component_id + ".appdata.xml")
+                    tree = ET.fromstring(metadata.read_bytes())
+                    self.assertEqual(tree.findtext("id"), component_id)
+                    self.assertEqual(tree.findtext("launchable"), desktop_name)
+                    self.assertEqual(tree.findtext("project_license"), "GPL-2.0-only")
+                    self.assertEqual(tree.findtext("url"), cargo["repository"])
+                    self.assertEqual(tree.findtext("description/p"), cargo["description"])
+                    self.assertIsNone(tree.find("releases"))
+                    self.assertIsNone(tree.find("screenshots"))
+                finally:
+                    lease.cleanup()
+        self.assertEqual(desktop_bytes[0], desktop_bytes[1])
+        self.assertEqual(icons[0], icons[1])
+
+    def test_appstream_unknown_license_is_not_invented(self):
+        builder = self.builder()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_text('[package]\ndescription="Existing description"\n')
+            (root / "LICENSE").write_text("Unrecognized license fixture")
+            data = {"package": {"repository": "https://example.com/project", "license-file": "LICENSE"}}
+            with patch.object(builder, "_workspace_root", return_value=root), patch.object(builder, "_load_toml_file", return_value=data):
+                with self.assertRaisesRegex(ValueError, "explicit SPDX"):
+                    builder._write_linux_appstream_metadata(ROOT, root / "output", "existing.desktop")
+            self.assertFalse((root / "output").exists())
+
+    def test_actual_appimage_command_uses_owned_hicolor_and_does_not_force_no_strip(self):
+        builder = self.builder()
+        for user_flag in [None, "1"]:
+            with self.subTest(user_flag=user_flag), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                executable = root / "input/groundstation_frontend"
+                executable.parent.mkdir()
+                executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+                executable.chmod(0o755)
+                captured = []
+                def fake_tool(argv, **kwargs):
+                    captured.append((argv, kwargs["env"]))
+                    (Path(kwargs["cwd"]) / "fixture.AppImage").write_bytes(b"packaging fixture")
+                environment = {} if user_flag is None else {"NO_STRIP": user_flag}
+                with patch.dict(os.environ, environment, clear=True), patch.object(builder, "_resolve_linuxdeploy", return_value=Path("/prepared/linuxdeploy")), patch.object(builder, "_find_linux_app_binary", return_value=executable), patch.object(builder, "dist_dir", return_value=root / "dist"), patch.object(builder, "run", side_effect=fake_tool), contextlib.redirect_stdout(io.StringIO()):
+                    builder.build_manual_appimage(ROOT, "x86_64-unknown-linux-gnu", False)
+                self.assertEqual(len(captured), 1)
+                argv, environment = captured[0]
+                self.assertNotIn("--icon-file", argv)
+                self.assertIn("--desktop-file", argv)
+                self.assertEqual(environment.get("NO_STRIP"), user_flag)
+                self.assertEqual(environment["APPIMAGE_EXTRACT_AND_RUN"], "1")
+                self.assertTrue((root / "dist/UBSEDS GS_x86_64.AppImage").is_file())
+        self.assertNotIn('env.setdefault("NO_STRIP", "1")', (ROOT / "build.py").read_text())
 
     def test_no_legacy_input_is_a_successful_noop_and_real_rename_failure_propagates(self):
         builder = self.builder()

@@ -46,7 +46,7 @@ ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 # successful metadata is pending. Preserve and report them separately from
 # compiler/tool diagnostics; every other warning remains fatal.
 DIOXUS_METADATA_PROGRESS = re.compile(r"^warning: (?:Waiting for cargo-metadata\.\.\.|\(Try (?:[1-9]|[1-9][0-9]|100)\) Taking a while\.\.\.)$")
-WARNING = re.compile(r"(?i)(?:^|\s)(?:warning(?:\[[^]]+\])?:|warn(?:ing)?\s+(?!0\b)\S|w:\s)")
+WARNING = re.compile(r"(?i)(?:(?:^|\s)(?:warning(?:\[[^]]+\])?:|warn(?:ing)?\s+(?!0\b)\S|w:\s)|::warning(?: [^:]*)?::)")
 
 
 def file_sha256(path):
@@ -325,7 +325,7 @@ def bootstrap(name):
     checked([npm, "install", "--prefix", str(ROOT / ".ci-tools/node"), "esbuild@0.25.12"], env, "esbuild")
     install_binaryen(host)
     if name in {"linux", "linux-arm64"}:
-        for tool in ["makepkg", "fakeroot", "flatpak", "rpmbuild", "desktop-file-validate"]:
+        for tool in ["makepkg", "pacman", "fakeroot", "flatpak", "rpmbuild", "desktop-file-validate", "appstreamcli", "gpg"]:
             if not shutil.which(tool, path=env["PATH"]):
                 raise RuntimeError(f"Missing Linux packaging prerequisite: {tool}; see CI-RUNNERS.md")
         install_linuxdeploy(host)

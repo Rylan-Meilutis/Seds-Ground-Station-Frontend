@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 import gzip
+import hashlib
+import shlex
+import stat
+import tarfile
 import json
 import os
 import platform
@@ -9,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 
 import errno
 import sys
@@ -1213,6 +1218,61 @@ def _find_linux_app_binary(frontend_dir: Path, rust_target: Optional[str], debug
     )
 
 
+def _linux_appstream_id(frontend_dir: Path) -> str:
+    # AppStream DNS domains must be lowercase. This projection does not change
+    # Dioxus/runtime identifiers or application/desktop/icon contents.
+    identifier = _bundle_identifier(frontend_dir).lower()
+    if not re.fullmatch(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+){2,}", identifier):
+        raise ValueError("Dioxus identifier cannot be projected to a valid AppStream ID")
+    return identifier
+
+
+def _linux_desktop_filename(frontend_dir: Path, appimage_mode: bool) -> str:
+    name = _linux_appstream_id(frontend_dir) if appimage_mode else LINUX_PACKAGE_NAME
+    return name + ".desktop"
+
+
+def _write_linux_appstream_metadata(frontend_dir: Path, pkg_root: Path, desktop_name: str) -> None:
+    repo_root = _workspace_root(frontend_dir)
+    package = _load_toml_file(repo_root / "Cargo.toml").get("package", {})
+    description = _read_workspace_description(repo_root)
+    project_url = package.get("homepage") or package.get("repository")
+    if not isinstance(project_url, str) or not project_url.startswith("https://"):
+        raise ValueError("AppStream metadata requires the existing HTTPS project URL")
+    project_license = package.get("license")
+    if not project_license:
+        license_path = package.get("license-file")
+        if not isinstance(license_path, str):
+            raise ValueError("AppStream metadata requires the existing project license")
+        license_text = (repo_root / license_path).read_text(encoding="utf-8")
+        if license_text.startswith("GNU GENERAL PUBLIC LICENSE\nVersion 2,"):
+            project_license = "GPL-2.0-only"
+        else:
+            raise ValueError("Add an explicit SPDX package.license for this existing license-file")
+    identifier = _linux_appstream_id(frontend_dir)
+    summary = description.rstrip(".")
+    if len(summary) > 80:
+        summary = summary[:80].rsplit(" ", 1)[0]
+    component = ET.Element("component", {"type": "desktop-application"})
+    for name, text in [
+        ("id", identifier),
+        # Applies only to this newly generated metadata, not project code.
+        ("metadata_license", "CC0-1.0"),
+        ("project_license", project_license),
+        ("name", WINDOWS_APP_NAME),
+        ("summary", summary),
+    ]:
+        ET.SubElement(component, name).text = text
+    ET.SubElement(ET.SubElement(component, "description"), "p").text = description
+    ET.SubElement(component, "url", {"type": "homepage"}).text = project_url
+    ET.SubElement(component, "launchable", {"type": "desktop-id"}).text = desktop_name
+    ET.SubElement(ET.SubElement(component, "provides"), "binary").text = LINUX_PACKAGE_NAME
+    ET.indent(component)
+    metadata = pkg_root / "usr" / "share" / "metainfo" / (identifier + ".appdata.xml")
+    metadata.parent.mkdir(parents=True, exist_ok=True)
+    metadata.write_bytes(ET.tostring(component, encoding="utf-8", xml_declaration=True) + b"\n")
+
+
 def _stage_linux_app_payload(
         frontend_dir: Path,
         rust_target: Optional[str],
@@ -1270,7 +1330,8 @@ def _stage_linux_app_payload(
 
     applications_dir = pkg_root / "usr" / "share" / "applications"
     applications_dir.mkdir(parents=True, exist_ok=True)
-    desktop_file = applications_dir / f"{LINUX_PACKAGE_NAME}.desktop"
+    desktop_name = _linux_desktop_filename(frontend_dir, appimage_mode)
+    desktop_file = applications_dir / desktop_name
     description = _read_workspace_description(_workspace_root(frontend_dir))
     desktop_file.write_text(
         "\n".join([
@@ -1294,15 +1355,19 @@ def _stage_linux_app_payload(
     if not sized_icon_src.exists():
         sized_icon_src = pixmap_icon_src
 
-    if pixmap_icon_src.exists():
+    # AppImage discovery uses the sized hicolor icon. A duplicate in pixmaps
+    # has no size in its path and linuxdeploy warns while scanning it.
+    if pixmap_icon_src.exists() and not appimage_mode:
         pixmaps_dir = pkg_root / "usr" / "share" / "pixmaps"
         pixmaps_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(pixmap_icon_src, pixmaps_dir / f"{LINUX_PACKAGE_NAME}.png")
 
+    if sized_icon_src.exists():
         icons_dir = pkg_root / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps"
         icons_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(sized_icon_src, icons_dir / f"{LINUX_PACKAGE_NAME}.png")
 
+    _write_linux_appstream_metadata(frontend_dir, pkg_root, desktop_name)
     return temp_dir, pkg_root
 
 
@@ -1800,9 +1865,10 @@ def build_manual_appimage(
 
         env = os.environ.copy()
         env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
-        env["NO_STRIP"] = "1"
-        desktop_file = appdir / "usr" / "share" / "applications" / f"{LINUX_PACKAGE_NAME}.desktop"
+        desktop_file = appdir / "usr" / "share" / "applications" / _linux_desktop_filename(frontend_dir, True)
         icon_file = appdir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / f"{LINUX_PACKAGE_NAME}.png"
+        if not desktop_file.is_file() or not icon_file.is_file():
+            raise FileNotFoundError("AppImage desktop and owned hicolor icon must be staged first")
         run(
             [
                 str(linuxdeploy),
@@ -1810,8 +1876,8 @@ def build_manual_appimage(
                 str(appdir),
                 "--desktop-file",
                 str(desktop_file),
-                "--icon-file",
-                str(icon_file),
+                # The icon is already owned by AppDir. Passing it as an
+                # external file asks dpkg-query to attribute our own artwork.
                 "--output",
                 "appimage",
             ],
@@ -1832,21 +1898,80 @@ def build_manual_appimage(
         temp_dir.cleanup()
 
 
+def _arch_payload_recipe(version: str, description: str, arch: str, pkg_root: Path) -> str:
+    # Generator-owned prebuilt-payload recipe: no source/build/prepare/check stages.
+    return "\n".join([
+        f"pkgname={shlex.quote(LINUX_PACKAGE_NAME)}", f"pkgver={shlex.quote(version)}", "pkgrel=1",
+        f"pkgdesc={shlex.quote(description)}", f"arch=({shlex.quote(arch)})",
+        'url="https://github.com/University-at-Buffalo-SEDS/GroundStation26"',
+        'license=("custom")', 'depends=("gtk3" "webkit2gtk-4.1")',
+        "options=(!strip !debug)", "", "package() {",
+        f'  cp -a {shlex.quote(str(pkg_root) + "/.")} "$pkgdir/"', "}", "",
+    ])
+
+
+def _validate_arch_payload_archive(archive: Path, payload: Path, version: str, arch: str) -> None:
+    """Validate bytes, paths, modes and root ownership without extracting/running."""
+    expected = {p.relative_to(payload).as_posix(): p for p in payload.rglob("*")}
+    seen = set()
+    metadata = {".BUILDINFO", ".MTREE", ".PKGINFO"}
+    with tarfile.open(archive, "r:gz") as package:
+        for member in package.getmembers():
+            name = member.name.removeprefix("./").rstrip("/")
+            if not name or name in seen or member.name.startswith("/") or ".." in Path(name).parts:
+                raise RuntimeError(f"Invalid Arch archive path: {member.name}")
+            seen.add(name)
+            if member.uid != 0 or member.gid != 0:
+                raise RuntimeError(f"Arch archive has non-root ownership: {name}")
+            if name in metadata:
+                if not member.isfile():
+                    raise RuntimeError(f"Invalid Arch package metadata: {name}")
+                continue
+            original = expected.get(name)
+            if original is None or stat.S_IMODE(original.lstat().st_mode) != member.mode:
+                raise RuntimeError(f"Arch payload path/mode mismatch: {name}")
+            if original.is_symlink():
+                valid = member.issym() and member.linkname == os.readlink(original)
+            elif original.is_dir():
+                valid = member.isdir()
+            else:
+                stream = package.extractfile(member) if member.isfile() else None
+                if stream is None:
+                    valid = False
+                else:
+                    with stream, original.open("rb") as source:
+                        valid = hashlib.file_digest(stream, "sha256").digest() == hashlib.file_digest(source, "sha256").digest()
+            if not valid:
+                raise RuntimeError(f"Arch payload contents/type mismatch: {name}")
+        if seen != set(expected) | metadata:
+            raise RuntimeError("Arch archive is missing payload or metadata")
+        info = package.extractfile(".PKGINFO")
+        if info is None:
+            raise RuntimeError("Arch package metadata missing")
+        fields = info.read().decode("utf-8").splitlines()
+        for field in [f"pkgname = {LINUX_PACKAGE_NAME}", f"pkgver = {version}-1", f"arch = {arch}",
+                      "depend = gtk3", "depend = webkit2gtk-4.1"]:
+            if field not in fields:
+                raise RuntimeError(f"Arch package metadata mismatch: {field}")
+
+
 def build_manual_arch_package(
         frontend_dir: Path,
         rust_target: Optional[str],
         debug_mode: bool,
 ) -> None:
-    makepkg = _which_in_path("makepkg", os.environ.get("PATH", ""))
-    if makepkg is None:
-        print("Warning: makepkg not found; skipping Arch package build.", file=sys.stderr)
-        return
+    tools = {name: _which_in_path(name, os.environ.get("PATH", ""))
+             for name in ["makepkg", "fakeroot", "pacman"]}
+    if any(path is None for path in tools.values()):
+        raise RuntimeError("Arch packaging requires makepkg, fakeroot and pacman")
+    makepkg = str(tools["makepkg"])
+    if not re.search(r"^makepkg \(pacman\) 6\.0\.2$", run_capture([makepkg, "--version"], frontend_dir), re.MULTILINE):
+        raise RuntimeError("Prebuilt Arch packaging supports qualified makepkg 6.0.2 only; internal -F requires review on other versions")
 
     temp_dir, base_pkg_root = _stage_linux_app_payload(frontend_dir, rust_target, debug_mode)
     try:
         version = _read_frontend_version(frontend_dir)
         description = _read_workspace_description(_workspace_root(frontend_dir))
-        repo_url = "https://github.com/University-at-Buffalo-SEDS/GroundStation26"
         arch = _linux_pkg_arch(rust_target)
         build_root = Path(temp_dir.name) / "archpkg"
         src_root = build_root / "src"
@@ -1855,44 +1980,30 @@ def build_manual_arch_package(
         _clone_tree(base_pkg_root, pkg_root)
 
         pkgbuild = build_root / "PKGBUILD"
-        pkgbuild.write_text(
-            "\n".join([
-                f"pkgname={LINUX_PACKAGE_NAME}",
-                f"pkgver={version}",
-                "pkgrel=1",
-                f'pkgdesc="{description}"',
-                f'arch=("{arch}")',
-                f'url="{repo_url}"',
-                'license=("custom")',
-                'depends=("gtk3" "webkit2gtk-4.1")',
-                "options=(!strip !debug)",
-                "",
-                "package() {",
-                f'  cp -a "{pkg_root}/." "$pkgdir/"',
-                "}",
-                "",
-            ]),
-            encoding="utf-8",
-        )
-
+        pkgbuild.write_text(_arch_payload_recipe(version, description, arch, pkg_root), encoding="utf-8")
+        # makepkg -F is its version-bound internal fakeroot package phase, ONLY
+        # for the generated already-built payload above. Never use for sources.
+        (build_root / "pkg").mkdir()
+        database = build_root / "validation-db"
+        (database / "local").mkdir(parents=True)
+        # makepkg's official pacman -Qi metadata query initializes this empty
+        # owned local database. A legacy database-upgrade pass is unnecessary.
+        pacman_wrapper = build_root / "owned-pacman"
+        pacman_wrapper.write_text("#!/bin/sh\nexec " + shlex.quote(str(tools["pacman"])) +
+                                  " --dbpath " + shlex.quote(str(database)) + ' "$@"\n', encoding="utf-8")
+        pacman_wrapper.chmod(0o755)
         dist = dist_dir(frontend_dir)
         dist.mkdir(parents=True, exist_ok=True)
-        run(
-            [
-                str(makepkg),
-                "--force",
-                "--nodeps",
-                "--cleanbuild",
-                "--skippgpcheck",
-                "--holdver",
-            ],
-            cwd=build_root,
-        )
+        run([str(tools["fakeroot"]), "--", makepkg, "-F", "--force"], cwd=build_root,
+            env={"PACMAN": str(pacman_wrapper), "PKGDEST": str(build_root), "BUILDDIR": str(build_root),
+                 "PKGEXT": ".pkg.tar.gz"})
 
         built = sorted(build_root.glob(f"{LINUX_PACKAGE_NAME}-{version}-1-{arch}.pkg.tar.*"))
         if not built:
             raise FileNotFoundError(f"Manual Arch package was not created under {build_root}")
         built_pkg = built[-1]
+        run([str(tools["pacman"]), "--dbpath", str(database), "-Qip", str(built_pkg)], cwd=build_root)
+        _validate_arch_payload_archive(built_pkg, pkg_root, version, arch)
         built_name = built_pkg.name
         suffix_start = built_name.find(".pkg.tar.")
         built_suffix = built_name[suffix_start:] if suffix_start != -1 else "".join(built_pkg.suffixes[-3:])
@@ -5218,7 +5329,6 @@ def build_frontend(
             env["DIOXUS_PRODUCT_NAME"] = LINUX_PACKAGE_NAME
             env["DIOXUS_APP_TITLE"] = WINDOWS_APP_NAME
             env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
-            env.setdefault("NO_STRIP", "1")
 
         ensured_wasm_bindgen = _ensure_wasm_bindgen_cli(frontend_dir, host_tool_env)
         if env is not None and ensured_wasm_bindgen is not None:
