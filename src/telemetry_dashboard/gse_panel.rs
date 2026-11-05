@@ -7,7 +7,7 @@ use crate::auth;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Settings {
     #[serde(default)]
     cold_flow_target_psi: Option<f32>,
@@ -24,6 +24,8 @@ struct Settings {
     fill_settle_ms: u64,
     #[serde(default)]
     turbocharge_max_added_mass_kg: Option<f32>,
+    #[serde(default = "default_turbocharge_deadband")]
+    turbocharge_pressure_deadband_psi: f32,
     pressure_ceiling_psi: Option<f32>,
     maximum_zero_offset_psi: Option<f32>,
     dry_self_test_confirmed: bool,
@@ -31,6 +33,20 @@ struct Settings {
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            cold_flow_target_psi: None, nitrogen_target_psi: 0.0, pressure_step_psi: 0.0,
+            nitrogen_steps: Vec::new(), fill_overfill_kg: 0.0, fill_tolerance_kg: 0.0,
+            fill_settle_ms: 0, turbocharge_max_added_mass_kg: None,
+            turbocharge_pressure_deadband_psi: default_turbocharge_deadband(),
+            pressure_ceiling_psi: None, maximum_zero_offset_psi: None,
+            dry_self_test_confirmed: false, grouped_panel: false,
+            extra: std::collections::BTreeMap::new(),
+        }
+    }
+}
+fn default_turbocharge_deadband() -> f32 { 12.0 }
 fn default_pressure_step() -> f32 {
     50.0
 }
@@ -859,6 +875,7 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
         && !abort_only_mode
         && !busy();
     let cold_flow_supported = config_grant.read().as_ref().is_some_and(|grant| grant.cold_flow_supported());
+    let turbo_deadband_supported = config_grant.read().as_ref().is_some_and(|grant| grant.turbo_deadband_supported());
     let rows = nitrogen_rows.read().clone();
     let step_error = validated_nitrogen_steps(&rows).err();
     let fill = fill_draft.read().clone();
@@ -912,6 +929,18 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
                         label {style:"display:grid;gap:5px;max-width:440px;", "Maximum added nitrogen mass (kg, required for Turbocharge)"
                             input {r#type:"number",min:"0.001",step:"0.01",disabled:!can_edit,value:cfg.turbocharge_max_added_mass_kg.map(|v|v.to_string()).unwrap_or_default(),oninput:move|event|{if let Some(c)=settings.write().as_mut(){c.turbocharge_max_added_mass_kg=event.value().parse().ok();}}}
                             small {"Blank disables Turbocharge. This cumulative allowance is separate from liquid-fill tolerance."}
+                        }
+                        label {style:"display:grid;gap:6px;max-width:440px;min-width:0;", "Turbocharge pressure deadband (psi)"
+                            select {aria_label:"Turbocharge pressure deadband (psi)",style:"box-sizing:border-box;width:100%;min-width:0;min-height:44px;",disabled:!can_edit||!turbo_deadband_supported,value:cfg.turbocharge_pressure_deadband_psi.to_string(),onchange:move |event|{
+                                if !can_edit||!turbo_deadband_supported{return;}
+                                if let Ok(value)=event.value().parse::<f32>() && [8.0,12.0,16.0].contains(&value)
+                                    && let Some(config)=settings.write().as_mut(){config.turbocharge_pressure_deadband_psi=value;}
+                            },
+                                if ![8.0,12.0,16.0].contains(&cfg.turbocharge_pressure_deadband_psi) {option {value:cfg.turbocharge_pressure_deadband_psi.to_string(),disabled:true,"Current {cfg.turbocharge_pressure_deadband_psi} psi"}}
+                                for psi in [8,12,16] {option {value:psi.to_string(),"{psi} psi"}}
+                            }
+                            small {"Nitrogen stops at the pressure target. A fall within this band does not trigger a top-up. The hardware pressure ceiling is unchanged."}
+                            if !turbo_deadband_supported {small {role:"status","Turbocharge deadband configuration is unavailable on this ground station; other settings can still be saved."}}
                         }
                         label {style:"display:grid;gap:6px;margin-top:16px;max-width:400px;min-width:0;", "Cold Flow nitrogen target (psi)"
                             input {r#type:"number",min:"0.001",step:"0.1",disabled:!can_edit||!cold_flow_supported,value:cfg.cold_flow_target_psi.map(|v|v.to_string()).unwrap_or_default(),style:"width:100%;min-height:44px;box-sizing:border-box;",oninput:move|event|{if let Some(c)=settings.write().as_mut(){c.cold_flow_target_psi=event.value().parse().ok();}}}

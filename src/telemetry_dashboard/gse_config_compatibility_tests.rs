@@ -20,7 +20,7 @@ fn exact_published_strict_parser_rejects_source19_default_but_accepts_legacy_pay
         error.contains("unknown field") && error.contains("cold_flow_target_psi"),
         "{error}"
     );
-    let corrected = payload(&config, false).unwrap();
+    let corrected = payload(&config, false, false).unwrap();
     assert!(corrected.get("cold_flow_target_psi").is_none());
     let parsed: legacy::Config = serde_json::from_value(corrected).unwrap();
     assert_eq!(parsed, legacy::Config::default());
@@ -35,32 +35,31 @@ fn explicit_schema_presence_supports_values_and_null_clear_without_hidden_defaul
     ));
     let mut config: Settings = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(
-        payload(&config, true).unwrap()["cold_flow_target_psi"],
+        payload(&config, true, false).unwrap()["cold_flow_target_psi"],
         Value::Null
     );
     config.cold_flow_target_psi = Some(95.);
-    let parsed: current::Config = serde_json::from_value(payload(&config, true).unwrap()).unwrap();
+    let parsed: current::Config = serde_json::from_value(payload(&config, true, false).unwrap()).unwrap();
     assert_eq!(parsed.cold_flow_target_psi, Some(95.));
     config.cold_flow_target_psi = None;
-    let cleared: current::Config = serde_json::from_value(payload(&config, true).unwrap()).unwrap();
+    let cleared: current::Config = serde_json::from_value(payload(&config, true, false).unwrap()).unwrap();
     assert_eq!(cleared, original);
-    assert_eq!(
-        payload(&config, true).unwrap(),
-        serde_json::from_str::<Value>(&serde_json::to_string(&config).unwrap()).unwrap()
-    );
+    let mut original_without_unsupported_deadband = serde_json::from_str::<Value>(&serde_json::to_string(&config).unwrap()).unwrap();
+    original_without_unsupported_deadband.as_object_mut().unwrap().remove("turbocharge_pressure_deadband_psi");
+    assert_eq!(payload(&config, true, false).unwrap(), original_without_unsupported_deadband);
 }
 #[test]
 fn unsupported_some_and_nonfinite_never_silently_save_as_omitted_or_null() {
     let mut config = legacy_settings();
     config.cold_flow_target_psi = Some(95.);
     assert!(
-        payload(&config, false)
+        payload(&config, false, false)
             .unwrap_err()
             .contains("does not support")
     );
     for value in [f32::NAN, f32::INFINITY, 0., -1.] {
         config.cold_flow_target_psi = Some(value);
-        assert!(payload(&config, true).is_err());
+        assert!(payload(&config, true, false).is_err());
     }
 }
 
@@ -275,5 +274,26 @@ mod native {
             assert!(other.posted.lock().unwrap().is_empty());
             assert!(!dom.in_scope(ScopeId::ROOT, || grant.cold_flow_supported()));
         }
+    }
+}
+
+#[test]
+fn turbo_deadband_defaults_preserves_custom_values_and_gates_legacy_payloads() {
+    let mut config = legacy_settings();
+    assert_eq!(config.turbocharge_pressure_deadband_psi, 12.0);
+    assert_eq!(Settings::default().turbocharge_pressure_deadband_psi, 12.0);
+    assert!(!supports_turbo_deadband(&serde_json::to_value(legacy::Config::default()).unwrap()));
+    for value in [8.0, 9.5, 12.0, 16.0] {
+        config.turbocharge_pressure_deadband_psi = value;
+        let wire = payload(&config, false, true).unwrap();
+        assert!(supports_turbo_deadband(&wire));
+        assert_eq!(wire["turbocharge_pressure_deadband_psi"], serde_json::json!(value));
+        let restored: Settings = serde_json::from_value(wire).unwrap();
+        assert_eq!(restored.turbocharge_pressure_deadband_psi, value);
+        if value != 12.0 { assert!(payload(&config, false, false).is_err()); }
+    }
+    for value in [f32::NAN, f32::INFINITY, 7.99, 16.01] {
+        config.turbocharge_pressure_deadband_psi = value;
+        assert!(payload(&config, false, true).is_err());
     }
 }
