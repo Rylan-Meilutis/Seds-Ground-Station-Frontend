@@ -1,7 +1,7 @@
 #[path = "gse_config_compatibility.rs"]
 mod config_compatibility;
 use super::{
-    ActionPolicyMsg, UrlConfig, http_post_json, js_eval, layout::ThemeConfig,
+    ActionPolicyMsg, UrlConfig, js_eval, layout::ThemeConfig,
 };
 use crate::auth;
 use dioxus::prelude::*;
@@ -544,6 +544,23 @@ pub(super) fn PhysicalPanelStatus(status: Signal<serde_json::Value>) -> Element 
     }
 }
 
+// Reuse the existing policy at the actual opening/confirmation gesture, so a
+// stale rendered enabled button cannot authorize a changed operation state.
+fn qualification_access(value: &serde_json::Value, disabled: bool, busy: bool) -> (bool, bool) {
+    let Some(qualification) = value.get("qualification") else {return (false, false);};
+    let can_reset = !disabled && !busy && auth::can_send_command("ValveSelfTest")
+        && value["request_gate"]["flight_state"].as_str().is_some_and(|s| matches!(s, "Startup" | "Idle"));
+    let can_override = can_reset && auth::can_send_command("NitrogenTest")
+        && value["topology_stable"].as_bool() == Some(true)
+        && qualification["fault"].as_str().is_none()
+        && value["storage_error"].is_null()
+        && value["mission_stage"].as_str().unwrap_or("idle") == "idle"
+        && qualification["self_test"].as_bool() == Some(true)
+        && qualification["nitrogen_test"].as_bool() != Some(true)
+        && qualification["nitrogen_override"]["operator"].as_str().is_none();
+    (can_reset, can_override)
+}
+
 #[component]
 pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: bool) -> Element {
     let mut confirm = use_signal(|| false);
@@ -551,18 +568,38 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
     let mut override_reason = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
+    let mut reset_owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let mut override_owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let mut pending_owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let alive = super::recording_download::use_export_lifetime();
+    let reset_open_alive = alive.clone();
+    let override_open_alive = alive.clone();
+    let reset_confirm_alive = alive.clone();
+    let override_confirm_alive = alive.clone();
+    use_future(move || {let alive = alive.clone(); async move {
+        loop {
+            if !alive.load(Ordering::Acquire) {return;}
+            let mut retired = false;
+            if reset_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
+                reset_owner.set(None);confirm.set(false);retired = true;
+            }
+            if override_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
+                override_owner.set(None);override_open.set(false);retired = true;
+            }
+            // An inactive dialog must not clear another, newer pending request.
+            if pending_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
+                pending_owner.set(None);busy.set(false);retired = true;
+            }
+            if retired {message.set("Station, login or connection changed. Review a new qualification confirmation.".into());}
+            delay().await;
+        }
+    }});
     let value = status.read().clone();
     let Some(qualification) = value.get("qualification") else {
         return rsx! {};
     };
     let fault = qualification["fault"].as_str().map(str::to_string);
     let stable = value["topology_stable"].as_bool() == Some(true);
-    let can_reset = !disabled
-        && !*busy.read()
-        && auth::can_send_command("ValveSelfTest")
-        && value["request_gate"]["flight_state"]
-            .as_str()
-            .is_some_and(|s| matches!(s, "Startup" | "Idle"));
     let mission_stage = value["mission_stage"]
         .as_str()
         .unwrap_or("idle")
@@ -570,15 +607,7 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
     let override_actor = qualification["nitrogen_override"]["operator"]
         .as_str()
         .map(str::to_string);
-    let can_override = can_reset
-        && auth::can_send_command("NitrogenTest")
-        && stable
-        && fault.is_none()
-        && value["storage_error"].is_null()
-        && mission_stage == "idle"
-        && qualification["self_test"].as_bool() == Some(true)
-        && qualification["nitrogen_test"].as_bool() != Some(true)
-        && override_actor.is_none();
+    let (can_reset, can_override) = qualification_access(&value, disabled, *busy.read());
     let qd_label = value["qd"].as_str().unwrap_or("Waiting for QD").to_string();
     rsx! {
         section {"aria-label":"Operational qualification",class:"gs26-qualification",
@@ -597,12 +626,24 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
                 }
             }
             if let Some(actor)=override_actor {p {style:"margin:0;color:#e6b85c;","Cold-flow override by {actor}"}}
-            if can_override {button {style:"min-height:44px;justify-self:start;",onclick:move |_|{override_open.set(true);override_reason.set(String::new());},"Override cold-flow requirement"}}
+            if can_override {button {style:"min-height:44px;justify-self:start;",onclick:move |_|{
+                if !override_open_alive.load(Ordering::Acquire) || !qualification_access(&status.peek(), disabled, *busy.peek()).1 {return;}
+                match capture_fill_owner(override_open_alive.clone()) {
+                    Ok(owner) => {override_owner.set(Some(owner));override_open.set(true);override_reason.set(String::new());message.set(String::new());},
+                    Err(error) => message.set(error),
+                }
+            },"Override cold-flow requirement"}}
             if !stable {p {role:"status",style:"margin:0;color:#e6b85c;","Waiting for stable fill-system connections"}}
             if let Some(fault)=fault {p {role:"alert",style:"margin:0;color:#ff8f8f;","Safety fault: {fault}. Recover to Idle and reset checks."}}
             if let Some(error)=value["storage_error"].as_str() {p {role:"alert","Checks cannot be saved: {error}"}}
             if value["launch_queued"].as_bool()==Some(true) {p {role:"status","Launch queued · {qd_label}"}}
-            button {style:"min-height:44px;justify-self:start;",disabled:!can_reset,onclick:move |_|confirm.set(true),"Reset operation checks"}
+            button {style:"min-height:44px;justify-self:start;",disabled:!can_reset,onclick:move |_|{
+                if !reset_open_alive.load(Ordering::Acquire) || !qualification_access(&status.peek(), disabled, *busy.peek()).0 {return;}
+                match capture_fill_owner(reset_open_alive.clone()) {
+                    Ok(owner) => {reset_owner.set(Some(owner));confirm.set(true);message.set(String::new());},
+                    Err(error) => message.set(error),
+                }
+            },"Reset operation checks"}
             p {role:"status",style:"margin:0;","{message}"}
             if *override_open.read() {
                 div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
@@ -612,12 +653,22 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
                         p {style:"margin:0;","This records an operator override, not a passed test. Fresh pressure, valve and connection checks still apply."}
                         label {"Reason" textarea {"aria-label":"Cold-flow override reason",maxlength:"500",value:override_reason(),oninput:move |event|override_reason.set(event.value()),style:"width:100%;min-height:88px;box-sizing:border-box;"}}
                         div {style:"display:flex;gap:12px;flex-wrap:wrap;",
-                            button {disabled:*busy.read(),onclick:move |_|override_open.set(false),"Cancel override"}
-                            button {class:"gs26-modal-danger",disabled:*busy.read()||override_reason.read().trim().is_empty(),onclick:move |_|{
-                                let reason=override_reason.read().trim().to_string();busy.set(true);
+                            button {disabled:*busy.read(),onclick:move |_|{if *busy.peek() {return;} override_open.set(false);override_owner.set(None);},"Cancel override"}
+                            button {class:"gs26-modal-danger",disabled:!can_override||override_reason.read().trim().is_empty(),onclick:move |_|{
+                                if !override_confirm_alive.load(Ordering::Acquire) || !qualification_access(&status.peek(), disabled, *busy.peek()).1 {return;}
+                                let reason=override_reason.peek().trim().to_string();if reason.is_empty() {return;}
+                                let Some(owner)=override_owner.peek().clone().filter(|owner| owner.is_current()) else {
+                                    override_open.set(false);override_owner.set(None);
+                                    message.set("Station, login or connection changed. Review a new qualification confirmation.".into());return;
+                                };
+                                let request=super::station_settings_request::post_captured_no_redirect::<_,serde_json::Value>("/api/gse/cold-flow/override",&serde_json::json!({"reason":reason}),Ok(owner.clone()));
+                                let alive=override_confirm_alive.clone();pending_owner.set(Some(owner.clone()));busy.set(true);
                                 spawn(async move {
-                                    match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/cold-flow/override",&serde_json::json!({"reason":reason})).await {
-                                        Ok(_)=>{message.set("Cold-flow override saved".into());override_open.set(false);},
+                                    let result=request.await;
+                                    if !alive.load(Ordering::Acquire) || !owner.is_current() {return;}
+                                    pending_owner.set(None);
+                                    match result {
+                                        Ok(_)=>{message.set("Cold-flow override saved".into());override_open.set(false);override_owner.set(None);},
                                         Err(error)=>message.set(error),
                                     }
                                     busy.set(false);
@@ -634,12 +685,21 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
                         h3 {style:"margin:0;","Reset operation checks?"}
                         p {style:"margin:0;","Valve test, nitrogen test and fill qualification will be cleared. Outputs will not be actuated."}
                         div {style:"display:flex;gap:12px;flex-wrap:wrap;",
-                            button {style:"min-height:44px;",disabled:*busy.read(),onclick:move |_|confirm.set(false),"Cancel"}
-                            button {class:"gs26-modal-danger",style:"min-height:44px;",disabled:*busy.read(),onclick:move |_| {
-                                busy.set(true);
+                            button {style:"min-height:44px;",disabled:*busy.read(),onclick:move |_|{if *busy.peek() {return;} confirm.set(false);reset_owner.set(None);},"Cancel"}
+                            button {class:"gs26-modal-danger",style:"min-height:44px;",disabled:!can_reset,onclick:move |_| {
+                                if !reset_confirm_alive.load(Ordering::Acquire) || !qualification_access(&status.peek(), disabled, *busy.peek()).0 {return;}
+                                let Some(owner)=reset_owner.peek().clone().filter(|owner| owner.is_current()) else {
+                                    confirm.set(false);reset_owner.set(None);
+                                    message.set("Station, login or connection changed. Review a new qualification confirmation.".into());return;
+                                };
+                                let request=super::station_settings_request::post_captured_no_redirect::<_,serde_json::Value>("/api/gse/qualification/reset",&serde_json::json!({}),Ok(owner.clone()));
+                                let alive=reset_confirm_alive.clone();pending_owner.set(Some(owner.clone()));busy.set(true);
                                 spawn(async move {
-                                    match http_post_json::<serde_json::Value,serde_json::Value>("/api/gse/qualification/reset",&serde_json::json!({})).await {
-                                        Ok(_)=>{message.set("Operation checks reset".into());confirm.set(false);},
+                                    let result=request.await;
+                                    if !alive.load(Ordering::Acquire) || !owner.is_current() {return;}
+                                    pending_owner.set(None);
+                                    match result {
+                                        Ok(_)=>{message.set("Operation checks reset".into());confirm.set(false);reset_owner.set(None);},
                                         Err(error)=>message.set(error),
                                     }
                                     busy.set(false);

@@ -8,7 +8,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     time::Duration,
 };
@@ -46,6 +46,7 @@ async fn in_dom<F: Future + ?Sized>(dom: &VirtualDom, mut future: Pin<&mut F>) -
 struct Server {
     base: String,
     seen: Arc<AtomicBool>,
+    status_code: Arc<AtomicU16>,
     release: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<(String, String)>>>,
@@ -57,6 +58,8 @@ impl Server {
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(AtomicBool::new(false));
+        let status_code = Arc::new(AtomicU16::new(status));
+        let reply_status = status_code.clone();
         let release = Arc::new(AtomicBool::new(!held));
         let stop = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -102,6 +105,7 @@ impl Server {
                             String::from_utf8(bytes[header_end..header_end + length].to_vec())
                                 .unwrap(),
                         ));
+                        let status = reply_status.load(Ordering::Acquire);
                         s.store(true, Ordering::Release);
                         while !r.load(Ordering::Acquire) && !end.load(Ordering::Acquire) {
                             std::thread::sleep(Duration::from_millis(2));
@@ -123,6 +127,7 @@ impl Server {
         Self {
             base,
             seen,
+            status_code,
             release,
             stop,
             requests,
@@ -508,5 +513,276 @@ async fn actual_clear_abort_component_captures_dialog_and_confirm_before_task_fi
             replacement.requests.lock().unwrap().is_empty(),
             "never retarget new station"
         );
+    }
+}
+
+thread_local! {
+    static QUALIFICATION_STATUS: std::cell::RefCell<Option<Signal<serde_json::Value>>> = const {std::cell::RefCell::new(None)};
+}
+fn qualification_fixture_app() -> Element {
+    let status = use_signal(|| {
+        serde_json::json!({
+            "qualification":{"self_test":true,"nitrogen_test":false,"fill_target":false,"fault":null},
+            "topology_stable":true,"mission_stage":"idle","storage_error":null,
+            "request_gate":{"flight_state":"Idle"}
+        })
+    });
+    use_hook(move || QUALIFICATION_STATUS.with(|slot| *slot.borrow_mut() = Some(status)));
+    rsx! {dashboard::gse_panel::QualificationStatus{status,disabled:false}}
+}
+fn qualification_dom(base: &str) -> (VirtualDom, [dioxus::core::ElementId; 2]) {
+    let mut dom = VirtualDom::new(qualification_fixture_app);
+    dom.in_scope(ScopeId::ROOT, || {
+        dashboard::UrlConfig::set_base_url_and_persist(base.into());
+        *dashboard::WS_EPOCH.write() = 7;
+        *dashboard::DASHBOARD_LIFE.write() = dashboard::DashboardLife::new_alive();
+        *dashboard::FRONTEND_NETWORK_METRICS_STATE.lock().unwrap() = Default::default();
+        session("settings-original");
+    });
+    let mutations = dom.rebuild_to_vec();
+    let buttons = qualification_click_ids(&mutations.edits);
+    assert_eq!(buttons.len(), 2, "actual override/reset opening handlers");
+    // The static Reset handler precedes the conditional Override handler.
+    // Every opening is also checked against the actual dialog accessible name.
+    (dom, [buttons[1], buttons[0]])
+}
+fn qualification_click_ids(edits: &[dioxus::core::Mutation]) -> Vec<dioxus::core::ElementId> {
+    edits
+        .iter()
+        .filter_map(|edit| match edit {
+            dioxus::core::Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .collect()
+}
+fn qualification_open_confirm(
+    dom: &mut VirtualDom,
+    opening: dioxus::core::ElementId,
+    action: &str,
+) -> dioxus::core::ElementId {
+    dispatch_fill_click(dom, opening);
+    let mutations = dom.render_immediate_to_vec();
+    let expected_label = if action == "override" { "Override nitrogen cold flow" } else { "Reset operation checks" };
+    assert!(dioxus::ssr::render(dom).contains(&format!("aria-label=\"{expected_label}\"")), "actual qualification dialog matches its operation");
+    let buttons = qualification_click_ids(&mutations.edits);
+    assert_eq!(buttons.len(), 2, "actual modal Cancel/Confirm handlers");
+    if action == "override" {
+        let input = mutations
+            .edits
+            .iter()
+            .find_map(|edit| match edit {
+                dioxus::core::Mutation::NewEventListener { name, id } if name == "input" => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .expect("actual reason textarea handler");
+        let payload =
+            dioxus::html::PlatformEventData::new(Box::new(dioxus::html::SerializedFormData::new(
+                "  Original isolated cold-flow reason  ".into(),
+                Vec::new(),
+            )));
+        dom.runtime().handle_event(
+            "input",
+            Event::new(Rc::new(payload) as Rc<dyn std::any::Any>, true),
+            input,
+        );
+        dom.render_immediate_to_vec();
+    }
+    buttons[1]
+}
+async fn qualification_pump(
+    dom: &mut VirtualDom,
+    until_retired: bool,
+) -> Vec<dioxus::core::Mutation> {
+    let end = std::time::Instant::now() + Duration::from_secs(2);
+    let mut edits = Vec::new();
+    while std::time::Instant::now() < end {
+        let _ = tokio::time::timeout(Duration::from_millis(10), dom.wait_for_work()).await;
+        edits.extend(dom.render_immediate_to_vec().edits);
+        let html = dioxus::ssr::render(dom);
+        if (until_retired && html.contains("Review a new qualification confirmation"))
+            || (!until_retired
+                && (html.contains("Cold-flow override saved")
+                    || html.contains("Operation checks reset")))
+        {
+            break;
+        }
+    }
+    edits
+}
+fn qualification_path(action: &str) -> &'static str {
+    if action == "override" {
+        "/api/gse/cold-flow/override"
+    } else {
+        "/api/gse/qualification/reset"
+    }
+}
+fn qualification_body(action: &str) -> serde_json::Value {
+    if action == "override" {
+        serde_json::json!({"reason":"Original isolated cold-flow reason"})
+    } else {
+        serde_json::json!({})
+    }
+}
+async fn qualification_first_poll_cases(action: &str) {
+    for change in [
+        "current",
+        "station-after-confirm",
+        "token-after-confirm",
+        "token-before-confirm",
+        "policy-before-confirm",
+    ] {
+        let original = Server::new(200, false);
+        let other = Server::new(200, false);
+        let (mut dom, opening) = qualification_dom(&original.base);
+        let confirm = qualification_open_confirm(
+            &mut dom,
+            opening[usize::from(action != "override")],
+            action,
+        );
+        if change == "token-before-confirm" {
+            dom.in_scope(ScopeId::ROOT, || session("qualification-new-token"));
+        }
+        if change == "policy-before-confirm" {
+            dom.in_scope(ScopeId::ROOT, || {
+                QUALIFICATION_STATUS.with(|slot| {
+                    let mut status = slot.borrow().unwrap();
+                    status.write()["request_gate"]["flight_state"] = "Ascent".into();
+                })
+            });
+        }
+        dispatch_fill_click(&dom, confirm);
+        // Actual Confirm dispatched, no await/work pump before replacing owner.
+        dom.in_scope(ScopeId::ROOT, || match change {
+            "station-after-confirm" => {
+                dashboard::UrlConfig::set_base_url_and_persist(other.base.clone())
+            }
+            "token-after-confirm" => session("qualification-new-token"),
+            _ => (),
+        });
+        if change == "current" {
+            qualification_pump(&mut dom, false).await;
+        } else {
+            pump_fill_dom(&mut dom).await;
+        }
+        assert!(
+            other.requests.lock().unwrap().is_empty(),
+            "qualification intent never retargets replacement station"
+        );
+        let rows = original.requests.lock().unwrap();
+        if change == "current" {
+            assert_eq!(rows.len(), 1, "actual qualification positive must send");
+            assert!(
+                rows[0]
+                    .0
+                    .starts_with(&format!("POST {} ", qualification_path(action)))
+            );
+            assert!(
+                rows[0]
+                    .0
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer settings-original")
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&rows[0].1).unwrap(),
+                qualification_body(action)
+            );
+            assert!(dioxus::ssr::render(&dom).contains(if action == "override" {
+                "Cold-flow override saved"
+            } else {
+                "Operation checks reset"
+            }));
+        } else {
+            assert!(
+                rows.is_empty(),
+                "retired/policy-refused actual qualification:{action}/{change}"
+            );
+        }
+    }
+}
+#[tokio::test(flavor = "current_thread")]
+async fn actual_qualification_override_original_owner_before_task_first_poll() {
+    qualification_first_poll_cases("override").await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn actual_qualification_reset_original_owner_before_task_first_poll() {
+    qualification_first_poll_cases("reset").await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn held_qualification_401_cannot_clear_new_session_and_fresh_explicit_confirmation_works() {
+    for action in ["override", "reset"] {
+        for change_station in [false, true] {
+            let old = Server::new(401, true);
+            let other = Server::new(200, false);
+            let (mut dom, opening) = qualification_dom(&old.base);
+            let confirm = qualification_open_confirm(
+                &mut dom,
+                opening[usize::from(action != "override")],
+                action,
+            );
+            dispatch_fill_click(&dom, confirm);
+            tokio::time::timeout(Duration::from_secs(4), async {
+                while !old.seen.load(Ordering::Acquire) {
+                    let _ =
+                        tokio::time::timeout(Duration::from_millis(10), dom.wait_for_work()).await;
+                    dom.render_immediate_to_vec();
+                }
+            })
+            .await
+            .unwrap();
+            dom.in_scope(ScopeId::ROOT, || {
+                if change_station {
+                    dashboard::UrlConfig::set_base_url_and_persist(other.base.clone());
+                }
+                session("qualification-replacement");
+            });
+            old.status_code.store(200, Ordering::Release);
+            old.release.store(true, Ordering::Release);
+            let retired = qualification_pump(&mut dom, true).await;
+            assert_eq!(
+                auth::current_token().as_deref(),
+                Some("qualification-replacement")
+            );
+            assert!(!dioxus::ssr::render(&dom).contains("Cold-flow override saved"));
+            assert!(!dioxus::ssr::render(&dom).contains("Operation checks reset"));
+            assert_eq!(
+                old.requests.lock().unwrap().len(),
+                1,
+                "accepted original bytes are not recalled/resubmitted"
+            );
+            let current_open = if action == "override" {
+                *qualification_click_ids(&retired)
+                    .last()
+                    .expect("fresh override opening handler after busy retires")
+            } else {
+                opening[1]
+            };
+            let renewed = qualification_open_confirm(&mut dom, current_open, action);
+            dispatch_fill_click(&dom, renewed);
+            qualification_pump(&mut dom, false).await;
+            let html = dioxus::ssr::render(&dom);
+            assert!(
+                html.contains(if action == "override" {
+                    "Cold-flow override saved"
+                } else {
+                    "Operation checks reset"
+                }),
+                "fresh explicit confirmation remains usable:{action}"
+            );
+            let current = if change_station { &other } else { &old };
+            let rows = current.requests.lock().unwrap();
+            let row = rows.last().unwrap();
+            assert_eq!(rows.len(), if change_station { 1 } else { 2 });
+            assert!(
+                row.0
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer qualification-replacement")
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&row.1).unwrap(),
+                qualification_body(action)
+            );
+        }
     }
 }
