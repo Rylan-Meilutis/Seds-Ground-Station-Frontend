@@ -16,3 +16,10 @@ Ground Station disables system-browser launches per native window using
 fallbacks and browser-open IPC anchors; unknown or closed IPC window IDs cannot
 open the browser. Exact trusted station documents retain the in-app navigation
 allowlist. Other consumers retain the vendor default of true.
+
+Private menu/tray state is compiled only for the desktop platforms that consume
+it. The public tray-click builder remains available as a no-op on platforms
+without tray support. Developer hot-reload toast code and its imports share the
+same debug/devtools gate as their callers; application notifications are not
+changed. The unused mobile menu-icon alias is omitted while mobile menu APIs
+remain available.

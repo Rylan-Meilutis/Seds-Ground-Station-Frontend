@@ -96,12 +96,16 @@ try {
   const cancel=()=>primary.dispatchEvent('touchcancel');
   const ghost=async()=>{await primary.dispatchEvent('mousedown',{button:0,buttons:1});await primary.dispatchEvent('click',{button:0});};
   const finish=async(name,expected)=>{if(expected.length){for(let i=0;i<100&&requests.length<expected.length;i++)await page.waitForTimeout(10);}await page.waitForTimeout(100);assert.deepEqual(requests,expected,name);assert.deepEqual(errors,[]);results.push({name,requests:[...requests],events:await page.evaluate(()=>window.valveEvents)});fs.writeFileSync(process.env.GS_GESTURE_RESULT||'/tmp/valve-gesture-result.json',JSON.stringify(results,null,2));await context.close();};
-  return {base,page,context,primary,requests,update,down,up,syntheticTouch,cancel,ghost,finish};
+  return {base,page,context,primary,requests,cdp,update,down,up,syntheticTouch,cancel,ghost,finish};
  };
  for(const base of ['Nitrogen','Nitrous']){
   const c=await open({base});await c.down();await c.update(false);await c.up();await c.finish(base+' mouse Close→OFF never opens',[]);
  }
  {const c=await open();await c.down();await c.up();await c.finish('mouse stable Close positive',['NitrogenClose']);}
+ // Real Dioxus Actions controls: dragging away and back still produces a
+ // browser click, so target-only pointerleave handlers are insufficient.
+ {const c=await open();await c.down();const b=await c.primary.boundingBox();await c.page.mouse.move(b.x+b.width/2+14,b.y+b.height/2);await c.page.mouse.move(b.x+b.width/2,b.y+b.height/2);await c.up();assert.deepEqual(c.requests,[],'drag returning to the same valve must not dispatch');await c.primary.click();await c.finish('drag cancels actual valve; next physical click dispatches once',['NitrogenClose']);}
+ {const c=await open();await c.down();const moved=await c.primary.evaluate(el=>{for(let p=el.parentElement;p;p=p.parentElement){if(p.scrollHeight>p.clientHeight+2){const before=p.scrollTop;p.scrollTop=before>0?before-1:before+1;return p.scrollTop!==before;}}return false;});assert(moved,'Actual Actions scroll container must move');await c.up();await c.finish('actual ancestor scroll cancels held valve',[]);}
  {const c=await open({observed:false});await c.down();await c.update(null);await c.up();await c.finish('mouse Open→unknown drops changed intent',[]);}
  {const c=await open();await c.down();await c.update(null,false);await c.up();await c.finish('current Close permission revoked',[]);}
  {const c=await open();await c.down();await c.page.waitForTimeout(700);await c.up();await c.finish('held gesture exceeds actual650ms limit',[]);}
@@ -133,5 +137,23 @@ try {
 
  {const c=await open();await c.primary.focus();await c.page.keyboard.down('Space');await c.page.getByRole('button',{name:/^SIGN OUT/,includeHidden:true}).evaluate(e=>e.click());await c.primary.waitFor({state:'detached'});await c.page.keyboard.up('Space');await c.finish('held Space actual signout revokes auth and unmounts',[]);}
  {const c=await open({touch:true});await c.syntheticTouch();await c.page.getByRole('button',{name:/Choose tab/}).evaluate(e=>e.click());await c.page.getByRole('button',{name:'Dashboard',exact:true}).evaluate(e=>e.click());await c.primary.waitFor({state:'detached'});await c.page.getByRole('button',{name:/Choose tab/}).evaluate(e=>e.click());await c.page.getByRole('button',{name:'Actions',exact:true}).evaluate(e=>e.click());await c.primary.waitFor();await c.update(false);await c.ghost();assert.deepEqual(c.requests,[],'Retired component touch cannot produce new Open');await c.primary.click();await c.finish('actual Actions remount ghost drops then fresh pointer works',['Nitrogen']);}
+ // Shell controls formerly had independent touchend actions which bypassed
+ // click cancellation. Exercise actual Dioxus overlay open and Close controls.
+ for(const [label,title] of [['SETTINGS','Settings'],['VERSION','UBSEDS GS']]) {
+  const c=await open({touch:true});await c.page.setViewportSize({width:390,height:280});
+  await c.page.locator('.gs26-header-menu-toggle').filter({hasText:'Tools'}).click();
+  const button=c.page.getByRole('button',{name:label,exact:true});await button.scrollIntoViewIfNeeded();
+  const touchAndScroll=async(control)=>{
+   const b=await control.boundingBox();await c.cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:b.x+b.width/2,y:b.y+b.height/2,id:1}]});
+   const changed=await control.evaluate(el=>{for(let p=el.parentElement;p;p=p.parentElement){if(p.scrollHeight>p.clientHeight+2){const old=p.scrollTop;p.scrollTop=old>0?old-1:old+1;return p.scrollTop!==old;}}return false;});
+   assert(changed,'actual '+label+' control scroll container moved');await c.cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  };
+  const heading=c.page.getByRole('heading',{name:title,exact:true,level:1});
+  await touchAndScroll(button);assert.equal(await heading.count(),0,label+' press and scroll must stay closed');
+  await button.tap();await heading.waitFor();
+  const close=c.page.getByRole('button',{name:'Close',exact:true}).first();await close.scrollIntoViewIfNeeded();
+  await touchAndScroll(close);assert.equal(await heading.count(),1,label+' Close press and scroll must stay open');
+  await close.tap();await heading.waitFor({state:'detached'});await c.finish('actual '+label+' and Close scroll cancellation with fresh tap controls',[]);
+ }
  fs.writeFileSync(process.env.GS_GESTURE_RESULT||'/tmp/valve-gesture-result.json',JSON.stringify(results,null,2));console.log('PASS '+results.length+' actual gesture cases: pointer/touch/compatibility cancellation, policy/owner/unmount and keyboard/current-command controls');
 }catch(error){console.error(error.message);throw error;}finally{await browser.close();server.closeAllConnections();server.close();}

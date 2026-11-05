@@ -2238,13 +2238,6 @@ fn TelemetryDashboardInner() -> Element {
                         show_version_overlay.set(true);
                     }
                 },
-                ontouchend: {
-                    let mut show_version_overlay = show_version_overlay;
-                    move |_| {
-                        header_actions_expanded.set(false);
-                        show_version_overlay.set(true);
-                    }
-                },
                 {translate_text("VERSION")}
             }
         }
@@ -2265,13 +2258,6 @@ fn TelemetryDashboardInner() -> Element {
                     cursor:pointer;
                 ", theme.button_border, theme.button_background, theme.button_text),
                 onclick: {
-                    let mut show_settings_overlay = show_settings_overlay;
-                    move |_| {
-                        header_actions_expanded.set(false);
-                        show_settings_overlay.set(true);
-                    }
-                },
-                ontouchend: {
                     let mut show_settings_overlay = show_settings_overlay;
                     move |_| {
                         header_actions_expanded.set(false);
@@ -2505,10 +2491,6 @@ fn TelemetryDashboardInner() -> Element {
                                     let mut show_version_overlay = show_version_overlay;
                                     move |_| show_version_overlay.set(false)
                                 },
-                                ontouchend: {
-                                    let mut show_version_overlay = show_version_overlay;
-                                    move |_| show_version_overlay.set(false)
-                                },
                                 "{close_button_label}"
                             }
                         }
@@ -2575,10 +2557,6 @@ fn TelemetryDashboardInner() -> Element {
                                     cursor:pointer;
                                 ",
                                 onclick: {
-                                    let mut show_settings_overlay = show_settings_overlay;
-                                    move |_| show_settings_overlay.set(false)
-                                },
-                                ontouchend: {
                                     let mut show_settings_overlay = show_settings_overlay;
                                     move |_| show_settings_overlay.set(false)
                                 },
@@ -3633,21 +3611,17 @@ fn TelemetryDashboardInner() -> Element {
                                                 style: "{abort_style} touch-action:manipulation;",
                                                 disabled: !abort_allowed,
                                                 onmousedown: {
-                                                    let mut header_actions_expanded = header_actions_expanded;
                                                     move |_| {
                                                         if abort_allowed {
                                                             send_cmd_from_press("Abort");
                                                         }
-                                                        header_actions_expanded.set(false);
                                                     }
                                                 },
                                                 ontouchstart: {
-                                                    let mut header_actions_expanded = header_actions_expanded;
                                                     move |_| {
                                                         if abort_allowed {
                                                             send_cmd_from_press("Abort");
                                                         }
-                                                        header_actions_expanded.set(false);
                                                     }
                                                 },
                                                 onclick: {

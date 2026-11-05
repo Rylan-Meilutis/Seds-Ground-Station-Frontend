@@ -16,7 +16,9 @@ use dioxus_hooks::to_owned;
 use dioxus_html::{FileData, FormValue, HtmlEvent, PlatformEventData, SerializedFileData};
 use futures_util::{pin_mut, FutureExt};
 use std::sync::{atomic::AtomicBool, Arc};
-use std::{cell::OnceCell, time::Duration};
+use std::cell::OnceCell;
+#[cfg(all(feature = "devtools", debug_assertions))]
+use std::time::Duration;
 use std::{rc::Rc, task::Waker};
 use wry::{DragDropEvent, RequestAsyncResponder, WebContext, WebViewBuilder, WebViewId};
 
@@ -611,6 +613,7 @@ impl WebviewInstance {
     }
 
     /// Displays a toast to the developer.
+    #[cfg(all(feature = "devtools", debug_assertions))]
     pub(crate) fn show_toast(
         &self,
         header_text: &str,

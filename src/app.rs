@@ -1,5 +1,7 @@
 // frontend/src/app.rs
 //
+const ACTIVATION_GESTURE_GUARD: &str = include_str!("../static/activation_gesture_guard.js");
+
 const _CONNECTION_TIMEOUT_MS: u64 = 8000;
 const _BODY_TRANSFER_TIMEOUT_MS: u64 = 10000;
 const _WS_TIMEOUT_MS: u64 = 4500;
@@ -162,6 +164,7 @@ pub fn App() -> Element {
     #[cfg(target_arch = "wasm32")]
     {
         use_effect(move || {
+            ensure_document_inline_script("gs26-activation-gesture-guard", ACTIVATION_GESTURE_GUARD);
             ensure_document_inline_style("gs26-global-css", GLOBAL_CSS);
             ensure_document_inline_style("gs26-maplibre-css", INLINE_MAPLIBRE_CSS);
             ensure_document_inline_script("gs26-maplibre-js", INLINE_MAPLIBRE_JS);
@@ -172,6 +175,7 @@ pub fn App() -> Element {
 
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))]
     let document_assets: Element = rsx! {
+        document::Script { "{ACTIVATION_GESTURE_GUARD}" }
         document::Style { "{GLOBAL_CSS}" }
         document::Style { "{INLINE_MAPLIBRE_CSS}" }
         document::Script { "{INLINE_MAPLIBRE_JS}" }
@@ -179,6 +183,7 @@ pub fn App() -> Element {
     };
     #[cfg(target_os = "linux")]
     let document_assets: Element = rsx! {
+        document::Script { "{ACTIVATION_GESTURE_GUARD}" }
         document::Style { "{GLOBAL_CSS}" }
     };
     #[cfg(target_arch = "wasm32")]

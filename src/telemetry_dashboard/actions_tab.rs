@@ -44,12 +44,33 @@ fn redundant_supply_close(cmd: &str) -> bool {
     matches!(cmd, "NitrogenClose" | "NitrousClose")
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SupplyGestureOrigin {
+    Pointer { id: i32, touch_companion_pending: bool },
+    Touch,
+    Keyboard,
+}
+impl SupplyGestureOrigin {
+    fn is_companion(self, next: Self) -> bool {
+        matches!((self, next), (Self::Pointer { touch_companion_pending: true, .. }, Self::Touch))
+    }
+    fn owns_pointer(self, id: i32) -> bool {
+        matches!(self, Self::Pointer { id: original, .. } if original == id)
+    }
+    fn finish_pointer(&mut self, id: i32) {
+        if let Self::Pointer { id: original, touch_companion_pending } = self && *original == id {
+            *touch_companion_pending = false;
+        }
+    }
+}
+
 #[derive(Clone)]
 enum SupplyGesture {
     Armed {
         base: String,
         command: String,
         started_ms: f64,
+        origin: SupplyGestureOrigin,
         owner: Option<std::rc::Rc<super::recording_download::ExportOwner>>,
     },
     Cancelled,
@@ -57,7 +78,7 @@ enum SupplyGesture {
 impl SupplyGesture {
     fn current(&self, base: &str, command: &str, now_ms: f64) -> bool {
         match self {
-            Self::Armed { base: original, command: chosen, started_ms, owner } => {
+            Self::Armed { base: original, command: chosen, started_ms, owner, .. } => {
                 let elapsed = now_ms - started_ms;
                 original == base && chosen == command && elapsed.is_finite()
                     && (0. ..=super::COMMAND_MAX_PRESS_RELEASE_MS).contains(&elapsed)
@@ -67,16 +88,30 @@ impl SupplyGesture {
         }
     }
 }
-fn arm_supply_gesture(gesture: &mut Signal<Option<SupplyGesture>>, base: &str, command: &str) -> bool {
-    // Touch compatibility mouse events must not replace the first chosen intent.
-    if matches!(gesture.peek().as_ref(), Some(SupplyGesture::Armed { .. })) {
+fn arm_supply_gesture(gesture: &mut Signal<Option<SupplyGesture>>, base: &str, command: &str, next: SupplyGestureOrigin) -> bool {
+    // A new physical gesture retires abandoned intent. Only the touchstart
+    // companion of an active touch pointer preserves the first chosen command.
+    if matches!(gesture.peek().as_ref(), Some(SupplyGesture::Armed { base: original, origin, owner, .. })
+        if original == base && origin.is_companion(next) && owner.as_ref().is_some_and(|owner| owner.is_current())) {
         return false;
     }
     gesture.set(Some(SupplyGesture::Armed {
-        base: base.into(), command: command.into(), started_ms: super::monotonic_now_ms(),
+        base: base.into(), command: command.into(), started_ms: super::monotonic_now_ms(), origin: next,
         owner: super::recording_download::ExportOwner::capture().ok(),
     }));
     true
+}
+
+fn finish_supply_pointer(gesture: &mut Signal<Option<SupplyGesture>>, base: &str, id: i32, cancel: bool) {
+    let owns = matches!(gesture.peek().as_ref(), Some(SupplyGesture::Armed { base: original, origin, owner, .. })
+        if original == base && origin.owns_pointer(id) && owner.as_ref().is_some_and(|owner| owner.is_current()));
+    if !owns { return; }
+    if cancel {
+        gesture.set(Some(SupplyGesture::Cancelled));
+    } else if let Some(SupplyGesture::Armed { origin, .. }) = gesture.write().as_mut() {
+        // Preserve the chosen click intent through a normal pointerup.
+        origin.finish_pointer(id);
+    }
 }
 
 fn cancel_supply_gesture(gesture: &mut Signal<Option<SupplyGesture>>, base: &str) {
@@ -88,6 +123,22 @@ fn cancel_supply_gesture(gesture: &mut Signal<Option<SupplyGesture>>, base: &str
 #[cfg(test)]
 mod sequence_action_tests {
     use super::*;
+
+    #[test]
+    fn new_supply_press_retires_abandoned_intent_but_touch_companion_does_not() {
+        let mut first = SupplyGestureOrigin::Pointer { id: 7, touch_companion_pending: true };
+        assert!(first.is_companion(SupplyGestureOrigin::Touch));
+        assert!(!first.is_companion(SupplyGestureOrigin::Pointer { id: 8, touch_companion_pending: true }));
+        assert!(!first.is_companion(SupplyGestureOrigin::Keyboard));
+        first.finish_pointer(8);
+        assert!(first.is_companion(SupplyGestureOrigin::Touch));
+        first.finish_pointer(7);
+        assert!(!first.is_companion(SupplyGestureOrigin::Touch));
+        assert!(!SupplyGestureOrigin::Touch.is_companion(SupplyGestureOrigin::Touch));
+        assert!(!SupplyGestureOrigin::Keyboard.is_companion(SupplyGestureOrigin::Keyboard));
+        assert!(!SupplyGestureOrigin::Pointer { id: 1, touch_companion_pending: false }.is_companion(SupplyGestureOrigin::Touch));
+    }
+
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -139,6 +190,19 @@ mod sequence_action_tests {
         assert_eq!(actions, original);
     }
     #[test]
+    fn cold_flow_row_follows_self_test_once_even_in_a_custom_layout() {
+        let mut actions = Vec::new();
+        ensure_sequence_actions(&mut actions, &ThemeConfig::default());
+        actions[0].label = "Custom dry valve test".into();
+        actions.push(actions[0].clone());
+        let refs = actions.iter().collect::<Vec<_>>();
+        let rows = build_action_rows(&refs);
+        let positions = rows.iter().enumerate().filter_map(|(i,row)|matches!(row,ActionLayoutRow::ColdFlow).then_some(i)).collect::<Vec<_>>();
+        assert_eq!(positions.len(),1);
+        let ActionLayoutRow::Items(items) = &rows[positions[0]-1] else {panic!("Cold Flow must follow valve test controls")};
+        assert!(items.iter().any(|item|matches!(item,ActionRowItem::Action(action) if action.cmd == "ValveSelfTest" && action.label == "Custom dry valve test")));
+    }
+    #[test]
     fn primary_supply_button_closes_unknown_and_never_borrows_close_illumination() {
         for (cmd, close) in [("Nitrogen", "NitrogenClose"), ("Nitrous", "NitrousClose")] {
             assert_eq!(supply_dispatch_command(cmd, Some(false)), cmd);
@@ -158,7 +222,7 @@ mod sequence_action_tests {
 
 }
 
-fn btn_style(
+pub(super) fn btn_style(
     border: &str,
     bg: &str,
     fg: &str,
@@ -333,6 +397,7 @@ enum ActionLayoutRow<'a> {
     Heading(&'a str),
     Items(Vec<ActionRowItem<'a>>),
     Spacer,
+    ColdFlow,
 }
 
 fn flush_action_row<'a>(
@@ -348,6 +413,7 @@ fn build_action_rows<'a>(actions: &'a [&'a ActionSpec]) -> Vec<ActionLayoutRow<'
     let mut rows = Vec::new();
     let mut current_row = Vec::new();
     let mut previous_group = "";
+    let mut cold_flow_inserted = false;
 
     for action in actions {
         if !action.group.is_empty() && action.group != previous_group {
@@ -369,6 +435,11 @@ fn build_action_rows<'a>(actions: &'a [&'a ActionSpec]) -> Vec<ActionLayoutRow<'
 
         if action.spacer_after {
             current_row.push(ActionRowItem::Spacer);
+        }
+        if action.cmd == "ValveSelfTest" && !cold_flow_inserted {
+            flush_action_row(&mut rows, &mut current_row);
+            rows.push(ActionLayoutRow::ColdFlow);
+            cold_flow_inserted = true;
         }
         if action.new_row_after || action.spacer_row_after {
             flush_action_row(&mut rows, &mut current_row);
@@ -594,7 +665,7 @@ pub fn ActionsTab(
     });
     let mut all_actions = layout.actions.clone();
     ensure_sequence_actions(&mut all_actions, &theme);
-    all_actions.retain(|action| !redundant_supply_close(&action.cmd));
+    all_actions.retain(|action| !redundant_supply_close(&action.cmd) && action.cmd != "AutoColdFlow");
     for action in &mut all_actions {
         if matches!(action.cmd.as_str(), "Igniter" | "IgniterSequence") {
             action.group = "Manual GSE valves".into();
@@ -718,9 +789,11 @@ pub fn ActionsTab(
                                     }}} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
                                     p {role:"status","{self_test_confirmation.read().notice.text()}"}
                                     super::gse_panel::QualificationStatus {status:operational_status,disabled:abort_only_mode}
-                                    super::cold_flow::AutoColdFlow {status:shared_sequence_status,disabled:abort_only_mode}
                                     details {summary {"Sequence diagnostics"} p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}}
                                 }
+                            },
+                            ActionLayoutRow::ColdFlow => rsx! {
+                                super::cold_flow::AutoColdFlow {status:shared_sequence_status,disabled:abort_only_mode,theme:theme.clone()}
                             },
                             ActionLayoutRow::Spacer => rsx! {
                                 div {
@@ -810,11 +883,13 @@ pub fn ActionsTab(
                                                             let base = action.cmd.clone();
                                                             move |event| {
                                                                 if is_supply && enabled && event.is_primary()
-                                                                    && arm_supply_gesture(&mut supply_gesture, &base, &cmd) {
+                                                                    && arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Pointer { id: event.pointer_id(), touch_companion_pending: event.pointer_type() == "touch" }) {
                                                                     crate::telemetry_dashboard::send_cmd_from_press(&cmd)
                                                                 }
                                                             }
                                                         },
+                                                        onpointerup: { let base = action.cmd.clone(); move |event| { if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), false); } } },
+                                                        onpointercancel: { let base = action.cmd.clone(); move |event| { if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), true); } } },
                                                         onmousedown: {
                                                             let cmd = dispatch_cmd.clone();
                                                             move |_| {
@@ -829,7 +904,7 @@ pub fn ActionsTab(
                                                             let cmd = dispatch_cmd.clone();
                                                             let base = action.cmd.clone();
                                                             move |event| {
-                                                                if enabled && (!is_supply || (event.touches().len() == 1 && arm_supply_gesture(&mut supply_gesture, &base, &cmd))) {
+                                                                if enabled && (!is_supply || (event.touches().len() == 1 && arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Touch))) {
                                                                     crate::telemetry_dashboard::send_cmd_from_press(&cmd)
                                                                 }
                                                             }
@@ -846,7 +921,7 @@ pub fn ActionsTab(
                                                                 if matches!(key, Key::Escape | Key::Tab) {
                                                                     cancel_supply_gesture(&mut supply_gesture, &base);
                                                                 } else if !event.is_auto_repeating() && (key == Key::Enter || key.to_string() == " ")
-                                                                    && enabled && arm_supply_gesture(&mut supply_gesture, &base, &cmd) {
+                                                                    && enabled && arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Keyboard) {
                                                                     crate::telemetry_dashboard::send_cmd_from_press(&cmd);
                                                                 }
                                                             }

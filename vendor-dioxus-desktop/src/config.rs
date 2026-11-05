@@ -73,6 +73,7 @@ pub struct Config {
     pub(crate) disable_file_drop_handler: bool,
     pub(crate) disable_dma_buf_on_wayland: bool,
     pub(crate) additional_windows_args: Option<String>,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) tray_icon_show_window_on_click: bool,
     pub(crate) navigation_handler: Option<NavigationHandler>,
     pub(crate) in_app_navigation_handler: Option<NavigationHandler>,
@@ -130,6 +131,7 @@ impl Config {
             disable_dma_buf_on_wayland: true,
             on_window: None,
             additional_windows_args: None,
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             tray_icon_show_window_on_click: true,
             navigation_handler: None,
             in_app_navigation_handler: None,
@@ -356,8 +358,15 @@ impl Config {
     /// Defaults to `true` (preserves current behavior). Set to `false` for tray/menu bar apps
     /// that only want to show the context menu when the tray icon is clicked, without
     /// activating the main window.
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub fn with_tray_icon_show_window_on_click(mut self, show: bool) -> Self {
         self.tray_icon_show_window_on_click = show;
+        self
+    }
+
+    /// This desktop tray setting has no effect on platforms without a tray icon.
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    pub fn with_tray_icon_show_window_on_click(self, _show: bool) -> Self {
         self
     }
 
@@ -418,3 +427,32 @@ impl Default for Config {
 //     file.write_all(icon.as_bytes()).unwrap();
 //     println!("({}, {})", icon.width(), icon.height())
 // }
+
+#[cfg(test)]
+mod tray_setting_tests {
+    use super::Config;
+
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn desktop_tray_builder_preserves_default_opt_out_and_opt_in() {
+        let config = Config::new();
+        assert!(config.tray_icon_show_window_on_click);
+        let config = config.with_tray_icon_show_window_on_click(false);
+        assert!(!config.tray_icon_show_window_on_click);
+        assert!(
+            config
+                .with_tray_icon_show_window_on_click(true)
+                .tray_icon_show_window_on_click
+        );
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn compatibility_tray_builder_preserves_other_config_on_platforms_without_a_tray() {
+        let config = Config::new().with_external_browser_enabled(false);
+        let config = config
+            .with_tray_icon_show_window_on_click(false)
+            .with_tray_icon_show_window_on_click(true);
+        assert!(!config.external_browser_enabled);
+    }
+}
