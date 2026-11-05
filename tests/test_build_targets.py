@@ -59,6 +59,27 @@ class TargetTests(unittest.TestCase):
                 targets.handle_target_args(["--target", "macos,macos-intel", "--no-sign"], Path(root), builder, Mock())
             self.assertEqual(builder.call_count, 2)
 
+    def test_aggregate_all_skips_unavailable_workers_without_creating_artifacts(self):
+        import tempfile
+        for group in ["all", "all,sims"]:
+            with self.subTest(group=group), tempfile.TemporaryDirectory() as root, patch.object(targets.platform, "system", return_value="Darwin"), patch.object(targets.platform, "machine", return_value="arm64"), patch.object(targets.subprocess, "run") as run:
+                self.assertTrue(targets.handle_target_args(["--target", group, "--dry-run"], Path(root), Mock(), Mock()))
+                run.assert_not_called()
+                self.assertFalse((Path(root) / "artifacts").exists())
+
+    def test_explicit_unavailable_target_remains_required_alongside_all(self):
+        with patch.object(targets.platform, "system", return_value="Darwin"):
+            with self.assertRaisesRegex(SystemExit, "linux"):
+                targets.handle_target_args(["--target", "all,linux", "--dry-run"], Path("/tmp"), Mock(), Mock())
+
+    def test_aggregate_actual_build_failure_is_not_treated_as_unavailable(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root, patch.object(targets.platform, "system", return_value="Darwin"), patch.object(targets.subprocess, "run"):
+            builder = Mock(side_effect=RuntimeError("real compiler failure"))
+            with self.assertRaisesRegex(SystemExit, "web"):
+                targets.handle_target_args(["--target", "all", "--no-sign"], Path(root), builder, Mock())
+            self.assertGreater(builder.call_count, 0)
+
     def test_unavailable_native_targets_fail_instead_of_succeeding(self):
         with patch.object(targets.platform, "system", return_value="Linux"):
             with self.assertRaises(SystemExit):

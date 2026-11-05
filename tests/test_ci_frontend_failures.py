@@ -298,6 +298,30 @@ class RuntimeResourcesAndPackaging(unittest.TestCase):
                         with self.assertRaises(RuntimeError):
                             builder._validate_arch_payload_archive(archive, payload, "0.3.1", "x86_64")
 
+    def test_optional_arch_tools_missing_skips_without_staging_or_deleting_other_formats(self):
+        builder = self.builder()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packages = [root / "fresh.AppImage", root / "fresh.deb"]
+            for package in packages:
+                package.write_bytes(b"completed artifact")
+            with patch.object(builder, "_which_in_path", return_value=None), patch.object(builder, "_stage_linux_app_payload") as stage:
+                builder.build_manual_arch_package(root, None, False)
+                stage.assert_not_called()
+            for package in packages:
+                self.assertEqual(package.read_bytes(), b"completed artifact")
+
+    def test_debian_rpm_stage_preserves_fresh_appimage(self):
+        builder = self.builder()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            appimage = root / "fresh.AppImage"
+            appimage.write_bytes(b"completed AppImage")
+            with patch.object(builder, "dist_dir", return_value=root), patch.object(builder, "_which_in_path", return_value="/tools/dpkg-deb"), patch.object(builder, "_stage_linux_app_payload", side_effect=RuntimeError("staging sentinel")):
+                with self.assertRaisesRegex(RuntimeError, "staging sentinel"):
+                    builder.build_manual_linux_packages(root, None, False)
+            self.assertEqual(appimage.read_bytes(), b"completed AppImage")
+
     def test_arch_internal_phase_refuses_unqualified_makepkg_before_staging(self):
         builder = self.builder()
         with patch.object(builder, "_which_in_path", side_effect=lambda name, _path: Path("/tools") / name), \

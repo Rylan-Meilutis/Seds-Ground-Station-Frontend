@@ -47,7 +47,7 @@ def expand_targets(value):
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description="Build frontend targets. Apple targets need macOS/Xcode; Windows needs a Windows worker.")
-    p.add_argument("--target", default="web", help="Target or comma-separated list; list, all (no simulators), all,sims.")
+    p.add_argument("--target", default="web", help="Target or comma-separated list; list, all (no simulators), all,sims. Aggregate groups skip unavailable workers; explicit targets must build.")
     p.add_argument("--list-targets", action="store_true", help="List all targets and Docker availability without building.")
     p.add_argument("--docker", action="store_true", help="Use Docker for web/Linux/Android; Apple/Windows use native workers.")
     p.add_argument("--docker-image", help="Use an existing compatible builder image instead of building the supplied Dockerfile.")
@@ -107,15 +107,22 @@ def handle_target_args(argv, root, build_frontend, package_ios, finalize_release
         return True
     try: names = expand_targets(args.target)
     except ValueError as error: raise SystemExit(str(error)) from error
+    # Explicit names remain mandatory, even when also selected through all/sims.
+    explicit = {name.strip() for name in args.target.split(",") if name.strip() in TARGETS}
     failures = []
+    skipped = []
     for name in names:
         target = TARGETS[name]
         container = args.docker and target.docker is not None
         problem = None if container else native_requirement(target)
         print(f"\nTarget {name}: {'Docker' if container else 'native'} · {target.triple}", flush=True)
         if problem:
-            print(f"Unavailable: {problem}", file=sys.stderr)
-            failures.append(name)
+            if name in explicit:
+                print(f"Unavailable: {problem}", file=sys.stderr)
+                failures.append(name)
+            else:
+                print(f"Skipped unavailable aggregate target: {problem}", file=sys.stderr)
+                skipped.append(name)
             continue
         try:
             final = args.final and not target.simulator and target.platform in {"macos", "ios", "android"}
@@ -146,5 +153,6 @@ def handle_target_args(argv, root, build_frontend, package_ios, finalize_release
         except (OSError, RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
             print(f"FAILED {name}: {error}", file=sys.stderr)
             failures.append(name)
+    if skipped: print("Skipped unavailable targets: " + ", ".join(skipped))
     if failures: raise SystemExit("Targets failed/unavailable: " + ", ".join(failures))
     return True

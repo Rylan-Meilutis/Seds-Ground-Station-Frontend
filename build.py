@@ -1743,7 +1743,8 @@ def build_manual_linux_packages(
         )
         return
 
-    cleanup_linux_package_artifacts(frontend_dir)
+    # Stale packages were removed before bundling. Preserve the AppImage just
+    # created by the preceding packaging stage while adding Debian/RPM output.
     temp_dir, base_pkg_root = _stage_linux_app_payload(frontend_dir, rust_target, debug_mode)
     try:
         version = _read_frontend_version(frontend_dir)
@@ -1963,7 +1964,9 @@ def build_manual_arch_package(
     tools = {name: _which_in_path(name, os.environ.get("PATH", ""))
              for name in ["makepkg", "fakeroot", "pacman"]}
     if any(path is None for path in tools.values()):
-        raise RuntimeError("Arch packaging requires makepkg, fakeroot and pacman")
+        missing = ", ".join(name for name, path in tools.items() if path is None)
+        print(f"Warning: Arch packaging tools unavailable ({missing}); skipping Arch package.", file=sys.stderr)
+        return
     makepkg = str(tools["makepkg"])
     if not re.search(r"^makepkg \(pacman\) 6\.0\.2$", run_capture([makepkg, "--version"], frontend_dir), re.MULTILINE):
         raise RuntimeError("Prebuilt Arch packaging supports qualified makepkg 6.0.2 only; internal -F requires review on other versions")
