@@ -14,7 +14,41 @@ pub(super) fn with_tab(mut layout: super::layout::DataTabLayout) -> super::layou
             .expect("checked-in read-only igniter tab must be valid");
         layout.tabs.push(tab);
     }
+    // Older server layouts exposed a permanently empty amperes channel. Keep
+    // the measured ADC/voltage cards and show capability in the status panel;
+    // do not silently rewrite custom channels or infer a current conversion.
+    for tab in &mut layout.tabs {
+        if tab.id != "IGNITER_SENSE_SIGNAL" {
+            continue;
+        }
+        if unsupported_current_channel(&tab.channels) {
+            tab.channels.truncate(2);
+            if let Some(formatters) = &mut tab.channel_formatters {
+                formatters.truncate(2);
+            }
+        }
+        for subtab in tab.subtabs.iter_mut().flatten() {
+            if subtab
+                .data_type
+                .as_deref()
+                .is_some_and(|kind| kind != "IGNITER_SENSE_SIGNAL")
+            {
+                continue;
+            }
+            if let Some(channels) = &mut subtab.channels
+                && unsupported_current_channel(channels)
+            {
+                channels.truncate(2);
+                if let Some(formatters) = &mut subtab.channel_formatters {
+                    formatters.truncate(2);
+                }
+            }
+        }
+    }
     layout
+}
+fn unsupported_current_channel(channels: &[String]) -> bool {
+    channels == ["ADC counts", "Signal voltage", "Current (unavailable)"]
 }
 
 #[component]
@@ -115,10 +149,45 @@ mod tests {
         };
         let layout = with_tab(empty);
         assert_eq!(layout.tabs.len(), 1);
-        assert_eq!(layout.tabs[0].channels.len(), 3);
+        assert_eq!(layout.tabs[0].channels.len(), 2);
         let sub = layout.tabs[0].subtabs.as_ref().unwrap();
         assert_eq!(sub[0].sender_id.as_deref(), Some("AB"));
         assert_eq!(with_tab(layout).tabs.len(), 1);
+    }
+    #[test]
+    fn old_unavailable_ampere_slot_is_removed_without_changing_custom_channels() {
+        let mut tab: super::super::layout::DataTabSpec =
+            serde_json::from_str(include_str!("igniter_sense_tab.json")).unwrap();
+        tab.channels.push("Current (unavailable)".into());
+        tab.subtabs.as_mut().unwrap()[0]
+            .channels
+            .as_mut()
+            .unwrap()
+            .push("Current (unavailable)".into());
+        let layout = super::super::layout::DataTabLayout {
+            tabs: vec![tab.clone()],
+            sender_split_data_types: vec![],
+            default_display_filter: None,
+        };
+        let migrated = with_tab(layout.clone());
+        assert_eq!(
+            migrated.tabs[0].channels,
+            vec!["ADC counts", "Signal voltage"]
+        );
+        assert_eq!(
+            migrated.tabs[0].subtabs.as_ref().unwrap()[0]
+                .channels
+                .as_ref()
+                .unwrap()
+                .len(),
+            2
+        );
+        tab.channels[2] = "Custom input".into();
+        let custom = with_tab(super::super::layout::DataTabLayout {
+            tabs: vec![tab.clone()],
+            ..layout
+        });
+        assert_eq!(custom.tabs[0].channels, tab.channels);
     }
     #[test]
     fn igniter_sense_native_panel_mounts_without_a_browser() {

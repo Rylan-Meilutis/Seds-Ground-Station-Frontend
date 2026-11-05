@@ -95,6 +95,8 @@ pub(super) struct Network {
 pub(super) struct Capabilities {
     pub query: Option<bool>,
     pub recover: Option<bool>,
+    /// Opens preparation/query only; actual recovery still requires fresh board proof.
+    pub prepare_recover: Option<bool>,
     pub resync: Option<bool>,
     pub reset_startup: Option<bool>,
     pub endpoint_verified: bool,
@@ -337,6 +339,35 @@ impl Status {
         }
         if self.pending() {
             return Some("Another operation is pending; wait for its actual result.".into());
+        }
+        None
+    }
+    /// Preparation can refresh expired board proof. This never grants confirmation.
+    pub fn prepare_board_reason(
+        &self,
+        board: &Board,
+        action: &str,
+        elapsed: u64,
+    ) -> Option<String> {
+        if action != "recover_abort" {
+            return self.board_reason(board, action, elapsed);
+        }
+        if !self.valid() || !self.permissions.recover {
+            return Some("Recovery is not permitted by this server/session.".into());
+        }
+        if !matches!(self.flight_state, Some(0 | 1 | 15)) {
+            return Some("Recovery requires GS Startup, Idle or Aborted.".into());
+        }
+        if board.capabilities.prepare_recover != Some(true) || !board.query_allowed() {
+            return Some("Recovery preparation is not advertised by this server/board.".into());
+        }
+        if self.pending() {
+            return Some("Another operation is pending.".into());
+        }
+        if self.host_recovery.as_ref().is_some_and(|recovery| {
+            !recovery.publication_acknowledged && recovery.targets.iter().any(|id| id != &board.id)
+        }) {
+            return Some("Finish recovery of all previously selected boards first.".into());
         }
         None
     }
@@ -609,6 +640,96 @@ mod tests {
         }
         for id in ["GS", "GW", "DAQB", "", "fc", "unknown"] {
             assert!(targeted_recovery_label(id).is_none());
+        }
+    }
+
+    #[test]
+    fn preparation_capability_refreshes_stale_proof_without_authorizing_recovery() {
+        let mut s = status();
+        let board = s.boards.iter_mut().find(|b| b.id == "AB").unwrap();
+        board.capabilities.prepare_recover = Some(true);
+        board.capabilities.recover = Some(false);
+        board.age_ms = Some(20_000);
+        let board = s.board("AB").unwrap();
+        assert!(!board.fresh(60_000));
+        assert!(
+            s.prepare_board_reason(board, "recover_abort", 60_000)
+                .is_none()
+        );
+        assert!(s.board_reason(board, "recover_abort", 0).is_some());
+        assert!(s.prepare_board_reason(board, "resync", 0).is_some());
+        assert!(
+            s.confirmation.is_none(),
+            "Preparation capability is not a challenge/ticket"
+        );
+    }
+
+    #[test]
+    fn missing_or_denied_preparation_capability_stays_closed_even_with_fresh_recovery() {
+        for capability in [None, Some(false)] {
+            let mut s = status();
+            let board = s.boards.iter_mut().find(|b| b.id == "AB").unwrap();
+            board.capabilities.prepare_recover = capability;
+            assert!(board.fresh(0));
+            assert_eq!(board.capabilities.recover, Some(true));
+            assert!(
+                s.prepare_board_reason(s.board("AB").unwrap(), "recover_abort", 0)
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn preparation_capability_retains_session_permission_safe_state_and_query_guards() {
+        for rejected in 0..7 {
+            let mut s = status();
+            s.boards
+                .iter_mut()
+                .find(|b| b.id == "AB")
+                .unwrap()
+                .capabilities
+                .prepare_recover = Some(true);
+            match rejected {
+                0 => s.permissions.recover = false,
+                1 => s.flight_state = Some(8),
+                2 => s.backend_instance = "0".repeat(32),
+                3 => {
+                    s.boards
+                        .iter_mut()
+                        .find(|b| b.id == "AB")
+                        .unwrap()
+                        .capabilities
+                        .endpoint_verified = false
+                }
+                4 => {
+                    s.boards
+                        .iter_mut()
+                        .find(|b| b.id == "AB")
+                        .unwrap()
+                        .capabilities
+                        .query = Some(false)
+                }
+                5 => {
+                    s.host_recovery = Some(HostRecovery {
+                        pending: true,
+                        verified: false,
+                        publication_acknowledged: false,
+                        targets: vec!["AB".into(), "VB".into()],
+                    })
+                }
+                _ => {
+                    s.operation = Some(Operation {
+                        action: "recover_abort".into(),
+                        phase: "querying".into(),
+                        ..Default::default()
+                    })
+                }
+            }
+            assert!(
+                s.prepare_board_reason(s.board("AB").unwrap(), "recover_abort", 0)
+                    .is_some(),
+                "guard {rejected}"
+            );
         }
     }
 

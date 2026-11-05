@@ -140,7 +140,7 @@ fn begin_prepare(
             .map(|board| {
                 snapshot
                     .status
-                    .board_reason(board, &action, snapshot.elapsed())
+                    .prepare_board_reason(board, &action, snapshot.elapsed())
             })
             .unwrap_or_else(|| Some("Board context is unavailable.".into())),
         _ => Some("Unsupported recovery action.".into()),
@@ -296,8 +296,8 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                         div{style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px;",
                             for id in BOARD_IDS {
                                 {let board=status.board(id).cloned().unwrap_or_else(||Board{id:id.into(),label:id.into(),..Default::default()});
-                                 let recover_reason=status.board_reason(&board,"recover_abort",current.elapsed());
-                                 let resync_reason=status.board_reason(&board,"resync",current.elapsed());
+                                 let recover_reason=status.prepare_board_reason(&board,"recover_abort",current.elapsed());
+                                 let resync_reason=status.prepare_board_reason(&board,"resync",current.elapsed());
                                  let query_allowed=status.permissions.query&&board.query_allowed();
                                  let board_id=board.id.clone();
                                  let state=if board.state.is_some(){board.state_label.clone()}else{"Unknown".into()};

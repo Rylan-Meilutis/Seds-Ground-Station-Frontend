@@ -54,7 +54,8 @@
         "recover": null,
         "resync": null,
         "endpoint_verified": false,
-        "reset_startup": null
+        "reset_startup": null,
+        "prepare_recover": null
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
@@ -84,7 +85,8 @@
         "recover": null,
         "resync": null,
         "endpoint_verified": false,
-        "reset_startup": null
+        "reset_startup": null,
+        "prepare_recover": null
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
@@ -114,7 +116,8 @@
         "recover": null,
         "resync": null,
         "endpoint_verified": false,
-        "reset_startup": null
+        "reset_startup": null,
+        "prepare_recover": null
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
@@ -144,7 +147,8 @@
         "recover": true,
         "resync": true,
         "endpoint_verified": true,
-        "reset_startup": true
+        "reset_startup": true,
+        "prepare_recover": true
       },
       "operation": null,
       "message": null
@@ -174,7 +178,8 @@
         "recover": true,
         "resync": true,
         "endpoint_verified": true,
-        "reset_startup": true
+        "reset_startup": true,
+        "prepare_recover": true
       },
       "operation": null,
       "message": null
@@ -204,7 +209,8 @@
         "recover": null,
         "resync": null,
         "endpoint_verified": false,
-        "reset_startup": null
+        "reset_startup": null,
+        "prepare_recover": null
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."
@@ -234,7 +240,8 @@
         "recover": null,
         "resync": null,
         "endpoint_verified": false,
-        "reset_startup": null
+        "reset_startup": null,
+        "prepare_recover": null
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered."

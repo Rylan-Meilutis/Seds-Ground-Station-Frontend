@@ -15,7 +15,7 @@ fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(pathname==='
  assert.equal(req.headers.authorization,'Bearer ui-token');let text='';for await(const data of req)text+=data;const body=JSON.parse(text);
  res.setHeader('Content-Type','application/json');
  if(pathname.endsWith('/query')){assert.equal(boardRecovery.boards.find(b=>b.id===body.board)?.capabilities.query,true);queried.push(body);res.end(JSON.stringify({accepted:true,operation:null,message:'Synthetic query accepted; no outputs.'}));return;}
- if(pathname.endsWith('/prepare')){prepared.push(body);const targets=body.board?[body.board]:boardRecovery.boards.map(b=>b.id);const confirmation=body.action==='recover_abort'?'RECOVER '+body.board:body.action==='resync'?'RESYNC '+body.board:body.action==='change_mode'?'CHANGE MODE '+body.mode.toUpperCase():'RESET ALL STARTUP';const summary=body.action==='reset_startup'?challengeTemplate.summary:'Operator '+body.action+' for '+targets.join(', ')+'. Preserve clock, calibration and network power. Readback is not physical valve position.';const result={...challengeTemplate,summary,action:body.action,targets,backend_instance:boardRecovery.backend_instance,principal_context:boardRecovery.principal.context,reset_epoch:boardRecovery.reset_epoch,expires_in_ms:ttl,confirmation};boardRecovery.confirmation={ticket:result.ticket,backend_instance:result.backend_instance,principal_context:result.principal_context,reset_epoch:result.reset_epoch,action:result.action,targets:result.targets,expires_in_ms:result.expires_in_ms};res.end(JSON.stringify(result));return;}
+ if(pathname.endsWith('/prepare')){if(body.action==='recover_abort'){const board=boardRecovery.boards.find(b=>b.id===body.board);assert.equal(board?.capabilities.prepare_recover,true,'only explicit server preparation capability opens a challenge');board.age_ms=20;board.capabilities.recover=true;}prepared.push(body);const targets=body.board?[body.board]:boardRecovery.boards.map(b=>b.id);const confirmation=body.action==='recover_abort'?'RECOVER '+body.board:body.action==='resync'?'RESYNC '+body.board:body.action==='change_mode'?'CHANGE MODE '+body.mode.toUpperCase():'RESET ALL STARTUP';const summary=body.action==='reset_startup'?challengeTemplate.summary:'Operator '+body.action+' for '+targets.join(', ')+'. Preserve clock, calibration and network power. Readback is not physical valve position.';const result={...challengeTemplate,summary,action:body.action,targets,backend_instance:boardRecovery.backend_instance,principal_context:boardRecovery.principal.context,reset_epoch:boardRecovery.reset_epoch,expires_in_ms:ttl,confirmation};boardRecovery.confirmation={ticket:result.ticket,backend_instance:result.backend_instance,principal_context:result.principal_context,reset_epoch:result.reset_epoch,action:result.action,targets:result.targets,expires_in_ms:result.expires_in_ms};res.end(JSON.stringify(result));return;}
  if(pathname.endsWith('/confirm')){assert.deepEqual(Object.keys(body).sort(),['backend_instance','confirmation','principal_context','reset_epoch','ticket']);assert.equal(body.backend_instance,boardRecovery.backend_instance);assert.equal(body.principal_context,boardRecovery.principal.context);assert.equal(body.reset_epoch,boardRecovery.reset_epoch);assert.equal(body.ticket,boardRecovery.confirmation?.ticket);boardRecovery.confirmation=null;confirmed.push(body);boardRecovery.operation={id:'c'.repeat(32),action:prepared.at(-1).action,phase:'verifying',targets:prepared.at(-1).board?[prepared.at(-1).board]:boardRecovery.boards.map(b=>b.id),completed:false,success:null,age_ms:0,message:'Awaiting actual board readbacks; ACK alone is insufficient.'};res.end(JSON.stringify({accepted:true,operation:boardRecovery.operation,message:'Synthetic accepted; not device confirmed.'}));return;}
  throw Error('Unexpected recovery path '+pathname);
  }
@@ -32,6 +32,23 @@ fixture+=`try {
  assert(await rf.getByRole('button',{name:'Query board'}).isDisabled());assert(await rf.getByRole('button',{name:'Reset metadata to Startup…'}).isDisabled());assert.match(await rf.innerText(),/Cached application metadata only; no physical recovery/);
  assert(await panel.getByRole('button',{name:'Reset ALL to Startup…'}).isDisabled());assert(await panel.getByRole('combobox',{name:'Supported runtime mode'}).isDisabled());
  assert.equal(prepared.length+confirmed.length+queried.length,0,'mount/poll must not send queries or actions');
+ // Missing/denied new preparation capability never falls back to old fresh recover.
+ const initialPrepareAB=JSON.parse(JSON.stringify(boardRecovery.boards.find(b=>b.id==='AB'))),prepareAB=boardRecovery.boards.find(b=>b.id==='AB');
+ for(const capability of[undefined,false]){
+  if(capability===undefined)delete prepareAB.capabilities.prepare_recover;else prepareAB.capabilities.prepare_recover=capability;
+  await page.waitForFunction(()=>document.querySelector('[data-board="AB"] button:nth-of-type(2)')?.disabled);
+  assert.equal(prepared.length+confirmed.length+queried.length,0,'denied preparation must not query or dispatch');
+ }
+ // An explicit prepare capability refreshes old proof; it never confirms recovery itself.
+ prepareAB.capabilities.prepare_recover=true;prepareAB.capabilities.recover=false;prepareAB.age_ms=15000;
+ await ab.getByText('Actual board state: Startup (unconfirmed/stale)',{exact:true}).waitFor();
+ assert(await ab.getByRole('button',{name:'Resync…'}).isDisabled(),'resync still requires actual fresh proof');
+ assert(await ab.getByRole('button',{name:'Recover to Idle…'}).isEnabled(),'prepare has no two-second query-click race');
+ await ab.getByRole('button',{name:'Recover to Idle…'}).click();const prepareModal=page.getByRole('alertdialog');await prepareModal.waitFor();
+ assert.equal(prepared.length,1);assert.equal(prepared[0].action,'recover_abort');assert.equal(confirmed.length,0);assert.equal(queried.length,0,'prepare uses only the server prepare endpoint');
+ assert(await prepareModal.getByRole('button',{name:'Confirm recovery action'}).isDisabled(),'manual phrase is still required');
+ await prepareModal.getByRole('button',{name:'Cancel',exact:true}).click();await prepareModal.waitFor({state:'detached'});assert.equal(confirmed.length,0);
+ Object.assign(prepareAB,initialPrepareAB);boardRecovery.confirmation=null;
  await ab.getByRole('button',{name:'Query board'}).click();await page.getByText(/Synthetic query accepted/).waitFor();assert.deepEqual(queried,[{board:'AB'}]);
  await ab.getByRole('button',{name:'Recover to Idle…'}).click();let modal=page.getByRole('alertdialog');await modal.waitFor();
  assert.match(await modal.innerText(),/Frozen targets: AB/);assert.equal(confirmed.length,0);assert(await modal.getByRole('button',{name:'Confirm recovery action'}).isDisabled());
@@ -63,13 +80,13 @@ fixture+=`try {
  }
  // A response held in transport beyond the2sreadback bound must not
  // reappear as fresh merely because it has just reached the client.
- delayStatusMs=2500;await ab.getByRole('heading',{name:'AB delayed fixture (AB)',exact:true}).waitFor();assert(await ab.getByRole('button',{name:'Recover to Idle…'}).isDisabled(),'transport delay must be included in readback age');delayStatusMs=0;
+ delayStatusMs=2500;await ab.getByRole('heading',{name:'AB delayed fixture (AB)',exact:true}).waitFor();assert(await ab.getByRole('button',{name:'Resync…'}).isDisabled(),'transport delay must be included in actual proof age');assert(await ab.getByRole('button',{name:'Recover to Idle…'}).isEnabled(),'explicit prepare capability may refresh transport-stale proof');delayStatusMs=0;
  for(const width of[320,390,844,1280]){await page.setViewportSize({width,height:1000});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'populated board cards fit '+width);}
  // An older backend removes capability; the UI never guesses a recovery write.
  boardRecovery={};await panel.getByText('Recovery status unavailable. No control action is enabled.',{exact:true}).waitFor();assert.equal(confirmed.length,3);
  for(const width of[320,390,844,1280]){await page.setViewportSize({width,height:1000});assert(await panel.evaluate(e=>e.getBoundingClientRect().width<=innerWidth),'panel width '+width);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'page overflow '+width);}
  assert.deepEqual(dialogs,[],'all confirmation stays in DOM');assert.deepEqual(commands,[],'no direct telemetry command escape');assert.deepEqual(errors,[]);await context.close();
- console.log('PASS realWasm Connectivity: actual/unknown states, dedicated endpoint capability, GET-only poll, query explicit, DOM challenge/cancel/consume, immutable serveridentity/stale-readback separation, server/backend/principal/epoch invalidation, pending/readback honesty, no autoretry, all7 reset scope, mode capabilities, mobile widths');
+ console.log('PASS realWasm Connectivity: actual/unknown states, dedicated endpoint capability, explicit prepare capability with stale proof and old-server failclosed, GET-only poll, query explicit, DOM challenge/cancel/consume, immutable serveridentity/stale-readback separation, server/backend/principal/epoch invalidation, pending/readback honesty, no autoretry, all7 reset scope, mode capabilities, mobile widths');
 }finally{await browser.close();await new Promise(r=>server.close(r));}`;
 if(process.env.GS_RECOVERY_FIXTURE_DEBUG)fs.writeFileSync(process.env.GS_RECOVERY_FIXTURE_DEBUG,fixture);
 try{if(!process.env.GS_RECOVERY_PREPARE_ONLY)await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}

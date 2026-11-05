@@ -3,8 +3,7 @@
   "label": "Igniter current sense",
   "channels": [
     "ADC counts",
-    "Signal voltage",
-    "Current (unavailable)"
+    "Signal voltage"
   ],
   "show_min_max": true,
   "channel_formatters": [
@@ -14,9 +13,6 @@
     {
       "precision": 4,
       "suffix": " V"
-    },
-    {
-      "suffix": " A"
     }
   ],
   "chart": {
@@ -54,8 +50,7 @@
       "sender_id": "AB",
       "channels": [
         "ADC counts",
-        "Signal voltage",
-        "Current (unavailable)"
+        "Signal voltage"
       ],
       "show_min_max": true
     }

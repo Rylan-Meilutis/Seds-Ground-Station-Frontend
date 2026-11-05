@@ -1,5 +1,5 @@
 //! Presentation only; measured analog signal never certifies ignition/continuity.
-pub(super) const CAPABILITY: &str = "Current unavailable: sensor supply mismatch (045B5 at 3.3 V).";
+pub(super) const CAPABILITY: &str = "Board reports no supported current conversion.";
 pub(super) fn capability(status: &[Option<f32>]) -> &'static str {
     if status.get(3).copied().flatten() == Some(1.0) {
         CAPABILITY
@@ -56,7 +56,9 @@ pub(super) fn view(
         .zip(live_elapsed_ms)
         .zip(transit)
         .map(|((source, elapsed), transit)| source.saturating_add(elapsed.max(transit)));
-    let label = if live_elapsed_ms.is_none() {
+    let label = if status.is_empty() && signal.is_empty() {
+        "No igniter ADC report received"
+    } else if live_elapsed_ms.is_none() {
         "Recorded or unavailable · no fresh live source"
     } else if matches!(code, Some(1 | 7)) && transit.is_none() {
         "Source clock unavailable · last signal retained"
@@ -128,12 +130,19 @@ mod tests {
         tagged(&[Some(2048.0), Some(1.6504), None])
     }
     #[test]
+    fn missing_report_is_explicit() {
+        assert_eq!(
+            view(&[], &[], None, None).label,
+            "No igniter ADC report received"
+        );
+    }
+    #[test]
     fn fresh_raw_voltage_is_separate_from_unavailable_current() {
         let a = view(&status(1.0, 0.0), &signal(), Some(50), Some(NOW));
         assert_eq!(a.label, "Live measured signal");
         assert_eq!(a.counts, "2048 counts");
         assert_eq!(a.volts, "1.6504 V");
-        assert!(CAPABILITY.contains("mismatch"));
+        assert!(CAPABILITY.contains("no supported current conversion"));
         assert_eq!(capability(&status(1.0, 0.0)), CAPABILITY);
         assert!(capability(&[]).contains("not reported"));
     }
