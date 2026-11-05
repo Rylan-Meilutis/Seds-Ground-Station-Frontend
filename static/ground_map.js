@@ -1773,19 +1773,13 @@ function distanceMetersBetween(a, b) {
 }
 
 function isUsableLatLng(lat, lon) {
-    const latNum = Number(lat);
-    const lonNum = Number(lon);
-    if (!Number.isFinite(latNum) || !Number.isFinite(lonNum)) return false;
-    if (Math.abs(latNum) > 85.05112878 || Math.abs(lonNum) > 180.0) return false;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+    if (Math.abs(lat) > 85.05112878 || Math.abs(lon) > 180.0) return false;
     return true;
 }
 
 function isUsableUserLatLng(lat, lon) {
-    if (!isUsableLatLng(lat, lon)) return false;
-    const latNum = Number(lat);
-    const lonNum = Number(lon);
-    if (Math.abs(latNum) < 0.000001 && Math.abs(lonNum) < 0.000001) return false;
-    return true;
+    return isUsableLatLng(lat, lon);
 }
 
 function stabilizeLatLng(stateName, lat, lon) {
@@ -5940,12 +5934,13 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
         persistMaxNativeZoom(effectivePrefetchTilesUrl(), currentMaxNativeZoom);
     }
 
-    const rLat = Number(rocketLat);
-    const rLon = Number(rocketLon);
-    const uLat = Number(userLat);
-    const uLon = Number(userLon);
-    const stableRocket = isUsableLatLng(rLat, rLon) ? stabilizeLatLng("rocket", rLat, rLon) : null;
-    const stableUser = stabilizeLatLng("user", uLat, uLon);
+    // This boundary receives numeric fixes or null from the Dashboard. Never
+    // turn absent/non-number values into a fix through Number(null/"") === 0.
+    // Numeric (0, 0) is a real geographic location for either source.
+    const stableRocket = isUsableLatLng(rocketLat, rocketLon)
+        ? stabilizeLatLng("rocket", rocketLat, rocketLon) : null;
+    const stableUser = isUsableUserLatLng(userLat, userLon)
+        ? stabilizeLatLng("user", userLat, userLon) : null;
     prefetchRocketLatLng = stableRocket ? [stableRocket[0], stableRocket[1]] : null;
     prefetchUserLatLng = stableUser ? [stableUser[0], stableUser[1]] : null;
     if (stableRocket) {
@@ -5959,6 +5954,8 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
 
     if (stableUser) {
         scheduleTrackingTilePrefetch();
+    }
+    if (stableRocket || stableUser) {
         if (shouldRunAutomaticHighResPrefetch()) {
             scheduleHighResTilePrefetch();
         }
