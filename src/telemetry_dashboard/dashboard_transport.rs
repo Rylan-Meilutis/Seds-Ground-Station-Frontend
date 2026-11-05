@@ -983,6 +983,8 @@ async fn seed_from_db(
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     load_graph_history_floor();
+    let continuity = telemetry_reseed_continuity::begin_seed()
+        .ok_or("Telemetry source identity is unavailable")?;
     let graph_generation = GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed);
     log!("[seed] seed_from_db entered");
     struct ReseedGuard;
@@ -1004,12 +1006,10 @@ async fn seed_from_db(
     let _reseed_guard = ReseedGuard;
 
     fn merge_db_and_live(
-        mut db_rows: Vec<TelemetryRow>,
+        db_rows: Vec<TelemetryRow>,
         live_rows: Vec<TelemetryRow>,
     ) -> Vec<TelemetryRow> {
-        // Keep full overlap, then compact to the same bucket density the chart can render.
-        db_rows.extend(live_rows);
-        compact_rows_for_ui(db_rows)
+        merge_reseed_with_local_rows(db_rows, live_rows)
     }
 
     let queue_snapshot = || -> Vec<TelemetryRow> {
@@ -1025,21 +1025,23 @@ async fn seed_from_db(
     }
 
     // ---- Telemetry history (/api/recent) ----
-    let existing_rows_before_seed = ui_telemetry_rows_snapshot();
+    let existing_rows_before_seed = UI_TELEMETRY_STORE.lock().ok()
+        .map(|store| store.rows.len()).unwrap_or(0);
     if let Ok(mut rows) = RESEED_HISTORY_BRIDGE.lock() {
         rows.clear();
     }
-    if existing_rows_before_seed.is_empty() {
+    if existing_rows_before_seed == 0 {
         set_reseed_status_running();
     }
     log!(
         "[seed] /api/recent begin existing_rows_before_seed={}",
-        existing_rows_before_seed.len()
+        existing_rows_before_seed
     );
     match fetch_recent_rows_for_reseed().await {
         Ok(mut list) => {
             if !alive.load(Ordering::Relaxed)
                 || graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed)
+                || !continuity.current()
             {
                 return Ok(());
             }
@@ -1047,6 +1049,11 @@ async fn seed_from_db(
             sort_rows(&mut list);
             prune_history(&mut list);
             list = compact_rows_for_ui(list);
+            // Only actual local ingress in the original local domain can be
+            // a floor; restored offline/database rows never gain provenance.
+            let local_rows = UI_TELEMETRY_STORE.lock().ok()
+                .map(|store| store.live_snapshot()).unwrap_or_default();
+            list = merge_reseed_with_local_rows(list, local_rows);
             log!("[seed] /api/recent ok compacted_rows={}", list.len());
 
             // Capture rows that arrived while reseed was running and keep them.
@@ -1061,15 +1068,13 @@ async fn seed_from_db(
                 list = merge_db_and_live(list, live_rows);
             }
 
-            rocket_gps.set(list.iter().rev().find_map(row_to_gps));
-            rocket_gps_altitude_m.set(list.iter().rev().find_map(row_to_gps_altitude_m));
-
             // Build reseed cache in a double buffer while active cache keeps live updates.
             const RESEED_INGEST_CHUNK: usize = 1024;
             for chunk in list.chunks(RESEED_INGEST_CHUNK) {
                 data_chart::charts_cache_reseed_ingest_rows(chunk);
                 cooperative_yield().await;
-                if graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed) {
+                if graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed)
+                    || !continuity.current() {
                     return Ok(());
                 }
             }
@@ -1080,8 +1085,7 @@ async fn seed_from_db(
                 data_chart::charts_cache_reseed_ingest_rows(chunk);
             }
             if !post_reset_queued_rows.is_empty() {
-                list.extend(post_reset_queued_rows);
-                list = compact_rows_for_ui(list);
+                list = merge_reseed_with_local_rows(list, post_reset_queued_rows);
             }
 
             // Replay live rows received during reseed build.
@@ -1094,20 +1098,22 @@ async fn seed_from_db(
                 for chunk in reseed_live_rows.chunks(RESEED_INGEST_CHUNK) {
                     data_chart::charts_cache_reseed_ingest_rows(chunk);
                 }
-                list.extend(reseed_live_rows);
-                list = compact_rows_for_ui(list);
+                list = merge_reseed_with_local_rows(list, reseed_live_rows);
             }
 
             // Atomically swap the prepared reseed cache in. Empty /api/recent
             // means empty history and should clear stale offline data.
-            if graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed) {
+            if graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed)
+                || !continuity.current() {
                 return Ok(());
             }
             charts_cache_finish_reseed_build();
             charts_cache_request_refit();
             log!("[seed] applying reseed rows={}", list.len());
             if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-                store.replace_from_rows(&list);
+                store.replace_from_reseed(&list);
+                rocket_gps.set(store.latest_rocket_gps());
+                rocket_gps_altitude_m.set(store.latest_rocket_gps_altitude_m());
             }
             reseed_latest_telemetry(&list);
             rebuild_chart_cache_from_visible_rows();
@@ -1121,7 +1127,7 @@ async fn seed_from_db(
         }
         Err(err) => {
             log!("[seed] /api/recent failed: {err}");
-            if existing_rows_before_seed.is_empty() {
+            if existing_rows_before_seed == 0 {
                 set_reseed_status_failed(reseed_error_message(false, &err));
                 return Err(format!("telemetry reseed failed: {err}"));
             }
@@ -2007,6 +2013,7 @@ fn try_handle_ws_telemetry_message_fast(
     );
     LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
     note_incoming_ws_message(s.len());
+    telemetry_reseed_continuity::synchronize();
 
     let page_visible = dashboard_page_visible();
     let now_ms = current_wallclock_ms();
@@ -2148,6 +2155,7 @@ fn handle_ws_message(
         return;
     };
     note_incoming_ws_message(s.len());
+    telemetry_reseed_continuity::synchronize();
     let page_visible = dashboard_page_visible();
     let now_ms = current_wallclock_ms();
 

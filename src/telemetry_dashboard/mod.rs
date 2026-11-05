@@ -19,6 +19,7 @@ mod connection_status_tab;
 mod connectivity_health;
 mod custom_dashboard;
 mod dashboard_history;
+mod telemetry_reseed_continuity;
 pub mod data_chart;
 mod data_groups;
 pub mod data_tab;
@@ -851,6 +852,7 @@ fn queue_live_telemetry_from_ws_message(payload: &str) -> bool {
 
     LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
     note_incoming_ws_message(payload.len());
+    telemetry_reseed_continuity::synchronize();
 
     let page_visible = dashboard_page_visible();
     let now_ms = current_wallclock_ms();

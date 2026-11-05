@@ -61,16 +61,119 @@ mod backward_clock_latest_tests {
         update_latest_telemetry_locked(&mut latest, &mut by_type, &future);
         update_latest_telemetry_with_provenance(&mut latest, &mut by_type, &live, Some(500));
         assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(25.0)]);
-        rebuild_latest_preserving_live(&mut latest, &mut by_type, std::slice::from_ref(&future), 600);
+        let mut current_domain_history = vec![future.clone()];
+        discard_future_display_history(&mut current_domain_history, 1_000_000);
+        rebuild_latest_preserving_live(&mut latest, &mut by_type, &current_domain_history, 600);
         assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(25.0)]);
         // A second live receipt wins even when the CLIENT wall clock also moves backward.
         let newer = row(500_000, 26.0);
         update_latest_telemetry_with_provenance(&mut latest, &mut by_type, &newer, Some(700));
         assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(26.0)]);
         assert_eq!(latest.values().next().unwrap().received_timestamp_ms, 500_000);
-        // Once live data is stale, offline recalibration/history may seed again.
+        // An explicit domain replacement, not an elapsed freshness timer,
+        // retires old live provenance. New-domain historical rows may seed.
+        latest.clear(); by_type.clear();
         rebuild_latest_preserving_live(&mut latest, &mut by_type, &[future], 3_000);
         assert_eq!(by_type[&live.interned_data_type_id()].values.as_ref(), &[Some(100.0)]);
+    }
+}
+
+#[cfg(test)]
+mod reseed_continuity_tests {
+    use super::*;
+    fn row(time: i64, value: f32) -> TelemetryRow {
+        let mut row = TelemetryRow {source_timestamp_ms: Some(time), timestamp_ms:time,
+            received_timestamp_ms:time, data_type:"KG1000".into(), sender_id:"DAQ".into(),
+            data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(value)]};
+        row.refresh_interned_ids(); row
+    }
+    #[test]
+    fn old_snapshot_preserves_live_history_extrema_and_original_receipt_after_quiet_reconnect() {
+        let old=row(1000,1.); let live=row(4000,441.);
+        let mut store=UiTelemetryStore::default();
+        store.apply_live_rows(vec![live.clone()]);
+        let merged=merge_reseed_with_local_rows(vec![old],store.live_snapshot());
+        store.replace_from_reseed(&merged);
+        assert_eq!(store.snapshot(),merged);
+        assert_eq!(store.live_snapshot(),vec![live.clone()]);
+        assert_eq!(store.channel_minmax(live.interned_data_type_id(),Some(live.interned_sender_id()),0),Some((1.,441.)));
+        assert!(store.dashboard_history.samples(&(live.interned_data_type_id(),live.interned_sender_id(),0),false).iter().any(|point|point.value==441.));
+        let mut latest=HashMap::new(); let mut by_type=HashMap::new();
+        update_latest_telemetry_with_provenance(&mut latest,&mut by_type,&live,Some(100));
+        rebuild_latest_preserving_live(&mut latest,&mut by_type,&merged,60_000);
+        let kept=by_type.get(&live.interned_data_type_id()).unwrap();
+        assert_eq!(kept.values.as_ref(),&[Some(441.)]);
+        assert_eq!(kept.received_timestamp_ms,4000);
+        assert_eq!(kept.live_received_mono_ms,Some(100));
+    }
+    #[test]
+    fn newer_and_changed_equal_time_rest_win_without_becoming_live() {
+        for rest in [row(4020,442.),row(4000,442.)] {
+            let live=row(4000,441.); let mut store=UiTelemetryStore::default();
+            store.apply_live_rows(vec![live.clone()]);
+            let merged=merge_reseed_with_local_rows(vec![rest.clone()],store.live_snapshot());
+            store.replace_from_reseed(&merged);
+            assert_eq!(store.snapshot().last(),Some(&rest));
+            assert!(!store.live_snapshot().contains(&rest));
+            let mut latest=HashMap::new();let mut by_type=HashMap::new();
+            update_latest_telemetry_with_provenance(&mut latest,&mut by_type,&live,Some(100));
+            rebuild_latest_preserving_live(&mut latest,&mut by_type,&merged,60_000);
+            let current=&by_type[&live.interned_data_type_id()];
+            assert_eq!(current.values.as_ref(),&[Some(442.)]);
+            assert_eq!(current.live_received_mono_ms,None);
+        }
+    }
+    #[test]
+    fn equal_time_value_from_another_sender_cannot_inherit_live_provenance() {
+        let live=row(4000,441.);let mut rest=live.clone();rest.sender_id="ZZZ_OTHER".into();rest.refresh_interned_ids();
+        let mut latest=HashMap::new();let mut by_type=HashMap::new();
+        update_latest_telemetry_with_provenance(&mut latest,&mut by_type,&live,Some(100));
+        let merged=merge_reseed_with_local_rows(vec![rest.clone()],vec![live.clone()]);
+        rebuild_latest_preserving_live(&mut latest,&mut by_type,&merged,60_000);
+        let current=&by_type[&rest.interned_data_type_id()];
+        assert_eq!(current.sender_id,rest.interned_sender_id());
+        assert_eq!(current.live_received_mono_ms,None);
+        assert_eq!(latest[&LatestTelemetryKey::new(live.interned_data_type_id(),live.interned_sender_id())].live_received_mono_ms,Some(100));
+    }
+    #[test]
+    fn gps_position_and_altitude_follow_same_reseed_winner_as_values() {
+        let gps=|time,lat,alt| {let mut value=row(time,lat);value.data_type="GPS".into();
+            value.values=vec![Some(lat),Some(-78.),Some(alt)];value.refresh_interned_ids();value};
+        let mut store=UiTelemetryStore::default();let live=gps(4000,43.,1000.);
+        store.apply_live_rows(vec![live.clone()]);
+        let rows=merge_reseed_with_local_rows(vec![gps(1000,42.,10.)],store.live_snapshot());
+        store.replace_from_reseed(&rows);
+        assert_eq!(store.latest_rocket_gps(),Some((43.,-78.)));
+        assert_eq!(store.latest_rocket_gps_altitude_m(),Some(1000.));
+        let rows=merge_reseed_with_local_rows(vec![gps(4020,44.,2000.)],store.live_snapshot());
+        store.replace_from_reseed(&rows);
+        assert_eq!(store.latest_rocket_gps(),Some((44.,-78.)));
+        assert_eq!(store.latest_rocket_gps_altitude_m(),Some(2000.));
+        assert!(!store.live_snapshot().iter().any(|row|row.received_timestamp_ms==4020));
+    }
+    #[test]
+    fn restored_offline_future_rows_never_form_a_local_ingress_floor() {
+        let mut store=UiTelemetryStore::default();
+        store.replace_from_rows(&[row(500_000,999.)]);
+        assert!(store.live_snapshot().is_empty());
+        let restored=merge_reseed_with_local_rows(vec![row(1000,1.)],store.live_snapshot());
+        store.replace_from_reseed(&restored);
+        assert_eq!(store.snapshot(),vec![row(1000,1.)]);
+        assert!(store.live_snapshot().is_empty());
+    }
+    #[test]
+    fn repeated_reseed_reindexes_without_duplicate_extrema_or_lost_provenance() {
+        let mut store=UiTelemetryStore::default();let live=row(4000,441.);
+        store.apply_live_rows(vec![live.clone()]);
+        for _ in 0..3 {
+            let merged=merge_reseed_with_local_rows(vec![row(1000,1.)],store.live_snapshot());
+            store.replace_from_reseed(&merged);
+            assert_eq!(store.live_snapshot(),vec![live.clone()]);
+            assert_eq!(store.channel_minmax(live.interned_data_type_id(),None,0),Some((1.,441.)));
+        }
+        store.replace_from_reseed(&[]);
+        assert!(store.snapshot().is_empty());
+        assert_eq!(store.channel_minmax(live.interned_data_type_id(),None,0),None);
     }
 }
 
@@ -105,10 +208,22 @@ impl LatestTelemetryKey {
     }
 }
 
+#[derive(Clone)]
+struct StoredUiRow {
+    row: TelemetryRow,
+    // Local ingress evidence only. This is NOT backend-instance attestation.
+    locally_received_live: bool,
+    // Temporary in-place reseed bookkeeping; never serialized or a clock.
+    seen_in_reseed: bool,
+}
+impl std::ops::Deref for StoredUiRow {
+    type Target = TelemetryRow;
+    fn deref(&self) -> &Self::Target { &self.row }
+}
 #[derive(Default)]
 struct UiTelemetryStore {
     dashboard_history: dashboard_history::History<(TelemetryTextId, TelemetryTextId, usize)>,
-    rows: BTreeMap<UiRowKey, TelemetryRow>,
+    rows: BTreeMap<UiRowKey, StoredUiRow>,
     // Index only valid GPS values. Fill-only sessions must not walk every
     // retained DAQ row twice on every UI drain looking for nonexistent GPS.
     gps_positions: BTreeMap<UiRowKey, (f64, f64)>,
@@ -132,9 +247,28 @@ impl UiTelemetryStore {
 
     /// Inserts rows into the compacted UI store, keeping only the newest row per bucket.
     fn apply_rows<I>(&mut self, rows: I)
-    where
-        I: IntoIterator<Item = TelemetryRow>,
-    {
+    where I: IntoIterator<Item = TelemetryRow> {
+        self.apply_rows_with_origin(rows, Some(false));
+    }
+    fn apply_live_rows(&mut self, rows: Vec<TelemetryRow>) {
+        self.apply_rows_with_origin(rows, Some(true));
+    }
+    fn live_snapshot(&self) -> Vec<TelemetryRow> {
+        self.rows.values().filter(|entry| entry.locally_received_live)
+            .map(|entry| entry.row.clone()).collect()
+    }
+    fn replace_from_reseed(&mut self, rows: &[TelemetryRow]) {
+        // Reuse the existing map. No copied payload/key ledger is required to
+        // retain provenance only when the ORIGINAL row wins the replacement.
+        for entry in self.rows.values_mut() { entry.seen_in_reseed = false; }
+        self.gps_positions.clear(); self.gps_altitudes.clear();
+        self.channel_values.clear(); self.channel_minmax_cache.clear();
+        self.channel_minmax_dirty = true;
+        self.apply_rows_with_origin(rows.iter().cloned(), None);
+        self.rows.retain(|_, entry| entry.seen_in_reseed);
+    }
+    fn apply_rows_with_origin<I>(&mut self, rows: I, live_origin: Option<bool>)
+    where I: IntoIterator<Item = TelemetryRow> {
         let mut newest_received_ms = None::<i64>;
         for row in rows {
             for (index,value) in row.values.iter().enumerate() {
@@ -169,11 +303,14 @@ impl UiTelemetryStore {
             } else {
                 self.gps_altitudes.remove(&key);
             }
-            if let Some(previous) = self.rows.remove(&key) {
+            let previous = self.rows.remove(&key);
+            let locally_received_live = live_origin.unwrap_or_else(|| previous.as_ref()
+                .is_some_and(|entry| entry.locally_received_live && entry.row == row));
+            if let Some(previous) = previous && previous.seen_in_reseed {
                 self.index_channel_values(&previous, false);
             }
             self.index_channel_values(&row, true);
-            self.rows.insert(key, row);
+            self.rows.insert(key, StoredUiRow { row, locally_received_live, seen_in_reseed: true });
         }
         self.channel_minmax_dirty = true;
 
@@ -185,7 +322,7 @@ impl UiTelemetryStore {
     /// Drops buckets that are older than the retained history window.
     #[allow(dead_code)]
     fn prune_history(&mut self) {
-        let newest_received_ms = self.rows.values().map(telemetry_row_received_ms).max();
+        let newest_received_ms = self.rows.values().map(|entry| telemetry_row_received_ms(entry)).max();
         let Some(newest_received_ms) = newest_received_ms else {
             return;
         };
@@ -203,7 +340,7 @@ impl UiTelemetryStore {
             if let Some((key, row)) = self.rows.pop_first() {
                 self.gps_positions.remove(&key);
                 self.gps_altitudes.remove(&key);
-                self.index_channel_values(&row, false);
+                if row.seen_in_reseed { self.index_channel_values(&row, false); }
             }
             pruned_any = true;
         }
@@ -214,7 +351,7 @@ impl UiTelemetryStore {
 
     /// Returns the compacted UI store as a sorted vector.
     fn snapshot(&self) -> Vec<TelemetryRow> {
-        self.rows.values().cloned().collect()
+        self.rows.values().map(|entry| entry.row.clone()).collect()
     }
 
     /// Returns whether the compacted UI store currently has any rows.
@@ -229,7 +366,7 @@ impl UiTelemetryStore {
             .values()
             .rev()
             .take(take)
-            .cloned()
+            .map(|entry| entry.row.clone())
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
@@ -395,6 +532,14 @@ fn compact_rows_for_ui(rows: Vec<TelemetryRow>) -> Vec<TelemetryRow> {
     out
 }
 
+/// Local observations are a display floor, not newly received samples. REST
+/// wins exact ties; sorting before the existing compactor makes newer rows win.
+fn merge_reseed_with_local_rows(db_rows: Vec<TelemetryRow>, mut local_rows: Vec<TelemetryRow>) -> Vec<TelemetryRow> {
+    local_rows.extend(db_rows);
+    sort_rows(&mut local_rows);
+    compact_rows_for_ui(local_rows)
+}
+
 /// Rebuilds the latest-row indexes from a full telemetry snapshot.
 fn reset_latest_telemetry(rows: &[TelemetryRow]) {
     if let Ok(mut latest) = LATEST_TELEMETRY.lock()
@@ -428,14 +573,26 @@ fn rebuild_latest_preserving_live(
     latest_by_type: &mut HashMap<TelemetryTextId, LatestTelemetrySample>,
     rows: &[TelemetryRow], now_mono_ms: i64,
 ) {
-    let recent_live = |sample: &LatestTelemetrySample| sample.live_received_mono_ms
-        .is_some_and(|received| (0..=2_000).contains(&now_mono_ms.saturating_sub(received)));
-    let live: Vec<_> = latest.iter().filter(|(_, sample)| recent_live(sample)).map(|(key, sample)| (key.clone(), sample.clone())).collect();
-    let live_by_type: Vec<_> = latest_by_type.iter().filter(|(_, sample)| recent_live(sample)).map(|(key, sample)| (*key, sample.clone())).collect();
+    let known_live = |sample: &LatestTelemetrySample| sample.live_received_mono_ms
+        .is_some_and(|received| received <= now_mono_ms);
+    let live: Vec<_> = latest.iter().filter(|(_, sample)| known_live(sample))
+        .map(|(key, sample)| (key.clone(), sample.clone())).collect();
+    let live_by_type: Vec<_> = latest_by_type.iter().filter(|(_, sample)| known_live(sample))
+        .map(|(key, sample)| (*key, sample.clone())).collect();
     latest.clear(); latest_by_type.clear();
     for row in rows { update_latest_telemetry_locked(latest, latest_by_type, row); }
-    latest.extend(live);
-    latest_by_type.extend(live_by_type);
+    let keep_original = |original: &LatestTelemetrySample, candidate: Option<&LatestTelemetrySample>| {
+        candidate.is_none_or(|next| next.received_timestamp_ms < original.received_timestamp_ms
+            || (next.received_timestamp_ms == original.received_timestamp_ms
+                && next.timestamp_ms == original.timestamp_ms && next.sender_id == original.sender_id
+                && next.values == original.values))
+    };
+    for (key, original) in live {
+        if keep_original(&original, latest.get(&key)) { latest.insert(key, original); }
+    }
+    for (key, original) in live_by_type {
+        if keep_original(&original, latest_by_type.get(&key)) { latest_by_type.insert(key, original); }
+    }
 }
 
 fn reseed_latest_telemetry(rows: &[TelemetryRow]) {
@@ -506,7 +663,7 @@ fn ingest_telemetry_rows_into_runtime_caches_with_chart_mode(
         data_chart::charts_cache_store_rows_for_later(&rows);
     }
     if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-        store.apply_rows(rows);
+        store.apply_live_rows(rows);
         return Some((
             store.latest_rocket_gps(),
             store.latest_rocket_gps_altitude_m(),
@@ -968,13 +1125,13 @@ mod latest_telemetry_tests {
         }));
         let start = Instant::now();
         for _ in 0..100 {
-            black_box(store.rows.values().rev().find_map(super::row_to_gps));
+            black_box(store.rows.values().rev().find_map(|entry|super::row_to_gps(entry)));
             black_box(
                 store
                     .rows
                     .values()
                     .rev()
-                    .find_map(super::row_to_gps_altitude_m),
+                    .find_map(|entry| super::row_to_gps_altitude_m(entry)),
             );
         }
         let old = start.elapsed();
@@ -1592,9 +1749,9 @@ fn apply_telemetry_history_settings(retention_ms: u64, view_window_ms: u64) {
     if !rows.is_empty() {
         prune_history(&mut rows);
         if let Ok(mut store) = UI_TELEMETRY_STORE.lock() {
-            store.replace_from_rows(&rows);
+            store.replace_from_reseed(&rows);
         }
-        reset_latest_telemetry(&rows);
+        reseed_latest_telemetry(&rows);
         if rows.is_empty() {
             charts_cache_clear_active();
             persist::_remove(TELEMETRY_CACHE_STORAGE_KEY);

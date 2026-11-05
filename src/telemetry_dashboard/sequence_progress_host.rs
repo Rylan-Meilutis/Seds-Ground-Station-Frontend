@@ -63,8 +63,9 @@ pub fn SequenceProgressHost(
             state.write().set_source(origin.epoch);
             if auth::can_view_data() {
                 let started = super::monotonic_now_ms();
+                let observation = super::telemetry_reseed_continuity::begin_observation();
                 let response = super::http_get_json::<serde_json::Value>("/api/gse/status").await;
-                if source() != origin {
+                if source() != origin || observation.as_ref().is_none_or(|request| !request.current()) {
                     state.write().set_source(source().epoch);
                     cancel_api.set(None);
                     continue;
@@ -81,6 +82,7 @@ pub fn SequenceProgressHost(
                             serde_json::from_value::<Envelope>(value["sequence_progress"].clone());
                         match envelope {
                             Ok(envelope) => {
+                                let authority = (envelope.backend_instance.clone(), envelope.reset_epoch.clone());
                                 let version = envelope.cancel_api_version;
                                 if state
                                     .write()
@@ -92,6 +94,9 @@ pub fn SequenceProgressHost(
                                     )
                                     .is_ok()
                                 {
+                                    if let Some(request) = observation.as_ref() {
+                                        super::telemetry_reseed_continuity::observe(request, authority.0, authority.1);
+                                    }
                                     cancel_api.set(Some(version));
                                     let needed = state.write().needed_result_details();
                                     for key in needed {

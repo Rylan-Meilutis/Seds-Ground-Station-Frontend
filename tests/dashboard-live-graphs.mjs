@@ -50,7 +50,7 @@ const broadcast=msg=>{for(const socket of sockets)send(socket,msg);};
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`;
 
-const browser=await chromium.launch({headless:true});
+const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY});
 try {
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
  await context.addInitScript(({session,origin})=>{localStorage.setItem('navigation-style','tabs');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});

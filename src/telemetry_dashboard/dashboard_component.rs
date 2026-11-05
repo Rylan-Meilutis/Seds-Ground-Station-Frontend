@@ -1519,6 +1519,7 @@ fn TelemetryDashboardInner() -> Element {
                     );
 
                     apply_pending_display_clock_reset();
+                    telemetry_reseed_continuity::synchronize();
                     let drained = drain_telemetry_queue_for_frame();
 
                     let charts_live_enabled =
