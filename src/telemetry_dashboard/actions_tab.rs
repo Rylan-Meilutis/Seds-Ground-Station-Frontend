@@ -21,6 +21,7 @@ fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
         ("StartFill", "Start fill"),
         ("PauseFill", "Pause fill"),
         ("CancelFill", "Cancel fill"),
+        ("Turbocharge", "Turbocharge"),
     ] {
         if !actions.iter().any(|action| action.cmd == cmd) {
             actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
@@ -95,7 +96,7 @@ mod sequence_action_tests {
         ensure_sequence_actions(&mut actions, &ThemeConfig::default());
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sender = crate::telemetry_dashboard::WsSender { tx };
-        for expected in ["NitrogenTest", "StartFill"] {
+        for expected in ["NitrogenTest", "StartFill", "Turbocharge"] {
             let button = actions
                 .iter()
                 .find(|button| button.cmd == expected)
@@ -120,7 +121,7 @@ mod sequence_action_tests {
         let theme = ThemeConfig::default();
         let mut actions = Vec::new();
         ensure_sequence_actions(&mut actions, &theme);
-        assert_eq!(actions.len(), 5);
+        assert_eq!(actions.len(), 6);
         assert!(!actions.iter().any(|a| redundant_supply_close(&a.cmd)), "No extra per-supply Close action");
         for cmd in [
             "StartFill",
@@ -128,6 +129,7 @@ mod sequence_action_tests {
             "CancelFill",
             "NitrogenTest",
             "ValveSelfTest",
+            "Turbocharge",
         ] {
             assert!(actions.iter().any(|action| action.cmd == cmd));
         }
