@@ -128,6 +128,9 @@ class PlatformPrerequisites(unittest.TestCase):
         linux = next(step for step in steps if step.get("name") == "Linux native libraries")["run"]
         for package in ["makepkg", "fakeroot", "flatpak", "rpm", "desktop-file-utils", "zstd"]:
             self.assertIn(package, linux.split())
+        self.assertIn("fuse3", linux.split())
+        self.assertIn("libfuse2t64", linux.split())
+        self.assertNotIn("fuse", linux.split(), "legacy fuse conflicts with Flatpak's fuse3 dependency")
         for config in [".github/workflows/platforms.yml", ".gitlab-ci.yml"]:
             self.assertIn("-p 'test_ci*.py'", (ROOT / config).read_text())
 
