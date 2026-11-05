@@ -74,6 +74,14 @@ pub(super) fn view(
         "Waiting for matching ADC sample · last signal retained"
     } else {
         match code {
+            Some(0)
+                if owner(status, 4).is_some_and(|words| {
+                    words[..4].iter().all(|word| *word == 0)
+                        && words[4..].iter().any(|word| *word != 0)
+                }) =>
+            {
+                "ADC reports received; board identity must be commissioned before live readings can be confirmed"
+            }
             Some(0) => "Waiting for an owned ADC sample",
             Some(1) => "Live measured signal",
             Some(2) => "Stale · last signal retained",
@@ -134,6 +142,40 @@ mod tests {
         assert_eq!(
             view(&[], &[], None, None).label,
             "No igniter ADC report received"
+        );
+    }
+    #[test]
+    fn received_adc_without_boot_identity_requires_commissioning_not_hardware_guessing() {
+        let mut report = status(0.0, 39.0);
+        report[4..8].fill(Some(0.0));
+        report[8] = Some(8055.0);
+        let display = view(&report, &[], Some(20), Some(NOW));
+        assert_eq!(
+            display.label,
+            "ADC reports received; board identity must be commissioned before live readings can be confirmed"
+        );
+        assert_eq!(display.counts, "—");
+        assert_eq!(display.volts, "—");
+        assert!(
+            view(&report, &[], None, Some(NOW))
+                .label
+                .starts_with("Recorded")
+        );
+        assert!(
+            view(&report, &[], Some(1001), Some(NOW))
+                .label
+                .starts_with("Stale")
+        );
+        report[8] = Some(0.0);
+        assert_eq!(
+            view(&report, &[], Some(20), Some(NOW)).label,
+            "Waiting for an owned ADC sample"
+        );
+        report[8] = Some(8055.0);
+        report[4] = Some(f32::NAN);
+        assert_eq!(
+            view(&report, &[], Some(20), Some(NOW)).label,
+            "Waiting for an owned ADC sample"
         );
     }
     #[test]
