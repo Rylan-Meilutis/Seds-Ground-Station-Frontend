@@ -25,7 +25,7 @@ button{min-height:44px;border-radius:10px}button:focus-visible{outline:3px solid
 @media(max-width:600px){#graphic-stage[data-flat="true"] #rocket-inset[data-equipment="true"]{grid-template-columns:62px minmax(0,1fr);gap:8px;padding:10px}#graphic-stage[data-flat="true"] #rocket-inset[data-equipment="true"]>#rocket-phase{font-size:10px;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
-<div id="viewport"><div id="stage"></div><div id="graphic-stage"></div><div id="map-scene" style="display:none"></div><iframe id="recorded-scene" title="Recorded flight replay" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:0" allow="fullscreen"></iframe></div><footer id="program-bar" aria-label="Program status"><div id="rocket-inset" aria-label="Delayed rocket state"><svg viewBox="0 0 100 180" role="img" aria-label="Single-stage rocket"><g id="chute" style="display:none"><path d="M10 32 Q50 -8 90 32Z" fill="#e5ecf2"/><path d="M10 32L50 63L90 32" fill="none" stroke="#99afc0"/></g><path d="M40 145L28 159V130L40 120M60 145L72 159V130L60 120" fill="#8498a8"/><path d="M40 145V68L50 45L60 68V145Z" fill="#e5ecf2"/><path id="flame" d="M42 148L50 175L58 148Z" fill="#ff984a" style="display:none"/></svg><div id="rocket-phase">Unknown</div></div><div id="banner"></div><div id="playback-controls"><div id="status" role="status">Buffering</div><div id="stream-sound"></div></div></footer><script src="/assets/stay-awake.js"></script><script src="/assets/hls.min.js"></script><script src="/assets/stream-sequence-visuals.js"></script><script src="/assets/program-art.js"></script>
+<div id="viewport"><div id="stage"></div><div id="graphic-stage"></div><div id="map-scene" style="display:none"></div><iframe id="recorded-scene" title="Recorded flight replay" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:0" allow="fullscreen"></iframe></div><footer id="program-bar" aria-label="Program status"><div id="rocket-inset" aria-label="Delayed rocket state"><svg viewBox="0 0 100 180" role="img" aria-label="Vehicle mode unavailable; illustration only"><g id="flight-vehicle" style="display:none"><g id="chute" style="display:none"><path d="M10 32 Q50 -8 90 32Z" fill="#e5ecf2"/><path d="M10 32L50 63L90 32" fill="none" stroke="#99afc0"/></g><path d="M40 145L28 159V130L40 120M60 145L72 159V130L60 120" fill="#8498a8"/><path d="M40 145V68L50 45L60 68V145Z" fill="#e5ecf2"/><path id="flame" d="M42 148L50 175L58 148Z" fill="#ff984a" style="display:none"/></g><g id="test-fire-stand" style="display:none"><rect x="14" y="79" width="63" height="25" rx="8" fill="#d9e3ea" stroke="#8498a8" stroke-width="2"/><path d="M77 85L90 80V103L77 98Z" fill="#8498a8"/><path d="M28 105V139M62 105V139" fill="none" stroke="#91a8ba" stroke-width="6"/><rect x="8" y="141" width="84" height="7" rx="2" fill="#8498a8"/><path d="M23 109H35M56 109H68" stroke="#91a8ba" stroke-width="3"/></g><g id="vehicle-mode-unknown"><circle cx="50" cy="97" r="25" fill="#152a3c" stroke="#8498a8" stroke-width="2"/><text x="50" y="109" text-anchor="middle" fill="#d9e3ea" font-size="34">?</text></g></svg><div id="rocket-phase">Unknown</div></div><div id="banner"></div><div id="playback-controls"><div id="status" role="status">Buffering</div><div id="stream-sound"></div></div></footer><script src="/assets/stay-awake.js"></script><script src="/assets/hls.min.js"></script><script src="/assets/stream-sequence-visuals.js"></script><script src="/assets/program-art.js"></script>
 <script>
 'use strict';
 window.GS26StayAwake?.setActive('programme',true);
@@ -49,8 +49,13 @@ function graphicDisplay(videoReady,tile=null){
  const fresh=programmeFresh();
  const telemetry=fresh?state.telemetry:null;
  const phase=telemetry?.phase||'Unknown';
- const onGround=!!telemetry?.test_fire_mode||['Startup','Idle','PreFill','FillTest','NitrogenFill','NitrousFill','Armed'].includes(phase);
+ const onGround=telemetry?.test_fire_mode===true||['Startup','Idle','PreFill','FillTest','NitrogenFill','NitrousFill','Armed'].includes(phase);
  const svg=inset.querySelector('svg');
+ const artwork=window.gsProgramArt.artwork(telemetry);
+ svg.dataset.artwork=artwork.kind;svg.setAttribute('aria-label',artwork.description);
+ document.querySelector('#flight-vehicle').style.display=artwork.kind==='flight'?'':'none';
+ document.querySelector('#test-fire-stand').style.display=artwork.kind==='test_fire'?'':'none';
+ document.querySelector('#vehicle-mode-unknown').style.display=artwork.kind==='unknown'?'':'none';
  let equipment=svg.querySelector('#ground-equipment');
  if(!equipment){
   equipment=document.createElementNS('http://www.w3.org/2000/svg','g');equipment.id='ground-equipment';
@@ -61,7 +66,7 @@ function graphicDisplay(videoReady,tile=null){
  equipment.style.display=onGround?'':'none';
  svg.setAttribute('viewBox',onGround?'-110 0 215 180':'0 0 100 180');
  
- inset.setAttribute('aria-label',onGround?'Delayed rocket and fill equipment':'Delayed rocket state');
+ inset.setAttribute('aria-label',artwork.label+(onGround?' and fill equipment':'')+'; illustration only');
  const selected=!state?.broadcast.replay&&(state?.broadcast.layout==='model'||!!tile);
  const flat=selected||!videoReady;
  const show=selected||flat;
@@ -70,7 +75,7 @@ function graphicDisplay(videoReady,tile=null){
  holder.style.right='auto';holder.style.bottom='auto';
  holder.style.display=flat?'flex':'none';
  holder.querySelector('gs-vehicle-viewer')?.remove();
- document.querySelector('#rocket-phase').textContent=phase;
+ document.querySelector('#rocket-phase').textContent=artwork.label+' · '+phase;
  document.querySelector('#flame').style.display=phase==='Ascent'?'':'none';
  document.querySelector('#chute').style.display=['Descent','Reefing','ParachuteDeploy','Landed','Recovery'].includes(phase)?'':'none';
 }

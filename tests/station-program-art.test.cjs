@@ -7,3 +7,19 @@ test('the same artwork grows without video and returns to the status bar when vi
  for(let i=0;i<100;i++)window.gsProgramArt.layout(holder,inset,footer,true);
  assert.equal(holder.children.length,1);assert.equal(inset.children.length,1);const equipment=inset.querySelector('#gs26-sequence-equipment');assert.equal(equipment.hidden,true);assert.equal(equipment.attributes['aria-label'],'Programme GSE output evidence');window.gsProgramArt.layout(holder,inset,footer,false);assert.equal(footer.firstChild,inset);assert.equal(footer.children[1],banner);assert.equal(holder.children.length,0);assert.equal(holder.dataset.flat,'false');
 });
+
+test('programme artwork uses only explicit boolean mode and never infers firing from phase',()=>{
+ const window={};vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../station_ui/scripts/program-art.js'),'utf8'),{window});
+ for(const phase of ['Idle','Armed','Ascent','Descent']) {
+  const reported=Object.freeze({test_fire_mode:true,phase,sequence_visuals:{igniter:{output:{value:true,evidence:'board_reported'}}}});
+  const art=window.gsProgramArt.artwork(reported);assert.equal(art.kind,'test_fire');assert.match(art.description,/Illustrative/);assert.match(art.description,/not ignition or flow evidence/);
+  assert.equal(window.gsProgramArt.artwork(Object.freeze({test_fire_mode:false,phase})).kind,'flight');
+ }
+});
+test('missing or malformed programme mode remains explicitly unavailable',()=>{
+ const window={};vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../station_ui/scripts/program-art.js'),'utf8'),{window});
+ for(const mode of [undefined,null,'true','false',0,1,{},[]]) {
+  const art=window.gsProgramArt.artwork({test_fire_mode:mode,phase:'Ascent'});assert.equal(art.kind,'unknown');assert.match(art.label,/unavailable/);
+ }
+ assert.equal(window.gsProgramArt.artwork(null).kind,'unknown');
+});

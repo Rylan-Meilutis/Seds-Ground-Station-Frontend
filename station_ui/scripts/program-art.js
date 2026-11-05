@@ -1,5 +1,12 @@
 // Reuse the same 2D artwork: large without video, compact beside a live camera.
 window.gsProgramArt = {
+  // Mode is a reported programme field, never inferred from a phase, command,
+  // countdown, camera, pressure, or loadcell. Artwork is not output evidence.
+  artwork(telemetry) {
+    if (telemetry?.test_fire_mode === true) return {kind:'test_fire',label:'Test-fire motor stand',description:'Illustrative motor on a test stand; not ignition or flow evidence'};
+    if (telemetry?.test_fire_mode === false) return {kind:'flight',label:'Flight vehicle',description:'Illustrative flight phase; not ignition or flow evidence'};
+    return {kind:'unknown',label:'Vehicle mode unavailable',description:'Vehicle mode unavailable; illustration is not output evidence'};
+  },
   layout(holder, inset, footer, flat, sequenceFrame = null, showEquipment = false) {
     const destination = flat ? holder : footer;
     if (inset.parentElement !== destination) {
