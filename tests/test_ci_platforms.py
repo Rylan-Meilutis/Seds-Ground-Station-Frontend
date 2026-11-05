@@ -1,11 +1,14 @@
 """Fast source/behaviour contracts; these do not pretend to compile any platform."""
 import contextlib
+import gzip
+import hashlib
 import io
 import importlib.util
 import json
 import os
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -117,11 +120,12 @@ class PlatformCI(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ci.resolved_tool_versions()
 
-    def test_bootstrap_resolves_missing_lock_and_installs_exact_tools_unlocked(self):
+    def test_bootstrap_resolves_lock_and_installs_exact_cargo_and_release_tools(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
              patch.object(ci, "validate_host", return_value=("Linux", "x86_64")), \
              patch.object(ci.shutil, "which", return_value="fixture-tool"), \
-             patch.object(ci, "install_binaryen"):
+             patch.object(ci, "install_binaryen"), \
+             patch.object(ci, "install_wasm_bindgen") as wasm:
             calls = []
             def checked(argv, _env, label):
                 calls.append(argv)
@@ -133,13 +137,133 @@ class PlatformCI(unittest.TestCase):
                 ci.bootstrap("web")
                 self.assertIn(["cargo", "generate-lockfile"], calls)
                 self.assertIn(["cargo", "+" + ci.RUST, "install", "dioxus-cli", "--version", "=0.7.10"], calls)
-                self.assertIn(["cargo", "+" + ci.RUST, "install", "wasm-bindgen-cli", "--version", "=0.2.130"], calls)
+                wasm.assert_called_once_with(("Linux", "x86_64"), "0.2.130", unittest.mock.ANY)
+                self.assertFalse(any("wasm-bindgen-cli" in argv for argv in calls))
                 self.assertFalse(any("--locked" in argv for argv in calls if argv[:3] == ["cargo", "+" + ci.RUST, "install"]))
                 receipt = json.loads((Path(directory) / "ci-results/resolved-tools.json").read_text())
                 self.assertEqual(receipt["lock_sha256"], ci.file_sha256(Path(directory) / "Cargo.lock"))
                 calls.clear()
                 ci.bootstrap("web")
                 self.assertNotIn(["cargo", "generate-lockfile"], calls)
+
+    def test_wasm_release_pins_cover_all_native_hosts_and_future_abi_fails(self):
+        for row in ci.PLATFORMS:
+            suffix, digest = ci.wasm_bindgen_asset((row["host"], row["arch"]), "0.2.130")
+            self.assertEqual(len(digest), 64)
+            self.assertNotIn("latest", suffix)
+        with self.assertRaisesRegex(RuntimeError, "update release checksums"):
+            ci.wasm_bindgen_asset(("Linux", "x86_64"), "0.2.131")
+        with self.assertRaisesRegex(RuntimeError, "No pinned official"):
+            ci.wasm_bindgen_asset(("Other", "x86_64"), "0.2.130")
+
+    def wasm_archive(self, extra=None, reported="0.2.130"):
+        stem = "wasm-bindgen-0.2.130-x86_64-unknown-linux-musl"
+        content = f"#!/bin/sh\nprintf 'wasm-bindgen {reported}\\n'\n".encode()
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w:gz") as archive:
+            member = tarfile.TarInfo(stem + "/wasm-bindgen")
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+            if extra is not None:
+                archive.addfile(extra)
+        return output.getvalue(), content
+
+    def install_fixture(self, root, raw, expected=None):
+        pins = {"0.2.130": {("Linux", "x86_64"): (
+            "x86_64-unknown-linux-musl", expected or hashlib.sha256(raw).hexdigest())}}
+        with patch.object(ci, "ROOT", root), patch.object(ci, "WASM_BINDGEN", pins), \
+             patch.object(ci.urllib.request, "urlopen", return_value=io.BytesIO(raw)) as download:
+            with contextlib.redirect_stdout(io.StringIO()):
+                ci.install_wasm_bindgen(("Linux", "x86_64"), "0.2.130", os.environ.copy())
+            self.assertEqual(download.call_args.kwargs, {"timeout": 120})
+            self.assertTrue(download.call_args.args[0].startswith(
+                "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.130/"))
+
+    @unittest.skipIf(os.name == "nt", "POSIX shell executable fixture; Windows release pins separately checked")
+    def test_wasm_release_verified_version_receipt_and_atomic_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw, binary = self.wasm_archive()
+            self.install_fixture(root, raw)
+            dest = root / ".ci-tools/wasm-bindgen/wasm-bindgen"
+            self.assertEqual(dest.read_bytes(), binary)
+            receipt = json.loads((root / "ci-results/wasm-bindgen-release.json").read_text())
+            self.assertEqual(receipt["binary_sha256"], hashlib.sha256(binary).hexdigest())
+            self.assertEqual(receipt["archive_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(receipt["reported"], "wasm-bindgen 0.2.130")
+            self.assertEqual(list((root / ".ci-tools").iterdir()), [dest.parent])
+
+    def test_wasm_bad_checksum_never_executes_or_publishes(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "checked") as checked:
+            root = Path(directory)
+            raw, _ = self.wasm_archive()
+            with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                self.install_fixture(root, raw, "0" * 64)
+            checked.assert_not_called()
+            self.assertFalse((root / ".ci-tools/wasm-bindgen").exists())
+
+    def test_wasm_download_deadline_stops_before_execution(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "checked") as checked, \
+             patch.object(ci.time, "monotonic", side_effect=[0, 121]):
+            raw, _ = self.wasm_archive()
+            with self.assertRaisesRegex(RuntimeError, "120 seconds"):
+                self.install_fixture(Path(directory), raw)
+            checked.assert_not_called()
+
+    def test_wasm_malicious_members_never_execute_or_write_foreign_paths(self):
+        stem = "wasm-bindgen-0.2.130-x86_64-unknown-linux-musl"
+        for name, kind in [("/escape", tarfile.REGTYPE), (stem + "/../escape", tarfile.REGTYPE),
+                           (stem + "/C:\\escape", tarfile.REGTYPE),
+                           (stem + "/link", tarfile.SYMTYPE), (stem + "/hard", tarfile.LNKTYPE),
+                           (stem + "/fifo", tarfile.FIFOTYPE),
+                           (stem + "/wasm-bindgen", tarfile.REGTYPE)]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(ci, "checked") as checked:
+                root = Path(directory)
+                member = tarfile.TarInfo(name)
+                member.type = kind
+                member.linkname = "../../foreign"
+                raw, _ = self.wasm_archive(member)
+                with self.assertRaisesRegex(RuntimeError, "Unsafe|Duplicate"):
+                    self.install_fixture(root, raw)
+                checked.assert_not_called()
+                self.assertEqual(list((root / ".ci-tools").iterdir()), [])
+                self.assertFalse((root / "escape").exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX shell executable fixture; Windows release pins separately checked")
+    def test_wasm_wrong_version_and_warning_are_fatal_without_publishing(self):
+        for reported in ["0.2.129", "0.2.130\\nwarning: causal version fixture"]:
+            with self.subTest(reported=reported), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                raw, _ = self.wasm_archive(reported=reported)
+                with self.assertRaisesRegex(RuntimeError, "version mismatch|warning_lines=1"):
+                    self.install_fixture(root, raw)
+                self.assertFalse((root / ".ci-tools/wasm-bindgen").exists())
+                self.assertTrue((root / "ci-results/wasm-bindgen-version.log").is_file())
+
+    def test_wasm_refuses_stale_directory_without_deleting_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dest = root / ".ci-tools/wasm-bindgen"
+            dest.mkdir(parents=True)
+            (dest / "owned").write_text("keep")
+            raw, _ = self.wasm_archive()
+            with self.assertRaisesRegex(RuntimeError, "stale"):
+                self.install_fixture(root, raw)
+            self.assertEqual((dest / "owned").read_text(), "keep")
+
+    def test_wasm_missing_executable_and_oversized_members_never_execute(self):
+        stem = "wasm-bindgen-0.2.130-x86_64-unknown-linux-musl"
+        for size in [0, 257 * 1024 * 1024]:
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(ci, "checked") as checked:
+                member = tarfile.TarInfo(stem + "/README.md")
+                member.size = size
+                # Deliberately hostile declared size without allocating its body.
+                raw = gzip.compress(member.tobuf() + b"\0" * 1024)
+                with self.assertRaisesRegex(RuntimeError, "Missing|exceeds 256"):
+                    self.install_fixture(Path(directory), raw)
+                checked.assert_not_called()
 
     def test_warning_recognition_is_not_a_blanket_whitelist(self):
         for line in ["warning: unused item", "warning[dead_code]: item", "WARNING SDK mismatch", "WARN retry failed", "w: Kotlin warning", "\x1b[33mwarning: colorful\x1b[0m"]:

@@ -5,19 +5,28 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
+import time
 import tomllib
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 PLATFORMS = json.loads((Path(__file__).parent / "platforms.json").read_text())
 RUST = "1.99.0"
+WASM_BINDGEN = {"0.2.130": {
+    ("Linux", "x86_64"): ("x86_64-unknown-linux-musl", "9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f"),
+    ("Linux", "aarch64"): ("aarch64-unknown-linux-gnu", "cc8dd8e90aa9111758168d30c63a14b7f0276997d9d60d3e160a1fb5e7d3b919"),
+    ("Darwin", "aarch64"): ("aarch64-apple-darwin", "b90ddb9357f584b1af897d58ad77e4cce2b48fc17e2a967bc249a87f72809444"),
+    ("Darwin", "x86_64"): ("x86_64-apple-darwin", "eb209c115b7cb95832423c1aa3f4d06d6c53f63ef74fc4b6fb79ef0b2eea5f10"),
+    ("Windows", "x86_64"): ("x86_64-pc-windows-msvc", "844d23f1b56097549b936dd2e0d561fadebc1e8c9e985d5068b6b919654104ad"),
+}}
 BINARYEN = {
     ("Linux", "x86_64"): ("x86_64-linux", "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489"),
     ("Linux", "aarch64"): ("aarch64-linux", "89c07ea56faf38d0fbecf36ca8ec0721756716185f265b568e133d427f299bf8"),
@@ -91,9 +100,80 @@ def ci_env():
     for key in list(env):
         if key.startswith(("NOTARY_", "IOS_DISTRIBUTION_", "IOS_DEVELOPMENT_", "ANDROID_KEY")):
             env.pop(key)
-    bins = [ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
+    bins = [ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
     env["PATH"] = os.pathsep.join(map(str, bins)) + os.pathsep + env.get("PATH", "")
     return env
+
+
+def wasm_bindgen_asset(host, version):
+    try:
+        return WASM_BINDGEN[version][host]
+    except KeyError:
+        raise RuntimeError(f"No pinned official wasm-bindgen {version} binary for {host}; update release checksums") from None
+
+
+def install_wasm_bindgen(host, version, env):
+    suffix, expected = wasm_bindgen_asset(host, version)
+    stem = f"wasm-bindgen-{version}-{suffix}"
+    url = f"https://github.com/wasm-bindgen/wasm-bindgen/releases/download/{version}/{stem}.tar.gz"
+    tools = ROOT / ".ci-tools"
+    tools.mkdir(exist_ok=True)
+    if tools.is_symlink():
+        raise RuntimeError("Refusing linked CI tools directory")
+    dest = tools / "wasm-bindgen"
+    if dest.exists() or dest.is_symlink():
+        raise RuntimeError("Refusing stale wasm-bindgen tool directory; use a fresh CI checkout")
+    executable = "wasm-bindgen.exe" if host[0] == "Windows" else "wasm-bindgen"
+    with tempfile.TemporaryDirectory(prefix="wasm-bindgen-", dir=tools) as temporary:
+        stage = Path(temporary)
+        archive = stage / "download.tar.gz"
+        started = time.monotonic()
+        with urllib.request.urlopen(url, timeout=120) as response, archive.open("xb") as out:
+            total = 0
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > 64 * 1024 * 1024 or time.monotonic() - started > 120:
+                    raise RuntimeError("wasm-bindgen download exceeds 64 MiB or 120 seconds")
+                out.write(chunk)
+        actual = file_sha256(archive)
+        if actual != expected:
+            raise RuntimeError("wasm-bindgen archive checksum mismatch")
+        selected = None
+        with tarfile.open(archive) as bundle:
+            total = 0
+            for count, member in enumerate(bundle, 1):
+                pieces = member.name.rstrip("/").split("/")
+                if (count > 128 or not pieces or pieces[0] != stem
+                        or any(p in {"", ".", ".."} for p in pieces)
+                        or "\\" in member.name or ":" in member.name
+                        or PurePosixPath(member.name).is_absolute()
+                        or not (member.isdir() or member.isfile())):
+                    raise RuntimeError("Unsafe wasm-bindgen archive member")
+                total += member.size
+                if member.size < 0 or total > 256 * 1024 * 1024:
+                    raise RuntimeError("wasm-bindgen archive exceeds 256 MiB")
+                if pieces == [stem, executable]:
+                    if selected is not None or not member.isfile():
+                        raise RuntimeError("Duplicate or invalid wasm-bindgen executable")
+                    selected = member
+            if selected is None:
+                raise RuntimeError("Missing wasm-bindgen executable")
+            # No archive path is used as an output path; only this verified file
+            # is created in our private staging directory. Never extract links.
+            binary = stage / executable
+            with bundle.extractfile(selected) as source, binary.open("xb") as out:
+                shutil.copyfileobj(source, out)
+            binary.chmod(0o755)
+        checked([str(binary), "--version"], env, "wasm-bindgen-version")
+        reported = (ROOT / "ci-results/wasm-bindgen-version.log").read_text().strip()
+        if reported != f"wasm-bindgen {version}":
+            raise RuntimeError(f"wasm-bindgen version mismatch: {reported!r}")
+        receipt = {"version": version, "host": host, "url": url,
+                   "archive_sha256": actual, "binary_sha256": file_sha256(binary),
+                   "archive_bytes": archive.stat().st_size, "reported": reported}
+        archive.unlink()
+        stage.rename(dest)
+    (ROOT / "ci-results/wasm-bindgen-release.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
 def install_binaryen(host):
@@ -155,6 +235,7 @@ def bootstrap(name):
     if not (ROOT / "Cargo.lock").exists():
         checked(["cargo", "generate-lockfile"], env, "resolve-application-lock")
     versions = resolved_tool_versions()
+    wasm_bindgen_asset(host, versions["wasm-bindgen"])
     receipt = ROOT / "ci-results/resolved-tools.json"
     receipt.parent.mkdir(exist_ok=True)
     receipt.write_text(json.dumps({"versions": versions,
@@ -163,7 +244,7 @@ def bootstrap(name):
     # app bootstrap policy for published CLI locks containing yanked crates.
     # Explicit selection avoids Cargo's implicit-toolchain warning during install.
     checked(["cargo", "+" + RUST, "install", "dioxus-cli", "--version", "=" + versions["dioxus"]], env, "dioxus-cli")
-    checked(["cargo", "+" + RUST, "install", "wasm-bindgen-cli", "--version", "=" + versions["wasm-bindgen"]], env, "wasm-bindgen-cli")
+    install_wasm_bindgen(host, versions["wasm-bindgen"], env)
     npm = shutil.which("npm")
     checked([npm, "install", "--prefix", str(ROOT / ".ci-tools/node"), "esbuild@0.25.12"], env, "esbuild")
     install_binaryen(host)
