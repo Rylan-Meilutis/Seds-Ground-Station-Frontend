@@ -161,8 +161,9 @@ def bootstrap(name):
                                   "lock_sha256": file_sha256(ROOT / "Cargo.lock")}, indent=2) + "\n")
     # Exact CLI versions; resolve their own dependencies afresh, matching the
     # app bootstrap policy for published CLI locks containing yanked crates.
-    checked(["cargo", "install", "dioxus-cli", "--version", "=" + versions["dioxus"]], env, "dioxus-cli")
-    checked(["cargo", "install", "wasm-bindgen-cli", "--version", "=" + versions["wasm-bindgen"]], env, "wasm-bindgen-cli")
+    # Explicit selection avoids Cargo's implicit-toolchain warning during install.
+    checked(["cargo", "+" + RUST, "install", "dioxus-cli", "--version", "=" + versions["dioxus"]], env, "dioxus-cli")
+    checked(["cargo", "+" + RUST, "install", "wasm-bindgen-cli", "--version", "=" + versions["wasm-bindgen"]], env, "wasm-bindgen-cli")
     npm = shutil.which("npm")
     checked([npm, "install", "--prefix", str(ROOT / ".ci-tools/node"), "esbuild@0.25.12"], env, "esbuild")
     install_binaryen(host)

@@ -132,9 +132,9 @@ class PlatformCI(unittest.TestCase):
             with patch.object(ci, "checked", side_effect=checked):
                 ci.bootstrap("web")
                 self.assertIn(["cargo", "generate-lockfile"], calls)
-                self.assertIn(["cargo", "install", "dioxus-cli", "--version", "=0.7.10"], calls)
-                self.assertIn(["cargo", "install", "wasm-bindgen-cli", "--version", "=0.2.130"], calls)
-                self.assertFalse(any("--locked" in argv for argv in calls if argv[:2] == ["cargo", "install"]))
+                self.assertIn(["cargo", "+" + ci.RUST, "install", "dioxus-cli", "--version", "=0.7.10"], calls)
+                self.assertIn(["cargo", "+" + ci.RUST, "install", "wasm-bindgen-cli", "--version", "=0.2.130"], calls)
+                self.assertFalse(any("--locked" in argv for argv in calls if argv[:3] == ["cargo", "+" + ci.RUST, "install"]))
                 receipt = json.loads((Path(directory) / "ci-results/resolved-tools.json").read_text())
                 self.assertEqual(receipt["lock_sha256"], ci.file_sha256(Path(directory) / "Cargo.lock"))
                 calls.clear()
