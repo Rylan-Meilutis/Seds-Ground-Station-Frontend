@@ -11,14 +11,19 @@ pub(super) fn GroundStationSettings(
     layout: ActionsTabLayout,
     action_policy: Signal<ActionPolicyMsg>,
     fill_targets: Signal<Option<FillTargetsConfig>>,
-    capture_sample_count: Signal<usize>,
+    calibration_context: settings_navigation::CalibrationContext,
     abort_only_mode: bool,
     theme: ThemeConfig,
     on_manage_users: EventHandler<()>,
 ) -> Element {
     let mut revision = use_signal(|| 0_u64);
-    rsx! {StationSettingsBody {key:"station-settings-{revision}",layout,action_policy,fill_targets,capture_sample_count,abort_only_mode,theme,on_manage_users,
-        on_reload:move |_|revision.set(revision().saturating_add(1)),
+    // A key replaces a scope through Dioxus's keyed-iterator diff. A single
+    // component key alone memoizes the same body and retains its old Factory.
+    // Only the explicit Reload action advances this one-item iterator's key.
+    rsx! {for current_revision in [revision()] {
+        StationSettingsBody {key:"station-settings-{current_revision}",layout:layout.clone(),action_policy,fill_targets,calibration_context,abort_only_mode,theme:theme.clone(),on_manage_users,
+            on_reload:move |_|revision.set(revision().saturating_add(1)),
+        }
     }}
 }
 
@@ -27,7 +32,7 @@ fn StationSettingsBody(
     layout: ActionsTabLayout,
     action_policy: Signal<ActionPolicyMsg>,
     fill_targets: Signal<Option<FillTargetsConfig>>,
-    capture_sample_count: Signal<usize>,
+    calibration_context: settings_navigation::CalibrationContext,
     abort_only_mode: bool,
     theme: ThemeConfig,
     on_manage_users: EventHandler<()>,
@@ -47,9 +52,9 @@ fn StationSettingsBody(
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
     });
-    let mut input_epoch = use_signal(|| 0_u64);
-    let mut input_changing = use_signal(|| false);
-    let mut calibration_locked = use_signal(|| false);
+    let input_epoch = calibration_context.input_epoch;
+    let calibration_locked = calibration_context.locked;
+    let input_status = calibration_context.selection.read().clone();
     if retired() {
         return rsx! { section {role:"status",style:"display:grid;gap:12px;",
             p {"The connected station or signed-in account changed. Reload settings before editing."}
@@ -88,18 +93,12 @@ fn StationSettingsBody(
                 section {style:"display:grid;gap:14px;min-width:0;",
                     h3 {style:"margin:0;","Loadcells"}
                     p {style:"margin:0;color:{theme.text_muted};","Choose the DAQ input and the load cell used for fill cutoff here. Each input retains its own calibration."}
-                    super::data_tab::Kg50InputSelector {theme:theme.clone(),disabled:!crate::auth::can_edit_calibration()||abort_only_mode||calibration_locked()||input_changing()||input_epoch()==u64::MAX,
-                        on_changing:move |_|{input_changing.set(true);input_epoch.set(settings_navigation::next_input_epoch(input_epoch()));},
-                        on_settled:move |_|input_changing.set(false),
-                    }
+                    super::data_tab::Kg50InputSelector {theme:theme.clone(),selection:calibration_context,disabled:!crate::auth::can_edit_calibration()||abort_only_mode||calibration_locked()||input_epoch()==u64::MAX}
                     FillSourceSetting {theme:theme.clone(),fill_targets,disabled:abort_only_mode||!crate::auth::can_view_actions()}
-                    p {style:"color:{theme.text_muted};", "Temperature correction is configured with each sensor’s saved calibration below. A separate on/off setting is unavailable."}
+                    p {style:"color:{theme.text_muted};", "Temperature correction follows the sensor’s saved drift calibration. This backend has no independent on/off preference; fitted coefficients are preserved."}
                     if crate::auth::can_view_calibration() {
-                        if !input_changing() {
-                            super::CalibrationTab {key:"calibration-input-{input_epoch}",theme:theme.clone(),can_edit:crate::auth::can_edit_calibration(),capture_sample_count:*capture_sample_count.read(),context_epoch:Some(input_epoch),
-                                on_context_locked:move |locked|calibration_locked.set(locked),
-                            }
-                        } else {p {role:"status","Updating input selection. Calibration reloads from the station when the request finishes."}}
+                        button {r#type:"button",style:idle_style.clone(),disabled:input_status.pending(),onclick:move |_|settings_navigation::open_calibration(),"Open Calibration page"}
+                        p {style:"color:{theme.text_muted};","Capture samples, adjust fits and save calibration on the Calibration page."}
                     } else {p {"Calibration access is required to view sensor calibration."}}
                 }
             },

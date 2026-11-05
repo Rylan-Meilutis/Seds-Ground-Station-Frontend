@@ -223,23 +223,47 @@ fn TelemetryDashboardInner() -> Element {
     let show_version_overlay = use_signal(|| false);
 
     let mut active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
-    // Saved/custom Calibration navigation remains a shortcut to its one shared
-    // configuration home, rather than mounting another independent editor.
+    // Configuration and procedures share one selection lifetime, while the
+    // calibration editor mounts only on its dedicated page.
+    let calibration_context = settings_navigation::use_calibration_context(abort_only_mode);
+    let calibration_input_epoch = calibration_context.input_epoch;
+    let mut calibration_context_locked = calibration_context.locked;
+    let calibration_editor =
+        settings_navigation::use_calibration_editor_owner(calibration_input_epoch);
+    let mut applied_calibration_request = use_signal(|| 0_u64);
     use_effect(move || {
-        if *active_main_tab.read() == MainTab::Calibration {
-            settings_navigation::open_calibration();
-        }
-    });
-    use_effect(move || {
-        if *settings_navigation::CALIBRATION_REQUEST.read() != 0 {
+        let request = *settings_navigation::CALIBRATION_REQUEST.read();
+        if request != 0 && request != *applied_calibration_request.peek() {
+            applied_calibration_request.set(request);
             let mut overlay = show_settings_overlay;
-            overlay.set(true);
+            overlay.set(false);
+            open_dashboard_tool(
+                MainTab::Calibration,
+                active_main_tab,
+                dashboard_customization,
+            );
         }
     });
+    // Match the actual editor branch, including owner/permission retirement.
+    // This releases only a removed editor's local lock, never a pending POST.
+    let calibration_editor_mounted = *active_main_tab.read() == MainTab::Calibration
+        && crate::auth::can_view_calibration()
+        && !calibration_context.captures_blocked()
+        && !calibration_editor.is_retired()
+        && *calibration_editor.revision.read() != u64::MAX;
+    use_effect(use_reactive(
+        (&calibration_editor_mounted,),
+        move |(mounted,)| {
+            if !mounted {
+                calibration_context_locked.set(false);
+                calibration_editor.invalidate();
+            }
+        },
+    ));
 
     let sequence_progress = use_signal(sequence_progress_model::Model::default);
     let sequence_status = use_signal(sequence_progress_host::StatusObservation::default);
-    let mut sequence_result_request = use_signal(||None::<sequence_progress_model::RunKey>);
+    let mut sequence_result_request = use_signal(|| None::<sequence_progress_model::RunKey>);
     use_context_provider(|| sequence_status);
 
     let mut return_main_tab = use_signal(|| {
@@ -336,7 +360,8 @@ fn TelemetryDashboardInner() -> Element {
             let Some(layout) = layout_config.read().clone() else {
                 return;
             };
-            let data_layout = data_groups::with_grouped_views(igniter_sense_panel::with_tab(layout.data_tab));
+            let data_layout =
+                data_groups::with_grouped_views(igniter_sense_panel::with_tab(layout.data_tab));
             if data_layout.tabs.is_empty() {
                 return;
             }
@@ -1437,7 +1462,7 @@ fn TelemetryDashboardInner() -> Element {
                         );
                     }
 
-                    let ws_messages: Vec<(u64,u64,String)> =
+                    let ws_messages: Vec<(u64, u64, String)> =
                         if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
                             std::mem::take(&mut *q).into_iter().collect()
                         } else {
@@ -1799,22 +1824,95 @@ fn TelemetryDashboardInner() -> Element {
             count.to_string()
         }
     };
-    let condition_view=ALERT_CONDITION_VIEW.read().clone();
-    let unacked_warning_count=if warnings.read().iter().all(|event|event.condition.is_none()) {warnings_tab::unacknowledged_warning_count(&warnings.read(),*ack_warning_ts.read())}else{warnings.read().iter().filter(|event|condition_view.event_projection(event.condition.as_ref(),event.timestamp_ms<=*ack_warning_ts.read()).attention()).count()};
-    let unacked_error_count=errors.read().iter().filter(|event|condition_view.event_projection(event.condition.as_ref(),event.timestamp_ms<=*ack_error_ts.read()).attention()).count();
-    let condition_status=condition_view.summary(active_board_error_count>0,unacked_warning_count+unacked_error_count>0);
-    let condition_warning_count=condition_status.active_warnings+condition_status.unknown_warnings;
-    let condition_error_count=condition_status.active_errors+condition_status.unknown_errors;
-    let condition_unknown_event=warnings.read().iter().chain(errors.read().iter()).any(|event|condition_view.event_projection(event.condition.as_ref(),true).unknown());
-    let condition_records=condition_view.snapshot().map(|snapshot|snapshot.records.as_slice()).unwrap_or(&[]);
-    let condition_warning_history=condition_records.iter().filter(|record|record.severity==alert_conditions::Severity::Warning).count();
-    let condition_error_history=condition_records.iter().filter(|record|record.severity==alert_conditions::Severity::Error).count();
-    let board_abort_overlap=condition_records.iter().filter(|record|record.state==alert_conditions::ConditionState::Active && record.severity==alert_conditions::Severity::Error && BOARD_ABORT_SIGNAL.read().active_errors.iter().any(|error|error.source==record.key&&error.board==record.source)).count();
-    let active_error_count=active_board_error_count+condition_error_count-board_abort_overlap;
-    let warn_count_label = if !condition_status.snapshot_current && unacked_warning_count+condition_warning_count==0 {"?".into()}else{format_capped_alert_count(unacked_warning_count+condition_warning_count)};
+    let condition_view = ALERT_CONDITION_VIEW.read().clone();
+    let unacked_warning_count = if warnings
+        .read()
+        .iter()
+        .all(|event| event.condition.is_none())
+    {
+        warnings_tab::unacknowledged_warning_count(&warnings.read(), *ack_warning_ts.read())
+    } else {
+        warnings
+            .read()
+            .iter()
+            .filter(|event| {
+                condition_view
+                    .event_projection(
+                        event.condition.as_ref(),
+                        event.timestamp_ms <= *ack_warning_ts.read(),
+                    )
+                    .attention()
+            })
+            .count()
+    };
+    let unacked_error_count = errors
+        .read()
+        .iter()
+        .filter(|event| {
+            condition_view
+                .event_projection(
+                    event.condition.as_ref(),
+                    event.timestamp_ms <= *ack_error_ts.read(),
+                )
+                .attention()
+        })
+        .count();
+    let condition_status = condition_view.summary(
+        active_board_error_count > 0,
+        unacked_warning_count + unacked_error_count > 0,
+    );
+    let condition_warning_count =
+        condition_status.active_warnings + condition_status.unknown_warnings;
+    let condition_error_count = condition_status.active_errors + condition_status.unknown_errors;
+    let condition_unknown_event = warnings
+        .read()
+        .iter()
+        .chain(errors.read().iter())
+        .any(|event| {
+            condition_view
+                .event_projection(event.condition.as_ref(), true)
+                .unknown()
+        });
+    let condition_records = condition_view
+        .snapshot()
+        .map(|snapshot| snapshot.records.as_slice())
+        .unwrap_or(&[]);
+    let condition_warning_history = condition_records
+        .iter()
+        .filter(|record| record.severity == alert_conditions::Severity::Warning)
+        .count();
+    let condition_error_history = condition_records
+        .iter()
+        .filter(|record| record.severity == alert_conditions::Severity::Error)
+        .count();
+    let board_abort_overlap = condition_records
+        .iter()
+        .filter(|record| {
+            record.state == alert_conditions::ConditionState::Active
+                && record.severity == alert_conditions::Severity::Error
+                && BOARD_ABORT_SIGNAL
+                    .read()
+                    .active_errors
+                    .iter()
+                    .any(|error| error.source == record.key && error.board == record.source)
+        })
+        .count();
+    let active_error_count = active_board_error_count + condition_error_count - board_abort_overlap;
+    let warn_count_label = if !condition_status.snapshot_current
+        && unacked_warning_count + condition_warning_count == 0
+    {
+        "?".into()
+    } else {
+        format_capped_alert_count(unacked_warning_count + condition_warning_count)
+    };
     let err_count_label = if active_error_count > 0 {
-        format!("{active_error_count} active / {} history",format_capped_alert_count(err_count+condition_error_history))
-    } else {format_capped_alert_count(err_count+condition_error_history)};
+        format!(
+            "{active_error_count} active / {} history",
+            format_capped_alert_count(err_count + condition_error_history)
+        )
+    } else {
+        format_capped_alert_count(err_count + condition_error_history)
+    };
 
     let latest_warning_ts = warnings
         .read()
@@ -1829,15 +1927,20 @@ fn TelemetryDashboardInner() -> Element {
         .max()
         .unwrap_or(0);
 
-    let has_warnings = warn_count > 0 || condition_warning_history>0;
-    let has_errors = err_count > 0 || active_board_error_count > 0 || condition_error_history>0;
+    let has_warnings = warn_count > 0 || condition_warning_history > 0;
+    let has_errors = err_count > 0 || active_board_error_count > 0 || condition_error_history > 0;
     let has_active_notifications = !notifications.read().is_empty();
     let has_unread_notifications = !unread_notification_ids.read().is_empty();
 
-    let has_unacked_warnings = unacked_warning_count>0;
-    let has_unacked_errors = unacked_error_count>0;
-    let active_error_alert = (has_unacked_errors && has_errors) || active_board_error_count > 0 || condition_error_count>0;
-    let active_warning_alert = (has_unacked_warnings && has_warnings) || condition_warning_count>0 || !condition_status.snapshot_current || condition_unknown_event;
+    let has_unacked_warnings = unacked_warning_count > 0;
+    let has_unacked_errors = unacked_error_count > 0;
+    let active_error_alert = (has_unacked_errors && has_errors)
+        || active_board_error_count > 0
+        || condition_error_count > 0;
+    let active_warning_alert = (has_unacked_warnings && has_warnings)
+        || condition_warning_count > 0
+        || !condition_status.snapshot_current
+        || condition_unknown_event;
     let border_style = "1px solid transparent";
     let app_alert_effect = "none";
     let app_alert_animation = "";
@@ -2487,7 +2590,7 @@ fn TelemetryDashboardInner() -> Element {
                                     station_settings::GroundStationSettings {
                                         layout: layout.actions_tab.clone(), action_policy, fill_targets,
                                         abort_only_mode: *abort_only_mode.read(), theme: theme.clone(),
-                                        capture_sample_count: calibration_capture_sample_count,
+                                        calibration_context,
                                         on_manage_users: move |_| { let mut overlay=show_settings_overlay; overlay.set(false); admin_open.set(true); },
                                     }
                                 } else { p { "Waiting for station configuration." } }
@@ -3862,10 +3965,38 @@ fn TelemetryDashboardInner() -> Element {
                                     }
                                 },
                                 MainTab::Calibration => rsx! {
-                                    div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                        h2 { "Calibration" }
-                                        p { "Sensor calibration and loadcell configuration are together in Ground Station settings." }
-                                        button { r#type: "button", onclick: move |_| settings_navigation::open_calibration(), "Open loadcells & calibration" }
+                                    div { class:"gs26-calibration-page", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                        if crate::auth::can_view_calibration() {
+                                            if calibration_editor_mounted {
+                                                for editor_token in [calibration_editor.token()] {
+                                                    CalibrationTab {
+                                                        key: "calibration-{editor_token.0}-{editor_token.1}",
+                                                        theme: theme.clone(),
+                                                        can_edit: crate::auth::can_edit_calibration(),
+                                                        capture_sample_count: *calibration_capture_sample_count.read(),
+                                                        context_epoch: Some(calibration_input_epoch),
+                                                        view_owner: Some(editor_token),
+                                                        on_context_retired: move |original| {
+                                                            if *active_main_tab.peek() == MainTab::Calibration {
+                                                                calibration_editor.retire(original);
+                                                            }
+                                                        },
+                                                        on_context_locked: move |locked|calibration_context_locked.set(locked),
+                                                    }
+                                                }
+                                            } else {
+                                                if calibration_context.can_retry_read() {
+                                                    p {role:"status","The calibration view's station, account or connection changed. Reload calibration to read the current station; saved coefficients and this client's draft are kept."}
+                                                    button {r#type:"button",style:"padding:10px;min-height:44px;border-radius:8px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;",disabled:*calibration_context.locked.read()||*calibration_editor.revision.read()==u64::MAX,onclick:move |_|{
+                                                        if !crate::auth::can_view_calibration() || *calibration_context.locked.peek() || *calibration_editor.revision.peek()==u64::MAX { return; }
+                                                        if calibration_context.prepare_read_retry() { calibration_editor.reload(); }
+                                                    },"Reload calibration"}
+                                                } else {
+                                                    p {role:"status","Input selection is pending or unconfirmed. Calibration controls stay unavailable until an original request confirms the desired source."}
+                                                }
+                                                button {r#type:"button",style:"padding:10px;min-height:44px;border-radius:8px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;",onclick:move |_|{settings_navigation::select_scope("station");settings_navigation::select_section(settings_navigation::StationSection::Loadcells);let mut overlay=show_settings_overlay;overlay.set(true);},"Open loadcell settings"}
+                                            }
+                                        } else { p {role:"status","Calibration access is required to view sensor calibration."} }
                                     }
                                 },
                                 MainTab::CrewVoice | MainTab::Media => rsx! {},

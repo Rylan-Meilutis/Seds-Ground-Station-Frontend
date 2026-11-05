@@ -1323,10 +1323,27 @@ mod calibration_eval_tests {
 pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: usize,
     #[props(default)] context_epoch: Option<Signal<u64>>,
     #[props(default)] on_context_locked: EventHandler<bool>,
+    #[props(default)] view_owner: Option<(u64, u64)>,
+    #[props(default)] on_context_retired: EventHandler<(u64, u64)>,
 ) -> Element {
     let original_epoch = context_epoch.map(|epoch| *epoch.peek());
     let settings_owner = super::station_settings_request::use_factory_selected(move || {
         context_epoch.zip(original_epoch).is_none_or(|(epoch, original)| original != u64::MAX && *epoch.peek() == original)
+    });
+    // Immutable scope token: a late old GET/callback cannot retire a new editor.
+    let original_view_owner = use_hook(|| view_owner);
+    use_future(move || async move {
+        let Some(original) = original_view_owner else { return; };
+        loop {
+            if !settings_owner.current() {
+                on_context_retired.call(original);
+                return;
+            }
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(250).await;
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     });
     let layout_cfg = use_signal(|| None::<CalibrationTabLayout>);
     let sensors = layout_cfg
@@ -1393,7 +1410,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     save_cached_calibration_layout(&v);
                     layout_cfg.set(Some(v));
                 }
-                Err(_) if !settings_owner.current() => (),
+                Err(_) if !settings_owner.current() => {
+                    if let Some(original) = original_view_owner { on_context_retired.call(original); }
+                },
                 Err(e) => {
                     if layout_cfg.read().is_some() {
                         status.set(format!(
@@ -1486,7 +1505,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         status.set("Calibration loaded".to_string());
                     }
                 }
-                Err(_) if !settings_owner.current() => (),
+                Err(_) if !settings_owner.current() => {
+                    if let Some(original) = original_view_owner { on_context_retired.call(original); }
+                },
                 Err(e) => {
                     if cfg.read().is_some() {
                         if !*dirty.read() {

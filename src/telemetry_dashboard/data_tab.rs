@@ -150,14 +150,21 @@ fn chart_axis_label(value: f32, min: f32, max: f32) -> String {
         return format!("{value:.3e}");
     }
     let span = (max - min).abs();
-    let decimals = if span > 0.0 { (2.0 - span.log10().floor()).clamp(2.0, 9.0) as usize } else { 2 };
+    let decimals = if span > 0.0 {
+        (2.0 - span.log10().floor()).clamp(2.0, 9.0) as usize
+    } else {
+        2
+    };
     format!("{value:.decimals$}")
 }
 
 #[cfg(test)]
 #[test]
 fn microvolt_axis_labels_remain_distinct() {
-    assert_ne!(chart_axis_label(0.0000276, 0.0000276, 0.0000278), chart_axis_label(0.0000278, 0.0000276, 0.0000278));
+    assert_ne!(
+        chart_axis_label(0.0000276, 0.0000276, 0.0000278),
+        chart_axis_label(0.0000278, 0.0000276, 0.0000278)
+    );
     assert_eq!(chart_axis_label(10.0, 0.0, 100.0), "10.00");
 }
 
@@ -237,14 +244,24 @@ fn layout_for_fill_source(mut layout: DataTabLayout, source: Option<&str>) -> Da
         _ => None,
     };
     for tab in &mut layout.tabs {
-        let Some(subtabs) = tab.subtabs.as_mut() else { continue; };
-        let is_loadcell = |subtab: &DataSubtabSpec| matches!(subtab.data_type.as_deref(), Some("KG50" | "KG1000"));
-        let chart = subtabs.iter().filter(|s| is_loadcell(s))
+        let Some(subtabs) = tab.subtabs.as_mut() else {
+            continue;
+        };
+        let is_loadcell = |subtab: &DataSubtabSpec| {
+            matches!(subtab.data_type.as_deref(), Some("KG50" | "KG1000"))
+        };
+        let chart = subtabs
+            .iter()
+            .filter(|s| is_loadcell(s))
             .flat_map(|s| s.chart_groups.iter().flatten())
-            .find(|g| g.data_type.as_deref() == Some("LOADCELL_FILL_PERCENT")).cloned();
-        let summary = subtabs.iter().filter(|s| is_loadcell(s))
+            .find(|g| g.data_type.as_deref() == Some("LOADCELL_FILL_PERCENT"))
+            .cloned();
+        let summary = subtabs
+            .iter()
+            .filter(|s| is_loadcell(s))
             .flat_map(|s| s.summary_items.iter().flatten())
-            .find(|i| i.data_type == "LOADCELL_FILL_PERCENT").cloned();
+            .find(|i| i.data_type == "LOADCELL_FILL_PERCENT")
+            .cloned();
         for subtab in subtabs.iter_mut().filter(|s| is_loadcell(s)) {
             if let Some(groups) = &mut subtab.chart_groups {
                 groups.retain(|g| g.data_type.as_deref() != Some("LOADCELL_FILL_PERCENT"));
@@ -253,8 +270,18 @@ fn layout_for_fill_source(mut layout: DataTabLayout, source: Option<&str>) -> Da
                 items.retain(|i| i.data_type != "LOADCELL_FILL_PERCENT");
             }
             if selected.is_some() && subtab.data_type.as_deref() == selected {
-                if let Some(chart) = &chart { subtab.chart_groups.get_or_insert_default().push(chart.clone()); }
-                if let Some(summary) = &summary { subtab.summary_items.get_or_insert_default().push(summary.clone()); }
+                if let Some(chart) = &chart {
+                    subtab
+                        .chart_groups
+                        .get_or_insert_default()
+                        .push(chart.clone());
+                }
+                if let Some(summary) = &summary {
+                    subtab
+                        .summary_items
+                        .get_or_insert_default()
+                        .push(summary.clone());
+                }
             }
         }
     }
@@ -274,14 +301,24 @@ pub fn DataTab(
     use_effect(move || {
         if fill_targets.read().is_none() {
             spawn(async move {
-                if let Ok(targets) = super::http_get_json::<super::FillTargetsConfig>("/api/fill_targets").await {
+                if let Ok(targets) =
+                    super::http_get_json::<super::FillTargetsConfig>("/api/fill_targets").await
+                {
                     let mut fill_targets = fill_targets;
-                    if fill_targets.peek().is_none() { fill_targets.set(Some(targets)); }
+                    if fill_targets.peek().is_none() {
+                        fill_targets.set(Some(targets));
+                    }
                 }
             });
         }
     });
-    let layout = super::data_groups::with_grouped_views(layout_for_fill_source(super::igniter_sense_panel::with_tab(layout), fill_targets.read().as_ref().map(|cfg| cfg.fill_source.as_str())));
+    let layout = super::data_groups::with_grouped_views(layout_for_fill_source(
+        super::igniter_sense_panel::with_tab(layout),
+        fill_targets
+            .read()
+            .as_ref()
+            .map(|cfg| cfg.fill_source.as_str()),
+    ));
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
     let active_subtabs = use_signal(HashMap::<String, String>::new);
@@ -773,21 +810,65 @@ mod tests {
             ]
         })))});
         let original: super::DataTabLayout = serde_json::from_value(fixture).unwrap();
-        for (source, selected) in [(Some("kg50"), Some("KG50")), (Some("kg1000_absolute"), Some("KG1000")), (None, None), (Some("invalid"), None)] {
+        for (source, selected) in [
+            (Some("kg50"), Some("KG50")),
+            (Some("kg1000_absolute"), Some("KG1000")),
+            (None, None),
+            (Some("invalid"), None),
+        ] {
             let layout = super::layout_for_fill_source(original.clone(), source);
             assert_eq!(original.tabs.len(), layout.tabs.len());
             for tab in &layout.tabs {
                 for subtab in tab.subtabs.as_ref().unwrap() {
-                    let expected = usize::from(selected.is_some() && subtab.data_type.as_deref() == selected);
-                    assert_eq!(subtab.chart_groups.as_ref().unwrap().iter().filter(|g| g.data_type.as_deref() == Some("LOADCELL_FILL_PERCENT")).count(), expected, "{} {} charts", tab.id, subtab.id);
-                    assert_eq!(subtab.summary_items.as_ref().unwrap().iter().filter(|i| i.data_type == "LOADCELL_FILL_PERCENT").count(), expected, "{} {} summaries", tab.id, subtab.id);
-                    assert!(subtab.chart_groups.as_ref().unwrap().iter().any(|g| g.title.as_deref() == Some("Calibrated")));
+                    let expected =
+                        usize::from(selected.is_some() && subtab.data_type.as_deref() == selected);
+                    assert_eq!(
+                        subtab
+                            .chart_groups
+                            .as_ref()
+                            .unwrap()
+                            .iter()
+                            .filter(|g| g.data_type.as_deref() == Some("LOADCELL_FILL_PERCENT"))
+                            .count(),
+                        expected,
+                        "{} {} charts",
+                        tab.id,
+                        subtab.id
+                    );
+                    assert_eq!(
+                        subtab
+                            .summary_items
+                            .as_ref()
+                            .unwrap()
+                            .iter()
+                            .filter(|i| i.data_type == "LOADCELL_FILL_PERCENT")
+                            .count(),
+                        expected,
+                        "{} {} summaries",
+                        tab.id,
+                        subtab.id
+                    );
+                    assert!(
+                        subtab
+                            .chart_groups
+                            .as_ref()
+                            .unwrap()
+                            .iter()
+                            .any(|g| g.title.as_deref() == Some("Calibrated"))
+                    );
                 }
             }
-            assert_eq!(super::layout_for_fill_source(layout.clone(), source), layout, "rerender must not duplicate fill widgets");
+            assert_eq!(
+                super::layout_for_fill_source(layout.clone(), source),
+                layout,
+                "rerender must not duplicate fill widgets"
+            );
         }
         let small = super::layout_for_fill_source(original.clone(), Some("kg50"));
-        assert_eq!(super::layout_for_fill_source(small, Some("kg1000_absolute")), super::layout_for_fill_source(original, Some("kg1000_absolute")));
+        assert_eq!(
+            super::layout_for_fill_source(small, Some("kg1000_absolute")),
+            super::layout_for_fill_source(original, Some("kg1000_absolute"))
+        );
     }
 
     use super::{
@@ -875,7 +956,8 @@ mod tests {
         let _guard = DATA_TAB_TEST_GUARD.lock().unwrap();
         reset_latest_telemetry(&[]);
         reset_latest_telemetry(&[TelemetryRow {
-            source_timestamp_ms: None, timestamp_ms: 1_700_000_050_000,
+            source_timestamp_ms: None,
+            timestamp_ms: 1_700_000_050_000,
             received_timestamp_ms: 1_700_000_050_000,
             data_type: "BATTERY_VOLTAGE".to_string(),
             data_type_id: Default::default(),
@@ -1111,33 +1193,28 @@ fn DataSummarySection(
 
     if !summary_items.is_empty() {
         let grid_style = summary_grid_style(summary_items.len());
-        let summary_cards: Vec<SummaryCardValues> =
-            summary_items
-                .iter()
-                .enumerate()
-                .map(|(i, item)| {
-                    let min_max = if summary_item_show_min_max(
-                        item,
-                        current_tab.as_ref(),
-                        selected_subtab.as_ref(),
-                    ) {
-                        telemetry_channel_minmax(
-                            &item.data_type,
-                            item.sender_id.as_deref(),
-                            item.index,
-                        )
-                    } else {
-                        None
-                    };
-                    (
-                        translate_text(&item.label),
-                        min_max.map(|(min, _)| format_value(Some(min), item.formatter.as_ref())),
-                        min_max.map(|(_, max)| format_value(Some(max), item.formatter.as_ref())),
-                        summary_item_value(item),
-                        summary_color(i),
-                    )
-                })
-                .collect();
+        let summary_cards: Vec<SummaryCardValues> = summary_items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let min_max = if summary_item_show_min_max(
+                    item,
+                    current_tab.as_ref(),
+                    selected_subtab.as_ref(),
+                ) {
+                    telemetry_channel_minmax(&item.data_type, item.sender_id.as_deref(), item.index)
+                } else {
+                    None
+                };
+                (
+                    translate_text(&item.label),
+                    min_max.map(|(min, _)| format_value(Some(min), item.formatter.as_ref())),
+                    min_max.map(|(_, max)| format_value(Some(max), item.formatter.as_ref())),
+                    summary_item_value(item),
+                    summary_color(i),
+                )
+            })
+            .collect();
         return rsx! {
             div {
                 style: "{grid_style}",
@@ -1465,7 +1542,14 @@ fn render_chart_group(
                 scale.map(|(series_min, series_max)| {
                     [
                         (i, chart_axis_label(series_max, series_min, series_max)),
-                        (i, chart_axis_label((series_min + series_max) * 0.5, series_min, series_max)),
+                        (
+                            i,
+                            chart_axis_label(
+                                (series_min + series_max) * 0.5,
+                                series_min,
+                                series_max,
+                            ),
+                        ),
                         (i, chart_axis_label(series_min, series_min, series_max)),
                     ]
                 })
@@ -2117,68 +2201,87 @@ fn fmt_span(span_min: f32) -> String {
 #[component]
 pub(super) fn Kg50InputSelector(
     theme: ThemeConfig,
+    selection: super::settings_navigation::CalibrationContext,
     #[props(default = false)] disabled: bool,
-    #[props(default)] on_changed: EventHandler<serde_json::Value>,
-    #[props(default)] on_changing: EventHandler<()>,
-    #[props(default)] on_settled: EventHandler<()>,
 ) -> Element {
+    use super::settings_navigation::InputSelectionStatus;
+    // Every write trigger must retain this mounted form's original owner
+    // before the parent may capture the explicit operation. No stale-view rebind.
     let settings_owner = super::station_settings_request::use_factory();
     let mut input = use_signal(|| None::<String>);
-    let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
     use_future(move || async move {
         loop {
-            if !*busy.peek()
-                && let Ok(cfg) = settings_owner.get::<serde_json::Value>("/api/calibration").await
-                    && !*busy.peek() {
-                        input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
-                    }
+            let original_epoch = *selection.input_epoch.peek();
+            if !selection.selection.peek().pending()
+                && let Ok(cfg) = settings_owner
+                    .get::<serde_json::Value>("/api/calibration")
+                    .await
+                && *selection.input_epoch.peek() == original_epoch
+                && !selection.selection.peek().pending()
+            {
+                let loaded = cfg
+                    .get("kg50_input")
+                    .and_then(|v| v.as_str())
+                    .filter(|value| super::settings_navigation::known_input(value));
+                input.set(loaded.map(str::to_owned));
+                message.set(if loaded.is_none() {
+                    "Input selection is unavailable on this station; no source was assumed.".into()
+                } else {
+                    String::new()
+                });
+            }
             #[cfg(target_arch = "wasm32")]
             gloo_timers::future::TimeoutFuture::new(2000).await;
             #[cfg(not(target_arch = "wasm32"))]
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     });
-    let selected = input.read().clone().unwrap_or_else(|| "amp2".into());
+    use_effect(move || {
+        let input_loaded = input.with_peek(Option::is_some);
+        if let InputSelectionStatus::Confirmed(confirmed) = &*selection.selection.read()
+            && input_loaded
+            && selection.owner_current()
+        {
+            input.set(Some(confirmed.clone()));
+        }
+    });
+    let status = selection.selection.read().clone();
+    let busy = status.pending();
+    let unknown = matches!(status, InputSelectionStatus::Unconfirmed { .. });
+    let selected = input.read().clone().unwrap_or_default();
     rsx! {
         section { style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background}; display:flex; flex-direction:column; gap:8px;",
             label { r#for: "kg50-input", style: "font-weight:700; color:{theme.text_primary};", "50 kg input" }
             select {
-                id: "kg50-input",
-                value: "{selected}",
-                disabled: disabled || *busy.read() || input.read().is_none(),
-                style: "padding:8px; border-radius:6px; background:{theme.button_background}; color:{theme.text_primary}; border:1px solid {theme.border}; font:inherit; max-width:100%;",
-                onchange: move |event| {
-                    let requested = event.value();
-                    if disabled || !matches!(requested.as_str(), "amp2" | "p6_differential") || *busy.peek() { return; }
-                    busy.set(true);
-                    on_changing.call(());
-                    message.set("Saving input selection…".into());
-                    spawn(async move {
-                        let body = serde_json::json!({"input":requested});
-                        match settings_owner.post::<serde_json::Value,serde_json::Value>("/api/calibration/kg50_input", &body).await {
-                            Ok(cfg) => {
-                                input.set(Some(cfg["kg50_input"].as_str().unwrap_or("amp2").to_string()));
-                                on_changed.call(cfg);
-                                message.set("Selection saved. Waiting for fresh readings from the selected input.".into());
-                            }
-                            Err(_) if !settings_owner.current() => return,
-                            Err(error) => message.set(format!("Input change failed: {error}")),
-                        }
-                        busy.set(false);
-                        on_settled.call(());
-                    });
+                id: "kg50-input",value:"{selected}",
+                disabled:disabled||busy||unknown||input.read().is_none(),
+                style:"padding:8px;border-radius:6px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;max-width:100%;",
+                onchange:move |event|{
+                    let requested=event.value();
+                    if !settings_owner.current()||disabled||busy||unknown||input.peek().is_none(){return;}
+                    selection.request.call(requested);
                 },
-                option { value: "amp2", "Normal · AMP2 / P8" }
-                option { value: "p6_differential", "P6 · pin 3 (+) − pin 4 (−)" }
+                if selected.is_empty() {option {value:"",disabled:true,"Input selection unavailable"}}
+                option {value:"amp2","Normal · AMP2 / P8"}
+                option {value:"p6_differential","P6 · pin 3 (+) − pin 4 (−)"}
             }
-            p { style: "margin:0; font-size:12px; color:{theme.text_muted};", "Selected input uses the fast load-cell scan with a 250 Hz reporting target. Each input keeps its own calibration." }
-            if selected == "p6_differential" {
-                p { style: "margin:0; font-size:12px; color:{theme.text_secondary};", "P6 raw readings are differential volts. Calibrate this input below before using kilograms. SD records retain differential ADC samples in volts." }
+            p {style:"margin:0;font-size:12px;color:{theme.text_muted};","Selected input uses the fast load-cell scan with a 250 Hz reporting target. Each input keeps its own calibration."}
+            if selected=="p6_differential" {p {style:"margin:0;font-size:12px;color:{theme.text_secondary};","P6 raw readings are differential volts. Calibrate this input on the Calibration page before using kilograms. SD records retain differential ADC samples in volts."}}
+            match status {
+                InputSelectionStatus::Pending(requested)=>rsx!{p {role:"status",title:"Requested input: {requested}","Saving input selection… Calibration remains unavailable until the station confirms it."}},
+                InputSelectionStatus::Confirmed(_)=>rsx!{p {role:"status","Selection saved. Waiting for fresh readings from the selected input."}},
+                InputSelectionStatus::Unconfirmed{requested,detail}=>rsx!{
+                    p {role:"status","{detail}"}
+                    button {r#type:"button",style:"padding:10px;min-height:44px;border-radius:8px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;",disabled,onclick:move |_|{if settings_owner.current(){selection.request.call(requested.clone());}},"Confirm selected input again"}
+                },
+                InputSelectionStatus::Retired(detail)=>rsx!{
+                    p {role:"status","{detail}"}
+                    button {r#type:"button",style:"padding:10px;min-height:44px;border-radius:8px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;",disabled:disabled||input.read().is_none(),onclick:move |_|{if settings_owner.current()&&let Some(desired)=input.peek().clone(){selection.request.call(desired);}},"Confirm current station input"}
+                },
+                InputSelectionStatus::Ready=>rsx!{},
             }
-            if !message.read().is_empty() {
-                p { role: "status", style: "margin:0; font-size:12px; color:{theme.text_secondary};", "{message}" }
-            }
+            if !message.read().is_empty() {p {role:"status","{message}"}}
         }
     }
 }
