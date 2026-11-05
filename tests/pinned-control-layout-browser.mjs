@@ -12,8 +12,8 @@ let recentRows=[]; let recentHits=0; let holdRecent=false; let heldResponse; con
 let fillSource='kg50';
 const dashboardLayout=example('layout.full');
 const actionPolicy=example('action-policy');
-actionPolicy.controls=['ToggleAvBayUnderglow','ToggleFlightBuzzer'].map(cmd=>({cmd,enabled:true,blink:'none',actuated:false}));
-dashboardLayout.actions_tab.actions=[['Underglow','ToggleAvBayUnderglow'],['FC Buzzer','ToggleFlightBuzzer']].map(([label,cmd])=>({label,cmd,border:'#38bdf8',bg:'#172638',fg:'#fff',group:'Avionics'}));
+actionPolicy.controls=['ToggleAvBayUnderglow','ToggleFlightBuzzer','DeployChutes','ExpandParachutes'].map(cmd=>({cmd,enabled:true,blink:'none',actuated:false}));
+dashboardLayout.actions_tab.actions=[['Underglow','ToggleAvBayUnderglow'],['FC Buzzer','ToggleFlightBuzzer'],['Deploy parachute','DeployChutes'],['Expand parachute','ExpandParachutes']].map(([label,cmd])=>({label,cmd,border:'#38bdf8',bg:'#172638',fg:'#fff',group:'Avionics',new_row_before:cmd==='DeployChutes'}));
 const commandRequests=[];
 for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label:id,channels:[],subtabs:[
   {id:'large',label:'1000 kg',data_type:'KG1000',channels:['Raw'],chart:{enabled:true},chart_groups:[{title:'Fill %',data_type:'LOADCELL_FILL_PERCENT',channels:[0]}],summary_items:[{label:'Fill %',data_type:'LOADCELL_FILL_PERCENT',index:0}]},
@@ -67,7 +67,7 @@ try {
  await card.getByRole('button',{name:'Pin to top bar',exact:true}).click();await page.getByRole('button',{name:'Done',exact:true}).click();
  const strip=page.locator('[aria-label="Pinned telemetry"]'),point=strip.locator(':scope > div').first();await strip.waitFor();
  async function reading(value){const now=Date.now();recentRows=[{data_type:'LOADCELL_50_WEIGHT_KG',sender_id:'DAQ',values:[value],timestamp_ms:now,received_timestamp_ms:now}];broadcast({ty:'TelemetryBatch',data:recentRows});await page.waitForFunction(expected=>document.querySelector('[aria-label="Pinned telemetry"] .gs26-card-value')?.textContent.trim().replace(/\s+/g,' ')===expected,value.toFixed(2)+' kg');await page.waitForTimeout(70);return point.evaluate(element=>{const value=element.querySelector('.gs26-card-value'),unit=element.querySelector('.gs26-pinned-unit'),number=element.querySelector('.gs26-pinned-number');const rect=e=>{const r=e.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height};};return{point:rect(element),value:rect(value),unit:unit?rect(unit):null,number:number?rect(number):null,text:value.textContent,scrollWidth:value.scrollWidth,clientWidth:value.clientWidth};});}
- for(const width of [1280,390,320]){
+ for(const width of [1280,844,390,320]){
   await page.setViewportSize({width,height:900});const rows=[];
   for(const value of [0,20,0,-20,123456.78,-123456.78,0])rows.push(await reading(value));
   measurements.push({kind:'pinned',width,rows});if(process.env.GS_LAYOUT_RESULTS)fs.writeFileSync(process.env.GS_LAYOUT_RESULTS,JSON.stringify({measurements,phase:'pinned'},null,2)+'\n');
@@ -84,6 +84,22 @@ try {
   await reading(0);
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'page contains pinned strip at '+width);
  }
+ await page.setViewportSize({width:1280,height:900});await page.getByRole('button',{name:'Customize dashboard',exact:true}).click();
+ const labels=['50 kg loadcell','1000 kg loadcell','Chamber pressure','Tank pressure','Fill level','Fill box battery','Valve board battery','Pilot'];
+ for(const label of labels.slice(1)){const card=page.locator('.gs26-dashboard-card').filter({has:page.getByText(label,{exact:true})});await card.getByRole('button',{name:'Pin to top bar',exact:true}).click();}
+ await page.getByRole('button',{name:'Done',exact:true}).click();
+ for(const width of[1280,844,390,320]){
+  await page.setViewportSize({width,height:900});await page.waitForTimeout(120);
+  const sizes=await strip.locator(':scope > div').evaluateAll(nodes=>nodes.map(e=>{const r=e.getBoundingClientRect(),label=e.querySelector('.gs26-card-label').getBoundingClientRect(),value=e.querySelector('.gs26-card-value').getBoundingClientRect();return{text:e.querySelector('.gs26-card-label').textContent,x:r.x,y:r.y,width:r.width,height:r.height,labelRight:label.right,valueX:value.x,valueY:value.y};}));
+  assert.deepEqual(sizes.map(e=>e.text),labels,'saved pinned order retained');assert.equal(sizes.length,8,'no pin disappears at '+width);
+  assert(sizes.every(e=>e.x>=0&&e.x+e.width<=width+1),'all eight pins contained at '+width);
+  assert(Math.max(...sizes.map(e=>e.width))-Math.min(...sizes.map(e=>e.width))>20,'pairs use content sizes instead of equal widths');
+  assert(sizes.every(e=>e.valueX-e.labelRight<9||e.valueY>e.y+15),'label/value gap stays small at '+width);
+  assert(await strip.evaluate(e=>e.scrollWidth<=e.clientWidth+1),'pins wrap without strip scrolling');
+  if(width<=390)assert(new Set(sizes.map(e=>Math.round(e.y))).size>1,'mobile pins wrap to rows');
+  await page.screenshot({path:'/tmp/pinned-compact-'+width+'.png'});
+ }
+ await page.reload();await strip.waitFor();assert.deepEqual(await strip.locator('.gs26-card-label').allTextContents(),labels,'pin choices survive reload');
  await page.getByRole('button',{name:/Choose tab/}).click();await page.getByRole('button',{name:'Actions',exact:true}).click();
  for(const width of [1280,390,320]){
   await page.setViewportSize({width,height:900});
@@ -99,11 +115,18 @@ try {
     assert.equal(geometry.whiteSpace,'nowrap','cosmetic label remains intact');assert(geometry.scrollWidth<=geometry.clientWidth+1,'button content contained '+label+'/'+width);buttons.push(geometry);
    }
    if(width===320)assert(buttons[1].button.y>=buttons[0].button.y+buttons[0].button.height,'button row wraps into full controls');
+   for(const command of ['ToggleAvBayUnderglow','ToggleFlightBuzzer','DeployChutes','ExpandParachutes']){
+    const button=page.locator('button[data-dispatch-command="'+command+'"]');
+    const contained=await button.evaluate(e=>{const b=e.getBoundingClientRect();return [...e.querySelectorAll('span')].every(n=>{const r=n.getBoundingClientRect();return r.top>=b.top-1&&r.bottom<=b.bottom+1&&r.left>=b.left-1&&r.right<=b.right+1})&&e.scrollHeight<=e.clientHeight+1;});
+    assert(contained,'confirmation copy and badge stay inside '+command+'/'+width);
+   }
+   const cosmetic=await page.locator('button[data-dispatch-command="ToggleFlightBuzzer"]').boundingBox(),following=await page.locator('button[data-dispatch-command="DeployChutes"]').boundingBox();
+   assert(following.y>=cosmetic.y+cosmetic.height+6,'following row clears complete confirmation button');
    measurements.push({kind:'buttons',width,state,buttons});
   }
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'no offscreen button at '+width);
  }
  assert.deepEqual(commandRequests,[],'layout inspection sends no commands');assert.deepEqual(errors,[]);
  if(process.env.GS_LAYOUT_RESULTS)fs.writeFileSync(process.env.GS_LAYOUT_RESULTS,JSON.stringify({measurements,commands:commandRequests,errors},null,2)+'\n');
- await context.close();console.log('PASS actual pinned geometry 0→20→0/negative/longer full-precision values and mobile-contained full Underglow/FC Buzzer labels, no commands');
+ await context.close();console.log('PASS compact8-pin wrapping/order/reload, requested-state/badge containment and actual pinned geometry 0→20→0/negative/longer full-precision values and mobile-contained full Underglow/FC Buzzer labels, no commands');
 }finally{await browser.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));}

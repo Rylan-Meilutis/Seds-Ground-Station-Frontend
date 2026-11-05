@@ -872,6 +872,7 @@ pub fn ActionsTab(
                                                 let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { "Unconfirmed" } else { "Disabled" };
                                                 rsx! {
                                                     button {
+                                                        class: "gs26-action-control",
                                                         style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\" && !physical_output_action(&action.cmd))}",
                                                         disabled: !enabled,
                                                         aria_busy: sequence == Some(super::sequence_indicator::Progress::Running),
@@ -943,7 +944,7 @@ pub fn ActionsTab(
                                                                 }
                                                             }
                                                         },
-                                                        span { style: "min-width:0; flex:1 1 auto;",
+                                                        span { class:"gs26-action-copy",style: "min-width:0; flex:1 1 auto;",
                                                             span {title:"{action.label}",style:if cosmetic_output_action(&action.cmd) {"display:block;white-space:nowrap;line-height:1.25;"} else {"display:block;overflow-wrap:break-word;white-space:normal;line-height:1.25;"}, "{action.label}"}
                                                             if cosmetic_output_action(&action.cmd) {
                                                                 span {style:"display:block;font-size:11px;font-weight:400;line-height:1.3;", "{requested_label}; owner unconfirmed"}
@@ -953,6 +954,7 @@ pub fn ActionsTab(
                                                             }
                                                         }
                                                             span {
+                                                                class:"gs26-action-badge",
                                                                 "aria-hidden": enabled && !unconfirmed && sequence_label.is_empty(),
                                                                 style: "visibility:{badge_visibility};flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
                                                                 "{translate_text(badge_label)}"

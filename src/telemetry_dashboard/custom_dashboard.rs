@@ -608,6 +608,29 @@ mod trend_tests {
 
 }
 
+// Reserve the configured operating range, rather than every possible float.
+// Values outside it retain the existing scrollable full-precision slot.
+fn pinned_number_chars(card: &Card) -> usize {
+    if card.display == "state" { return "Closed / Off".len(); }
+    let mut magnitude = card.min.abs().max(card.max.abs()).ceil().max(1.0);
+    let mut digits = 1;
+    while magnitude >= 10.0 && digits < 12 { magnitude /= 10.0; digits += 1; }
+    1 + digits + if card.precision == 0 {0} else {1 + card.precision}
+}
+#[cfg(test)]
+mod pinned_size_tests {
+    use super::*;
+    #[test]
+    fn range_and_precision_reserve_digits_without_reserving_screen_width() {
+        let mut card=defaults()[0].clone();card.min=0.0;card.max=50.0;card.precision=2;
+        assert_eq!(pinned_number_chars(&card),6);
+        card.min=-1000.0;card.max=1000.0;card.precision=1;
+        assert_eq!(pinned_number_chars(&card),7);
+        card.precision=0;assert_eq!(pinned_number_chars(&card),5);
+        card.min=-99.999;card.max=99.999;card.precision=2;assert_eq!(pinned_number_chars(&card),7);
+        card.display="state".into();assert_eq!(pinned_number_chars(&card),12);
+    }
+}
 #[component]
 fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] aggregate: bool, #[props(default = false)] compact: bool) -> Element {
     // Share Data's ingress-driven render cadence. A per-card200ms sampler
@@ -661,7 +684,8 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
     // remain readable by scrolling their numeric slot rather than truncation.
     let compact_number = value.map(|v| if card.display == "state" { text.clone() }
         else { format!("{v:.precision$}", precision=card.precision) }).unwrap_or_else(|| "—".into());
-    let compact_value_style = format!("inline-size:{}ch;flex:0 0 {}ch;overflow-x:auto;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;", 14 + card.precision, 14 + card.precision);
+    let compact_chars = pinned_number_chars(&card);
+    let compact_value_style = format!("inline-size:{compact_chars}ch;flex:0 0 {compact_chars}ch;overflow-x:auto;white-space:nowrap;text-align:left;font-variant-numeric:tabular-nums;");
     let fraction = value
         .map(|v| ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0))
         .unwrap_or(0.0);
@@ -673,9 +697,9 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
                 .map(|(min,max)|if thrust {(min*9.80665,max*9.80665)}else{(min,max)})
         }
     }else{None};
-    rsx! {div { style: if compact { "display:grid;grid-template-columns:max-content max-content;align-items:baseline;gap:2px 6px;flex:0 0 auto;white-space:nowrap;" } else { "" },
-        strong {class:"gs26-card-label","{card.label}"}
-        div {class:"gs26-card-value",style:if compact {"font-size:13px;display:flex;align-items:baseline;gap:0.35em;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},
+    rsx! {div { style: if compact { "display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px;flex:0 0 auto;min-width:0;max-width:100%;" } else { "" },
+        strong {class:"gs26-card-label",style:if compact {"min-width:0;max-width:100%;overflow-wrap:anywhere;"}else{""},"{card.label}"}
+        div {class:"gs26-card-value",style:if compact {"font-size:13px;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 4px;min-width:0;max-width:100%;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},
             if compact {
                 span {class:"gs26-pinned-number",style:"{compact_value_style}","{compact_number}"}
                 if card.display != "state" {span {class:"gs26-pinned-unit",style:if value.is_some(){"visibility:visible;"}else{"visibility:hidden;"}," {card.unit}"}}
@@ -693,7 +717,7 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
                 if let Some(stats)=capture {if let Some((start,_))=window { {format!("Launch capture · last sample +{:.1}s",stats.last.time.saturating_sub(start) as f64/1000.0)} }}
                 else {"Launch capture · no source-timed samples"}
             }
-        } else if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:format!("{}color:{};",if compact {"grid-column:1 / -1;inline-size:0;min-inline-size:100%;white-space:normal;overflow-wrap:anywhere;"}else{""},if age.is_none_or(|a|a>10000){"#fbbf24"}else{"#94a3b8"}),
+        } else if !compact || age.is_none_or(|a| a>10000) { small {class:"gs26-card-freshness",style:format!("{}color:{};",if compact {"flex-basis:100%;inline-size:0;min-inline-size:100%;white-space:normal;overflow-wrap:anywhere;"}else{""},if age.is_none_or(|a|a>10000){"#fbbf24"}else{"#94a3b8"}),
             if let Some(ms)=age {if ms>10000 {"Stale · "} "{ms/1000}s ago" if !card.sender.is_empty() {" · {card.sender}"}}else{"Waiting for telemetry"}
         }}
     }}
@@ -704,7 +728,7 @@ pub(super) fn PinnedTelemetry(#[props(default)] test_fire_mode: bool) -> Element
     let cards = use_context::<Signal<Vec<Card>>>();
     rsx! {
         if cards.read().iter().any(|card| card.pinned) {
-            div { style:"grid-column:1 / -1;grid-row:5;display:flex;flex-wrap:nowrap;justify-content:flex-start;align-items:start;text-align:center;gap:8px 16px;padding:6px 0;font-size:12px;min-width:0;max-width:100%;overflow-x:auto;",
+            div { style:"grid-column:1 / -1;grid-row:5;display:flex;flex-wrap:wrap;justify-content:flex-start;align-items:start;text-align:left;gap:6px 14px;padding:6px 0;font-size:12px;min-width:0;max-width:100%;",
                 "aria-label":"Pinned telemetry",
                 for (index, card) in cards.read().iter().enumerate().filter(|(_,card)|card.pinned) {
                     TelemetryCard {key:"pinned-{index}", card:display_card(card.clone(),test_fire_mode), compact:true, thrust:test_fire_mode && card.data_type=="LOADCELL_WEIGHT_KG"}
