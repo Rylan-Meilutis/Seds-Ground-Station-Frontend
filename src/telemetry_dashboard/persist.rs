@@ -112,7 +112,20 @@ pub fn get_or(key: &str, default: &str) -> String {
 
 /// Returns the UTF-8 byte size of a persisted string value.
 pub fn byte_len(key: &str) -> usize {
-    get_string(key).map(|value| value.len()).unwrap_or(0)
+    #[cfg(target_arch = "wasm32")]
+    {
+        get_string(key).map(|value| value.len()).unwrap_or(0)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match native::byte_len(key) {
+            Ok(length) => length,
+            Err(error) => {
+                crate::native_storage::report_error("read frontend preferences", &error);
+                0
+            }
+        }
+    }
 }
 
 /// Returns the combined UTF-8 byte size of values whose keys share a prefix.
@@ -151,7 +164,124 @@ mod native {
     use std::io;
     use std::sync::Mutex;
 
-    static STORE_LOCK: Mutex<()> = Mutex::new(());
+    static STORE: std::sync::LazyLock<Mutex<CachedStore>> = std::sync::LazyLock::new(|| {
+        Mutex::new(CachedStore {
+            path: None,
+            identity: None,
+            map: HashMap::new(),
+            #[cfg(test)]
+            reloads: 0,
+        })
+    });
+
+    /// Identity includes inode/change time on Unix, so same-size atomic replacements
+    /// and in-place edits invalidate the cache. Every operation still takes the
+    /// process-shared transaction lock; another app process cannot lose its writes.
+    #[derive(PartialEq, Eq)]
+    struct FileIdentity {
+        len: u64,
+        modified: Option<std::time::SystemTime>,
+        created: Option<std::time::SystemTime>,
+        #[cfg(unix)]
+        unix: (u64, u64, i64, i64),
+    }
+    fn file_identity(path: &std::path::Path) -> io::Result<Option<FileIdentity>> {
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Some(FileIdentity {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
+            #[cfg(unix)]
+            unix: (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ),
+        }))
+    }
+    struct CachedStore {
+        path: Option<std::path::PathBuf>,
+        identity: Option<FileIdentity>,
+        map: HashMap<String, String>,
+        #[cfg(test)]
+        reloads: usize,
+    }
+    impl CachedStore {
+        fn invalidate(&mut self) {
+            self.path = None;
+        }
+        fn refresh(&mut self, path: &std::path::Path) -> io::Result<()> {
+            let identity = file_identity(path)?;
+            if self.path.as_deref() == Some(path) && self.identity == identity {
+                return Ok(());
+            }
+            self.invalidate();
+            // Cooperating writers hold our sidecar lock. Also fail closed if an
+            // external editor repeatedly replaces the file during the read.
+            let mut before = identity;
+            for _ in 0..3 {
+                let map = load_map(path)?;
+                #[cfg(test)]
+                {
+                    self.reloads += 1;
+                }
+                let after = file_identity(path)?;
+                if before == after {
+                    self.map = map;
+                    self.identity = after;
+                    self.path = Some(path.to_owned());
+                    return Ok(());
+                }
+                before = after;
+            }
+            Err(io::Error::other(
+                "frontend preferences changed while reading",
+            ))
+        }
+        fn read<T>(
+            &mut self,
+            path: &std::path::Path,
+            read: impl FnOnce(&HashMap<String, String>) -> T,
+        ) -> io::Result<T> {
+            let _file_lock = crate::native_storage::transaction_lock(path)?;
+            self.refresh(path)?;
+            Ok(read(&self.map))
+        }
+        fn update(
+            &mut self,
+            path: &std::path::Path,
+            update: impl FnOnce(&mut HashMap<String, String>) -> bool,
+        ) -> io::Result<()> {
+            self.update_with(path, update, save_map)
+        }
+        fn update_with(
+            &mut self,
+            path: &std::path::Path,
+            update: impl FnOnce(&mut HashMap<String, String>) -> bool,
+            save: impl FnOnce(&std::path::Path, &HashMap<String, String>) -> io::Result<()>,
+        ) -> io::Result<()> {
+            let _file_lock = crate::native_storage::transaction_lock(path)?;
+            self.refresh(path)?;
+            if !update(&mut self.map) {
+                return Ok(());
+            }
+            // Never serve an in-memory mutation when durable replacement failed.
+            self.invalidate();
+            save(path, &self.map)
+        }
+    }
+    fn store() -> io::Result<std::sync::MutexGuard<'static, CachedStore>> {
+        STORE
+            .lock()
+            .map_err(|_| io::Error::other("frontend preference lock poisoned"))
+    }
 
     /// Resolves the default native storage root when no platform-specific path is available.
     fn fallback_storage_base_dir() -> std::path::PathBuf {
@@ -187,8 +317,7 @@ mod native {
     }
 
     /// Loads the native persistence map from disk.
-    fn load_map() -> Result<HashMap<String, String>, io::Error> {
-        let path = storage_path();
+    fn load_map(path: &std::path::Path) -> Result<HashMap<String, String>, io::Error> {
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -207,8 +336,7 @@ mod native {
     }
 
     /// Saves the native persistence map back to disk.
-    fn save_map(map: &HashMap<String, String>) -> Result<(), io::Error> {
-        let path = storage_path();
+    fn save_map(path: &std::path::Path, map: &HashMap<String, String>) -> Result<(), io::Error> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -217,74 +345,248 @@ mod native {
         Ok(())
     }
 
-    /// Reads a string key from the native persistence file.
+    /// Reads just the requested value; the parsed map is shared until the file changes.
     pub fn get_string(key: &str) -> Result<Option<String>, io::Error> {
-        let _guard = STORE_LOCK
-            .lock()
-            .map_err(|_| io::Error::other("frontend preference lock poisoned"))?;
-        let _file_lock = crate::native_storage::transaction_lock(&storage_path())?;
-        let map = load_map()?;
-        Ok(map.get(key).cloned())
+        store()?.read(&storage_path(), |map| map.get(key).cloned())
     }
-
-    /// Writes a string key into the native persistence file.
+    pub fn byte_len(key: &str) -> Result<usize, io::Error> {
+        store()?.read(&storage_path(), |map| map.get(key).map_or(0, String::len))
+    }
     pub fn set_string(key: &str, value: &str) -> Result<(), io::Error> {
-        let _guard = STORE_LOCK
-            .lock()
-            .map_err(|_| io::Error::other("frontend preference lock poisoned"))?;
-        let _file_lock = crate::native_storage::transaction_lock(&storage_path())?;
-        let mut map = load_map()?;
-        map.insert(key.to_string(), value.to_string());
-        save_map(&map)?;
-        Ok(())
+        store()?.update(&storage_path(), |map| {
+            if map.get(key).is_some_and(|old| old == value) {
+                return false;
+            }
+            map.insert(key.to_owned(), value.to_owned());
+            true
+        })
     }
-
-    /// Removes a key from the native persistence file.
     pub fn _remove(key: &str) -> Result<(), io::Error> {
-        let _guard = STORE_LOCK
-            .lock()
-            .map_err(|_| io::Error::other("frontend preference lock poisoned"))?;
-        let _file_lock = crate::native_storage::transaction_lock(&storage_path())?;
-        let mut map = load_map()?;
-        map.remove(key);
-        save_map(&map)?;
-        Ok(())
+        store()?.update(&storage_path(), |map| map.remove(key).is_some())
     }
-
-    /// Removes all keys that share a prefix from the native persistence file.
     pub fn remove_prefix(prefix: &str) -> Result<(), io::Error> {
-        let _guard = STORE_LOCK
-            .lock()
-            .map_err(|_| io::Error::other("frontend preference lock poisoned"))?;
-        let _file_lock = crate::native_storage::transaction_lock(&storage_path())?;
-        let mut map = load_map()?;
-        map.retain(|key, _| !key.starts_with(prefix));
-        save_map(&map)?;
-        Ok(())
+        store()?.update(&storage_path(), |map| {
+            let before = map.len();
+            map.retain(|key, _| !key.starts_with(prefix));
+            map.len() != before
+        })
     }
-
-    /// Sums persisted value sizes for keys that share a prefix.
     pub fn byte_len_prefix(prefix: &str) -> Result<usize, io::Error> {
-        let _guard = STORE_LOCK
-            .lock()
-            .map_err(|_| io::Error::other("frontend preference lock poisoned"))?;
-        let _file_lock = crate::native_storage::transaction_lock(&storage_path())?;
-        let map = load_map()?;
-        Ok(map
-            .iter()
-            .filter(|(key, _)| key.starts_with(prefix))
-            .map(|(_, value)| value.len())
-            .sum())
+        store()?.read(&storage_path(), |map| {
+            map.iter()
+                .filter(|(key, _)| key.starts_with(prefix))
+                .map(|(_, value)| value.len())
+                .sum()
+        })
     }
-
-    /// Removes the native persistence file entirely.
     pub fn clear_all() -> Result<(), io::Error> {
-        let _guard = STORE_LOCK
-            .lock()
-            .map_err(|_| io::Error::other("frontend preference lock poisoned"))?;
+        let mut store = store()?;
         let path = storage_path();
         let _file_lock = crate::native_storage::transaction_lock(&path)?;
+        store.invalidate();
         crate::native_storage::remove_durable(&path)
+    }
+
+    #[cfg(test)]
+    mod cache_tests {
+        use super::*;
+        struct Fixture {
+            directory: std::path::PathBuf,
+            path: std::path::PathBuf,
+            cache: CachedStore,
+        }
+        impl Fixture {
+            fn new() -> Self {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let directory = std::env::temp_dir().join(format!(
+                    "gs26-persist-cache-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ));
+                std::fs::create_dir_all(&directory).unwrap();
+                Self {
+                    path: directory.join("storage.json"),
+                    directory,
+                    cache: CachedStore {
+                        path: None,
+                        identity: None,
+                        map: HashMap::new(),
+                        reloads: 0,
+                    },
+                }
+            }
+            fn get(&mut self, key: &str) -> io::Result<Option<String>> {
+                self.cache.read(&self.path, |map| map.get(key).cloned())
+            }
+            fn replace(&self, value: &str) {
+                save_map(&self.path, &HashMap::from([("key".into(), value.into())])).unwrap();
+            }
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.directory);
+            }
+        }
+        #[test]
+        fn unchanged_large_store_reads_parse_once_and_measure_without_clone() {
+            let mut f = Fixture::new();
+            let large = "x".repeat(660_000);
+            save_map(
+                &f.path,
+                &HashMap::from([("key".into(), "on".into()), ("telemetry".into(), large)]),
+            )
+            .unwrap();
+            for _ in 0..1000 {
+                assert_eq!(f.get("key").unwrap().as_deref(), Some("on"));
+                assert_eq!(
+                    f.cache.read(&f.path, |map| map["telemetry"].len()).unwrap(),
+                    660_000
+                );
+            }
+            assert_eq!(f.cache.reloads, 1);
+        }
+        #[test]
+        fn external_same_size_replace_in_place_delete_and_recreate_invalidate() {
+            let mut f = Fixture::new();
+            f.replace("old");
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("old"));
+            f.replace("new"); // Same size, new inode.
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("new"));
+            let before = std::fs::read_to_string(&f.path).unwrap();
+            let edited = before.replace("new", "alt");
+            assert_eq!(edited.len(), before.len());
+            std::fs::write(&f.path, edited).unwrap();
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("alt"));
+            std::fs::remove_file(&f.path).unwrap();
+            assert_eq!(f.get("key").unwrap(), None);
+            f.replace("again");
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("again"));
+        }
+        #[test]
+        fn malformed_changed_store_errors_instead_of_serving_cached_auth_or_preferences() {
+            let mut f = Fixture::new();
+            f.replace("old");
+            let _ = f.get("key").unwrap();
+            std::fs::write(&f.path, b"invalid json").unwrap();
+            assert_eq!(f.get("key").unwrap_err().kind(), io::ErrorKind::InvalidData);
+            f.replace("repaired");
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("repaired"));
+        }
+        #[test]
+        fn failed_write_is_not_cached_and_external_writer_values_are_merged() {
+            let mut f = Fixture::new();
+            f.replace("old");
+            let _ = f.get("key").unwrap();
+            let error = f.cache.update_with(
+                &f.path,
+                |map| {
+                    map.insert("key".into(), "unwritten".into());
+                    true
+                },
+                |_, _| {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "injected durable write failure",
+                    ))
+                },
+            );
+            assert_eq!(error.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("old"));
+            f.replace("external");
+            f.cache
+                .update(&f.path, |map| {
+                    map.insert("other".into(), "local".into());
+                    true
+                })
+                .unwrap();
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("external"));
+            assert_eq!(f.get("other").unwrap().as_deref(), Some("local"));
+        }
+        #[test]
+        fn external_process_writes_merge_and_invalidate_parent_cache() {
+            let mut f = Fixture::new();
+            f.replace("parent");
+            let _ = f.get("key").unwrap();
+            let mut children: Vec<_> = (0..3)
+                .map(|worker| {
+                    std::process::Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            &format!(
+                                "{}::isolated_cache_writer_child",
+                                module_path!().split_once("::").unwrap().1
+                            ),
+                        ])
+                        .env("GS26_CACHE_TEST_CHILD_PATH", &f.path)
+                        .env("GS26_CACHE_TEST_CHILD_WORKER", worker.to_string())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .unwrap()
+                })
+                .collect();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            for child in &mut children {
+                loop {
+                    if let Some(status) = child.try_wait().unwrap() {
+                        assert!(status.success());
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        panic!("isolated preference writer timed out");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+            for worker in 0..3 {
+                for index in 0..12 {
+                    assert_eq!(
+                        f.get(&format!("worker-{worker}-{index}"))
+                            .unwrap()
+                            .as_deref(),
+                        Some("saved")
+                    );
+                }
+            }
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("parent"));
+        }
+        #[test]
+        fn isolated_cache_writer_child() {
+            let Some(path) = std::env::var_os("GS26_CACHE_TEST_CHILD_PATH") else {
+                return;
+            };
+            let path = std::path::PathBuf::from(path);
+            let worker = std::env::var("GS26_CACHE_TEST_CHILD_WORKER").unwrap();
+            let mut cache = CachedStore {
+                path: None,
+                identity: None,
+                map: HashMap::new(),
+                reloads: 0,
+            };
+            for index in 0..12 {
+                cache
+                    .update(&path, |map| {
+                        map.insert(format!("worker-{worker}-{index}"), "saved".into());
+                        true
+                    })
+                    .unwrap();
+            }
+        }
+        #[test]
+        fn no_op_update_does_not_replace_file_and_path_changes_do_not_share_values() {
+            let mut f = Fixture::new();
+            f.replace("old");
+            let before = file_identity(&f.path).unwrap();
+            f.cache.update(&f.path, |_| false).unwrap();
+            assert!(file_identity(&f.path).unwrap() == before);
+            let other = f.directory.join("other.json");
+            assert_eq!(
+                f.cache.read(&other, |map| map.get("key").cloned()).unwrap(),
+                None
+            );
+            assert_eq!(f.get("key").unwrap().as_deref(), Some("old"));
+        }
     }
 
     #[cfg(all(test, target_os = "linux"))]
