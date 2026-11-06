@@ -225,7 +225,6 @@ struct RecoveryUi {
     message: Signal<String>,
     status_error: Signal<String>,
     busy: Signal<bool>,
-    phrase: Signal<String>,
     mode: Signal<String>,
     serial: Signal<u64>,
     display: Signal<super::board_readback_display::DisplayCache>,
@@ -238,7 +237,6 @@ pub(super) fn use_recovery_provider() {
     let mut message = use_signal(String::new);
     let mut status_error = use_signal(String::new);
     let busy = use_signal(|| false);
-    let mut phrase = use_signal(String::new);
     let mode = use_signal(String::new);
     let mut serial = use_signal(|| 0_u64);
     use_future(move || async move {
@@ -271,7 +269,6 @@ pub(super) fn use_recovery_provider() {
                         );
                         if pending.peek().as_ref().is_some_and(|p| !p.valid(&fresh)) {
                             pending.set(None);
-                            phrase.set(String::new());
                             message.set("Confirmation cancelled: board/session changed or ticket expired. No automatic retry.".into());
                         }
                         snapshot.set(Some(fresh));
@@ -282,7 +279,6 @@ pub(super) fn use_recovery_provider() {
                             snapshot.set(None);
                             display.set(Default::default());
                             pending.set(None);
-                            phrase.set(String::new());
                         }
                         if pending
                             .peek()
@@ -290,7 +286,6 @@ pub(super) fn use_recovery_provider() {
                             .is_some_and(|pending| !pending.locally_live())
                         {
                             pending.set(None);
-                            phrase.set(String::new());
                         }
                         status_error.set(error.message);
                     }
@@ -308,7 +303,6 @@ pub(super) fn use_recovery_provider() {
         message,
         status_error,
         busy,
-        phrase,
         mode,
         serial,
         display,
@@ -491,7 +485,6 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
         mut mode,
         mut serial,
         mut display,
-        mut phrase,
         ..
     } = ui;
     let mut open = use_signal(|| false);
@@ -515,7 +508,6 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                         snapshot.set(None);
                         display.set(Default::default());
                         pending.set(None);
-                        phrase.set(String::new());
                     }
                     if pending
                         .peek()
@@ -523,7 +515,6 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                         .is_some_and(|pending| !pending.locally_live())
                     {
                         pending.set(None);
-                        phrase.set(String::new());
                     }
                     status_error.set(error.message);
                 }
@@ -545,6 +536,7 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                     button{onclick:refresh,"Refresh local status"}
                     div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
                     if !status_error.read().is_empty(){p{role:"alert","{status_error}"}}
+                    section{style:"padding:14px;border:1px solid var(--gs26-border,#405269);border-radius:10px;margin-bottom:14px;",h4{style:"margin:0 0 10px;","Launch readiness"}super::board_abort_readiness::BoardAbortReadiness{}}
                     if let Some(current)=current.clone(){
                         {let status=&current.status;let reset_reason=status.reset_reason(current.elapsed());let selected=mode.read().clone();let mode_reason=status.mode_reason(&selected);let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());rsx!{
                         p{"Operator: {operator}."}
@@ -592,7 +584,6 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
     let ui = use_context::<RecoveryUi>();
     let RecoveryUi {
         mut pending,
-        mut phrase,
         mut busy,
         mut message,
         ..
@@ -605,28 +596,24 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
         if !message.read().is_empty(){p{role:"status","{message}"}}
         if let Some(dialog)=dialog {
             div{style:"position:fixed;inset:0;z-index:200000;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
-                onkeydown:move|e|{if e.key()==Key::Escape && !*busy.peek(){pending.set(None);phrase.set(String::new());}},
-                div{role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,960px);height:min(86dvh,860px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:12px;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;",
+                onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape if !*busy.peek()=>{event.prevent_default();pending.set(None);},Key::Tab=>{event.prevent_default();cycle_modal_focus("gs26-recovery-confirm",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
+                div{id:"gs26-recovery-confirm",role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,960px);height:min(86dvh,860px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:12px;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;",
                     h2{id:"board-recovery-confirm-title","Confirm operator recovery action"}
                     div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
                         p{"{dialog.challenge.summary}"}
                         {challenge_scope_view(&dialog.challenge)}
                     }
-                    label{r#for:"board-recovery-confirm-phrase","Type {dialog.challenge.confirmation} to confirm"}
-                    input{style:"width:100%;box-sizing:border-box;min-height:44px;",id:"board-recovery-confirm-phrase",value:"{phrase}",oninput:move|e|phrase.set(e.value()),disabled:*busy.read(),autocomplete:"off"}
-                    button{autofocus:true,disabled:*busy.read(),onclick:move |_|{pending.set(None);phrase.set(String::new());},"Cancel"}
-                    button{disabled:*busy.read()||!connected||!permitted||phrase.read().as_str()!=dialog.challenge.confirmation,
+                    button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},disabled:*busy.read(),onclick:move |_|pending.set(None),"Cancel"}
+                    button{r#type:"button",disabled:*busy.read()||!connected||!permitted,
                         onclick:move |_|{
                             if *busy.peek()||!crate::auth::can_view_actions(){return;}
                             let Some(owned)=pending.write().take()else{return;};
-                            let typed=phrase.peek().clone();phrase.set(String::new());
-                            if typed!=owned.challenge.confirmation {message.set("Confirmation phrase did not match. No action sent.".into());return;}
                             busy.set(true);
                             spawn(async move{
                                 match read_status().await{
                                     Ok(fresh)if crate::auth::can_view_actions() && owned.valid(&fresh)=>{
                                         let challenge=&owned.challenge;
-                                        let body=Confirm{ticket:&challenge.ticket,backend_instance:&challenge.backend_instance,principal_context:&challenge.principal_context,reset_epoch:&challenge.reset_epoch,confirmation:&typed};
+                                        let body=Confirm{ticket:&challenge.ticket,backend_instance:&challenge.backend_instance,principal_context:&challenge.principal_context,reset_epoch:&challenge.reset_epoch,confirmation:&challenge.confirmation};
                                         match super::http_post_json::<_,Accepted>("/api/board-recovery/confirm",&body).await{
                                             Ok(value)=>{
                                                 if owned.snapshot.binding==ConnectionBinding::current(){

@@ -38,6 +38,7 @@ pub fn ConnectionStatusTab(
     theme: ThemeConfig,
 ) -> Element {
     super::board_recovery_panel::use_recovery_provider();
+    let mut diagnostics_open = use_signal(|| false);
     let mut show_board = use_signal(|| true);
     let mut board_fullscreen = use_signal(|| false);
     let mut show_latency = use_signal(|| true);
@@ -46,7 +47,12 @@ pub fn ConnectionStatusTab(
     let previous_last_seen = use_signal(HashMap::<String, u64>::new);
     let smoothed_intervals = use_signal(HashMap::<String, f64>::new);
     let board_age_now_ms = use_board_age_clock();
-    let merged_boards = merged_connection_boards(&boards.read(), &expected_boards);
+    let topology = network_topology.read().clone();
+    let merged_boards = merged_connection_boards(&boards.read(), &expected_boards)
+        .into_iter()
+        .filter(|board| board.seen || board.last_seen_ms.is_some()
+            || topology.health.iter().any(|row| row.sender_id == board.sender_id))
+        .collect::<Vec<_>>();
 
     {
         use_effect(move || {
@@ -134,18 +140,6 @@ pub fn ConnectionStatusTab(
     };
 
     let mut panels = Vec::new();
-    let topology = network_topology.read().clone();
-    panels.push(super::info_panels::InfoPanel::new(
-        "board-health",
-        "Board network health",
-        "Overview",
-        rsx! {
-            super::connectivity_health::ConnectivityHealthSection {
-                rows: topology.health, ws_connected, generated_ms: topology.generated_ms,
-                simulated: topology.simulated, theme: theme.clone(),
-            }
-        },
-    ));
     for (idx, section) in layout.sections.iter().enumerate() {
         let (id, default_title) = match section.kind {
             ConnectionSectionKind::BoardStatus => ("boards", "Board status"),
@@ -244,8 +238,19 @@ pub fn ConnectionStatusTab(
                     p { "{error.message}" }
                 }
             }
-            super::board_abort_readiness::BoardAbortReadiness {}
-            super::info_panels::InfoPanels {page:"connections",panels,wide:true}
+            super::connectivity_health::ConnectivityHealthSection {
+                rows:topology.health,ws_connected,generated_ms:topology.generated_ms,
+                simulated:topology.simulated,theme:theme.clone(),
+            }
+            button{r#type:"button",style:"min-height:44px;margin-top:14px;padding:8px 14px;border:1px solid {theme.border};border-radius:10px;background:{theme.button_background};color:{theme.text_primary};font:inherit;",onclick:move |_|diagnostics_open.set(true),"More network diagnostics"}
+            if diagnostics_open(){
+                div{style:"position:fixed;inset:0;z-index:9997;padding:16px;background:#000a;display:flex;align-items:center;justify-content:center;box-sizing:border-box;",onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();diagnostics_open.set(false);},Key::Tab=>{event.prevent_default();super::board_recovery_panel::cycle_modal_focus("gs26-network-diagnostics",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
+                    section{id:"gs26-network-diagnostics",role:"dialog","aria-modal":"true","aria-label":"Network diagnostics",style:"width:min(100%,1100px);height:min(88dvh,900px);max-height:100%;background:{theme.panel_background};color:{theme.text_primary};border:1px solid {theme.border};border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px;min-width:0;box-sizing:border-box;",
+                        header{style:"display:flex;align-items:center;justify-content:space-between;gap:12px;",h3{style:"margin:0;","Network diagnostics"}button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|diagnostics_open.set(false),"Close diagnostics"}}
+                        div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow:auto;overflow-anchor:none;",super::info_panels::InfoPanels{page:"connection-diagnostics",panels,wide:true}}
+                    }
+                }
+            }
             super::board_recovery_panel::RecoveryDialogs {ws_connected}
         }
 
