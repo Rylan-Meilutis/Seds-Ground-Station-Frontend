@@ -122,3 +122,20 @@ ownership, plus package identity, architecture and dependency metadata. The
 package's own metadata files are permitted; unexpected/missing payload is fatal.
 The AppImage/Flatpak package controls use dummy payloads and never establish
 application-runtime success. Actual hosted native builds remain the final gate.
+
+
+## Hosted Linux RPM and Android packaging
+
+RPM's explicit file manifest includes the staged AppStream metainfo file, using
+its existing lowercase Dioxus identifier. Unpackaged-file checks remain enabled.
+The Android vendor trampoline drops three imports unused by its current body;
+compiler warnings remain fatal.
+
+Android CI already provisions Java 17. Bootstrap downloads Google's official
+bundletool 1.18.3 release (the latest non-prerelease verified on 2026-11-06),
+checks the exact asset size and SHA-256, and checks its reported version. The
+build stage checks the same pinned JAR again. CI exports `BUNDLETOOL_JAR` to
+`build.py`, whose repo-managed AAB-to-universal-APK stage consumes it. This is
+not an assumption that Dioxus reads that variable: Dioxus 0.7.10 selects AAB and
+uses Gradle. No mutable latest URL, checksum bypass, warning suppression, or
+fallback-success claim is introduced.

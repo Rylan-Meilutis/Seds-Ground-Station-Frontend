@@ -11,10 +11,6 @@
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn start_app() {
-    use crate::Config;
-    use dioxus_core::{Element, VirtualDom};
-    use std::any::Any;
-
     tao::android_binding!(dev_dioxus, main, WryActivity, wry::android_setup, root, tao);
     wry::android_binding!(dev_dioxus, main, wry);
 

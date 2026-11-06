@@ -41,6 +41,14 @@ LINUXDEPLOY = {
     "x86_64": ("linuxdeploy-x86_64.AppImage", "df908b19f1ed1cdafa79508d415aa12d6c56ce4d56d4149aa8c09286718706e5"),
     "aarch64": ("linuxdeploy-aarch64.AppImage", "f38e4d7cebf20d8073ec4e00e0a167ac146cd8585fe2f8fe82df27d74f2bd8e1"),
 }
+# Official latest non-prerelease at source review (2026-11-06), release
+# 270526371 / asset 329035725. Pin bytes, never a moving latest download.
+BUNDLETOOL = {
+    "version": "1.18.3",
+    "url": "https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar",
+    "sha256": "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29",
+    "bytes": 32520401,
+}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 # Upstream Dioxus 0.7.10 workspace.rs emits these exact timer messages while
 # successful metadata is pending. Preserve and report them separately from
@@ -134,6 +142,9 @@ def ci_env():
             env.pop(key)
     bins = [ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/linuxdeploy/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
     env["PATH"] = os.pathsep.join(map(str, bins)) + os.pathsep + env.get("PATH", "")
+    # build.py's repo-managed AAB -> universal APK stage consumes this value;
+    # dx itself builds the AAB through Gradle and need not read this variable.
+    env["BUNDLETOOL_JAR"] = str(ROOT / ".ci-tools/bundletool/bundletool.jar")
     return env
 
 
@@ -282,6 +293,41 @@ def install_linuxdeploy(host):
     }, indent=2) + "\n")
 
 
+def install_bundletool(env):
+    tools = ROOT / ".ci-tools"
+    tools.mkdir(exist_ok=True)
+    if tools.is_symlink():
+        raise RuntimeError("Refusing linked CI tools directory")
+    destination = tools / "bundletool"
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError("Refusing stale bundletool directory; use a fresh CI checkout")
+    if not shutil.which("java", path=env["PATH"]):
+        raise RuntimeError("Missing Android prerequisite: Java 17; see CI-RUNNERS.md")
+    with tempfile.TemporaryDirectory(prefix="bundletool-", dir=tools) as temporary:
+        stage = Path(temporary)
+        jar = stage / "bundletool.jar"
+        download(BUNDLETOOL["url"], jar)
+        if jar.stat().st_size != BUNDLETOOL["bytes"] or file_sha256(jar) != BUNDLETOOL["sha256"]:
+            raise RuntimeError("bundletool release size/checksum mismatch")
+        checked(["java", "-jar", str(jar), "version"], env, "bundletool-version")
+        reported = (ROOT / "ci-results/bundletool-version.log").read_text().strip()
+        if reported != BUNDLETOOL["version"]:
+            raise RuntimeError(f"bundletool version mismatch: {reported!r}")
+        stage.rename(destination)
+    (ROOT / "ci-results/bundletool-release.json").write_text(json.dumps({
+        **BUNDLETOOL, "reported": reported, "upstream_release_id": 270526371,
+        "upstream_asset_id": 329035725,
+    }, indent=2) + "\n")
+
+
+def verify_bundletool(env):
+    jar = ROOT / ".ci-tools/bundletool/bundletool.jar"
+    if (env.get("BUNDLETOOL_JAR") != str(jar) or not jar.is_file()
+            or jar.is_symlink() or jar.parent.is_symlink() or jar.parent.parent.is_symlink()
+            or jar.stat().st_size != BUNDLETOOL["bytes"] or file_sha256(jar) != BUNDLETOOL["sha256"]):
+        raise RuntimeError("Missing or changed prepared bundletool release")
+
+
 def resolved_tool_versions():
     """Match host CLI ABIs to the repository's actual resolved application crates."""
     lock = ROOT / "Cargo.lock"
@@ -324,6 +370,8 @@ def bootstrap(name):
     npm = shutil.which("npm")
     checked([npm, "install", "--prefix", str(ROOT / ".ci-tools/node"), "esbuild@0.25.12"], env, "esbuild")
     install_binaryen(host)
+    if name.startswith("android"):
+        install_bundletool(env)
     if name in {"linux", "linux-arm64"}:
         for tool in ["makepkg", "pacman", "fakeroot", "flatpak", "rpmbuild", "desktop-file-validate", "appstreamcli", "gpg"]:
             if not shutil.which(tool, path=env["PATH"]):
@@ -338,6 +386,8 @@ def run(name, profile):
     validate_host(name)
     env = ci_env()
     env["CARGO_NET_OFFLINE"] = "true"
+    if name.startswith("android"):
+        verify_bundletool(env)
     for tool in ["dx", "wasm-bindgen", "wasm-opt", "esbuild"]:
         if not shutil.which(tool, path=env["PATH"]):
             raise RuntimeError(f"Missing prepared tool: {tool}")

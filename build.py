@@ -1810,6 +1810,7 @@ def build_manual_linux_packages(
                     f"/usr/share/applications/{LINUX_PACKAGE_NAME}.desktop",
                     f"/usr/share/pixmaps/{LINUX_PACKAGE_NAME}.png",
                     f"/usr/share/icons/hicolor/256x256/apps/{LINUX_PACKAGE_NAME}.png",
+                    f"/usr/share/metainfo/{_linux_appstream_id(frontend_dir)}.appdata.xml",
                     "",
                 ]),
                 encoding="utf-8",
