@@ -1,5 +1,5 @@
 //! Shared administrator-saved locations; requesting device GPS is an explicit action.
-use super::{http_get_json, http_post_json};
+use super::{http_get_json};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -88,6 +88,12 @@ impl Form {
 }
 #[component]
 pub(super) fn StationPositionsAdmin() -> Element {
+    let view_key=super::station_mode_observer::view_key();
+    rsx! {for key in [view_key] { StationPositionsEditor {key:"{key}"} }}
+}
+#[component]
+fn StationPositionsEditor() -> Element {
+    let requests = super::station_settings_request::use_factory();
     let mut forms = use_signal(|| [Form::default(), Form::default()]);
     let mut revision = use_signal(|| 0u64);
     let mut loaded = use_signal(|| false);
@@ -138,7 +144,7 @@ pub(super) fn StationPositionsAdmin() -> Element {
                     let current=forms.read().clone();let positions=current[0].coordinate().and_then(|g|current[1].coordinate().map(|r|(g,r)));
                     let (g,r)=match positions{Ok(p)=>p,Err(e)=>{message.set(e);return;}};
                     let request=Update{expected_revision:*revision.read(),ground_station:g,rrls:r};busy.set(true);spawn(async move{
-                        match http_post_json::<Update,Document>("/api/station_positions",&request).await {
+                        let result=requests.post::<Update,Document>("/api/station_positions",&request).await; if !requests.current(){return;} match result {
                             Ok(d)=>{forms.set([Form::from_coordinate(d.ground_station),Form::from_coordinate(d.rrls)]);revision.set(d.revision);message.set("Station positions saved.".into())},Err(e)=>message.set(e)}busy.set(false);
                     });},"Save positions"}
             }

@@ -620,7 +620,7 @@ mod pinned_size_tests {
     #[test]
     fn compact_details_preserve_value_source_and_exact_age_without_reserved_digits() {
         let mut card=defaults()[0].clone();card.unit="kg".into();card.sender="DAQ".into();
-        let value=-123456.789_f32;
+        let value=-123_456.79_f32;
         let details=pinned_details(&card,Some(value),Some(12345));
         assert!(details.contains(&format!("{value} kg")));
         assert!(details.contains("12345 ms"));

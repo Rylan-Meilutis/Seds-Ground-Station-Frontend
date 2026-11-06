@@ -83,6 +83,7 @@ pub(super) fn AutoColdFlow(
     let mut busy = use_signal(|| false);
     let mut pending = use_signal(|| None::<RunKey>);
     let alive = super::recording_download::use_export_lifetime();
+    let requests = super::station_settings_request::use_factory_selected(move || alive.load(std::sync::atomic::Ordering::Acquire));
     let mut message = use_signal(String::new);
     use_future(move || async move {
         loop {
@@ -168,14 +169,14 @@ pub(super) fn AutoColdFlow(
         div {class:"gs26-cold-flow-start",style:"display:grid;gap:6px;min-width:0;",
             button {r#type:"button",disabled:!enabled,style:"{style}","data-sequence-command":"AutoColdFlow","data-sequence-state":progress.unwrap_or(""),aria_busy:working || progress.is_some(),onclick:move|_|{
                 let current=status();let epoch=*WS_EPOCH.read();
-                if disabled||!*super::WS_CONNECTED_SIGNAL.peek()||!current.current_binding()||busy()||pending().is_some()||!available(&current.value,current.requested_at_ms,current.source_epoch,epoch,super::monotonic_now_ms(),auth::can_send_command("AutoColdFlow"),auth::current_status().station_role.as_deref()!=Some("rrls")){return;}
+                if !requests.current()||disabled||!*super::WS_CONNECTED_SIGNAL.peek()||!current.current_binding()||busy()||pending().is_some()||!available(&current.value,current.requested_at_ms,current.source_epoch,epoch,super::monotonic_now_ms(),auth::can_send_command("AutoColdFlow"),auth::current_status().station_role.as_deref()!=Some("rrls")){return;}
                 let backend=UrlConfig::base_http();let token=auth::current_token();let identity=current.identity.clone();
-                let mounted=alive.clone();
-                let owner=super::recording_download::ExportOwner::capture_selected(move||mounted.load(std::sync::atomic::Ordering::Acquire)&&epoch==*WS_EPOCH.peek());
+                let owner=requests.capture();
                 let request=super::station_settings_request::post_captured_no_redirect::<serde_json::Value,serde_json::Value>("/api/gse/cold-flow/start",&serde_json::json!({}),owner);
                 busy.set(true);message.set(String::new());
                 spawn(async move{
                     let result=request.await;
+                    if !requests.current(){return;}
                     if epoch!=*WS_EPOCH.read()||backend!=UrlConfig::base_http()||token!=auth::current_token()||identity.as_ref().is_none_or(|owner|!auth::request_identity_is_current(owner)){busy.set(false);return;}
                     match result {
                         Ok(value)=>match serde_json::from_value::<RunKey>(value["key"].clone()){

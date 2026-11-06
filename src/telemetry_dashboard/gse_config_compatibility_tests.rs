@@ -75,7 +75,7 @@ mod native {
         pin::Pin,
         sync::{
             Arc, Mutex,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU16, Ordering},
         },
         time::Duration,
     };
@@ -113,6 +113,11 @@ mod native {
     struct Server {
         base: String,
         posted: Arc<Mutex<Vec<Value>>>,
+        headers: Arc<Mutex<Vec<String>>>,
+        mode_headers: Arc<Mutex<Vec<String>>>,
+        mode_reply: Arc<Mutex<Value>>,
+        hold_posts: Arc<AtomicBool>,
+        response_code: Arc<AtomicU16>,
         stop: Arc<AtomicBool>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
@@ -123,12 +128,26 @@ mod native {
             let base = format!("http://{}", listener.local_addr().unwrap());
             let posted = Arc::new(Mutex::new(Vec::new()));
             let requests = posted.clone();
+            let headers = Arc::new(Mutex::new(Vec::new()));
+            let header_rows = headers.clone();
+            let mode_headers = Arc::new(Mutex::new(Vec::new()));
+            let mode_header_rows = mode_headers.clone();
+            let mode_reply = Arc::new(Mutex::new(serde_json::to_value(dashboard::station_mode_contract::tests::example_snapshot()).unwrap()));
+            let mode_response = mode_reply.clone();
+            let hold_posts = Arc::new(AtomicBool::new(false));
+            let hold = hold_posts.clone();
+            let response_code = Arc::new(AtomicU16::new(200));
+            let code = response_code.clone();
             let stop = Arc::new(AtomicBool::new(false));
             let stopped = stop.clone();
             let worker = std::thread::spawn(move || {
+                let mut workers = Vec::new();
                 while !stopped.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((mut socket, _)) => {
+                            let (requests, header_rows, hold, code, stopped, mode_response, mode_header_rows) =
+                                (requests.clone(), header_rows.clone(), hold.clone(), code.clone(), stopped.clone(), mode_response.clone(), mode_header_rows.clone());
+                            workers.push(std::thread::spawn(move || {
                             socket
                                 .set_read_timeout(Some(Duration::from_secs(2)))
                                 .unwrap();
@@ -145,7 +164,20 @@ mod native {
                                 }
                             }
                             let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                            if headers.starts_with("GET /api/station-modes ") {
+                                mode_header_rows.lock().unwrap().push(headers.to_string());
+                                let text = mode_response.lock().unwrap().to_string();
+                                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len());
+                                let _ = socket.write_all(response.as_bytes());
+                                return;
+                            }
+                            let request_epoch = headers.lines().find_map(|line| line.split_once(':')
+                                .filter(|(name,_)| name.eq_ignore_ascii_case("x-station-policy-epoch"))
+                                .map(|(_, value)| value.trim().to_owned()));
+                            header_rows.lock().unwrap().push(headers.to_string());
                             let is_post = headers.starts_with("POST ");
+                            // Freeze old status BEFORE publishing request-arrived ledger.
+                            let captured_code = code.load(Ordering::Acquire);
                             let length = headers
                                 .lines()
                                 .find_map(|line| {
@@ -178,15 +210,22 @@ mod native {
                             } else {
                                 Ok(serde_json::to_value(legacy::Config::default()).unwrap())
                             };
+                            while is_post && hold.load(Ordering::Acquire) && !stopped.load(Ordering::Acquire) {
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
                             let (status, text) = match parsed {
                                 Ok(value) => ("200 OK", value.to_string()),
                                 Err(error) => ("422 Unprocessable Entity", error.to_string()),
                             };
+                            let status = if captured_code == 401 { "401 Unauthorized" } else { status };
+                            let scope = if !is_post { request_epoch.map(|epoch| format!("X-Station-Epoch-Scope: mode\r\nX-Station-Policy-Epoch: {epoch}\r\n")).unwrap_or_default() } else { String::new() };
                             let response = format!(
-                                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{scope}Content-Length: {}\r\nConnection: close\r\n\r\n{text}",
                                 text.len()
                             );
                             let _ = socket.write_all(response.as_bytes());
+                            }));
+                            assert!(workers.len() <= 64, "bounded synthetic compatibility requests");
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(2))
@@ -194,10 +233,16 @@ mod native {
                         Err(error) => panic!("fixture accept: {error}"),
                     }
                 }
+                for worker in workers { worker.join().unwrap(); }
             });
             Self {
                 base,
                 posted,
+                headers,
+                mode_headers,
+                mode_reply,
+                hold_posts,
+                response_code,
                 stop,
                 worker: Some(worker),
             }
@@ -216,7 +261,7 @@ mod native {
         for supported in [false, true] {
             let server = Server::new(supported);
             let dom = dom(&server.base);
-            let mut load = Box::pin(Grant::load());
+            let mut load = Box::pin(dom.in_scope(ScopeId::ROOT, Grant::load));
             let (mut config, grant) = in_dom(&dom, load.as_mut()).await.unwrap();
             assert_eq!(
                 dom.in_scope(ScopeId::ROOT, || grant.cold_flow_supported()),
@@ -257,7 +302,7 @@ mod native {
             let original = Server::new(true);
             let other = Server::new(false);
             let dom = dom(&original.base);
-            let mut load = Box::pin(Grant::load());
+            let mut load = Box::pin(dom.in_scope(ScopeId::ROOT, Grant::load));
             let (mut config, grant) = in_dom(&dom, load.as_mut()).await.unwrap();
             config.cold_flow_target_psi = Some(95.);
             let mut pending = Box::pin(grant.save(&config));
@@ -274,6 +319,83 @@ mod native {
             assert!(other.posted.lock().unwrap().is_empty());
             assert!(!dom.in_scope(ScopeId::ROOT, || grant.cold_flow_supported()));
         }
+    }
+    async fn observed_policy(dom: &VirtualDom, server: &Server, epoch: &str) {
+        let mut snapshot = dashboard::station_mode_contract::tests::example_snapshot();
+        snapshot.policy_epoch = Some(epoch.into());
+        *server.mode_reply.lock().unwrap() = serde_json::to_value(snapshot).unwrap();
+        dashboard::incoming_epoch_native_tests::mode_get(dom).await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn actual_grant_original_epoch_before_first_poll_and_current_body_header() {
+        if !dashboard::command_owner::isolated_test_child(module_path!(), "actual_grant_original_epoch_before_first_poll_and_current_body_header") { return; }
+        let server = Server::new(true);
+        let dom = dom(&server.base);
+        observed_policy(&dom, &server, "grant-owner:1").await;
+        let mut retired_load = Box::pin(dom.in_scope(ScopeId::ROOT, Grant::load));
+        observed_policy(&dom, &server, "grant-owner:2").await;
+        assert!(in_dom(&dom, retired_load.as_mut()).await.is_err());
+        assert!(server.headers.lock().unwrap().is_empty(), "old load must do zero CONFIG IO");
+        assert_eq!(server.mode_headers.lock().unwrap().len(), 2, "two independent ModeGETs are explicit setup, not config IO");
+        let mut load = Box::pin(dom.in_scope(ScopeId::ROOT, Grant::load));
+        let (mut config, grant) = in_dom(&dom, load.as_mut()).await.unwrap();
+        config.cold_flow_target_psi = Some(95.);
+        let mut retired_save = Box::pin(grant.save(&config));
+        observed_policy(&dom, &server, "grant-owner:3").await;
+        assert!(in_dom(&dom, retired_save.as_mut()).await.is_err());
+        assert!(server.posted.lock().unwrap().is_empty(), "old grant must not restamp a save");
+        let mut load = Box::pin(dom.in_scope(ScopeId::ROOT, Grant::load));
+        let (mut config, grant) = in_dom(&dom, load.as_mut()).await.unwrap();
+        config.cold_flow_target_psi = Some(130.);
+        let expected = payload(&config, true, false).unwrap();
+        let mut save = Box::pin(grant.save(&config));
+        let (saved, _) = in_dom(&dom, save.as_mut()).await.unwrap();
+        assert_eq!(saved.cold_flow_target_psi, Some(130.));
+        assert_eq!(*server.posted.lock().unwrap(), vec![expected]);
+        let headers = server.headers.lock().unwrap();
+        let posts: Vec<_> = headers.iter().filter(|row| row.starts_with("POST ")).collect();
+        assert_eq!(posts.len(), 1);
+        assert!(posts[0].to_ascii_lowercase().contains("x-station-policy-epoch: grant-owner:3\r\n"));
+        assert!(posts[0].to_ascii_lowercase().contains("authorization: bearer fixture-original\r\n"));
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn actual_held_grant_401_retires_without_auth_clear_or_automatic_retry() {
+        if !dashboard::command_owner::isolated_test_child(module_path!(), "actual_held_grant_401_retires_without_auth_clear_or_automatic_retry") { return; }
+        let server = Server::new(true);
+        let dom = dom(&server.base);
+        observed_policy(&dom, &server, "held-grant:1").await;
+        let mut load = Box::pin(dom.in_scope(ScopeId::ROOT, Grant::load));
+        let (mut config, grant) = in_dom(&dom, load.as_mut()).await.unwrap();
+        config.cold_flow_target_psi = Some(95.);
+        server.hold_posts.store(true, Ordering::Release);
+        server.response_code.store(401, Ordering::Release);
+        let mut save = Box::pin(grant.save(&config));
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while server.posted.lock().unwrap().is_empty() {
+                tokio::select! {
+                    result=in_dom(&dom,save.as_mut())=>panic!("held request returned early: {}",result.is_ok()),
+                    _=tokio::time::sleep(Duration::from_millis(2))=>{}
+                }
+            }
+        }).await.unwrap();
+        dom.in_scope(ScopeId::ROOT, || session("fixture-replacement"));
+        observed_policy(&dom, &server, "held-grant:2").await;
+        server.hold_posts.store(false, Ordering::Release);
+        assert!(in_dom(&dom, save.as_mut()).await.is_err());
+        assert_eq!(dom.in_scope(ScopeId::ROOT, auth::current_token).as_deref(), Some("fixture-replacement"));
+        assert_eq!(server.posted.lock().unwrap().len(), 1, "no retry of an old admitted body");
+        server.response_code.store(200, Ordering::Release);
+        let mut load = Box::pin(dom.in_scope(ScopeId::ROOT, Grant::load));
+        let (mut config, grant) = in_dom(&dom, load.as_mut()).await.unwrap();
+        config.cold_flow_target_psi = Some(130.);
+        let mut fresh = Box::pin(grant.save(&config));
+        in_dom(&dom, fresh.as_mut()).await.unwrap();
+        assert_eq!(server.posted.lock().unwrap().len(), 2);
+        let headers=server.headers.lock().unwrap();
+        let posts:Vec<_>=headers.iter().filter(|row|row.starts_with("POST ")).collect();
+        assert!(posts[0].to_ascii_lowercase().contains("x-station-policy-epoch: held-grant:1\r\n"));
+        assert!(posts[1].to_ascii_lowercase().contains("x-station-policy-epoch: held-grant:2\r\n"));
+        assert!(posts[1].to_ascii_lowercase().contains("authorization: bearer fixture-replacement\r\n"));
     }
 }
 

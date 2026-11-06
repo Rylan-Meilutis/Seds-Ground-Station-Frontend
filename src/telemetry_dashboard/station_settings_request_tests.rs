@@ -148,7 +148,7 @@ impl Drop for Server {
 async fn actual_settings_post_retains_original_body_and_authorization() {
     let server = Server::new(200, false);
     let dom = dom(&server.base);
-    let owner = dom.in_scope(ScopeId::ROOT, ExportOwner::capture).unwrap();
+    let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true)).unwrap();
     let body = r#"{"target_pressure_psi":123.5,"utc_ms":1793744000123}"#.to_string();
     let mut request = Box::pin(post_owned::<serde_json::Value>(
         "/api/fill_targets",
@@ -174,7 +174,7 @@ async fn queued_settings_post_never_rebinds_after_station_or_credential_aba() {
         let original = Server::new(200, false);
         let other = Server::new(200, false);
         let dom = dom(&original.base);
-        let owner = dom.in_scope(ScopeId::ROOT, ExportOwner::capture).unwrap();
+        let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true)).unwrap();
         let mut request = Box::pin(post_owned::<serde_json::Value>(
             "/api/calibration",
             "{}".into(),
@@ -198,7 +198,7 @@ async fn late_settings_response_cannot_return_old_config_or_clear_new_account() 
     for status in [200, 401] {
         let server = Server::new(status, true);
         let dom = dom(&server.base);
-        let owner = dom.in_scope(ScopeId::ROOT, ExportOwner::capture).unwrap();
+        let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true)).unwrap();
         let mut request = Box::pin(post_owned::<serde_json::Value>(
             "/api/calibration",
             "{}".into(),
@@ -228,7 +228,7 @@ async fn actual_input_epoch_selection_retires_queued_http_before_io() {
     let observed = epoch.clone();
     let owner = dom
         .in_scope(ScopeId::ROOT, || {
-            ExportOwner::capture_selected(move || observed.get() == 4)
+            ExportOwner::capture_ordinary_selected(move || observed.get() == 4)
         })
         .unwrap();
     let mut request = Box::pin(post_owned::<serde_json::Value>(
@@ -248,7 +248,7 @@ async fn actual_input_epoch_selection_retires_queued_http_before_io() {
 async fn captured_confirmation_retains_exact_api_body_and_original_token() {
     let server = Server::new(200, false);
     let dom = dom(&server.base);
-    let owner = dom.in_scope(ScopeId::ROOT, ExportOwner::capture).unwrap();
+    let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true)).unwrap();
     let mut request = Box::pin(post_captured::<_, serde_json::Value>(
         "/api/gse/self-test-confirmation",
         &serde_json::json!({"confirmed":true}),
@@ -279,7 +279,7 @@ async fn captured_confirmation_held_response_cannot_confirm_new_actor_or_clear_l
         let original = selected.clone();
         let owner = dom
             .in_scope(ScopeId::ROOT, || {
-                ExportOwner::capture_selected(move || original.get() == 1)
+                ExportOwner::capture_ordinary_selected(move || original.get() == 1)
             })
             .unwrap();
         let completion_owner = owner.clone();
@@ -319,7 +319,7 @@ async fn captured_fill_gestures_preserve_exact_route_body_and_authorization() {
     for path in ["/api/command", "/api/gse/abort/clear"] {
         let server = Server::new(200, false);
         let dom = dom(&server.base);
-        let owner = dom.in_scope(ScopeId::ROOT, ExportOwner::capture).unwrap();
+        let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true)).unwrap();
         let body = fill_body(path);
         let mut request = Box::pin(post_captured_no_redirect::<_, serde_json::Value>(
             path,
@@ -353,7 +353,7 @@ async fn captured_fill_gestures_refuse_station_token_and_aba_changes_before_firs
             let dom = dom(&original.base);
             // Clear-abort captures here when opening its confirmation, NOT at
             // confirm or when the spawned future first runs.
-            let owner = dom.in_scope(ScopeId::ROOT, ExportOwner::capture).unwrap();
+            let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true)).unwrap();
             let body = fill_body(path);
             let mut request = Box::pin(post_captured_no_redirect::<_, serde_json::Value>(
                 path,
@@ -390,17 +390,27 @@ async fn held_fill_commands_and_status_cannot_clear_a_replacement_session() {
             let original = Server::new(401, true);
             let other = Server::new(200, false);
             let dom = dom(&original.base);
-            let owner = dom.in_scope(ScopeId::ROOT, ExportOwner::capture).unwrap();
+            let owner = dom.in_scope(ScopeId::ROOT, || {
+                if path == "/api/gse/status" {
+                    ExportOwner::capture()
+                } else {
+                    ExportOwner::capture_ordinary_selected(|| true)
+                }
+            }).unwrap();
             let body = fill_body(path);
             let mut request: Pin<Box<dyn Future<Output = Result<serde_json::Value, String>>>> =
-                if path == "/api/gse/status" {
-                    Box::pin(dashboard::recording_download::saved_json(
-                        path,
-                        owner.clone(),
-                    ))
-                } else {
-                    Box::pin(post_captured_no_redirect(path, &body, Ok(owner.clone())))
-                };
+                dom.in_scope(ScopeId::ROOT, || {
+                    let request: Pin<Box<dyn Future<Output = Result<serde_json::Value, String>>>> =
+                        if path == "/api/gse/status" {
+                            Box::pin(dashboard::recording_download::saved_json(
+                                path,
+                                owner.clone(),
+                            ))
+                        } else {
+                            Box::pin(post_captured_no_redirect(path, &body, Ok(owner.clone())))
+                        };
+                    request
+                });
             tokio::time::timeout(Duration::from_secs(4),async {
                 while !original.seen.load(Ordering::Acquire) {
                     tokio::select! {

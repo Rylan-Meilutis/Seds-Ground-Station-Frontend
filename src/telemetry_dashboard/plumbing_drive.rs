@@ -1,4 +1,4 @@
-use super::{UrlConfig, http_get_json, http_post_json, layout::ThemeConfig};
+use super::{UrlConfig, layout::ThemeConfig};
 use crate::auth;
 use dioxus::prelude::*;
 use serde_json::{Value, json};
@@ -54,8 +54,9 @@ fn settings_request(snapshot: &Value, mode: &str, release: bool) -> Result<Value
     )
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 struct SourceContext {
+    owner: Result<std::rc::Rc<super::recording_download::ExportOwner>, String>,
     base: String,
     token: Option<String>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -64,19 +65,25 @@ struct SourceContext {
 impl SourceContext {
     fn current() -> Self {
         Self {
+            owner: super::recording_download::ExportOwner::capture_ordinary_selected(|| true),
             base: UrlConfig::base_http(),
             token: auth::current_token(),
             #[cfg(not(target_arch = "wasm32"))]
             skip_tls: UrlConfig::_skip_tls_verify(),
         }
     }
+    fn matches_current(&self) -> bool {
+        self.owner.as_ref().is_ok_and(|owner| owner.is_current())
+    }
 }
 /// SET uses the exact clicked URL/token, even if the source changes before the
 /// spawned future starts. A response from the old source cannot clear a new login.
 async fn save_to_source(context: &SourceContext, body: &Value) -> Result<Value, String> {
-    if *context != SourceContext::current() {
+    if !context.matches_current() {
         return Err("Connection changed; query and choose the drive again.".into());
     }
+    let owner = context.owner.as_ref().map_err(Clone::clone)?;
+    owner.check_ordinary()?;
     #[cfg(target_arch = "wasm32")]
     let (status, text) = {
         let base = if context.base.is_empty() {
@@ -94,6 +101,12 @@ async fn save_to_source(context: &SourceContext, body: &Value) -> Result<Value, 
         let mut request =
             gloo_net::http::Request::post(&format!("{base}/api/actuator/plumbing/settings"))
                 .abort_signal(Some(&controller.signal()));
+        if let Some(epoch) = owner.policy_epoch() {
+            request = request.header(super::station_policy_context::HTTP_EPOCH_HEADER, epoch);
+        }
+        if let Some(origin) = owner.control_origin() {
+            request = request.header("X-Station-Control-Origin", origin);
+        }
         if let Some(token) = &context.token {
             request = request.header("Authorization", &format!("Bearer {token}"));
         }
@@ -106,7 +119,7 @@ async fn save_to_source(context: &SourceContext, body: &Value) -> Result<Value, 
         };
         let timeout = gloo_timers::future::TimeoutFuture::new(8000);
         futures_util::pin_mut!(fetch, timeout);
-        match futures_util::future::select(fetch, timeout).await {
+        match owner.wait(futures_util::future::select(fetch, timeout)).await? {
             futures_util::future::Either::Left((result, _)) => result?,
             futures_util::future::Either::Right(_) => {
                 return Err(
@@ -131,15 +144,22 @@ async fn save_to_source(context: &SourceContext, body: &Value) -> Result<Value, 
         let mut request = client
             .post(format!("{base}/api/actuator/plumbing/settings"))
             .json(body);
+        if let Some(epoch) = owner.policy_epoch() {
+            request = request.header(super::station_policy_context::HTTP_EPOCH_HEADER, epoch);
+        }
+        if let Some(origin) = owner.control_origin() {
+            request = request.header("X-Station-Control-Origin", origin);
+        }
         if let Some(token) = &context.token {
             request = request.bearer_auth(token);
         }
-        let response = request.send().await.map_err(|e| e.to_string())?;
+        let response = owner.wait(request.send()).await?.map_err(|e| e.to_string())?;
         let status = response.status().as_u16();
-        let text = response.text().await.map_err(|e| e.to_string())?;
+        let text = owner.wait(response.text()).await?.map_err(|e| e.to_string())?;
         (status, text)
     };
-    if status == 401 && *context == SourceContext::current() {
+    owner.check()?;
+    if status == 401 && context.matches_current() {
         auth::clear_current_session();
     }
     if !(200..300).contains(&status) {
@@ -164,7 +184,7 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
         let mut query_tick = 0u8;
         loop {
             let current = SourceContext::current();
-            if context.as_ref() != Some(&current) {
+            if context.as_ref().is_none_or(|old| !old.matches_current()) {
                 snapshot.set(None);
                 snapshot_source.set(None);
                 query_tick = 0;
@@ -176,18 +196,21 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
             if !*busy.peek() {
                 if query_tick == 0 && auth::current_status().station_role.as_deref() != Some("rrls")
                 {
-                    let _ = http_post_json::<_, Value>("/api/actuator/plumbing/query", &json!({}))
+                    let _ = super::station_settings_request::post_captured::<_, Value>("/api/actuator/plumbing/query", &json!({}), current.owner.clone())
                         .await;
-                    if current == SourceContext::current() {
-                        let _ = http_post_json::<_, Value>(
+                    if current.matches_current() {
+                        let _ = super::station_settings_request::post_captured::<_, Value>(
                             "/api/board-recovery/query",
-                            &json!({"board":"AB"}),
+                            &json!({"board":"AB"}), current.owner.clone(),
                         )
                         .await;
                     }
                 }
-                let next = http_get_json::<Value>("/api/actuator/plumbing/status").await;
-                if current == SourceContext::current() && !*busy.peek() {
+                let next = match current.owner.clone() {
+                    Ok(owner) => super::recording_download::saved_json::<Value>("/api/actuator/plumbing/status", owner).await,
+                    Err(error) => Err(error),
+                };
+                if current.matches_current() && !*busy.peek() {
                     match next {
                         Ok(next) => {
                             if snapshot.peek().as_ref().is_some_and(|old| {
@@ -228,7 +251,7 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
         && snapshot_source
             .read()
             .as_ref()
-            .is_some_and(|source| *source == SourceContext::current())
+            .is_some_and(|source| source.matches_current())
         && current["board"].is_object()
         && !*busy.read();
     let can_save =
@@ -281,8 +304,8 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
                 style: "min-height:44px;max-width:100%;width:auto;padding:10px 14px;white-space:normal;font:inherit;",
                 onclick: move |_| {
                     let Some(before) = snapshot.peek().clone() else { return; };
-                    let context=SourceContext::current();
-                    if snapshot_source.peek().as_ref()!=Some(&context) {snapshot.set(None);draft.set(None);release.set(false);message.set("Connection changed. Query and choose the drive again.".into());return;}
+                    let Some(context)=snapshot_source.peek().clone() else {return;};
+                    if !context.matches_current() {snapshot.set(None);draft.set(None);release.set(false);message.set("Connection changed. Query and choose the drive again.".into());return;}
                     let mode = draft.peek().clone().unwrap_or_else(|| before["desired"]["mode"].as_str().unwrap_or("stepper").to_string());
                     let body = match settings_request(&before, &mode, *release.peek()) {
                         Ok(body) => body, Err(error) => {message.set(error.into()); return;}
@@ -290,7 +313,7 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
                     busy.set(true);
                     spawn(async move {
                         let result = save_to_source(&context, &body).await;
-                        if context == SourceContext::current() {
+                        if context.matches_current() {
                             match result {
                                 Ok(next) => { let note=next["message"].as_str().unwrap_or("Drive response received; desired and actual readback are shown separately.").to_string(); snapshot_source.set(Some(context.clone())); snapshot.set(Some(next)); draft.set(None); release.set(false); message.set(note); }
                                 Err(error) => { snapshot.set(None); snapshot_source.set(None); draft.set(None);release.set(false); message.set(format!("Drive change failed: {error}")); }

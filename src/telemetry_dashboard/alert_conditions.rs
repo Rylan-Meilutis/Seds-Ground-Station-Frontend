@@ -125,6 +125,15 @@ impl View {
         self.invalid = false;
         self.connection
     }
+    /// Retire current-domain facts without inventing a new transport token.
+    /// The preserved socket can deliver the next matching-epoch snapshot.
+    pub fn retire_applied_context(&mut self) {
+        self.snapshot = None;
+        self.by_occurrence = Arc::new(BTreeMap::new());
+        self.evaluated = Arc::new(BTreeMap::new());
+        self.retired.clear();
+        self.invalid = true;
+    }
     pub fn disconnect(&mut self, connection: u64) {
         if connection == self.connection {
             self.connected = false;

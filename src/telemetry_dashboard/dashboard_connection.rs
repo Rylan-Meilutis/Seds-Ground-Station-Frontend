@@ -561,13 +561,17 @@ struct WsSender {
     ws: web_sys::WebSocket,
 
     #[cfg(not(target_arch = "wasm32"))]
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<QueuedCommand>,
 }
 
 impl WsSender {
     /// Sends a command over the current WebSocket transport.
     fn send_cmd(&self, cmd: &str) -> Result<(), String> {
-        let msg = format!(r#"{{"cmd":"{}"}}"#, cmd);
+        self.send_owned(CommandOwner::capture(cmd)?)
+    }
+    fn send_owned(&self, owner: CommandOwner) -> Result<(), String> {
+        let queued = QueuedCommand::capture(owner)?;
+        queued.owner.check()?;
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -575,14 +579,14 @@ impl WsSender {
                 return Err("connection is not open".into());
             }
             self.ws
-                .send_with_str(&msg)
+                .send_with_str(&queued.wire)
                 .map_err(|_| "ws send failed".to_string())?;
         }
 
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.tx
-                .send(msg)
+                .send(queued)
                 .map_err(|_| "ws channel closed".to_string())?;
         }
 

@@ -1,5 +1,5 @@
 //! GroundStation-owned checklist progress and administrator-managed templates.
-use super::{http_get_json, http_post_json, layout::ThemeConfig};
+use super::{http_get_json, layout::ThemeConfig};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -178,6 +178,7 @@ fn id() -> Result<String, String> {
 }
 #[component]
 pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
+    let requests = super::station_settings_request::use_factory();
     let mut document = use_signal(Document::default);
     let mut loaded = use_signal(|| false);
     let mut selected = use_signal(String::new);
@@ -269,7 +270,7 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
                {let key=key.clone();let expected=expected.clone();let value=head.value.clone();let summary=version_summary(&value);let stations=concise(&head.clock.keys().cloned().collect::<Vec<_>>().join(", "));rsx!{
                 button {disabled:*busy.read()||!sync_state.read().ready||sync_state.read().durability_pending,onclick:move |_|{
                  let request=Resolve{key:key.clone(),expected:(*expected).clone(),value:value.clone()};busy.set(true);
-                 spawn(async move{match http_post_json::<Resolve,Document>("/api/checklists/resolve",&request).await{Ok(value)=>{document.set(value);message.set("Reviewed version saved".into());if let Ok(status)=http_get_json::<SyncStatus>("/api/checklists/sync").await{sync_state.set(status);}},Err(error)=>message.set(error)}busy.set(false);});
+                 spawn(async move{let result=requests.post::<Resolve,Document>("/api/checklists/resolve",&request).await; if !requests.current(){return;} match result {Ok(value)=>{document.set(value);message.set("Reviewed version saved".into());if let Ok(status)=http_get_json::<SyncStatus>("/api/checklists/sync").await{sync_state.set(status);}},Err(error)=>message.set(error)}busy.set(false);});
                 },strong {"Use version {index+1}"}span {"{summary}"}small {"{stations}"}}
                }}
               }
@@ -313,7 +314,7 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
         }
         div {class:"gs26-checklist-tools",
          button {disabled:*busy.read(),onclick:move |_|{match id(){Ok(id)=>if let Some(d)=draft.write().as_mut(){d.checklists.push(Checklist{id,title:"New checklist".into(),..Default::default()})},Err(e)=>message.set(e)}},"Add checklist"}
-         button {disabled:*busy.read(),onclick:move |_|{let Some(request)=draft.read().clone()else{return};busy.set(true);spawn(async move{match http_post_json::<Document,Document>("/api/checklists",&request).await{Ok(value)=>{document.set(value);draft.set(None);message.set("Checklists saved".into());},Err(error)=>message.set(error)}busy.set(false);});},"Save changes"}
+         button {disabled:*busy.read(),onclick:move |_|{let Some(request)=draft.read().clone()else{return};busy.set(true);spawn(async move{let result=requests.post::<Document,Document>("/api/checklists",&request).await; if !requests.current(){return;} match result {Ok(value)=>{document.set(value);draft.set(None);message.set("Checklists saved".into());},Err(error)=>message.set(error)}busy.set(false);});},"Save changes"}
          button {disabled:*busy.read(),onclick:move |_|{draft.set(None);message.set(String::new());},"Cancel"}
         }
        }
@@ -334,7 +335,7 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
             label {class:"gs26-checklist-item",key:"{item.id}",
              input {r#type:"checkbox",checked:item_complete(&sync_state.read(),&list.id,item),disabled:*busy.read()||!*loaded.read()||(sync_state.read().enabled&&(!sync_state.read().ready||sync_state.read().durability_pending))||item_conflicted(&sync_state.read(),&list.id,&item.id),onchange:move|event|{
               let request=Check{checklist_id:list_id.clone(),item_id:item_id.clone(),checked:event.checked()};busy.set(true);
-              spawn(async move{match http_post_json::<Check,Document>("/api/checklists/check",&request).await{Ok(value)=>{if value.revision>=document.read().revision{document.set(value);}message.set(String::new());},Err(error)=>message.set(error)}busy.set(false);});
+              spawn(async move{let result=requests.post::<Check,Document>("/api/checklists/check",&request).await; if !requests.current(){return;} match result {Ok(value)=>{if value.revision>=document.read().revision{document.set(value);}message.set(String::new());},Err(error)=>message.set(error)}busy.set(false);});
              }}
              div {span {"{item.text}"}
               if item.completion_source.as_deref()==Some("automated_sequence"){small {"Test passed · saved automatically"}}
@@ -356,7 +357,7 @@ pub(super) fn ChecklistsTab(theme: ThemeConfig) -> Element {
             if can_sign {
              {let list_id=list.id.clone();let complete=!list.items.is_empty()&&list.items.iter().all(|item|item_complete(&sync_state.read(),&list.id,item));rsx!{
               button {disabled:*busy.read()||!*loaded.read()||!complete||(sync_state.read().enabled&&(!sync_state.read().ready||sync_state.read().durability_pending||sync_state.read().definition_pending||sync_state.read().conflict_count>0)),onclick:move |_|{
-               let request=Sign{checklist_id:list_id.clone(),revision:document.read().revision};busy.set(true);spawn(async move{match http_post_json::<Sign,Document>("/api/checklists/sign",&request).await{Ok(value)=>{document.set(value);message.set("Checklist signed off".into());},Err(error)=>message.set(error)}busy.set(false);});
+               let request=Sign{checklist_id:list_id.clone(),revision:document.read().revision};busy.set(true);spawn(async move{let result=requests.post::<Sign,Document>("/api/checklists/sign",&request).await; if !requests.current(){return;} match result {Ok(value)=>{document.set(value);message.set("Checklist signed off".into());},Err(error)=>message.set(error)}busy.set(false);});
               },"Sign off checklist"}
              }}
             }

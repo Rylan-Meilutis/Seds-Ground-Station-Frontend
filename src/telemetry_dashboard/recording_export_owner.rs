@@ -17,13 +17,14 @@ pub(crate) struct ExportOwner {
     identity: auth::RequestIdentity,
     base: String,
     ws_epoch: u64,
-    data_epoch: u64,
+    data_epoch: Option<u64>,
     mount: u64,
     disconnects: u64,
     connected: bool,
     alive: Arc<std::sync::atomic::AtomicBool>,
     selection: Box<dyn Fn() -> bool>,
     skip_tls: bool,
+    policy: Option<super::super::station_policy_context::Lease>,
 }
 impl ExportOwner {
     pub(crate) fn capture() -> Result<Rc<Self>, String> {
@@ -31,6 +32,28 @@ impl ExportOwner {
     }
     pub(crate) fn capture_selected(
         selection: impl Fn() -> bool + 'static,
+    ) -> Result<Rc<Self>, String> {
+        Self::capture_bound(selection, None, true)
+    }
+    /// Captured synchronously by an ordinary mutation, mutable draft or live
+    /// export producer. Read-only history/auth owners intentionally stay separate.
+    pub(crate) fn capture_ordinary_selected(
+        selection: impl Fn() -> bool + 'static,
+    ) -> Result<Rc<Self>, String> {
+        let policy = super::super::station_policy_context::capture_form_current()?;
+        Self::capture_bound(selection, Some(policy), true)
+    }
+    /// Only authoritative mode/status observation and server-classified Stop
+    /// use this identity. It does not grant ordinary mutation permission.
+    pub(crate) fn capture_observer_selected(
+        selection: impl Fn() -> bool + 'static,
+    ) -> Result<Rc<Self>, String> {
+        Self::capture_bound(selection, None, false)
+    }
+    fn capture_bound(
+        selection: impl Fn() -> bool + 'static,
+        policy: Option<super::super::station_policy_context::Lease>,
+        presentation_bound: bool,
     ) -> Result<Rc<Self>, String> {
         let identity = auth::request_identity().ok_or("Authentication identity is unavailable")?;
         let base = UrlConfig::base_http();
@@ -52,17 +75,19 @@ impl ExportOwner {
             ws_epoch,
             disconnects,
             connected,
-            data_epoch: frontend_data_clear_epoch(),
+            data_epoch: presentation_bound.then(frontend_data_clear_epoch),
             mount: dashboard_gen(),
             alive: dashboard_alive(),
             selection: Box::new(selection),
             skip_tls: UrlConfig::_skip_tls_verify(),
+            policy,
         });
         owner.check()?;
         Ok(owner)
     }
     pub(crate) fn is_current(&self) -> bool {
-        if !self.alive.load(Ordering::Acquire) || !(self.selection)() {
+        if !self.alive.load(Ordering::Acquire) || !(self.selection)()
+            || self.policy.as_ref().is_some_and(|lease| lease.check_form_current().is_err()) {
             return false;
         }
         let Ok(metrics) = super::super::FRONTEND_NETWORK_METRICS_STATE.lock() else {
@@ -74,7 +99,7 @@ impl ExportOwner {
         connection
             && Arc::ptr_eq(&self.alive, &dashboard_alive())
             && self.mount == dashboard_gen()
-            && self.data_epoch == frontend_data_clear_epoch()
+            && self.data_epoch.is_none_or(|epoch| epoch == frontend_data_clear_epoch())
             && self.ws_epoch == *super::super::WS_EPOCH.read()
             && self.skip_tls == UrlConfig::_skip_tls_verify()
             && self.session.is_current(
@@ -108,6 +133,18 @@ impl ExportOwner {
                 futures_util::future::Either::Right(_) => self.check()?,
             }
         }
+    }
+    pub(crate) fn check_ordinary(&self) -> Result<(), String> {
+        if self.policy.is_none() {
+            return Err("Original ordinary policy owner is missing; create a fresh request.".into());
+        }
+        self.check()
+    }
+    /// The original optional wire epoch. Never re-read current policy to send.
+    pub(crate) fn control_origin(&self) -> Option<&str> { self.policy.as_ref().and_then(|lease| lease.control_origin()) }
+    pub(crate) fn has_ordinary_policy(&self) -> bool { self.policy.is_some() }
+    pub(crate) fn policy_epoch(&self) -> Option<&str> {
+        self.policy.as_ref().and_then(|lease| lease.epoch())
     }
     pub(crate) fn base(&self) -> &str {
         &self.base

@@ -16,6 +16,8 @@ mod board_recovery_panel;
 mod calibration_tab;
 mod checklists;
 mod command_confirmation;
+mod command_owner;
+use command_owner::{CommandOwner, QueuedCommand};
 mod connection_status_tab;
 mod connectivity_health;
 mod custom_dashboard;
@@ -66,6 +68,16 @@ mod sd_recording_import;
 mod sequence_indicator;
 mod station_mode;
 mod station_positions_admin;
+mod station_mode_contract;
+mod station_mode_observer;
+mod station_policy_context;
+mod station_policy_model;
+mod incoming_epoch;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod incoming_epoch_native_tests;
+mod mode_live_view;
+mod station_mode_settings;
+mod station_mode_transport;
 mod station_settings;
 mod settings_navigation;
 mod station_settings_request;
@@ -131,8 +143,8 @@ use once_cell::sync::Lazy;
 // - WS ingest becomes O(1) and never does large Vec rebuilds.
 // - UI flush loop drains at ~120Hz (or as fast as runtime allows).
 // ============================================================================
-static TELEMETRY_QUEUE: Lazy<Mutex<VecDeque<TelemetryRow>>> =
-    Lazy::new(|| Mutex::new(VecDeque::new()));
+static TELEMETRY_QUEUE: Lazy<Mutex<incoming_epoch::TelemetryQueue>> =
+    Lazy::new(|| Mutex::new(incoming_epoch::TelemetryQueue::default()));
 static RESEED_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static RESEED_LIVE_BUFFER: Lazy<Mutex<reseed_buffer::ReseedBuffer>> =
     Lazy::new(|| Mutex::new(reseed_buffer::ReseedBuffer::default()));
@@ -148,8 +160,9 @@ static FRONTEND_NETWORK_METRICS_STATE: Lazy<Mutex<FrontendNetworkMetrics>> =
 static TRANSLATION_MISS_QUEUE: Lazy<Mutex<HashSet<String>>> =
     Lazy::new(|| Mutex::new(HashSet::new()));
 static TRANSLATION_REQUEST_ACTIVE: AtomicBool = AtomicBool::new(false);
-static LAST_COMMAND_ACTIVATION: Lazy<Mutex<Option<(String, f64)>>> = Lazy::new(|| Mutex::new(None));
-static PENDING_COMMAND_PRESS: Lazy<Mutex<Option<(String, f64)>>> = Lazy::new(|| Mutex::new(None));
+static LAST_COMMAND_ACTIVATION: Lazy<Mutex<Option<(CommandOwner, f64)>>> = Lazy::new(|| Mutex::new(None));
+static PENDING_COMMAND_PRESS: Lazy<Mutex<Option<command_owner::PendingCommandPress>>> = Lazy::new(|| Mutex::new(None));
+static COMMAND_KEYBOARD_SOURCES: Lazy<Mutex<command_owner::KeyboardSources>> = Lazy::new(|| Mutex::new(command_owner::KeyboardSources::default()));
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 static PAGE_VISIBILITY_BRIDGE_INSTALLED: AtomicBool = AtomicBool::new(false);
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
@@ -313,7 +326,13 @@ fn action_control<'a>(policy: &'a ActionPolicyMsg, cmd: &str) -> Option<&'a Acti
 pub(crate) fn action_policy_control_enabled(policy: &ActionPolicyMsg, cmd: &str) -> bool {
     let local_rrls = auth::current_status().station_role.as_deref() == Some("rrls")
         && auth::is_local_station_command(cmd);
-    if !policy.software_buttons_enabled && !local_rrls {
+    // A supported, explicit server Stop classification bypasses only ordinary
+    // software closure. The gesture still needs its original applied seal.
+    let explicit_emergency = station_policy_context::epoch_fencing_required()
+        && action_control(policy, cmd).is_some_and(|control| {
+            control.epoch_fence == EpochFence::EmergencyStop && control.enabled
+        });
+    if !policy.software_buttons_enabled && !local_rrls && !explicit_emergency {
         return false;
     }
 
@@ -482,7 +501,8 @@ fn old_connection_cleanup_cannot_remove_restarted_dashboard_pump() {
 }
 static PENDING_WS_OPEN_EVENTS: Lazy<Mutex<VecDeque<(u64, String)>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
-static PENDING_WS_MESSAGE_EVENTS: Lazy<Mutex<VecDeque<(u64,u64,String)>>> =
+type PendingWsMessage = (u64, u64, String, incoming_epoch::PacketPermit);
+static PENDING_WS_MESSAGE_EVENTS: Lazy<Mutex<VecDeque<PendingWsMessage>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
 static SEED_WATCHER_TX: Lazy<Mutex<Option<futures_channel::mpsc::UnboundedSender<()>>>> =
     Lazy::new(|| Mutex::new(None));
@@ -624,6 +644,7 @@ fn telemetry_rows_per_drain_budget(queue_len: usize, now_ms: i64) -> usize {
 
 fn drain_telemetry_queue_for_frame() -> Vec<TelemetryRow> {
     if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+        if !q.current() { q.clear(); return Vec::new(); }
         if q.is_empty() {
             return Vec::new();
         }
@@ -836,8 +857,9 @@ fn queue_ws_open_event(epoch: u64, ws_url: String) {
 
 #[cfg(target_arch = "wasm32")]
 fn queue_ws_message_event(epoch: u64, condition_connection:u64, payload: String) {
+    let Ok(permit) = incoming_epoch::PacketPermit::capture(&payload) else { return; };
     if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
-        q.push_back((epoch, condition_connection, payload));
+        q.push_back((epoch, condition_connection, payload, permit));
         while q.len() > 512 {
             q.pop_front();
         }
@@ -850,6 +872,8 @@ fn queue_live_telemetry_from_ws_message(payload: &str) -> bool {
     let Ok(msg) = serde_json::from_str::<WsTelemetryIngressMsg>(payload) else {
         return false;
     };
+
+    let Ok(permit) = incoming_epoch::PacketPermit::capture(payload) else { return true; };
 
     LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
     note_incoming_ws_message(payload.len());
@@ -870,6 +894,7 @@ fn queue_live_telemetry_from_ws_message(payload: &str) -> bool {
                 v.push(row.clone());
             }
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                if !q.bind(&permit) { return true; }
                 q.push_back(row);
                 trim_telemetry_queue_to_live_window(&mut q);
             }
@@ -893,6 +918,7 @@ fn queue_live_telemetry_from_ws_message(payload: &str) -> bool {
                 None
             };
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                if !q.bind(&permit) { return true; }
                 if let Some(v) = reseed_live.as_mut() {
                     q.reserve(batch.len());
                     for row in batch {
@@ -1403,7 +1429,13 @@ fn refresh_layout_after_ws_reconnect(
     });
 }
 
+include!("station_mode_layout.rs");
 include!("dashboard_settings.rs");
 include!("dashboard_connection.rs");
 include!("dashboard_component.rs");
 include!("dashboard_transport.rs");
+
+// The observer calls this after policy/proof installation and before its banner.
+fn synchronize_mode_ingress_context() {
+    mode_live_view::synchronize();
+}

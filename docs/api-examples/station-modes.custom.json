@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "backend_instance": "opaque-process-A",
+  "authority_id": "opaque-custom-authority",
+  "principal_context": "opaque-current-session",
+  "revision": "opaque-capabilities-9",
+  "policy_epoch": "opaque-owner-A-generation-1",
+  "authority_current": true,
+  "valid_for_ms": 5000,
+  "epoch_fencing_supported": true,
+  "admissions_open": true,
+  "change_supported": false,
+  "cancel_supported": false,
+  "permissions": {
+    "can_change": false,
+    "can_cancel_transition": false
+  },
+  "current": {
+    "id": "payload-simulated",
+    "mode_id": "payload/checkout",
+    "label": "Payload checkout \u00b7 Simulation",
+    "simulation": true,
+    "output_domain": "Isolated simulated telemetry and actions; physical transports closed"
+  },
+  "modes": [
+    {
+      "id": "payload/checkout",
+      "label": "Payload checkout"
+    },
+    {
+      "id": "bench-validation",
+      "label": "Custom bench validation"
+    }
+  ],
+  "options": [],
+  "transition": null,
+  "reason": "Descriptive capability only; runtime switching is not yet qualified."
+}

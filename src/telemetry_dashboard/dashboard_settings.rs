@@ -737,7 +737,7 @@ pub fn NativeSettingsPage() -> Element {
     };
 
     if *aiming.read() {
-        return rsx! {antenna_aiming::AntennaAiming {on_exit: move |_| aiming.set(false)}};
+        return rsx! {antenna_aiming::AntennaAiming {on_register_retirement: move |(alive, reset): antenna_aiming::RetirementRegistration| { mode_live_view::register_antenna(alive, move || reset.call(())); }, on_exit: move |_| aiming.set(false)}};
     }
     rsx! {
         SettingsPage {

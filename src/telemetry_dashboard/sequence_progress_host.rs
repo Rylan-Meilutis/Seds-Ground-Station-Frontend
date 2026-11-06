@@ -2,7 +2,7 @@
 use super::{
     auth,
     prelude::*,
-    sequence_progress_model::{Envelope, Model, RunKey, Snapshot},
+    sequence_progress_model::{Envelope, Model, Panel, RunKey, Snapshot},
     sequence_progress_view::SequenceProgressView,
 };
 
@@ -16,10 +16,12 @@ pub struct StatusObservation {
     pub(super) binding: Option<super::board_recovery_guard::ConnectionBinding>,
     pub(super) identity: Option<crate::auth::RequestIdentity>,
     pub(super) data_epoch: u64,
+    pub(super) read_context: Option<super::incoming_epoch::ReadContext>,
 }
 impl StatusObservation {
     pub(super) fn current_binding(&self) -> bool {
-        self.data_epoch == super::frontend_data_clear_epoch()
+        self.read_context.as_ref().is_some_and(|context| context.check_current().is_ok())
+            && self.data_epoch == super::frontend_data_clear_epoch()
             && self.binding.as_ref()
                 == Some(&super::board_recovery_guard::ConnectionBinding::current())
             && self
@@ -66,6 +68,7 @@ pub fn SequenceProgressHost(
 ) -> Element {
     let mut clock = use_signal(now_ms);
     let mut cancel_api = use_signal(|| None::<u16>);
+    let mut observed_policy = use_signal(|| None::<super::station_policy_context::Lease>);
     let mut transient_transport_error = use_signal(|| false);
     use_effect(use_reactive((&on_actions,), move |(on_actions,)| {
         state.write().set_surface(on_actions)
@@ -92,12 +95,23 @@ pub fn SequenceProgressHost(
                 previous_source = Some(origin.clone());
                 state.write().set_source(origin.epoch);
                 if changed {
+                    observed_policy.set(None);
                     transient_transport_error.set(false);
                     state.write().retire_source();
                     status.set(StatusObservation::default());
                     *HISTORY_OPEN.write() = false;
                 }
                 if auth::can_view_data() {
+                    let policy = super::station_policy_context::capture_current().ok();
+                    if policy.is_none() { observed_policy.set(None); }
+                    let read_context = match super::incoming_epoch::ReadContext::capture() {
+                        Ok(context) => context,
+                        Err(_) => {
+                            observed_policy.set(None); state.write().unavailable = true;
+                            status.set(StatusObservation::default()); cancel_api.set(None);
+                            delay(1000).await; continue;
+                        }
+                    };
                     let started = super::monotonic_now_ms();
                     let observation = super::telemetry_reseed_continuity::begin_observation();
                     let request_alive = alive.clone();
@@ -107,9 +121,9 @@ pub fn SequenceProgressHost(
                         });
                     let response = match &owner {
                         Ok(owner) => {
-                            super::recording_download::saved_json_classified::<serde_json::Value>(
+                            super::recording_download::saved_json_classified_in_context::<serde_json::Value>(
                                 "/api/gse/status",
-                                owner.clone(),
+                                owner.clone(), read_context.clone(),
                             )
                             .await
                         }
@@ -120,14 +134,20 @@ pub fn SequenceProgressHost(
                     if !alive.load(std::sync::atomic::Ordering::Acquire) {
                         return;
                     }
-                    if owner.as_ref().is_ok_and(|owner| !owner.is_current())
+                    if read_context.check_current().is_err()
+                        || owner.as_ref().is_ok_and(|owner| !owner.is_current())
                         || source() != origin
                         || observation
                             .as_ref()
                             .is_none_or(|request| !request.current())
                     {
-                        continue;
+                        delay(1000).await; continue;
                     }
+                    // Preserve the original in-flight policy before any new
+                    // status/readback projection can become action evidence.
+                    // Read-only status remains valid during Closing. A retired
+                    // ordinary owner only disables mutators; never spin/rebind it.
+                    observed_policy.set(policy.filter(|lease| lease.check_current().is_ok()));
                     match response {
                         Ok(value) => {
                             transient_transport_error.set(false);
@@ -160,6 +180,7 @@ pub fn SequenceProgressHost(
                                             binding:Some(super::board_recovery_guard::ConnectionBinding::current()),
                                             identity:crate::auth::request_identity(),
                                             data_epoch:super::frontend_data_clear_epoch(),
+                                            read_context:Some(read_context.clone()),
                                         });
                                         if let Some(request) = observation.as_ref() {
                                             super::telemetry_reseed_continuity::observe(
@@ -236,6 +257,7 @@ pub fn SequenceProgressHost(
                                     binding: None,
                                     identity: None,
                                     data_epoch: 0,
+                                    read_context: None,
                                 });
                             }
                             state.write().unavailable = true;
@@ -243,6 +265,7 @@ pub fn SequenceProgressHost(
                         }
                     }
                 } else {
+                    observed_policy.set(None);
                     *HISTORY_OPEN.write() = false;
                     transient_transport_error.set(false);
                     state.write().unavailable = true;
@@ -321,7 +344,9 @@ pub fn SequenceProgressHost(
             )
         })
         .collect();
-    let unavailable = state.read().unavailable;
+    let ordinary_current = observed_policy.read().as_ref().is_some_and(|lease| lease.check_current().is_ok());
+    let unavailable = state.read().unavailable || !status.read().current_binding();
+    let panel_policy_key = super::station_mode_observer::view_key();
     let transient_transport_error = transient_transport_error();
     let result_error = state.read().result_error.clone();
     let history = if *HISTORY_OPEN.read() {
@@ -366,19 +391,21 @@ pub fn SequenceProgressHost(
                 }
             }
             for (index,(panel,can_release_cold_flow,identity)) in panels.into_iter().enumerate() {
-                div {key:"{identity}",style:"--sequence-panel-index:{index};",
-                    SequenceProgressView {
-                        panel,now_ms:render_now,can_send_commands:auth::can_send_command("CancelFill"),cancel_api_version:cancel_api(),unavailable,
-                        can_release_cold_flow,transient_transport_error,
+                div {key:"{identity}:{panel_policy_key}",style:"--sequence-panel-index:{index};",
+                    OwnedSequenceProgressView {
+                        panel,now_ms:render_now,can_send_commands:ordinary_current&&auth::can_send_command("CancelFill"),cancel_api_version:cancel_api(),unavailable,
+                        can_release_cold_flow:ordinary_current&&can_release_cold_flow,transient_transport_error,
                         board_display:state.read().board_display.clone(),
                         output_display:state.read().output_display(),
-                        on_release_cold_flow:move |key:RunKey|{
+                        on_release_cold_flow:move |owned:OwnedRunIntent|{
+                            let OwnedRunIntent {key, owner}=owned;
+                            if !owner.is_current(){return;}
                             let origin=source();
                             let release = { state.write().request_release(&key,now_ms(),auth::can_send_command("ColdFlow")) };
                             if let Ok(intent)=release {
                                 spawn(async move {
-                                    let result=super::http_post_json::<RunKey,serde_json::Value>("/api/gse/cold-flow/release",&intent).await;
-                                    if source()!=origin{return;}
+                                    let result=super::station_settings_request::post_captured::<_,serde_json::Value>("/api/gse/cold-flow/release",&intent,Ok(owner.clone())).await;
+                                    if !owner.is_current()||source()!=origin{return;}
                                     if let Err(error)=result{state.write().release_failed(&intent);state.write().result_error=Some(format!("Cold Flow release refused: {error}"));}
                                     // Acceptance is not reported output or measured fluid flow.
                                 });
@@ -387,13 +414,15 @@ pub fn SequenceProgressHost(
                         on_minimize:move |key|state.write().minimize(&key),
                         on_restore:move |key|state.write().restore(&key),
                         on_dismiss:move |key|{state.write().dismiss(&key);},
-                        on_cancel:move |key:RunKey| {
+                        on_cancel:move |owned:OwnedRunIntent| {
+                            let OwnedRunIntent {key, owner}=owned;
+                            if !owner.is_current(){return;}
                             let origin=source();
                             let intent=state.write().request_cancel(&key,now_ms(),auth::can_send_command("CancelFill"),cancel_api());
                             if let Ok(intent)=intent {
                                 spawn(async move {
-                                    let result=super::http_post_json::<RunKey,serde_json::Value>("/api/gse/sequences/cancel",&intent).await;
-                                    if source()!=origin {return;}
+                                    let result=super::station_settings_request::post_captured::<RunKey,serde_json::Value>("/api/gse/sequences/cancel",&intent,Ok(owner.clone())).await;
+                                    if !owner.is_current()||source()!=origin {return;}
                                     if result.is_err(){state.write().cancel_failed(&intent);state.write().unavailable=true;}
                                     // HTTP acceptance never means cancelled; actual producer observation must confirm.
                                 });
@@ -404,4 +433,42 @@ pub fn SequenceProgressHost(
             }
         }
     }
+}
+
+/// Each actual run panel retains its first mounted ordinary owner. The global
+/// observer/results model survives; changing policy never rebinds this owner.
+#[derive(Clone)]
+struct OwnedRunIntent {
+    key: RunKey,
+    owner: std::rc::Rc<super::recording_download::ExportOwner>,
+}
+#[component]
+fn OwnedSequenceProgressView(
+    panel: Panel,
+    now_ms: u64,
+    can_send_commands: bool,
+    cancel_api_version: Option<u16>,
+    unavailable: bool,
+    can_release_cold_flow: bool,
+    transient_transport_error: bool,
+    board_display: super::sequence_progress_model::BoardDisplayMap,
+    output_display: super::sequence_progress_model::OutputDisplayMap,
+    on_minimize: EventHandler<RunKey>,
+    on_restore: EventHandler<RunKey>,
+    on_dismiss: EventHandler<RunKey>,
+    on_cancel: EventHandler<OwnedRunIntent>,
+    on_release_cold_flow: EventHandler<OwnedRunIntent>,
+) -> Element {
+    let original = super::station_settings_request::use_factory();
+    rsx! {SequenceProgressView {
+        panel, now_ms, can_send_commands, cancel_api_version,
+        unavailable, can_release_cold_flow, transient_transport_error, board_display, output_display,
+        on_minimize, on_restore, on_dismiss,
+        on_cancel: move |key:RunKey| {
+            if let Ok(owner)=original.capture() { on_cancel.call(OwnedRunIntent {key,owner}); }
+        },
+        on_release_cold_flow: move |key:RunKey| {
+            if let Ok(owner)=original.capture() { on_release_cold_flow.call(OwnedRunIntent {key,owner}); }
+        },
+    }}
 }

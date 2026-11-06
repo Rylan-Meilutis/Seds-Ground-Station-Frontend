@@ -1,5 +1,5 @@
 //! Explicit, evidence-preserving CLOSED reset; never a motion/readiness action.
-use super::super::{UrlConfig, http_post_json, prelude::*};
+use super::super::{UrlConfig, prelude::*};
 #[derive(Clone, serde::Deserialize)]
 struct Fault {
     fingerprint: Option<String>,
@@ -41,6 +41,7 @@ fn source() -> (String, Option<String>) {
 }
 #[component]
 pub(super) fn RetractionHistoryRepair() -> Element {
+    let requests = super::super::station_settings_request::use_factory();
     let mut confirmation = use_signal(|| None::<Confirmation>);
     let mut typed = use_signal(String::new);
     let mut busy = use_signal(|| false);
@@ -58,7 +59,8 @@ pub(super) fn RetractionHistoryRepair() -> Element {
             button {disabled:busy(),onclick:move |_|{
                 let original=source();busy.set(true);message.set("Inspecting retained evidence; no motion will be sent.".into());
                 spawn(async move {
-                    let result=http_post_json::<serde_json::Value,Inspection>("/api/actuator/plumbing/retraction-history/inspect",&serde_json::json!({})).await;
+                    let result=requests.post::<serde_json::Value,Inspection>("/api/actuator/plumbing/retraction-history/inspect",&serde_json::json!({})).await;
+                    if !requests.current(){return;}
                     busy.set(false);
                     if source()!=original{confirmation.set(None);message.set("Connection changed; inspect the current station again.".into());return;}
                     match result {Ok(inspection)=>{confirmation.set(Some(Confirmation{inspection,source:original}));typed.set(String::new());},Err(error)=>message.set(error)}
@@ -75,7 +77,8 @@ pub(super) fn RetractionHistoryRepair() -> Element {
                         if !context.current(&source())||typed()!="RESET RETRACTION JOURNAL"||!crate::auth::can_send_command("RetractPlumbing"){return;}
                         let original=context.source.clone();let body=context.body();busy.set(true);
                         spawn(async move {
-                            let result=http_post_json::<serde_json::Value,serde_json::Value>("/api/actuator/plumbing/retraction-history/reset",&body).await;
+                            let result=requests.post::<serde_json::Value,serde_json::Value>("/api/actuator/plumbing/retraction-history/reset",&body).await;
+                            if !requests.current(){return;}
                             busy.set(false);confirmation.set(None);typed.set(String::new());
                             if source()!=original{message.set("Connection changed. Inspect current status; no readiness is assumed.".into());return;}
                             message.set(match result{Ok(_)=>"Retraction history is CLOSED. Make a new explicit retraction and check actual completion before Launch.".into(),Err(error)=>error});

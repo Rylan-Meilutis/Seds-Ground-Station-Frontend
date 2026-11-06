@@ -364,7 +364,7 @@ fn playback_clock_ms() -> f64 {
 }
 // A native application may switch stations while a paginated request is in flight.
 // Never combine records, configuration or pages fetched from different servers.
-async fn saved_get<T: serde::de::DeserializeOwned>(origin: &str, path: &str) -> Result<T, String> {
+async fn saved_get<T: serde::de::DeserializeOwned + 'static>(origin: &str, path: &str) -> Result<T, String> {
     if UrlConfig::base_http() != origin {
         return Err("Station changed; select a saved recording again".into());
     }

@@ -323,6 +323,7 @@ pub struct Panel {
     pub visible: bool,
     pub cancel_pending: bool,
     pub historical: bool,
+    pub applied_retired: bool,
     pub loading_steps: Vec<(String, String)>,
     manual_minimize: bool,
 }
@@ -332,7 +333,8 @@ impl Panel {
             .map(|age| age.saturating_add(self.snapshot.observed_age_ms))
     }
     pub fn fresh(&self, now: u64) -> bool {
-        self.snapshot.reporting_error.is_none()
+        !self.applied_retired
+            && self.snapshot.reporting_error.is_none()
             && self
                 .age_ms(now)
                 .is_some_and(|age| age <= self.snapshot.valid_for_ms)
@@ -698,7 +700,13 @@ impl Model {
             envelope.reset_epoch.clone(),
         );
         for snapshot in envelope.active {
+            let key = snapshot.key.clone();
             self.accept(epoch, snapshot, observed_at, now)?;
+            // Only the header-validated CURRENT envelope can re-establish an
+            // active projection. Immutable result/history reads cannot.
+            if let Some(panel) = self.panels.iter_mut().find(|panel| panel.snapshot.key == key) {
+                panel.applied_retired = false;
+            }
         }
         for snapshot in envelope.terminal {
             if snapshot.key.reset_epoch == envelope.reset_epoch
@@ -819,6 +827,19 @@ impl Model {
         self.results
             .iter()
             .find(|s| &s.key == key && s.details_complete)
+    }
+    /// Retire current facts, not the station/transport or immutable results.
+    /// Preserve original ages and payloads; no synthetic time can make old
+    /// progress fresh. A new current envelope must explicitly establish it.
+    pub fn retire_applied_context(&mut self) {
+        for panel in &mut self.panels {
+            if !panel.snapshot.outcome.terminal() { panel.applied_retired = true; }
+            panel.cancel_pending = false;
+        }
+        self.board_display.clear();
+        self.output_cache = OutputCache::default();
+        self.release_pending.clear();
+        self.unavailable = true;
     }
     pub fn retire_source(&mut self) {
         self.panels.clear();
@@ -1006,6 +1027,7 @@ impl Model {
                 visible: true,
                 cancel_pending: false,
                 historical: false,
+                applied_retired: false,
                 loading_steps: Vec::new(),
                 manual_minimize: false,
             });
@@ -1236,13 +1258,13 @@ mod tests {
         let panel = display_panel(true, 0, 100);
         cache.observe(
             &display_boards(false, 10000, "0000000000000002"),
-            &[panel.clone()],
+            std::slice::from_ref(&panel),
             100,
         );
         assert_eq!(cache.values().get(&0), Some(&true));
         cache.observe(
             &display_boards(false, 11000, "0000000000000002"),
-            &[panel.clone()],
+            std::slice::from_ref(&panel),
             1100,
         );
         assert_eq!(cache.receipts[&0].received_at, 100);
@@ -1328,7 +1350,7 @@ mod tests {
         let boards = display_boards(false, 10000, "0000000000000002");
         let mut panel = display_panel(true, 0, 100);
         panel.snapshot.steps[0].watch[0].evidence = Evidence::Measured;
-        cache.observe(&boards, &[panel.clone()], 100);
+        cache.observe(&boards, std::slice::from_ref(&panel), 100);
         assert_eq!(
             cache.values().get(&0),
             Some(&false),
@@ -1336,7 +1358,7 @@ mod tests {
         );
         panel.snapshot.steps[0].watch[0].evidence = Evidence::BoardReported;
         panel.historical = true;
-        cache.observe(&boards, &[panel.clone()], 200);
+        cache.observe(&boards, std::slice::from_ref(&panel), 200);
         assert_eq!(cache.values().get(&0), Some(&false));
         panel.historical = false;
         panel.snapshot.outcome = Outcome::Passed;
@@ -1670,5 +1692,35 @@ mod envelope_tests {
         let mut model = Model::default();
         model.accept(0, old.clone(), 100, 100).unwrap();
         assert!(!model.can_release(&old.key, 101, true));
+    }
+}
+
+#[cfg(test)]
+mod applied_context_tests {
+    use super::*;
+    #[test]
+    fn applied_retirement_preserves_history_and_age_but_only_current_envelope_restores_live_facts() {
+        let live=super::tests::run();
+        let mut value=serde_json::to_value(&live).unwrap();
+        value["key"]["run_id"]="44444444444444444444444444444444".into();
+        value["outcome"]="passed".into(); value["current_step"]=serde_json::Value::Null;
+        value["next_step"]=serde_json::Value::Null; value["steps"]=serde_json::json!([]); value["cancel_allowed"]=false.into();
+        let terminal:Snapshot=serde_json::from_value(value).unwrap();
+        let mut envelope=Envelope {version:1,backend_instance:live.key.backend_instance.clone(),reset_epoch:live.key.reset_epoch.clone(),
+            cancel_api_version:1,active:vec![live.clone()],terminal:vec![terminal.clone()],reporting_error:None,result_links:Vec::new(),board_display:Default::default()};
+        let mut model=Model::default();model.accept_envelope(0,envelope.clone(),10,10).unwrap();
+        let original=model.panels()[0].clone();let source=model.source_epoch;let scope=model.expected_scope.clone();
+        assert!(original.can_cancel(20,true,Some(1)));
+        model.retire_applied_context();
+        assert_eq!(model.source_epoch,source);assert_eq!(model.expected_scope,scope);
+        assert_eq!(model.panels()[0].snapshot,original.snapshot);
+        assert_eq!(model.panels()[0].observed_at_ms,original.observed_at_ms,"mode clearing never rewrites capture/receipt age");
+        assert_eq!(model.cached_result(&terminal.key),Some(&terminal),"immutable result survives mode change");
+        assert!(!model.panels()[0].fresh(20));assert!(!model.panels()[0].can_cancel(20,true,Some(1)));
+        model.accept(0,live.clone(),21,21).unwrap();
+        assert!(!model.panels()[0].fresh(21),"generic/result acceptance cannot rehabilitate a retired live projection");
+        envelope.terminal.clear();model.accept_envelope(0,envelope,22,22).unwrap();
+        assert!(model.panels()[0].fresh(22));assert!(model.panels()[0].can_cancel(22,true,Some(1)));
+        assert_eq!(model.cached_result(&terminal.key),Some(&terminal));
     }
 }

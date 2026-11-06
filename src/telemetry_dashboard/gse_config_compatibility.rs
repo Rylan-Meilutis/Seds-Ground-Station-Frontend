@@ -1,5 +1,5 @@
 //! Current GET-config schema presence is the capability, never a guessed version.
-use super::super::recording_download::{ExportOwner, saved_json};
+use super::super::recording_download::ExportOwner;
 use super::Settings;
 use serde_json::Value;
 use std::rc::Rc;
@@ -53,13 +53,19 @@ fn payload(config: &Settings, supported: bool, turbo_deadband: bool) -> Result<V
     Ok(value)
 }
 impl Grant {
-    pub(super) async fn load() -> Result<(Settings, Self), String> {
-        let owner = ExportOwner::capture()?;
-        let value = saved_json::<Value>("/api/gse/config", owner.clone()).await?;
-        Self::from_response(value, owner)
+    pub(super) fn load() -> impl std::future::Future<Output = Result<(Settings, Self), String>> + 'static + use<> {
+        // The capability belongs to this original view/epoch, before any poll.
+        let owner = ExportOwner::capture_ordinary_selected(|| true);
+        let context = super::super::incoming_epoch::ReadContext::capture();
+        async move {
+            let owner = owner?;
+            owner.check_ordinary()?;
+            let value = super::super::recording_download::saved_json_in_context::<Value>("/api/gse/config", owner.clone(), context?).await?;
+            Self::from_response(value, owner)
+        }
     }
     fn from_response(value: Value, owner: Rc<ExportOwner>) -> Result<(Settings, Self), String> {
-        owner.check()?;
+        owner.check_ordinary()?;
         let cold_flow = supports_cold_flow(&value);
         let turbo_deadband = supports_turbo_deadband(&value);
         let config = serde_json::from_value(value)
@@ -75,29 +81,35 @@ impl Grant {
     pub(super) fn turbo_deadband_supported(&self) -> bool {
         self.current() && self.turbo_deadband
     }
-    pub(super) async fn status<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T, String> {
-        saved_json("/api/gse/status", self.owner.clone()).await
+    pub(super) fn status<T: for<'de> serde::Deserialize<'de>>(&self) -> impl std::future::Future<Output=Result<T,String>> + use<T> {
+        let request = super::super::incoming_epoch::ReadContext::capture().map(|context|
+            super::super::recording_download::saved_json_in_context::<T>("/api/gse/status", self.owner.clone(), context));
+        async move { request?.await }
     }
-    pub(super) async fn save(&self, config: &Settings) -> Result<(Settings, Self), String> {
-        self.owner.check()?;
-        let body = payload(config, self.cold_flow, self.turbo_deadband)?;
-        let value = post_owned(body, self.owner.clone()).await?;
-        let (next, grant) = Self::from_response(value, self.owner.clone())?;
-        if self.cold_flow
-            && (!grant.cold_flow || next.cold_flow_target_psi != config.cold_flow_target_psi)
-        {
-            return Err("The ground station did not confirm the requested Cold Flow target; it is not reported as saved.".into());
+    pub(super) fn save(&self, config: &Settings) -> impl std::future::Future<Output = Result<(Settings, Self), String>> + 'static + use<> {
+        let original = self.clone();
+        let config = config.clone();
+        let body = payload(&config, original.cold_flow, original.turbo_deadband);
+        async move {
+            original.owner.check_ordinary()?;
+            let value = post_owned(body?, original.owner.clone()).await?;
+            let (next, grant) = Self::from_response(value, original.owner.clone())?;
+            if original.cold_flow
+                && (!grant.cold_flow || next.cold_flow_target_psi != config.cold_flow_target_psi)
+            {
+                return Err("The ground station did not confirm the requested Cold Flow target; it is not reported as saved.".into());
+            }
+            if original.turbo_deadband && (!grant.turbo_deadband
+                || next.turbocharge_pressure_deadband_psi != config.turbocharge_pressure_deadband_psi) {
+                return Err("The ground station did not confirm the requested Turbocharge pressure deadband; it is not reported as saved.".into());
+            }
+            Ok((next, grant))
         }
-        if self.turbo_deadband && (!grant.turbo_deadband
-            || next.turbocharge_pressure_deadband_psi != config.turbocharge_pressure_deadband_psi) {
-            return Err("The ground station did not confirm the requested Turbocharge pressure deadband; it is not reported as saved.".into());
-        }
-        Ok((next, grant))
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
 async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String> {
-    owner.check()?;
+    owner.check_ordinary()?;
     let base = if owner.base().is_empty() {
         "http://localhost:3000"
     } else {
@@ -112,7 +124,13 @@ async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String
     if let Some(token) = owner.token() {
         request = request.bearer_auth(token);
     }
-    owner.check()?;
+    if let Some(epoch) = owner.policy_epoch() {
+        request = request.header(super::super::station_policy_context::HTTP_EPOCH_HEADER, epoch);
+    }
+    if let Some(origin) = owner.control_origin() {
+        request = request.header("X-Station-Control-Origin", origin);
+    }
+    owner.check_ordinary()?;
     let response = owner
         .wait(request.send())
         .await?
@@ -128,12 +146,12 @@ async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String
             text.chars().take(200).collect::<String>()
         ));
     }
-    owner.check()?;
+    owner.check_ordinary()?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 #[cfg(target_arch = "wasm32")]
 async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String> {
-    owner.check()?;
+    owner.check_ordinary()?;
     let base = if owner.base().is_empty() {
         web_sys::window()
             .ok_or("Window unavailable")?
@@ -150,12 +168,19 @@ async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String
     if let Some(token) = owner.token() {
         request = request.header("Authorization", &format!("Bearer {token}"));
     }
+    if let Some(epoch) = owner.policy_epoch() {
+        request = request.header(super::super::station_policy_context::HTTP_EPOCH_HEADER, epoch);
+    }
+    if let Some(origin) = owner.control_origin() {
+        request = request.header("X-Station-Control-Origin", origin);
+    }
     let signal = controller.signal();
     let request = request
+        .redirect(web_sys::RequestRedirect::Error)
         .abort_signal(Some(&signal))
         .json(&body)
         .map_err(|error| error.to_string())?;
-    owner.check()?;
+    owner.check_ordinary()?;
     let response = owner
         .wait(request.send())
         .await?
@@ -171,7 +196,7 @@ async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String
             text.chars().take(200).collect::<String>()
         ));
     }
-    owner.check()?;
+    owner.check_ordinary()?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 

@@ -21,6 +21,13 @@ the button can be pressed again. In-progress, paused and completed observations
 have text labels; loss of status clears the indication. Sending a request does
 not establish sequence completion or a physical valve position.
 
+Operating mode selection belongs in **Settings → Ground Station → Mission**.
+Its optional [backend-defined mode API](docs/station-modes.md) accepts custom IDs,
+labels and explicit mode/Simulation pairs without SEDS board names or recovery endpoints.
+Simulation is an independent draft; actual telemetry and actions use the backend-reported domain. A backend
+that cannot actually switch modes displays its current mode with disabled change
+controls; selecting a label never changes hardware policy.
+
 ## Custom State dashboard
 
 Live history uses indexed GPS and channel extrema lookups so those operations

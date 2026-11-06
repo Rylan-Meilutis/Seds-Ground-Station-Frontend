@@ -80,8 +80,14 @@ fn degrees(value: Option<f64>) -> String {
         .map(|v| format!("{v:.1}°"))
         .unwrap_or_else(|| "—".into())
 }
+/// Standalone adapter; real dashboard mounts always register the actual
+/// applied-context reset. The component owns its exact lifetime and reset.
+pub type RetirementRegistration = (std::sync::Arc<std::sync::atomic::AtomicBool>, EventHandler<()>);
 #[component]
-pub fn AntennaAiming(on_exit: EventHandler<()>) -> Element {
+pub fn AntennaAiming(
+    on_exit: EventHandler<()>,
+    #[props(default)] on_register_retirement: Option<EventHandler<RetirementRegistration>>,
+) -> Element {
     let mut snapshot = use_signal(Snapshot::default);
     let mut sensors = use_signal(Sensors::default);
     let mut origin = use_signal(|| "device".to_string());
@@ -95,6 +101,18 @@ pub fn AntennaAiming(on_exit: EventHandler<()>) -> Element {
     let mut best_rssi = use_signal(|| None::<(String, f64)>);
     let mut received = use_signal(monotonic_now_ms);
     let mut clock = use_signal(monotonic_now_ms);
+    let mode_alive = use_hook(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    let drop_alive = mode_alive.clone();
+    use_drop(move || drop_alive.store(false, std::sync::atomic::Ordering::Release));
+    let reset = EventHandler::new(move |()| {
+        let mut snapshot = snapshot; let mut best_rssi = best_rssi;
+        if snapshot.try_peek().is_err() { return; }
+        snapshot.set(Snapshot::default()); best_rssi.set(None);
+        // Device orientation/manual inputs are independent client facts.
+    });
+    use_hook(move || {
+        if let Some(register) = on_register_retirement { register.call((mode_alive, reset)); }
+    });
     use_future(move || async move {
         loop {
             match http_get_json::<Snapshot>("/api/antenna/status").await {

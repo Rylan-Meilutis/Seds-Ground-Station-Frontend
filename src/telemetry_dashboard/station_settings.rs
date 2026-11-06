@@ -19,9 +19,12 @@ pub(super) fn GroundStationSettings(
     let mut revision = use_signal(|| 0_u64);
     // A key replaces a scope through Dioxus's keyed-iterator diff. A single
     // component key alone memoizes the same body and retains its old Factory.
-    // Only the explicit Reload action advances this one-item iterator's key.
-    rsx! {for current_revision in [revision()] {
-        StationSettingsBody {key:"station-settings-{current_revision}",layout:layout.clone(),action_policy,fill_targets,calibration_context,abort_only_mode,theme:theme.clone(),on_manage_users,
+    // Ordinary policy retirement refreshes only ordinary drafts. The separately
+    // owned mode control survives closure so explicit backend repair stays reachable.
+    rsx! {super::station_mode_settings::ModeRequestNotice {theme:theme.clone()}
+        super::station_mode_settings::StationModeSettings {theme:theme.clone(),inhibited:abort_only_mode}
+        for (current_revision, policy_view_key) in [(revision(), super::station_mode_observer::view_key())] {
+        StationSettingsBody {key:"station-settings-{current_revision}-{policy_view_key}",layout:layout.clone(),action_policy,fill_targets,calibration_context,abort_only_mode,theme:theme.clone(),on_manage_users,
             on_reload:move |_|revision.set(revision().saturating_add(1)),
         }
     }}
@@ -88,7 +91,9 @@ fn StationSettingsBody(
             }
         }
         match section {
-            StationSection::Mission=>rsx! {super::actions_tab::MissionSettings {layout,action_policy,backend_fill_targets:fill_targets,abort_only_mode,theme:theme.clone()}},
+            StationSection::Mission=>rsx! {
+                super::actions_tab::MissionSettings {layout,action_policy,backend_fill_targets:fill_targets,abort_only_mode,theme:theme.clone()}
+            },
             StationSection::Loadcells=>rsx! {
                 section {style:"display:grid;gap:14px;min-width:0;",
                     h3 {style:"margin:0;","Loadcells"}

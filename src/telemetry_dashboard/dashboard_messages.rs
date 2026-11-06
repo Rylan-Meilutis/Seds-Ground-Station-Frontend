@@ -1,6 +1,7 @@
 #[derive(Deserialize, Debug)]
 #[serde(tag = "ty", content = "data")]
 enum WsInMsg {
+    DashboardReset,
     CalibrationChanged,
     Telemetry(TelemetryRow),
     TelemetryBatch(Vec<TelemetryRow>),
@@ -56,8 +57,21 @@ pub enum BlinkMode {
     Fast,
 }
 
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EpochFence {
+    #[default]
+    Ordinary,
+    EmergencyStop,
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ActionControl {
+    #[serde(default)]
+    pub epoch_fence: EpochFence,
+    /// Opaque backend producer identity; echo original bytes, never reconstruct.
+    #[serde(default)]
+    pub control_origin: Option<String>,
     #[serde(default)]
     pub disabled_reason: Option<String>,
     pub cmd: String,

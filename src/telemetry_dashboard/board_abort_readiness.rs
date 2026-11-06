@@ -2,7 +2,7 @@
 mod retraction_history;
 use super::{
     ACTION_POLICY_SIGNAL, BOARD_ABORT_SIGNAL, BoardAbortSnapshot, RetractionInterlock, UrlConfig,
-    WS_EPOCH, WS_SENDER, http_get_json, http_post_json, prelude::*,
+    WS_EPOCH, WS_SENDER, prelude::*,
 };
 #[derive(serde::Deserialize)]
 struct Reply {
@@ -37,6 +37,14 @@ async fn display_tick() {
 }
 #[component]
 pub fn BoardAbortReadiness(#[props(default = false)] show_hitl_interlocks: bool) -> Element {
+    let view_key = super::station_mode_observer::view_key();
+    rsx! { for key in [view_key] {
+        OwnedBoardAbortReadiness { key:"{key}", show_hitl_interlocks }
+    } }
+}
+#[component]
+fn OwnedBoardAbortReadiness(show_hitl_interlocks: bool) -> Element {
+    let requests = super::station_settings_request::use_factory();
     let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
     let mut request = use_signal(|| 0u64);
@@ -79,9 +87,10 @@ pub fn BoardAbortReadiness(#[props(default = false)] show_hitl_interlocks: bool)
             let revision=BOARD_ABORT_SIGNAL.read().local_revision;
             let id=request().wrapping_add(1);request.set(id);busy.set(true);
             message.set("Checking actual board states; no Launch is being sent.".into());
+            let refresh=requests.post::<serde_json::Value,Reply>("/api/board_abort/refresh",&serde_json::json!({}));
             spawn(async move {
-                let result=http_post_json::<serde_json::Value,Reply>("/api/board_abort/refresh",&serde_json::json!({})).await;
-                if request()!=id{return;}
+                let result=refresh.await;
+                if !requests.current()||request()!=id{return;}
                 if UrlConfig::base_http()!=base||crate::auth::current_token()!=token||*WS_EPOCH.peek()!=epoch{busy.set(false);message.set("Connection changed; check current readiness again.".into());return;}
                 match result {Ok(reply)=>{if accept_http_snapshot(reply.snapshot,revision,epoch){message.set(reply.message);}else{message.set("A newer station report was received; current readiness was retained.".into());}},Err(error)=>message.set(error)}
                 for _ in 0..3 {
@@ -89,14 +98,14 @@ pub fn BoardAbortReadiness(#[props(default = false)] show_hitl_interlocks: bool)
                     gloo_timers::future::TimeoutFuture::new(400).await;
                     #[cfg(not(target_arch="wasm32"))]
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                    if request()!=id{return;}
+                    if !requests.current()||request()!=id{return;}
                     if UrlConfig::base_http()!=base||crate::auth::current_token()!=token||*WS_EPOCH.peek()!=epoch{busy.set(false);message.set("Connection changed; check current readiness again.".into());return;}
                     let revision=BOARD_ABORT_SIGNAL.read().local_revision;
-                    if let Ok(snapshot)=http_get_json::<BoardAbortSnapshot>("/api/board_abort").await
-                        && UrlConfig::base_http()==base&&crate::auth::current_token()==token&&*WS_EPOCH.peek()==epoch
+                    if let Ok(snapshot)=requests.get::<BoardAbortSnapshot>("/api/board_abort").await
+                        && requests.current()&&UrlConfig::base_http()==base&&crate::auth::current_token()==token&&*WS_EPOCH.peek()==epoch
                     {accept_http_snapshot(snapshot,revision,epoch);}
                 }
-                if request()==id{busy.set(false);}
+                if requests.current()&&request()==id{busy.set(false);}
             });
         },"Check launch readiness"}
         if !message.read().is_empty(){p {role:"status","{message}"}}

@@ -1,10 +1,19 @@
+#[path = "network_health/board_display.rs"]
+pub(super) mod board_display;
+
+/// Recovery content is supplied by the production Connectivity owner. Previews
+/// render health/diagnostics without gaining backend mutation capabilities.
+#[derive(Clone, Copy, PartialEq)]
+pub enum RecoverySlot { Tools, State, Actions, Details }
+pub type RecoveryRenderer = Callback<(RecoverySlot, String, bool, ThemeConfig), Element>;
+
 use super::{
     layout::ThemeConfig,
     types::{BoardDiagnostics, LaunchLogStatus, NetworkBoardHealthEntry},
 };
 use dioxus::prelude::*;
 fn healthy(row: &NetworkBoardHealthEntry, connected: bool, _elapsed: u64) -> bool {
-    super::board_recovery_panel::network_healthy(connected,row.healthy)
+    board_display::network_healthy(connected,row.healthy)
 }
 fn temperature(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> String {
     if !connected {
@@ -239,6 +248,8 @@ pub fn NetworkHealthSection(
     #[props(default)] sd_retry_message: String,
     #[props(default)] sd_retry_token: Option<u32>,
     #[props(default)] on_sd_retry: EventHandler<()>,
+    #[props(default)] recovery_renderer: Option<RecoveryRenderer>,
+    #[props(default)] on_recovery_focus: Option<EventHandler<(String, bool)>>,
 ) -> Element {
     let now = super::connection_status_tab::use_board_age_clock();
     // Anchor each server snapshot to local monotonic time; UTC adjustments do not age boards.
@@ -251,7 +262,7 @@ pub fn NetworkHealthSection(
         section { class:"gs26-board-recovery gs26-network-health",style: "padding:16px; border:1px solid {theme.border_soft}; border-radius:12px; min-width:0; color:{theme.text_primary}; background:{theme.panel_background};",
             div{style:"display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;",
                 h3 { style: "margin:0;", "Network health" }
-                super::board_recovery_panel::RecoveryTools{ws_connected,theme:theme.clone()}
+                if let Some(render) = recovery_renderer { {render.call((RecoverySlot::Tools, String::new(), ws_connected, theme.clone()))} }
             }
             if simulated {p{style:"margin:8px 0;color:{theme.text_secondary};","Simulated network"}}
             if !ws_connected { p { role: "status", "GroundStation stream unavailable" } }
@@ -266,15 +277,15 @@ pub fn NetworkHealthSection(
                         article { key: "{row.sender_id}","data-board":"{row.sender_id}",class:"gs26-board-recovery-card", style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px; min-width:0; overflow-wrap:anywhere;",
                             div { style: "display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; align-items:center;",
                                 strong { "{row.sender_id}" }
-                                {super::board_recovery_panel::health_badge(ok)}
+                                {board_display::health_badge(ok)}
                             }
-                            p{style:"margin:8px 0;",super::board_recovery_panel::RecoveryBoardState{board_id:board_id.clone()}}
+                            if let Some(render) = recovery_renderer { p{style:"margin:8px 0;",{render.call((RecoverySlot::State, board_id.clone(), ws_connected, theme.clone()))}} }
                             p{style:"margin:8px 0;color:{theme.text_secondary};","Disconnects: {row.disconnects}"}
-                            super::board_recovery_panel::RecoveryBoardActions{board_id:board_id.clone(),ws_connected}
+                            if let Some(render) = recovery_renderer { {render.call((RecoverySlot::Actions, board_id.clone(), ws_connected, theme.clone()))} }
                             button{r#type:"button",style:"min-height:44px;margin-top:8px;",onclick:{let id=board_id.clone();move |_|more_info.set(Some(id.clone()))},"More info"}
                             if more_info.read().as_deref()==Some(board_id.as_str()){
                                 div{style:"position:fixed;inset:0;z-index:199999;background:#000a;display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));box-sizing:border-box;",
-                                    onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();more_info.set(None);},Key::Tab=>{event.prevent_default();super::board_recovery_panel::cycle_modal_focus("gs26-board-more-info",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
+                                    onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();more_info.set(None);},Key::Tab=>{if let Some(focus) = on_recovery_focus {event.prevent_default();focus.call(("gs26-board-more-info".into(),event.modifiers().contains(Modifiers::SHIFT)));}},_=>{}}},
                                     div{id:"gs26-board-more-info",role:"dialog","aria-modal":"true","aria-label":"Board details",style:"background:{theme.panel_background};color:{theme.text_primary};font:inherit;padding:20px;border-radius:14px;width:min(100%,1060px);height:min(88dvh,900px);max-height:100%;overflow:hidden;display:flex;flex-direction:column;gap:14px;box-sizing:border-box;overflow-wrap:anywhere;",
                                         div{style:"display:flex;flex:0 0 auto;justify-content:space-between;align-items:center;gap:12px;",h3{style:"margin:0;","{board_id} · More info"}button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|more_info.set(None),"Close details"}}
                                         div{class:"gs26-modal-scroll-body",style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px;align-items:start;flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
@@ -291,7 +302,7 @@ pub fn NetworkHealthSection(
                                 }
                             }
                                             }
-                                            super::board_recovery_panel::RecoveryBoardDetails{board_id:board_id.clone(),ws_connected,theme:theme.clone()}
+                                            if let Some(render) = recovery_renderer { {render.call((RecoverySlot::Details, board_id.clone(), ws_connected, theme.clone()))} }
                                             section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Internal diagnostics"}
                                 p { "Observed for {duration(row.observed_ms)} · Offline {duration(row.offline_ms)} · Receive observations {row.rx_observations}" }
                                 if let Some(report) = &row.diagnostics {

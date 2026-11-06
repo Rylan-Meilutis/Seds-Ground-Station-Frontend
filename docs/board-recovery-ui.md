@@ -40,10 +40,11 @@ retains its target scope. Reset success requires the server to report that Start
 was applied; normal initialization can subsequently advance to Idle.
 
 Request acceptance is displayed as pending, not safe-state proof. Failed,
-cancelled and unconfirmed operations remain explicit. Active mode is read from
-the server; selecting/requesting a mode never optimistically relabels the UI.
-Only advertised runtime-supported modes are selectable. A compiled current-only
-server displays the other modes as requiring the appropriate build/restart.
+cancelled and unconfirmed operations remain explicit. Operating mode selection
+lives in Settings → Ground Station → Mission through the independent optional
+[backend-defined mode contract](station-modes.md). Connectivity retains board
+health, query, recovery and Startup reset details; it no longer hosts a duplicate
+mode selector. A mode report never counts as board recovery or physical proof.
 
 The browser fixture uses real Wasm with synthetic authenticated HTTP/WS responses
 and no hardware outputs. It exercises confirmation/cancellation, identity changes,

@@ -64,9 +64,13 @@ pub(super) fn ClearWarningsButton(latest_warning_ts: i64, mut ack_warning_ts: Si
             disabled:*pending.read() || latest_warning_ts <= *ack_warning_ts.read(),
             onclick:move |_| {
                 if *pending.read() || latest_warning_ts <= *ack_warning_ts.read() { return; }
+                let owner=match super::recording_download::ExportOwner::capture_ordinary_selected(||true){Ok(owner)=>owner,Err(reason)=>{error.set(reason);return;}};
+                let request=super::post_remote_alert_ack(latest_warning_ts,0,owner.clone());
                 pending.set(true); error.set(String::new());
                 spawn(async move {
-                    match super::post_remote_alert_ack(latest_warning_ts, 0).await {
+                    let result=request.await;
+                    if !owner.is_current(){return;}
+                    match result {
                         Ok(()) => { let cutoff=(*ack_warning_ts.read()).max(latest_warning_ts); ack_warning_ts.set(cutoff); }
                         Err(reason) => error.set(reason),
                     }

@@ -8,17 +8,24 @@ use serde::Serialize;
 const STATUS: &str = "/api/board-recovery/status";
 #[derive(Clone)]
 struct Snapshot {
+    read_context: Option<super::incoming_epoch::ReadContext>,
+    policy_owner: Result<std::rc::Rc<super::recording_download::ExportOwner>, String>,
     status: std::sync::Arc<Status>,
     received: f64,
     binding: ConnectionBinding,
 }
 impl Snapshot {
+    fn review_current(&self) -> bool {
+        self.binding == ConnectionBinding::current()
+            && self.read_context.as_ref().is_some_and(|context| context.check_current().is_ok())
+    }
     fn elapsed(&self) -> u64 {
         status_age_ms(self.received, super::monotonic_now_ms())
     }
 }
 #[derive(Clone)]
 struct Pending {
+    owner: std::rc::Rc<super::recording_download::ExportOwner>,
     challenge: Challenge,
     snapshot: Snapshot,
     received: f64,
@@ -28,7 +35,7 @@ struct Pending {
 }
 impl Pending {
     fn locally_live(&self) -> bool {
-        self.snapshot.binding == ConnectionBinding::current()
+        self.owner.is_current() && self.snapshot.binding == ConnectionBinding::current()
             && challenge_unexpired(
                 self.received,
                 self.challenge.expires_in_ms,
@@ -36,7 +43,7 @@ impl Pending {
             )
     }
     fn same_origin(&self, current: &Snapshot) -> bool {
-        self.snapshot.binding == ConnectionBinding::current()
+        self.snapshot.review_current() && current.review_current()
             && current.binding == self.snapshot.binding
             && self.snapshot.status.backend_instance == current.status.backend_instance
             && self.snapshot.status.principal.context == current.status.principal.context
@@ -45,7 +52,8 @@ impl Pending {
             && self.snapshot.status.mode_capability.build_mode == current.status.mode_capability.build_mode
     }
     fn valid(&self, current: &Snapshot) -> bool {
-        self.snapshot.binding == ConnectionBinding::current()
+        self.owner.is_current()
+            && self.snapshot.binding == ConnectionBinding::current()
             && current.binding == self.snapshot.binding
             && challenge_unexpired(
                 self.received,
@@ -55,6 +63,56 @@ impl Pending {
             && self
                 .challenge
                 .context_unchanged(&self.snapshot.status, &current.status)
+    }
+}
+// A Refresh click is a new intent, but its review is still bound to the original
+// read-only applied/auth/base context. Never borrow mutation authority from a GET
+// completion or revive the previous Confirm owner.
+struct RefreshIntent {
+    original: Pending,
+    owner: std::rc::Rc<super::recording_download::ExportOwner>,
+}
+impl RefreshIntent {
+    fn capture(original: &Pending, alive: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<Self, String> {
+        if !alive.load(std::sync::atomic::Ordering::Acquire) || !original.snapshot.review_current() {
+            return Err("Original recovery review retired. Open a new review.".into());
+        }
+        let owner = super::recording_download::ExportOwner::capture_ordinary_selected(move || alive.load(std::sync::atomic::Ordering::Acquire))?;
+        owner.check_ordinary()?;
+        Ok(Self { original: original.clone(), owner })
+    }
+    fn check_current(&self) -> Result<(), String> {
+        if !self.original.snapshot.review_current() {
+            return Err("Original recovery review retired. Open a new review.".into());
+        }
+        self.owner.check_ordinary()
+    }
+    async fn read(&self) -> Result<Snapshot, String> {
+        self.check_current()?;
+        let mut fresh = read_status().await?;
+        self.check_current()?;
+        if !self.original.same_origin(&fresh) {
+            return Err("Station or session changed. Start a new recovery review.".into());
+        }
+        // This is the owner captured at the explicit click, not the status read's
+        // possibly newer ordinary owner.
+        fresh.policy_owner = Ok(self.owner.clone());
+        Ok(fresh)
+    }
+}
+fn prepare_request(
+    snapshot: &Snapshot,
+    owner: std::rc::Rc<super::recording_download::ExportOwner>,
+    action: &str,
+    board: Option<&str>,
+    mode: Option<&str>,
+) -> impl std::future::Future<Output = Result<Challenge, String>> + use<> {
+    let body = Prepare { action, board, mode, backend_instance: &snapshot.status.backend_instance, reset_epoch: &snapshot.status.reset_epoch };
+    // Erase borrowed DTO lifetimes synchronously, before creating the future.
+    let body = serde_json::to_value(body).map_err(|error| error.to_string());
+    async move {
+        let body = body?;
+        super::station_settings_request::post_captured("/api/board-recovery/prepare", &body, Ok(owner)).await
     }
 }
 // A request started before PREPARE cannot revoke the challenge returned by a newer
@@ -73,9 +131,11 @@ async fn read_status() -> Result<Snapshot, String> {
 }
 async fn read_status_classified() -> Result<Snapshot, super::recording_download::SavedJsonError> {
     let binding = ConnectionBinding::current();
+    let read_context = super::incoming_epoch::ReadContext::capture()?;
+    let policy_owner = super::recording_download::ExportOwner::capture_ordinary_selected(|| true);
     let request_started = super::monotonic_now_ms();
-    let owner = super::recording_download::ExportOwner::capture_selected(|| true)?;
-    let status = super::recording_download::saved_json_classified::<Status>(STATUS, owner).await?;
+    let owner = super::recording_download::ExportOwner::capture_observer_selected(|| true)?;
+    let status = super::recording_download::saved_json_classified_in_context::<Status>(STATUS, owner, read_context.clone()).await?;
     if binding != ConnectionBinding::current() {
         return Err("Station or sign-in changed; refresh the current station.".into());
     }
@@ -83,6 +143,8 @@ async fn read_status_classified() -> Result<Snapshot, super::recording_download:
         return Err("This backend does not provide supported recovery API v1 status.".into());
     }
     Ok(Snapshot {
+        read_context: Some(read_context),
+        policy_owner,
         status: std::sync::Arc::new(status),
         received: request_started,
         binding,
@@ -147,18 +209,17 @@ fn begin_prepare(
     action: String, board: Option<String>, mode: Option<String>, snapshot: Snapshot,
     busy: Signal<bool>, pending: Signal<Option<Pending>>, message: Signal<String>,
 ) {
-    begin_prepare_internal(action, board, mode, snapshot, busy, pending, message, false);
+    begin_prepare_internal(action, board, mode, snapshot, (busy, pending, message), false);
 }
 fn begin_prepare_internal(
     action: String,
     board: Option<String>,
     mode: Option<String>,
     snapshot: Snapshot,
-    mut busy: Signal<bool>,
-    mut pending: Signal<Option<Pending>>,
-    mut message: Signal<String>,
+    ui: (Signal<bool>, Signal<Option<Pending>>, Signal<String>),
     replace_pending: bool,
 ) {
+    let (mut busy, mut pending, mut message) = ui;
     if *busy.peek() || (!replace_pending && pending.peek().is_some()) {
         return;
     }
@@ -190,27 +251,26 @@ fn begin_prepare_internal(
         message.set(reason);
         return;
     }
+    let owner = match snapshot.policy_owner.clone() {
+        Ok(owner) if owner.check_ordinary().is_ok() => owner,
+        _ => { message.set("Original policy view retired. Refresh status and prepare again.".into()); return; }
+    };
     busy.set(true);
     message.set("Preparing a server-bound confirmation; no action has been confirmed.".into());
     spawn(async move {
-        let body = Prepare {
-            action: &action,
-            board: board.as_deref(),
-            mode: mode.as_deref(),
-            backend_instance: &snapshot.status.backend_instance,
-            reset_epoch: &snapshot.status.reset_epoch,
-        };
         let prepare_started = super::monotonic_now_ms();
-        let result =
-            super::http_post_json::<_, Challenge>("/api/board-recovery/prepare", &body).await;
+        let result = prepare_request(&snapshot, owner.clone(), &action, board.as_deref(), mode.as_deref()).await;
+        if !owner.is_current() { return; }
         match result {
             Ok(challenge) => {
                 // Preparation may explicitly refresh the board. Bind its resulting
                 // immutable identity snapshot, never the older pre-query nonce.
                 let received = prepare_started;
-                match read_status().await {
-                    Ok(fresh) if snapshot.binding==fresh.binding && challenge.matches(&fresh.status,&action,board.as_deref(),mode.as_deref()) && challenge_unexpired(received,challenge.expires_in_ms,super::monotonic_now_ms())=>{
-                        pending.set(Some(Pending{challenge,snapshot:fresh,received,action:action.clone(),board:board.clone(),mode:mode.clone()}));message.set(String::new());
+                let fresh = read_status().await;
+                if !owner.is_current() { return; }
+                match fresh {
+                    Ok(fresh) if owner.is_current() && snapshot.binding==fresh.binding && challenge.matches(&fresh.status,&action,board.as_deref(),mode.as_deref()) && challenge_unexpired(received,challenge.expires_in_ms,super::monotonic_now_ms())=>{
+                        pending.set(Some(Pending{owner:owner.clone(),challenge,snapshot:fresh,received,action:action.clone(),board:board.clone(),mode:mode.clone()}));message.set(String::new());
                     }
                     Ok(_)=>message.set("The prepared context changed or was unsupported. Review fresh status and prepare again.".into()),
                     Err(error)=>message.set(error),
@@ -222,19 +282,8 @@ fn begin_prepare_internal(
     });
 }
 
-pub(super) fn network_healthy(connected: bool, server_healthy: bool) -> bool {
-    // The backend owns health policy; displayed age is diagnostic only.
-    connected && server_healthy
-}
-
-pub(super) fn health_badge(healthy: bool) -> Element {
-    let (label, colors) = if healthy {
-        ("Healthy", "color:#86efac;background:#123b27;")
-    } else {
-        ("Unhealthy", "color:#fecaca;background:#471e25;")
-    };
-    rsx! { strong { class: "gs26-board-health", style: "{colors}padding:3px 9px;border-radius:999px;font-size:0.85em;", "{label}" } }
-}
+#[cfg(test)]
+use super::network_health::board_display::{health_badge, network_healthy};
 
 #[derive(Clone, Copy)]
 struct RecoveryUi {
@@ -243,9 +292,9 @@ struct RecoveryUi {
     message: Signal<String>,
     status_error: Signal<String>,
     busy: Signal<bool>,
-    mode: Signal<String>,
     serial: Signal<u64>,
     display: Signal<super::board_readback_display::DisplayCache>,
+    alive: Signal<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 // One owner per Connectivity page, independent of card count or presentation.
 pub(super) fn use_recovery_provider() {
@@ -255,7 +304,6 @@ pub(super) fn use_recovery_provider() {
     let mut message = use_signal(String::new);
     let mut status_error = use_signal(String::new);
     let busy = use_signal(|| false);
-    let mode = use_signal(String::new);
     let mut serial = use_signal(|| 0_u64);
     use_future(move || async move {
         loop {
@@ -316,15 +364,24 @@ pub(super) fn use_recovery_provider() {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     });
+    let retire_alive = super::recording_download::use_export_lifetime();
+    let alive = use_signal(|| retire_alive.clone());
+    use_hook(move || super::mode_live_view::register_recovery(retire_alive, move || {
+        let mut snapshot = snapshot; let mut display = display; let mut pending = pending;
+        let mut busy = busy; let mut serial = serial;
+        if snapshot.try_peek().is_err() { return; }
+        let next = serial.peek().wrapping_add(1); serial.set(next);
+        snapshot.set(None); display.set(Default::default()); pending.set(None); busy.set(false);
+    }));
     use_context_provider(|| RecoveryUi {
         snapshot,
         pending,
         message,
         status_error,
         busy,
-        mode,
         serial,
         display,
+        alive,
     });
 }
 pub(super) fn cycle_modal_focus(id: &str, backwards: bool) {
@@ -346,7 +403,7 @@ fn connected(ui: RecoveryUi, ws_connected: bool) -> bool {
 pub(super) fn RecoveryBoardState(board_id: String) -> Element {
     let ui = use_context::<RecoveryUi>();
     let _ = *super::HEADER_CLOCK_TICK.read();
-    let current = ui.snapshot.read().clone();
+    let current = ui.snapshot.read().clone().filter(|snapshot| snapshot.read_context.as_ref().is_some_and(|context| context.check_current().is_ok()));
     let display = ui.display.read().display(
         current
             .as_ref()
@@ -382,7 +439,7 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
         return rsx! {};
     }
     let unavailable = || rsx! {div{class:"gs26-recovery-actions",style:"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;",button{disabled:true,"Query board"}button{disabled:true,{targeted_recovery_label(&board_id).map_or("Recovery unavailable",|(label,_)|label)}}button{disabled:true,"Resync…"}}};
-    let Some(current) = snapshot.read().clone() else {
+    let Some(current) = snapshot.read().clone().filter(|snapshot| snapshot.read_context.as_ref().is_some_and(|context| context.check_current().is_ok())) else {
         return unavailable();
     };
     let Some(board) = current.status.board(&board_id).cloned() else {
@@ -400,12 +457,14 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
                                         span { role:"status",class:"gs26-recovery-required",style:"display:inline-flex;align-items:center;min-height:28px;padding:3px 9px;border:1px solid #b77b18;border-radius:999px;background:#3b2c11;color:#ffdc8a;font-size:0.85rem;font-weight:700;line-height:1.3;", "Recovery required" }
                                     }
                                     button{disabled:!connected||controls_busy||!query_allowed,title:if query_allowed{"Request fresh status through the advertised dedicated recovery endpoint"}else{"Unsupported: no verified dedicated recovery endpoint"},
-                                        onclick:{let board_id=board_id.clone();let binding=current.binding.clone();move |_|{
+                                        onclick:{let board_id=board_id.clone();let binding=current.binding.clone();let policy_owner=current.policy_owner.clone();move |_|{
                                             if *busy.peek()||pending.peek().is_some()||binding!=ConnectionBinding::current(){return;}
+                                            let owner=match policy_owner.clone(){Ok(owner)if owner.check_ordinary().is_ok()=>owner,_=>{message.set("Original policy view retired. Refresh status before querying.".into());return;}};
                                             busy.set(true);let board_id=board_id.clone();let binding=binding.clone();
                                             spawn(async move{
                                                 #[derive(Serialize)]struct Query{board:String}
-                                                let result=super::http_post_json::<_,Accepted>("/api/board-recovery/query",&Query{board:board_id}).await;
+                                                let result=super::station_settings_request::post_captured::<_,Accepted>("/api/board-recovery/query",&Query{board:board_id},Ok(owner.clone())).await;
+                                                if !owner.is_current(){return;}
                                                 if binding==ConnectionBinding::current(){match result{Ok(value)=>message.set(format!("{} {}",if value.accepted{"Query accepted; awaiting board readback."}else{"Query not accepted."},value.message)),Err(error)=>message.set(error)}}
                                                 busy.set(false);
                                             });
@@ -426,7 +485,7 @@ pub(super) fn RecoveryBoardDetails(
 ) -> Element {
     let ui = use_context::<RecoveryUi>();
     let _ = *super::HEADER_CLOCK_TICK.read();
-    let current = ui.snapshot.read().clone();
+    let current = ui.snapshot.read().clone().filter(|snapshot| snapshot.read_context.as_ref().is_some_and(|context| context.check_current().is_ok()));
     let raw = current
         .as_ref()
         .and_then(|snapshot| snapshot.status.board(&board_id));
@@ -513,7 +572,6 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
         message,
         mut status_error,
         busy,
-        mut mode,
         mut serial,
         mut display,
         ..
@@ -553,7 +611,7 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
             }
         });
     };
-    let current = snapshot.read().clone();
+    let current = snapshot.read().clone().filter(|snapshot| snapshot.read_context.as_ref().is_some_and(|context| context.check_current().is_ok()));
     let controls_busy = *busy.read() || pending.read().is_some();
     let permitted = crate::auth::can_view_actions();
     let connected = connected(ui, ws_connected);
@@ -569,25 +627,9 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                     if !status_error.read().is_empty(){p{role:"alert","{status_error}"}}
                     section{style:"padding:14px;border:1px solid var(--gs26-border,#405269);border-radius:10px;margin-bottom:14px;",h4{style:"margin:0 0 10px;","Launch readiness"}super::board_abort_readiness::BoardAbortReadiness{}}
                     if let Some(current)=current.clone(){
-                        {let status=&current.status;let reset_reason=status.reset_reason(current.elapsed());let selected=mode.read().clone();let mode_reason=status.mode_reason(&selected);let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());rsx!{
+                        {let status=&current.status;let reset_reason=status.reset_reason(current.elapsed());let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());rsx!{
                         p{"Operator: {operator}."}
                         p{"GS state: {status.flight_state.map(|n|n.to_string()).unwrap_or_else(||\"Unknown\".into())}. Automatic actions inhibited: {status.automatic_actions_inhibited}."}
-                        div{class:"gs26-recovery-mode",
-                            h4{"Runtime mode"}
-                            p{"Active: {status.mode_capability.current}; server build: {status.mode_capability.build_mode}."}
-                            p{"{status.mode_capability.message}"}
-                            if !status.mode_capability.requires_restart.is_empty(){p{"Requires another build/restart: {status.mode_capability.requires_restart.join(\", \")}."}}
-                            select{style:"max-width:100%;min-height:44px;",aria_label:"Supported runtime mode",value:"{selected}",disabled:!connected||controls_busy||!permitted||!status.mode_capability.runtime_switch_supported,
-                                onchange:move|e|mode.set(e.value()),
-                                option{value:"","Choose an actually supported mode"}
-                                for item in status.mode_capability.supported_modes.iter(){option{value:"{item}","{item}"}}
-                            }
-                            button{disabled:!connected||controls_busy||!permitted||mode_reason.is_some(),title:mode_reason.clone().unwrap_or_default(),
-                                onclick:{let current=current.clone();let selected=selected.clone();move |_|begin_prepare("change_mode".into(),None,Some(selected.clone()),current.clone(),busy,pending,message)},
-                                "Review mode change"
-                            }
-                            if let Some(reason)=mode_reason.clone(){p{"{reason}"}}
-                        }
                         div{class:"gs26-reset-all",
                             button{disabled:!connected||controls_busy||!permitted||reset_reason.is_some(),title:reset_reason.clone().unwrap_or_default(),
                                 onclick:{let current=current.clone();move |_|begin_prepare("reset_startup".into(),None,None,current.clone(),busy,pending,message)},
@@ -642,15 +684,17 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                         button{r#type:"button",disabled:*busy.read()||!connected||!permitted,
                             onclick:{let original=dialog.clone();move |_|{
                                 if *busy.peek()||!crate::auth::can_view_actions(){return;}
+                                let Ok(alive)=ui.alive.try_peek().map(|alive| alive.clone()) else{return;};
+                                let intent=match RefreshIntent::capture(&original,alive){Ok(intent)=>intent,Err(error)=>{message.set(error);return;}};
                                 busy.set(true);message.set("Refreshing review; no recovery has been confirmed.".into());
-                                let original=original.clone();
                                 spawn(async move{
-                                    match read_status().await {
-                                        Ok(fresh) if original.same_origin(&fresh) => {
+                                    let result=intent.read().await;
+                                    if intent.check_current().is_err(){return;}
+                                    match result {
+                                        Ok(fresh) => {
                                             busy.set(false);
-                                            begin_prepare_internal(original.action,original.board,original.mode,fresh,busy,pending,message,true);
+                                            begin_prepare_internal(intent.original.action,intent.original.board,intent.original.mode,fresh,(busy,pending,message),true);
                                         }
-                                        Ok(_)=>{pending.set(None);message.set("Station or session changed. Start a new recovery review.".into());busy.set(false);}
                                         Err(error)=>{message.set(error);busy.set(false);}
                                     }
                                 });
@@ -663,11 +707,16 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                             let Some(owned)=pending.write().take()else{return;};
                             busy.set(true);
                             spawn(async move{
-                                match read_status().await{
+                                if !owned.owner.is_current(){return;}
+                                let fresh=read_status().await;
+                                if !owned.owner.is_current(){return;}
+                                match fresh{
                                     Ok(fresh)if crate::auth::can_view_actions() && owned.valid(&fresh)=>{
                                         let challenge=&owned.challenge;
                                         let body=Confirm{ticket:&challenge.ticket,backend_instance:&challenge.backend_instance,principal_context:&challenge.principal_context,reset_epoch:&challenge.reset_epoch,confirmation:&challenge.confirmation};
-                                        match super::http_post_json::<_,Accepted>("/api/board-recovery/confirm",&body).await{
+                                        let result=super::station_settings_request::post_captured::<_,Accepted>("/api/board-recovery/confirm",&body,Ok(owned.owner.clone())).await;
+                                        if !owned.owner.is_current(){return;}
+                                        match result{
                                             Ok(value)=>{
                                                 if owned.snapshot.binding==ConnectionBinding::current(){
                                                     let result=acceptance_message(&value);
@@ -694,6 +743,8 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    mod refresh_native_tests { include!("board_recovery_refresh_native_tests.rs"); }
     #[test]
     fn older_status_cannot_rewind_post_prepare_context_but_authority_change_is_seen() {
         let status: Status = serde_json::from_str(include_str!(
@@ -706,11 +757,15 @@ mod tests {
             principal: Some("fixture".into()),
         };
         let current = Snapshot {
+            read_context: None,
+            policy_owner: Err("test has no operation owner".into()),
             status: std::sync::Arc::new(status.clone()),
             received: 200.,
             binding: binding.clone(),
         };
         let mut incoming = Snapshot {
+            read_context: None,
+            policy_owner: Err("test has no operation owner".into()),
             status: std::sync::Arc::new(status),
             received: 100.,
             binding,

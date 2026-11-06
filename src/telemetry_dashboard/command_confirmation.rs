@@ -6,7 +6,8 @@ struct PendingCommand {
     identity: std::sync::Arc<()>,
     command: String,
     message: &'static str,
-    dispatch: fn(&str),
+    dispatch: fn(&str, super::CommandOwner),
+    owner: super::CommandOwner,
     station: String,
     session: Option<String>,
 }
@@ -42,7 +43,7 @@ fn same_retirement(a: &RetiredDialog, b: &RetiredDialog) -> bool {
     std::sync::Arc::ptr_eq(&a.identity, &b.identity)
 }
 
-pub(super) fn request(command: &str, dispatch: fn(&str)) {
+pub(super) fn request(command: &str, owner: super::CommandOwner, dispatch: fn(&str, super::CommandOwner)) {
     let message = match command {
         "ResetFlightState" => {
             "Reset the shared flight state to Idle? This does not close valves or stop an active physical sequence. Confirm the system is safe first."
@@ -51,7 +52,7 @@ pub(super) fn request(command: &str, dispatch: fn(&str)) {
             "Reset the displayed T-clock? Flight state and physical board sequences will not be changed."
         }
         _ => {
-            dispatch(command);
+            if owner.is_current() { dispatch(command, owner); }
             return;
         }
     };
@@ -62,6 +63,7 @@ pub(super) fn request(command: &str, dispatch: fn(&str)) {
             command: command.into(),
             message,
             dispatch,
+            owner,
             station: super::UrlConfig::base_http(),
             session: crate::auth::current_token(),
         });
@@ -156,8 +158,8 @@ pub(super) fn CommandConfirmation() -> Element {
                             let pending = PENDING.write().take();
                             if let Some(pending) = pending {
                                 retire_dialog(&pending);
-                                if pending.station == super::UrlConfig::base_http() && pending.session == crate::auth::current_token() {
-                                    (pending.dispatch)(&pending.command);
+                                if pending.station == super::UrlConfig::base_http() && pending.session == crate::auth::current_token() && pending.owner.is_current() {
+                                    (pending.dispatch)(&pending.command, pending.owner);
                                 } else {
                                     *super::COMMAND_SEND_ERROR.write() = Some("Connection changed. Review the current station and confirm the reset again.".into());
                                 }

@@ -3,10 +3,10 @@ use dioxus::prelude::*;
 use serde_json::Value;
 
 pub(super) static OPERATING_MODE: GlobalSignal<Value> = Signal::global(|| Value::Null);
-type SourceContext = (String, Option<String>);
+type SourceContext = (String, Option<crate::auth::RequestIdentity>);
 static OPERATING_MODE_SOURCE: GlobalSignal<Option<SourceContext>> = Signal::global(|| None);
 pub(super) fn current_snapshot() -> Value {
-    let current = (super::UrlConfig::base_http(), crate::auth::current_token());
+    let current = (super::UrlConfig::base_http(), crate::auth::request_identity());
     if OPERATING_MODE_SOURCE.read().as_ref() == Some(&current) {
         OPERATING_MODE.read().clone()
     } else {
@@ -95,22 +95,26 @@ pub(super) fn OperatingModeNotice(#[props(default = true)] visible: bool) -> Ele
     let observer = crate::auth::current_status().station_role.as_deref() == Some("rrls");
     use_future(move || async move {
         // Auth handover already returns this snapshot; do not briefly guess Normal.
-        *OPERATING_MODE_SOURCE.write() = Some((super::UrlConfig::base_http(), crate::auth::current_token()));
+        *OPERATING_MODE_SOURCE.write() = Some((super::UrlConfig::base_http(), crate::auth::request_identity()));
         *OPERATING_MODE.write() = crate::auth::current_status()
             .operating_mode
             .unwrap_or(Value::Null);
-        let mut context = (super::UrlConfig::base_http(), crate::auth::current_token());
+        let mut context = (super::UrlConfig::base_http(), crate::auth::request_identity());
         loop {
-            let source = (super::UrlConfig::base_http(), crate::auth::current_token());
+            let source = (super::UrlConfig::base_http(), crate::auth::request_identity());
             if context != source {
                 *OPERATING_MODE.write() = Value::Null;
                 *OPERATING_MODE_SOURCE.write() = None;
                 context = source.clone();
             }
             let response = super::http_get_json::<Value>("/api/station_mode").await;
-            if source != (super::UrlConfig::base_http(), crate::auth::current_token()) {
-                *OPERATING_MODE.write() = Value::Null;
-                *OPERATING_MODE_SOURCE.write() = None;
+            if source != (super::UrlConfig::base_http(), crate::auth::request_identity()) {
+                // The next loop observes the current authority independently.
+                // A retired completion must not clear replacement metadata.
+                #[cfg(target_arch = "wasm32")]
+                gloo_timers::future::TimeoutFuture::new(2000).await;
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
                 continue;
             }
             match response {

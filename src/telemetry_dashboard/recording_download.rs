@@ -242,34 +242,63 @@ impl From<&str> for SavedJsonError {
         Self::from(message.to_owned())
     }
 }
-pub(super) async fn saved_json<T: serde::de::DeserializeOwned>(
-    path: &str,
-    owner: std::rc::Rc<ExportOwner>,
-) -> Result<T, String> {
-    saved_json_classified(path, owner)
-        .await
-        .map_err(|error| error.message)
+pub(super) fn saved_json<T: serde::de::DeserializeOwned>(
+    path: &str, owner: std::rc::Rc<ExportOwner>,
+) -> impl std::future::Future<Output=Result<T,String>> + use<T> {
+    let request = saved_json_classified(path, owner);
+    async move { request.await.map_err(|error| error.message) }
 }
-pub(super) async fn saved_json_classified<T: serde::de::DeserializeOwned>(
-    path: &str,
-    owner: std::rc::Rc<ExportOwner>,
-) -> Result<T, SavedJsonError> {
-    let url = export_url(&owner, path)?;
+pub(super) fn saved_json_classified<T: serde::de::DeserializeOwned>(
+    path: &str, owner: std::rc::Rc<ExportOwner>,
+) -> impl std::future::Future<Output=Result<T,SavedJsonError>> + use<T> {
+    // Capture synchronously, before the async function's first poll.
+    let context = super::incoming_epoch::context_for_path(path, owner.has_ordinary_policy());
+    saved_json_captured(path, owner, context)
+}
+pub(super) fn saved_json_classified_in_context<T: serde::de::DeserializeOwned>(
+    path: &str, owner: std::rc::Rc<ExportOwner>, context: super::incoming_epoch::ReadContext,
+) -> impl std::future::Future<Output=Result<T,SavedJsonError>> + use<T> {
+    saved_json_captured(path, owner, Ok(Some(context)))
+}
+pub(super) fn saved_json_in_context<T: serde::de::DeserializeOwned>(
+    path: &str, owner: std::rc::Rc<ExportOwner>, context: super::incoming_epoch::ReadContext,
+) -> impl std::future::Future<Output=Result<T,String>> + use<T> {
+    let request = saved_json_captured(path, owner, Ok(Some(context)));
+    async move { request.await.map_err(|error| error.message) }
+}
+async fn read_wait<F: std::future::Future>(owner: &ExportOwner, context: Option<&super::incoming_epoch::ReadContext>, future: F) -> Result<F::Output,String> {
+    match context { Some(context) => context.wait(owner, future).await, None => owner.wait(future).await }
+}
+fn saved_json_captured<T: serde::de::DeserializeOwned>(
+    path: &str, owner: std::rc::Rc<ExportOwner>,
+    context: Result<Option<super::incoming_epoch::ReadContext>,String>,
+) -> impl std::future::Future<Output=Result<T,SavedJsonError>> + use<T> {
+    let path = path.to_owned();
+    async move {
+    let context = context?;
+    owner.check()?;
+    if let Some(context) = &context { context.check_current()?; }
+    let url = export_url(&owner, &path)?;
     #[cfg(not(target_arch = "wasm32"))]
     let (status, text) = {
-        let (connect, timeout) = super::native_http_timeouts(path);
+        let (connect, timeout) = super::native_http_timeouts(&path);
         let client = auth::build_native_http_client(owner.skip_tls(), connect, timeout)?;
         let mut request = client.get(url);
         if let Some(token) = owner.token() {
             request = request.bearer_auth(token.to_owned());
         }
-        let response = owner
-            .wait(request.send())
+        if let Some(epoch) = context.as_ref().and_then(super::incoming_epoch::ReadContext::epoch) {
+            request = request.header(super::station_policy_context::HTTP_EPOCH_HEADER, epoch);
+        }
+        let response = read_wait(&owner, context.as_ref(), request.send())
             .await?
             .map_err(|e| SavedJsonError::transport(e.to_string()))?;
         let status = response.status().as_u16();
-        let text = owner
-            .wait(response.text())
+        owner.check()?;
+        if (200..300).contains(&status) && let Some(context) = &context {
+            context.validate_native_headers(response.headers())?;
+        }
+        let text = read_wait(&owner, context.as_ref(), response.text())
             .await?
             .map_err(|e| SavedJsonError {
                 message: e.to_string(),
@@ -287,13 +316,20 @@ pub(super) async fn saved_json_classified<T: serde::de::DeserializeOwned>(
         if let Some(token) = owner.token() {
             request = request.header("Authorization", &format!("Bearer {token}"));
         }
-        let response = owner
-            .wait(request.send())
+        if let Some(epoch) = context.as_ref().and_then(super::incoming_epoch::ReadContext::epoch) {
+            request = request.header(super::station_policy_context::HTTP_EPOCH_HEADER, epoch);
+        }
+        let response = read_wait(&owner, context.as_ref(), request.send())
             .await?
             .map_err(|e| SavedJsonError::transport(e.to_string()))?;
         let status = response.status();
-        let text = owner
-            .wait(response.text())
+        owner.check()?;
+        if (200..300).contains(&status) && let Some(context) = &context {
+            let scope = response.headers().get(super::incoming_epoch::SCOPE_HEADER);
+            let epoch = response.headers().get(super::station_policy_context::HTTP_EPOCH_HEADER);
+            context.validate_mode_headers(scope.as_deref(), epoch.as_deref())?;
+        }
+        let text = read_wait(&owner, context.as_ref(), response.text())
             .await?
             .map_err(|e| SavedJsonError {
                 message: e.to_string(),
@@ -302,6 +338,7 @@ pub(super) async fn saved_json_classified<T: serde::de::DeserializeOwned>(
         (status, text)
     };
     owner.check()?;
+    if let Some(context) = &context { context.check_current()?; }
     if !(200..300).contains(&status) {
         // A stale export response must never clear a newer account's session.
         return Err(SavedJsonError {
@@ -313,6 +350,7 @@ pub(super) async fn saved_json_classified<T: serde::de::DeserializeOwned>(
         });
     }
     serde_json::from_str(&text).map_err(|e| SavedJsonError::from(e.to_string()))
+    }
 }
 
 /// The JS operation asks this original owner before/after its awaits. Retirement

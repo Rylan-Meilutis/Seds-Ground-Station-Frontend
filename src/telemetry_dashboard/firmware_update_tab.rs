@@ -56,7 +56,7 @@ fn capture_owner(
     alive: Arc<AtomicBool>,
     selected: impl Fn() -> bool + 'static,
 ) -> Result<Rc<ExportOwner>, String> {
-    ExportOwner::capture_selected(move || alive.load(Ordering::Acquire) && selected())
+    ExportOwner::capture_ordinary_selected(move || alive.load(Ordering::Acquire) && selected())
 }
 
 fn is_seds_filename(filename: &str) -> bool {
@@ -103,7 +103,7 @@ async fn firmware_post(
     bytes: Vec<u8>,
     owner: Rc<ExportOwner>,
 ) -> Result<FirmwareUpdateStatus, String> {
-    owner.check()?;
+    owner.check_ordinary()?;
     if !auth::can_send_command("FirmwareUpdate") {
         return Err("FirmwareUpdate permission is required.".into());
     }
@@ -120,6 +120,12 @@ async fn firmware_post(
             request = request
                 .header("Content-Type", "application/octet-stream")
                 .header("X-Firmware-Filename", filename);
+        }
+        if let Some(epoch) = owner.policy_epoch() {
+            request = request.header(super::station_policy_context::HTTP_EPOCH_HEADER, epoch);
+        }
+        if let Some(origin) = owner.control_origin() {
+            request = request.header("X-Station-Control-Origin", origin);
         }
         if let Some(token) = owner.token() {
             request = request.bearer_auth(token.to_owned());
@@ -146,6 +152,12 @@ async fn firmware_post(
             request = request
                 .header("Content-Type", "application/octet-stream")
                 .header("X-Firmware-Filename", filename);
+        }
+        if let Some(epoch) = owner.policy_epoch() {
+            request = request.header(super::station_policy_context::HTTP_EPOCH_HEADER, epoch);
+        }
+        if let Some(origin) = owner.control_origin() {
+            request = request.header("X-Station-Control-Origin", origin);
         }
         if let Some(token) = owner.token() {
             request = request.header("Authorization", &format!("Bearer {token}"));

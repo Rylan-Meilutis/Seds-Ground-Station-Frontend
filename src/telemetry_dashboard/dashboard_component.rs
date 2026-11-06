@@ -555,6 +555,11 @@ fn TelemetryDashboardInner() -> Element {
 
     let rocket_gps = use_signal(latest_rocket_gps_from_store);
     let rocket_gps_altitude_m = use_signal(latest_rocket_gps_altitude_m_from_store);
+    use_hook(move || mode_live_view::register(mode_live_view::Mounted {
+        alive: dashboard_alive(), mount: dashboard_gen(), flight_state, launch_clock,
+        board_status, network_topology, action_policy, notifications, sequence_status, sequence_progress, fill_targets, network_time,
+        rocket_gps, rocket_gps_altitude: rocket_gps_altitude_m,
+    }));
     let user_gps = use_signal(|| None::<(f64, f64)>);
     let user_gps_altitude_m = use_signal(|| None::<f64>);
 
@@ -685,6 +690,21 @@ fn TelemetryDashboardInner() -> Element {
             UrlConfig::set_base_url_and_persist(base);
             log!("[GS26] Base URL changed; bumping ws epoch.");
             bump_ws_epoch();
+        });
+    }
+
+    // A successful in-place policy/domain change refreshes actual backend layout
+    // and policy without restarting auth, websocket, clocks or recording IDs.
+    {
+        let mut displayed_runtime_epoch=use_signal(||None::<String>);
+        use_effect(move||{
+            let observed=station_mode_observer::OBSERVED.read().clone();
+            let Some(observed)=observed.filter(|o|o.current(monotonic_now_ms())&&o.value.admissions_open) else{return;};
+            let epoch=observed.value.policy_epoch.clone();
+            if *displayed_runtime_epoch.peek()==epoch{return;}
+            let initial=displayed_runtime_epoch.peek().is_none();
+            if initial{displayed_runtime_epoch.set(epoch);return;}
+            refresh_layout_after_runtime_mode(RuntimeLayoutSignals{layout_config,layout_loading,layout_error,layout_error_dismissed,layout_request_base,calibration_has_sensors,calibration_request_base,action_policy},displayed_runtime_epoch,epoch);
         });
     }
 
@@ -1462,14 +1482,14 @@ fn TelemetryDashboardInner() -> Element {
                         );
                     }
 
-                    let ws_messages: Vec<(u64, u64, String)> =
+                    let ws_messages: Vec<(u64, u64, String, incoming_epoch::PacketPermit)> =
                         if let Ok(mut q) = PENDING_WS_MESSAGE_EVENTS.lock() {
                             std::mem::take(&mut *q).into_iter().collect()
                         } else {
                             Vec::new()
                         };
-                    for (event_epoch, condition_connection, payload) in ws_messages {
-                        if event_epoch != epoch {
+                    for (event_epoch, condition_connection, payload, permit) in ws_messages {
+                        if event_epoch != epoch || !permit.matches_installed() || permit.check_current().is_err() {
                             continue;
                         }
                         handle_ws_message(
@@ -2735,7 +2755,7 @@ fn TelemetryDashboardInner() -> Element {
     let view = (|| -> Element {
         // Keep hooks stable, but unmount all normal data views while aiming.
         if *antenna_aiming.read() {
-            return rsx! { antenna_aiming::AntennaAiming {on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
+            return rsx! { antenna_aiming::AntennaAiming {on_register_retirement: move |(alive, reset): antenna_aiming::RetirementRegistration| { mode_live_view::register_antenna(alive, move || reset.call(())); }, on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
         }
 
         // Dedicated media devices must not mount dashboard alerts, warnings or controls.
@@ -3466,21 +3486,17 @@ fn TelemetryDashboardInner() -> Element {
                                                 class: "gs26-header-abort-mobile",
                                                 style: "{abort_style} touch-action:manipulation;",
                                                 disabled: !abort_allowed,
-                                                onmousedown: move |_| {
-                                                    if abort_allowed {
-                                                        send_cmd_from_press("Abort");
-                                                    }
-                                                },
-                                                ontouchstart: move |_| {
-                                                    if abort_allowed {
-                                                        send_cmd_from_press("Abort");
-                                                    }
-                                                },
-                                                onclick: move |_| {
-                                                    if abort_allowed {
-                                                        send_cmd_from_click("Abort");
-                                                    }
-                                                },
+                                                onpointerdown: move |event| {if abort_allowed {command_pointer_down_event("header:abort:mobile","Abort",&event,false);}},
+                                                onpointerup: move |event| {command_pointer_up_event("header:abort:mobile",&event);},
+                                                onpointercancel: move |event| {command_pointer_cancel_event("header:abort:mobile",&event);},
+                                                ontouchstart: move |event| {if abort_allowed {command_touch_start_event("header:abort:mobile","Abort",&event,false);}},
+                                                ontouchend: move |event| {command_touch_end_event("header:abort:mobile",&event);},
+                                                ontouchcancel: move |event| {command_touch_cancel_event("header:abort:mobile",&event);},
+                                                onmousedown: move |event| {if abort_allowed {command_mouse_down_event("header:abort:mobile","Abort",&event,false);}},
+                                                onmouseup: move |event| {command_mouse_up_event("header:abort:mobile",&event);},
+                                                onkeydown: move |event| {let key=event.key();if abort_allowed&&!event.is_auto_repeating()&&(key==dioxus::prelude::Key::Enter||key.to_string()==" "){command_key_down_event("header:abort:mobile","Abort",&event,false);}},
+                                                onkeyup: move |event| {command_key_up_event("header:abort:mobile",&event);},
+                                                onclick: move |event| {if abort_allowed {command_click("header:abort:mobile","Abort",&event,false);}},
                                                 span { style: "display:inline-flex; align-items:center; gap:8px;",
                                                     span { "{translate_text(\"ABORT\")}" }
                                                     if !abort_allowed {
@@ -3611,28 +3627,19 @@ fn TelemetryDashboardInner() -> Element {
                                                 class: "gs26-header-abort-menu",
                                                 style: "{abort_style} touch-action:manipulation;",
                                                 disabled: !abort_allowed,
-                                                onmousedown: {
-                                                    move |_| {
-                                                        if abort_allowed {
-                                                            send_cmd_from_press("Abort");
-                                                        }
-                                                    }
-                                                },
-                                                ontouchstart: {
-                                                    move |_| {
-                                                        if abort_allowed {
-                                                            send_cmd_from_press("Abort");
-                                                        }
-                                                    }
-                                                },
+                                                onpointerdown: move |event| {if abort_allowed {command_pointer_down_event("header:abort:menu","Abort",&event,false);}},
+                                                onpointerup: move |event| {command_pointer_up_event("header:abort:menu",&event);},
+                                                onpointercancel: move |event| {command_pointer_cancel_event("header:abort:menu",&event);},
+                                                ontouchstart: move |event| {if abort_allowed {command_touch_start_event("header:abort:menu","Abort",&event,false);}},
+                                                ontouchend: move |event| {command_touch_end_event("header:abort:menu",&event);},
+                                                ontouchcancel: move |event| {command_touch_cancel_event("header:abort:menu",&event);},
+                                                onmousedown: move |event| {if abort_allowed {command_mouse_down_event("header:abort:menu","Abort",&event,false);}},
+                                                onmouseup: move |event| {command_mouse_up_event("header:abort:menu",&event);},
+                                                onkeydown: move |event| {let key=event.key();if abort_allowed&&!event.is_auto_repeating()&&(key==dioxus::prelude::Key::Enter||key.to_string()==" "){command_key_down_event("header:abort:menu","Abort",&event,false);}},
+                                                onkeyup: move |event| {command_key_up_event("header:abort:menu",&event);},
                                                 onclick: {
-                                                    let mut header_actions_expanded = header_actions_expanded;
-                                                    move |_| {
-                                                        if abort_allowed {
-                                                            send_cmd_from_click("Abort");
-                                                        }
-                                                        header_actions_expanded.set(false);
-                                                    }
+                                                    let mut header_actions_expanded=header_actions_expanded;
+                                                    move |event| {if abort_allowed {command_click("header:abort:menu","Abort",&event,false);} header_actions_expanded.set(false);}
                                                 },
                                                 span { style: "display:inline-flex; align-items:center; gap:8px;",
                                                     span { "{translate_text(\"ABORT\")}" }
@@ -3848,15 +3855,15 @@ fn TelemetryDashboardInner() -> Element {
                             div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                             div {id:"gs26-media-slot",style:if media_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                             match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
-                                MainTab::Checklists => rsx! {checklists::ChecklistsTab {theme:theme.clone()}},
+                                MainTab::Checklists => rsx! {for policy_view_key in [station_mode_observer::view_key()] { checklists::ChecklistsTab { key: "{policy_view_key}",theme:theme.clone()} }},
                                 MainTab::State => rsx! {
                                     div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
                                         custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:layout.test_fire_mode}
                                         if *ground_station_view.read() && auth::can_view_actions() && flight_state.read().as_str() == "Aborted" {
-                                            gse_panel::ClearGseAbort {}
+                                            for policy_view_key in [station_mode_observer::view_key()] { gse_panel::ClearGseAbort { key: "{policy_view_key}",} }
                                         }
                                         if *ground_station_view.read() && auth::can_view_actions() && (layout.test_fire_mode || gse_panel::ground_visible(&flight_state.read())) {
-                                            gse_panel::GsePanel {action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false}
+                                            for policy_view_key in [station_mode_observer::view_key()] { gse_panel::GsePanel { key: "{policy_view_key}",action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false} }
                                         }
                                     }
                                 },
@@ -3923,17 +3930,17 @@ fn TelemetryDashboardInner() -> Element {
                                 },
                                 MainTab::Actions => rsx! {
                                     div { style: "height:100%; width:100%; max-width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    ActionsTab {
+                                    for policy_view_key in [station_mode_observer::view_key()] { ActionsTab { key: "{policy_view_key}",
                                         layout: layout.actions_tab.clone(),
                                         action_policy: action_policy,
                                         recording_status: recording_status,
                                         abort_only_mode: *abort_only_mode.read(),
                                         theme: theme.clone(),
-                                    }
+                                    } }
                                     }
                                 },
                                 MainTab::FirmwareUpdate => rsx! {
-                                    FirmwareUpdateTab { theme: theme.clone() }
+                                    for policy_view_key in [station_mode_observer::view_key()] { FirmwareUpdateTab { key: "{policy_view_key}", theme: theme.clone() } }
                                 },
                                 MainTab::DataExport => rsx! {
                                     div { class: "gs26-export-scroll", style: "height:100%;min-height:0;min-width:0;overflow:auto;box-sizing:border-box;overscroll-behavior:contain;",
@@ -4046,14 +4053,12 @@ fn TelemetryDashboardInner() -> Element {
                                                 let remote_alert_acks_enabled = remote_alert_acks_enabled;
                                                 move |_| {
                                                     if *remote_alert_acks_enabled.read() {
+                                                        let owner=match recording_download::ExportOwner::capture_ordinary_selected(||true){Ok(owner)=>owner,Err(_)=>return};
+                                                        let request=post_remote_alert_ack(latest_warning_ts,latest_error_ts,owner);
                                                         ack_warning_ts.set(latest_warning_ts);
                                                         ack_error_ts.set(latest_error_ts);
                                                         spawn(async move {
-                                                            let _ = post_remote_alert_ack(
-                                                                latest_warning_ts,
-                                                                latest_error_ts,
-                                                            )
-                                                            .await;
+                                                            let _ = request.await;
                                                         });
                                                     } else {
                                                         ack_error_ts.set(latest_error_ts);
@@ -4097,24 +4102,17 @@ fn TelemetryDashboardInner() -> Element {
                                     {
                                         button {
                                             style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer; touch-action:manipulation;",
-                                            onmousedown: {
-                                                let cmd = action_cmd.to_string();
-                                                move |_| {
-                                                    send_cmd_from_press(&cmd);
-                                                }
-                                            },
-                                            ontouchstart: {
-                                                let cmd = action_cmd.to_string();
-                                                move |_| {
-                                                    send_cmd_from_press(&cmd);
-                                                }
-                                            },
-                                            onclick: {
-                                                let cmd = action_cmd.to_string();
-                                                move |_| {
-                                                    send_cmd_from_click(&cmd);
-                                                }
-                                            },
+                                            onpointerdown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_pointer_down_event(&source,&cmd,&event,false);}},
+                                            onpointerup: {let source=format!("notification:{}",n.id);move |event|{command_pointer_up_event(&source,&event);}},
+                                            onpointercancel: {let source=format!("notification:{}",n.id);move |event|{command_pointer_cancel_event(&source,&event);}},
+                                            ontouchstart: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_touch_start_event(&source,&cmd,&event,false);}},
+                                            ontouchend: {let source=format!("notification:{}",n.id);move |event|{command_touch_end_event(&source,&event);}},
+                                            ontouchcancel: {let source=format!("notification:{}",n.id);move |event|{command_touch_cancel_event(&source,&event);}},
+                                            onmousedown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_mouse_down_event(&source,&cmd,&event,false);}},
+                                            onmouseup: {let source=format!("notification:{}",n.id);move |event|{command_mouse_up_event(&source,&event);}},
+                                            onkeydown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_key_down_event(&source,&cmd,&event,false);}},
+                                            onkeyup: {let source=format!("notification:{}",n.id);move |event|{command_key_up_event(&source,&event);}},
+                                            onclick: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_click(&source,&cmd,&event,false);}},
                                             {translate_text(action_label)}
                                         }
                                     }
@@ -4163,6 +4161,7 @@ fn TelemetryDashboardInner() -> Element {
         command_confirmation::CommandConfirmation {}
         style {{include_str!("sequence_progress.css")}}
         if (auth::can_view_data() || auth::can_view_actions()) && !surface_viewer {
+            station_mode_observer::StationModeObserver {}
             sequence_progress_host::SequenceProgressHost {
                 state:sequence_progress,status:sequence_status,open_result:sequence_result_request,
                 on_actions:*active_main_tab.read()==MainTab::Actions && !*antenna_aiming.read() && !*admin_open.read() && !*show_settings_overlay.read() && !*show_version_overlay.read() && !surface_stream,
@@ -4171,14 +4170,8 @@ fn TelemetryDashboardInner() -> Element {
     }
 }
 
-fn send_cmd(cmd: &str) {
-    confirm_command_dispatch(cmd, send_confirmed_cmd);
-}
-fn confirm_command_dispatch(cmd: &str, dispatch: fn(&str)) {
-    command_confirmation::request(cmd, dispatch);
-}
-
-fn send_confirmed_cmd(cmd: &str) {
+fn send_confirmed_cmd(cmd: &str, owner: CommandOwner) {
+    if owner.command() != cmd || !owner.is_current() { return; }
     if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
         || !auth::can_send_command(cmd)
     {
@@ -4194,11 +4187,11 @@ fn send_confirmed_cmd(cmd: &str) {
         return;
     }
     if auth::command_uses_primary_proxy(&auth::current_status(), cmd) {
-        send_primary_request(cmd);
+        send_primary_request(cmd, owner);
         return;
     }
     let sender = WS_SENDER.read().clone();
-    match sender.map_or_else(|| Err("disconnected".into()), |sender| sender.send_cmd(cmd)) {
+    match sender.map_or_else(|| Err("disconnected".into()), |sender| sender.send_owned(owner)) {
         Ok(()) => {
             *COMMAND_SEND_ERROR.write() = None;
             log!("[CMD] dispatched cmd='{cmd}'");
@@ -4218,90 +4211,237 @@ fn schedule_action_policy_resync() {
 }
 
 fn clear_command_feedback_latches() {
-    if let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() {
-        pending.take();
-    }
+    // Policy refresh, dialog cancellation and old response feedback must not
+    // erase a physical gesture's original owner. A release consumes the retained
+    // tombstone; only an explicit new down may replace it.
     if let Ok(mut last) = LAST_COMMAND_ACTIVATION.lock() {
         last.take();
     }
 }
 
-fn should_send_command_activation(cmd: &str) -> bool {
+fn should_send_command_activation(cmd: &str, owner: &CommandOwner) -> bool {
     let now = monotonic_now_ms();
-    let Ok(mut last) = LAST_COMMAND_ACTIVATION.lock() else {
-        return true;
-    };
-    if let Some((last_cmd, last_ts)) = last.as_ref()
-        && last_cmd == cmd
-        && now - *last_ts <= COMMAND_ACTIVATION_DEDUP_MS
-    {
-        return false;
-    }
-    *last = Some((cmd.to_string(), now));
+    let Ok(mut last) = LAST_COMMAND_ACTIVATION.lock() else { return false; };
+    if let Some((original, last_ts)) = last.as_ref()
+        && original.command() == cmd && original.epoch() == owner.epoch()
+        && original.is_current() && now - *last_ts <= COMMAND_ACTIVATION_DEDUP_MS
+    { return false; }
+    *last = Some((owner.clone(), now));
     true
 }
 
-pub(crate) fn send_cmd_from_press(cmd: &str) {
-    if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
-        || !auth::can_send_command(cmd)
-    {
-        log!("[CMD] press ignored cmd='{cmd}'");
-        return;
+// These input boundaries run synchronously in the owning UI runtime. The
+// native socket task carries their Send owner unchanged and checks it again.
+fn record_command_press(
+    source: &str,
+    cmd: &str,
+    origin: command_owner::PressOrigin,
+    primary: bool,
+    proxy: bool,
+    terminal_seen: bool,
+) {
+    use command_owner::PressOrigin;
+    if origin == PressOrigin::Keyboard {
+        let Ok(mut sources) = COMMAND_KEYBOARD_SOURCES.lock() else { return; };
+        sources.remember(source);
     }
-    let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
-        return;
-    };
-    *pending = Some((cmd.to_string(), monotonic_now_ms()));
+    let Ok(pending) = PENDING_COMMAND_PRESS.lock() else { return; };
+    let companion = pending.as_ref().is_some_and(|old| match origin {
+        // A mouse event following any pointer/touch is compatibility, even if
+        // its owner retired or a release already consumed that gesture.
+        PressOrigin::Mouse { .. } => matches!(old.origin, PressOrigin::Pointer { .. } | PressOrigin::Touch { .. }),
+        PressOrigin::Touch { .. } => old.source == source && matches!(old.origin, PressOrigin::Pointer { touch: true, .. }),
+        _ => false,
+    });
+    drop(pending);
+    if companion { return; }
+    let owner = CommandOwner::capture(cmd).ok();
+    if !primary && !owner.as_ref().is_some_and(CommandOwner::is_emergency) { return; }
+    let allowed = auth::can_send_command(cmd)
+        && if proxy {
+            auth::command_uses_primary_proxy(&auth::current_status(), cmd)
+        } else {
+            action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
+        };
+    let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else { return; };
+    *pending = Some(command_owner::PendingCommandPress {
+        source: source.into(), command: cmd.into(), started_ms: monotonic_now_ms(),
+        owner: owner.filter(|_| allowed), origin, proxy, consumed: false, terminal_seen,
+    });
 }
+#[cfg(test)]
+pub(crate) fn command_pointer_down(source: &str, cmd: &str, id: i32, touch: bool, is_primary: bool, proxy: bool) {
+    record_command_press(source, cmd, command_owner::PressOrigin::Pointer { id, touch, button: Some(dioxus::html::input_data::MouseButton::Primary) }, is_primary, proxy, false);
+}
+#[cfg(test)]
+pub(crate) fn command_touch_start(source: &str, cmd: &str, single_touch: bool, proxy: bool) {
+    record_command_press(source, cmd, command_owner::PressOrigin::Touch { id: 0 }, single_touch, proxy, false);
+}
+#[cfg(test)]
+pub(crate) fn command_mouse_down(source: &str, cmd: &str, proxy: bool) {
+    record_command_press(source, cmd, command_owner::PressOrigin::Mouse { button: dioxus::html::input_data::MouseButton::Primary }, true, proxy, false);
+}
+#[cfg(test)]
+pub(crate) fn command_key_down(source: &str, cmd: &str, proxy: bool) {
+    record_command_press(source, cmd, command_owner::PressOrigin::Keyboard, true, proxy, true);
+}
+// Terminal events never mint or refresh authority. They can only complete or
+// cancel the retained source/origin/ID selected by an earlier genuine down.
+fn command_terminal(source: &str, matches: impl FnOnce(command_owner::PressOrigin)->bool, canceled: bool) {
+    let Ok(mut pending)=PENDING_COMMAND_PRESS.lock() else {return;};
+    let Some(pending)=pending.as_mut() else {return;};
+    if pending.source!=source || pending.consumed || !matches(pending.origin) {return;}
+    if canceled {pending.consumed=true;} else {pending.terminal_seen=true;}
+}
+pub(crate) fn command_pointer_down_event(source:&str,cmd:&str,event:&PointerEvent,proxy:bool) {
+    let touch=event.pointer_type()=="touch";
+    let button=event.trigger_button();
+    let eligible=event.is_primary() && (touch || button==Some(dioxus::html::input_data::MouseButton::Primary));
+    record_command_press(source,cmd,command_owner::PressOrigin::Pointer{id:event.pointer_id(),touch,button},eligible,proxy,false);
+}
+pub(crate) fn command_pointer_up_event(source:&str,event:&PointerEvent) {
+    command_terminal(source,|origin|matches!(origin,command_owner::PressOrigin::Pointer{id,touch,button} if id==event.pointer_id()&&(touch||button==event.trigger_button())),false);
+}
+pub(crate) fn command_pointer_cancel_event(source:&str,event:&PointerEvent) {
+    command_terminal(source,|origin|matches!(origin,command_owner::PressOrigin::Pointer{id,..} if id==event.pointer_id()),true);
+}
+pub(crate) fn command_mouse_down_event(source:&str,cmd:&str,event:&MouseEvent,proxy:bool) {
+    let Some(button)=event.trigger_button() else {return;};
+    record_command_press(source,cmd,command_owner::PressOrigin::Mouse{button},button==dioxus::html::input_data::MouseButton::Primary,proxy,false);
+}
+pub(crate) fn command_mouse_up_event(source:&str,event:&MouseEvent) {
+    let Some(button)=event.trigger_button() else {return;};
+    command_terminal(source,|origin|matches!(origin,command_owner::PressOrigin::Mouse{button:owned} if owned==button),false);
+}
+pub(crate) fn command_key_down_event(source:&str,cmd:&str,event:&KeyboardEvent,proxy:bool) {
+    let key=event.key();
+    if !event.is_auto_repeating() && (key==Key::Enter || key.to_string()==" ") {
+        record_command_press(source,cmd,command_owner::PressOrigin::Keyboard,true,proxy,key==Key::Enter);
+    }
+}
+pub(crate) fn command_key_up_event(source:&str,event:&KeyboardEvent) {
+    if event.key().to_string()==" " {
+        command_terminal(source,|origin|origin==command_owner::PressOrigin::Keyboard,false);
+    }
+}
+struct CommandTouches {active:Vec<i32>,changed:Vec<i32>}
+fn command_touches(event:&TouchEvent)->Option<CommandTouches> {
+    let data=event.data();
+    #[cfg(target_arch="wasm32")]
+    let lists={
+        let raw=data.downcast::<web_sys::TouchEvent>()?;
+        let ids=|list:web_sys::TouchList|->Option<Vec<i32>> {
+            if list.length()>16 {return None;}
+            (0..list.length()).map(|i|list.item(i).map(|point|point.identifier())).collect()
+        };
+        (ids(raw.touches())?,ids(raw.changed_touches())?)
+    };
+    #[cfg(not(target_arch="wasm32"))]
+    let lists={
+        if data.touches().len()>16 || data.touches_changed().len()>16 || data.target_touches().len()>16 {return None;}
+        // Desktop's public TouchPoint hides identifier(), but its actual
+        // supported serialization preserves the real i32 ID. Never invent one.
+        let value=serde_json::to_value(data.as_ref()).ok()?;
+        let ids=|field:&str|->Option<Vec<i32>> {
+            let values=value.get(field)?.as_array()?;
+            if values.len()>16 {return None;}
+            values.iter().map(|point|i32::try_from(point.get("identifier")?.as_i64()?).ok()).collect()
+        };
+        (ids("touches")?,ids("changed_touches")?)
+    };
+    if lists.0.iter().collect::<std::collections::BTreeSet<_>>().len()!=lists.0.len()
+        || lists.1.iter().collect::<std::collections::BTreeSet<_>>().len()!=lists.1.len() {return None;}
+    Some(CommandTouches{active:lists.0,changed:lists.1})
+}
+pub(crate) fn command_touch_start_event(source:&str,cmd:&str,event:&TouchEvent,proxy:bool) {
+    let Some(touches)=command_touches(event) else {return;};
+    let [id]=touches.changed.as_slice() else {return;};
+    if !touches.active.contains(id) {return;}
+    record_command_press(source,cmd,command_owner::PressOrigin::Touch{id:*id},touches.active.len()==1,proxy,false);
+}
+pub(crate) fn command_touch_end_event(source:&str,event:&TouchEvent) {
+    let Some(touches)=command_touches(event) else {return;};
+    command_terminal(source,|origin|matches!(origin,command_owner::PressOrigin::Touch{id} if touches.changed.contains(&id)&&!touches.active.contains(&id)),false);
+}
+pub(crate) fn command_touch_cancel_event(source:&str,event:&TouchEvent) {
+    let Some(touches)=command_touches(event) else {return;};
+    command_terminal(source,|origin|matches!(origin,command_owner::PressOrigin::Touch{id} if touches.changed.contains(&id)),true);
+}
+fn release_command_press(source: &str) {
+    let captured = {
+        let Ok(mut slot) = PENDING_COMMAND_PRESS.lock() else { return; };
+        let Some(pending) = slot.as_mut() else { return; };
+        // A late release from another control cannot consume a newer Stop.
+        if pending.source != source || pending.consumed { return; }
+        pending.consumed = true;
+        pending.clone()
+    };
+    let elapsed = monotonic_now_ms() - captured.started_ms;
+    let Some(owner) = captured.owner else { return; };
+    if !elapsed.is_finite() || !(0. ..=COMMAND_MAX_PRESS_RELEASE_MS).contains(&elapsed)
+        || !owner.is_current() || !auth::can_send_command(&captured.command)
+        || (!captured.proxy && !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), &captured.command))
+        || !should_send_command_activation(&captured.command, &owner)
+    { return; }
+    let dispatch: fn(&str, CommandOwner) = if captured.proxy { send_primary_request } else { send_confirmed_cmd };
+    command_confirmation::request(&captured.command, owner, dispatch);
+}
+pub(crate) fn command_click(source: &str, cmd: &str, event: &MouseEvent, proxy: bool) {
+    #[cfg(target_arch = "wasm32")]
+    let (origin, released_pointer) = {
+        use wasm_bindgen::JsCast;
+        let data = event.data();
+        let raw = data.downcast::<web_sys::MouseEvent>();
+        let origin = command_owner::ClickOrigin::from_mouse_detail(raw.map(|raw| raw.detail()));
+        (origin, raw.and_then(|raw| raw.dyn_ref::<web_sys::PointerEvent>()).map(|pointer| pointer.pointer_id()))
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let (origin, released_pointer) = { let _ = event; (command_owner::ClickOrigin::from_mouse_detail(None), None) };
+    command_click_with_origin(source, cmd, origin, released_pointer, proxy);
+}
+// This normalized event adapter is also exercised by native control tests. It
+// does not confer permission; the original CommandOwner and server do that.
+fn command_click_with_origin(source: &str, cmd: &str, origin: command_owner::ClickOrigin, released_pointer: Option<i32>, proxy: bool) {
+    use command_owner::{ClickOrigin, PressOrigin};
+    let blocked = COMMAND_KEYBOARD_SOURCES.lock().map_or(true, |sources| sources.blocks_uncorrelated(source));
+    let Ok(pending) = PENDING_COMMAND_PRESS.lock() else { return; };
+    if pending.as_ref().is_some_and(|old| old.source == source && !old.consumed
+        && origin == ClickOrigin::Unknown && !old.terminal_seen) { return; }
+    if pending.as_ref().is_some_and(|old| old.source == source && !old.consumed && match origin {
+        ClickOrigin::KeyboardOrAccessible => matches!(old.origin, PressOrigin::Pointer { .. } | PressOrigin::Touch { .. } | PressOrigin::Mouse { .. }),
+        ClickOrigin::Pointer => matches!(old.origin, PressOrigin::Keyboard | PressOrigin::Accessible)
+            || matches!(old.origin, PressOrigin::Pointer { id, .. } if released_pointer.is_some_and(|released| released != id)),
+        ClickOrigin::Unknown => false,
+    }) { return; }
+    // An old keyboard source never becomes a fresh click-only owner after its
+    // pending record was replaced. Unknown/overflow is fail closed for this
+    // fallback only; genuine down events and Emergency remain available.
+    let can_activate = !blocked && pending.as_ref().is_none_or(|old| old.consumed && old.origin != PressOrigin::Keyboard);
+    let legacy_click = !blocked && !station_policy_context::epoch_fencing_required()
+        && pending.as_ref().is_none_or(|old| old.consumed && old.origin == PressOrigin::Accessible);
+    drop(pending);
+    if (origin == ClickOrigin::KeyboardOrAccessible && can_activate) || legacy_click {
+        record_command_press(source, cmd, PressOrigin::Accessible, true, proxy, true);
+    }
+    release_command_press(source);
+}
+
+#[cfg(test)]
+pub(crate) fn send_cmd_from_press(cmd: &str) { command_key_down(cmd, cmd, false); }
+#[cfg(test)]
+pub(crate) fn send_cmd_from_click(cmd: &str) { release_command_press(cmd); }
 
 pub(crate) fn command_feedback_active(cmd: &str) -> bool {
     let now = monotonic_now_ms();
-    let pending_active = PENDING_COMMAND_PRESS
-        .lock()
-        .ok()
-        .and_then(|pending| pending.clone())
-        .is_some_and(|(pending_cmd, started_ms)| {
-            pending_cmd == cmd && now - started_ms <= COMMAND_MAX_PRESS_RELEASE_MS
-        });
-    if pending_active {
-        return true;
-    }
-    LAST_COMMAND_ACTIVATION
-        .lock()
-        .ok()
-        .and_then(|last| last.clone())
-        .is_some_and(|(last_cmd, last_ts)| {
-            last_cmd == cmd && now - last_ts <= COMMAND_VISUAL_FEEDBACK_MS
-        })
-}
-
-fn should_send_command_release(cmd: &str) -> bool {
-    let now = monotonic_now_ms();
-    let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
-        return false;
-    };
-    let armed = pending.take().is_some_and(|(pending_cmd, started_ms)| {
-        pending_cmd == cmd && now - started_ms <= COMMAND_MAX_PRESS_RELEASE_MS
+    let pending_active = PENDING_COMMAND_PRESS.lock().ok().is_some_and(|pending| {
+        pending.as_ref().is_some_and(|press| press.command == cmd && !press.consumed
+            && now - press.started_ms <= COMMAND_MAX_PRESS_RELEASE_MS
+            && press.owner.as_ref().is_some_and(CommandOwner::is_current))
     });
-    drop(pending);
-
-    armed && should_send_command_activation(cmd)
-}
-
-pub(crate) fn send_cmd_from_click(cmd: &str) {
-    if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
-        || !auth::can_send_command(cmd)
-    {
-        log!("[CMD] click ignored cmd='{cmd}'");
-        let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else {
-            return;
-        };
-        pending.take();
-        return;
-    }
-    if should_send_command_release(cmd) || should_send_command_activation(cmd) {
-        send_cmd(cmd);
-    }
+    pending_active || LAST_COMMAND_ACTIVATION.lock().ok()
+        .and_then(|last| last.clone())
+        .is_some_and(|(original, last_ts)| original.command() == cmd && original.is_current()
+            && now - last_ts <= COMMAND_VISUAL_FEEDBACK_MS)
 }
 
 fn row_to_gps(row: &TelemetryRow) -> Option<(f64, f64)> {
@@ -4332,31 +4472,21 @@ fn log(msg: &str) {
     debug_log::append(msg);
 }
 
-/// This is explicitly an execution request, independent of stale presentation policy.
-/// The primary performs current permissions/interlocks; no local execution is possible.
-pub(super) fn request_primary_command(cmd: &str) {
-    if !auth::command_uses_primary_proxy(&auth::current_status(), cmd)
-        || !auth::can_send_command(cmd)
-    {
-        return;
-    }
-    confirm_command_dispatch(cmd, send_primary_request);
-}
-fn send_primary_request(cmd: &str) {
+
+fn send_primary_request(cmd: &str, owner: CommandOwner) {
+    if owner.command() != cmd || !owner.is_current() { return; }
     if !auth::command_uses_primary_proxy(&auth::current_status(), cmd)
         || !auth::can_send_command(cmd)
     {
         return;
     }
     let command = cmd.to_owned();
-    let base = UrlConfig::base_http();
-    let token = auth::current_token();
     *COMMAND_PROXY_MESSAGE.write() = Some(format!(
         "{command}: submitting to RRLS; primary acceptance is pending."
     ));
     spawn(async move {
-        let result = http_post_json::<_, auth::CommandProxyStatus>("/api/command", &command).await;
-        if UrlConfig::base_http() != base || auth::current_token() != token {
+        let result = command_owner::post_primary(&owner).await;
+        if !owner.is_current() {
             return;
         }
         match result {

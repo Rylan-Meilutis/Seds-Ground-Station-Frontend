@@ -130,6 +130,18 @@ Command uplink:
 | `GET` | `/api/i18n/catalog?lang=<code>` | Optional translation catalog |
 | `POST` | `/api/i18n/translate` | Optional translation service |
 
+## Optional backend-defined modes
+
+Settings → Ground Station → Mission uses `GET /api/station-modes` and explicit
+`POST /api/station-modes/prepare` / `POST /api/station-modes/confirm` operations.
+The independent [mode integration contract](station-modes.md) supports arbitrary
+backend-defined IDs and labels without SEDS board-recovery routes. Missing,
+read-only, stale or unauthorized capabilities disable requests. A current build
+label does not enable runtime switching. Simulation is orthogonal to policy mode;
+only explicit advertised pairs can be prepared. Both client epoch integration and
+the backend’s real transition/domain implementation must qualify before changes
+are enabled. Preparation and readback retain the existing session.
+
 ## HTTP Schemas
 
 ### `GET /api/auth/session`

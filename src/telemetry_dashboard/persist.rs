@@ -318,7 +318,7 @@ mod native {
 
     /// Loads the native persistence map from disk.
     fn load_map(path: &std::path::Path) -> Result<HashMap<String, String>, io::Error> {
-        let bytes = match std::fs::read(&path) {
+        let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
             Err(e) => return Err(e),
@@ -341,7 +341,7 @@ mod native {
             std::fs::create_dir_all(parent)?;
         }
         let bytes = serde_json::to_vec_pretty(map).map_err(io::Error::other)?;
-        crate::native_storage::atomic_write(&path, &bytes)?;
+        crate::native_storage::atomic_write(path, &bytes)?;
         Ok(())
     }
 

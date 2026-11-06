@@ -41,72 +41,31 @@ fn websocket_idle_deadline_allows_jitter_but_recovers_stalls() {
 }
 
 // ---------- HTTP helpers ----------
-#[cfg(target_arch = "wasm32")]
-pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
-    use gloo_net::http::Request;
-
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-
-    let base = UrlConfig::base_http();
-
-    let url = if base.is_empty() {
-        let w = web_sys::window().ok_or("no window".to_string())?;
-        let origin = w
-            .location()
-            .origin()
-            .map_err(|_| "failed to read window.location.origin".to_string())?;
-        format!("{origin}{path}")
-    } else {
-        format!("{base}{path}")
-    };
-
-    let mut request = Request::get(&url);
-    if let Some(token) = auth::current_token() {
-        request = request.header("Authorization", &format!("Bearer {token}"));
+pub(crate) fn http_get_json<T: serde::de::DeserializeOwned + 'static>(
+    path: &str,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<T> {
+    let path = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
+    let owner = recording_download::ExportOwner::capture_observer_selected(|| true);
+    let request = owner.as_ref().map(|owner| recording_download::saved_json::<T>(&path, owner.clone())).map_err(Clone::clone);
+    async move {
+        let owner = owner?;
+        let request = request?;
+        let started = monotonic_now_ms();
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = request.await;
+        #[cfg(target_arch = "wasm32")]
+        let result = {
+            let timeout = if path == "/api/recent" || path.starts_with("/api/recordings/report?") { 300_000 } else { 15_000 };
+            let fetch = Box::pin(request);
+            match futures_util::future::select(fetch, Box::pin(gloo_timers::future::TimeoutFuture::new(timeout))).await {
+                futures_util::future::Either::Left((result, _)) => result,
+                futures_util::future::Either::Right(_) => Err(format!("HTTP GET {path} timed out")),
+            }
+        };
+        owner.check()?;
+        note_http_rtt_ms(monotonic_now_ms() - started);
+        result
     }
-    let controller =
-        web_sys::AbortController::new().map_err(|_| "HTTP abort controller unavailable")?;
-    let _abort_on_cancel = HttpAbortOnDrop(controller.clone());
-    let signal = controller.signal();
-    request = request.abort_signal(Some(&signal));
-    let started_mono_ms = monotonic_now_ms();
-    let fetch = async {
-        let response = request.send().await.map_err(|e| e.to_string())?;
-        let status = response.status();
-        let body = response.text().await.map_err(|e| e.to_string())?;
-        Ok::<_, String>((status, body))
-    };
-    futures_util::pin_mut!(fetch);
-    let timeout_ms = if path == "/api/recent" || path.starts_with("/api/recordings/report?") {
-        300_000
-    } else {
-        15_000
-    };
-    let (status, body) = match futures_util::future::select(
-        fetch,
-        gloo_timers::future::TimeoutFuture::new(timeout_ms),
-    )
-    .await
-    {
-        futures_util::future::Either::Left((result, _)) => result?,
-        futures_util::future::Either::Right(_) => {
-            controller.abort();
-            return Err(format!("HTTP GET {path} timed out"));
-        }
-    };
-    note_http_rtt_ms(monotonic_now_ms() - started_mono_ms);
-    if status == 401 {
-        auth::clear_current_session();
-    }
-    if !(200..300).contains(&status) {
-        let snippet: String = body.chars().take(200).collect();
-        return Err(format!("HTTP {status}: {}", snippet.trim()));
-    }
-    serde_json::from_str::<T>(&body).map_err(|e| e.to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -142,15 +101,17 @@ fn native_ws_connect_timeout() -> std::time::Duration {
 // Live rows use the client's receipt clock, while /api/recent uses the
 // backend's wall clock. Align historical receipt times before merging or a
 // Pi with a skewed clock loses its entire history at the first live packet.
-async fn fetch_recent_rows_for_reseed() -> Result<Vec<TelemetryRow>, String> {
+async fn fetch_recent_rows_for_reseed(seed: &telemetry_reseed_continuity::Seed) -> Result<Vec<TelemetryRow>, String> {
     #[derive(Deserialize)]
     struct HistoryClock {
         utc_ms: i64,
     }
+    if !seed.current() { return Err("Original reseed owner retired before request".into()); }
     let before = current_wallclock_ms();
     let clock = http_get_json::<HistoryClock>("/api/system/time").await;
     let after = current_wallclock_ms();
-    let mut rows = fetch_recent_rows_raw().await?;
+    if !seed.current() { return Err("Original reseed owner retired during clock read".into()); }
+    let mut rows = fetch_recent_rows_raw(seed).await?;
     rows.retain(|row| graph_row_allowed(row.timestamp_ms));
     match clock {
         Ok(clock) => {
@@ -233,19 +194,22 @@ mod history_clock_tests {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
+async fn fetch_recent_rows_raw(seed: &telemetry_reseed_continuity::Seed) -> Result<Vec<TelemetryRow>, String> {
     let mut rows =
-        http_get_json::<Vec<TelemetryRow>>("/api/recent?display=true&max_rows=12000").await?;
+        recording_download::saved_json_in_context::<Vec<TelemetryRow>>("/api/recent?display=true&max_rows=12000", seed.http_owner(), seed.read_context()).await?;
     normalize_telemetry_rows_for_runtime(&mut rows);
     Ok(rows)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
+async fn fetch_recent_rows_raw(seed: &telemetry_reseed_continuity::Seed) -> Result<Vec<TelemetryRow>, String> {
     use futures_util::StreamExt;
 
+    let owner = seed.http_owner();
+    let context = seed.read_context();
+    owner.check()?; context.check_current()?;
     let path = "/api/recent?display=true&max_rows=12000".to_string();
-    let base = UrlConfig::base_http();
+    let base = owner.base().to_owned();
     let url = if base.is_empty() {
         format!("http://localhost:3000{path}")
     } else {
@@ -253,20 +217,22 @@ async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
     };
     let (connect_timeout, timeout) = native_http_timeouts(&path);
     let client =
-        auth::build_native_http_client(UrlConfig::_skip_tls_verify(), connect_timeout, timeout)?;
-    let skip_tls = UrlConfig::_skip_tls_verify();
+        auth::build_native_http_client(owner.skip_tls(), connect_timeout, timeout)?;
+    let skip_tls = owner.skip_tls();
 
     let mut request = client.get(url);
-    if let Some(token) = auth::current_token() {
+    if let Some(token) = owner.token() {
         request = request.bearer_auth(token);
     }
-    let response = request.send().await.map_err(|e| {
+    if let Some(epoch) = context.epoch() { request = request.header(station_policy_context::HTTP_EPOCH_HEADER, epoch); }
+    let response = context.wait(&owner, request.send()).await?.map_err(|e| {
         format!(
             "request send failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
             UrlConfig::base_http()
         )
     })?;
 
+    owner.check()?; context.check_current()?;
     let status = response.status();
     let content_type = response
         .headers()
@@ -276,27 +242,26 @@ async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
         .to_ascii_lowercase();
 
     if !status.is_success() {
-        let body = response.text().await.map_err(|e| {
+        let body = context.wait(&owner, response.text()).await?.map_err(|e| {
             format!(
                 "response body read failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
                 UrlConfig::base_http()
             )
         })?;
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            auth::clear_current_session();
-        }
         let snippet: String = body.chars().take(200).collect();
         return Err(format!("HTTP {}: {}", status, snippet.trim()));
     }
 
+    context.validate_native_headers(response.headers())?;
     let is_ndjson = content_type.contains("ndjson") || content_type.contains("json-seq");
     if !is_ndjson {
-        let body = response.text().await.map_err(|e| {
+        let body = context.wait(&owner, response.text()).await?.map_err(|e| {
             format!(
                 "response body read failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
                 UrlConfig::base_http()
             )
         })?;
+        owner.check()?; context.check_current()?;
         let mut rows = serde_json::from_str::<Vec<TelemetryRow>>(&body).map_err(|e| {
             let snippet: String = body.chars().take(200).collect();
             format!("invalid JSON ({e}): {}", snippet.trim())
@@ -308,7 +273,8 @@ async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
     let mut rows = Vec::<TelemetryRow>::new();
     let mut buffered = Vec::<u8>::new();
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = context.wait(&owner, stream.next()).await? {
+        owner.check()?; context.check_current()?;
         let chunk = chunk.map_err(|e| format!("stream read failed: {e}"))?;
         buffered.extend_from_slice(&chunk);
         while let Some(newline_idx) = buffered.iter().position(|b| *b == b'\n') {
@@ -331,6 +297,7 @@ async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
             rows.push(row);
         }
     }
+    owner.check()?; context.check_current()?;
     let tail = String::from_utf8_lossy(&buffered);
     let trimmed = tail.trim();
     if !trimmed.is_empty() {
@@ -349,116 +316,12 @@ async fn fetch_recent_rows_raw() -> Result<Vec<TelemetryRow>, String> {
     Ok(rows)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn http_get_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-
-    let base = UrlConfig::base_http();
-    let url = if base.is_empty() {
-        format!("http://localhost:3000{path}")
-    } else {
-        format!("{base}{path}")
-    };
-    let (connect_timeout, timeout) = native_http_timeouts(&path);
-
-    let client =
-        auth::build_native_http_client(UrlConfig::_skip_tls_verify(), connect_timeout, timeout)?;
-    let skip_tls = UrlConfig::_skip_tls_verify();
-    log!(
-        "[http] GET {} skip_tls={} connect_timeout_ms={} timeout_ms={}",
-        url,
-        skip_tls,
-        connect_timeout.as_millis(),
-        timeout.as_millis()
-    );
-
-    let mut request = client.get(url);
-    if let Some(token) = auth::current_token() {
-        request = request.bearer_auth(token);
-    }
-    let started_mono_ms = monotonic_now_ms();
-    let response = request.send().await.map_err(|e| {
-        let msg = format!(
-            "request send failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
-            UrlConfig::base_http()
-        );
-        log!("[http] {msg}");
-        msg
-    })?;
-    note_http_rtt_ms(monotonic_now_ms() - started_mono_ms);
-
-    let status = response.status();
-    let body = response.text().await.map_err(|e| {
-        let msg = format!(
-            "response body read failed: {e:?} (base={} skip_tls={skip_tls} path={path})",
-            UrlConfig::base_http()
-        );
-        log!("[http] {msg}");
-        msg
-    })?;
-    if !status.is_success() {
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            auth::clear_current_session();
-        }
-        let snippet: String = body.chars().take(200).collect();
-        return Err(format!("HTTP {}: {}", status, snippet.trim()));
-    }
-
-    serde_json::from_str::<T>(&body).map_err(|e| {
-        let snippet: String = body.chars().take(200).collect();
-        format!("invalid JSON ({e}): {}", snippet.trim())
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) async fn http_post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
-    path: &str,
-    body: &B,
-) -> Result<T, String> {
-    use gloo_net::http::Request;
-
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-
-    let base = UrlConfig::base_http();
-    let url = if base.is_empty() {
-        let w = web_sys::window().ok_or("no window".to_string())?;
-        let origin = w
-            .location()
-            .origin()
-            .map_err(|_| "failed to read window.location.origin".to_string())?;
-        format!("{origin}{path}")
-    } else {
-        format!("{base}{path}")
-    };
-
-    let mut request = Request::post(&url);
-    if let Some(token) = auth::current_token() {
-        request = request.header("Authorization", &format!("Bearer {token}"));
-    }
-    let response = request
-        .json(body)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|e| e.to_string())?;
-    if status == 401 {
-        auth::clear_current_session();
-    }
-    if !(200..300).contains(&status) {
-        let snippet: String = body.chars().take(200).collect();
-        return Err(format!("HTTP {status}: {}", snippet.trim()));
-    }
-    serde_json::from_str::<T>(&body).map_err(|e| e.to_string())
+pub(crate) fn http_post_json<B: Serialize, T: serde::de::DeserializeOwned + 'static>(
+    path: &str, body: &B,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<B,T> {
+    let path = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
+    let owner = recording_download::ExportOwner::capture_observer_selected(|| true);
+    station_settings_request::post_captured_independent(&path, body, owner)
 }
 
 #[derive(Serialize)]
@@ -467,139 +330,56 @@ struct AlertAckRequest {
     error_timestamp_ms: i64,
 }
 
-async fn post_remote_alert_ack(
-    warning_timestamp_ms: i64,
-    error_timestamp_ms: i64,
-) -> Result<(), String> {
-    let _: AlertAckStateMsg = http_post_json(
-        "/api/alerts/ack",
-        &AlertAckRequest {
-            warning_timestamp_ms,
-            error_timestamp_ms,
-        },
-    )
-    .await?;
-    Ok(())
+fn post_remote_alert_ack(
+    warning_timestamp_ms: i64, error_timestamp_ms: i64,
+    owner: std::rc::Rc<recording_download::ExportOwner>,
+) -> impl std::future::Future<Output=Result<(),String>> + 'static + use<> {
+    let request=station_settings_request::post_captured::<_,AlertAckStateMsg>(
+        "/api/alerts/ack", &AlertAckRequest {warning_timestamp_ms,error_timestamp_ms}, Ok(owner));
+    async move { let _ = request.await?; Ok(()) }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn http_post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
-    path: &str,
-    body: &B,
-) -> Result<T, String> {
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-
-    let base = UrlConfig::base_http();
-    let url = if base.is_empty() {
-        format!("http://localhost:3000{path}")
-    } else {
-        format!("{base}{path}")
-    };
-
-    let client = auth::build_native_http_client(
-        UrlConfig::_skip_tls_verify(),
-        std::time::Duration::from_secs(8),
-        std::time::Duration::from_secs(8),
-    )?;
-
-    let mut request = client.post(url).json(body);
-    if let Some(token) = auth::current_token() {
-        request = request.bearer_auth(token);
+fn http_post_empty(path: &str) -> impl std::future::Future<Output=Result<(),String>> + 'static + use<> {
+    let path=if path.starts_with('/') {path.to_owned()} else {format!("/{path}")};
+    let owner=recording_download::ExportOwner::capture_observer_selected(||true);
+    async move {
+        let owner=owner?;
+        owner.check()?;
+        let base=if owner.base().is_empty() {
+            #[cfg(not(target_arch="wasm32"))] {"http://localhost:3000".to_owned()}
+            #[cfg(target_arch="wasm32")] {web_sys::window().ok_or("Window unavailable")?.location().origin().map_err(|_|"Origin unavailable")?}
+        }else{owner.base().trim_end_matches('/').to_owned()};
+        #[cfg(not(target_arch="wasm32"))]
+        let (status,text)={
+            let client=auth::build_native_http_client(owner.skip_tls(),std::time::Duration::from_secs(8),std::time::Duration::from_secs(8))?;
+            let mut request=client.post(format!("{base}{path}"));
+            if let Some(token)=owner.token(){request=request.bearer_auth(token);}
+            owner.check()?;
+            let response=owner.wait(request.send()).await?.map_err(|e|e.to_string())?;
+            let status=response.status().as_u16();
+            let text=owner.wait(response.text()).await?.map_err(|e|e.to_string())?;
+            (status,text)
+        };
+        #[cfg(target_arch="wasm32")]
+        let(status,text)={
+            let controller=web_sys::AbortController::new().map_err(|_|"Cancellation unavailable")?;
+            let _cancel=HttpAbortOnDrop(controller.clone());let signal=controller.signal();
+            let mut request=gloo_net::http::Request::post(&format!("{base}{path}"))
+                .abort_signal(Some(&signal)).redirect(web_sys::RequestRedirect::Error);
+            if let Some(token)=owner.token(){request=request.header("Authorization",&format!("Bearer {token}"));}
+            let send=async{let response=request.send().await.map_err(|e|e.to_string())?;let status=response.status();let text=response.text().await.map_err(|e|e.to_string())?;Ok::<_,String>((status,text))};
+            match owner.wait(futures_util::future::select(Box::pin(send),Box::pin(gloo_timers::future::TimeoutFuture::new(8000)))).await? {
+                futures_util::future::Either::Left((result,_))=>result?,
+                futures_util::future::Either::Right(_)=>return Err("Notification request timed out".into()),
+            }
+        };
+        owner.check()?;
+        if !(200..300).contains(&status){return Err(format!("HTTP {status}: {}",text.chars().take(200).collect::<String>()));}
+        Ok(())
     }
-    let response = request.send().await.map_err(|e| e.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|e| e.to_string())?;
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        auth::clear_current_session();
-    }
-    if !status.is_success() {
-        let snippet: String = body.chars().take(200).collect();
-        return Err(format!("HTTP {}: {}", status, snippet.trim()));
-    }
-    serde_json::from_str::<T>(&body).map_err(|e| e.to_string())
 }
-
-#[cfg(target_arch = "wasm32")]
-async fn http_post_empty(path: &str) -> Result<(), String> {
-    use gloo_net::http::Request;
-
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-
-    let base = UrlConfig::base_http();
-    let url = if base.is_empty() {
-        let w = web_sys::window().ok_or("no window".to_string())?;
-        let origin = w
-            .location()
-            .origin()
-            .map_err(|_| "failed to read window.location.origin".to_string())?;
-        format!("{origin}{path}")
-    } else {
-        format!("{base}{path}")
-    };
-
-    let mut request = Request::post(&url);
-    if let Some(token) = auth::current_token() {
-        request = request.header("Authorization", &format!("Bearer {token}"));
-    }
-    let response = request.send().await.map_err(|e| e.to_string())?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if status == 401 {
-        auth::clear_current_session();
-    }
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {status}: {}", body.trim()));
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn http_post_empty(path: &str) -> Result<(), String> {
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-
-    let base = UrlConfig::base_http();
-    let url = if base.is_empty() {
-        format!("http://localhost:3000{path}")
-    } else {
-        format!("{base}{path}")
-    };
-
-    let client = auth::build_native_http_client(
-        UrlConfig::_skip_tls_verify(),
-        std::time::Duration::from_secs(8),
-        std::time::Duration::from_secs(8),
-    )?;
-
-    let mut request = client.post(url);
-    if let Some(token) = auth::current_token() {
-        request = request.bearer_auth(token);
-    }
-    let response = request.send().await.map_err(|e| e.to_string())?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        auth::clear_current_session();
-    }
-    if !status.is_success() {
-        return Err(format!("HTTP {}: {}", status, body.trim()));
-    }
-    Ok(())
-}
-
-async fn dismiss_notification_remote(id: u64) -> Result<(), String> {
-    http_post_empty(&format!("/api/notifications/{id}/dismiss")).await
+fn dismiss_notification_remote(id:u64)->impl std::future::Future<Output=Result<(),String>>+'static + use<> {
+    http_post_empty(&format!("/api/notifications/{id}/dismiss"))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -702,9 +482,8 @@ fn clear_all_notifications_local_and_remote(
     notification_history.set(Vec::new());
     // Clearing the center is explicit; hiding/expiring a popup is only local.
     for notice in history {
-        spawn_detached(async move {
-            let _ = dismiss_notification_remote(notice.id).await;
-        });
+        let request=dismiss_notification_remote(notice.id);
+        spawn_detached(async move { let _=request.await; });
     }
 }
 
@@ -1014,7 +793,7 @@ async fn seed_from_db(
 
     let queue_snapshot = || -> Vec<TelemetryRow> {
         if let Ok(q) = TELEMETRY_QUEUE.lock() {
-            q.iter().cloned().collect()
+            if q.current() { q.iter().cloned().collect() } else { Vec::new() }
         } else {
             Vec::new()
         }
@@ -1037,7 +816,7 @@ async fn seed_from_db(
         "[seed] /api/recent begin existing_rows_before_seed={}",
         existing_rows_before_seed
     );
-    match fetch_recent_rows_for_reseed().await {
+    match fetch_recent_rows_for_reseed(&continuity).await {
         Ok(mut list) => {
             if !alive.load(Ordering::Relaxed)
                 || graph_generation != GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed)
@@ -1537,6 +1316,7 @@ async fn connect_ws_once_wasm(
                 return;
             }
             last_activity_ms.set(monotonic_now_ms());
+            LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
             if let Some(s) = e.data().as_string()
                 && !queue_live_telemetry_from_ws_message(&s)
             {
@@ -1797,7 +1577,7 @@ async fn connect_ws_once_native(
         network_metrics::redact_ws_url_for_display(&ws_url)
     );
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueuedCommand>();
     *WS_SENDER.write() = Some(WsSender { tx });
     let connect_timeout = native_ws_connect_timeout();
     let connect_result = native_session::await_owned(timeout(connect_timeout, async {
@@ -1888,7 +1668,7 @@ async fn connect_ws_once_native(
                 >,
             >,
         ),
-        Outgoing(Option<String>),
+        Outgoing(Option<Box<QueuedCommand>>),
     }
 
     let mut last_activity = std::time::Instant::now();
@@ -1899,7 +1679,7 @@ async fn connect_ws_once_native(
         }
         let event = native_session::await_owned(timeout(Duration::from_millis(250), async {
             tokio::select! {
-                outgoing = rx.recv() => NativeWsEvent::Outgoing(outgoing),
+                outgoing = rx.recv() => NativeWsEvent::Outgoing(outgoing.map(Box::new)),
                 incoming = ws_stream.next() => NativeWsEvent::Incoming(incoming),
             }
         }), &owns_session)
@@ -1914,15 +1694,18 @@ async fn connect_ws_once_native(
         };
         if matches!(&next_event, NativeWsEvent::Incoming(Some(Ok(_)))) {
             last_activity = std::time::Instant::now();
+            LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
         }
 
         match next_event {
-            NativeWsEvent::Outgoing(Some(msg)) => {
+            NativeWsEvent::Outgoing(Some(queued)) => {
+                if !queued.owner.is_current() { continue; }
+                let QueuedCommand { owner, wire } = *queued;
                 if !matches!(
                     native_session::await_owned(timeout(
                         Duration::from_secs(5),
-                        ws_stream.send(Message::Text(msg.into()))
-                    ), &owns_session)
+                        ws_stream.send(Message::Text(wire.into()))
+                    ), || owns_session() && owner.is_current())
                     .await,
                     Some(Ok(Ok(())))
                 ) {
@@ -2005,6 +1788,8 @@ fn try_handle_ws_telemetry_message_fast(
         return false;
     };
 
+    let Ok(permit) = incoming_epoch::PacketPermit::capture(s) else { return true; };
+
     note_ws_connected_from_live_message(
         *WS_EPOCH.read(),
         notifications,
@@ -2031,6 +1816,7 @@ fn try_handle_ws_telemetry_message_fast(
             }
 
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                if !q.bind(&permit) { return true; }
                 q.push_back(row);
                 trim_telemetry_queue_to_live_window(&mut q);
             }
@@ -2058,6 +1844,7 @@ fn try_handle_ws_telemetry_message_fast(
                 None
             };
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                if !q.bind(&permit) { return true; }
                 if let Some(v) = reseed_live.as_mut() {
                     q.reserve(batch.len());
                     for row in batch {
@@ -2108,6 +1895,9 @@ fn handle_ws_message(
     user_gps: Signal<Option<(f64, f64)>>,
     _user_gps_altitude_m: Signal<Option<f64>>,
 ) {
+    let Ok(permit) = incoming_epoch::PacketPermit::capture(s) else { return; };
+    if permit.check_current().is_err() { return; }
+
     if try_handle_ws_telemetry_message_fast(
         s,
         notifications,
@@ -2160,7 +1950,7 @@ fn handle_ws_message(
     let now_ms = current_wallclock_ms();
 
     match msg {
-        WsInMsg::CalibrationChanged => {
+        WsInMsg::DashboardReset | WsInMsg::CalibrationChanged => {
             GRAPH_HISTORY_GENERATION.fetch_add(1, Ordering::Relaxed);
             if let Ok(mut queue) = TELEMETRY_QUEUE.lock() {
                 queue.clear();
@@ -2180,6 +1970,7 @@ fn handle_ws_message(
 
             // Queue telemetry for UI batch flush
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                if !q.bind(&permit) { return; }
                 q.push_back(row);
                 trim_telemetry_queue_to_live_window(&mut q);
             }
@@ -2208,6 +1999,7 @@ fn handle_ws_message(
                 None
             };
             if let Ok(mut q) = TELEMETRY_QUEUE.lock() {
+                if !q.bind(&permit) { return; }
                 if let Some(v) = reseed_live.as_mut() {
                     q.reserve(batch.len());
                     for row in batch {

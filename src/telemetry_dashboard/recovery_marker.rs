@@ -99,6 +99,7 @@ pub(super) fn RecoveryRuntime() -> Element {
 
 #[component]
 pub(super) fn RecoveryMarker() -> Element {
+    let requests = super::station_settings_request::use_factory();
     let mut status = RECOVERY_STATUS.signal();
     let mut message = use_signal(String::new);
     let mut busy = use_signal(|| false);
@@ -125,11 +126,12 @@ pub(super) fn RecoveryMarker() -> Element {
         )
     });
     let session = current.clock.session.clone();
+    let reset_allowed = !*busy.read() && can_mark && !current.reset.pending;
     rsx! {div {class:"gs26-recovery-marker",style:"padding:12px;border:1px solid #435165;border-radius:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;",
         strong {style:"flex:1 0 100%;", "Recovery"}
         button {disabled, title:"Record arrival at the rocket; does not send a hardware command",onclick:move |_|{
             busy.set(true);let session=session.clone();spawn(async move {
-                match super::http_post_json::<Mark,Event>("/api/recovery/reached",&Mark{launch_session:session}).await {
+                let result=requests.post::<Mark,Event>("/api/recovery/reached",&Mark{launch_session:session}).await; if !requests.current(){return;} match result {
                     Ok(event)=>{message.set(format!("Saved rocket arrival {}",elapsed(event.t_relative_ms)));status.write().events.push(event);},
                     Err(error)=>message.set(format!("Recovery mark was not confirmed saved: {error}")),
                 }busy.set(false);
@@ -137,7 +139,20 @@ pub(super) fn RecoveryMarker() -> Element {
         },if marked.is_some(){"Rocket reached"}else{"Mark recovered"}}
         if let Some(text)=text {span{role:"status","{text}"}}
         if auth.station_role.as_deref()==Some("rrls") && current.clock_reset_request_supported {
-            button {disabled:*busy.read()||!can_mark||current.reset.pending,onclick:move |_|super::send_cmd_from_click("ResetTClock"),"Request T clock reset"}
+            button {disabled:!reset_allowed,
+                onpointerdown:move |event|{if reset_allowed {super::command_pointer_down_event("recovery:tclock","ResetTClock",&event,true);}},
+                onpointerup:move |event|{super::command_pointer_up_event("recovery:tclock",&event);},
+                onpointercancel:move |event|{super::command_pointer_cancel_event("recovery:tclock",&event);},
+                ontouchstart:move |event|{if reset_allowed {super::command_touch_start_event("recovery:tclock","ResetTClock",&event,true);}},
+                ontouchend:move |event|{super::command_touch_end_event("recovery:tclock",&event);},
+                ontouchcancel:move |event|{super::command_touch_cancel_event("recovery:tclock",&event);},
+                onmousedown:move |event|{if reset_allowed {super::command_mouse_down_event("recovery:tclock","ResetTClock",&event,true);}},
+                onmouseup:move |event|{super::command_mouse_up_event("recovery:tclock",&event);},
+                onkeydown:move |event|{if reset_allowed {super::command_key_down_event("recovery:tclock","ResetTClock",&event,true);}},
+                onkeyup:move |event|{super::command_key_up_event("recovery:tclock",&event);},
+                onclick:move |event|{if reset_allowed {super::command_click("recovery:tclock","ResetTClock",&event,true);}},
+                "Request T clock reset"
+            }
         }
         if current.reset.pending {span{role:"status","Primary T clock reset pending · clock retained"}}
         if let Some(error)=current.reset.error {span{role:"alert","Primary reset: {error}"}}

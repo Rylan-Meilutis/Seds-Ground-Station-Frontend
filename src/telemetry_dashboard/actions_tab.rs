@@ -91,13 +91,13 @@ impl SupplyGesture {
 fn arm_supply_gesture(gesture: &mut Signal<Option<SupplyGesture>>, base: &str, command: &str, next: SupplyGestureOrigin) -> bool {
     // A new physical gesture retires abandoned intent. Only the touchstart
     // companion of an active touch pointer preserves the first chosen command.
-    if matches!(gesture.peek().as_ref(), Some(SupplyGesture::Armed { base: original, origin, owner, .. })
-        if original == base && origin.is_companion(next) && owner.as_ref().is_some_and(|owner| owner.is_current())) {
+    if matches!(gesture.peek().as_ref(), Some(SupplyGesture::Armed { base: original, origin, .. })
+        if original == base && origin.is_companion(next)) {
         return false;
     }
     gesture.set(Some(SupplyGesture::Armed {
         base: base.into(), command: command.into(), started_ms: super::monotonic_now_ms(), origin: next,
-        owner: super::recording_download::ExportOwner::capture().ok(),
+        owner: super::recording_download::ExportOwner::capture_ordinary_selected(|| true).ok(),
     }));
     true
 }
@@ -143,6 +143,9 @@ mod sequence_action_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn nitrogen_and_fill_controls_send_the_expected_websocket_command() {
+        if !super::super::command_owner::isolated_test_child(module_path!(), "nitrogen_and_fill_controls_send_the_expected_websocket_command") { return; }
+        let dom=super::super::command_owner::legacy_test_dom("http://legacy-sequence-fixture.invalid");
+        dom.in_scope(ScopeId::ROOT, || {
         let mut actions = Vec::new();
         ensure_sequence_actions(&mut actions, &ThemeConfig::default());
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -153,7 +156,7 @@ mod sequence_action_tests {
                 .find(|button| button.cmd == expected)
                 .unwrap();
             sender.send_cmd(&button.cmd).unwrap();
-            let packet: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            let packet: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap().wire).unwrap();
             assert_eq!(packet, serde_json::json!({"cmd": expected}));
             assert!(
                 rx.try_recv().is_err(),
@@ -165,6 +168,7 @@ mod sequence_action_tests {
             sender.send_cmd("StartFill").is_err(),
             "closed transports must report failure"
         );
+        });
     }
 
     #[test]
@@ -204,6 +208,9 @@ mod sequence_action_tests {
     }
     #[test]
     fn primary_supply_button_closes_unknown_and_never_borrows_close_illumination() {
+        let mut dom = VirtualDom::new(|| rsx! { div {} });
+        dom.rebuild_in_place();
+        dom.in_scope(ScopeId::ROOT, || {
         for (cmd, close) in [("Nitrogen", "NitrogenClose"), ("Nitrous", "NitrousClose")] {
             assert_eq!(supply_dispatch_command(cmd, Some(false)), cmd);
             assert_eq!(supply_dispatch_command(cmd, Some(true)), close);
@@ -218,6 +225,7 @@ mod sequence_action_tests {
         assert!(!redundant_supply_close("CancelFill"));
         assert!(!redundant_supply_close("Abort"));
         assert!(!redundant_supply_close("CloseAll"));
+        });
     }
 
 }
@@ -519,6 +527,7 @@ fn apply_button_style(theme: &ThemeConfig, enabled: bool) -> String {
 
 #[component]
 pub(super) fn NetworkUtcControls() -> Element {
+    let requests = super::station_settings_request::use_factory();
     let mut utc = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
@@ -544,11 +553,14 @@ pub(super) fn NetworkUtcControls() -> Element {
                         Ok(value) => value,
                         Err(error) => { message.set(error); return; }
                     };
+                    let request = requests.post::<_, serde_json::Value>(
+                        "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
+                    );
                     busy.set(true);
                     spawn(async move {
-                        message.set(match super::http_post_json::<_, serde_json::Value>(
-                            "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
-                        ).await {
+                        let result = request.await;
+                        if !requests.current() { return; }
+                        message.set(match result {
                             Ok(value) if recovery => primary_utc_proxy_response(value),
                             Ok(_) => "Network UTC source updated.".into(),
                             Err(error) => format!("Network UTC was not updated: {error}"),
@@ -558,11 +570,14 @@ pub(super) fn NetworkUtcControls() -> Element {
                 }, "Set network UTC" }
                 button { disabled: busy() || (recovery && !super::COMMAND_PROXY_STATUS.read().as_ref().is_some_and(|s|s.available)), onclick: move |_| {
                     let utc_ms = super::current_wallclock_ms();
+                    let request = requests.post::<_, serde_json::Value>(
+                        "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
+                    );
                     busy.set(true);
                     spawn(async move {
-                        message.set(match super::http_post_json::<_, serde_json::Value>(
-                            "/api/network_time", &serde_json::json!({"source":"client","utc_ms":utc_ms})
-                        ).await {
+                        let result = request.await;
+                        if !requests.current() { return; }
+                        message.set(match result {
                             Ok(value) if recovery => primary_utc_proxy_response(value),
                             Ok(_) => "Network UTC source updated.".into(),
                             Err(error) => format!("Network UTC was not updated: {error}"),
@@ -635,7 +650,7 @@ mod actions_refresh_tests {
 }
 
 fn backend_disabled_reason(control: &super::ActionControl) -> Option<&str> {
-    (!control.enabled).then(|| control.disabled_reason.as_deref()).flatten()
+    (!control.enabled).then_some(control.disabled_reason.as_deref()).flatten()
         .filter(|reason| !reason.trim().is_empty())
 }
 
@@ -928,6 +943,7 @@ pub fn ActionsTab(
                                                 let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
                                                 let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
                                                 let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { "Unconfirmed" } else { "Disabled" };
+                                                let command_source = format!("action:{}", action.cmd);
                                                 rsx! {
                                                     button {
                                                         class: "gs26-action-control",
@@ -939,67 +955,71 @@ pub fn ActionsTab(
                                                         onpointerdown: {
                                                             let cmd = dispatch_cmd.clone();
                                                             let base = action.cmd.clone();
+                                                            let source = command_source.clone();
                                                             move |event| {
-                                                                if is_supply && enabled && event.is_primary()
-                                                                    && arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Pointer { id: event.pointer_id(), touch_companion_pending: event.pointer_type() == "touch" }) {
-                                                                    crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                                                                if enabled {
+                                                                    if is_supply && event.is_primary() && (event.pointer_type()=="touch" || event.trigger_button()==Some(dioxus::html::input_data::MouseButton::Primary)) {
+                                                                        arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Pointer { id:event.pointer_id(), touch_companion_pending:event.pointer_type()=="touch" });
+                                                                    }
+                                                                    super::command_pointer_down_event(&source, &cmd, &event, false);
                                                                 }
                                                             }
                                                         },
-                                                        onpointerup: { let base = action.cmd.clone(); move |event| { if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), false); } } },
-                                                        onpointercancel: { let base = action.cmd.clone(); move |event| { if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), true); } } },
+                                                        onpointerup: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_pointer_up_event(&source,&event); if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), false); } } },
+                                                        onpointercancel: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_pointer_cancel_event(&source,&event); if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), true); } } },
                                                         onmousedown: {
                                                             let cmd = dispatch_cmd.clone();
-                                                            move |_| {
-                                                                // Supply compatibility mouse events are not new intent.
-                                                                // Only primary pointer, touch, or keyboard can arm them.
-                                                                if enabled && !is_supply {
-                                                                    crate::telemetry_dashboard::send_cmd_from_press(&cmd)
-                                                                }
-                                                            }
+                                                            let source = command_source.clone();
+                                                            move |event| { if enabled { super::command_mouse_down_event(&source, &cmd, &event, false); } }
                                                         },
+                                                        onmouseup: {let source=command_source.clone();move |event|{super::command_mouse_up_event(&source,&event);}},
                                                         ontouchstart: {
                                                             let cmd = dispatch_cmd.clone();
                                                             let base = action.cmd.clone();
+                                                            let source = command_source.clone();
                                                             move |event| {
-                                                                if enabled && (!is_supply || (event.touches().len() == 1 && arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Touch))) {
-                                                                    crate::telemetry_dashboard::send_cmd_from_press(&cmd)
+                                                                if enabled {
+                                                                    let single = event.touches().len()==1;
+                                                                    if is_supply && single { arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Touch); }
+                                                                    super::command_touch_start_event(&source, &cmd, &event, false);
                                                                 }
                                                             }
                                                         },
-                                                        ontouchcancel: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
+                                                        ontouchend: {let source=command_source.clone();move |event|{super::command_touch_end_event(&source,&event);}},
+                                                        ontouchcancel: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_touch_cancel_event(&source,&event); if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
                                                         onmouseleave: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
                                                         onblur: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
                                                         onkeydown: {
                                                             let cmd = dispatch_cmd.clone();
                                                             let base = action.cmd.clone();
+                                                            let source = command_source.clone();
                                                             move |event| {
-                                                                if !is_supply { return; }
                                                                 let key = event.key();
                                                                 if matches!(key, Key::Escape | Key::Tab) {
-                                                                    cancel_supply_gesture(&mut supply_gesture, &base);
-                                                                } else if !event.is_auto_repeating() && (key == Key::Enter || key.to_string() == " ")
-                                                                    && enabled && arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Keyboard) {
-                                                                    crate::telemetry_dashboard::send_cmd_from_press(&cmd);
+                                                                    if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); }
+                                                                } else if !event.is_auto_repeating() && (key==Key::Enter || key.to_string()==" ") && enabled {
+                                                                    if is_supply { arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Keyboard); }
+                                                                    super::command_key_down_event(&source, &cmd, &event, false);
                                                                 }
                                                             }
                                                         },
+                                                        onkeyup: {let source=command_source.clone();move |event|{super::command_key_up_event(&source,&event);}},
                                                         onclick: {
                                                             let cmd = dispatch_cmd.clone();
                                                             let base = action.cmd.clone();
-                                                            move |_| {
-                                                                if is_supply {
+                                                            let source = command_source.clone();
+                                                            move |event| {
+                                                                let chosen = if is_supply {
                                                                     let original = supply_gesture.write().take();
-                                                                    // An unarmed click may be a delayed compatibility
-                                                                    // event from a retired component; never infer intent.
-                                                                    if original.is_none_or(|gesture| !gesture.current(&base, &cmd, super::monotonic_now_ms())) {
-                                                                        super::clear_command_feedback_latches();
-                                                                        return;
-                                                                    }
-                                                                }
-                                                                if enabled {
-                                                                    crate::telemetry_dashboard::send_cmd_from_click(&cmd)
-                                                                }
+                                                                    let Some(gesture) = original else { super::clear_command_feedback_latches(); return; };
+                                                                    let chosen = match &gesture { SupplyGesture::Armed {command,..}=>command.clone(), SupplyGesture::Cancelled=>{super::clear_command_feedback_latches();return;} };
+                                                                    // Companions cannot choose another command. Changed
+                                                                    // feedback cancels this supply press; neither the old
+                                                                    // Close nor a newly inferred Open is dispatched.
+                                                                    if chosen != cmd || !gesture.current(&base, &chosen, super::monotonic_now_ms()) { super::clear_command_feedback_latches(); return; }
+                                                                    chosen
+                                                                } else { cmd.clone() };
+                                                                if enabled { super::command_click(&source, &chosen, &event, false); }
                                                             }
                                                         },
                                                         span { class:"gs26-action-copy",style: "min-width:0; flex:1 1 auto;",
@@ -1629,7 +1649,20 @@ fn PrimaryCommandRequest(abort_only_mode: bool) -> Element {
                     for command in choices {option {value:"{command}","{command}"}}
                 }
             }
-            button {disabled:!allowed||pending,onclick:move |_|super::request_primary_command(&selected()),"Request execution if primary permits"}
+            button {disabled:!allowed||pending,
+                onpointerdown:move |event|{if allowed&&!pending {super::command_pointer_down_event("primary:execution",&selected(),&event,true);}},
+                onpointerup:move |event|{super::command_pointer_up_event("primary:execution",&event);},
+                onpointercancel:move |event|{super::command_pointer_cancel_event("primary:execution",&event);},
+                ontouchstart:move |event|{if allowed&&!pending {super::command_touch_start_event("primary:execution",&selected(),&event,true);}},
+                ontouchend:move |event|{super::command_touch_end_event("primary:execution",&event);},
+                ontouchcancel:move |event|{super::command_touch_cancel_event("primary:execution",&event);},
+                onmousedown:move |event|{if allowed&&!pending {super::command_mouse_down_event("primary:execution",&selected(),&event,true);}},
+                onmouseup:move |event|{super::command_mouse_up_event("primary:execution",&event);},
+                onkeydown:move |event|{if allowed&&!pending {super::command_key_down_event("primary:execution",&selected(),&event,true);}},
+                onkeyup:move |event|{super::command_key_up_event("primary:execution",&event);},
+                onclick:move |event|{if allowed&&!pending {super::command_click("primary:execution",&selected(),&event,true);}},
+                "Request execution if primary permits"
+            }
         }
     }
 }

@@ -270,7 +270,7 @@ pub(super) fn use_calibration_context(abort_only: Signal<bool>) -> CalibrationCo
             _ => {}
         }
         let request_alive = alive.clone();
-        let owner = match super::recording_download::ExportOwner::capture_selected(move || {
+        let owner = match super::recording_download::ExportOwner::capture_ordinary_selected(move || {
             request_alive.load(Ordering::Acquire)
         }) {
             Ok(owner) => owner,

@@ -15,26 +15,26 @@ pub(super) fn use_factory() -> Factory {
 pub(super) fn use_factory_selected(selected: impl Fn() -> bool + 'static) -> Factory {
     let alive = super::recording_download::use_export_lifetime();
     let original = use_signal(move || {
-        ExportOwner::capture_selected(move || alive.load(Ordering::Acquire) && selected())
+        ExportOwner::capture_ordinary_selected(move || alive.load(Ordering::Acquire) && selected())
     });
     Factory { original }
 }
 impl Factory {
     pub(super) fn current(self) -> bool {
-        self.original
-            .peek()
-            .as_ref()
-            .is_ok_and(|owner| owner.is_current())
+        self.original.try_peek().is_ok_and(|original| {
+            original.as_ref().is_ok_and(|owner| owner.is_current())
+        })
     }
-    fn capture(self) -> Result<Rc<ExportOwner>, String> {
-        let owner = self.original.peek().clone()?;
+    pub(super) fn capture(self) -> Result<Rc<ExportOwner>, String> {
+        let original = self.original.try_peek().map_err(|_| "Original settings view retired".to_owned())?;
+        let owner = original.clone()?;
         owner.check()?;
         Ok(owner)
     }
     pub(super) fn get<T: DeserializeOwned + 'static>(
         self,
         path: &str,
-    ) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+    ) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<T> {
         let owner = self.capture();
         let path = path.to_owned();
         async move { bounded(saved_json(&path, owner?)).await }
@@ -43,7 +43,7 @@ impl Factory {
         self,
         path: &str,
         body: &B,
-    ) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+    ) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<B,T> {
         // Capture/serialize synchronously before the returned future can yield.
         let owner = self.capture();
         post_captured(path, body, owner)
@@ -55,17 +55,26 @@ pub(super) fn post_captured<B: Serialize, T: DeserializeOwned + 'static>(
     path: &str,
     body: &B,
     owner: Result<Rc<ExportOwner>, String>,
-) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<B,T> {
     let path = path.to_owned();
     let body = serde_json::to_string(body).map_err(|e| e.to_string());
     async move { bounded(post_owned(&path, body?, owner?)).await }
+}
+/// Independent auth/admin/history/media requests never acquire ordinary authority.
+/// The backend route classifier still decides whether an epoch is mandatory.
+pub(super) fn post_captured_independent<B: Serialize, T: DeserializeOwned + 'static>(
+    path: &str, body: &B, owner: Result<Rc<ExportOwner>, String>,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<B,T> {
+    let path = path.to_owned();
+    let body = serde_json::to_string(body).map_err(|e| e.to_string());
+    async move { bounded(post_owned_class(&path, body?, owner?, false)).await }
 }
 /// Critical commands reject redirects as well as retaining their gesture owner.
 pub(super) fn post_captured_no_redirect<B: Serialize, T: DeserializeOwned + 'static>(
     path: &str,
     body: &B,
     owner: Result<Rc<ExportOwner>, String>,
-) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<B,T> {
     let path = path.to_owned();
     let body = serde_json::to_string(body).map_err(|e| e.to_string());
     async move {
@@ -75,7 +84,7 @@ pub(super) fn post_captured_no_redirect<B: Serialize, T: DeserializeOwned + 'sta
         }
         #[cfg(target_arch = "wasm32")]
         {
-            bounded(post_owned_policy(&path, body?, owner?, true)).await
+            bounded(post_owned_policy(&path, body?, owner?, true, true)).await
         }
     }
 }
@@ -85,7 +94,13 @@ async fn post_owned<T: DeserializeOwned>(
     body: String,
     owner: Rc<ExportOwner>,
 ) -> Result<T, String> {
-    owner.check()?;
+    post_owned_class(path, body, owner, true).await
+}
+#[cfg(not(target_arch = "wasm32"))]
+async fn post_owned_class<T: DeserializeOwned>(
+    path: &str, body: String, owner: Rc<ExportOwner>, require_ordinary: bool,
+) -> Result<T, String> {
+    if require_ordinary { owner.check_ordinary()?; } else { owner.check()?; }
     let base = if owner.base().is_empty() {
         "http://localhost:3000"
     } else {
@@ -97,6 +112,12 @@ async fn post_owned<T: DeserializeOwned>(
         .post(format!("{base}{path}"))
         .header("Content-Type", "application/json")
         .body(body);
+    if let Some(epoch) = owner.policy_epoch() {
+        request = request.header("X-Station-Policy-Epoch", epoch);
+    }
+    if require_ordinary && let Some(origin) = owner.control_origin() {
+        request = request.header("X-Station-Control-Origin", origin);
+    }
     if let Some(token) = owner.token() {
         request = request.bearer_auth(token);
     }
@@ -125,7 +146,13 @@ async fn post_owned<T: DeserializeOwned>(
     body: String,
     owner: Rc<ExportOwner>,
 ) -> Result<T, String> {
-    post_owned_policy(path, body, owner, false).await
+    post_owned_class(path, body, owner, true).await
+}
+#[cfg(target_arch = "wasm32")]
+async fn post_owned_class<T: DeserializeOwned>(
+    path: &str, body: String, owner: Rc<ExportOwner>, require_ordinary: bool,
+) -> Result<T, String> {
+    post_owned_policy(path, body, owner, true, require_ordinary).await
 }
 #[cfg(target_arch = "wasm32")]
 async fn post_owned_policy<T: DeserializeOwned>(
@@ -133,8 +160,9 @@ async fn post_owned_policy<T: DeserializeOwned>(
     body: String,
     owner: Rc<ExportOwner>,
     reject_redirects: bool,
+    require_ordinary: bool,
 ) -> Result<T, String> {
-    owner.check()?;
+    if require_ordinary { owner.check_ordinary()?; } else { owner.check()?; }
     let base = if owner.base().is_empty() {
         web_sys::window()
             .ok_or("Window unavailable")?
@@ -153,6 +181,12 @@ async fn post_owned_policy<T: DeserializeOwned>(
         .header("Content-Type", "application/json");
     if reject_redirects {
         request = request.redirect(web_sys::RequestRedirect::Error);
+    }
+    if let Some(epoch) = owner.policy_epoch() {
+        request = request.header("X-Station-Policy-Epoch", epoch);
+    }
+    if require_ordinary && let Some(origin) = owner.control_origin() {
+        request = request.header("X-Station-Control-Origin", origin);
     }
     if let Some(token) = owner.token() {
         request = request.header("Authorization", &format!("Bearer {token}"));

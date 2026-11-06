@@ -11,7 +11,7 @@ use super::recording_download::ExportOwner;
 
 // Capture at the actual gesture, never inside an async task's first poll.
 fn capture_fill_owner(alive: Arc<AtomicBool>) -> Result<Rc<ExportOwner>, String> {
-    ExportOwner::capture_selected(move || alive.load(Ordering::Acquire))
+    ExportOwner::capture_ordinary_selected(move || alive.load(Ordering::Acquire))
 }
 
 
@@ -364,7 +364,7 @@ pub(super) fn GsePanel(
                 online.set(false);
                 status.set(Status {phase: "unknown".into(), ..Status::default()});
             }
-            let owner = capture_fill_owner(alive.clone());
+            let owner = ExportOwner::capture_observer_selected({let alive=alive.clone();move || alive.load(Ordering::Acquire)});
             let response = match &owner {
                 Ok(owner) => super::recording_download::saved_json::<Status>("/api/gse/status", owner.clone()).await,
                 Err(error) => Err(error.clone()),
@@ -372,7 +372,7 @@ pub(super) fn GsePanel(
             if !alive.load(Ordering::Acquire) { return; }
             if owner.as_ref().is_ok_and(|owner| !owner.is_current()) {
                 // No response from a retired owner may publish or clear UI.
-                continue;
+                delay().await; continue;
             }
             match response {
                 Ok(next)
@@ -984,7 +984,7 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
                     Err(error) => { message.set(format!("GSE configuration unavailable: {error}")); delay().await; continue; }
                 }
             }
-            let Some(grant) = config_grant.peek().clone() else { continue; };
+            let Some(grant) = config_grant.peek().clone() else { delay().await; continue; };
             match grant.status::<Status>().await {
                 Ok(next) if grant.current() => {
                     if !["idle", "passed", "cancelled", "fault"].contains(&next.phase.as_str())
@@ -1099,10 +1099,11 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
                             let (overfill,tolerance,settle)=match validated_fill(&fill_draft.read()) {Ok(next)=>next,Err(error)=>{message.set(error);return;}};
                             cfg.fill_overfill_kg=overfill;cfg.fill_tolerance_kg=tolerance;cfg.fill_settle_ms=settle;
                             let Some(grant)=config_grant.peek().clone().filter(|grant|grant.current()) else {message.set("Ground station configuration changed; reload it before saving.".into());return;};
+                            let request=grant.save(&cfg);
                             busy.set(true);
                             spawn(async move {
-                                let result=grant.save(&cfg).await;
-                                if !grant.current(){busy.set(false);return;}
+                                let result=request.await;
+                                if !grant.current(){return;}
                                 match result {Ok((next,next_grant))=>{nitrogen_rows.set(nitrogen_drafts(&next));fill_draft.set(FillDraft::from(&next));settings.set(Some(next));config_grant.set(Some(next_grant));message.set("GSE configuration saved".into());},Err(err)=>message.set(err)}
                                 busy.set(false);
                             });

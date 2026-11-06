@@ -3,6 +3,7 @@ use super::*;
 
 #[derive(Clone)]
 struct LocalOwner {
+    applied: incoming_epoch::ReadContext,
     identity: crate::auth::RequestIdentity,
     base: String,
     graph: u64,
@@ -13,6 +14,7 @@ struct LocalOwner {
 impl LocalOwner {
     fn capture() -> Option<Self> {
         Some(Self {
+            applied: incoming_epoch::ReadContext::capture().ok()?,
             identity: crate::auth::request_identity()?,
             base: UrlConfig::base_http(),
             graph: GRAPH_HISTORY_GENERATION.load(Ordering::Relaxed),
@@ -22,7 +24,8 @@ impl LocalOwner {
         })
     }
     fn identity_current(&self) -> bool {
-        self.alive.load(Ordering::Acquire)
+        self.applied.check_current().is_ok()
+            && self.alive.load(Ordering::Acquire)
             && Arc::ptr_eq(&self.alive, &dashboard_alive())
             && self.mount == dashboard_gen()
             && self.base == UrlConfig::base_http()
@@ -104,12 +107,16 @@ fn retire_display(clear_queue: bool) {
 }
 #[derive(Clone)]
 pub(super) struct Seed {
+    http: std::rc::Rc<recording_download::ExportOwner>,
     owner: LocalOwner,
     revision: u64,
 }
 impl Seed {
+    pub(super) fn http_owner(&self) -> std::rc::Rc<recording_download::ExportOwner> { self.http.clone() }
+    pub(super) fn read_context(&self) -> incoming_epoch::ReadContext { self.owner.applied.clone() }
     pub(super) fn current(&self) -> bool {
-        self.owner.current()
+        self.http.is_current()
+            && self.owner.current()
             && CONTINUITY
                 .lock()
                 .ok()
@@ -122,10 +129,11 @@ pub(super) fn begin_seed() -> Option<Seed> {
     if state.revision == u64::MAX {
         return None;
     }
-    Some(Seed {
-        owner: state.owner.clone()?,
-        revision: state.revision,
-    })
+    let owner = state.owner.clone()?;
+    let revision = state.revision;
+    drop(state);
+    let http = recording_download::ExportOwner::capture_observer_selected(|| true).ok()?;
+    Some(Seed { http, owner, revision })
 }
 /// Original HTTP owner fences auth ABA, actual reconnect counters, mount and
 /// clear epochs. The serial additionally rejects delayed obsolete observers.
