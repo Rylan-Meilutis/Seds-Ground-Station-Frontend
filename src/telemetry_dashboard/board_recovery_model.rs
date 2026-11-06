@@ -184,6 +184,10 @@ pub(super) struct Board {
     pub age_ms: Option<u64>,
     /// Remaining server-issued readback lease at response time.
     pub readback_valid_for_ms: Option<u64>,
+    #[serde(default)]
+    pub recovery_required: bool,
+    #[serde(default)]
+    pub recovery_reason: Option<String>,
     pub abort_latched: Option<bool>,
     pub safe_outputs: Option<bool>,
     pub commanded_outputs: Option<u32>,
@@ -205,6 +209,14 @@ fn hex(value: &str, length: usize) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 impl Board {
+    pub fn recovery_notice(&self) -> Option<&'static str> {
+        if !self.recovery_required { return None; }
+        Some(match self.recovery_reason.as_deref() {
+            Some("abort_latched") => "This board reports Abort. Review recovery before starting another launch.",
+            Some("unfinished_recovery") => "The previous recovery for this board is incomplete. Review its result and retry recovery.",
+            _ => "GroundStation reports that this board requires recovery.",
+        })
+    }
     pub fn first_uncertainty_context(&self) -> bool {
         self.first_uncertainty_reconcilable
             && self.identity_kind == "retained_first_uncertainty"
@@ -293,12 +305,12 @@ impl Status {
     pub fn board(&self, id: &str) -> Option<&Board> {
         self.boards.iter().find(|b| b.id == id)
     }
-    pub fn pending(&self) -> bool {
-        self.operation.as_ref().is_some_and(Operation::pending)
-            || self
-                .boards
-                .iter()
-                .any(|b| b.operation.as_ref().is_some_and(Operation::pending))
+    /// Only an advertised mutation owns recovery admission. Background status
+    /// queries may run while preparation asks the backend for fresh proof.
+    pub fn mutating_pending(&self) -> bool {
+        let mutation = |operation: &Operation| operation.action != "query" && operation.pending();
+        self.operation.as_ref().is_some_and(mutation)
+            || self.boards.iter().any(|board| board.operation.as_ref().is_some_and(mutation))
     }
     /// GS is the server's global state, not a recoverable MCU identity.
     pub fn global_state_label(&self) -> &'static str {
@@ -315,18 +327,13 @@ impl Status {
         if !self.valid() || !self.permissions.reset_startup {
             return Some("Reset ALL is not permitted by this server/session.".into());
         }
-        if self.pending() {
+        if self.mutating_pending() {
             return Some("Another operation is pending; wait for its actual result.".into());
         }
         if let Some(policy) = self.reset_startup_policy.as_ref() {
             if !policy.valid_for(&self.mode_capability) {
                 return Some(
                     "This server advertised an unsupported or inconsistent reset policy.".into(),
-                );
-            }
-            if elapsed > 2_000 {
-                return Some(
-                    "Refresh current server reset policy before preparing a reset.".into(),
                 );
             }
             // Capability permits preparation/query only. The returned server
@@ -350,7 +357,7 @@ impl Status {
                 missing.join(", ")
             ));
         }
-        if self.pending() {
+        if self.mutating_pending() {
             return Some("Another operation is pending; wait for its actual result.".into());
         }
         None
@@ -374,7 +381,7 @@ impl Status {
         if board.capabilities.prepare_recover != Some(true) || !board.query_allowed() {
             return Some("Recovery preparation is not advertised by this server/board.".into());
         }
-        if self.pending() {
+        if self.mutating_pending() {
             return Some("Another operation is pending.".into());
         }
         if self.host_recovery.as_ref().is_some_and(|recovery| {
@@ -402,7 +409,7 @@ impl Status {
         if capability != Some(true) {
             return Some("Unsupported / not advertised by this board.".into());
         }
-        if self.pending() {
+        if self.mutating_pending() {
             return Some("Another operation is pending.".into());
         }
         if self.host_recovery.as_ref().is_some_and(|recovery| {
@@ -431,7 +438,7 @@ impl Status {
         if self.mode_capability.current == mode {
             return Some("This mode is already active.".into());
         }
-        if self.pending() {
+        if self.mutating_pending() {
             return Some("Another operation is pending.".into());
         }
         None
@@ -569,7 +576,7 @@ impl Challenge {
             && !current
                 .operation
                 .as_ref()
-                .is_some_and(|op| op.pending() && op.phase != "awaiting_confirmation")
+                .is_some_and(|op| op.action != "query" && op.pending() && op.phase != "awaiting_confirmation")
             && original.permissions == current.permissions
             && original.flight_state == current.flight_state
             && original.mode_capability == current.mode_capability
@@ -1198,6 +1205,22 @@ mod tests {
         (status, ticket)
     }
     #[test]
+    fn recovery_notice_requires_explicit_server_metadata_not_age_state_or_health() {
+        let mut board = status().board("VB").unwrap().clone();
+        board.state = Some(15);
+        board.abort_latched = Some(true);
+        board.age_ms = Some(u64::MAX);
+        board.network.healthy = false;
+        assert!(board.recovery_notice().is_none());
+        board.recovery_required = true;
+        board.recovery_reason = Some("abort_latched".into());
+        assert!(board.recovery_notice().unwrap().contains("reports Abort"));
+        board.recovery_reason = Some("unfinished_recovery".into());
+        assert!(board.recovery_notice().unwrap().contains("incomplete"));
+        board.recovery_required = false;
+        assert!(board.recovery_notice().is_none());
+    }
+    #[test]
     fn global_station_state_does_not_require_a_board_identity_or_other_board_agreement() {
         let mut current = status();
         current.boards.clear();
@@ -1226,6 +1249,27 @@ mod tests {
         assert!(!ticket.context_unchanged(&original, &current));
     }
     #[test]
+    fn background_queries_do_not_lock_preparation_but_real_mutations_do() {
+        let (mut status, ticket) = scoped_reset("hitl");
+        let original = status.clone();
+        status.boards[0].operation = Some(Operation { action:"query".into(),phase:"querying".into(),..Default::default() });
+        status.operation = status.boards[0].operation.clone();
+        assert!(!status.mutating_pending());
+        assert!(status.reset_reason(20_000).is_none());
+        let board = status.boards.iter_mut().find(|board|board.id=="AB").unwrap();
+        board.capabilities.prepare_recover=Some(true);
+        assert!(status.prepare_board_reason(status.board("AB").unwrap(),"recover_abort",0).is_none());
+        assert!(ticket.context_unchanged(&original,&status));
+        status.operation.as_mut().unwrap().action="recover_abort".into();
+        assert!(status.mutating_pending());
+        assert!(status.reset_reason(0).is_some());
+        assert!(status.prepare_board_reason(status.board("AB").unwrap(),"recover_abort",0).is_some());
+        assert!(!ticket.context_unchanged(&original,&status));
+        status.operation=None;
+        status.boards[0].operation.as_mut().unwrap().action="reset_startup".into();
+        assert!(status.mutating_pending());
+    }
+    #[test]
     fn explicit_mode_policy_allows_preparation_then_exact_scoped_confirmation() {
         for mode in ["normal", "test_fire", "hitl", "testing"] {
             let (mut status, ticket) = scoped_reset(mode);
@@ -1238,11 +1282,8 @@ mod tests {
                 status.reset_reason(0).is_none(),
                 "prepare queries must be allowed under explicit {mode} capability"
             );
-            assert!(status.reset_reason(2_000).is_none());
-            assert!(
-                status.reset_reason(2_001).is_some(),
-                "stale policy cannot prepare"
-            );
+            assert!(status.reset_reason(20_000).is_none(),
+                "server permission and scoped policy govern preparation, not a client age threshold");
             assert!(ticket.matches(&status, "reset_startup", None, None));
             assert!(ticket.context_unchanged(&status, &status));
         }

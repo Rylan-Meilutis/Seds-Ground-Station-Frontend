@@ -22,6 +22,9 @@ struct Pending {
     challenge: Challenge,
     snapshot: Snapshot,
     received: f64,
+    action: String,
+    board: Option<String>,
+    mode: Option<String>,
 }
 impl Pending {
     fn locally_live(&self) -> bool {
@@ -32,9 +35,17 @@ impl Pending {
                 super::monotonic_now_ms(),
             )
     }
+    fn same_origin(&self, current: &Snapshot) -> bool {
+        self.snapshot.binding == ConnectionBinding::current()
+            && current.binding == self.snapshot.binding
+            && self.snapshot.status.backend_instance == current.status.backend_instance
+            && self.snapshot.status.principal.context == current.status.principal.context
+            && self.snapshot.status.reset_epoch == current.status.reset_epoch
+            && self.snapshot.status.mode_capability.current == current.status.mode_capability.current
+            && self.snapshot.status.mode_capability.build_mode == current.status.mode_capability.build_mode
+    }
     fn valid(&self, current: &Snapshot) -> bool {
         self.snapshot.binding == ConnectionBinding::current()
-            && (current.status.reset_startup_policy.is_none() || current.elapsed() <= 2_000)
             && current.binding == self.snapshot.binding
             && challenge_unexpired(
                 self.received,
@@ -125,7 +136,7 @@ fn challenge_scope_view(challenge: &Challenge) -> Element {
                         if challenge.targets.is_empty(){p{"Proof targets: NONE (explicit HITL host-only policy). No board completion or readback is claimed."}}
                         else {p{"Frozen proof targets: {challenge.targets.join(\", \")}."}}
                     }else{
-                        p{"Frozen targets: {challenge.targets.join(\", \")}. Server refreshes board readbacks at confirmation; acceptance alone does not prove safe state."}
+                        p{"Frozen targets: {challenge.targets.join(\", \")}. Server verifies board proof at confirmation; acceptance alone does not prove safe state."}
                         p{"Only the frozen targets above are requested."}
                     }
                     p{"Physical valve position is not measured by command-register readbacks."}
@@ -133,6 +144,12 @@ fn challenge_scope_view(challenge: &Challenge) -> Element {
     }}
 }
 fn begin_prepare(
+    action: String, board: Option<String>, mode: Option<String>, snapshot: Snapshot,
+    busy: Signal<bool>, pending: Signal<Option<Pending>>, message: Signal<String>,
+) {
+    begin_prepare_internal(action, board, mode, snapshot, busy, pending, message, false);
+}
+fn begin_prepare_internal(
     action: String,
     board: Option<String>,
     mode: Option<String>,
@@ -140,8 +157,9 @@ fn begin_prepare(
     mut busy: Signal<bool>,
     mut pending: Signal<Option<Pending>>,
     mut message: Signal<String>,
+    replace_pending: bool,
 ) {
-    if *busy.peek() || pending.peek().is_some() {
+    if *busy.peek() || (!replace_pending && pending.peek().is_some()) {
         return;
     }
     if !crate::auth::can_view_actions() {
@@ -192,7 +210,7 @@ fn begin_prepare(
                 let received = prepare_started;
                 match read_status().await {
                     Ok(fresh) if snapshot.binding==fresh.binding && challenge.matches(&fresh.status,&action,board.as_deref(),mode.as_deref()) && challenge_unexpired(received,challenge.expires_in_ms,super::monotonic_now_ms())=>{
-                        pending.set(Some(Pending{challenge,snapshot:fresh,received}));message.set(String::new());
+                        pending.set(Some(Pending{challenge,snapshot:fresh,received,action:action.clone(),board:board.clone(),mode:mode.clone()}));message.set(String::new());
                     }
                     Ok(_)=>message.set("The prepared context changed or was unsupported. Review fresh status and prepare again.".into()),
                     Err(error)=>message.set(error),
@@ -267,7 +285,8 @@ pub(super) fn use_recovery_provider() {
                             fresh.received,
                             super::monotonic_now_ms(),
                         );
-                        if pending.peek().as_ref().is_some_and(|p| !p.valid(&fresh)) {
+                        if pending.peek().as_ref().is_some_and(|p| !p.valid(&fresh)
+                            && (p.locally_live() || !p.same_origin(&fresh))) {
                             pending.set(None);
                             message.set("Confirmation cancelled: board/session changed or ticket expired. No automatic retry.".into());
                         }
@@ -283,7 +302,7 @@ pub(super) fn use_recovery_provider() {
                         if pending
                             .peek()
                             .as_ref()
-                            .is_some_and(|pending| !pending.locally_live())
+                            .is_some_and(|pending| pending.snapshot.binding != ConnectionBinding::current())
                         {
                             pending.set(None);
                         }
@@ -377,6 +396,9 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
     let recover_reason = status.prepare_board_reason(&board, "recover_abort", current.elapsed());
     let resync_reason = status.prepare_board_reason(&board, "resync", current.elapsed());
     rsx! {div{class:"gs26-recovery-actions",style:"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;",
+                                    if board.recovery_notice().is_some() {
+                                        span { role:"status",class:"gs26-recovery-required",style:"display:inline-flex;align-items:center;min-height:28px;padding:3px 9px;border:1px solid #b77b18;border-radius:999px;background:#3b2c11;color:#ffdc8a;font-size:0.85rem;font-weight:700;line-height:1.3;", "Recovery required" }
+                                    }
                                     button{disabled:!connected||controls_busy||!query_allowed,title:if query_allowed{"Request fresh status through the advertised dedicated recovery endpoint"}else{"Unsupported: no verified dedicated recovery endpoint"},
                                         onclick:{let board_id=board_id.clone();let binding=current.binding.clone();move |_|{
                                             if *busy.peek()||pending.peek().is_some()||binding!=ConnectionBinding::current(){return;}
@@ -391,7 +413,7 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
                                         "Query board"
                                     }
                                     button{disabled:!connected||controls_busy||!permitted||recover_reason.is_some(),title:recover_reason.clone().unwrap_or_default(),
-                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("recover_abort".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},{super::board_recovery_model::targeted_recovery_label(&board_id).map_or("Recovery unavailable", |(label, _)| label)}}
+                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("recover_abort".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},{if board.recovery_notice().is_some() {"Review recovery…"} else {super::board_recovery_model::targeted_recovery_label(&board_id).map_or("Recovery unavailable", |(label, _)| label)}}}
                                     button{disabled:!connected||controls_busy||!permitted||resync_reason.is_some(),title:resync_reason.clone().unwrap_or_default(),
                                         onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("resync".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},"Resync…"}
     }}
@@ -458,6 +480,9 @@ pub(super) fn RecoveryBoardDetails(
     let _ = ws_connected;
     rsx! {section{class:"gs26-board-proof",style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",
     h4{style:"margin:0;","Device readback and recovery"}
+    if let Some(notice)=raw.and_then(|board|board.recovery_notice()) {
+        p{role:"status",style:"padding:10px;border:1px solid {theme.warning_border};border-radius:8px;background:{theme.warning_background};color:{theme.warning_text};line-height:1.45;overflow-wrap:anywhere;",strong{"Recovery required. "}"{notice}"}
+    }
     if display.retained{p{class:"gs26-retained-readback","Last confirmed readback retained while refreshing. Commands still require current server proof."}}
                                             dl{style:"display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:8px 12px;margin:18px 0;",
                                                 dt{"Actual board state"}dd{style:"margin:0;","{state} ({freshness})"}
@@ -518,7 +543,7 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                     if pending
                         .peek()
                         .as_ref()
-                        .is_some_and(|pending| !pending.locally_live())
+                        .is_some_and(|pending| pending.snapshot.binding != ConnectionBinding::current())
                     {
                         pending.set(None);
                     }
@@ -595,7 +620,7 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
         ..
     } = ui;
     let _ = *super::HEADER_CLOCK_TICK.read();
-    let dialog = pending.read().clone().filter(Pending::locally_live);
+    let dialog = pending.read().clone().filter(|pending| pending.snapshot.binding == ConnectionBinding::current());
     let connected = connected(ui, ws_connected);
     let permitted = crate::auth::can_view_actions();
     rsx! {
@@ -608,9 +633,31 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                     div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
                         p{"{dialog.challenge.summary}"}
                         {challenge_scope_view(&dialog.challenge)}
+                        if !message.read().is_empty() {p{role:"status",style:"padding:10px;border:1px solid #b77b18;border-radius:8px;line-height:1.45;overflow-wrap:anywhere;","{message}"}}
+                        if !dialog.locally_live() {
+                            p{role:"status",style:"padding:10px;border:1px solid #b77b18;border-radius:8px;background:#3b2c11;color:#ffdc8a;line-height:1.4;", "This review expired. Refresh the review to request fresh board proof, then confirm again. No action was sent."}
+                        }
+                    }
+                    if !dialog.locally_live() {
+                        button{r#type:"button",disabled:*busy.read()||!connected||!permitted,
+                            onclick:{let original=dialog.clone();move |_|{
+                                if *busy.peek()||!crate::auth::can_view_actions(){return;}
+                                busy.set(true);message.set("Refreshing review; no recovery has been confirmed.".into());
+                                let original=original.clone();
+                                spawn(async move{
+                                    match read_status().await {
+                                        Ok(fresh) if original.same_origin(&fresh) => {
+                                            busy.set(false);
+                                            begin_prepare_internal(original.action,original.board,original.mode,fresh,busy,pending,message,true);
+                                        }
+                                        Ok(_)=>{pending.set(None);message.set("Station or session changed. Start a new recovery review.".into());busy.set(false);}
+                                        Err(error)=>{message.set(error);busy.set(false);}
+                                    }
+                                });
+                            }},"Refresh review"}
                     }
                     button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},disabled:*busy.read(),onclick:move |_|pending.set(None),"Cancel"}
-                    button{r#type:"button",disabled:*busy.read()||!connected||!permitted,
+                    button{r#type:"button",disabled:*busy.read()||!connected||!permitted||!dialog.locally_live(),
                         onclick:move |_|{
                             if *busy.peek()||!crate::auth::can_view_actions(){return;}
                             let Some(owned)=pending.write().take()else{return;};

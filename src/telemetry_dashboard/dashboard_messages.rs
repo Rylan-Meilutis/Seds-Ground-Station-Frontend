@@ -58,6 +58,8 @@ pub enum BlinkMode {
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ActionControl {
+    #[serde(default)]
+    pub disabled_reason: Option<String>,
     pub cmd: String,
     pub enabled: bool,
     pub blink: BlinkMode,

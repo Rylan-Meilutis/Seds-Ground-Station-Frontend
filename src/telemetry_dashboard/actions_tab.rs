@@ -634,6 +634,38 @@ mod actions_refresh_tests {
     }
 }
 
+fn backend_disabled_reason(control: &super::ActionControl) -> Option<&str> {
+    (!control.enabled).then(|| control.disabled_reason.as_deref()).flatten()
+        .filter(|reason| !reason.trim().is_empty())
+}
+
+#[component]
+fn UnavailableControls(policy: ActionPolicyMsg, actions: Vec<(String, String)>, theme: ThemeConfig) -> Element {
+    let mut open = use_signal(|| false);
+    let rows: Vec<_> = actions.iter().filter_map(|(command,label)| {
+        let base=policy.controls.iter().find(|control|control.cmd==*command)?;
+        let dispatch=supply_dispatch_command(command,base.actuated);
+        let control=policy.controls.iter().find(|control|control.cmd==dispatch)?;
+        backend_disabled_reason(control).map(|reason|(label.as_str(),reason))
+    }).collect();
+    if rows.is_empty() && !open() { return rsx!{}; }
+    rsx!{
+        if !rows.is_empty() {button{r#type:"button",style:"min-height:44px;padding:8px 12px;align-self:flex-start;",onclick:move |_|open.set(true),"Why are controls unavailable?"}}
+        if open(){
+            div{style:"position:fixed;inset:0;z-index:199999;background:#000a;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));display:flex;align-items:center;justify-content:center;box-sizing:border-box;",onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();open.set(false);},Key::Tab=>{event.prevent_default();super::board_recovery_panel::cycle_modal_focus("gs26-unavailable-controls",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
+                section{id:"gs26-unavailable-controls",role:"dialog","aria-modal":"true","aria-label":"Unavailable controls",style:"width:min(100%,760px);max-height:88dvh;min-width:0;padding:18px;border-radius:14px;border:1px solid {theme.border};background:{theme.panel_background};color:{theme.text_primary};display:flex;flex-direction:column;gap:12px;box-sizing:border-box;",
+                    header{style:"display:flex;justify-content:space-between;align-items:center;gap:12px;",h3{style:"margin:0;","Unavailable controls"}button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|open.set(false),"Close"}}
+                    p{style:"margin:0;font-size:0.9rem;line-height:1.4;","Current reasons reported by GroundStation. Other available controls remain usable."}
+                    div{class:"gs26-modal-scroll-body",style:"overflow-y:auto;min-height:0;display:grid;gap:10px;overflow-wrap:anywhere;",
+                        if rows.is_empty() {p{role:"status","All displayed controls are now available."}}
+                        for (label,reason) in rows {article{style:"padding:12px;border:1px solid {theme.border_soft};border-radius:8px;min-width:0;",strong{"{label}"}p{style:"margin:6px 0 0;line-height:1.45;","{reason}"}}}
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn ActionsTab(
     layout: ActionsTabLayout,
@@ -753,7 +785,7 @@ pub fn ActionsTab(
                 PrimaryCommandRequest {abort_only_mode}
             }
             if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {
-                div {role:"alert",style:"padding:8px 10px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};","{error}"}
+                div {role:"alert",style:"padding:10px 12px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};font-size:0.95rem;line-height:1.45;min-width:0;max-width:100%;overflow-wrap:anywhere;box-sizing:border-box;","{error}"}
             }
             if abort_only_mode {
                 div {
@@ -770,6 +802,7 @@ pub fn ActionsTab(
                     "{action_buttons_disabled_message(&action_policy.read())}"
                 }
             }
+            UnavailableControls {policy:action_policy_snapshot.clone(),actions:visible_actions.iter().map(|action|(action.cmd.clone(),action.label.clone())).collect(),theme:theme.clone()}
             if visible_actions.is_empty() {
                 div {
                     style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background}; color:{theme.text_muted}; font-size:13px;",
@@ -866,6 +899,8 @@ pub fn ActionsTab(
                                                     Some("Not permitted by your account")
                                                 } else if abort_only_mode {
                                                     Some("Abort-only mode is enabled")
+                                                } else if let Some(reason) = dispatch_control.and_then(backend_disabled_reason) {
+                                                    Some(reason)
                                                 } else if !action_policy_snapshot.software_buttons_enabled {
                                                     Some("Software controls disabled by backend")
                                                 } else if dispatch_control.is_none() {
@@ -1615,5 +1650,23 @@ mod cosmetic_request_truth_tests {
         }
         assert_eq!(merge_command_feedback("NitrogenClose", Some(false), true), Some(false));
         assert_eq!(merge_command_feedback("NitrogenClose", None, true), None);
+    }
+}
+
+#[cfg(test)]
+mod disabled_reason_tests {
+    use super::*;
+    #[test]
+    fn unavailable_controls_show_only_the_backend_reason_without_new_gating() {
+        let mut control: super::super::ActionControl = serde_json::from_value(serde_json::json!({
+            "cmd":"Nitrogen","enabled":false,"blink":"none","actuated":null,
+            "disabled_reason":"Fill-system manual control is unavailable while the launch sequence is active."
+        })).unwrap();
+        assert_eq!(backend_disabled_reason(&control),control.disabled_reason.as_deref());
+        control.enabled=true;
+        assert!(backend_disabled_reason(&control).is_none());
+        control.enabled=false;
+        control.disabled_reason=None;
+        assert!(backend_disabled_reason(&control).is_none());
     }
 }

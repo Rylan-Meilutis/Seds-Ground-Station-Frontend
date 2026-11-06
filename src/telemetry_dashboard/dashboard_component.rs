@@ -4182,6 +4182,14 @@ fn send_confirmed_cmd(cmd: &str) {
     if !action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
         || !auth::can_send_command(cmd)
     {
+        let reason = if !auth::can_send_command(cmd) {
+            "Your account is not permitted to send this command.".to_string()
+        } else {
+            ACTION_POLICY_SIGNAL.read().controls.iter().find(|control| control.cmd == cmd)
+                .and_then(|control| control.disabled_reason.clone())
+                .unwrap_or_else(|| "GroundStation currently marks this command unavailable. Review unavailable controls for details.".into())
+        };
+        *COMMAND_SEND_ERROR.write() = Some(format!("{cmd}: {reason}"));
         log!("[CMD] blocked cmd='{cmd}'");
         return;
     }
