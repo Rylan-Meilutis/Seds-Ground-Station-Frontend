@@ -373,7 +373,7 @@ def bootstrap(name):
     if name.startswith("android"):
         install_bundletool(env)
     if name in {"linux", "linux-arm64"}:
-        for tool in ["makepkg", "pacman", "fakeroot", "flatpak", "rpmbuild", "desktop-file-validate", "appstreamcli", "gpg"]:
+        for tool in ["makepkg", "bsdtar", "pacman", "fakeroot", "flatpak", "rpmbuild", "desktop-file-validate", "appstreamcli", "gpg"]:
             if not shutil.which(tool, path=env["PATH"]):
                 raise RuntimeError(f"Missing Linux packaging prerequisite: {tool}; see CI-RUNNERS.md")
         install_linuxdeploy(host)

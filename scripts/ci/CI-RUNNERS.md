@@ -48,7 +48,7 @@ error responses are closed before retry. Official linuxdeploy release 430855031
 (November 1, 2026) bytes are pinned separately for x86_64/aarch64; a moved
 continuous tag fails verification instead of silently changing the tool.
 
-Native icon generation requires Pillow12.0.0. Linux workers need `rpm makepkg pacman-package-manager
+Native icon generation requires Pillow12.0.0. Linux workers need `rpm makepkg libarchive-tools pacman-package-manager
 fakeroot flatpak desktop-file-utils appstream gnupg zstd` in addition to the existing GUI/build
 packages; GitHub installs these and GitLab tagged runners must provision them.
 The driver fails early on missing Linux packagers. The explicitly prepared
@@ -139,3 +139,14 @@ build stage checks the same pinned JAR again. CI exports `BUNDLETOOL_JAR` to
 not an assumption that Dioxus reads that variable: Dioxus 0.7.10 selects AAB and
 uses Gradle. No mutable latest URL, checksum bypass, warning suppression, or
 fallback-success claim is introduced.
+
+
+`makepkg` invokes `bsdtar` to generate `.MTREE` metadata and write its archive.
+On Ubuntu 24.04, provision `libarchive-tools`; the shared bootstrap also checks
+for the actual `bsdtar` executable before packaging. Installing the libarchive
+runtime library alone does not supply that command. Arch packaging remains
+required, and its errors and archive validation remain fatal.
+
+Official Ubuntu package and command reference:
+https://packages.ubuntu.com/noble/libarchive-tools ;
+https://manpages.ubuntu.com/manpages/noble/en/man1/bsdtar.1.html .

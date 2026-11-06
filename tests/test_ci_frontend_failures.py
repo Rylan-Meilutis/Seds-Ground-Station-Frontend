@@ -209,13 +209,30 @@ class PlatformPrerequisites(unittest.TestCase):
         android = next(step for step in steps if step.get("uses") == "android-actions/setup-android@v3")
         self.assertEqual(android["with"]["packages"], "platform-tools")
         linux = next(step for step in steps if step.get("name") == "Linux native libraries")["run"]
-        for package in ["makepkg", "pacman-package-manager", "fakeroot", "flatpak", "rpm", "desktop-file-utils", "appstream", "gnupg", "zstd"]:
+        for package in ["makepkg", "libarchive-tools", "pacman-package-manager", "fakeroot", "flatpak", "rpm", "desktop-file-utils", "appstream", "gnupg", "zstd"]:
             self.assertIn(package, linux.split())
         self.assertIn("fuse3", linux.split())
         self.assertIn("libfuse2t64", linux.split())
         self.assertNotIn("fuse", linux.split(), "legacy fuse conflicts with Flatpak's fuse3 dependency")
         for config in [".github/workflows/platforms.yml", ".gitlab-ci.yml"]:
             self.assertIn("-p 'test_ci*.py'", (ROOT / config).read_text())
+
+    def test_linux_bootstrap_refuses_missing_bsdtar_before_packager_install(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
+             patch.object(ci, "validate_host", return_value=("Linux", "x86_64")), \
+             patch.object(ci, "resolved_tool_versions", return_value={"dioxus": "0.7.10", "wasm-bindgen": "0.2.130"}), \
+             patch.object(ci, "checked"), patch.object(ci, "install_wasm_bindgen"), \
+             patch.object(ci, "install_binaryen"), patch.object(ci, "install_linuxdeploy") as packager:
+            root = Path(directory)
+            (root / "Cargo.lock").write_text("inert existing lock fixture")
+            missing = lambda name, **_kwargs: None if name == "bsdtar" else "/fixture/" + name
+            with patch.object(ci.shutil, "which", side_effect=missing):
+                with self.assertRaisesRegex(RuntimeError, "Missing Linux packaging prerequisite: bsdtar"):
+                    ci.bootstrap("linux")
+            packager.assert_not_called()
+            with patch.object(ci.shutil, "which", return_value="/fixture/prepared-tool"):
+                ci.bootstrap("linux")
+            packager.assert_called_once_with(("Linux", "x86_64"))
 
     def test_actual_github_warning_annotations_are_fatal_and_preserved(self):
         for message in ["::warning::AppStream metadata missing", "::warning file=build.py,line=1::fixture"]:
