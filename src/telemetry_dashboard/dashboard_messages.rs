@@ -76,6 +76,8 @@ pub struct ActionPolicyMsg {
     pub hitl_button_interlock_satisfied: bool,
     #[serde(default = "default_interlock_satisfied")]
     pub hitl_launch_interlock_satisfied: bool,
+    #[serde(default)]
+    pub local_phase_controls: bool,
     pub controls: Vec<ActionControl>,
 }
 
@@ -87,6 +89,7 @@ impl ActionPolicyMsg {
             software_buttons_enabled: true,
             hitl_button_interlock_satisfied: true,
             hitl_launch_interlock_satisfied: true,
+            local_phase_controls: false,
             controls: Vec::new(),
         }
     }
@@ -452,6 +455,7 @@ impl BoardAbortSnapshot {
             return;
         }
         for control in &mut policy.controls {
+            if policy.local_phase_controls && matches!(control.cmd.as_str(),"AdvanceFlightState"|"RewindFlightState") {continue;}
             if matches!(
                 control.cmd.as_str(),
                 "Launch" | "GroundStationLaunch" | "AdvanceFlightState" | "RewindFlightState"
@@ -551,6 +555,13 @@ mod board_abort_message_tests {
             assert!(next.controls[..4].iter().all(|c| !c.enabled));
             assert!(next.controls[4..].iter().all(|c| c.enabled));
             assert!(current.launch_message().is_some());
+            let mut local=policy(); local.local_phase_controls=true;
+            local.controls[3].enabled=false; // server boundary denial stays denied
+            current.constrain_launch_policy(&mut local);
+            assert!(!local.controls[0].enabled && !local.controls[1].enabled);
+            assert!(local.controls[2].enabled);
+            assert!(!local.controls[3].enabled);
+            assert!(local.controls[4..].iter().all(|c|c.enabled));
         }
         // HITL proof enforcement is server-scoped, never inferred from raw history.
         let optional = snapshot(
