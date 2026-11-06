@@ -3,9 +3,8 @@ use super::{
     types::{BoardDiagnostics, LaunchLogStatus, NetworkBoardHealthEntry},
 };
 use dioxus::prelude::*;
-const TIMEOUT_MS: u64 = 12_000;
-fn healthy(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> bool {
-    connected && row.healthy && row.age_ms.saturating_add(elapsed) <= TIMEOUT_MS
+fn healthy(row: &NetworkBoardHealthEntry, connected: bool, _elapsed: u64) -> bool {
+    super::board_recovery_panel::network_healthy(connected,row.healthy)
 }
 fn temperature(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> String {
     if !connected {
@@ -247,29 +246,39 @@ pub fn NetworkHealthSection(
         super::monotonic_now_ms()
     }));
     let elapsed = (now as f64 - receipt()).max(0.0) as u64;
+    let mut more_info=use_signal(||None::<String>);
     rsx! {
-        section { style: "padding:16px; border:1px solid {theme.border_soft}; border-radius:12px; min-width:0; color:{theme.text_primary}; background:{theme.panel_background};",
-            h3 { style: "margin:0 0 6px;", "Network health" }
-            p { style: "margin:0 0 12px; color:{theme.text_secondary}; font-size:0.85rem;",
-                if simulated { "Simulated network · " }
-                "Observed boards · history since GroundStation started"
+        section { class:"gs26-board-recovery gs26-network-health",style: "padding:16px; border:1px solid {theme.border_soft}; border-radius:12px; min-width:0; color:{theme.text_primary}; background:{theme.panel_background};",
+            div{style:"display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;",
+                h3 { style: "margin:0;", "Network health" }
+                super::board_recovery_panel::RecoveryTools{ws_connected,theme:theme.clone()}
             }
+            if simulated {p{style:"margin:8px 0;color:{theme.text_secondary};","Simulated network"}}
             if !ws_connected { p { role: "status", "GroundStation stream unavailable" } }
-            div { style: "display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));",
+            div { style: "display:grid; gap:12px; margin-top:12px;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));",
                 for row in &rows {
                     {let ok = healthy(row, ws_connected, elapsed);
-                     let color = if ok { "#146c43" } else { "#9f1239" };
                      let age = duration(row.age_ms.saturating_add(elapsed));
                      let observed = row.observed_ms.max(1);
                      let availability = 100.0 * observed.saturating_sub(row.offline_ms) as f64 / observed as f64;
+                     let board_id=row.sender_id.clone();
                      rsx! {
-                        article { key: "{row.sender_id}", style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px; min-width:0; overflow-wrap:anywhere;",
+                        article { key: "{row.sender_id}","data-board":"{row.sender_id}",class:"gs26-board-recovery-card", style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px; min-width:0; overflow-wrap:anywhere;",
                             div { style: "display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; align-items:center;",
                                 strong { "{row.sender_id}" }
-                                span { style: "font-size:0.8rem; border:1px solid {color}; background:{color}; color:#ffffff; border-radius:999px; padding:3px 9px;",
-                                    if ok { "Healthy" } else { "Unhealthy" }
-                                }
+                                {super::board_recovery_panel::health_badge(ok)}
                             }
+                            p{style:"margin:8px 0;",super::board_recovery_panel::RecoveryBoardState{board_id:board_id.clone()}}
+                            p{style:"margin:8px 0;color:{theme.text_secondary};","Disconnects: {row.disconnects}"}
+                            super::board_recovery_panel::RecoveryBoardActions{board_id:board_id.clone(),ws_connected}
+                            button{r#type:"button",style:"min-height:44px;margin-top:8px;",onclick:{let id=board_id.clone();move |_|more_info.set(Some(id.clone()))},"More info"}
+                            if more_info.read().as_deref()==Some(board_id.as_str()){
+                                div{style:"position:fixed;inset:0;z-index:199999;background:#000a;display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));box-sizing:border-box;",
+                                    onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();more_info.set(None);},Key::Tab=>{event.prevent_default();super::board_recovery_panel::cycle_modal_focus("gs26-board-more-info",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
+                                    div{id:"gs26-board-more-info",role:"dialog","aria-modal":"true","aria-label":"Board details",style:"background:{theme.panel_background};color:{theme.text_primary};font:inherit;padding:20px;border-radius:14px;width:min(100%,1060px);height:min(88dvh,900px);max-height:100%;overflow:hidden;display:flex;flex-direction:column;gap:14px;box-sizing:border-box;overflow-wrap:anywhere;",
+                                        div{style:"display:flex;flex:0 0 auto;justify-content:space-between;align-items:center;gap:12px;",h3{style:"margin:0;","{board_id} · More info"}button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|more_info.set(None),"Close details"}}
+                                        div{class:"gs26-modal-scroll-body",style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px;align-items:start;flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
+                                            section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Network history"}
                             dl { style: "display:grid; grid-template-columns:1fr auto; gap:8px; font-size:0.9rem; margin:12px 0 0;",
                                 dt { "Temperature" } dd { style: "margin:0;", "{temperature(row, ws_connected, elapsed)}" }
                                 dt { "Last received" } dd { style: "margin:0;", "{age} ago" }
@@ -281,16 +290,9 @@ pub fn NetworkHealthSection(
                                     dt { "Current outage" } dd { style: "margin:0;", "{duration(row.current_outage_ms.saturating_add(elapsed))}" }
                                 }
                             }
-                            if row.sender_id == "DAQ" {
-                                if let Some(report) = &row.diagnostics {
-                                    SdHealth { report:report.clone(), connected:ws_connected, elapsed,
-                                        theme:theme.clone(), retry_allowed:sd_retry_allowed,
-                                        retry_busy:sd_retry_busy, retry_message:sd_retry_message.clone(),
-                                        retry_token:sd_retry_token, on_retry:on_sd_retry }
-                                }
-                            }
-                            details { style: "margin-top:12px; font-size:0.85rem;",
-                                summary { style: "min-height:44px; display:flex; align-items:center; cursor:pointer;", "Health details" }
+                                            }
+                                            super::board_recovery_panel::RecoveryBoardDetails{board_id:board_id.clone(),ws_connected,theme:theme.clone()}
+                                            section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Internal diagnostics"}
                                 p { "Observed for {duration(row.observed_ms)} · Offline {duration(row.offline_ms)} · Receive observations {row.rx_observations}" }
                                 if let Some(report) = &row.diagnostics {
                                     {let report_age = report.received_age_ms.saturating_add(elapsed);
@@ -315,20 +317,31 @@ pub fn NetworkHealthSection(
                                         if let Some(overruns)=report.adc_overruns { p { "ADC queue overruns: {overruns}" } }
                                         p { "Diagnostic send refusals: {report.diagnostic_send_failures}" }
                                      }}
-                                } else { p { "Internal diagnostics unavailable from this firmware." } }
+                                } else { p { "Internal diagnostics unavailable from this firmware." } }                                            }
+                                            section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Storage and recording"}
+                            if row.sender_id == "DAQ" {
+                                if let Some(report) = &row.diagnostics {
+                                    SdHealth { report:report.clone(), connected:ws_connected, elapsed,
+                                        theme:theme.clone(), retry_allowed:sd_retry_allowed,
+                                        retry_busy:sd_retry_busy, retry_message:sd_retry_message.clone(),
+                                        retry_token:sd_retry_token, on_retry:on_sd_retry }
+                                }
+                            }
+                                                if row.sender_id!="DAQ"{p{"No storage actions are advertised for this node."}}
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                      }}
                 }
             }
             if rows.is_empty() { p { "No boards observed in this mode." } }
-            details { style: "margin-top:12px; font-size:0.85rem; color:{theme.text_secondary};",
-                summary { style: "min-height:44px; display:flex; align-items:center; cursor:pointer;", "About health" }
-                p { "Healthy means traffic was received within 12 seconds. Silence counts once as a disconnect; fresh traffic counts once as a reconnect. This measures network liveness, not internal sensor or CPU health. Receive observations may include multiple handlers for one packet. History resets when the backend restarts or simulation is reset." }
-            }
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,14 +482,14 @@ mod tests {
         assert_eq!(temperature(&row, true, 0), "MCU die -12.34 °C");
     }
     #[test]
-    fn disconnected_stream_and_aged_snapshot_cannot_show_healthy() {
+    fn network_health_uses_backend_authority_even_for_an_old_displayed_age() {
         let row = NetworkBoardHealthEntry {
             healthy: true,
-            age_ms: 11_000,
+            age_ms: 30_000,
             ..Default::default()
         };
         assert!(healthy(&row, true, 999));
-        assert!(!healthy(&row, true, 1001));
+        assert!(healthy(&row, true, 1001));
         assert!(!healthy(&row, false, 0));
     }
     #[test]

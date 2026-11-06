@@ -313,7 +313,8 @@ impl Snapshot {
     }
 }
 
-pub const AUTO_CLOSE_MS: u64 = 4000;
+// Only limits unsolicited surfacing of old results; open views never expire.
+const RECENT_RESULT_WINDOW_MS: u64 = 4000;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Panel {
     pub snapshot: Snapshot,
@@ -322,8 +323,8 @@ pub struct Panel {
     pub visible: bool,
     pub cancel_pending: bool,
     pub historical: bool,
+    pub loading_steps: Vec<(String, String)>,
     manual_minimize: bool,
-    auto_close_at_ms: Option<u64>,
 }
 impl Panel {
     pub fn age_ms(&self, now: u64) -> Option<u64> {
@@ -369,6 +370,222 @@ impl Panel {
             && matches!(self.snapshot.outcome, Outcome::Running | Outcome::Paused)
     }
 }
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub struct BoardDisplay {
+    pub connected: bool,
+    pub known: bool,
+    pub boot: Option<String>,
+    pub epoch: Option<u32>,
+    pub outputs: Option<u32>,
+    #[serde(default)]
+    pub outputs_age_ms: Option<u64>,
+}
+pub type BoardDisplayMap = std::collections::BTreeMap<String, BoardDisplay>;
+impl BoardDisplay {
+    fn valid(&self) -> bool {
+        self.boot
+            .as_ref()
+            .is_none_or(|boot| boot.len() == 16 && boot.bytes().all(|b| b.is_ascii_hexdigit()))
+            && (!self.known
+                || (self.connected
+                    && self.boot.as_ref().is_some_and(|boot| {
+                        boot.len() == 16
+                            && boot.bytes().all(|b| b.is_ascii_hexdigit())
+                            && boot != "0000000000000000"
+                            && boot != "ffffffffffffffff"
+                    })
+                    && self.epoch.is_some_and(|epoch| epoch > 0)
+                    && self.outputs.is_some()
+                    && self.outputs_age_ms.is_some_and(|age| age != u64::MAX)))
+    }
+}
+pub type OutputDisplayMap = std::collections::BTreeMap<usize, bool>;
+#[derive(Clone)]
+struct OutputReceipt {
+    boot: String,
+    epoch: u32,
+    value: bool,
+    received_at: u64,
+    source_age_ms: u64,
+}
+#[derive(Default)]
+struct OutputCache {
+    receipts: std::collections::BTreeMap<usize, OutputReceipt>,
+    generations: std::collections::BTreeMap<String, (String, u32)>,
+    fences: std::collections::BTreeMap<String, u64>,
+    query_fences: std::collections::BTreeMap<String, u64>,
+    last_received: Option<u64>,
+}
+fn output_source(index: usize) -> Option<(&'static str, u32)> {
+    Some(match index {
+        0 => ("VB", 1),
+        1 => ("VB", 2),
+        2 => ("VB", 4),
+        3 => ("AB", 2),
+        4 => ("AB", 4),
+        _ => return None,
+    })
+}
+fn output_index(watch: &Watch) -> Option<usize> {
+    let index = watch
+        .id
+        .strip_prefix("board-output-")
+        .or_else(|| watch.id.strip_prefix("cold-valve-"))?
+        .parse()
+        .ok()?;
+    output_source(index)?;
+    Some(index)
+}
+pub fn board_output_metadata_present(watch: &Watch, boards: &BoardDisplayMap) -> bool {
+    output_index(watch)
+        .and_then(output_source)
+        .is_some_and(|(board, _)| boards.contains_key(board))
+}
+pub fn board_output_display(watch: &Watch, outputs: &OutputDisplayMap) -> Option<Value> {
+    outputs
+        .get(&output_index(watch)?)
+        .copied()
+        .map(Value::Boolean)
+}
+impl OutputCache {
+    fn accepts_clock(&self, received: u64) -> bool {
+        self.last_received.is_none_or(|old| received >= old)
+    }
+    fn clear_board(&mut self, board: &str) {
+        self.receipts
+            .retain(|index, _| output_source(*index).is_some_and(|(source, _)| source != board));
+    }
+    fn offer(&mut self, index: usize, row: &BoardDisplay, value: bool, age: u64, received: u64) {
+        if age == u64::MAX {
+            return;
+        }
+        let Some(boot) = row.boot.as_ref() else {
+            return;
+        };
+        let Some(epoch) = row.epoch else {
+            return;
+        };
+        if let Some(old) = self.receipts.get(&index) {
+            let old_age = received
+                .checked_sub(old.received_at)
+                .and_then(|elapsed| old.source_age_ms.checked_add(elapsed));
+            if old.boot == *boot
+                && old.epoch == epoch
+                && old_age.is_some_and(|old_age| age >= old_age)
+            {
+                return;
+            }
+        }
+        self.receipts.insert(
+            index,
+            OutputReceipt {
+                boot: boot.clone(),
+                epoch,
+                value,
+                received_at: received,
+                source_age_ms: age,
+            },
+        );
+    }
+    /// Fixed capacity: two generations and five Boolean output receipts. Neither
+    /// duplicate polls nor producer expiry can renew an original source stamp.
+    fn observe(&mut self, boards: &BoardDisplayMap, panels: &[Panel], received: u64) -> bool {
+        if !self.accepts_clock(received) {
+            self.receipts.clear();
+            return false;
+        }
+        for board in ["AB", "VB"] {
+            let row = boards
+                .get(board)
+                .filter(|row| row.valid() && row.connected && row.known);
+            let Some(row) = row else {
+                self.clear_board(board);
+                self.generations.remove(board);
+                self.fences.insert(board.into(), received);
+                self.query_fences.insert(board.into(), received);
+                continue;
+            };
+            let generation = (row.boot.clone().unwrap(), row.epoch.unwrap());
+            if self
+                .generations
+                .get(board)
+                .is_some_and(|old| old != &generation)
+            {
+                self.clear_board(board);
+                self.fences.insert(board.into(), received);
+            }
+            self.generations.insert(board.into(), generation);
+            for index in 0..5 {
+                let (source, bit) = output_source(index).unwrap();
+                if source == board
+                    && self.query_fences.get(board).is_none_or(|fence| {
+                        received
+                            .checked_sub(*fence)
+                            .is_some_and(|elapsed| row.outputs_age_ms.unwrap() < elapsed)
+                    })
+                {
+                    self.offer(
+                        index,
+                        row,
+                        row.outputs.unwrap() & bit != 0,
+                        row.outputs_age_ms.unwrap(),
+                        received,
+                    );
+                }
+            }
+        }
+        for panel in panels
+            .iter()
+            .filter(|panel| !panel.historical && !panel.snapshot.outcome.terminal())
+        {
+            let current = panel
+                .snapshot
+                .current_step
+                .as_ref()
+                .and_then(|id| panel.snapshot.steps.iter().find(|step| &step.id == id));
+            for watch in current.into_iter().flat_map(|step| &step.watch) {
+                if watch.evidence != Evidence::BoardReported {
+                    continue;
+                }
+                let Some(index) = output_index(watch) else {
+                    continue;
+                };
+                let (board, _) = output_source(index).unwrap();
+                let Some(row) = boards
+                    .get(board)
+                    .filter(|row| row.valid() && row.connected && row.known)
+                else {
+                    continue;
+                };
+                let Some(Value::Boolean(value)) = panel.observed_value(watch, received) else {
+                    continue;
+                };
+                let Some(age) = panel
+                    .age_ms(received)
+                    .and_then(|age| watch.age_ms.and_then(|own| age.checked_add(own)))
+                else {
+                    continue;
+                };
+                if self.fences.get(board).is_some_and(|fence| {
+                    received
+                        .checked_sub(*fence)
+                        .is_none_or(|elapsed| age >= elapsed)
+                }) {
+                    continue;
+                }
+                self.offer(index, row, *value, age, received);
+            }
+        }
+        self.last_received = Some(received);
+        true
+    }
+    fn values(&self) -> OutputDisplayMap {
+        self.receipts
+            .iter()
+            .map(|(index, row)| (*index, row.value))
+            .collect()
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Envelope {
     pub version: u16,
@@ -380,6 +597,8 @@ pub struct Envelope {
     pub reporting_error: Option<String>,
     #[serde(default)]
     pub result_links: Vec<ResultNotice>,
+    #[serde(default)]
+    pub board_display: BoardDisplayMap,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResultNotice {
@@ -393,6 +612,8 @@ pub struct Model {
     source_epoch: u64,
     on_actions: bool,
     expected_scope: Option<(String, String)>,
+    pub board_display: BoardDisplayMap,
+    output_cache: OutputCache,
     panels: Vec<Panel>,
     results: VecDeque<Snapshot>,
     notices: VecDeque<ResultNotice>,
@@ -414,6 +635,11 @@ impl Model {
         if epoch != self.source_epoch {
             return Err(Error::Stale);
         }
+        if !self.output_cache.accepts_clock(observed_at) {
+            self.output_cache.receipts.clear();
+            self.unavailable = true;
+            return Err(Error::Stale);
+        }
         let scope = RunKey {
             backend_instance: envelope.backend_instance.clone(),
             reset_epoch: envelope.reset_epoch.clone(),
@@ -425,6 +651,11 @@ impl Model {
             || envelope.active.len() > MAX_ACTIVE
             || envelope.terminal.len() > MAX_TERMINAL
             || envelope.result_links.len() > MAX_RESULT_LINKS
+            || envelope.board_display.len() > 2
+            || envelope
+                .board_display
+                .iter()
+                .any(|(id, row)| !matches!(id.as_str(), "AB" | "VB") || !row.valid())
         {
             self.unavailable = true;
             return Err(Error::Invalid);
@@ -471,7 +702,11 @@ impl Model {
         }
         for snapshot in envelope.terminal {
             if snapshot.key.reset_epoch == envelope.reset_epoch
-                && snapshot.observed_age_ms < AUTO_CLOSE_MS
+                && (self
+                    .panels
+                    .iter()
+                    .any(|panel| panel.snapshot.key == snapshot.key)
+                    || snapshot.observed_age_ms < RECENT_RESULT_WINDOW_MS)
             {
                 self.accept(epoch, snapshot, observed_at, now)?;
             } else {
@@ -490,6 +725,14 @@ impl Model {
         while self.notices.len() > MAX_RESULT_LINKS {
             self.notices.pop_front();
         }
+        if !self
+            .output_cache
+            .observe(&envelope.board_display, &self.panels, observed_at)
+        {
+            self.unavailable = true;
+            return Err(Error::Stale);
+        }
+        self.board_display = envelope.board_display;
         self.unavailable = envelope.reporting_error.is_some();
         Ok(())
     }
@@ -553,10 +796,41 @@ impl Model {
         }
         keys
     }
+    pub fn history(&self) -> Vec<(RunKey, String, Outcome, Option<i64>)> {
+        let mut rows = Vec::new();
+        for snapshot in self
+            .panels
+            .iter()
+            .map(|panel| &panel.snapshot)
+            .chain(self.results.iter().rev())
+        {
+            if !rows.iter().any(|(key, _, _, _)| key == &snapshot.key) {
+                rows.push((
+                    snapshot.key.clone(),
+                    snapshot.title.clone(),
+                    snapshot.outcome,
+                    snapshot.notification_timestamp_ms,
+                ));
+            }
+        }
+        rows
+    }
     pub fn cached_result(&self, key: &RunKey) -> Option<&Snapshot> {
         self.results
             .iter()
             .find(|s| &s.key == key && s.details_complete)
+    }
+    pub fn retire_source(&mut self) {
+        self.panels.clear();
+        self.results.clear();
+        self.notices.clear();
+        self.expected_scope = None;
+        self.board_display.clear();
+        self.output_cache = OutputCache::default();
+        self.result_error = None;
+        self.requested_details.clear();
+        self.release_pending.clear();
+        self.unavailable = true;
     }
     pub fn set_source(&mut self, epoch: u64) {
         if epoch != self.source_epoch {
@@ -566,6 +840,8 @@ impl Model {
             self.notices.clear();
             self.unavailable = false;
             self.expected_scope = None;
+            self.board_display.clear();
+            self.output_cache = OutputCache::default();
             self.result_error = None;
             self.requested_details.clear();
             self.release_pending.clear();
@@ -579,6 +855,8 @@ impl Model {
             self.notices.clear();
             self.unavailable = false;
             self.expected_scope = Some((backend_instance, reset_epoch));
+            self.board_display.clear();
+            self.output_cache = OutputCache::default();
             self.result_error = None;
             self.requested_details.clear();
             self.release_pending.clear();
@@ -594,6 +872,9 @@ impl Model {
                 panel.minimized = !actions || panel.manual_minimize;
             }
         }
+    }
+    pub fn output_display(&self) -> OutputDisplayMap {
+        self.output_cache.values()
     }
     pub fn panels(&self) -> &[Panel] {
         &self.panels
@@ -691,18 +972,27 @@ impl Model {
             let first_terminal =
                 snapshot.outcome.terminal() && !self.panels[i].snapshot.outcome.terminal();
             let panel = &mut self.panels[i];
+            if !snapshot.details_complete && panel.snapshot.details_complete {
+                panel.loading_steps = panel
+                    .snapshot
+                    .steps
+                    .iter()
+                    .map(|step| (step.id.clone(), step.label.clone()))
+                    .collect();
+            } else if snapshot.details_complete {
+                panel.loading_steps.clear();
+            }
             if first_terminal {
-                panel.auto_close_at_ms = Some(now.saturating_add(AUTO_CLOSE_MS));
                 panel.cancel_pending = false;
             }
             panel.snapshot = snapshot.clone();
             panel.observed_at_ms = observed_at;
         } else {
-            if self.panels.len() >= MAX_ACTIVE {
+            if self.panels.len() >= MAX_ACTIVE + MAX_TERMINAL {
                 if let Some(old) = self
                     .panels
                     .iter()
-                    .position(|p| p.snapshot.outcome.terminal())
+                    .position(|p| p.snapshot.outcome.terminal() && !p.visible)
                 {
                     self.panels.remove(old);
                 } else {
@@ -710,16 +1000,13 @@ impl Model {
                 }
             }
             self.panels.push(Panel {
-                auto_close_at_ms: snapshot
-                    .outcome
-                    .terminal()
-                    .then_some(now.saturating_add(AUTO_CLOSE_MS)),
                 snapshot: snapshot.clone(),
                 observed_at_ms: observed_at,
                 minimized: !self.on_actions,
                 visible: true,
                 cancel_pending: false,
                 historical: false,
+                loading_steps: Vec::new(),
                 manual_minimize: false,
             });
         }
@@ -736,10 +1023,16 @@ impl Model {
         }
     }
     pub fn restore(&mut self, key: &RunKey) {
-        if let Some(panel) = self.panels.iter_mut().find(|p| &p.snapshot.key == key) {
+        if let Some(index) = self
+            .panels
+            .iter()
+            .position(|panel| &panel.snapshot.key == key)
+        {
+            let mut panel = self.panels.remove(index);
             panel.minimized = false;
             panel.manual_minimize = false;
             panel.visible = true;
+            self.panels.push(panel);
         }
     }
     /// Running, paused, cancelling and unknown are never dismissed as finished.
@@ -807,22 +1100,13 @@ impl Model {
             panel.cancel_pending = false;
         }
     }
-    pub fn tick(&mut self, now: u64) {
+    pub fn tick(&mut self, _now: u64) {
         let panels = &self.panels;
         self.release_pending.retain(|key| {
             panels
                 .iter()
                 .any(|p| &p.snapshot.key == key && p.snapshot.cold_flow_release_allowed)
         });
-        for panel in &mut self.panels {
-            if panel.snapshot.outcome.terminal()
-                && panel
-                    .auto_close_at_ms
-                    .is_some_and(|deadline| now >= deadline)
-            {
-                panel.visible = false;
-            }
-        }
     }
     pub fn open_result(&mut self, epoch: u64, snapshot: Snapshot, now: u64) -> Result<(), Error> {
         if epoch != self.source_epoch {
@@ -840,7 +1124,7 @@ impl Model {
         panel.historical = true;
         panel.visible = true;
         panel.minimized = false;
-        panel.auto_close_at_ms = None;
+        self.restore(&snapshot.key);
         self.result_error = None;
         Ok(())
     }
@@ -851,6 +1135,224 @@ mod tests {
     use super::*;
     pub(super) fn run() -> Snapshot {
         serde_json::from_value(serde_json::json!({"version":1,"key":{"backend_instance":"11111111111111111111111111111111","reset_epoch":"2222222222222222","run_id":"33333333333333333333333333333333"},"revision":1,"kind":"nitrogen_test","outcome":"running","origin_client":"origin-a","title":"Nitrogen test","message":"Watching tank pressure","current_step":"raise-0","next_step":"hold-0","steps":[{"id":"raise-0","label":"Raise pressure","state":"watching","watch":[{"id":"tank-pt","label":"Tank pressure","target":50.0,"observed":42.0,"unit":"psi","age_ms":0,"valid_for_ms":2000,"evidence":"measured"}]},{"id":"hold-0","label":"Verify hold","state":"planned","watch":[]}],"observed_age_ms":0,"valid_for_ms":2000,"cancel_allowed":true})).unwrap()
+    }
+    #[test]
+    fn output_display_is_separate_from_revision_proofs_and_never_refreshes_sensors() {
+        let snapshot = run();
+        let mut header:Envelope=serde_json::from_value(serde_json::json!({"version":1,"backend_instance":snapshot.key.backend_instance,"reset_epoch":snapshot.key.reset_epoch,"cancel_api_version":1,"active":[snapshot.clone()],"terminal":[],"reporting_error":null,"board_display":{"VB":{"connected":true,"known":true,"boot":"0000000000000002","epoch":3,"outputs":5,"outputs_age_ms":0}}})).unwrap();
+        let mut model = Model::default();
+        model.accept_envelope(0, header.clone(), 0, 0).unwrap();
+        let mut output = snapshot.steps[0].watch[0].clone();
+        output.id = "board-output-0".into();
+        assert_eq!(
+            board_output_display(&output, &model.output_display()),
+            Some(Value::Boolean(true))
+        );
+        assert_eq!(
+            board_output_display(&snapshot.steps[0].watch[0], &model.output_display()),
+            None,
+            "measured pressure never uses board heartbeat/output authority"
+        );
+        header.board_display.get_mut("VB").unwrap().outputs = Some(0);
+        model
+            .accept_envelope(0, header.clone(), 30000, 30000)
+            .unwrap();
+        assert_eq!(model.panels()[0].snapshot.revision, 1);
+        assert_eq!(
+            board_output_display(&output, &model.output_display()),
+            Some(Value::Boolean(false)),
+            "mutable display does not falsify frozen watch revisions"
+        );
+        assert!(
+            model.panels()[0]
+                .observed_value(&snapshot.steps[0].watch[0], 33000)
+                .is_none(),
+            "old sensor receipt remains expired"
+        );
+        header.board_display.get_mut("VB").unwrap().connected = false;
+        header.board_display.get_mut("VB").unwrap().known = false;
+        model.accept_envelope(0, header, 31000, 31000).unwrap();
+        assert_eq!(board_output_display(&output, &model.output_display()), None);
+        assert!(
+            board_output_metadata_present(&output, &model.board_display),
+            "explicit disconnect suppresses fallback to any still-fresh producer watch"
+        );
+        model.retire_source();
+        assert!(model.board_display.is_empty());
+    }
+    #[test]
+    fn display_metadata_schema_is_bounded_and_missing_old_fields_are_strict() {
+        let snapshot = run();
+        let make = |display: serde_json::Value| {
+            serde_json::from_value::<Envelope>(serde_json::json!({"version":1,"backend_instance":snapshot.key.backend_instance,"reset_epoch":snapshot.key.reset_epoch,"cancel_api_version":1,"active":[snapshot.clone()],"terminal":[],"reporting_error":null,"board_display":display})).unwrap()
+        };
+        let mut model = Model::default();
+        model
+            .accept_envelope(0, make(serde_json::json!({})), 0, 0)
+            .unwrap();
+        assert!(model.board_display.is_empty());
+        for display in [
+            serde_json::json!({"FC":{"connected":true,"known":false,"boot":null,"epoch":null,"outputs":null}}),
+            serde_json::json!({"AB":{"connected":false,"known":true,"boot":"0000000000000001","epoch":1,"outputs":0}}),
+            serde_json::json!({"AB":{"connected":true,"known":false,"boot":"x".repeat(4096),"epoch":null,"outputs":null}}),
+        ] {
+            assert!(
+                Model::default()
+                    .accept_envelope(0, make(display), 0, 0)
+                    .is_err()
+            );
+        }
+    }
+    fn display_boards(value: bool, age: u64, boot: &str) -> BoardDisplayMap {
+        [(
+            "VB".into(),
+            BoardDisplay {
+                connected: true,
+                known: true,
+                boot: Some(boot.into()),
+                epoch: Some(3),
+                outputs: Some(u32::from(value)),
+                outputs_age_ms: Some(age),
+            },
+        )]
+        .into_iter()
+        .collect()
+    }
+    fn display_panel(value: bool, age: u64, received: u64) -> Panel {
+        let mut snapshot = run();
+        snapshot.observed_age_ms = age;
+        let watch = &mut snapshot.steps[0].watch[0];
+        watch.id = "board-output-0".into();
+        watch.observed = Some(Value::Boolean(value));
+        watch.evidence = Evidence::BoardReported;
+        watch.unit = None;
+        let mut model = Model::default();
+        model.accept(0, snapshot, received, received).unwrap();
+        model.panels()[0].clone()
+    }
+    #[test]
+    fn latest_output_source_wins_in_both_directions_without_duplicate_restamping() {
+        let mut cache = OutputCache::default();
+        let panel = display_panel(true, 0, 100);
+        cache.observe(
+            &display_boards(false, 10000, "0000000000000002"),
+            &[panel.clone()],
+            100,
+        );
+        assert_eq!(cache.values().get(&0), Some(&true));
+        cache.observe(
+            &display_boards(false, 11000, "0000000000000002"),
+            &[panel.clone()],
+            1100,
+        );
+        assert_eq!(cache.receipts[&0].received_at, 100);
+        assert_eq!(cache.receipts[&0].source_age_ms, 0);
+        cache.observe(
+            &display_boards(false, 13000, "0000000000000002"),
+            &[panel],
+            3100,
+        );
+        assert_eq!(
+            cache.values().get(&0),
+            Some(&true),
+            "producer expiry cannot resurrect an older QUERY mask"
+        );
+        cache.observe(
+            &display_boards(false, 0, "0000000000000002"),
+            &[display_panel(true, 1500, 4100)],
+            4100,
+        );
+        assert_eq!(
+            cache.values().get(&0),
+            Some(&false),
+            "new QUERY supersedes an older still-fresh producer receipt"
+        );
+        cache.observe(
+            &display_boards(false, 1000, "0000000000000002"),
+            &[display_panel(true, 0, 5100)],
+            5100,
+        );
+        assert_eq!(cache.values().get(&0), Some(&true));
+        assert!(cache.receipts.len() <= 5);
+    }
+    #[test]
+    fn disconnect_and_boot_fences_never_resurrect_prechange_producer_or_query_outputs() {
+        let mut cache = OutputCache::default();
+        let boot = "0000000000000002";
+        cache.observe(
+            &display_boards(false, 10000, boot),
+            &[display_panel(true, 0, 100)],
+            100,
+        );
+        cache.observe(
+            &[("VB".into(), BoardDisplay::default())]
+                .into_iter()
+                .collect(),
+            &[],
+            1100,
+        );
+        assert!(cache.values().is_empty());
+        cache.observe(
+            &display_boards(false, 12000, boot),
+            &[display_panel(true, 1500, 2100)],
+            2100,
+        );
+        assert!(
+            cache.values().is_empty(),
+            "nothing from before disconnect returns on reconnect"
+        );
+        cache.observe(&display_boards(false, 0, boot), &[], 3100);
+        assert_eq!(cache.values().get(&0), Some(&false));
+        cache.observe(
+            &display_boards(false, 0, "0000000000000004"),
+            &[display_panel(true, 500, 4100)],
+            4100,
+        );
+        assert_eq!(cache.values().get(&0), Some(&false));
+        cache.observe(
+            &display_boards(false, 1000, "0000000000000004"),
+            &[display_panel(true, 1500, 5100)],
+            5100,
+        );
+        assert_eq!(cache.values().get(&0), Some(&false));
+        cache.observe(
+            &display_boards(false, 2000, "0000000000000004"),
+            &[display_panel(true, 0, 6100)],
+            6100,
+        );
+        assert_eq!(cache.values().get(&0), Some(&true));
+    }
+    #[test]
+    fn output_cache_missing_invalid_clock_sensor_and_historical_sources_fail_closed() {
+        let mut cache = OutputCache::default();
+        let boards = display_boards(false, 10000, "0000000000000002");
+        let mut panel = display_panel(true, 0, 100);
+        panel.snapshot.steps[0].watch[0].evidence = Evidence::Measured;
+        cache.observe(&boards, &[panel.clone()], 100);
+        assert_eq!(
+            cache.values().get(&0),
+            Some(&false),
+            "measured sensor cannot supply display state"
+        );
+        panel.snapshot.steps[0].watch[0].evidence = Evidence::BoardReported;
+        panel.historical = true;
+        cache.observe(&boards, &[panel.clone()], 200);
+        assert_eq!(cache.values().get(&0), Some(&false));
+        panel.historical = false;
+        panel.snapshot.outcome = Outcome::Passed;
+        cache.observe(&boards, &[panel], 300);
+        assert_eq!(cache.values().get(&0), Some(&false));
+        assert!(!cache.observe(&boards, &[], 299));
+        assert!(
+            cache.values().is_empty(),
+            "clock rollback erases display receipts"
+        );
+        cache.observe(&BoardDisplayMap::new(), &[], 400);
+        assert!(cache.values().is_empty());
+        let mut invalid = boards;
+        invalid.get_mut("VB").unwrap().outputs_age_ms = None;
+        cache.observe(&invalid, &[], 500);
+        assert!(cache.values().is_empty());
     }
     #[test]
     fn every_actions_client_observes_identical_steps_and_origin_minimizes_elsewhere() {
@@ -917,7 +1419,39 @@ mod tests {
         assert!(!p.fresh(0u64.wrapping_sub(1)));
     }
     #[test]
-    fn terminal_autoclose_is_not_restarted_by_polling_and_results_reopen() {
+    fn compact_completion_retains_only_labels_until_authoritative_details_arrive() {
+        let mut live = run();
+        live.current_step = Some("step".into());
+        live.next_step = None;
+        live.steps = vec![Step {
+            id: "step".into(),
+            label: "Recorded step".into(),
+            state: StepState::Watching,
+            watch: vec![],
+        }];
+        let mut model = Model::default();
+        model.accept(0, live.clone(), 0, 0).unwrap();
+        let mut full = live;
+        full.revision += 1;
+        full.outcome = Outcome::Passed;
+        full.cancel_allowed = false;
+        full.current_step = None;
+        full.next_step = None;
+        full.steps[0].state = StepState::Passed;
+        model.accept(0, full.compact_result(), 100, 100).unwrap();
+        assert!(model.panels()[0].snapshot.steps.is_empty());
+        assert_eq!(
+            model.panels()[0].loading_steps,
+            vec![("step".into(), "Recorded step".into())]
+        );
+        model.tick(15000);
+        assert!(model.panels()[0].visible);
+        model.accept(0, full, 16000, 16000).unwrap();
+        assert!(model.panels()[0].loading_steps.is_empty());
+        assert_eq!(model.panels()[0].snapshot.steps[0].state, StepState::Passed);
+    }
+    #[test]
+    fn completed_views_stay_open_until_manual_close_and_can_always_reopen() {
         let mut value = run();
         let mut m = Model::default();
         m.accept(0, value.clone(), 0, 0).unwrap();
@@ -931,8 +1465,17 @@ mod tests {
         assert!(m.notices()[0].warning);
         m.accept(0, value.clone(), 4000, 4000).unwrap();
         assert_eq!(m.notices().len(), 1);
-        m.tick(5000);
-        assert!(!m.panels()[0].visible);
+        m.tick(15000);
+        assert!(m.panels()[0].visible);
+        assert!(m.dismiss(&value.key));
+        m.accept(0, value.clone(), 16000, 16000).unwrap();
+        assert!(
+            !m.panels()[0].visible,
+            "polling must not undo a manual close"
+        );
+        m.restore(&value.key);
+        m.tick(17000);
+        assert!(m.panels()[0].visible);
         m.open_result(0, value.clone(), 9000).unwrap();
         m.tick(20000);
         assert!(m.panels()[0].visible && m.panels()[0].historical);
@@ -990,6 +1533,7 @@ mod envelope_tests {
             terminal: vec![value],
             reporting_error: None,
             result_links: Vec::new(),
+            board_display: Default::default(),
         }
     }
     #[test]
@@ -1036,14 +1580,14 @@ mod envelope_tests {
         assert_eq!(model.cached_result(&full.key).unwrap().steps.len(), 1);
         model.tick(4000);
         assert!(
-            !model.panels()[0].visible,
-            "detail arrival must not restart completion auto-close"
+            model.panels()[0].visible,
+            "detail arrival must not close the operator's open view"
         );
         model
             .accept_envelope(5, envelope(summary), 4000, 4000)
             .unwrap();
         assert!(model.panels()[0].snapshot.details_complete);
-        assert!(!model.panels()[0].visible);
+        assert!(model.panels()[0].visible);
         assert!(model.needed_result_details().is_empty());
         full.steps[0].state = StepState::Failed;
         assert_eq!(model.accept(5, full, 4000, 4000), Err(Error::Conflict));

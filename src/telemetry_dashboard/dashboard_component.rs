@@ -3545,6 +3545,7 @@ fn TelemetryDashboardInner() -> Element {
                                             onclick:move |_| { clear_current_dashboard_data_without_reseed(); },
                                             "Clear all graphs"
                                         }
+                                        button{r#type:"button",disabled:!auth::can_view_data(),onclick:move |_|sequence_progress_host::open_history(),"Sequence history"}
                                         {auth_button}{reload_button}{version_button}{connect_button}
                                     }
                                 }

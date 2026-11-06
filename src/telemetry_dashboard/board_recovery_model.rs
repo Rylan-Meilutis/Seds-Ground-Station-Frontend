@@ -173,6 +173,9 @@ pub(super) struct Board {
     pub id: String,
     pub label: String,
     pub network: Network,
+    /// Backend presentation authority; distinct from the mutation proof lease.
+    pub display_connected: Option<bool>,
+    pub display_known: Option<bool>,
     pub state: Option<u8>,
     pub state_label: String,
     pub boot: Option<String>,

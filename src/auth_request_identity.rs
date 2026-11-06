@@ -2,7 +2,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct Revision(AtomicU64);
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Identity {
     revision: u64,
     token: Option<String>,

@@ -8,7 +8,7 @@ use serde::Serialize;
 const STATUS: &str = "/api/board-recovery/status";
 #[derive(Clone)]
 struct Snapshot {
-    status: Status,
+    status: std::sync::Arc<Status>,
     received: f64,
     binding: ConnectionBinding,
 }
@@ -24,6 +24,14 @@ struct Pending {
     received: f64,
 }
 impl Pending {
+    fn locally_live(&self) -> bool {
+        self.snapshot.binding == ConnectionBinding::current()
+            && challenge_unexpired(
+                self.received,
+                self.challenge.expires_in_ms,
+                super::monotonic_now_ms(),
+            )
+    }
     fn valid(&self, current: &Snapshot) -> bool {
         self.snapshot.binding == ConnectionBinding::current()
             && (current.status.reset_startup_policy.is_none() || current.elapsed() <= 2_000)
@@ -38,10 +46,25 @@ impl Pending {
                 .context_unchanged(&self.snapshot.status, &current.status)
     }
 }
+// A request started before PREPARE cannot revoke the challenge returned by a newer
+// request. Authority changes are never discarded by this ordering fence.
+fn older_same_authority(incoming: &Snapshot, current: &Snapshot) -> bool {
+    incoming.received < current.received
+        && incoming.binding == current.binding
+        && incoming.status.backend_instance == current.status.backend_instance
+        && incoming.status.reset_epoch == current.status.reset_epoch
+        && incoming.status.principal.context == current.status.principal.context
+}
 async fn read_status() -> Result<Snapshot, String> {
+    read_status_classified()
+        .await
+        .map_err(|error| error.message)
+}
+async fn read_status_classified() -> Result<Snapshot, super::recording_download::SavedJsonError> {
     let binding = ConnectionBinding::current();
     let request_started = super::monotonic_now_ms();
-    let status = super::http_get_json::<Status>(STATUS).await?;
+    let owner = super::recording_download::ExportOwner::capture_selected(|| true)?;
+    let status = super::recording_download::saved_json_classified::<Status>(STATUS, owner).await?;
     if binding != ConnectionBinding::current() {
         return Err("Station or sign-in changed; refresh the current station.".into());
     }
@@ -49,7 +72,7 @@ async fn read_status() -> Result<Snapshot, String> {
         return Err("This backend does not provide supported recovery API v1 status.".into());
     }
     Ok(Snapshot {
-        status,
+        status: std::sync::Arc::new(status),
         received: request_started,
         binding,
     })
@@ -181,24 +204,71 @@ fn begin_prepare(
     });
 }
 
-#[component]
-pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Element {
+pub(super) fn network_healthy(connected: bool, server_healthy: bool) -> bool {
+    // The backend owns health policy; displayed age is diagnostic only.
+    connected && server_healthy
+}
+
+pub(super) fn health_badge(healthy: bool) -> Element {
+    let (label, colors) = if healthy {
+        ("Healthy", "color:#86efac;background:#123b27;")
+    } else {
+        ("Unhealthy", "color:#fecaca;background:#471e25;")
+    };
+    rsx! { strong { class: "gs26-board-health", style: "{colors}padding:3px 9px;border-radius:999px;font-size:0.85em;", "{label}" } }
+}
+
+#[derive(Clone, Copy)]
+struct RecoveryUi {
+    snapshot: Signal<Option<Snapshot>>,
+    pending: Signal<Option<Pending>>,
+    message: Signal<String>,
+    status_error: Signal<String>,
+    busy: Signal<bool>,
+    phrase: Signal<String>,
+    mode: Signal<String>,
+    serial: Signal<u64>,
+    display: Signal<super::board_readback_display::DisplayCache>,
+}
+// One owner per Connectivity page, independent of card count or presentation.
+pub(super) fn use_recovery_provider() {
     let mut snapshot = use_signal(|| None::<Snapshot>);
+    let mut display = use_signal(super::board_readback_display::DisplayCache::default);
     let mut pending = use_signal(|| None::<Pending>);
     let mut message = use_signal(String::new);
     let mut status_error = use_signal(String::new);
-    let mut busy = use_signal(|| false);
+    let busy = use_signal(|| false);
     let mut phrase = use_signal(String::new);
-    let mut mode = use_signal(String::new);
+    let mode = use_signal(String::new);
     let mut serial = use_signal(|| 0_u64);
     use_future(move || async move {
         loop {
             let n = serial.peek().wrapping_add(1);
             serial.set(n);
-            let result = read_status().await;
+            let result = read_status_classified().await;
             if *serial.peek() == n {
                 match result {
                     Ok(fresh) => {
+                        let older = snapshot
+                            .peek()
+                            .as_ref()
+                            .is_some_and(|current| older_same_authority(&fresh, current))
+                            || pending.peek().as_ref().is_some_and(|current| {
+                                older_same_authority(&fresh, &current.snapshot)
+                            });
+                        if older {
+                            #[cfg(target_arch = "wasm32")]
+                            gloo_timers::future::TimeoutFuture::new(1000).await;
+                            #[cfg(not(target_arch = "wasm32"))]
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            continue;
+                        }
+                        display.write().observe(
+                            &fresh.status,
+                            &fresh.binding,
+                            fresh.received,
+                            super::monotonic_now_ms(),
+                        );
                         if pending.peek().as_ref().is_some_and(|p| !p.valid(&fresh)) {
                             pending.set(None);
                             phrase.set(String::new());
@@ -208,10 +278,21 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                         status_error.set(String::new());
                     }
                     Err(error) => {
-                        snapshot.set(None);
-                        pending.set(None);
-                        phrase.set(String::new());
-                        status_error.set(error);
+                        if !error.transient {
+                            snapshot.set(None);
+                            display.set(Default::default());
+                            pending.set(None);
+                            phrase.set(String::new());
+                        }
+                        if pending
+                            .peek()
+                            .as_ref()
+                            .is_some_and(|pending| !pending.locally_live())
+                        {
+                            pending.set(None);
+                            phrase.set(String::new());
+                        }
+                        status_error.set(error.message);
                     }
                 }
             }
@@ -221,46 +302,251 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     });
+    use_context_provider(|| RecoveryUi {
+        snapshot,
+        pending,
+        message,
+        status_error,
+        busy,
+        phrase,
+        mode,
+        serial,
+        display,
+    });
+}
+pub(super) fn cycle_modal_focus(id: &str, backwards: bool) {
+    let id = serde_json::to_string(id).expect("static modal id");
+    let shift = if backwards { "-1" } else { "1" };
+    super::js_eval(&format!(
+        "(()=>{{const d=document.getElementById({id});if(!d)return;const a=[...d.querySelectorAll('button:not([disabled]),a[href],summary,input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]')].filter(e=>e.tabIndex>=0&&e.getClientRects().length);if(a.length){{const i=a.indexOf(document.activeElement);a[(i+{shift}+a.length)%a.length].focus();}}}})()"
+    ));
+}
+fn connected(ui: RecoveryUi, ws_connected: bool) -> bool {
+    ws_connected
+        && ui
+            .snapshot
+            .read()
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.binding == ConnectionBinding::current())
+}
+#[component]
+pub(super) fn RecoveryBoardState(board_id: String) -> Element {
+    let ui = use_context::<RecoveryUi>();
+    let _ = *super::HEADER_CLOCK_TICK.read();
+    let current = ui.snapshot.read().clone();
+    let display = ui.display.read().display(
+        current
+            .as_ref()
+            .map(|snapshot| (&*snapshot.status, snapshot.received)),
+        &ConnectionBinding::current(),
+        &board_id,
+        super::monotonic_now_ms(),
+    );
+    let label = if display.state.is_empty() {
+        "Unknown"
+    } else {
+        display.state.as_str()
+    };
+    rsx! {span{class:"gs26-recovery-state","{label}"}}
+}
+#[component]
+pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Element {
+    let ui = use_context::<RecoveryUi>();
+    let RecoveryUi {
+        snapshot,
+        mut busy,
+        pending,
+        mut message,
+        ..
+    } = ui;
+    if !BOARD_IDS.contains(&board_id.as_str()) {
+        return rsx! {};
+    }
+    let unavailable = || rsx! {div{class:"gs26-recovery-actions",style:"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;",button{disabled:true,"Query board"}button{disabled:true,{targeted_recovery_label(&board_id).map_or("Recovery unavailable",|(label,_)|label)}}button{disabled:true,"Resync…"}}};
+    let Some(current) = snapshot.read().clone() else {
+        return unavailable();
+    };
+    let Some(board) = current.status.board(&board_id).cloned() else {
+        return unavailable();
+    };
+    let status = &current.status;
+    let connected = connected(ui, ws_connected);
+    let permitted = crate::auth::can_view_actions();
+    let controls_busy = *busy.read() || pending.read().is_some();
+    let query_allowed = status.permissions.query && board.query_allowed();
+    let recover_reason = status.prepare_board_reason(&board, "recover_abort", current.elapsed());
+    let resync_reason = status.prepare_board_reason(&board, "resync", current.elapsed());
+    rsx! {div{class:"gs26-recovery-actions",style:"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;",
+                                    button{disabled:!connected||controls_busy||!query_allowed,title:if query_allowed{"Request fresh status through the advertised dedicated recovery endpoint"}else{"Unsupported: no verified dedicated recovery endpoint"},
+                                        onclick:{let board_id=board_id.clone();let binding=current.binding.clone();move |_|{
+                                            if *busy.peek()||pending.peek().is_some()||binding!=ConnectionBinding::current(){return;}
+                                            busy.set(true);let board_id=board_id.clone();let binding=binding.clone();
+                                            spawn(async move{
+                                                #[derive(Serialize)]struct Query{board:String}
+                                                let result=super::http_post_json::<_,Accepted>("/api/board-recovery/query",&Query{board:board_id}).await;
+                                                if binding==ConnectionBinding::current(){match result{Ok(value)=>message.set(format!("{} {}",if value.accepted{"Query accepted; awaiting board readback."}else{"Query not accepted."},value.message)),Err(error)=>message.set(error)}}
+                                                busy.set(false);
+                                            });
+                                        }},
+                                        "Query board"
+                                    }
+                                    button{disabled:!connected||controls_busy||!permitted||recover_reason.is_some(),title:recover_reason.clone().unwrap_or_default(),
+                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("recover_abort".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},{super::board_recovery_model::targeted_recovery_label(&board_id).map_or("Recovery unavailable", |(label, _)| label)}}
+                                    button{disabled:!connected||controls_busy||!permitted||resync_reason.is_some(),title:resync_reason.clone().unwrap_or_default(),
+                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("resync".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},"Resync…"}
+    }}
+}
+#[component]
+pub(super) fn RecoveryBoardDetails(
+    board_id: String,
+    ws_connected: bool,
+    theme: ThemeConfig,
+) -> Element {
+    let ui = use_context::<RecoveryUi>();
+    let _ = *super::HEADER_CLOCK_TICK.read();
+    let current = ui.snapshot.read().clone();
+    let raw = current
+        .as_ref()
+        .and_then(|snapshot| snapshot.status.board(&board_id));
+    let display = ui.display.read().display(
+        current
+            .as_ref()
+            .map(|snapshot| (&*snapshot.status, snapshot.received)),
+        &ConnectionBinding::current(),
+        &board_id,
+        super::monotonic_now_ms(),
+    );
+    let recover_reason = current
+        .as_ref()
+        .and_then(|snapshot| {
+            raw.map(|board| {
+                snapshot
+                    .status
+                    .prepare_board_reason(board, "recover_abort", snapshot.elapsed())
+            })
+        })
+        .unwrap_or_else(|| {
+            Some("Current server proof is unavailable; controls remain disabled.".into())
+        });
+    let state = if display.state.is_empty() {
+        "Unknown"
+    } else {
+        display.state.as_str()
+    };
+    let freshness = if display.retained {
+        "last confirmed; refresh pending"
+    } else if display.fresh {
+        "fresh"
+    } else {
+        "unconfirmed/stale"
+    };
+    let boot_label = if display.boot.is_empty() {
+        "Unknown"
+    } else {
+        display.boot.as_str()
+    };
+    let epoch_label = if display.epoch.is_empty() {
+        "Unknown"
+    } else {
+        display.epoch.as_str()
+    };
+    let bits = if display.outputs.is_empty() {
+        "Unknown"
+    } else {
+        display.outputs.as_str()
+    };
+    let _ = ws_connected;
+    rsx! {section{class:"gs26-board-proof",style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",
+    h4{style:"margin:0;","Device readback and recovery"}
+    if display.retained{p{class:"gs26-retained-readback","Last confirmed readback retained while refreshing. Commands still require current server proof."}}
+                                            dl{style:"display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:8px 12px;margin:18px 0;",
+                                                dt{"Actual board state"}dd{style:"margin:0;","{state} ({freshness})"}
+                                                dt{"Abort latched"}dd{style:"margin:0;","{display_bool(display.abort_latched)}"}
+                                                dt{"Safe output registers"}dd{style:"margin:0;","{display_bool(display.safe_outputs)}"}
+                                                dt{"Boot identity"}dd{style:"margin:0;","{boot_label}"}
+                                                dt{"Recovery epoch"}dd{style:"margin:0;","{epoch_label}"}
+                                                dt{"Query nonce"}dd{style:"margin:0;",{if display.nonce.is_empty(){"Unknown"}else{display.nonce.as_str()}}}
+                                                dt{"Readback age"}dd{style:"margin:0;",{display.age_ms.map(|age|format!("{age} ms")).unwrap_or_else(||"Unknown".into())}}
+                                                dt{"Remaining server lease"}dd{style:"margin:0;",{display.lease_ms.map(|lease|format!("{lease} ms")).unwrap_or_else(||"Not issued".into())}}
+                                                dt{"Output source"}dd{style:"margin:0;","{display.output_source}"}
+                                                dt{"Output bits"}dd{style:"margin:0;","{bits}"}
+                                            }
+                                if display.commissioning {p{"Storage or identity setup requires explicit confirmation; it is not a completed reset."}}
+                                            p{"Physical valve position is not verified by GPIO/servo command registers."}
+                                if display.physical_verified {p{"Server claims physical verification; these command-register fields alone do not establish valve position."}}
+                                if let Some(text)=display.message.as_ref(){p{"{text}"}}
+                                            if let Some((_, description))=super::board_recovery_model::targeted_recovery_label(&board_id){p{"{description}"}}
+                                            if let Some(reason)=recover_reason.clone(){p{"Recovery unavailable: {reason}"}}
+                                            if let Some(operation)=raw.and_then(|board|board.operation.as_ref()){{operation_view(operation)}}    }}
+}
+#[component]
+pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
+    let ui = use_context::<RecoveryUi>();
+    let RecoveryUi {
+        mut snapshot,
+        mut pending,
+        message,
+        mut status_error,
+        busy,
+        mut mode,
+        mut serial,
+        mut display,
+        mut phrase,
+        ..
+    } = ui;
+    let mut open = use_signal(|| false);
     let refresh = move |_| {
         let n = serial.peek().wrapping_add(1);
         serial.set(n);
         spawn(async move {
-            match read_status().await {
+            match read_status_classified().await {
                 Ok(fresh) if *serial.peek() == n => {
+                    display.write().observe(
+                        &fresh.status,
+                        &fresh.binding,
+                        fresh.received,
+                        super::monotonic_now_ms(),
+                    );
                     snapshot.set(Some(fresh));
                     status_error.set(String::new());
                 }
                 Err(error) if *serial.peek() == n => {
-                    snapshot.set(None);
-                    pending.set(None);
-                    status_error.set(error);
+                    if !error.transient {
+                        snapshot.set(None);
+                        display.set(Default::default());
+                        pending.set(None);
+                        phrase.set(String::new());
+                    }
+                    if pending
+                        .peek()
+                        .as_ref()
+                        .is_some_and(|pending| !pending.locally_live())
+                    {
+                        pending.set(None);
+                        phrase.set(String::new());
+                    }
+                    status_error.set(error.message);
                 }
                 _ => {}
             }
         });
     };
     let current = snapshot.read().clone();
-    let dialog = pending.read().clone();
-    let controls_busy = *busy.read() || dialog.is_some();
+    let controls_busy = *busy.read() || pending.read().is_some();
     let permitted = crate::auth::can_view_actions();
-    let connected = ws_connected
-        && current
-            .as_ref()
-            .is_some_and(|x| x.binding == ConnectionBinding::current());
+    let connected = connected(ui, ws_connected);
     rsx! {
-        section{class:"gs26-board-recovery",style:"padding:16px;margin-bottom:16px;border:1px solid {theme.border};border-radius:14px;background:{theme.panel_background};color:{theme.text_primary};overflow-wrap:anywhere;min-width:0;",
-            h3{"Board state and recovery"}
-            p{"Board state is a device readback, separate from GS flight state. Recovery is never retried automatically."}
-            button{onclick:refresh,"Refresh local status"}
-            if !status_error.read().is_empty(){p{role:"alert","{status_error}"}}
-            if !message.read().is_empty(){p{role:"status","{message}"}}
-            if let Some(current)=current.clone(){
-                {let status=&current.status;
-                    let reset_reason=status.reset_reason(current.elapsed());
-                    let selected=mode.read().clone();
-                    let mode_reason=status.mode_reason(&selected);
-                    let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());
-                    rsx!{
+        button{r#type:"button",onclick:move |_|open.set(true),"Recovery tools"}
+        if open(){
+            div{style:"position:fixed;inset:0;z-index:199998;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;",onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();open.set(false);},Key::Tab=>{event.prevent_default();cycle_modal_focus("gs26-recovery-tools",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
+                div{id:"gs26-recovery-tools",role:"dialog","aria-modal":"true","aria-label":"Recovery tools",style:"background:{theme.panel_background};color:{theme.text_primary};padding:20px;border-radius:14px;width:min(100%,960px);height:min(88dvh,900px);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;gap:12px;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;font:inherit;",
+                    h3{"Recovery tools"}
+                    button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|open.set(false),"Close tools"}
+                    button{onclick:refresh,"Refresh local status"}
+                    div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
+                    if !status_error.read().is_empty(){p{role:"alert","{status_error}"}}
+                    if let Some(current)=current.clone(){
+                        {let status=&current.status;let reset_reason=status.reset_reason(current.elapsed());let selected=mode.read().clone();let mode_reason=status.mode_reason(&selected);let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());rsx!{
                         p{"Operator: {operator}."}
                         p{"GS state: {status.flight_state.map(|n|n.to_string()).unwrap_or_else(||\"Unknown\".into())}. Automatic actions inhibited: {status.automatic_actions_inhibited}."}
                         div{class:"gs26-recovery-mode",
@@ -293,65 +579,39 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
                             }
                         }
                         if let Some(operation)=status.operation.as_ref(){{operation_view(operation)}}
-                        div{style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px;",
-                            for id in BOARD_IDS {
-                                {let board=status.board(id).cloned().unwrap_or_else(||Board{id:id.into(),label:id.into(),..Default::default()});
-                                 let recover_reason=status.prepare_board_reason(&board,"recover_abort",current.elapsed());
-                                 let resync_reason=status.prepare_board_reason(&board,"resync",current.elapsed());
-                                 let query_allowed=status.permissions.query&&board.query_allowed();
-                                 let board_id=board.id.clone();
-                                 let state=if board.state.is_some(){board.state_label.clone()}else{"Unknown".into()};
-                                 let network_age=board.network.age_ms.saturating_add(current.elapsed());
-                                 let network_label=if connected && board.network.healthy && network_age<=12000{"Healthy"}else{"Unconfirmed / stale"};
-                                 let freshness=if board.fresh(current.elapsed()){"fresh"}else{"unconfirmed/stale"};
-                                 let boot_label=if board.first_uncertainty_context(){"Identity verification pending".into()}else if board.commissioning_context(){"Not yet commissioned".into()}else{board.boot.clone().unwrap_or_else(||"Unknown".into())};
-                                 let epoch_label=board.epoch.map(|v|v.to_string()).unwrap_or_else(||"Unknown".into());
-                                 let bits=board.commanded_outputs.map(|n|format!("0x{n:08x}")).unwrap_or_else(||"Unknown".into());
-                                 rsx!{article{class:"gs26-board-recovery-card","data-board":id,style:"border:1px solid {theme.border};padding:12px;border-radius:10px;",
-                                    h4{"{board.label} ({board.id})"}
-                                    p{"Network: {network_label}; age {network_age}ms; disconnects {board.network.disconnects}, reconnects {board.network.reconnects}."}
-                                    p{"Actual board state: {state} ({freshness})"}
-                                    p{"Abort latched: {display_bool(board.abort_latched)}; commanded outputs safe: {display_bool(board.safe_outputs)}."}
-                                    p{"Boot: {boot_label}; epoch: {epoch_label}."}
-                                    if board.commissioning_required {p{"Storage or identity setup requires explicit confirmation; it is not a completed reset."}}
-                                    p{"Output readback: {board.output_readback}; register bits: {bits}. Physical valve position is not verified by GPIO/servo command registers."}
-                                    if board.physical_position_verified {p{"Server claims physical verification; these command-register fields alone do not establish valve position."}}
-                                    if let Some(text)=board.message.as_ref(){p{"{text}"}}
-                                    button{disabled:!connected||controls_busy||!query_allowed,title:if query_allowed{"Request fresh status through the advertised dedicated recovery endpoint"}else{"Unsupported: no verified dedicated recovery endpoint"},
-                                        onclick:{let board_id=board_id.clone();let binding=current.binding.clone();move |_|{
-                                            if *busy.peek()||pending.peek().is_some()||binding!=ConnectionBinding::current(){return;}
-                                            busy.set(true);let board_id=board_id.clone();let binding=binding.clone();
-                                            spawn(async move{
-                                                #[derive(Serialize)]struct Query{board:String}
-                                                let result=super::http_post_json::<_,Accepted>("/api/board-recovery/query",&Query{board:board_id}).await;
-                                                if binding==ConnectionBinding::current(){match result{Ok(value)=>message.set(format!("{} {}",if value.accepted{"Query accepted; awaiting board readback."}else{"Query not accepted."},value.message)),Err(error)=>message.set(error)}}
-                                                busy.set(false);
-                                            });
-                                        }},
-                                        "Query board"
-                                    }
-                                    button{disabled:!connected||controls_busy||!permitted||recover_reason.is_some(),title:recover_reason.clone().unwrap_or_default(),
-                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("recover_abort".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},{super::board_recovery_model::targeted_recovery_label(&board_id).map_or("Recovery unavailable", |(label, _)| label)}}
-                                    if let Some((_, description))=super::board_recovery_model::targeted_recovery_label(&board_id){p{"{description}"}}
-                                    button{disabled:!connected||controls_busy||!permitted||resync_reason.is_some(),title:resync_reason.clone().unwrap_or_default(),
-                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("resync".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},"Resync…"}
-                                    if let Some(reason)=recover_reason.clone(){p{"Recovery unavailable: {reason}"}}
-                                    if let Some(operation)=board.operation.as_ref(){{operation_view(operation)}}
-                                 }}
-                                }
-                            }
-                        }
+                        }}
+                    }else{p{"Recovery status unavailable. No control action is enabled."}}
                     }
                 }
-            }else{p{"Recovery status unavailable. No control action is enabled."}}
+            }
         }
+    }
+}
+#[component]
+pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
+    let ui = use_context::<RecoveryUi>();
+    let RecoveryUi {
+        mut pending,
+        mut phrase,
+        mut busy,
+        mut message,
+        ..
+    } = ui;
+    let _ = *super::HEADER_CLOCK_TICK.read();
+    let dialog = pending.read().clone().filter(Pending::locally_live);
+    let connected = connected(ui, ws_connected);
+    let permitted = crate::auth::can_view_actions();
+    rsx! {
+        if !message.read().is_empty(){p{role:"status","{message}"}}
         if let Some(dialog)=dialog {
             div{style:"position:fixed;inset:0;z-index:200000;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
                 onkeydown:move|e|{if e.key()==Key::Escape && !*busy.peek(){pending.set(None);phrase.set(String::new());}},
-                div{role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,620px);max-height:90vh;overflow:auto;box-sizing:border-box;overflow-wrap:anywhere;",
+                div{role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,960px);height:min(86dvh,860px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:12px;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;",
                     h2{id:"board-recovery-confirm-title","Confirm operator recovery action"}
-                    p{"{dialog.challenge.summary}"}
-                    {challenge_scope_view(&dialog.challenge)}
+                    div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
+                        p{"{dialog.challenge.summary}"}
+                        {challenge_scope_view(&dialog.challenge)}
+                    }
                     label{r#for:"board-recovery-confirm-phrase","Type {dialog.challenge.confirmation} to confirm"}
                     input{style:"width:100%;box-sizing:border-box;min-height:44px;",id:"board-recovery-confirm-phrase",value:"{phrase}",oninput:move|e|phrase.set(e.value()),disabled:*busy.read(),autocomplete:"off"}
                     button{autofocus:true,disabled:*busy.read(),onclick:move |_|{pending.set(None);phrase.set(String::new());},"Cancel"}
@@ -394,6 +654,37 @@ pub(super) fn BoardRecoveryPanel(ws_connected: bool, theme: ThemeConfig) -> Elem
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn older_status_cannot_rewind_post_prepare_context_but_authority_change_is_seen() {
+        let status: Status = serde_json::from_str(include_str!(
+            "../../tests/fixtures/board-recovery/status-example.json"
+        ))
+        .unwrap();
+        let binding = ConnectionBinding {
+            backend: "https://fixture.invalid".into(),
+            token: Some("fake-confirmation-token".into()),
+            principal: Some("fixture".into()),
+        };
+        let current = Snapshot {
+            status: std::sync::Arc::new(status.clone()),
+            received: 200.,
+            binding: binding.clone(),
+        };
+        let mut incoming = Snapshot {
+            status: std::sync::Arc::new(status),
+            received: 100.,
+            binding,
+        };
+        assert!(older_same_authority(&incoming, &current));
+        incoming.received = 201.;
+        assert!(!older_same_authority(&incoming, &current));
+        incoming.received = 100.;
+        std::sync::Arc::make_mut(&mut incoming.status).reset_epoch = "different".into();
+        assert!(!older_same_authority(&incoming, &current));
+        incoming.status = current.status.clone();
+        incoming.binding.token = Some("other-fake-token".into());
+        assert!(!older_same_authority(&incoming, &current));
+    }
     fn result(host_only: bool) -> Operation {
         serde_json::from_value(serde_json::json!({
             "action":"reset_startup","completed":true,"success":true,"phase":"completed",
@@ -424,6 +715,34 @@ mod tests {
         let mut dom = VirtualDom::new(component);
         dom.rebuild_in_place();
         dioxus::ssr::render(&dom)
+    }
+    #[test]
+    fn network_health_follows_server_policy_not_displayed_age() {
+        let mut network = Network {
+            healthy: true,
+            age_ms: 30000,
+            ..Default::default()
+        };
+        assert!(network_healthy(true, network.healthy));
+        assert!(!network_healthy(false, network.healthy));
+        network.healthy = false;
+        assert!(!network_healthy(true, network.healthy));
+    }
+    fn healthy_badge() -> Element {
+        health_badge(true)
+    }
+    fn unhealthy_badge() -> Element {
+        health_badge(false)
+    }
+    #[test]
+    fn actual_network_health_badges_are_explicit_and_distinct() {
+        let healthy = render(healthy_badge);
+        let unhealthy = render(unhealthy_badge);
+        assert!(healthy.contains("Healthy"));
+        assert!(healthy.contains("#86efac"));
+        assert!(!healthy.contains("Unhealthy"));
+        assert!(unhealthy.contains("Unhealthy"));
+        assert!(unhealthy.contains("#fecaca"));
     }
     #[test]
     fn actual_host_only_result_never_renders_board_readback_confirmation() {

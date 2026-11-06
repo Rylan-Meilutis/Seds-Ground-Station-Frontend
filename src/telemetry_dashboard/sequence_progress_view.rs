@@ -3,7 +3,7 @@ use super::sequence_progress_model::{
 };
 use dioxus::prelude::*;
 
-fn outcome_label(value: Outcome) -> &'static str {
+pub(super) fn outcome_label(value: Outcome) -> &'static str {
     match value {
         Outcome::Running => "In progress",
         Outcome::Paused => "Paused",
@@ -84,8 +84,11 @@ pub fn SequenceProgressView(
     can_send_commands: bool,
     cancel_api_version: Option<u16>,
     #[props(default = false)] unavailable: bool,
+    #[props(default = false)] transient_transport_error: bool,
     on_minimize: EventHandler<RunKey>,
     on_restore: EventHandler<RunKey>,
+    #[props(default)] board_display: super::sequence_progress_model::BoardDisplayMap,
+    #[props(default)] output_display: super::sequence_progress_model::OutputDisplayMap,
     on_cancel: EventHandler<RunKey>,
     on_dismiss: EventHandler<RunKey>,
     #[props(default = false)] can_release_cold_flow: bool,
@@ -102,8 +105,17 @@ pub fn SequenceProgressView(
     let dismiss_key = key.clone();
     let keyboard_key = key.clone();
     let terminal = panel.snapshot.outcome.terminal();
-    let fresh = panel.fresh(now_ms) && !unavailable;
-    let status = if !terminal && !fresh {
+    let fresh = panel.fresh(now_ms) && (!unavailable || transient_transport_error);
+    let current_authority = panel.fresh(now_ms) && !unavailable;
+    let display_authority = !terminal
+        && !panel.historical
+        && (!unavailable || transient_transport_error)
+        && board_display
+            .values()
+            .any(|board| board.connected && board.known);
+    let status = if !terminal && !fresh && display_authority {
+        "Last confirmed progress"
+    } else if !terminal && !fresh {
         "Progress unknown"
     } else {
         outcome_label(panel.snapshot.outcome)
@@ -154,10 +166,12 @@ pub fn SequenceProgressView(
                     if terminal {button {r#type:"button","aria-label":"Close sequence result",onclick:move |_|on_dismiss.call(dismiss_key.clone()),"×"}}
                     else {button {r#type:"button","aria-label":"Minimize sequence progress",onclick:move |_|on_minimize.call(minimize_key.clone()),"−"}}
                 }
+                div {class:"gs26-sequence-body",
                 div {class:"gs26-sequence-summary",role:"status",aria_live:"polite","data-outcome":format!("{:?}",panel.snapshot.outcome),
                     strong {"{status}"}if panel.snapshot.details_complete {span {"{passed} of {count} steps passed"}}
                 }
-                if !terminal&&!fresh {p {class:"gs26-sequence-unknown","Fresh station progress is unavailable. Confirmation is unknown."}}
+                if !terminal&&!fresh {p {class:"gs26-sequence-unknown","Current sensor confirmation is unavailable. Last reported board state is shown separately when connected."}}
+                if !terminal&&transient_transport_error&&fresh {p{class:"gs26-sequence-refreshing","Last confirmed progress retained while reconnecting. Commands remain unavailable."}}
                 p {class:"gs26-sequence-message","{panel.snapshot.message}"}
                 if !terminal {
                     section {class:"gs26-sequence-current",h3 {"Current"}
@@ -165,7 +179,7 @@ pub fn SequenceProgressView(
                         if let Some(step)=current {
                             if !step.watch.is_empty(){h4 {"Watching"}}
                             for watch in &step.watch {
-                                {let observed=if fresh{panel.observed_value(watch,now_ms)}else{None};let reading=value_label(observed);let target=value_label(watch.target.as_ref());let evidence=if observed.is_some(){evidence_label(watch.evidence)}else{"Unknown"};
+                                {let displayed=if !terminal&&!panel.historical&&(!unavailable||transient_transport_error){super::sequence_progress_model::board_output_display(watch,&output_display)}else{None};let metadata_present=!terminal&&!panel.historical&&(!unavailable||transient_transport_error)&&super::sequence_progress_model::board_output_metadata_present(watch,&board_display);let observed=displayed.as_ref().or_else(||if fresh&&!metadata_present{panel.observed_value(watch,now_ms)}else{None});let reading=value_label(observed);let target=value_label(watch.target.as_ref());let evidence=if displayed.is_some(){"Board-reported electrical state"}else if observed.is_some(){evidence_label(watch.evidence)}else{"Unknown"};
                                 rsx!{div {class:"gs26-sequence-watch",key:"{watch.id}",
                                     span {"{watch.label}"}strong {"{reading}" if let Some(unit)=&watch.unit{" {unit}"}}
                                     small {"{evidence}"}small {if watch.target.is_some(){"Planned target: {target}"}}
@@ -178,9 +192,12 @@ pub fn SequenceProgressView(
                 if terminal && !panel.snapshot.details_complete {p {class:"gs26-sequence-message",role:"status","Loading recorded step details…"}}
                 if terminal && panel.snapshot.details_complete {p {class:"gs26-sequence-legend","Step readings below were recorded while watching each step. They are not current live readings."}}
                 if panel.snapshot.watch_history_truncated {p {class:"gs26-sequence-legend","Some earlier step readings are not retained. All step results are retained."}}
+                if terminal&&!panel.snapshot.details_complete&&!panel.loading_steps.is_empty(){
+                    ol{class:"gs26-sequence-steps","aria-label":"Recorded steps loading",for (id,label) in &panel.loading_steps{li{key:"{id}",span{"{label}"}small{"Loading final result…"}}}}
+                }
                 ol {class:"gs26-sequence-steps","aria-label":"Sequence steps",
                     for step in &panel.snapshot.steps {
-                        {let state=if !terminal&&!fresh&&matches!(step.state,StepState::Current|StepState::Watching){StepState::Unknown}else{step.state};let label=step_label(state);let glyph=step_glyph(state);
+                        {let state=if !terminal&&!fresh&&!display_authority&&matches!(step.state,StepState::Current|StepState::Watching){StepState::Unknown}else{step.state};let label=step_label(state);let glyph=step_glyph(state);
                         rsx!{li {key:"{step.id}","data-step-state":label,
                             if terminal && !step.watch.is_empty() {
                                 details {summary {span {"{step.label}"}small {span {class:"gs26-sequence-step-glyph","aria-hidden":"true","{glyph}"} span {class:"gs26-sequence-step-label","{label}"}}}
@@ -195,11 +212,12 @@ pub fn SequenceProgressView(
                         }}}
                     }
                 }
+                }
                 footer {
                     if panel.snapshot.kind==Kind::ColdFlow && !terminal {
                         p {class:"gs26-sequence-legend","Cold Flow opens PILOT/main only. No igniter or launch countdown. Cancel closes supplies/main, then dump and vent."}
                         if panel.snapshot.cold_flow_release_allowed {
-                            button {class:"gs26-sequence-cancel",r#type:"button",disabled:!fresh||!can_release_cold_flow,onclick:move |_|on_release_cold_flow.call(release_key.clone()),"Cold Flow · open PILOT/main"}
+                            button {class:"gs26-sequence-cancel",r#type:"button",disabled:!current_authority||!can_release_cold_flow,onclick:move |_|on_release_cold_flow.call(release_key.clone()),"Cold Flow · open PILOT/main"}
                         }
                     }
                     if panel.cancel_pending {p {role:"status","Cancellation requested. Waiting for the station's safe-cancel result."}}
@@ -221,9 +239,31 @@ mod tests {
         minimized: bool,
         now: u64,
         summary: bool,
+        unavailable: bool,
+        transient: bool,
+        board_meta: Option<bool>,
     }
     fn fixture(props: FixtureProps) -> Element {
         let mut snapshot:Snapshot=serde_json::from_value(serde_json::json!({"version":1,"key":{"backend_instance":"11111111111111111111111111111111","reset_epoch":"2222222222222222","run_id":"33333333333333333333333333333333"},"revision":1,"kind":"nitrogen_test","outcome":"running","origin_client":"origin-a","title":"Nitrogen test","message":"Watching tank pressure","current_step":"raise-0","next_step":"hold-0","steps":[{"id":"raise-0","label":"Raise pressure","state":"watching","watch":[{"id":"tank-pt","label":"Tank pressure","target":50.0,"observed":42.0,"unit":"psi","age_ms":0,"valid_for_ms":2000,"evidence":"measured"}]},{"id":"hold-0","label":"Verify hold","state":"planned","watch":[]}],"observed_age_ms":0,"valid_for_ms":2000,"cancel_allowed":true})).unwrap();
+        let mut board_display = super::super::sequence_progress_model::BoardDisplayMap::new();
+        if let Some(connected) = props.board_meta {
+            let watch = &mut snapshot.steps[0].watch[0];
+            watch.id = "board-output-0".into();
+            watch.observed = Some(Value::Boolean(true));
+            watch.unit = None;
+            watch.evidence = Evidence::BoardReported;
+            board_display.insert(
+                "VB".into(),
+                super::super::sequence_progress_model::BoardDisplay {
+                    connected,
+                    known: connected,
+                    boot: Some("0000000000000002".into()),
+                    epoch: Some(3),
+                    outputs: Some(1),
+                    outputs_age_ms: Some(0),
+                },
+            );
+        }
         if props.terminal {
             snapshot.outcome = Outcome::Cancelled;
             snapshot.cancel_allowed = false;
@@ -238,7 +278,12 @@ mod tests {
             model.minimize(&snapshot.key);
         }
         let panel = model.panels()[0].clone();
-        rsx! {SequenceProgressView{panel,now_ms:props.now,can_send_commands:true,cancel_api_version:Some(1),on_minimize:move|_|{},on_restore:move|_|{},on_cancel:move|_|{},on_dismiss:move|_|{}}}
+        let output_display = if props.board_meta == Some(true) {
+            [(0, true)].into_iter().collect()
+        } else {
+            Default::default()
+        };
+        rsx! {SequenceProgressView{panel,board_display,output_display,now_ms:props.now,unavailable:props.unavailable,transient_transport_error:props.transient,can_send_commands:true,cancel_api_version:Some(1),on_minimize:move|_|{},on_restore:move|_|{},on_cancel:move|_|{},on_dismiss:move|_|{}}}
     }
     fn html(terminal: bool, minimized: bool, now: u64) -> String {
         let mut dom = VirtualDom::new_with_props(
@@ -248,10 +293,62 @@ mod tests {
                 minimized,
                 now,
                 summary: false,
+                unavailable: false,
+                transient: false,
+                board_meta: None,
             },
         );
         dom.rebuild_in_place();
         dioxus::ssr::render(&dom)
+    }
+    #[test]
+    fn transient_transport_failure_retains_valid_display_but_never_command_authority() {
+        for (now, transient, known) in [(100, true, true), (100, false, false), (2001, true, false)]
+        {
+            let mut dom = VirtualDom::new_with_props(
+                fixture,
+                FixtureProps {
+                    terminal: false,
+                    minimized: false,
+                    now,
+                    summary: false,
+                    unavailable: true,
+                    transient,
+                    board_meta: None,
+                },
+            );
+            dom.rebuild_in_place();
+            let html = dioxus::ssr::render(&dom);
+            assert_eq!(html.contains("42.00"), known);
+            assert!(html.contains("disabled"));
+            assert_eq!(html.contains("Progress unknown"), !known);
+        }
+    }
+    #[test]
+    fn explicit_disconnect_overrides_fresh_producer_output_but_never_rewrites_history() {
+        for terminal in [false, true] {
+            for connected in [false, true] {
+                let mut dom = VirtualDom::new_with_props(
+                    fixture,
+                    FixtureProps {
+                        terminal,
+                        minimized: false,
+                        now: 100,
+                        summary: false,
+                        unavailable: false,
+                        transient: false,
+                        board_meta: Some(connected),
+                    },
+                );
+                dom.rebuild_in_place();
+                let html = dioxus::ssr::render(&dom);
+                assert_eq!(
+                    html.contains(">On</strong>"),
+                    terminal || connected,
+                    "terminal={terminal} connected={connected}"
+                );
+            }
+        }
     }
     #[test]
     fn running_actual_view_has_minimize_and_guarded_cancel_but_no_dismiss() {
@@ -271,7 +368,10 @@ mod tests {
         let stale = html(false, false, 2001);
         assert!(stale.contains("Progress unknown"));
         assert!(!stale.contains("42.00"));
-        assert!(!stale.contains("◌"), "stale work must not keep a working glyph");
+        assert!(
+            !stale.contains("◌"),
+            "stale work must not keep a working glyph"
+        );
         assert!(stale.contains("?"));
         let result = html(true, false, 100);
         assert!(result.contains("Close sequence result"));
@@ -288,6 +388,9 @@ mod tests {
                 minimized: false,
                 now: 100,
                 summary: true,
+                unavailable: false,
+                transient: false,
+                board_meta: None,
             },
         );
         dom.rebuild_in_place();

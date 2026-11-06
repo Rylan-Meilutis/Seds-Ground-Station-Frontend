@@ -59,7 +59,9 @@
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
-      "readback_valid_for_ms": null
+      "readback_valid_for_ms": null,
+      "display_connected": true,
+      "display_known": false
     },
     {
       "id": "FC",
@@ -91,7 +93,9 @@
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
-      "readback_valid_for_ms": null
+      "readback_valid_for_ms": null,
+      "display_connected": true,
+      "display_known": false
     },
     {
       "id": "PB",
@@ -123,7 +127,9 @@
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
-      "readback_valid_for_ms": null
+      "readback_valid_for_ms": null,
+      "display_connected": true,
+      "display_known": false
     },
     {
       "id": "AB",
@@ -155,7 +161,9 @@
       },
       "operation": null,
       "message": null,
-      "readback_valid_for_ms": 4950
+      "readback_valid_for_ms": 4950,
+      "display_connected": true,
+      "display_known": true
     },
     {
       "id": "VB",
@@ -187,7 +195,9 @@
       },
       "operation": null,
       "message": null,
-      "readback_valid_for_ms": 4950
+      "readback_valid_for_ms": 4950,
+      "display_connected": true,
+      "display_known": true
     },
     {
       "id": "GB",
@@ -219,7 +229,9 @@
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
-      "readback_valid_for_ms": null
+      "readback_valid_for_ms": null,
+      "display_connected": true,
+      "display_known": false
     },
     {
       "id": "DAQ",
@@ -251,7 +263,9 @@
       },
       "operation": null,
       "message": "No verified dedicated recovery endpoint/status. Unsupported or not yet discovered.",
-      "readback_valid_for_ms": null
+      "readback_valid_for_ms": null,
+      "display_connected": true,
+      "display_known": false
     }
   ],
   "operation": null

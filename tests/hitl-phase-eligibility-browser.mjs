@@ -1,0 +1,28 @@
+// Actual optimized Wasm, inert localhost APIs; no commands or hardware access.
+import fs from 'node:fs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base)}catch{return null}};
+const source=fs.readFileSync('tests/navigation-checklists.mjs','utf8');
+const boundary=source.indexOf('try {\n const context=');
+if(boundary<0)throw Error('Navigation fixture boundary changed');
+let fixture=source.slice(0,boundary).replace("process.env.PLAYWRIGHT_MODULE || 'playwright'",JSON.stringify(pathToFileURL(path.resolve(process.env.PLAYWRIGHT_MODULE)).href));
+fixture=fixture.replace('let lists={',`let boardAbort={version:10,active_errors:[],required_boards:[],missing_required_state:[],history_error:null,history_unknown_boards:[],retraction:{configured:true,enforced:true,allowed:false,phase:'awaiting_completion',message:'Synthetic retract completion is still required for launch'}};let lists={`);
+fixture=fixture.replace("let actionPolicy=example('action-policy');",`let actionPolicy={key_enabled:true,software_buttons_enabled:true,local_phase_controls:true,controls:['Launch','GroundStationLaunch','AdvanceFlightState','RewindFlightState'].map(cmd=>({cmd,enabled:true,blink:'none',actuated:null}))};`);
+fixture=fixture.replace("const dashboardLayout=example('layout.full');",`const dashboardLayout=example('layout.full');dashboardLayout.actions_tab.actions=['Launch','GroundStationLaunch','AdvanceFlightState','RewindFlightState'].map(cmd=>({cmd,label:cmd,group:'Flight controls',border:'#53657c',bg:'#142033',fg:'#ffffff'}));`);
+fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(pathname==='/api/board_abort'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(boardAbort));return;}
+  if(pathname==='/api/station_mode'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({local_build_mode:'hitl',effective_mode:'hitl',synchronized:true,primary:true}));return;}
+  if(pathname==='/api/checklists'||`);
+fixture+=`try {
+ const context=await browser.newContext({viewport:{width:1280,height:900}});
+ await context.addInitScript(({session,origin})=>{if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base)}catch{return null}};localStorage.setItem('navigation-style','tabs');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
+ const commands=[],errors=[];await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',socket=>{socket.onMessage(data=>commands.push(data));const push=()=>{socket.send(JSON.stringify({ty:'BoardAbort',data:boardAbort}));socket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy}));};push();const timer=setInterval(push,100);socket.onClose(()=>clearInterval(timer));});
+ const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));await page.goto(origin+'/dashboard');await page.getByRole('button',{name:/Choose tab/}).click();await page.locator('#dashboard-tab-picker').getByRole('button',{name:'Actions',exact:true}).click();
+ const button=cmd=>page.locator('button[data-dispatch-command="'+cmd+'"]');
+ await button('AdvanceFlightState').waitFor();
+ for(const width of [1280,390]){await page.setViewportSize({width,height:900});for(let until=Date.now()+2500;Date.now()<until;){await page.waitForTimeout(100);assert(await button('AdvanceFlightState').isEnabled(),'server-enabled local Advance remains enabled despite launch-only retract blocker');assert(await button('RewindFlightState').isEnabled(),'server-enabled local Rewind remains enabled despite launch-only retract blocker');assert(await button('Launch').isDisabled(),'retraction still blocks Launch');assert(await button('GroundStationLaunch').isDisabled(),'retraction still blocks GS Launch');}}
+ actionPolicy.controls.find(c=>c.cmd==='RewindFlightState').enabled=false;await page.waitForFunction(()=>document.querySelector('button[data-dispatch-command="RewindFlightState"]').disabled);assert(await button('AdvanceFlightState').isEnabled(),'a server denial for Rewind does not disable Advance');
+ actionPolicy.local_phase_controls=false;await page.waitForFunction(()=>document.querySelector('button[data-dispatch-command="AdvanceFlightState"]').disabled);assert(await button('RewindFlightState').isDisabled(),'old/nonlocal policy retains launch-family constraint');
+ actionPolicy.local_phase_controls=true;actionPolicy.controls.find(c=>c.cmd==='AdvanceFlightState').enabled=false;actionPolicy.controls.find(c=>c.cmd==='RewindFlightState').enabled=true;await page.waitForFunction(()=>!document.querySelector('button[data-dispatch-command="RewindFlightState"]').disabled);assert(await button('AdvanceFlightState').isDisabled(),'explicit server phase boundary denial stays disabled');assert.deepEqual(commands,[],'viewing and policy updates cannot dispatch a flight-state or launch command');assert.deepEqual(errors,[]);await context.close();console.log('PASS actual Wasm server-owned local HITL phase eligibility, launch-only retract blocker, per-control denial, old-policy fallback, desktop/mobile and no command dispatch');
+}finally{await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}`;
+if(process.env.GS_PHASE_PREPARE_ONLY==='1'){fs.writeFileSync('/tmp/hitl-phase-eligibility-fixture.mjs',fixture);}else try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}

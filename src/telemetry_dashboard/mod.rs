@@ -9,6 +9,7 @@ mod alert_conditions;
 mod alert_condition_panel;
 mod admin_console;
 mod board_abort_readiness;
+mod board_readback_display;
 mod board_recovery_guard;
 mod board_recovery_model;
 mod board_recovery_panel;

@@ -132,7 +132,8 @@ pub fn AntennaAiming(on_exit: EventHandler<()>) -> Element {
     });
     let current = snapshot.read().clone();
     let sensor = sensors.read().clone();
-    let backend_age_ms = (*clock.read() - *received.read()).max(0.0);
+    let _clock_tick = *clock.read();
+    let backend_age_ms = (monotonic_now_ms() - *received.read()).max(0.0);
     let backend_fresh = backend_age_ms < 3_000.0;
     let source = match origin.read().as_str() {
         "gs" => current.ground_station.clone(),

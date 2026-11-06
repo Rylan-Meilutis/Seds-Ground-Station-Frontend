@@ -37,6 +37,7 @@ pub fn ConnectionStatusTab(
     title: String,
     theme: ThemeConfig,
 ) -> Element {
+    super::board_recovery_panel::use_recovery_provider();
     let mut show_board = use_signal(|| true);
     let mut board_fullscreen = use_signal(|| false);
     let mut show_latency = use_signal(|| true);
@@ -244,8 +245,8 @@ pub fn ConnectionStatusTab(
                 }
             }
             super::board_abort_readiness::BoardAbortReadiness {}
-            super::board_recovery_panel::BoardRecoveryPanel {ws_connected,theme:theme.clone()}
             super::info_panels::InfoPanels {page:"connections",panels,wide:true}
+            super::board_recovery_panel::RecoveryDialogs {ws_connected}
         }
 
         if *board_fullscreen.read() {
@@ -724,5 +725,7 @@ pub(super) fn use_board_age_clock() -> i64 {
             now.set(super::monotonic_now_ms() as i64);
         }
     });
-    *now.read()
+    // New board receipts may be newer than the last timer signal.
+    let _tick = *now.read();
+    super::monotonic_now_ms() as i64
 }
