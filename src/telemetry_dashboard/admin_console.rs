@@ -1,5 +1,5 @@
 //! Account management is a separate, explicitly authorized application area.
-use super::{http_get_json,http_post_json};
+use super::neutral_request_owner;
 use dioxus::prelude::*;
 use serde::{Deserialize,Serialize};
 #[derive(Clone,Default,Serialize,Deserialize)]
@@ -17,21 +17,25 @@ struct Account {
 }
 #[component]
 pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<String>)->Element {
+    let authority = neutral_request_owner::use_factory();
     let mut accounts=use_signal(Vec::<Account>::new);
     let mut message=use_signal(String::new);
     let mut busy=use_signal(||false);
     let mut username=use_signal(String::new);
     let mut password=use_signal(String::new);
     let mut loaded=use_signal(||false);
-    use_future(move||async move{
-        match http_get_json::<Vec<Account>>("/api/admin/users").await {
+    #[cfg(all(test, not(target_arch="wasm32")))]
+    super::neutral_request_owner::native_tests::observe_admin_signals(move || (*busy.peek(), message.peek().clone()));
+    use_future(move||authority.run(async move{
+        match authority.get::<Vec<Account>>("/api/admin/users").await {
             Ok(value)=>{accounts.set(value);loaded.set(true);},Err(error)=>message.set(error),
         }
-    });
+    }));
     let status=crate::auth::current_status();
     if !status.authenticated || !status.roles.iter().any(|role|role=="admin") {
         return rsx!{main {p {"Application administrator required"}button {onclick:move |_|on_exit.call(()),"Back to dashboard"}}};
     }
+    if !authority.current(){return rsx!{main {{neutral_request_owner::retired_notice()} button {onclick:move |_|on_exit.call(()),"Back to settings"}}};}
     rsx!{
         style {{include_str!("controls.css")}}
         style {{include_str!("admin_console.css")}}
@@ -74,9 +78,9 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
                             p {"Application admins inherit all permissions. Other accounts need explicit command access; an empty command list allows all commands."}
                         }
                         button {disabled:*busy.read(),onclick:move |_|{
-                            let account=accounts.read()[index].clone();busy.set(true);
-                            spawn(async move{
-                                match http_post_json::<Account,Account>("/api/admin/users",&account).await {
+                            let account=accounts.read()[index].clone();if !authority.current(){return;}busy.set(true);
+                            authority.spawn(async move{
+                                match authority.post::<Account,Account>("/api/admin/users",&account).await {
                                     Ok(saved)=>{accounts.write()[index]=saved;message.set("Account saved".into());},Err(error)=>message.set(error),
                                 }
                                 busy.set(false);
@@ -91,9 +95,9 @@ pub(super) fn AdminConsole(on_exit:EventHandler<()>,on_navigate:EventHandler<Str
                     label {"Temporary password" input {r#type:"password",value:password.read().clone(),minlength:"12",maxlength:"128",autocomplete:"new-password",oninput:move|e|password.set(e.value())}}
                     button {disabled:*busy.read()||username.read().trim().is_empty()||password.read().len()<12,onclick:move |_|{
                         let account=Account{username:username.read().trim().into(),password:Some(password.read().clone()),roles:vec!["stream_viewer".into()],permissions:Permissions{view_data:true,..Default::default()},..Default::default()};
-                        busy.set(true);password.set(String::new());
-                        spawn(async move{
-                            match http_post_json::<Account,Account>("/api/admin/users/create",&account).await {
+                        if !authority.current(){return;}busy.set(true);password.set(String::new());
+                        authority.spawn(async move{
+                            match authority.post::<Account,Account>("/api/admin/users/create",&account).await {
                                 Ok(saved)=>{accounts.write().push(saved);username.set(String::new());message.set("Account created with viewing access".into());},Err(error)=>message.set(error),
                             }
                             busy.set(false);

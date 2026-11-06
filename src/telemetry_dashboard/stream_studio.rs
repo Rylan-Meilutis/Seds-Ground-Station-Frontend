@@ -1,4 +1,5 @@
-use super::{http_get_json, http_post_json, live_stream_tab::BroadcastState};
+use super::neutral_request_owner;
+use super::{ live_stream_tab::BroadcastState};
 use crate::auth;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -20,15 +21,17 @@ struct TranscodeHost {id:String,name:String,passed:bool,online:bool,capacity:usi
 struct TranscodeHosts {selected:Option<String>,hosts:Vec<TranscodeHost>}
 #[component]
 fn TranscodingHosts()->Element{
+    let authority = neutral_request_owner::use_factory();
     let mut data=use_signal(TranscodeHosts::default);let mut message=use_signal(String::new);let mut busy=use_signal(||false);let mut available=use_signal(||false);
-    use_future(move||async move{loop{match http_get_json::<TranscodeHosts>("/api/video/transcode/hosts").await{Ok(value)=>{data.set(value);available.set(true);},Err(_)=>{available.set(false);}}
+    use_future(move||authority.run(async move{loop{match authority.get::<TranscodeHosts>("/api/video/transcode/hosts").await{Ok(value)=>{data.set(value);available.set(true);},Err(_)=>{available.set(false);}}
         #[cfg(target_arch="wasm32")]gloo_timers::future::TimeoutFuture::new(3000).await;
         #[cfg(not(target_arch="wasm32"))]tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    }});
+    }}));
+    if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx!{section {"aria-label":"Transcoding hosts",h3 {"Transcoding host"}
         p {"Run the GroundStation Video Transcoder helper on another computer. It must pass encoding and upload/download tests before it can be selected."}
         label {"Use host" select {value:data().selected.unwrap_or_default(),disabled:busy()||!available(),onchange:move|e|{
-            let id=e.value();busy.set(true);spawn(async move{let body=serde_json::json!({"host_id":if id.is_empty(){None}else{Some(id)}});match http_post_json::<serde_json::Value,serde_json::Value>("/api/video/transcode/hosts",&body).await{Ok(_)=>{message.set("Transcoding selection saved".into());if let Ok(next)=http_get_json::<TranscodeHosts>("/api/video/transcode/hosts").await{data.set(next);}},Err(error)=>message.set(error)}busy.set(false);});
+            let id=e.value();if !authority.current(){return;}busy.set(true);authority.spawn(async move{let body=serde_json::json!({"host_id":if id.is_empty(){None}else{Some(id)}});match authority.post::<serde_json::Value,serde_json::Value>("/api/video/transcode/hosts",&body).await{Ok(_)=>{message.set("Transcoding selection saved".into());if let Ok(next)=authority.get::<TranscodeHosts>("/api/video/transcode/hosts").await{data.set(next);}},Err(error)=>message.set(error)}busy.set(false);});
         },option {value:"","Original camera feeds (no remote transcoding)"}
          for host in &data().hosts{option {value:host.id.clone(),disabled:!host.passed||!host.online,"{host.name} · {host.capacity} camera(s)"}}
         }}
@@ -40,10 +43,12 @@ fn TranscodingHosts()->Element{
 
 #[component]
 fn LayoutDesigner(broadcast:BroadcastState,streams:Vec<super::live_stream_tab::LiveStreamSpec>)->Element{
+    let authority = neutral_request_owner::use_factory();
     let mut order=use_signal(||{let mut ids:Vec<_>=broadcast.tiles.iter().map(|t|t.stream_id.clone()).collect();for s in &streams{if !ids.contains(&s.id){ids.push(s.id.clone());}}ids.truncate(8);ids});
     let mut template=use_signal(||"grid".to_owned());let mut split=use_signal(||65.0);
     let mut base=use_signal(||broadcast.clone());let mut busy=use_signal(||false);let mut message=use_signal(String::new);
     let mut preview=use_signal(||true);let tiles=camera_tiles(&order(),&template(),split());
+    if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx!{section {class:"gs26-layout-designer","aria-label":"Camera layout designer",
         h3 {"Live camera layout"}
         p {"Arrange the tiles, choose a layout and resize the main camera. Save to fade the audience programme into this layout, including camera replays."}
@@ -64,8 +69,8 @@ fn LayoutDesigner(broadcast:BroadcastState,streams:Vec<super::live_stream_tab::L
             }
         }
         button {disabled:busy()||tiles.is_empty(),onclick:move|_|{
-            let mut next=base();next.layout="tiles".into();next.tiles=camera_tiles(&order(),&template(),split());next.hidden_stream_ids.retain(|id|!next.tiles.iter().any(|t|&t.stream_id==id));busy.set(true);
-            spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(saved)=>{base.set(saved);message.set("Layout saved".into());},Err(e)=>message.set(e)}busy.set(false);});
+            let mut next=base();next.layout="tiles".into();next.tiles=camera_tiles(&order(),&template(),split());next.hidden_stream_ids.retain(|id|!next.tiles.iter().any(|t|&t.stream_id==id));if !authority.current(){return;}busy.set(true);
+            authority.spawn(async move{match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(saved)=>{base.set(saved);message.set("Layout saved".into());},Err(e)=>message.set(e)}busy.set(false);});
         },"Save camera layout"}
         button {disabled:busy(),onclick:move|_|{base.set(broadcast.clone());order.set(streams.iter().map(|s|s.id.clone()).take(8).collect());message.set("Current camera list loaded".into());},"Reload cameras"}
         p {role:"status","{message}"}
@@ -88,6 +93,7 @@ pub(super) fn StreamStudio(
     program_url: String,
     streams: Vec<super::live_stream_tab::LiveStreamSpec>,
 ) -> Element {
+    let authority = neutral_request_owner::use_factory();
     let delay = use_signal(|| broadcast.delay_seconds);
     let mut comms_audio = use_signal(|| broadcast.comms_audio_enabled);
     let mut commentary_audio = use_signal(|| broadcast.commentary_audio_enabled);
@@ -100,14 +106,15 @@ pub(super) fn StreamStudio(
         .roles
         .iter()
         .any(|r| r == "stream_admin" || r == "admin");
-    use_future(move || async move {
+    use_future(move || authority.run(async move {
         if admin {
-            match http_get_json::<Vec<Account>>("/api/stream-roles").await {
+            match authority.get::<Vec<Account>>("/api/stream-roles").await {
                 Ok(v) => accounts.set(v),
                 Err(e) => message.set(e),
             }
         }
-    });
+    }));
+    if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {section {class:"gs26-stream-studio",style:"width:100%;padding:16px;box-sizing:border-box;border:1px solid #344454;border-radius:12px;background:#101923;color:#e4ebf0;",
       style {{include_str!("stream_studio.css")}}
       h3 {style:"margin:0 0 12px;","Broadcast studio"}
@@ -124,8 +131,8 @@ pub(super) fn StreamStudio(
       }
       div {
        button {disabled:*busy.read()||!(3..=60).contains(&*delay.read()),onclick:move |_|{
-         let mut next=broadcast.clone();next.delay_seconds = *delay.read();next.label=label.read().clone();next.comms_audio_enabled = *comms_audio.read();next.commentary_audio_enabled=commentary_audio();busy.set(true);
-         spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(_)=>message.set("Broadcast settings saved.".into()),Err(e)=>message.set(e)}busy.set(false);});
+         let mut next=broadcast.clone();next.delay_seconds = *delay.read();next.label=label.read().clone();next.comms_audio_enabled = *comms_audio.read();next.commentary_audio_enabled=commentary_audio();if !authority.current(){return;}busy.set(true);
+         authority.spawn(async move{match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(_)=>message.set("Broadcast settings saved.".into()),Err(e)=>message.set(e)}busy.set(false);});
        },"Apply broadcast settings"}
       }
       div {class:"gs26-studio-actions",button {aria_expanded:audio_desk().to_string(),onclick:move|_|audio_desk.toggle(),if audio_desk(){"Close audio desk"}else{"Open audio desk"}}}
@@ -146,8 +153,8 @@ pub(super) fn StreamStudio(
          {let username=account.username.clone();let enabled=account.roles.iter().any(|r|r=="stream_master");let administrator=account.roles.iter().any(|r|r=="stream_admin");
           rsx!{label {style:"display:block;padding:8px;",
            input {r#type:"checkbox",checked:enabled,disabled:account.disabled||administrator||*busy.read(),onchange:move|e|{
-             let grant=Grant{username:username.clone(),stream_master:e.checked()};busy.set(true);
-             spawn(async move{match http_post_json::<Grant,serde_json::Value>("/api/stream-roles",&grant).await{Ok(_)=>{message.set("Stream role saved".into());if let Ok(v)=http_get_json::<Vec<Account>>("/api/stream-roles").await{accounts.set(v);}},Err(e)=>message.set(e)}busy.set(false);});
+             let grant=Grant{username:username.clone(),stream_master:e.checked()};if !authority.current(){return;}busy.set(true);
+             authority.spawn(async move{match authority.post::<Grant,serde_json::Value>("/api/stream-roles",&grant).await{Ok(_)=>{message.set("Stream role saved".into());if let Ok(v)=authority.get::<Vec<Account>>("/api/stream-roles").await{accounts.set(v);}},Err(e)=>message.set(e)}busy.set(false);});
            }} "{account.username}" if administrator {" — administrator"}
           }}
          }
@@ -165,6 +172,7 @@ fn freshest_broadcast(current: &BroadcastState, saved: &Option<BroadcastState>) 
         .clone()
 }
 async fn save_replay(
+    authority: neutral_request_owner::Factory,
     mut request: BroadcastState,
     plan: Option<super::live_stream_tab::ReplayPlan>,
     mut busy: Signal<bool>,
@@ -173,9 +181,9 @@ async fn save_replay(
     mut draft: Signal<super::live_stream_tab::ReplayPlan>,
 ) {
     request.replay = plan;
-    busy.set(true);
+    if !authority.current(){return;}busy.set(true);
     message.set("Preparing buffered cameras…".into());
-    match http_post_json::<BroadcastState, BroadcastState>("/api/live_streams/control", &request)
+    match authority.post::<BroadcastState, BroadcastState>("/api/live_streams/control", &request)
         .await
     {
         Ok(value) => {
@@ -201,6 +209,7 @@ pub(super) fn ReplayControls(
     broadcast: BroadcastState,
     streams: Vec<super::live_stream_tab::LiveStreamSpec>,
 ) -> Element {
+    let authority = neutral_request_owner::use_factory();
     use super::live_stream_tab::{ReplayCamera, ReplayPlan};
     let mut draft = use_signal(|| {
         broadcast.replay.clone().unwrap_or(ReplayPlan {
@@ -227,6 +236,7 @@ pub(super) fn ReplayControls(
     let saved = use_signal(|| None::<BroadcastState>);
     let current = freshest_broadcast(&broadcast, &saved.read());
     let can_apply = current.replay.is_some();
+    if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {
         section {class:"gs26-replay-controls",style:"padding:16px;border:1px solid #344454;border-radius:12px;display:grid;gap:12px;",
             h3 {style:"margin:0;","Instant replay"}
@@ -255,9 +265,9 @@ pub(super) fn ReplayControls(
                 }
             }
             div {style:"display:flex;gap:10px;flex-wrap:wrap;",
-                button {r#type:"button",disabled:*busy.read()||draft.read().cameras.is_empty()||!(1..=20).contains(&draft.read().duration_seconds),onclick:{let current=current.clone();move |_|{let mut p=draft.read().clone();p.id.clear();p.started_at_ms=0;p.source_end_ms=0;spawn(save_replay(current.clone(),Some(p),busy,message,saved,draft));}},"Play replay"}
-                button {r#type:"button",disabled:*busy.read()||!can_apply,onclick:{let current=current.clone();move |_|{if let Some(mut p)=current.replay.clone(){p.cameras=draft.read().cameras.clone();spawn(save_replay(current.clone(),Some(p),busy,message,saved,draft));}}},"Apply replay framing"}
-                button {r#type:"button",disabled:*busy.read()||!can_apply,onclick:{let current=current.clone();move |_|{spawn(save_replay(current.clone(),None,busy,message,saved,draft));}},"Return to live"}
+                button {r#type:"button",disabled:*busy.read()||draft.read().cameras.is_empty()||!(1..=20).contains(&draft.read().duration_seconds),onclick:{let current=current.clone();move |_|{let mut p=draft.read().clone();p.id.clear();p.started_at_ms=0;p.source_end_ms=0;authority.spawn(save_replay(authority,current.clone(),Some(p),busy,message,saved,draft));}},"Play replay"}
+                button {r#type:"button",disabled:*busy.read()||!can_apply,onclick:{let current=current.clone();move |_|{if let Some(mut p)=current.replay.clone(){p.cameras=draft.read().cameras.clone();authority.spawn(save_replay(authority,current.clone(),Some(p),busy,message,saved,draft));}}},"Apply replay framing"}
+                button {r#type:"button",disabled:*busy.read()||!can_apply,onclick:{let current=current.clone();move |_|{authority.spawn(save_replay(authority,current.clone(),None,busy,message,saved,draft));}},"Return to live"}
             }
             p {role:"status",style:"margin:0;","{message}"}
             details {summary {"Replay help"} p {"Select up to eight cameras, including cameras hidden from the live program. Replay uses the last 1–20 seconds of the audience timeline and returns to live automatically. Frame and order changes apply only to the replay. Start a new replay to add a camera or change its duration or speed. Crew voice is muted during replay."}}
@@ -304,6 +314,7 @@ fn InterviewEditor(
     broadcast: BroadcastState,
     streams: Vec<super::live_stream_tab::LiveStreamSpec>,
 ) -> Element {
+    let authority = neutral_request_owner::use_factory();
     let mut base = use_signal(|| broadcast.clone());
     let mut main = use_signal(|| broadcast.interview.main_stream_id.clone());
     let mut pip = use_signal(|| broadcast.interview.pip_stream_id.clone());
@@ -311,6 +322,7 @@ fn InterviewEditor(
     let mut pip_audio = use_signal(|| broadcast.interview.pip_audio);
     let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
+    if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {details {class:"gs26-interview-editor",summary {"Interview scene"}
         p {class:"gs26-studio-help","Choose a camera/participant feed for the main view and another feed for the corner. Share a browser camera from Cameras to add a participant."}
         div {class:"gs26-studio-fields",
@@ -322,10 +334,10 @@ fn InterviewEditor(
         p {class:"gs26-studio-help","Feed audio, commentary and crew-voice inclusion are separate choices. Use headphones when monitoring comms."}
         div {class:"gs26-studio-actions",
             button {disabled:busy()||main().is_empty()||pip().is_empty()||main()==pip(),onclick:move|_|{
-                let mut request=base();request.layout="interview".into();request.interview=super::live_stream_tab::InterviewScene{main_stream_id:main(),pip_stream_id:pip(),main_audio:main_audio(),pip_audio:pip_audio()};busy.set(true);
-                spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await{Ok(saved)=>{base.set(saved);message.set("Interview scene saved and selected".into());},Err(e)=>message.set(e)}busy.set(false);});
+                let mut request=base();request.layout="interview".into();request.interview=super::live_stream_tab::InterviewScene{main_stream_id:main(),pip_stream_id:pip(),main_audio:main_audio(),pip_audio:pip_audio()};if !authority.current(){return;}busy.set(true);
+                authority.spawn(async move{match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await{Ok(saved)=>{base.set(saved);message.set("Interview scene saved and selected".into());},Err(e)=>message.set(e)}busy.set(false);});
             },"Take interview on air"}
-            button {disabled:busy(),onclick:move|_|{busy.set(true);spawn(async move{match http_get_json::<super::live_stream_tab::LiveStreamConfig>("/api/live_streams").await{Ok(cfg)=>{main.set(cfg.broadcast.interview.main_stream_id.clone());pip.set(cfg.broadcast.interview.pip_stream_id.clone());main_audio.set(cfg.broadcast.interview.main_audio);pip_audio.set(cfg.broadcast.interview.pip_audio);base.set(cfg.broadcast);message.set("Interview settings reloaded".into());},Err(e)=>message.set(e)}busy.set(false);});},"Reload interview settings"}
+            button {disabled:busy(),onclick:move|_|{if !authority.current(){return;}busy.set(true);authority.spawn(async move{match authority.get::<super::live_stream_tab::LiveStreamConfig>("/api/live_streams").await{Ok(cfg)=>{main.set(cfg.broadcast.interview.main_stream_id.clone());pip.set(cfg.broadcast.interview.pip_stream_id.clone());main_audio.set(cfg.broadcast.interview.main_audio);pip_audio.set(cfg.broadcast.interview.pip_audio);base.set(cfg.broadcast);message.set("Interview settings reloaded".into());},Err(e)=>message.set(e)}busy.set(false);});},"Reload interview settings"}
         }
         if !message().is_empty(){p {role:"status","{message}"}}
     }}

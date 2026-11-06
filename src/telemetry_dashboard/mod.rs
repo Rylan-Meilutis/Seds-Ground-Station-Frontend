@@ -2,6 +2,7 @@
 
 // frontend/src/telemetry_dashboard/mod.rs
 
+mod neutral_request_owner;
 mod accel_display_filter;
 mod actions_tab;
 mod self_test_confirmation;

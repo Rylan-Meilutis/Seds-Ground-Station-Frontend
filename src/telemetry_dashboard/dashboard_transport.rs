@@ -44,8 +44,16 @@ fn websocket_idle_deadline_allows_jitter_but_recovers_stalls() {
 pub(crate) fn http_get_json<T: serde::de::DeserializeOwned + 'static>(
     path: &str,
 ) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<T> {
+    http_get_json_captured(path, recording_download::ExportOwner::capture_observer_selected(|| true))
+}
+
+/// Same existing GET algorithm with an immutable caller-owned auth/base context.
+/// This never captures a replacement owner after a neutral operation has begun.
+pub(crate) fn http_get_json_captured<T: serde::de::DeserializeOwned + 'static>(
+    path: &str,
+    owner: Result<std::rc::Rc<recording_download::ExportOwner>, String>,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<T> {
     let path = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
-    let owner = recording_download::ExportOwner::capture_observer_selected(|| true);
     let request = owner.as_ref().map(|owner| recording_download::saved_json::<T>(&path, owner.clone())).map_err(Clone::clone);
     async move {
         let owner = owner?;

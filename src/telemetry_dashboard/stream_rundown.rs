@@ -1,6 +1,7 @@
 //! Editor for the backend-owned audience rundown; no operational state changes.
+use super::neutral_request_owner;
 use super::{
-    http_get_json, http_post_json,
+
     live_stream_tab::{BroadcastState, LiveStreamConfig},
     vehicle_tab::VehicleTelemetryBinding,
 };
@@ -104,6 +105,7 @@ fn new_stat() -> Stat {
 }
 #[component]
 pub(super) fn RundownEditor(broadcast: BroadcastState) -> Element {
+    let authority = neutral_request_owner::use_factory();
     let mut base = use_signal(|| broadcast.clone());
     let mut draft = use_signal(|| broadcast.rundown.clone());
     let mut selected = use_signal(|| "ground".to_string());
@@ -115,6 +117,7 @@ pub(super) fn RundownEditor(broadcast: BroadcastState) -> Element {
         .as_ref()
         .and_then(|r| r.profiles.get(&selected()))
         .cloned();
+    if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {details {class:"gs26-rundown-editor",
         summary {"Audience rundown"}
         p {class:"gs26-studio-help","Choose data, cycle order and scene for each stage. These choices affect the audience programme only."}
@@ -150,13 +153,13 @@ pub(super) fn RundownEditor(broadcast: BroadcastState) -> Element {
         } else {p {"Reload broadcast settings to edit this station’s audience rundown."}}
         div {class:"gs26-studio-actions",
             button {disabled:busy()||draft.read().is_none(),onclick:move|_|{
-                let mut request=base();request.rundown=draft();busy.set(true);
-                spawn(async move{match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
+                let mut request=base();request.rundown=draft();if !authority.current(){return;}busy.set(true);
+                authority.spawn(async move{match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
                     Ok(saved)=>{base.set(saved.clone());draft.set(saved.rundown);status.set("Audience rundown saved".into());},Err(e)=>status.set(e)
                 }busy.set(false);});
             },"Save audience rundown"}
-            button {disabled:busy(),onclick:move|_|{busy.set(true);spawn(async move {
-                match http_get_json::<LiveStreamConfig>("/api/live_streams").await {Ok(cfg)=>{base.set(cfg.broadcast.clone());draft.set(cfg.broadcast.rundown);status.set("Broadcast settings reloaded".into());},Err(e)=>status.set(e)}busy.set(false);
+            button {disabled:busy(),onclick:move|_|{if !authority.current(){return;}busy.set(true);authority.spawn(async move {
+                match authority.get::<LiveStreamConfig>("/api/live_streams").await {Ok(cfg)=>{base.set(cfg.broadcast.clone());draft.set(cfg.broadcast.rundown);status.set("Broadcast settings reloaded".into());},Err(e)=>status.set(e)}busy.set(false);
             });},"Reload broadcast settings"}
         }
         if !status().is_empty(){p {role:"status","{status}"}}

@@ -1,4 +1,5 @@
-use super::{http_get_json, http_post_json, layout::ThemeConfig, UrlConfig};
+use super::neutral_request_owner;
+use super::{ layout::ThemeConfig, UrlConfig};
 use crate::telemetry_dashboard::vehicle_tab::VehicleTelemetryBinding;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -171,12 +172,13 @@ pub(crate) fn LiveStreamTab(
     #[props(default = false)] program_only: bool,
     #[props(default = false)] dedicated: bool,
 ) -> Element {
+    let authority = neutral_request_owner::use_factory();
     let mut config = use_signal(|| None::<LiveStreamConfig>);
     let mut status = use_signal(|| "Loading broadcast…".to_string());
     let mut edit_mode = use_signal(|| manager_mode);
-    use_future(move || async move {
+    use_future(move || authority.run(async move {
         loop {
-            match http_get_json::<LiveStreamConfig>("/api/live_streams").await {
+            match authority.get::<LiveStreamConfig>("/api/live_streams").await {
                 Ok(next) => {
                     status.set(String::new());
                     if config.read().as_ref() != Some(&next) {
@@ -187,9 +189,10 @@ pub(crate) fn LiveStreamTab(
             }
             stream_poll_delay().await;
         }
-    });
+    }));
     let cfg = config.read().clone().unwrap_or_default();
     let url = media_url(&cfg.program_url);
+    if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {
         style { {r#"
             .gs26-program-shell { height:100%; min-height:0; min-width:0; display:flex; flex-direction:column; overflow:auto; padding:8px; box-sizing:border-box; }
@@ -250,8 +253,8 @@ pub(crate) fn LiveStreamTab(
                                 let broadcast=cfg.broadcast.clone();
                                 move |event: Event<FormData>| {
                                     let mut request=broadcast.clone();request.layout=event.value();
-                                    spawn(async move {
-                                        match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
+                                    authority.spawn(async move {
+                                        match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
                                             Ok(saved)=>{let mut next=config.read().clone().unwrap_or_default();next.broadcast=saved;config.set(Some(next));},
                                             Err(error)=>status.set(error),
                                         }
@@ -264,8 +267,8 @@ pub(crate) fn LiveStreamTab(
                                 let broadcast=cfg.broadcast.clone();
                                 move |event: Event<FormData>| {
                                     let mut request=broadcast.clone();request.featured_stream_id=event.value();
-                                    spawn(async move {
-                                        match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
+                                    authority.spawn(async move {
+                                        match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
                                             Ok(saved)=>{let mut next=config.read().clone().unwrap_or_default();next.broadcast=saved;config.set(Some(next));},
                                             Err(error)=>status.set(error),
                                         }
@@ -282,8 +285,8 @@ pub(crate) fn LiveStreamTab(
                                     move |event: Event<FormData>| {
                                         let mut request=broadcast.clone();request.hidden_stream_ids.retain(|s|s!=&id);
                                         if !event.checked(){request.hidden_stream_ids.push(id.clone());}
-                                        spawn(async move {
-                                            match http_post_json::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
+                                        authority.spawn(async move {
+                                            match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
                                                 Ok(saved)=>{let mut next=config.read().clone().unwrap_or_default();next.broadcast=saved;config.set(Some(next));},
                                                 Err(error)=>status.set(error),
                                             }

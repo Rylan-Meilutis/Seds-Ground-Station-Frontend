@@ -1,6 +1,7 @@
 //! Programme control for a selected saved recording, separate from camera clips.
+use super::neutral_request_owner;
 use super::{
-    http_get_json, http_post_json,
+
     live_stream_tab::{BroadcastState, LiveStreamConfig, RecordedReplayPlan},
     vehicle_replay::{Recording, Snapshot},
 };
@@ -52,8 +53,8 @@ fn encoded(value: &str) -> String {
     }
     out
 }
-async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastState, String> {
-    let current = http_get_json::<LiveStreamConfig>("/api/live_streams")
+async fn update(authority: neutral_request_owner::Factory, expected: BroadcastState, action: Action) -> Result<BroadcastState, String> {
+    let current = authority.get::<LiveStreamConfig>("/api/live_streams")
         .await?
         .broadcast;
     if current.revision != expected.revision {
@@ -64,7 +65,7 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
         Action::Select(_) | Action::Refresh => {
             let refresh = matches!(&action, Action::Refresh);
             let prior = if refresh {
-                Some(http_get_json::<SceneClock>("/api/media-assets/recorded-vehicle/state").await?)
+                Some(authority.get::<SceneClock>("/api/media-assets/recorded-vehicle/state").await?)
             } else {
                 None
             };
@@ -76,7 +77,7 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
                     .map(|p| p.recording_id.clone())
                     .ok_or("Select a recording first")?,
             };
-            let saved = http_get_json::<Snapshot>(&format!(
+            let saved = authority.get::<Snapshot>(&format!(
                 "/api/recordings/{}/replay/flight",
                 encoded(&id)
             ))
@@ -134,7 +135,7 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
         }
         _ => {
             let clock =
-                http_get_json::<SceneClock>("/api/media-assets/recorded-vehicle/state").await?;
+                authority.get::<SceneClock>("/api/media-assets/recorded-vehicle/state").await?;
             let plan = next
                 .recorded_replay
                 .as_mut()
@@ -162,25 +163,27 @@ async fn update(expected: BroadcastState, action: Action) -> Result<BroadcastSta
             }
         }
     }
-    http_post_json::<BroadcastState, BroadcastState>(
+    authority.post::<BroadcastState, BroadcastState>(
         "/api/media-assets/recorded-vehicle/control",
         &next,
     )
     .await
 }
 fn dispatch(
+    authority: neutral_request_owner::Factory,
     action: Action,
     mut base: Signal<BroadcastState>,
     mut busy: Signal<bool>,
     mut message: Signal<String>,
 ) {
+    if !authority.current(){return;}
     if *busy.read() {
         return;
     }
-    busy.set(true);
+    if !authority.current(){return;}busy.set(true);
     let expected = base.read().clone();
-    spawn(async move {
-        match update(expected, action).await {
+    authority.spawn(async move {
+        match update(authority, expected, action).await {
             Ok(value) => {
                 message.set(
                     if value.recorded_replay.is_some() {
@@ -194,7 +197,7 @@ fn dispatch(
             }
             Err(error) => {
                 message.set(error);
-                if let Ok(config) = http_get_json::<LiveStreamConfig>("/api/live_streams").await {
+                if let Ok(config) = authority.get::<LiveStreamConfig>("/api/live_streams").await {
                     base.set(config.broadcast);
                 }
             }
@@ -204,6 +207,7 @@ fn dispatch(
 }
 #[component]
 pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
+    let authority = neutral_request_owner::use_factory();
     let mut selected = use_signal(|| {
         broadcast
             .recorded_replay
@@ -216,24 +220,24 @@ pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
     let message = use_signal(String::new);
     let mut seek = use_signal(|| None::<u64>);
     let recordings =
-        use_resource(|| async { http_get_json::<Vec<Recording>>("/api/recordings").await });
-    use_effect(move || {
+        use_resource(move || authority.resource(async move { authority.get::<Vec<Recording>>("/api/recordings").await }));
+    use_effect(move || authority.effect(|| {
         if broadcast.revision >= base.read().revision && broadcast != *base.read() {
             base.set(broadcast.clone());
         }
-    });
+    }));
     let mut clock = use_resource(move || {
         let key = base.read().recorded_replay.clone();
-        async move {
+        authority.resource(async move {
             if key.is_none() {
                 return Ok(None);
             }
-            http_get_json::<SceneClock>("/api/media-assets/recorded-vehicle/state")
+            authority.get::<SceneClock>("/api/media-assets/recorded-vehicle/state")
                 .await
                 .map(Some)
-        }
+        })
     });
-    use_future(move || async move {
+    use_future(move || authority.run(async move {
         loop {
             #[cfg(target_arch = "wasm32")]
             gloo_timers::future::TimeoutFuture::new(1000).await;
@@ -243,7 +247,7 @@ pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
                 clock.restart();
             }
         }
-    });
+    }));
     let current = base.read().clone();
     let plan = current.recorded_replay.clone();
     let position = clock
@@ -263,6 +267,7 @@ pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
         .and_then(|v| v.as_ref().ok())
         .cloned()
         .unwrap_or_default();
+    if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {section {class:"gs26-recorded-replay-controls",style:"padding:16px;border:1px solid #344454;border-radius:12px;display:grid;gap:12px;",
         h3 {style:"margin:0;","Recorded flight replay"}
         div {style:"display:flex;align-items:end;gap:10px;flex-wrap:wrap;",
@@ -272,22 +277,22 @@ pub(super) fn RecordedReplayControls(broadcast: BroadcastState) -> Element {
                     for recording in options {option {value:"{recording.id}","{recording.id}",if recording.active{" · recording"}}}
                 }
             }
-            button {class:"gs26-button",disabled:*busy.read()||selected.read().is_empty(),onclick:move|_|dispatch(Action::Select(selected.read().clone()),base,busy,message),"Show 3D replay"}
+            button {class:"gs26-button",disabled:*busy.read()||selected.read().is_empty(),onclick:move|_|dispatch(authority,Action::Select(selected.read().clone()),base,busy,message),"Show 3D replay"}
         }
         if let Some(p)=plan {
             div {style:"display:flex;gap:8px;flex-wrap:wrap;align-items:center;",
-                button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(Action::TogglePause,base,busy,message),if p.paused{"Play recorded flight"}else{"Pause recorded flight"}}
-                button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(Action::Rewind,base,busy,message),"Rewind flight"}
-                label {"Replay speed" select {"aria-label":"Recorded flight speed",value:"{p.speed}",disabled:*busy.read(),onchange:move|e|if let Ok(v)=e.value().parse(){dispatch(Action::Speed(v),base,busy,message);},
+                button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(authority,Action::TogglePause,base,busy,message),if p.paused{"Play recorded flight"}else{"Pause recorded flight"}}
+                button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(authority,Action::Rewind,base,busy,message),"Rewind flight"}
+                label {"Replay speed" select {"aria-label":"Recorded flight speed",value:"{p.speed}",disabled:*busy.read(),onchange:move|e|if let Ok(v)=e.value().parse(){dispatch(authority,Action::Speed(v),base,busy,message);},
                     option {value:"0.25","¼×"}option {value:"0.5","½×"}option {value:"1","1×"}option {value:"2","2×"}option {value:"4","4×"}
                 }}
-                label {style:"display:flex;gap:7px;align-items:center;min-height:44px;",input {r#type:"checkbox",checked:p.loop_playback,disabled:*busy.read(),onchange:move|e|dispatch(Action::Loop(e.checked()),base,busy,message)},"Loop recorded flight"}
-                label {style:"display:flex;gap:7px;align-items:center;min-height:44px;",input {r#type:"checkbox",checked:p.follow_saved,disabled:*busy.read(),onchange:move|e|dispatch(Action::FollowSaved(e.checked()),base,busy,message)},"Follow newly saved data"}
-                button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(Action::Refresh,base,busy,message),"Refresh saved snapshot"}
-                button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(Action::Stop,base,busy,message),"Stop flight replay"}
+                label {style:"display:flex;gap:7px;align-items:center;min-height:44px;",input {r#type:"checkbox",checked:p.loop_playback,disabled:*busy.read(),onchange:move|e|dispatch(authority,Action::Loop(e.checked()),base,busy,message)},"Loop recorded flight"}
+                label {style:"display:flex;gap:7px;align-items:center;min-height:44px;",input {r#type:"checkbox",checked:p.follow_saved,disabled:*busy.read(),onchange:move|e|dispatch(authority,Action::FollowSaved(e.checked()),base,busy,message)},"Follow newly saved data"}
+                button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(authority,Action::Refresh,base,busy,message),"Refresh saved snapshot"}
+                button {class:"gs26-button",disabled:*busy.read(),onclick:move|_|dispatch(authority,Action::Stop,base,busy,message),"Stop flight replay"}
             }
             label {style:"display:grid;gap:6px;","Saved replay position"
-                input {r#type:"range","aria-label":"Broadcast replay position",min:"0",max:"{p.end_ms.saturating_sub(p.start_ms)}",step:"100",value:"{seek.read().unwrap_or(position)}",disabled:*busy.read(),style:"min-height:44px;width:100%;",oninput:move|e|if let Ok(v)=e.value().parse(){seek.set(Some(v));},onchange:move|e|{if let Ok(v)=e.value().parse(){dispatch(Action::Seek(v),base,busy,message);}seek.set(None);}}
+                input {r#type:"range","aria-label":"Broadcast replay position",min:"0",max:"{p.end_ms.saturating_sub(p.start_ms)}",step:"100",value:"{seek.read().unwrap_or(position)}",disabled:*busy.read(),style:"min-height:44px;width:100%;",oninput:move|e|if let Ok(v)=e.value().parse(){seek.set(Some(v));},onchange:move|e|{if let Ok(v)=e.value().parse(){dispatch(authority,Action::Seek(v),base,busy,message);}seek.set(None);}}
             }
             span {style:"font-variant-numeric:tabular-nums;font-size:13px;",{format!("Recorded {:.1} / {:.1} s",position as f64/1000.,p.end_ms.saturating_sub(p.start_ms) as f64/1000.)}}
         }
