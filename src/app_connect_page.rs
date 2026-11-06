@@ -34,7 +34,7 @@ pub fn Connect() -> Element {
         discovering.set(true);
         stations.set(vec![]);
         discovery_status.set("Searching this local network…".into());
-        spawn(async move {
+        let _discovery_task = spawn(async move {
             match crate::native_station::discover().await {
                 Ok(found) => {
                     discovery_status.set(if found.is_empty() {
@@ -48,6 +48,8 @@ pub fn Connect() -> Element {
             }
             discovering.set(false);
         });
+        #[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+        connect_settings_transition_tests::observe_discovery_task(_discovery_task);
     };
     use_effect(discover_stations);
 

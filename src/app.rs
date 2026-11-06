@@ -774,3 +774,11 @@ fn Preview() -> Element {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+#[path = "connect_settings_transition_tests.rs"]
+mod connect_settings_transition_tests;
+
+#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+#[path = "native_settings_route_mount_tests.rs"]
+mod native_settings_route_mount_tests;

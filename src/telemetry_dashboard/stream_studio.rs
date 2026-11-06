@@ -22,21 +22,22 @@ struct TranscodeHosts {selected:Option<String>,hosts:Vec<TranscodeHost>}
 #[component]
 fn TranscodingHosts()->Element{
     let authority = neutral_request_owner::use_factory();
-    let mut data=use_signal(TranscodeHosts::default);let mut message=use_signal(String::new);let mut busy=use_signal(||false);let mut available=use_signal(||false);
-    use_future(move||authority.run(async move{loop{match authority.get::<TranscodeHosts>("/api/video/transcode/hosts").await{Ok(value)=>{data.set(value);available.set(true);},Err(_)=>{available.set(false);}}
+    let mut data=use_signal(TranscodeHosts::default);let mut message=use_signal(String::new);let mut busy=use_signal(||false);let mut available=use_signal(||false);let mut has_snapshot=use_signal(||false);let mut failed=use_signal(||false);
+    use_future(move||authority.run(async move{loop{match authority.get::<TranscodeHosts>("/api/video/transcode/hosts").await{Ok(value)=>{data.set(value);has_snapshot.set(true);failed.set(false);available.set(true);},Err(_)=>{available.set(false);failed.set(true);}}
         #[cfg(target_arch="wasm32")]gloo_timers::future::TimeoutFuture::new(3000).await;
         #[cfg(not(target_arch="wasm32"))]tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }}));
     if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx!{section {"aria-label":"Transcoding hosts",h3 {"Transcoding host"}
         p {"Run the GroundStation Video Transcoder helper on another computer. It must pass encoding and upload/download tests before it can be selected."}
+        if !available(){p {role:"status", if has_snapshot(){"Host verification is unavailable. Displayed results and selection are last known and unverified."}else if failed(){"Host verification is unavailable. No successful host snapshot has been received."}else{"Loading transcoding hosts…"}}}
         label {"Use host" select {value:data().selected.unwrap_or_default(),disabled:busy()||!available(),onchange:move|e|{
-            let id=e.value();if !authority.current(){return;}busy.set(true);authority.spawn(async move{let body=serde_json::json!({"host_id":if id.is_empty(){None}else{Some(id)}});match authority.post::<serde_json::Value,serde_json::Value>("/api/video/transcode/hosts",&body).await{Ok(_)=>{message.set("Transcoding selection saved".into());if let Ok(next)=authority.get::<TranscodeHosts>("/api/video/transcode/hosts").await{data.set(next);}},Err(error)=>message.set(error)}busy.set(false);});
+            let id=e.value();if !authority.current(){return;}busy.set(true);authority.spawn(async move{let body=serde_json::json!({"host_id":if id.is_empty(){None}else{Some(id)}});match authority.post::<serde_json::Value,serde_json::Value>("/api/video/transcode/hosts",&body).await{Ok(_)=>{message.set("Transcoding selection saved".into());if let Ok(next)=authority.get::<TranscodeHosts>("/api/video/transcode/hosts").await{data.set(next);has_snapshot.set(true);failed.set(false);available.set(true);}},Err(error)=>message.set(error)}busy.set(false);});
         },option {value:"","Original camera feeds (no remote transcoding)"}
          for host in &data().hosts{option {value:host.id.clone(),disabled:!host.passed||!host.online,"{host.name} · {host.capacity} camera(s)"}}
         }}
         for host in &data().hosts{p {"{host.name}: " if host.passed {"qualified"}else{"test required"} if !host.online {" · offline / not offered"} " · encode {host.encoding_ms} ms · ↑{host.upload_bps / 1_000_000} / ↓{host.download_bps / 1_000_000} Mb/s"}}
-        if data().selected.is_some()&&!data().hosts.iter().any(|h|Some(&h.id)==data().selected.as_ref()&&h.online){p {role:"status","Selected host is unavailable. Using original feeds."}}
+        if data().selected.is_some()&&!data().hosts.iter().any(|h|Some(&h.id)==data().selected.as_ref()&&h.online){p {role:"status","Selected host was unavailable in the last received snapshot. Host selection does not confirm which feed is playing."}}
         p {role:"status","{message}"}
     }}
 }
@@ -386,3 +387,7 @@ fn CleanFeedLink(url: String) -> Element {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch="wasm32")))]
+#[path="stream_studio_host_snapshot_tests.rs"]
+mod host_snapshot_tests;

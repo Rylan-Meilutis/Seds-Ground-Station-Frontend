@@ -141,6 +141,8 @@ fn public_hint(bytes: &[u8], nonce: &str, from: SocketAddr) -> Option<StationHin
     })
 }
 fn discover_lan() -> Result<Vec<StationHint>, String> {
+    #[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+    let _discovery_attempt = discovery_test_barrier::enter_actual_worker();
     let socket =
         UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Cannot open LAN discovery: {e}"))?;
     socket
@@ -585,3 +587,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+#[path = "native_station_discovery_test_barrier.rs"]
+pub(crate) mod discovery_test_barrier;
