@@ -300,12 +300,20 @@ impl Status {
                 .iter()
                 .any(|b| b.operation.as_ref().is_some_and(Operation::pending))
     }
+    /// GS is the server's global state, not a recoverable MCU identity.
+    pub fn global_state_label(&self) -> &'static str {
+        const LABELS: [&str; 16] = [
+            "Startup", "Idle", "Pre Fill", "Fill Test", "Nitrogen Fill", "Nitrous Fill",
+            "Armed", "Launch", "Ascent", "Coast", "Apogee", "Descent", "Reefing", "Landed",
+            "Recovery", "Aborted",
+        ];
+        self.flight_state
+            .and_then(|value| LABELS.get(value as usize).copied())
+            .unwrap_or("Unknown")
+    }
     pub fn reset_reason(&self, elapsed: u64) -> Option<String> {
         if !self.valid() || !self.permissions.reset_startup {
             return Some("Reset ALL is not permitted by this server/session.".into());
-        }
-        if !matches!(self.flight_state, Some(0 | 1 | 15)) {
-            return Some("Stop the active operation before resetting the boards.".into());
         }
         if self.pending() {
             return Some("Another operation is pending; wait for its actual result.".into());
@@ -476,9 +484,7 @@ impl Challenge {
             || self.expires_in_ms == 0
             || self.expires_in_ms > 30_000
             || !self.identity_matches(status)
-            || (action == "reset_startup"
-                && (!status.permissions.reset_startup
-                    || !matches!(status.flight_state, Some(0 | 1 | 15))))
+            || (action == "reset_startup" && !status.permissions.reset_startup)
         {
             return false;
         }
@@ -565,11 +571,10 @@ impl Challenge {
                 .as_ref()
                 .is_some_and(|op| op.pending() && op.phase != "awaiting_confirmation")
             && original.permissions == current.permissions
+            && original.flight_state == current.flight_state
             && original.mode_capability == current.mode_capability
             && original.reset_startup_policy == current.reset_startup_policy
-            && (self.action != "reset_startup"
-                || (current.permissions.reset_startup
-                    && matches!(current.flight_state, Some(0 | 1 | 15))))
+            && (self.action != "reset_startup" || current.permissions.reset_startup)
             && self.identity_matches(original)
             && self.identity_matches(current)
             && original.mode_capability.current == current.mode_capability.current
@@ -1119,9 +1124,10 @@ mod tests {
             "Explicit ALL includes all retained targets"
         );
         s.flight_state = Some(8);
+        s.permissions.reset_startup = false;
         assert!(
             s.reset_reason(0).is_some(),
-            "Active operation is not a reset context"
+            "Server must withhold reset permission for an active operation"
         );
     }
 
@@ -1190,6 +1196,34 @@ mod tests {
         );
         status.confirmation.as_mut().unwrap().targets = ticket.targets.clone();
         (status, ticket)
+    }
+    #[test]
+    fn global_station_state_does_not_require_a_board_identity_or_other_board_agreement() {
+        let mut current = status();
+        current.boards.clear();
+        current.flight_state = Some(7);
+        assert_eq!(current.global_state_label(), "Launch");
+        current.flight_state = Some(1);
+        assert_eq!(current.global_state_label(), "Idle");
+        current.flight_state = Some(255);
+        assert_eq!(current.global_state_label(), "Unknown");
+    }
+    #[test]
+    fn server_granted_launch_reset_keeps_review_and_confirmation_available() {
+        let (mut current, ticket) = scoped_reset("hitl");
+        current.flight_state = Some(7);
+        assert!(current.reset_reason(0).is_none());
+        assert!(ticket.matches(&current, "reset_startup", None, None));
+        assert!(ticket.context_unchanged(&current, &current));
+        // A grant to reset host metadata is not a grant for targeted recovery.
+        assert!(current
+            .prepare_board_reason(current.board("VB").unwrap(), "recover_abort", 0)
+            .is_some());
+        let original = current.clone();
+        current.permissions.reset_startup = false;
+        assert!(current.reset_reason(0).is_some());
+        assert!(!ticket.matches(&current, "reset_startup", None, None));
+        assert!(!ticket.context_unchanged(&original, &current));
     }
     #[test]
     fn explicit_mode_policy_allows_preparation_then_exact_scoped_confirmation() {
@@ -1335,7 +1369,10 @@ mod tests {
                         .unwrap()
                         .optional_proofs = false
                 }
-                _ => current.flight_state = Some(8),
+                _ => {
+                    current.flight_state = Some(8);
+                    current.permissions.reset_startup = false;
+                }
             }
             assert!(!ticket.matches(&current, "reset_startup", None, None));
             assert!(!ticket.context_unchanged(&original, &current));

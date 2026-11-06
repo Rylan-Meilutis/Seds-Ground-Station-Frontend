@@ -336,7 +336,13 @@ pub(super) fn RecoveryBoardState(board_id: String) -> Element {
         &board_id,
         super::monotonic_now_ms(),
     );
-    let label = if display.state.is_empty() {
+    let local_gs = board_id == "GS"
+        && crate::auth::current_status().station_role.as_deref() != Some("rrls");
+    let label = if local_gs {
+        current.as_ref()
+            .filter(|snapshot| snapshot.binding == ConnectionBinding::current())
+            .map_or("Unknown", |snapshot| snapshot.status.global_state_label())
+    } else if display.state.is_empty() {
         "Unknown"
     } else {
         display.state.as_str()
