@@ -100,6 +100,7 @@ impl Server {
                             assert!(n > 0);
                             bytes.extend_from_slice(&buffer[..n]);
                         }
+                        let clear_abort = headers.starts_with("POST /api/gse/abort/clear ");
                         rows.lock().unwrap().push((
                             headers,
                             String::from_utf8(bytes[header_end..header_end + length].to_vec())
@@ -110,7 +111,12 @@ impl Server {
                         while !r.load(Ordering::Acquire) && !end.load(Ordering::Acquire) {
                             std::thread::sleep(Duration::from_millis(2));
                         }
-                        let body = r#"{"saved":true}"#;
+                        // The primary's actual clear-abort reply; other routes accept generically.
+                        let body = if clear_abort {
+                            r#"{"cleared":true}"#
+                        } else {
+                            r#"{"saved":true}"#
+                        };
                         let text = format!(
                             "HTTP/1.1 {status} Result\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()

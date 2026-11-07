@@ -768,7 +768,7 @@ pub(super) fn ClearGseAbort() -> Element {
                             if !alive.load(Ordering::Acquire) {return;}
                             if !owner.is_current() {return;}
                             match result {
-                                Ok(_) => {confirming.set(false);confirmation_owner.set(None);message.set("GSE abort cleared. Repeat operation checks before filling.".into());},
+                                Ok(value) => {confirming.set(false);confirmation_owner.set(None);message.set(clear_abort_result_message(&value).into());},
                                 Err(error) => message.set(error),
                             }
                             busy.set(false);
@@ -779,6 +779,26 @@ pub(super) fn ClearGseAbort() -> Element {
             }
             if !message.read().is_empty() {p {role:"status",style:"margin:0;","{message}"}}
         }
+    }
+}
+
+/// The primary answers `{"cleared":true}`; an RRLS answers with the status of
+/// its request to the primary, which is not yet a cleared abort.
+fn clear_abort_result_message(value: &serde_json::Value) -> &'static str {
+    if value["cleared"].as_bool() == Some(true) {
+        "GSE abort cleared. Repeat operation checks before filling."
+    } else {
+        "Clear-abort request sent to the primary. Check the primary's GSE state; it is not confirmed here."
+    }
+}
+
+#[cfg(test)]
+mod clear_abort_message_tests {
+    #[test]
+    fn rrls_request_is_not_reported_as_cleared() {
+        assert!(super::clear_abort_result_message(&serde_json::json!({"cleared":true})).starts_with("GSE abort cleared"));
+        let proxied = serde_json::json!({"pending":{"operation":"ClearGseAbort","phase":"pending_primary"}});
+        assert!(super::clear_abort_result_message(&proxied).contains("not confirmed"));
     }
 }
 
