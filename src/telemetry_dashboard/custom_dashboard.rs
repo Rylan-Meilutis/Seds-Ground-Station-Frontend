@@ -407,6 +407,9 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
     // store. Refresh availability even when no telemetry or editor is active.
     let _ = *super::HEADER_CLOCK_TICK.read();
     let mut cards = use_context::<Signal<Vec<Card>>>();
+    let extrema_policies = use_memo(use_reactive((&data_layout,), move |(layout,)| {
+        cards.read().iter().map(|card| card_minmax_policy(&layout, card)).collect::<Vec<_>>()
+    }));
     let mut editing = use_signal(|| false);
     let mut aggregate = use_signal(|| false);
     let mut cameras = use_signal(super::live_stream_tab::LiveStreamConfig::default);
@@ -492,7 +495,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
                         }
                         if card.visible {
                             if card.display == "camera" { CameraCard {card:card.clone(),config:cameras.read().clone(),error:camera_error.read().clone()} }
-                            else { TelemetryCard {card:display_card(card.clone(),test_fire_mode), aggregate:*aggregate.read(), thrust:test_fire_mode && card.data_type=="LOADCELL_WEIGHT_KG"} }
+                            else { TelemetryCard {card:display_card(card.clone(),test_fire_mode), aggregate:*aggregate.read(), thrust:test_fire_mode && card.data_type=="LOADCELL_WEIGHT_KG", show_min_max:extrema_policies.read().get(index).copied().unwrap_or(card.display=="trend")} }
                         }
                         if *editing.read() && card.display != "camera" {
                         button { disabled: !card.pinned && snapshot.iter().filter(|c| c.pinned).count() >= 8,
@@ -629,8 +632,56 @@ mod pinned_size_tests {
         assert!(missing.contains("No sample"));assert!(missing.contains("waiting for telemetry"));
     }
 }
+/// Reuse Data's configured view policy without changing saved dashboard cards.
+/// A Dashboard has no selected Data view: conflicting matches keep its fallback.
+fn card_minmax_policy(layout: &super::layout::DataTabLayout, card: &Card) -> bool {
+    if !matches!(card.display.as_str(), "trend" | "number" | "gauge" | "bar") {
+        return false;
+    }
+    let mut policy = None;
+    let mut ambiguous = false;
+    let matches = |kind: &str, sender: Option<&str>, index: usize| {
+        kind == card.data_type && index == card.index
+            && sender.is_none_or(|sender| !card.sender.is_empty() && sender == card.sender)
+    };
+    for tab in &layout.tabs {
+        let mut visit = |sub: Option<&super::layout::DataSubtabSpec>| {
+            let inherited = sub.and_then(|sub| sub.show_min_max).or(tab.show_min_max).unwrap_or(true);
+            let mut admit = |visible: bool| {
+                if policy.is_some_and(|previous| previous != visible) {
+                    ambiguous = true;
+                }
+                policy = Some(visible);
+            };
+            if let Some(items) = sub.and_then(|sub| sub.summary_items.as_ref()).filter(|items| !items.is_empty()) {
+                for item in items {
+                    if matches(&item.data_type, item.sender_id.as_deref(), item.index) {
+                        admit(item.show_min_max.unwrap_or(inherited) && item.boolean_labels.is_none());
+                    }
+                }
+            } else {
+                let kind = sub.and_then(|sub| sub.data_type.as_deref()).unwrap_or(&tab.id);
+                let sender = sub.and_then(|sub| sub.sender_id.as_deref());
+                let channels = sub.and_then(|sub| sub.channels.as_ref()).unwrap_or(&tab.channels);
+                if card.index < channels.len() && matches(kind, sender, card.index) {
+                    let boolean = sub.and_then(|sub| sub.boolean_labels.as_ref()).or(tab.boolean_labels.as_ref());
+                    let channel_boolean = sub.and_then(|sub| sub.channel_boolean_labels.as_ref())
+                        .or(tab.channel_boolean_labels.as_ref()).and_then(|labels| labels.get(card.index));
+                    admit(inherited && boolean.is_none() && channel_boolean.is_none());
+                }
+            }
+        };
+        if let Some(subtabs) = tab.subtabs.as_ref().filter(|subtabs| !subtabs.is_empty()) {
+            for sub in subtabs { visit(Some(sub)); }
+        } else {
+            visit(None);
+        }
+    }
+    if ambiguous { card.display == "trend" } else { policy.unwrap_or(card.display == "trend") }
+}
+
 #[component]
-fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] aggregate: bool, #[props(default = false)] compact: bool) -> Element {
+fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] aggregate: bool, #[props(default = false)] compact: bool, #[props(default)] show_min_max: bool) -> Element {
     // Share Data's ingress-driven render cadence. A per-card200ms sampler
     // delayed live values and discarded intermediate display updates.
     let _ = *super::TELEMETRY_RENDER_EPOCH.read();
@@ -688,7 +739,7 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
         .unwrap_or(0.0);
     let geometry=if card.display=="trend" {card_values::trend_geometry(&samples,window)}else{card_values::TrendGeometry::default()};
     let has_trend=!geometry.path.is_empty();
-    let minmax=if !compact && card.display == "trend" {
+    let minmax=if !compact && show_min_max {
         if aggregate {capture.map(|stats|(stats.min,stats.max))}else{
             super::telemetry_channel_minmax(&card.data_type,if card.sender.is_empty(){None}else{Some(&card.sender)},card.index)
                 .map(|(min,max)|if thrust {(min*9.80665,max*9.80665)}else{(min,max)})

@@ -74,3 +74,9 @@ After building the web bundle, run
 hidden capture, remount and independent wake-lock ownership with synthetic locks.
 
 Fill percentage in Telemetry follows the saved fill source from Actions. Its readout and chart appear only under the selected load cell in both Loadcell and DAQ. The percentage comes from backend telemetry, including calibration and source-selection rules.
+
+Dashboard measurement extrema reuse the configured Data view's `show_min_max`: summary-item overrides subtab, subtab overrides tab, and an unspecified value defaults to true. Policies match the actual source, channel and sender scope; a sender-specific view does not configure a wildcard card. Conflicting matching views or an unconfigured source keep the existing dashboard fallback (extrema for trends only). Number, Gauge and Bar cards can show extrema without changing their display type. Binary/state cards and compact pins do not gain extrema. This adds no saved card setting. Live extrema use the existing Data history; launch extrema use only the source-timed admitted launch capture.
+
+Live Data-history extrema summarize retained representative samples, not every raw or batched input value: the existing Data store retains one representative per source/sender receipt bucket. This presentation change does not alter that ingestion policy.
+
+These shared visibility policies also apply to Trend extrema: a matching explicit `show_min_max:false` or boolean metadata suppresses its min/max text in both live and launch views. The Trend card, measurement and plot remain visible. This intentionally replaces the previous unconditional Trend extrema display; unconfigured or conflicting metadata retains the prior Trend-only fallback.
