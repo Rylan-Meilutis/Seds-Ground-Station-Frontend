@@ -296,6 +296,16 @@ fn cosmetic_requested(cmd: &str, requested: Option<bool>, legacy_actuated: Optio
     cosmetic_output_action(cmd).then_some(requested.or(legacy_actuated)).flatten()
 }
 
+/// A backend that reports `requested` sends `actuated` only once the owner
+/// board has acknowledged that request. Older backends sent their stored
+/// request as `actuated`, which is never owner feedback.
+fn cosmetic_confirmed(cmd: &str, requested: Option<bool>, actuated: Option<bool>) -> Option<bool> {
+    if !cosmetic_output_action(cmd) {
+        return None;
+    }
+    requested.zip(actuated).and_then(|(requested, actuated)| (requested == actuated).then_some(actuated))
+}
+
 fn physical_output_action(cmd: &str) -> bool {
     matches!(
         cmd,
@@ -967,10 +977,15 @@ pub fn ActionsTab(
                                                     action.cmd.as_str(),
                                                     control.as_ref().and_then(|c| c.actuated),
                                                     &recording_status.read(),
+                                                )).or_else(|| cosmetic_confirmed(
+                                                    action.cmd.as_str(),
+                                                    control.as_ref().and_then(|c| c.requested),
+                                                    control.as_ref().and_then(|c| c.actuated),
                                                 ));
                                                 let unconfirmed = (physical_output_action(&action.cmd) || cosmetic_output_action(&action.cmd)) && actuated.is_none();
                                                 let requested = cosmetic_requested(&action.cmd, control.as_ref().and_then(|c| c.requested), control.as_ref().and_then(|c| c.actuated));
                                                 let requested_label = match requested { Some(true) => "Requested: On", Some(false) => "Requested: Off", None => "Requested: unknown" };
+                                                let owner_label = if actuated.is_some() { "owner confirmed" } else { "owner unconfirmed" };
                                                 let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
                                                 let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
                                                 let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { "Unconfirmed" } else { "Disabled" };
@@ -1056,7 +1071,7 @@ pub fn ActionsTab(
                                                         span { class:"gs26-action-copy",style: "min-width:0; flex:1 1 auto;",
                                                             span {title:"{action.label}",style:if cosmetic_output_action(&action.cmd) {"display:block;white-space:nowrap;line-height:1.25;"} else {"display:block;overflow-wrap:break-word;white-space:normal;line-height:1.25;"}, "{action.label}"}
                                                             if cosmetic_output_action(&action.cmd) {
-                                                                span {style:"display:block;font-size:11px;font-weight:400;line-height:1.3;", "{requested_label}; owner unconfirmed"}
+                                                                span {style:"display:block;font-size:11px;font-weight:400;line-height:1.3;", "{requested_label}; {owner_label}"}
                                                             }
                                                             if action.group == "GSE sequence actions" {
                                                                 span {title:disabled_reason.unwrap_or(""),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;", "{reason_text}"}
@@ -1711,7 +1726,14 @@ mod cosmetic_request_truth_tests {
             }
             assert_eq!(cosmetic_requested(cmd, Some(false), Some(true)), Some(false));
             assert_eq!(cosmetic_requested(cmd, None, Some(true)), Some(true));
+            // Legacy desired-as-actuated is not owner feedback.
+            assert_eq!(cosmetic_confirmed(cmd, None, Some(true)), None);
+            // Only an owner-acknowledged value equal to the request is shown.
+            assert_eq!(cosmetic_confirmed(cmd, Some(false), None), None);
+            assert_eq!(cosmetic_confirmed(cmd, Some(false), Some(true)), None);
+            assert_eq!(cosmetic_confirmed(cmd, Some(false), Some(false)), Some(false));
         }
+        assert_eq!(cosmetic_confirmed("NitrogenClose", Some(true), Some(true)), None);
         assert_eq!(merge_command_feedback("NitrogenClose", Some(false), true), Some(false));
         assert_eq!(merge_command_feedback("NitrogenClose", None, true), None);
     }
