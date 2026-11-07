@@ -95,8 +95,17 @@ pub(super) struct CalibrationContext {
     pub(super) locked: Signal<bool>,
     pub(super) request: EventHandler<String>,
     retained_owner: Signal<Option<std::rc::Rc<super::recording_download::ExportOwner>>>,
+    abort_only: Signal<bool>,
 }
 impl CalibrationContext {
+    /// Actions start disabled on production layouts, and Settings covers the
+    /// header toggle, so the selector offers the same switch itself.
+    pub(super) fn can_enable_actions(self) -> bool {
+        *self.abort_only.read() && crate::auth::can_view_actions()
+    }
+    pub(super) fn enable_actions(mut self) {
+        self.abort_only.set(false);
+    }
     pub(super) fn owner_current(self) -> bool {
         self.retained_owner
             .read()
@@ -177,6 +186,39 @@ struct InputSelectionRequest {
 pub(super) fn known_input(value: &str) -> bool {
     matches!(value, "amp2" | "p6_differential")
 }
+fn input_label(value: &str) -> &str {
+    match value {
+        "amp2" => "AMP2 / P8",
+        "p6_differential" => "P6 differential",
+        other => other,
+    }
+}
+/// The station's selection against the input the DAQ's own reports prove.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub(super) struct Kg50BoardStatus {
+    pub(super) selected: String,
+    pub(super) board_input: Option<String>,
+    pub(super) board_age_ms: Option<u64>,
+    pub(super) state: String,
+}
+impl Kg50BoardStatus {
+    pub(super) fn text(&self) -> String {
+        let selected = input_label(&self.selected);
+        let board = self.board_input.as_deref().map(input_label);
+        match (self.state.as_str(), board) {
+            ("synced", _) => format!("DAQ confirmed: using {selected}."),
+            ("syncing", Some(board)) => format!("DAQ is still on {board}. Sending {selected}…"),
+            ("mismatch", Some(board)) => format!(
+                "DAQ reports {board}, not the selected {selected}. The station keeps sending its selection; check the DAQ link."
+            ),
+            (_, Some(board)) => format!(
+                "DAQ is not reporting. Last reported {board} {} s ago; its current input is unknown.",
+                self.board_age_ms.unwrap_or(0) / 1000
+            ),
+            _ => "DAQ has not reported yet; its input is unknown.".into(),
+        }
+    }
+}
 /// One parent-owned operation, captured only when the operator acts. Closing
 /// Settings does not destroy its owner; changing station/auth/session still does.
 pub(super) fn use_calibration_context(abort_only: Signal<bool>) -> CalibrationContext {
@@ -241,7 +283,7 @@ pub(super) fn use_calibration_context(abort_only: Signal<bool>) -> CalibrationCo
     let request = use_callback(move |requested: String| {
         if !known_input(&requested)
             || !crate::auth::can_edit_calibration()
-            || *abort_only.peek()
+            || (*abort_only.peek() && crate::auth::can_view_actions())
             || *locked.peek()
             || *input_epoch.peek() == u64::MAX
         {
@@ -305,11 +347,30 @@ pub(super) fn use_calibration_context(abort_only: Signal<bool>) -> CalibrationCo
         locked,
         request,
         retained_owner,
+        abort_only,
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn board_status_text_never_presents_an_unreported_input_as_current() {
+        let status = |board: Option<&str>, state: &str| Kg50BoardStatus {
+            selected: "p6_differential".into(),
+            board_input: board.map(str::to_owned),
+            board_age_ms: board.map(|_| 12_000),
+            state: state.into(),
+        };
+        assert_eq!(
+            status(Some("p6_differential"), "synced").text(),
+            "DAQ confirmed: using P6 differential."
+        );
+        assert!(status(Some("amp2"), "syncing").text().contains("still on AMP2"));
+        assert!(status(Some("amp2"), "mismatch").text().contains("not the selected P6"));
+        let stale = status(Some("amp2"), "no_readback").text();
+        assert!(stale.contains("12 s ago") && stale.contains("unknown"), "{stale}");
+        assert!(status(None, "no_readback").text().contains("has not reported"));
+    }
     #[test]
     fn unknown_preferences_fall_back_without_new_configuration() {
         assert_eq!(normalize_scope("unknown"), "client");

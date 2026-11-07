@@ -2203,6 +2203,8 @@ pub(super) fn Kg50InputSelector(
     theme: ThemeConfig,
     selection: super::settings_navigation::CalibrationContext,
     #[props(default = false)] disabled: bool,
+    /// Why the selector is disabled, shown so it never greys out unexplained.
+    #[props(default)] disabled_reason: Option<String>,
 ) -> Element {
     use super::settings_navigation::InputSelectionStatus;
     // Every write trigger must retain this mounted form's original owner
@@ -2210,8 +2212,16 @@ pub(super) fn Kg50InputSelector(
     let settings_owner = super::station_settings_request::use_factory();
     let mut input = use_signal(|| None::<String>);
     let mut message = use_signal(String::new);
+    let mut board = use_signal(|| None::<super::settings_navigation::Kg50BoardStatus>);
     use_future(move || async move {
         loop {
+            // The board's own report, read even while a selection is in flight.
+            board.set(
+                settings_owner
+                    .get::<super::settings_navigation::Kg50BoardStatus>("/api/calibration/kg50_input")
+                    .await
+                    .ok(),
+            );
             let original_epoch = *selection.input_epoch.peek();
             if !selection.selection.peek().pending()
                 && let Ok(cfg) = settings_owner
@@ -2250,10 +2260,20 @@ pub(super) fn Kg50InputSelector(
     let busy = status.pending();
     let unknown = matches!(status, InputSelectionStatus::Unconfirmed { .. });
     let selected = input.read().clone().unwrap_or_default();
+    let board_status = board.read().clone();
+    let board_confirmed = board_status.as_ref().is_some_and(|status| status.state == "synced");
+    let board_attribute = board_status.as_ref().map(|status| format!(
+        "{}:{}", status.board_input.as_deref().unwrap_or("unknown"), status.state)).unwrap_or_default();
+    let board_text = board_status.as_ref().map(super::settings_navigation::Kg50BoardStatus::text);
+    let epoch = *selection.input_epoch.read();
     rsx! {
         section { style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px; background:{theme.panel_background}; display:flex; flex-direction:column; gap:8px;",
             label { r#for: "kg50-input", style: "font-weight:700; color:{theme.text_primary};", "50 kg input" }
+            // Recreated per operation: a refused choice must not stay on screen
+            // as if it were the station's input.
+            for view in [format!("{selected}-{epoch}")] {
             select {
+                key: "{view}",
                 id: "kg50-input",value:"{selected}",
                 disabled:disabled||busy||unknown||input.read().is_none(),
                 style:"padding:8px;border-radius:6px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;max-width:100%;",
@@ -2263,14 +2283,24 @@ pub(super) fn Kg50InputSelector(
                     selection.request.call(requested);
                 },
                 if selected.is_empty() {option {value:"",disabled:true,"Input selection unavailable"}}
-                option {value:"amp2","Normal · AMP2 / P8"}
-                option {value:"p6_differential","P6 · pin 3 (+) − pin 4 (−)"}
+                option {value:"amp2",selected:selected=="amp2","Normal · AMP2 / P8"}
+                option {value:"p6_differential",selected:selected=="p6_differential","P6 · pin 3 (+) − pin 4 (−)"}
+            }
+            }
+            if let Some(reason)=disabled_reason {
+                p {role:"status",style:"margin:0;font-size:12px;color:{theme.text_secondary};","{reason}"}
+            }
+            if selection.can_enable_actions() {
+                button {r#type:"button",style:"padding:10px;min-height:44px;border-radius:8px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;align-self:flex-start;",onclick:move |_|selection.enable_actions(),"Enable actions"}
+            }
+            if let Some(text)=board_text {
+                p {role:"status","data-kg50-board":"{board_attribute}",style:"margin:0;font-size:12px;font-weight:700;color:{theme.text_primary};","{text}"}
             }
             p {style:"margin:0;font-size:12px;color:{theme.text_muted};","Selected input uses the fast load-cell scan with a 250 Hz reporting target. Each input keeps its own calibration."}
             if selected=="p6_differential" {p {style:"margin:0;font-size:12px;color:{theme.text_secondary};","P6 raw readings are differential volts. Calibrate this input on the Calibration page before using kilograms. SD records retain differential ADC samples in volts."}}
             match status {
                 InputSelectionStatus::Pending(requested)=>rsx!{p {role:"status",title:"Requested input: {requested}","Saving input selection… Calibration remains unavailable until the station confirms it."}},
-                InputSelectionStatus::Confirmed(_)=>rsx!{p {role:"status","Selection saved. Waiting for fresh readings from the selected input."}},
+                InputSelectionStatus::Confirmed(_)=>rsx!{if !board_confirmed {p {role:"status","Selection saved. Waiting for fresh readings from the selected input."}}},
                 InputSelectionStatus::Unconfirmed{requested,detail}=>rsx!{
                     p {role:"status","{detail}"}
                     button {r#type:"button",style:"padding:10px;min-height:44px;border-radius:8px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;",disabled,onclick:move |_|{if settings_owner.current(){selection.request.call(requested.clone());}},"Confirm selected input again"}

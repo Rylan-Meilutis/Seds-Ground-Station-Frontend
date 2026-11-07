@@ -116,6 +116,8 @@ Command uplink:
 | `GET` | `/api/calibration_config` | Calibration tab layout |
 | `GET` | `/api/calibration` | Calibration document |
 | `POST` | `/api/calibration` | Save calibration document |
+| `GET` | `/api/calibration/kg50_input` | Selected 50 kg input against the input the DAQ reports |
+| `POST` | `/api/calibration/kg50_input` | Select the 50 kg input (`{"input":"amp2"\|"p6_differential"}`) |
 | `POST` | `/api/calibration/capture_zero` | Capture a zero point |
 | `POST` | `/api/calibration/capture_span` | Capture a span point |
 | `POST` | `/api/calibration/refit` | Recompute calibration fit |
@@ -783,6 +785,19 @@ Frontend behavior notes:
 - If the backend disconnects after calibration data was already loaded, the calibration tab keeps showing the cached last-seen data instead of going blank.
 - Unsaved frontend-only calibration edits are stored locally per Ground Station URL until saved or replaced by a newer successful backend save.
 - The calibration UI includes a `Preserve regression when changing zero point` toggle. This only affects local frontend editing behavior; it does not change the request schema.
+
+### `GET /api/calibration/kg50_input`
+
+```json
+{"selected":"p6_differential","board_input":"p6_differential","board_age_ms":12,"state":"synced"}
+```
+
+`board_input` comes from the DAQ's own reports: `KG50` while it scans AMP2 and
+tagged `DAQ_KG50_SELECTED` while it scans P6. `state` is `synced`, `syncing` or
+`mismatch` (the board reports another input, and `mismatch` means for over ten
+seconds) or `no_readback` (no report for three seconds, so `board_input` is only
+the last value seen). The Ground Station's saved selection wins any mismatch and
+is re-sent every two seconds until the DAQ reports it.
 
 ### `POST /api/calibration`
 

@@ -98,7 +98,7 @@ fn StationSettingsBody(
                 section {style:"display:grid;gap:14px;min-width:0;",
                     h3 {style:"margin:0;","Loadcells"}
                     p {style:"margin:0;color:{theme.text_muted};","Choose the DAQ input and the load cell used for fill cutoff here. Each input retains its own calibration."}
-                    super::data_tab::Kg50InputSelector {theme:theme.clone(),selection:calibration_context,disabled:!crate::auth::can_edit_calibration()||abort_only_mode||calibration_locked()||input_epoch()==u64::MAX}
+                    super::data_tab::Kg50InputSelector {theme:theme.clone(),selection:calibration_context,disabled:!crate::auth::can_edit_calibration()||(abort_only_mode&&crate::auth::can_view_actions())||calibration_locked()||input_epoch()==u64::MAX,disabled_reason:input_disabled_reason(abort_only_mode,calibration_locked())}
                     FillSourceSetting {theme:theme.clone(),fill_targets,disabled:abort_only_mode||!crate::auth::can_view_actions()}
                     p {style:"color:{theme.text_muted};", "Temperature correction follows the sensor’s saved drift calibration. This backend has no independent on/off preference; fitted coefficients are preserved."}
                     if crate::auth::can_view_calibration() {
@@ -118,6 +118,18 @@ fn StationSettingsBody(
             },
             StationSection::Administration=>rsx! {section {h3 {"Administration"}button {r#type:"button",onclick:move |_|on_manage_users.call(()),"Manage users & access"}}},
         }
+    }
+}
+
+fn input_disabled_reason(abort_only_mode: bool, calibration_locked: bool) -> Option<String> {
+    if !crate::auth::can_edit_calibration() {
+        Some("This account cannot change the DAQ input.".into())
+    } else if abort_only_mode && crate::auth::can_view_actions() {
+        Some("Actions are disabled, so the DAQ input cannot be changed.".into())
+    } else if calibration_locked {
+        Some("Finish or discard the edits on the Calibration page before changing the DAQ input.".into())
+    } else {
+        None
     }
 }
 

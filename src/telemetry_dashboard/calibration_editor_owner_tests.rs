@@ -64,6 +64,7 @@ fn explicit_read_retry_never_acknowledges_pending_or_uncertain_input_writes() {
             locked: Signal::new(false),
             request: EventHandler::new(|_: String| {}),
             retained_owner: Signal::new(None),
+            abort_only: Signal::new(false),
         };
         for state in [
             InputSelectionStatus::Pending("amp2".into()),
