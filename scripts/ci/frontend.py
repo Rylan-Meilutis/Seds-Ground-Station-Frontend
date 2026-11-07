@@ -56,6 +56,21 @@ ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 DIOXUS_METADATA_PROGRESS = re.compile(r"^warning: (?:Waiting for cargo-metadata\.\.\.|\(Try (?:[1-9]|[1-9][0-9]|100)\) Taking a while\.\.\.)$")
 WARNING = re.compile(r"(?i)(?:(?:^|\s)(?:warning(?:\[[^]]+\])?:|warn(?:ing)?\s+(?!0\b)\S|w:\s)|::warning(?: [^:]*)?::)")
 
+# Only the two observed Cargo/libcurl error-55 SSL transport diagnostics may
+# trigger a clean offline verification after an otherwise successful fetch.
+CARGO_FETCH_TRANSIENT = re.compile(
+    r"^warning: spurious network error \([1-3] tries remaining\): \[55\] "
+    r"Failed sending data to the peer \(OpenSSL SSL_read: "
+    r"(?:SSL_ERROR_SYSCALL|OpenSSL/[0-9.]+: error:0A000126:SSL routines::unexpected eof while reading), errno 0\)$"
+)
+
+
+class CommandFailure(RuntimeError):
+    def __init__(self, label, result, warnings):
+        super().__init__(f"{label}: exit={result}, warning_lines={len(warnings)}; inspect preserved log")
+        self.result = result
+        self.warnings = tuple(warnings)
+
 
 def file_sha256(path):
     with path.open("rb") as source:
@@ -98,7 +113,7 @@ def checked(argv, env, label, *, dioxus_progress=False):
     configure_utf8_console()
     logs = ROOT / "ci-results"
     logs.mkdir(exist_ok=True)
-    warning_lines = 0
+    warnings = []
     progress_lines = []
     resolved = list(argv)
     if not Path(resolved[0]).is_absolute():
@@ -118,11 +133,26 @@ def checked(argv, env, label, *, dioxus_progress=False):
                 if dioxus_progress and DIOXUS_METADATA_PROGRESS.fullmatch(plain):
                     progress_lines.append(plain)
                 else:
-                    warning_lines += bool(WARNING.search(plain))
+                    if WARNING.search(plain):
+                        warnings.append(plain)
         result = child.wait()
-    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": warning_lines, "external_metadata_progress_warnings": progress_lines}, indent=2) + "\n")
-    if result or warning_lines:
-        raise RuntimeError(f"{label}: exit={result}, warning_lines={warning_lines}; inspect preserved log")
+    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines}, indent=2) + "\n")
+    if result or warnings:
+        raise CommandFailure(label, result, warnings)
+
+
+def fetch_application(env):
+    """Require a clean fetch, or verify an SSL-recovered fetch fully offline."""
+    try:
+        checked(["cargo", "fetch", "--locked"], env, "application-fetch")
+    except CommandFailure as failure:
+        if (failure.result != 0 or not failure.warnings
+                or not all(CARGO_FETCH_TRANSIENT.fullmatch(line) for line in failure.warnings)):
+            raise
+        # Keep the initial log/receipt unchanged. No second network attempt and
+        # no warning exemption in the verification or subsequent build steps.
+        checked(["cargo", "fetch", "--locked", "--offline"], env,
+                "application-fetch-offline-verification")
 
 
 def ci_env():
@@ -356,7 +386,7 @@ def bootstrap(name):
     versions = resolved_tool_versions()
     # Resolve/download the exact application lock before dx's timer-based
     # metadata spinner; subsequent application Cargo work is offline/locked.
-    checked(["cargo", "fetch", "--locked"], env, "application-fetch")
+    fetch_application(env)
     wasm_bindgen_asset(host, versions["wasm-bindgen"])
     receipt = ROOT / "ci-results/resolved-tools.json"
     receipt.parent.mkdir(exist_ok=True)
