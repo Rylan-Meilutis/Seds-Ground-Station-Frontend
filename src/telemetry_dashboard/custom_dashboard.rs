@@ -677,8 +677,8 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
             }
         })
         .unwrap_or_else(|| "—".into());
-    // Compact pins use their actual content width. Only exceptionally long
-    // numbers scroll; no configured range creates empty space before the unit.
+    // Reserve a stable numeric slot so changing digits do not move adjacent pins.
+    // Keep full precision; unusually long values remain horizontally scrollable.
     let compact_number = value.map(|v| if card.display == "state" { text.clone() }
         else { format!("{v:.precision$}", precision=card.precision) }).unwrap_or_else(|| "—".into());
     let compact_details = pinned_details(&card, value, age);
@@ -698,7 +698,7 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
         strong {class:"gs26-card-label",style:if compact {"min-width:0;max-width:100%;overflow-wrap:anywhere;"}else{""},"{card.label}"}
         div {class:"gs26-card-value",style:if compact {"font-size:13px;display:inline-flex;flex-wrap:nowrap;align-items:baseline;gap:4px;min-width:0;max-width:100%;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},
             if compact {
-                span {class:"gs26-pinned-number",style:"flex:0 1 auto;min-width:0;max-inline-size:18ch;overflow-x:auto;white-space:nowrap;font-variant-numeric:tabular-nums;","{compact_number}"}
+                span {class:"gs26-pinned-number",style:if card.display == "state" {"flex:0 1 auto;min-width:0;max-inline-size:18ch;overflow-x:auto;white-space:nowrap;font-variant-numeric:tabular-nums;"} else {"flex:0 0 10ch;inline-size:10ch;min-inline-size:10ch;max-inline-size:10ch;overflow-x:auto;white-space:nowrap;font-variant-numeric:tabular-nums;"},"{compact_number}"}
                 if card.display != "state" && value.is_some() {span {class:"gs26-pinned-unit",style:"flex:0 0 auto;white-space:nowrap;","{card.unit}"}}
             } else {"{text}"}
         }

@@ -24,6 +24,8 @@ fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(req.method==
   if(pathname==='/api/checklists'||`);
 fixture=fixture.replace("await new Promise(resolve=>server.listen","const serverSockets=new Set();server.on('connection',socket=>{serverSockets.add(socket);socket.on('close',()=>serverSockets.delete(socket));});\nawait new Promise(resolve=>server.listen");
 fixture=fixture.replace('const server=http.createServer', "const rawPosts=[],localizationPosts=[];process.on('exit',()=>console.log('CAL_POST_LEDGER '+JSON.stringify({rawPosts,localizationPosts,writes,queries})));const server=http.createServer");
+// Match the published read-only status envelope; no run/readiness is invented.
+fixture=fixture.replace("res.end(JSON.stringify(gseStatus));return;}","res.end(JSON.stringify({...gseStatus,sequence_progress:{version:1,backend_instance:'1'.repeat(32),reset_epoch:'2'.repeat(16),cancel_api_version:1,active:[],terminal:[],reporting_error:null}}));return;}");
 fixture+=`let observedPage=null;let observedPhase="settings-setup";try {
  const theme=process.env.GS_SETTINGS_THEME||'default';assert(['default','light'].includes(theme));
  const context=await browser.newContext({viewport:{width:1440,height:1000}});

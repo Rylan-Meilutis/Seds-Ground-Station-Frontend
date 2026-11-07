@@ -72,13 +72,18 @@ try {
   await page.setViewportSize({width,height:900});const rows=[];
   for(const value of [0,20,0,-20,123456.78,-123456.78,0])rows.push(await reading(value));
   measurements.push({kind:'pinned',width,rows});if(process.env.GS_LAYOUT_RESULTS)fs.writeFileSync(process.env.GS_LAYOUT_RESULTS,JSON.stringify({measurements,phase:'pinned'},null,2)+'\n');
-  assert(rows[1].point.width>rows[0].point.width,'pins use actual value width rather than a reserved range at '+width);
+  for(const row of rows){
+   assert(Math.abs(row.number.width-rows[0].number.width)<0.1,'numeric slot stays fixed through digit/sign changes at '+width);
+   assert(Math.abs(row.point.width-rows[0].point.width)<0.1,'pin stays fixed through digit/sign changes at '+width);
+   assert(Math.abs(row.unit.x-rows[0].unit.x)<0.1,'unit stays fixed through digit/sign changes at '+width);
+  }
   assert(rows.every(row=>row.number&&row.unit&&row.unit.x-row.number.x-row.number.width>=-0.1&&row.unit.x-row.number.x-row.number.width<=6),'number and unit stay contiguous at '+width);
   assert.equal(await strip.locator('.gs26-card-freshness').count(),0,'compact pins never add verbose freshness rows');
   assert(rows.every(row=>row.number.width>0&&row.text.includes('kg')),'full precision and unit remain present');
   const beforeOverflow=rows[0];const large=2**54;const overflow=await reading(large);
   assert.equal(overflow.numberText.trim(),large.toFixed(2),'full finite overflow number keeps originalprecision');assert.equal(overflow.unitText.trim(),'kg','separate unit remains present');assert.equal(overflow.gap,'4px','visual separation is the CSS gap, not a text-space contract');
-  assert(overflow.point.width<=width,'huge full-precision value remains contained');assert(overflow.unit.x-overflow.number.x-overflow.number.width<=6,'huge value keeps adjacent unit');
+  assert(overflow.point.width<=width,'huge full-precision value remains contained');
+  assert(Math.abs(overflow.number.width-beforeOverflow.number.width)<0.1&&Math.abs(overflow.point.width-beforeOverflow.point.width)<0.1,'overflow retains the same numeric slot and pin width');assert(overflow.unit.x-overflow.number.x-overflow.number.width<=6,'huge value keeps adjacent unit');
   const scroll=await point.locator('.gs26-pinned-number').evaluate(element=>{const box=element.getBoundingClientRect(),text=element.firstChild;const charBox=index=>{const range=document.createRange();range.setStart(text,index);range.setEnd(text,index+1);const r=range.getBoundingClientRect();return{x:r.x,right:r.right};};element.scrollLeft=0;const first=charBox(0);element.scrollLeft=element.scrollWidth;const last=charBox(text.textContent.length-1);const result={clientWidth:element.clientWidth,scrollWidth:element.scrollWidth,firstVisible:first.x>=box.x-.1&&first.right<=box.right+.1,lastVisible:last.x>=box.x-.1&&last.right<=box.right+.1,scrollLeft:element.scrollLeft};element.scrollLeft=0;return result;});
   measurements.push({kind:'true-overflow',width,overflow,scroll});if(process.env.GS_LAYOUT_RESULTS)fs.writeFileSync(process.env.GS_LAYOUT_RESULTS,JSON.stringify({measurements,phase:'overflow'},null,2)+'\n');
   assert(scroll.scrollWidth>scroll.clientWidth&&scroll.firstVisible&&scroll.lastVisible,'overflow number is fully readable through horizontal scroll');
@@ -94,10 +99,17 @@ try {
   const sizes=await strip.locator(':scope > div').evaluateAll(nodes=>nodes.map(e=>{const r=e.getBoundingClientRect(),label=e.querySelector('.gs26-card-label').getBoundingClientRect(),value=e.querySelector('.gs26-card-value').getBoundingClientRect();return{text:e.querySelector('.gs26-card-label').textContent,x:r.x,y:r.y,width:r.width,height:r.height,labelRight:label.right,valueX:value.x,valueY:value.y};}));
   assert.deepEqual(sizes.map(e=>e.text),labels,'saved pinned order retained');assert.equal(sizes.length,8,'no pin disappears at '+width);
   assert(sizes.every(e=>e.x>=0&&e.x+e.width<=width+1),'all eight pins contained at '+width);
-  assert(Math.max(...sizes.map(e=>e.width))-Math.min(...sizes.map(e=>e.width))>20,'pairs use content sizes instead of equal widths');
+  assert(Math.max(...sizes.map(e=>e.width))-Math.min(...sizes.map(e=>e.width))>20,'different labels and state text retain their individual layouts');
   assert(sizes.every(e=>e.valueX-e.labelRight<9||e.valueY>e.y+15),'label/value gap stays small at '+width);
   assert(await strip.evaluate(e=>e.scrollWidth<=e.clientWidth+1),'pins wrap without strip scrolling');
   if(width<=390)assert(new Set(sizes.map(e=>Math.round(e.y))).size>1,'mobile pins wrap to rows');
+  const pilot=strip.locator(':scope > div').filter({has:page.locator('.gs26-card-label',{hasText:/^Pilot$/})});
+  for(const [value,expected]of [[0,'Closed / Off'],[1,'Open / On']]){
+   const now=Date.now(),row={data_type:'VALVE_STATE',sender_id:'VB',values:[value,0,0,0,0,0],timestamp_ms:now,received_timestamp_ms:now};broadcast({ty:'TelemetryBatch',data:[row]});
+   await pilot.locator('.gs26-pinned-number').filter({hasText:expected}).waitFor();
+   const state=await pilot.locator('.gs26-pinned-number').evaluate(e=>({text:e.textContent.trim(),width:e.clientWidth,scrollWidth:e.scrollWidth}));
+   assert.equal(state.text,expected,'state label remains complete at '+width);assert(state.scrollWidth<=state.width+1,'state label fits without clipping at '+width);assert.equal(await pilot.locator('.gs26-pinned-unit').count(),0,'state label never acquires a numeric unit');measurements.push({kind:'state-label',width,state});
+  }
   await page.screenshot({path:'/tmp/pinned-compact-'+width+'.png'});
  }
  await page.reload();await strip.waitFor();assert.deepEqual(await strip.locator('.gs26-card-label').allTextContents(),labels,'pin choices survive reload');
@@ -129,5 +141,5 @@ try {
  }
  assert.deepEqual(commandRequests,[],'layout inspection sends no commands');assert.deepEqual(errors,[]);
  if(process.env.GS_LAYOUT_RESULTS)fs.writeFileSync(process.env.GS_LAYOUT_RESULTS,JSON.stringify({measurements,commands:commandRequests,errors},null,2)+'\n');
- await context.close();console.log('PASS compact8-pin wrapping/order/reload, requested-state/badge containment and actual pinned geometry 0→20→0/negative/longer full-precision values and mobile-contained full Underglow/FC Buzzer labels, no commands');
+ await context.close();console.log('PASS fixed-numeric8-pin wrapping/order/reload, requested-state/badge containment and actual pinned geometry 0→20→0/negative/longer full-precision values and mobile-contained full Underglow/FC Buzzer labels, no commands');
 }finally{await browser.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));}

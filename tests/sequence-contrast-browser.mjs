@@ -38,5 +38,5 @@ const body=String.raw`try {
   await context.close();active=[];terminal=[];
  }
  assert.equal(cancelBodies.length,0);assert.equal(genericCommands,0);fs.writeFileSync(process.env.GS_SEQUENCE_CONTRAST_RESULT||'/tmp/sequence-contrast.json',JSON.stringify(observations,null,2));console.log('PASS actualWASM dark/light running+paused sequence summary/cancel/watch/legend/steps contrast>=4.5');
-}catch(error){console.error('CONTRAST_CASE_ERROR '+error.message);throw error;}finally{await browser.close();server.closeAllConnections();server.close();}`;
+}catch(error){console.error('CONTRAST_CASE_ERROR '+error.message);throw error;}finally{clearInterval(heartbeat);await browser.close();for(const item of heldStatus)if(!item.res.destroyed)item.res.destroy();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));}`;
 try{await import('data:text/javascript;base64,'+Buffer.from(setup+'fixture+='+JSON.stringify(body)+';await import("data:text/javascript;base64,"+Buffer.from(fixture).toString("base64"));').toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}
