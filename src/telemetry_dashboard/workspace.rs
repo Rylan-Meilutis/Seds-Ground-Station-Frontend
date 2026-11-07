@@ -1,0 +1,254 @@
+//! A second visible tab, sharing the dashboard's existing data and command owners.
+use super::*;
+use std::{cell::RefCell, rc::Rc};
+
+const MIN_WIDTH: u32 = 1440;
+static VIEWPORT_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+struct Preference {
+    enabled: bool,
+    primary: String,
+    secondary: String,
+}
+impl Default for Preference {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            primary: "data".into(),
+            secondary: "actions".into(),
+        }
+    }
+}
+
+fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
+    match tab {
+        // State can already contain the ground controls; never add another
+        // command surface next to it. Editors and singleton media stay primary.
+        MainTab::Actions => matches!(
+            primary,
+            MainTab::Data
+                | MainTab::ConnectionStatus
+                | MainTab::Detailed
+                | MainTab::NetworkTopology
+                | MainTab::Map
+                | MainTab::Vehicle
+                | MainTab::Messages
+                | MainTab::Notifications
+                | MainTab::Warnings
+                | MainTab::Errors
+        ),
+        MainTab::Data
+        | MainTab::ConnectionStatus
+        | MainTab::Detailed
+        | MainTab::NetworkTopology
+        | MainTab::Map
+        | MainTab::Vehicle
+        | MainTab::Messages
+        | MainTab::Notifications
+        | MainTab::Warnings
+        | MainTab::Errors => true,
+        _ => false,
+    }
+}
+
+fn resolve(primary: MainTab, secondary: &str, available: &[MainTab], split: bool) -> Vec<MainTab> {
+    let primary = if available.contains(&primary) {
+        primary
+    } else {
+        available.first().copied().unwrap_or(MainTab::State)
+    };
+    let mut tabs = vec![primary];
+    if split
+        && !matches!(
+            primary,
+            MainTab::Mission | MainTab::StreamManager | MainTab::CrewVoice | MainTab::Media
+        )
+    {
+        let mut candidates = available
+            .iter()
+            .copied()
+            .filter(|tab| *tab != primary && secondary_allowed(*tab, primary));
+        let selected = candidates
+            .clone()
+            .find(|tab| _main_tab_to_str(*tab) == secondary)
+            .or_else(|| candidates.clone().find(|tab| *tab == MainTab::Data))
+            .or_else(|| candidates.clone().find(|tab| *tab == MainTab::Actions))
+            .or_else(|| candidates.next());
+        if let Some(tab) = selected {
+            tabs.push(tab);
+        }
+    }
+    tabs
+}
+
+fn storage_key() -> String {
+    // Same client storage boundary as customized tabs, with an independent
+    // station + account namespace. It conveys no command or server authority.
+    let account = auth::current_status()
+        .username
+        .unwrap_or_else(|| "anonymous".into());
+    let station = normalize_base_url(UrlConfig::base_http());
+    format!(
+        "gs26_wide_workspace_v1:{}",
+        serde_json::json!([station, account])
+    )
+}
+fn load(key: &str) -> Preference {
+    persist::get_string(key)
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct Workspace {
+    pub tabs: Memo<Vec<MainTab>>,
+    wide: Signal<bool>,
+    preference: Signal<Preference>,
+}
+impl Workspace {
+    pub fn contains(self, tab: MainTab) -> bool {
+        self.tabs.read().contains(&tab)
+    }
+}
+
+pub(super) fn use_workspace(
+    mut primary: Signal<MainTab>,
+    available: Vec<MainTab>,
+    streamer: bool,
+) -> Workspace {
+    let key = storage_key();
+    let mut loaded_key = use_signal(|| key.clone());
+    let mut preference = use_signal(|| load(&key));
+    let mut applied_key = use_signal(|| None::<String>);
+    let mut wide = use_signal(|| false);
+    let viewport_id = use_hook(|| VIEWPORT_ID.fetch_add(1, Ordering::Relaxed));
+    use_future(move || async move {
+        let mut script = document::eval(&format!(
+            r#"
+            (() => {{
+                const media = window.matchMedia('(min-width: {MIN_WIDTH}px)');
+                const changed = () => dioxus.send(media.matches);
+                const key = '__gs26_workspace_{viewport_id}';
+                window[key] = () => {{ media.removeEventListener('change', changed); delete window[key]; }};
+                media.addEventListener('change', changed);
+                changed();
+            }})();
+        "#
+        ));
+        while let Ok(value) = script.recv::<bool>().await {
+            set_signal_if_changed(&mut wide, value);
+        }
+    });
+    use_drop(move || js_eval(&format!("window.__gs26_workspace_{viewport_id}?.();")));
+
+    use_effect(use_reactive((&key,), move |(key,)| {
+        if *loaded_key.peek() != key {
+            preference.set(load(&key));
+            loaded_key.set(key);
+            applied_key.set(None);
+        }
+    }));
+    use_effect(use_reactive((&key, &available), move |(key, available)| {
+        if !available.is_empty() && !available.contains(&*primary.peek()) {
+            primary.set(available[0]);
+        }
+        if !available.is_empty()
+            && *wide.read()
+            && *loaded_key.read() == key
+            && applied_key.read().as_ref() != Some(&key)
+        {
+            let selected = _main_tab_from_str(&preference.peek().primary);
+            if available.contains(&selected) {
+                primary.set(selected);
+            }
+            applied_key.set(Some(key));
+        }
+    }));
+    use_effect(use_reactive((&key,), move |(key,)| {
+        let selected = *primary.read();
+        let mut next = preference.read().clone();
+        if *wide.read() && *loaded_key.read() == key && applied_key.read().as_ref() == Some(&key) {
+            next.primary = _main_tab_to_str(selected).into();
+            if let Ok(value) = serde_json::to_string(&next) {
+                persist::set_string(&key, &value);
+            }
+            if *preference.peek() != next {
+                preference.set(next);
+            }
+        }
+    }));
+    let previous_tabs = use_hook(|| Rc::new(RefCell::new(Vec::<MainTab>::new())));
+    let tabs = use_memo(use_reactive(
+        (&available, &streamer, &key),
+        move |(available, streamer, key)| {
+            let next = if streamer {
+                vec![MainTab::Mission]
+            } else if *loaded_key.read() != key {
+                resolve(*primary.read(), "data", &available, false)
+            } else {
+                let choice = preference.read();
+                resolve(
+                    *primary.read(),
+                    &choice.secondary,
+                    &available,
+                    *wide.read() && choice.enabled,
+                )
+            };
+            if *previous_tabs.borrow() != next {
+                // Run BEFORE publishing the changed view/DOM, never from a
+                // later effect that could consume a fresh Stop pressed in the
+                // newly rendered layout. Keep the original gesture tombstone.
+                if let Ok(mut pending) = PENDING_COMMAND_PRESS.lock()
+                    && let Some(press) = pending.as_mut()
+                    && !press.owner.as_ref().is_some_and(CommandOwner::is_emergency)
+                {
+                    press.consumed = true;
+                }
+                *previous_tabs.borrow_mut() = next.clone();
+            }
+            next
+        },
+    ));
+    Workspace {
+        tabs,
+        wide,
+        preference,
+    }
+}
+
+#[component]
+pub(super) fn WorkspaceToolbar(
+    workspace: Workspace,
+    available: Vec<MainTab>,
+    labels: Vec<String>,
+) -> Element {
+    let tabs = workspace.tabs.read();
+    let primary = tabs[0];
+    let secondary = tabs.get(1).copied();
+    let mut preference = workspace.preference;
+    rsx! {
+        if *workspace.wide.read() && !matches!(primary, MainTab::Mission | MainTab::StreamManager | MainTab::CrewVoice | MainTab::Media) {
+            div { class: "gs26-workspace-tools", "aria-label": "Workspace layout",
+                button { r#type: "button", "aria-pressed": secondary.is_some().to_string(),
+                    onclick: move |_| { let mut next = preference.read().clone(); next.enabled = !next.enabled; preference.set(next); },
+                    if secondary.is_some() { "Single pane" } else { "Two panes" }
+                }
+                if let Some(secondary) = secondary {
+                    label { "Second pane "
+                        select { "aria-label": "Second workspace pane", value: _main_tab_to_str(secondary),
+                            onchange: move |event| { let mut next = preference.read().clone(); next.secondary = event.value(); preference.set(next); },
+                            for (tab, label) in available.into_iter().zip(labels).filter(|(tab, _)| *tab != primary && secondary_allowed(*tab, primary)) {
+                                option { value: _main_tab_to_str(tab), "{label}" }
+                            }
+                        }
+                    }
+                    button { r#type: "button", "aria-label": "Close second pane", onclick: move |_| { let mut next = preference.read().clone(); next.enabled = false; preference.set(next); }, "×" }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

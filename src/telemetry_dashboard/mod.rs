@@ -51,6 +51,7 @@ mod live_stream_tab;
 mod media_tool_tab;
 mod messages_tab;
 mod navigation_rail;
+mod workspace;
 mod network_health;
 mod network_topology_tab;
 mod notifications_tab;

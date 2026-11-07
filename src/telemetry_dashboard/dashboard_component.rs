@@ -223,6 +223,11 @@ fn TelemetryDashboardInner() -> Element {
     let show_version_overlay = use_signal(|| false);
 
     let mut active_main_tab = use_signal(|| _main_tab_from_str(st_main_tab.read().as_str()));
+    let workspace_available = layout_config.read().as_ref().map(|layout| _configured_main_tabs(
+        layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read(),
+    )).unwrap_or_default();
+    let workspace = workspace::use_workspace(active_main_tab, workspace_available.clone(), *streamer_mode.read());
+
     // Configuration and procedures share one selection lifetime, while the
     // calibration editor mounts only on its dedicated page.
     let calibration_context = settings_navigation::use_calibration_context(abort_only_mode);
@@ -375,12 +380,10 @@ fn TelemetryDashboardInner() -> Element {
     {
         let mut frontend_network_metrics = frontend_network_metrics;
         let alive = alive.clone();
-        let active_main_tab = active_main_tab;
         use_effect(move || {
             reset_frontend_network_metrics_state();
             let alive = alive.clone();
-            let active_main_tab = active_main_tab;
-            let epoch = *WS_EPOCH.read();
+                let epoch = *WS_EPOCH.read();
             spawn(async move {
                 let mut last_snapshot = FrontendNetworkMetrics::default();
                 while alive.load(Ordering::Relaxed) && *WS_EPOCH.read() == epoch {
@@ -392,7 +395,7 @@ fn TelemetryDashboardInner() -> Element {
 
                     let sleep_ms = if !dashboard_page_visible() {
                         5_000
-                    } else if *active_main_tab.read() == MainTab::ConnectionStatus {
+                    } else if workspace.contains(MainTab::ConnectionStatus) {
                         500
                     } else {
                         2_000
@@ -465,9 +468,8 @@ fn TelemetryDashboardInner() -> Element {
     }
 
     {
-        let active_main_tab = active_main_tab;
         use_effect(move || {
-            if matches!(*active_main_tab.read(), MainTab::Data | MainTab::State) {
+            if workspace.tabs.read().iter().any(|tab| matches!(tab, MainTab::Data | MainTab::State)) {
                 bump_chart_render_epoch();
                 if CHART_RENDER_DIRTY.load(Ordering::Acquire) {
                     schedule_dashboard_runtime_pump();
@@ -891,7 +893,7 @@ fn TelemetryDashboardInner() -> Element {
     }
     {
         use_effect(move || {
-            if *active_main_tab.read() == MainTab::Map {
+            if workspace.contains(MainTab::Map) {
                 js_eval(
                     r#"
                     (function() {
@@ -1388,7 +1390,6 @@ fn TelemetryDashboardInner() -> Element {
     // ------------------------------------------------------------------------
     {
         let alive = alive.clone();
-        let active_main_tab = active_main_tab;
         let rocket_gps_flush = rocket_gps;
         let notifications_flush = notifications;
         let notification_history_flush = notification_history;
@@ -1406,8 +1407,7 @@ fn TelemetryDashboardInner() -> Element {
 
         use_effect(move || {
             let alive = alive.clone();
-            let active_main_tab = active_main_tab;
-            let mut rocket_gps_flush = rocket_gps_flush;
+                let mut rocket_gps_flush = rocket_gps_flush;
             let mut rocket_gps_altitude_flush = rocket_gps_altitude_m;
             let mut notifications_flush = notifications_flush;
             let mut notification_history_flush = notification_history_flush;
@@ -1543,7 +1543,7 @@ fn TelemetryDashboardInner() -> Element {
                     let drained = drain_telemetry_queue_for_frame();
 
                     let charts_live_enabled =
-                        matches!(*active_main_tab.read(), MainTab::Data | MainTab::State);
+                        workspace.tabs.read().iter().any(|tab| matches!(tab, MainTab::Data | MainTab::State));
                     if let Some((gps, altitude_m)) =
                         ingest_telemetry_rows_into_runtime_caches_with_chart_mode(
                             drained,
@@ -1562,14 +1562,9 @@ fn TelemetryDashboardInner() -> Element {
                     if TELEMETRY_RENDER_DIRTY.load(Ordering::Acquire)
                         && dashboard_page_visible()
                         && telemetry_render_flush_due(now_ms)
-                        && matches!(
-                            *active_main_tab.read(),
-                            MainTab::State
-                                | MainTab::Data
-                                | MainTab::Calibration
-                                | MainTab::Mission
-                                | MainTab::Vehicle
-                        )
+                        && workspace.tabs.read().iter().any(|tab| matches!(tab,
+                            MainTab::State | MainTab::Data | MainTab::Calibration | MainTab::Mission | MainTab::Vehicle
+                        ))
                     {
                         TELEMETRY_RENDER_DIRTY.store(false, Ordering::Release);
                         LAST_TELEMETRY_RENDER_FLUSH_MS.store(now_ms, Ordering::Relaxed);
@@ -1578,14 +1573,14 @@ fn TelemetryDashboardInner() -> Element {
 
                     if CHART_RENDER_DIRTY.load(Ordering::Acquire)
                         && chart_render_flush_due(now_ms)
-                        && matches!(*active_main_tab.read(), MainTab::Data | MainTab::State)
+                        && workspace.tabs.read().iter().any(|tab| matches!(tab, MainTab::Data | MainTab::State))
                     {
                         CHART_RENDER_DIRTY.store(false, Ordering::Release);
                         LAST_CHART_RENDER_FLUSH_MS.store(now_ms, Ordering::Relaxed);
                         bump_chart_render_epoch();
                     }
 
-                    let active_tab = *active_main_tab.read();
+                    let visible_tabs = workspace.tabs.read().clone();
                     let page_visible = dashboard_page_visible();
                     if telemetry_queue_has_rows() {
                         TELEMETRY_RENDER_DIRTY.store(true, Ordering::Release);
@@ -1599,14 +1594,9 @@ fn TelemetryDashboardInner() -> Element {
 
                     if TELEMETRY_RENDER_DIRTY.load(Ordering::Acquire)
                         && page_visible
-                        && matches!(
-                            active_tab,
-                            MainTab::State
-                                | MainTab::Data
-                                | MainTab::Calibration
-                                | MainTab::Mission
-                                | MainTab::Vehicle
-                        )
+                        && visible_tabs.iter().any(|tab| matches!(tab,
+                            MainTab::State | MainTab::Data | MainTab::Calibration | MainTab::Mission | MainTab::Vehicle
+                        ))
                     {
                         let elapsed = now_ms
                             .saturating_sub(LAST_TELEMETRY_RENDER_FLUSH_MS.load(Ordering::Relaxed));
@@ -1615,7 +1605,7 @@ fn TelemetryDashboardInner() -> Element {
                     }
 
                     if CHART_RENDER_DIRTY.load(Ordering::Acquire)
-                        && matches!(active_tab, MainTab::Data | MainTab::State)
+                        && visible_tabs.iter().any(|tab| matches!(tab, MainTab::Data | MainTab::State))
                     {
                         let elapsed = now_ms
                             .saturating_sub(LAST_CHART_RENDER_FLUSH_MS.load(Ordering::Relaxed));
@@ -2039,7 +2029,7 @@ fn TelemetryDashboardInner() -> Element {
         let dismissed_notifications = dismissed_notifications;
         let unread_notification_ids = unread_notification_ids;
         use_effect(move || {
-            if *active_main_tab.read() == MainTab::Notifications {
+            if workspace.contains(MainTab::Notifications) {
                 dismiss_all_active_notifications_local(
                     notifications,
                     dismissed_notifications,
@@ -3851,10 +3841,24 @@ fn TelemetryDashboardInner() -> Element {
                         }
 
                         }
-                        div {class:"gs26-page-content", style: "flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
+                        div {class:"gs26-page-content", style: "display:flex;flex-direction:column;flex:1 1 auto; min-height:0; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
                             div {id:"gs26-voice-slot",style:if voice_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
                             div {id:"gs26-media-slot",style:if media_visible {"display:block;height:100%;width:100%;"}else{"display:none;"}}
-                            match if *streamer_mode.read() {MainTab::Mission}else{*active_main_tab.read()} {
+                            if !*streamer_mode.read() && !media_visible && !voice_visible {
+                                workspace::WorkspaceToolbar {
+                                    workspace,
+                                    available: workspace_available.clone(),
+                                    labels: workspace_available.iter().map(|tab| _main_tab_label(&layout, *tab)).collect::<Vec<_>>(),
+                                }
+                            }
+                            div { class: "gs26-workspace", "data-split": (workspace.tabs.read().len() == 2).to_string(),
+                                style: if media_visible || voice_visible { "display:none;" } else { "" },
+                                for (pane_index, pane_tab) in workspace.tabs.read().clone().into_iter().enumerate() {
+                                    section { key: "workspace-pane-{pane_index}", class: "gs26-workspace-pane",
+                                        "data-workspace-pane": if pane_index == 0 { "primary" } else { "secondary" },
+                                        "data-workspace-tab": _main_tab_to_str(pane_tab),
+                                        "aria-label": _main_tab_label(&layout, pane_tab),
+                            match pane_tab {
                                 MainTab::Checklists => rsx! {for policy_view_key in [station_mode_observer::view_key()] { checklists::ChecklistsTab { key: "{policy_view_key}",theme:theme.clone()} }},
                                 MainTab::State => rsx! {
                                     div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
@@ -3929,7 +3933,7 @@ fn TelemetryDashboardInner() -> Element {
                                     }
                                 },
                                 MainTab::Actions => rsx! {
-                                    div { style: "height:100%; width:100%; max-width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
+                                    div { class: "gs26-actions-page", style: "height:100%; width:100%; max-width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
                                     for policy_view_key in [station_mode_observer::view_key()] { ActionsTab { key: "{policy_view_key}",
                                         layout: layout.actions_tab.clone(),
                                         action_policy: action_policy,
@@ -4078,17 +4082,20 @@ fn TelemetryDashboardInner() -> Element {
                                     }
                                 },
                             }
+                                    }
+                                }
+                            }
                         }
                     }
                     }
-                    if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && *active_main_tab.read()!=MainTab::Warnings {
+                    if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && !workspace.contains(MainTab::Warnings) {
                         aside {role:"alert",class:"gs26-warning-toast gs26-message-card",style:"font-family:{dashboard_font_stack};position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
                             div {class:"gs26-message-body",style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
                             button {style:"font-family:inherit;",onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
                             button {style:"font-family:inherit;","aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
                         }
                     }
-                    if *active_main_tab.read() != MainTab::Notifications && !notifications.read().is_empty() {
+                    if !workspace.contains(MainTab::Notifications) && !notifications.read().is_empty() {
                         div {
                             class:"gs26-notification-stack",
                             style: "position:fixed; top:88px; right:16px; z-index:2000; width:min(420px, calc(100vw - 32px)); max-height:min(40vh, 280px); display:flex; flex-direction:column; gap:8px; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; pointer-events:none; font-family:{dashboard_font_stack};",
@@ -4160,11 +4167,12 @@ fn TelemetryDashboardInner() -> Element {
         media_tool_tab::MediaSurface {media_visible,voice_visible,stream_visible:surface_stream,{view}}
         command_confirmation::CommandConfirmation {}
         style {{include_str!("sequence_progress.css")}}
+        style {{include_str!("workspace.css")}}
         if (auth::can_view_data() || auth::can_view_actions()) && !surface_viewer {
             station_mode_observer::StationModeObserver {}
             sequence_progress_host::SequenceProgressHost {
                 state:sequence_progress,status:sequence_status,open_result:sequence_result_request,
-                on_actions:*active_main_tab.read()==MainTab::Actions && !*antenna_aiming.read() && !*admin_open.read() && !*show_settings_overlay.read() && !*show_version_overlay.read() && !surface_stream,
+                on_actions:workspace.contains(MainTab::Actions) && !*antenna_aiming.read() && !*admin_open.read() && !*show_settings_overlay.read() && !*show_version_overlay.read() && !surface_stream,
             }
         }
     }
