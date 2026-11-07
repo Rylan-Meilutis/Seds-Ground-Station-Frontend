@@ -69,3 +69,18 @@ fn reverse_duplicate_prefers_actions_over_an_earlier_configured_connection_view(
         ["data", "actions"]
     );
 }
+
+#[test]
+fn choosing_the_second_view_as_first_swaps_instead_of_dropping_the_first() {
+    let available = [MainTab::Actions, MainTab::Map, MainTab::Data];
+    let shown = [MainTab::Actions, MainTab::Map];
+    let secondary = secondary_choice(&shown, MainTab::Map, "map");
+    assert_eq!(secondary, "actions");
+    assert_eq!(
+        ids(resolve(MainTab::Map, &secondary, &available, true)),
+        ["map", "actions"]
+    );
+    // An unrelated first-pane choice keeps the saved second pane.
+    assert_eq!(secondary_choice(&shown, MainTab::Data, "map"), "map");
+    assert_eq!(secondary_choice(&[MainTab::Map], MainTab::Map, "map"), "map");
+}

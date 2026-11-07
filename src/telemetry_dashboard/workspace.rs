@@ -1,6 +1,9 @@
 //! A second visible tab, sharing the dashboard's existing data and command owners.
 use super::*;
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 const MIN_WIDTH: u32 = 1440;
 static VIEWPORT_ID: AtomicU64 = AtomicU64::new(1);
@@ -49,6 +52,15 @@ fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
         | MainTab::Warnings
         | MainTab::Errors => true,
         _ => false,
+    }
+}
+
+/// Moving the second pane's view into the first swaps the panes, so choosing
+/// that view never drops what was already showing, such as Actions.
+fn secondary_choice(previous: &[MainTab], primary: MainTab, saved: &str) -> String {
+    match previous {
+        [first, second] if *second == primary && *first != primary => _main_tab_to_str(*first).into(),
+        _ => saved.into(),
     }
 }
 
@@ -166,11 +178,18 @@ pub(super) fn use_workspace(
             applied_key.set(Some(key));
         }
     }));
+    let last_primary = use_hook(|| Rc::new(Cell::new(None::<MainTab>)));
     use_effect(use_reactive((&key,), move |(key,)| {
         let selected = *primary.read();
         let mut next = preference.read().clone();
         if *wide.read() && *loaded_key.read() == key && applied_key.read().as_ref() == Some(&key) {
             next.primary = _main_tab_to_str(selected).into();
+            if let Some(previous) = last_primary.replace(Some(selected))
+                && previous != selected
+                && next.secondary == _main_tab_to_str(selected)
+            {
+                next.secondary = _main_tab_to_str(previous).into();
+            }
             if let Ok(value) = serde_json::to_string(&next) {
                 persist::set_string(&key, &value);
             }
@@ -189,9 +208,11 @@ pub(super) fn use_workspace(
                 resolve(*primary.read(), "data", &available, false)
             } else {
                 let choice = preference.read();
+                let selected = *primary.read();
+                let secondary = secondary_choice(&previous_tabs.borrow(), selected, &choice.secondary);
                 resolve(
-                    *primary.read(),
-                    &choice.secondary,
+                    selected,
+                    &secondary,
                     &available,
                     *wide.read() && choice.enabled,
                 )

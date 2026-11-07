@@ -93,15 +93,15 @@ fixture+=`try {
  assert.equal(commands.length,2,'original genuine Stop survives pane transition');
  assert.equal(socketOpens,originalSockets,'pane switches share the original socket');const paneSwitchReopens=socketOpens-originalSockets;
  assert.equal(await page.locator('.gs26-actions-page').count(),1);
- // Both panes choose their own view and the selectors show what is really mounted.
+ // Both panes choose their own view, the selectors show what is really mounted,
+ // and choosing the second pane's view as the first swaps rather than dropping.
  const first=page.getByLabel('First workspace pane',{exact:true}),second=page.getByLabel('Second workspace pane',{exact:true});
  const shown=async(a,b)=>{await waitTabs([a,b]);await page.waitForFunction(([a,b])=>document.querySelector('[aria-label="First workspace pane"]').value===a&&document.querySelector('[aria-label="Second workspace pane"]').value===b,[a,b]);};
  await shown('actions','data');
  await second.selectOption('connection-status');await shown('actions','connection-status');
  await page.reload();await shown('actions','connection-status');
- await second.selectOption('map');await shown('actions','map');
- await first.selectOption('connection-status');await waitTabs(['connection-status','map']);
- await rail.getByRole('link',{name:'Actions',exact:true}).click();await shown('actions','map');
+ await first.selectOption('connection-status');await shown('connection-status','actions');
+ await rail.getByRole('link',{name:'Actions',exact:true}).click();await shown('actions','connection-status');
  await second.selectOption('data');await shown('actions','data');
  // The sequence host observes Actions in the SECOND pane as well.
  await rail.getByRole('link',{name:'Telemetry',exact:true}).click();await waitTabs(['data','actions']);
