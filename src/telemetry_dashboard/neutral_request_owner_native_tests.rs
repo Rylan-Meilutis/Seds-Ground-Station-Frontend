@@ -92,6 +92,7 @@ impl Server{
                         ("GET","/api/admin/users")=>serde_json::json!([account]),
                         ("POST","/api/admin/users")|("POST","/api/admin/users/create")=>{let mut v=body.clone();v.as_object_mut().unwrap().remove("password");v},
                         ("GET","/api/station_positions")=>serde_json::json!({"revision":0,"ground_station":null,"rrls":null}),
+                        ("GET","/api/station/pairing")=>serde_json::json!({"role":"primary","paired":false,"source":null,"error":null,"peers":[],"fingerprint":null,"restart_required":false,"can_manage":true,"radio_available":true,"unpair_available":false,"exchange":null,"primary_link":null}),
                         ("GET","/api/recordings")=>serde_json::json!([{"id":"record-r","bytes":1,"active":false}]),
                         ("GET","/api/live_streams")=>serde_json::to_value(dashboard::live_stream_tab::LiveStreamConfig::default()).unwrap(),
                         ("GET","/api/recordings/record-r/replay/flight")=>serde_json::json!({"upper_id":42,"start_ms":100,"end_ms":1000}),

@@ -70,6 +70,7 @@ mod sd_recording_import;
 mod sequence_indicator;
 mod station_mode;
 mod station_positions_admin;
+mod station_pairing_admin;
 mod station_mode_contract;
 mod station_mode_observer;
 mod station_policy_context;
