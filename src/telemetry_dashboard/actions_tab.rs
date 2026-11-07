@@ -681,6 +681,36 @@ fn UnavailableControls(policy: ActionPolicyMsg, actions: Vec<(String, String)>, 
     }
 }
 
+/// Keeps the reset next to Launch. The dialog is the existing recovery tool, so
+/// it carries the same server-issued ticket and typed confirmation. It owns its
+/// status polling only while open.
+#[component]
+fn ResetBoardsEntry(theme: ThemeConfig) -> Element {
+    let mut open = use_signal(|| false);
+    rsx!{
+        button{r#type:"button",style:"min-height:44px;padding:8px 12px;align-self:flex-start;",onclick:move |_|open.set(true),"Reset all boards to Idle…"}
+        if open(){ResetBoardsDialog{theme:theme.clone(),on_close:move |_|open.set(false)}}
+    }
+}
+
+#[component]
+fn ResetBoardsDialog(theme: ThemeConfig, on_close: EventHandler<()>) -> Element {
+    super::board_recovery_panel::use_recovery_provider();
+    let ws_connected = *super::WS_CONNECTED_SIGNAL.read();
+    rsx!{
+        div{style:"position:fixed;inset:0;z-index:9000;background:#000a;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));display:flex;align-items:center;justify-content:center;box-sizing:border-box;",
+            section{role:"dialog","aria-modal":"true","aria-label":"Reset all boards",style:"width:min(100%,760px);max-height:88dvh;min-width:0;padding:16px;display:flex;flex-direction:column;gap:12px;background:{theme.panel_background};border:1px solid {theme.border_soft};border-radius:12px;box-sizing:border-box;overflow-y:auto;",
+                header{style:"display:flex;justify-content:space-between;align-items:center;gap:12px;",
+                    h3{style:"margin:0;","Reset all boards"}
+                    button{r#type:"button",style:"min-height:44px;padding:8px 12px;",onclick:move |_|on_close.call(()),"Close"}
+                }
+                super::board_recovery_panel::RecoveryTools{ws_connected,theme:theme.clone()}
+            }
+        }
+        super::board_recovery_panel::RecoveryDialogs{ws_connected}
+    }
+}
+
 #[component]
 pub fn ActionsTab(
     layout: ActionsTabLayout,
@@ -817,6 +847,7 @@ pub fn ActionsTab(
                     "{action_buttons_disabled_message(&action_policy.read())}"
                 }
             }
+            ResetBoardsEntry {theme:theme.clone()}
             UnavailableControls {policy:action_policy_snapshot.clone(),actions:visible_actions.iter().map(|action|(action.cmd.clone(),action.label.clone())).collect(),theme:theme.clone()}
             if visible_actions.is_empty() {
                 div {
