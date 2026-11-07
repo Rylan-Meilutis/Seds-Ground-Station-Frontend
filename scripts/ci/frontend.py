@@ -55,6 +55,17 @@ ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 # successful metadata is pending. Preserve and report them separately from
 # compiler/tool diagnostics; every other warning remains fatal.
 DIOXUS_METADATA_PROGRESS = re.compile(r"^warning: (?:Waiting for cargo-metadata\.\.\.|\(Try (?:[1-9]|[1-9][0-9]|100)\) Taking a while\.\.\.)$")
+# AGP's default keep rules and AndroidX consumer rules trigger this exact R8
+# forward-compatibility notice during every minified release. Those files are
+# generated from Gradle's downloads; the notice needs no action until R8's next
+# major version. Rules owned by this repository or any other R8 text stay fatal.
+ANDROID_R8_UPSTREAM_RULE_NOTICE = re.compile(
+    r"^WARNING: \S*(?:/build/intermediates/default_proguard_files/global/proguard-android(?:-optimize)?\.txt-[0-9.]+"
+    r"|/\.gradle-user-home/caches/[0-9.]+/transforms/[0-9a-f]+/transformed/[^/\s]+(?:/proguard\.txt|/lib/META-INF/proguard/[^/\s]+\.pro))"
+    r":[0-9]+:[0-9]+-[0-9]+:[0-9]+: R8: The current version of R8 implicitly keeps the default constructor for Proguard configuration rules "
+    r"that have no member pattern\. If the following rule should continue to keep the default constructor in the next major version of R8, "
+    r"then it must be augmented with the member pattern `\{ void <init>\(\); \}` to explicitly keep the default constructor:$"
+)
 WARNING = re.compile(r"(?i)(?:(?:^|\s)(?:warning(?:\[[^]]+\])?:|warn(?:ing)?\s+(?!0\b)\S|w:\s)|::warning(?: [^:]*)?::)")
 
 # Only the two observed Cargo/libcurl error-55 SSL transport diagnostics may
@@ -109,13 +120,18 @@ def configure_utf8_console():
             reconfigure(encoding="utf-8", errors="strict")
 
 
-def checked(argv, env, label, *, dioxus_progress=False):
-    """Preserve full output and fail warnings as well as nonzero exits; no whitelist."""
+def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=False):
+    """Preserve full output and fail warnings as well as nonzero exits.
+
+    Only the exact upstream notices named above are reported separately, and
+    only for the build step which opts in.
+    """
     configure_utf8_console()
     logs = ROOT / "ci-results"
     logs.mkdir(exist_ok=True)
     warnings = []
     progress_lines = []
+    upstream_r8_lines = []
     resolved = list(argv)
     if not Path(resolved[0]).is_absolute():
         executable = shutil.which(resolved[0], path=env.get("PATH", ""))
@@ -133,11 +149,13 @@ def checked(argv, env, label, *, dioxus_progress=False):
                 plain = ANSI.sub("", line).strip()
                 if dioxus_progress and DIOXUS_METADATA_PROGRESS.fullmatch(plain):
                     progress_lines.append(plain)
+                elif android_upstream_r8 and ANDROID_R8_UPSTREAM_RULE_NOTICE.fullmatch(plain):
+                    upstream_r8_lines.append(plain)
                 else:
                     if WARNING.search(plain):
                         warnings.append(plain)
         result = child.wait()
-    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines}, indent=2) + "\n")
+    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines}, indent=2) + "\n")
     if result or warnings:
         raise CommandFailure(label, result, warnings)
 
@@ -453,7 +471,8 @@ def run(name, profile):
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh CI checkout")
     if name.startswith("android"):
         prepare_android_development_signing(env)
-    checked(build_command(name, profile), env, "build-" + name + "-" + profile, dioxus_progress=True)
+    checked(build_command(name, profile), env, "build-" + name + "-" + profile, dioxus_progress=True,
+            android_upstream_r8=name.startswith("android") and profile == "release")
     output = ROOT / "artifacts" / name
     files = sorted(p for p in output.rglob("*") if p.is_file())
     if not files:

@@ -122,6 +122,48 @@ assert sys.stdout.encoding.lower()=='utf-8' and sys.stderr.encoding.lower()=='ut
                 self.assertEqual(receipt["external_metadata_progress_warnings"], [line] if enabled else [])
                 self.assertEqual(receipt["warning_lines"], 0 if enabled else 1)
 
+    R8_NOTICE = (": R8: The current version of R8 implicitly keeps the default constructor for Proguard configuration rules "
+                 "that have no member pattern. If the following rule should continue to keep the default constructor in the next "
+                 "major version of R8, then it must be augmented with the member pattern `{ void <init>(); }` to explicitly keep "
+                 "the default constructor:")
+    R8_ROOT = "/home/runner/work/Seds-Ground-Station-Frontend/Seds-Ground-Station-Frontend"
+    R8_HOSTED_RULES = [  # Paths from hosted run 42358758356, android release.
+        "/target/dx/groundstation_frontend/release/android/app/app/build/intermediates/default_proguard_files/global/proguard-android-optimize.txt-8.7.0:21:1-22:1",
+        "/.gradle-user-home/caches/9.1.0/transforms/278e2c7444361773bdcab88dd57a66ee/transformed/webkit-1.13.0/proguard.txt:26:1-30:1",
+        "/.gradle-user-home/caches/9.1.0/transforms/570229748dcacedfb95b25bc8eeaf6f2/transformed/rules/lib/META-INF/proguard/androidx-annotations.pro:1:1-2:1",
+    ]
+
+    def r8_run(self, lines, enabled):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            failure = None
+            try:
+                ci.checked([sys.executable, "-c", f"print({chr(10).join(lines)!r})"], os.environ.copy(), "build", android_upstream_r8=enabled)
+            except ci.CommandFailure as error:
+                failure = error
+            return failure, json.loads((Path(directory) / "ci-results/build.json").read_text())
+
+    def test_hosted_android_release_upstream_r8_rule_notices_are_reported_not_fatal(self):
+        lines = ["WARNING: " + self.R8_ROOT + rule + self.R8_NOTICE for rule in self.R8_HOSTED_RULES]
+        failure, receipt = self.r8_run(lines, True)
+        self.assertIsNone(failure)
+        self.assertEqual(receipt["warning_lines"], 0)
+        self.assertEqual(receipt["external_android_r8_rule_notices"], lines)
+
+    def test_r8_notice_stays_fatal_outside_release_or_for_other_sources_and_text(self):
+        hosted = "WARNING: " + self.R8_ROOT + self.R8_HOSTED_RULES[1] + self.R8_NOTICE
+        self.assertEqual(self.r8_run([hosted], False)[0].warnings, (hosted,))
+        for line in [
+            "WARNING: " + self.R8_ROOT + "/proguard-rules.pro:1:1-2:1" + self.R8_NOTICE,
+            "WARNING: " + self.R8_ROOT + "/platform/android/app/proguard.txt:1:1-2:1" + self.R8_NOTICE,
+            "WARNING: " + self.R8_ROOT + self.R8_HOSTED_RULES[1] + ": R8: Missing class com.example.Fixture",
+            "warning: " + self.R8_ROOT + self.R8_HOSTED_RULES[1] + self.R8_NOTICE,
+        ]:
+            with self.subTest(line=line[:90]):
+                failure, receipt = self.r8_run([hosted, line], True)
+                self.assertEqual(failure.warnings, (line,))
+                self.assertEqual(receipt["external_android_r8_rule_notices"], [hosted])
+
     def test_real_compiler_and_unrecognized_tool_warnings_still_fail_after_progress(self):
         for warning in ["warning: unused item", "warning[dead_code]: item", "WARN resource missing",
                         "warning: Waiting for cargo-metadata... unexpected", "warning: (Try 101) Taking a while..."]:
