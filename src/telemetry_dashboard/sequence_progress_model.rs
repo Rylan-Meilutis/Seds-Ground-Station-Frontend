@@ -989,7 +989,7 @@ impl Model {
                 }
             }
             // Same-revision polling may update envelope age; it never reopens a
-            // dismissed result or restarts a terminal auto-close deadline.
+            // dismissed result or an automatically closed live result.
             let first_terminal =
                 snapshot.outcome.terminal() && !self.panels[i].snapshot.outcome.terminal();
             let panel = &mut self.panels[i];
@@ -1005,6 +1005,9 @@ impl Model {
             }
             if first_terminal {
                 panel.cancel_pending = false;
+                // Completion closes live progress; recorded results reopen only
+                // through an explicit notification/history intent.
+                panel.visible = false;
             }
             panel.snapshot = snapshot.clone();
             panel.observed_at_ms = observed_at;
@@ -1024,7 +1027,7 @@ impl Model {
                 snapshot: snapshot.clone(),
                 observed_at_ms: observed_at,
                 minimized: !self.on_actions,
-                visible: true,
+                visible: !snapshot.outcome.terminal(),
                 cancel_pending: false,
                 historical: false,
                 applied_retired: false,
@@ -1467,41 +1470,72 @@ mod tests {
             vec![("step".into(), "Recorded step".into())]
         );
         model.tick(15000);
-        assert!(model.panels()[0].visible);
+        assert!(!model.panels()[0].visible);
         model.accept(0, full, 16000, 16000).unwrap();
+        assert!(!model.panels()[0].visible, "detail arrival cannot reopen a completed live panel");
         assert!(model.panels()[0].loading_steps.is_empty());
         assert_eq!(model.panels()[0].snapshot.steps[0].state, StepState::Passed);
     }
     #[test]
-    fn completed_views_stay_open_until_manual_close_and_can_always_reopen() {
+    fn terminal_live_progress_closes_once_and_notification_result_stays_reopened() {
+        for outcome in [Outcome::Passed, Outcome::Failed, Outcome::Cancelled, Outcome::Interrupted] {
+            let mut value = run();
+            let mut model = Model::default();
+            model.set_surface(true);
+            model.accept(0, value.clone(), 0, 0).unwrap();
+            assert!(model.panels()[0].visible);
+            assert!(!model.dismiss(&value.key), "running progress cannot be dismissed");
+            model.restore(&value.key);
+            value.revision += 1;
+            value.outcome = outcome;
+            value.cancel_allowed = false;
+            value.current_step = None;
+            value.next_step = None;
+            value.notification_id = Some(9);
+            value.notification_timestamp_ms = Some(1000);
+            model.accept(0, value.clone(), 1000, 1000).unwrap();
+            assert!(!model.panels()[0].visible, "{outcome:?} must close live progress");
+            assert_eq!(model.notices().len(), 1);
+            assert_eq!(model.notices()[0].warning, outcome != Outcome::Passed);
+            assert_eq!(model.cached_result(&value.key), Some(&value));
+            model.accept(0, value.clone(), 4000, 4000).unwrap();
+            model.set_surface(false);
+            model.set_surface(true);
+            model.tick(15000);
+            assert!(!model.panels()[0].visible, "polls/navigation cannot reopen a result");
+            model.open_result(0, value.clone(), 16000).unwrap();
+            assert!(model.panels()[0].visible && model.panels()[0].historical);
+            model.accept(0, value.clone(), 17000, 17000).unwrap();
+            model.tick(20000);
+            assert!(model.panels()[0].visible, "an explicitly reopened result stays open");
+            assert!(model.dismiss(&value.key));
+            model.accept(0, value.clone(), 21000, 21000).unwrap();
+            assert!(!model.panels()[0].visible, "polls cannot undo explicit close");
+            model.open_result(0, value, 22000).unwrap();
+            assert!(model.panels()[0].visible);
+        }
+    }
+    #[test]
+    fn first_observed_terminal_is_catalogued_without_covering_running_progress() {
         let mut value = run();
-        let mut m = Model::default();
-        m.accept(0, value.clone(), 0, 0).unwrap();
         value.revision = 2;
-        value.outcome = Outcome::Cancelled;
+        value.outcome = Outcome::Passed;
         value.cancel_allowed = false;
-        value.notification_id = Some(9);
-        value.notification_timestamp_ms = Some(1000);
-        m.accept(0, value.clone(), 1000, 1000).unwrap();
-        assert_eq!(m.notices().len(), 1);
-        assert!(m.notices()[0].warning);
-        m.accept(0, value.clone(), 4000, 4000).unwrap();
-        assert_eq!(m.notices().len(), 1);
-        m.tick(15000);
-        assert!(m.panels()[0].visible);
-        assert!(m.dismiss(&value.key));
-        m.accept(0, value.clone(), 16000, 16000).unwrap();
-        assert!(
-            !m.panels()[0].visible,
-            "polling must not undo a manual close"
-        );
-        m.restore(&value.key);
-        m.tick(17000);
-        assert!(m.panels()[0].visible);
-        m.open_result(0, value.clone(), 9000).unwrap();
-        m.tick(20000);
-        assert!(m.panels()[0].visible && m.panels()[0].historical);
-        assert!(m.dismiss(&value.key));
+        value.current_step = None;
+        value.next_step = None;
+        value.notification_id = Some(11);
+        value.notification_timestamp_ms = Some(100);
+        let mut model = Model::default();
+        model.set_surface(true);
+        model.accept(0, value.clone(), 100, 100).unwrap();
+        assert!(!model.panels()[0].visible);
+        assert_eq!(model.notices().len(), 1);
+        let mut live = run();
+        live.key.run_id = "4".repeat(32);
+        model.accept(0, live, 101, 101).unwrap();
+        assert_eq!(model.panels().iter().filter(|p| p.visible).count(), 1);
+        model.open_result(0, value, 102).unwrap();
+        assert_eq!(model.panels().iter().filter(|p| p.visible).count(), 2);
     }
     #[test]
     fn backend_auth_epoch_and_reset_scope_reject_stale_callbacks() {
@@ -1594,10 +1628,11 @@ mod envelope_tests {
             .unwrap();
         assert!(!model.panels()[0].snapshot.details_complete);
         assert!(model.panels()[0].snapshot.steps.is_empty());
-        assert_eq!(model.needed_result_details(), vec![full.key.clone()]);
+        assert!(!model.panels()[0].visible);
         assert!(model.needed_result_details().is_empty());
         assert!(model.cached_result(&full.key).is_none());
-        model.accept(5, full.clone(), 1000, 1000).unwrap();
+        // The notification/history GET supplies full immutable details.
+        model.open_result(5, full.clone(), 1000).unwrap();
         assert!(model.panels()[0].snapshot.details_complete);
         assert_eq!(model.cached_result(&full.key).unwrap().steps.len(), 1);
         model.tick(4000);

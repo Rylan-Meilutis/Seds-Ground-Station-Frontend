@@ -268,16 +268,23 @@ mod tests {
             snapshot.outcome = Outcome::Cancelled;
             snapshot.cancel_allowed = false;
         }
-        if props.summary {
-            snapshot = snapshot.compact_result();
-        }
         let mut model = Model::default();
         model.set_surface(true);
-        model.accept(0, snapshot.clone(), 0, 0).unwrap();
+        if props.terminal {
+            // Use the same explicit immutable-result opening path as Notifications.
+            model.open_result(0, snapshot.clone(), 0).unwrap();
+        } else {
+            model.accept(0, snapshot.clone(), 0, 0).unwrap();
+        }
         if props.minimized {
             model.minimize(&snapshot.key);
         }
-        let panel = model.panels()[0].clone();
+        let mut panel = model.panels()[0].clone();
+        if props.summary {
+            // This component-only case checks compact/loading presentation;
+            // the real notification opener still requires complete result details.
+            panel.snapshot = panel.snapshot.compact_result();
+        }
         let output_display = if props.board_meta == Some(true) {
             [(0, true)].into_iter().collect()
         } else {
