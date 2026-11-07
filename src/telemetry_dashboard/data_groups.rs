@@ -16,7 +16,10 @@ fn family(source: &str) -> Option<Family> {
     if source.starts_with("BATTERY_")
         || source.contains("_BATTERY_")
         || source.starts_with("FILL_BOX_POWER_")
-        || matches!(source, "DAQ_CURRENT_SENSE" | "DAQ_POWER_MONITOR" | "IGNITER_SENSE_SIGNAL")
+        || matches!(
+            source,
+            "DAQ_CURRENT_SENSE" | "DAQ_POWER_MONITOR" | "IGNITER_SENSE_SIGNAL"
+        )
     {
         Some(Family::Power)
     } else if source.starts_with("LOADCELL")
@@ -282,7 +285,8 @@ impl Overview {
     }
 }
 
-/// Append overviews after fill-source selection. Existing tabs, IDs and metadata are untouched.
+/// Put configured sensor overviews first after fill-source selection.
+/// Original tabs keep their relative order, IDs and metadata.
 /// Equivalent summary copies collapse; distinct formatting and filter policies remain visible.
 /// The new IDs are navigation only: all readouts and graph series name real configured sources.
 pub fn with_grouped_views(mut layout: DataTabLayout) -> DataTabLayout {
@@ -309,12 +313,19 @@ pub fn with_grouped_views(mut layout: DataTabLayout) -> DataTabLayout {
             }
         }
     }
+    let mut ordered = Vec::with_capacity(layout.tabs.len() + overviews.len());
     for overview in overviews {
-        if !layout.tabs.iter().any(|t| t.id == overview.id)
-            && let Some(tab) = overview.into_tab()
-        {
-            layout.tabs.push(tab);
+        // Reuse an existing overview unchanged when this helper is called again.
+        let tab = if let Some(index) = layout.tabs.iter().position(|tab| tab.id == overview.id) {
+            Some(layout.tabs.remove(index))
+        } else {
+            overview.into_tab()
+        };
+        if let Some(tab) = tab {
+            ordered.push(tab);
         }
     }
+    ordered.append(&mut layout.tabs);
+    layout.tabs = ordered;
     layout
 }

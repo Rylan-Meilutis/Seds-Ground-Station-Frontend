@@ -36,7 +36,7 @@ mod grouped_views {
         ]));
         let result = with_grouped_views(original.clone());
         assert_eq!(
-            &result.tabs[..original.tabs.len()],
+            &result.tabs[result.tabs.len() - original.tabs.len()..],
             original.tabs.as_slice()
         );
         assert_eq!(
@@ -53,6 +53,28 @@ mod grouped_views {
             3,
             "unknown custom sensor creates no guessed family"
         );
+    }
+
+    #[test]
+    fn combined_views_precede_configured_tabs_in_stable_family_order() {
+        let original = layout(json!([
+            {"id":"BATTERY_VOLTAGE", "label":"Power first in config", "channels":["V"]},
+            {"id":"operator-private", "label":"Custom sensor", "channels":["Unspecified"]},
+            {"id":"GYRO_DATA", "label":"Gyroscope", "channels":["Roll"]},
+            {"id":"FUEL_TANK_PRESSURE", "label":"Tank", "channels":["Pressure"]}
+        ]));
+        let result = with_grouped_views(original.clone());
+        let labels = result
+            .tabs
+            .iter()
+            .map(|tab| tab.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &labels[..3],
+            &["Fill overview", "Avionics overview", "Power overview"]
+        );
+        assert_eq!(&result.tabs[3..], original.tabs.as_slice());
+        assert_eq!(with_grouped_views(result.clone()), result);
     }
 
     #[test]

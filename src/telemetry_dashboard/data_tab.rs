@@ -537,7 +537,7 @@ pub fn DataTab(
                 }
                 }
 
-                if !current_subtabs.is_empty() {
+                if current_subtabs.len() > 1 {
                     div {
                         class: "gs26-data-subtab-shell",
                         "data-expanded": if *subtabs_expanded.read() { "true" } else { "false" },
