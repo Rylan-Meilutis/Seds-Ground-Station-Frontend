@@ -529,8 +529,8 @@ pub fn MapTab(
                 let message = js_read_window_string("__gs26_map_runtime_error")
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty());
-                map_runtime_error_token.set(token);
-                map_runtime_error.set(message);
+                super::set_signal_if_changed(&mut map_runtime_error_token, token);
+                super::set_signal_if_changed(&mut map_runtime_error, message);
                 gloo_timers::future::TimeoutFuture::new(500).await;
             }
         });
@@ -549,8 +549,8 @@ pub fn MapTab(
                     .await
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty());
-                map_runtime_error_token.set(token);
-                map_runtime_error.set(message);
+                super::set_signal_if_changed(&mut map_runtime_error_token, token);
+                super::set_signal_if_changed(&mut map_runtime_error, message);
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         });

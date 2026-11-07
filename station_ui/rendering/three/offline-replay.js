@@ -60,7 +60,7 @@ const svgNS='http://www.w3.org/2000/svg';
 function node(tag,text){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;}
 function svg(tag,attrs){const e=document.createElementNS(svgNS,tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,String(v));return e;}
 function mount(root,input){
- const p=validate(input);root.replaceChildren();const title=node('h3',p.mode==='test_fire'?'Test-fire replay · motor on stand':'Flight replay · saved data');root.append(title);
+ const p=validate(input);root.replaceChildren();root.style.overflowWrap='anywhere';const title=node('h3',p.mode==='test_fire'?'Test-fire replay · motor on stand':'Flight replay · saved data');root.append(title);
  root.append(node('p',`${p.recording||'Imported recording'} · offline · ${p.configuration_provenance||'configuration saved at export'}; no live values or commands`));
  const controls=node('div');controls.style.cssText='display:flex;gap:8px;flex-wrap:wrap;align-items:center';root.append(controls);
  const play=node('button','Play'),rewind=node('button','Rewind'),resetView=node('button','Reset 3D view'),speed=node('select');resetView.disabled=true;for(const n of [.25,.5,1,2,4]){const o=node('option',n+'×');o.value=n;o.selected=n===1;speed.append(o);}controls.append(play,rewind,speed,resetView);
