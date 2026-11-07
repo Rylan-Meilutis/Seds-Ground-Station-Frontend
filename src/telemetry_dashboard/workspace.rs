@@ -105,6 +105,7 @@ pub(super) struct Workspace {
     pub tabs: Memo<Vec<MainTab>>,
     wide: Signal<bool>,
     preference: Signal<Preference>,
+    primary: Signal<MainTab>,
 }
 impl Workspace {
     pub fn contains(self, tab: MainTab) -> bool {
@@ -214,6 +215,7 @@ pub(super) fn use_workspace(
         tabs,
         wide,
         preference,
+        primary,
     }
 }
 
@@ -227,6 +229,8 @@ pub(super) fn WorkspaceToolbar(
     let primary = tabs[0];
     let secondary = tabs.get(1).copied();
     let mut preference = workspace.preference;
+    let mut selected_primary = workspace.primary;
+    let views = available.into_iter().zip(labels).collect::<Vec<_>>();
     rsx! {
         if *workspace.wide.read() && !matches!(primary, MainTab::Mission | MainTab::StreamManager | MainTab::CrewVoice | MainTab::Media) {
             div { class: "gs26-workspace-tools", "aria-label": "Workspace layout",
@@ -235,11 +239,19 @@ pub(super) fn WorkspaceToolbar(
                     if secondary.is_some() { "Single pane" } else { "Two panes" }
                 }
                 if let Some(secondary) = secondary {
+                    label { "First pane "
+                        select { "aria-label": "First workspace pane",
+                            onchange: move |event| selected_primary.set(_main_tab_from_str(&event.value())),
+                            for (tab, label) in views.iter().cloned() {
+                                option { key: "{_main_tab_to_str(tab)}", value: _main_tab_to_str(tab), selected: tab == primary, "{label}" }
+                            }
+                        }
+                    }
                     label { "Second pane "
-                        select { "aria-label": "Second workspace pane", value: _main_tab_to_str(secondary),
+                        select { "aria-label": "Second workspace pane",
                             onchange: move |event| { let mut next = preference.read().clone(); next.secondary = event.value(); preference.set(next); },
-                            for (tab, label) in available.into_iter().zip(labels).filter(|(tab, _)| *tab != primary && secondary_allowed(*tab, primary)) {
-                                option { value: _main_tab_to_str(tab), "{label}" }
+                            for (tab, label) in views.iter().cloned().filter(|(tab, _)| *tab != primary && secondary_allowed(*tab, primary)) {
+                                option { key: "{_main_tab_to_str(tab)}", value: _main_tab_to_str(tab), selected: tab == secondary, "{label}" }
                             }
                         }
                     }
