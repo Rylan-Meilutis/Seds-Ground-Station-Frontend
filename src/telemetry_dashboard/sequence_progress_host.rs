@@ -2,7 +2,7 @@
 use super::{
     auth,
     prelude::*,
-    sequence_progress_model::{Envelope, Model, Panel, RunKey, Snapshot},
+    sequence_progress_model::{Control, Envelope, Model, Panel, RunKey, Snapshot},
     sequence_progress_view::SequenceProgressView,
 };
 
@@ -332,9 +332,15 @@ pub fn SequenceProgressHost(
                 render_now,
                 auth::can_send_command("ColdFlow"),
             );
+            let model = state.read();
+            let controls = model.controls(&panel.snapshot.key).cloned();
+            let key = &panel.snapshot.key;
+            let can_pause = model.can_control(key, Control::Pause, render_now, auth::can_send_command("PauseFill"));
+            let can_resume = model.can_control(key, Control::Resume, render_now, auth::can_send_command(resume_command(panel.snapshot.kind)));
+            drop(model);
             (
                 panel.clone(),
-                can_release,
+                (can_release, controls, can_pause, can_resume),
                 format!(
                     "{}:{}:{}",
                     panel.snapshot.key.backend_instance,
@@ -390,11 +396,28 @@ pub fn SequenceProgressHost(
                     button {r#type:"button",onclick:move |_|state.write().result_error=None,"Close result notice"}
                 }
             }
-            for (index,(panel,can_release_cold_flow,identity)) in panels.into_iter().enumerate() {
+            for (index,(panel,(can_release_cold_flow,controls,can_pause,can_resume),identity)) in panels.into_iter().enumerate() {
                 div {key:"{identity}:{panel_policy_key}",style:"--sequence-panel-index:{index};",
                     OwnedSequenceProgressView {
                         panel,now_ms:render_now,can_send_commands:ordinary_current&&auth::can_send_command("CancelFill"),cancel_api_version:cancel_api(),unavailable,
                         can_release_cold_flow:ordinary_current&&can_release_cold_flow,transient_transport_error,
+                        controls,can_pause:ordinary_current&&can_pause,can_resume:ordinary_current&&can_resume,
+                        on_control:move |(owned,control):(OwnedRunIntent,Control)|{
+                            let OwnedRunIntent {key, owner}=owned;
+                            if !owner.is_current(){return;}
+                            let origin=source();
+                            let permission=match control {Control::Pause=>auth::can_send_command("PauseFill"),Control::Resume=>state.read().panels().iter().find(|p|p.snapshot.key==key).is_some_and(|p|auth::can_send_command(resume_command(p.snapshot.kind)))};
+                            let intent=state.write().request_control(&key,control,now_ms(),permission);
+                            if let Ok(intent)=intent {
+                                spawn(async move {
+                                    let path=match control {Control::Pause=>"/api/gse/sequences/pause",Control::Resume=>"/api/gse/sequences/resume"};
+                                    let result=super::station_settings_request::post_captured::<RunKey,serde_json::Value>(path,&intent,Ok(owner.clone())).await;
+                                    if !owner.is_current()||source()!=origin {return;}
+                                    if let Err(error)=result{state.write().control_failed(&intent);state.write().result_error=Some(format!("{} refused: {error}",match control{Control::Pause=>"Pause",Control::Resume=>"Resume"}));}
+                                    // Acceptance is not completion; the next station revision confirms it.
+                                });
+                            }
+                        },
                         board_display:state.read().board_display.clone(),
                         output_display:state.read().output_display(),
                         on_release_cold_flow:move |owned:OwnedRunIntent|{
@@ -437,6 +460,17 @@ pub fn SequenceProgressHost(
 
 /// Each actual run panel retains its first mounted ordinary owner. The global
 /// observer/results model survives; changing policy never rebinds this owner.
+/// The command permission a Resume needs, mirroring the station's check.
+fn resume_command(kind: super::sequence_progress_model::Kind) -> &'static str {
+    use super::sequence_progress_model::Kind;
+    match kind {
+        Kind::Fill => "StartFill",
+        Kind::ValveSelfTest => "ValveSelfTest",
+        Kind::NitrogenTest => "NitrogenTest",
+        Kind::ColdFlow => "AutoColdFlow",
+        _ => "Turbocharge",
+    }
+}
 #[derive(Clone)]
 struct OwnedRunIntent {
     key: RunKey,
@@ -458,12 +492,22 @@ fn OwnedSequenceProgressView(
     on_dismiss: EventHandler<RunKey>,
     on_cancel: EventHandler<OwnedRunIntent>,
     on_release_cold_flow: EventHandler<OwnedRunIntent>,
+    controls: Option<super::sequence_progress_model::RunControls>,
+    can_pause: bool,
+    can_resume: bool,
+    on_control: EventHandler<(OwnedRunIntent, Control)>,
 ) -> Element {
     let original = super::station_settings_request::use_factory();
     rsx! {SequenceProgressView {
         panel, now_ms, can_send_commands, cancel_api_version,
         unavailable, can_release_cold_flow, transient_transport_error, board_display, output_display,
-        on_minimize, on_restore, on_dismiss,
+        on_minimize, on_restore, on_dismiss, controls, can_pause, can_resume,
+        on_pause: move |key:RunKey| {
+            if let Ok(owner)=original.capture() { on_control.call((OwnedRunIntent {key,owner},Control::Pause)); }
+        },
+        on_resume: move |key:RunKey| {
+            if let Ok(owner)=original.capture() { on_control.call((OwnedRunIntent {key,owner},Control::Resume)); }
+        },
         on_cancel: move |key:RunKey| {
             if let Ok(owner)=original.capture() { on_cancel.call(OwnedRunIntent {key,owner}); }
         },

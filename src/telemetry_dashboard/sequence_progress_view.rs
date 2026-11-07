@@ -1,5 +1,5 @@
 use super::sequence_progress_model::{
-    Evidence, Kind, Outcome, Panel, RunKey, StepState, Value, Watch,
+    Evidence, Kind, Outcome, Panel, RunControls, RunKey, StepState, Value, Watch,
 };
 use dioxus::prelude::*;
 
@@ -93,6 +93,12 @@ pub fn SequenceProgressView(
     on_dismiss: EventHandler<RunKey>,
     #[props(default = false)] can_release_cold_flow: bool,
     #[props(default)] on_release_cold_flow: EventHandler<RunKey>,
+    /// Live station admission for Pause/Resume/Cancel, with refusal reasons.
+    #[props(default)] controls: Option<RunControls>,
+    #[props(default = false)] can_pause: bool,
+    #[props(default = false)] can_resume: bool,
+    #[props(default)] on_pause: EventHandler<RunKey>,
+    #[props(default)] on_resume: EventHandler<RunKey>,
 ) -> Element {
     if !panel.visible {
         return rsx! {};
@@ -102,6 +108,8 @@ pub fn SequenceProgressView(
     let minimize_key = key.clone();
     let cancel_key = key.clone();
     let release_key = key.clone();
+    let pause_key = key.clone();
+    let resume_key = key.clone();
     let dismiss_key = key.clone();
     let keyboard_key = key.clone();
     let terminal = panel.snapshot.outcome.terminal();
@@ -120,8 +128,30 @@ pub fn SequenceProgressView(
     } else {
         outcome_label(panel.snapshot.outcome)
     };
-    let can_cancel =
-        !unavailable && panel.can_cancel(now_ms, can_send_commands, cancel_api_version);
+    let can_cancel = !unavailable
+        && panel.can_cancel(now_ms, can_send_commands, cancel_api_version)
+        && controls.as_ref().is_none_or(|c| c.cancel.allowed);
+    let paused = panel.snapshot.outcome == Outcome::Paused;
+    let can_pause = can_pause && !unavailable && current_authority;
+    let can_resume = can_resume && !unavailable && current_authority;
+    // Server-provided reasons first; then local reasons the station cannot see.
+    let local_reason = if unavailable || !current_authority {
+        Some("Current station status is unavailable".to_string())
+    } else if panel.control_pending.is_some() || panel.cancel_pending {
+        Some("Waiting for the station to apply the previous request".to_string())
+    } else if !can_send_commands {
+        Some("This session cannot send sequence commands".to_string())
+    } else {
+        None
+    };
+    let reason = |gate: Option<&super::sequence_progress_model::Gate>| {
+        gate.and_then(|g| (!g.allowed).then(|| g.reason.clone()).flatten())
+            .or_else(|| local_reason.clone())
+            .unwrap_or_else(|| "Waiting for the station's control status".into())
+    };
+    let pause_reason = (!can_pause).then(|| reason(controls.as_ref().map(|c| &c.pause)));
+    let resume_reason = (!can_resume).then(|| reason(controls.as_ref().map(|c| &c.resume)));
+    let cancel_reason = (!can_cancel).then(|| reason(controls.as_ref().map(|c| &c.cancel)));
     let current = panel
         .snapshot
         .current_step
@@ -221,7 +251,20 @@ pub fn SequenceProgressView(
                         }
                     }
                     if panel.cancel_pending {p {role:"status","Cancellation requested. Waiting for the station's safe-cancel result."}}
-                    if !terminal {button {class:"gs26-sequence-cancel",r#type:"button",disabled:!can_cancel,onclick:move |_|on_cancel.call(cancel_key.clone()),"Cancel sequence"}}
+                    if panel.control_pending.is_some() {p {role:"status","Request sent. Waiting for the station to confirm it."}}
+                    if !terminal {
+                        div {class:"gs26-sequence-controls",
+                            if paused {
+                                button {class:"gs26-sequence-resume",r#type:"button",disabled:!can_resume,title:resume_reason.clone().unwrap_or_default(),onclick:move |_|on_resume.call(resume_key.clone()),"Resume sequence"}
+                            } else {
+                                button {class:"gs26-sequence-pause",r#type:"button",disabled:!can_pause,title:pause_reason.clone().unwrap_or_default(),onclick:move |_|on_pause.call(pause_key.clone()),"Pause sequence"}
+                            }
+                            button {class:"gs26-sequence-cancel",r#type:"button",disabled:!can_cancel,title:cancel_reason.clone().unwrap_or_default(),onclick:move |_|on_cancel.call(cancel_key.clone()),"Cancel sequence"}
+                        }
+                        if paused { if let Some(text)=&resume_reason {p {class:"gs26-sequence-control-reason","data-control":"resume","Resume unavailable: {text}"}} }
+                        else if let Some(text)=&pause_reason {p {class:"gs26-sequence-control-reason","data-control":"pause","Pause unavailable: {text}"}}
+                        if let Some(text)=&cancel_reason {p {class:"gs26-sequence-control-reason","data-control":"cancel","Cancel unavailable: {text}"}}
+                    }
                     p {class:"gs26-sequence-legend","Planned · Command accepted · Board reported · Measured · Unknown"}
                 }
             }
@@ -433,5 +476,40 @@ mod tests {
         assert!(value.contains("100.00"));
         assert!(!value.contains("Close sequence result"));
         assert!(value.contains("Minimize sequence progress"));
+    }
+    fn controlled(outcome: &str, pause: bool, resume: bool) -> String {
+        let snapshot:Snapshot=serde_json::from_value(serde_json::json!({"version":1,"key":{"backend_instance":"11111111111111111111111111111111","reset_epoch":"2222222222222222","run_id":"33333333333333333333333333333333"},"revision":1,"kind":"nitrogen_test","outcome":outcome,"origin_client":null,"title":"Nitrogen test","message":"Watching","current_step":null,"next_step":null,"steps":[],"observed_age_ms":0,"valid_for_ms":2000,"cancel_allowed":true})).unwrap();
+        let controls = super::super::sequence_progress_model::RunControls {
+            key: snapshot.key.clone(),
+            pause: super::super::sequence_progress_model::Gate { allowed: pause, reason: (!pause).then(|| "Already paused".into()) },
+            resume: super::super::sequence_progress_model::Gate { allowed: resume, reason: (!resume).then(|| "Earlier valve commands are still being delivered".into()) },
+            cancel: super::super::sequence_progress_model::Gate { allowed: false, reason: Some("Vehicle is not in a prelaunch state".into()) },
+        };
+        #[derive(Props, Clone, PartialEq)]
+        struct P { snapshot: Snapshot, controls: super::super::sequence_progress_model::RunControls, pause: bool, resume: bool }
+        fn view(p: P) -> Element {
+            let mut model = Model::default();
+            model.set_surface(true);
+            model.accept(0, p.snapshot.clone(), 0, 0).unwrap();
+            let panel = model.panels()[0].clone();
+            rsx! {SequenceProgressView{panel,now_ms:0,can_send_commands:true,cancel_api_version:Some(1),controls:Some(p.controls),can_pause:p.pause,can_resume:p.resume,on_minimize:move|_|{},on_restore:move|_|{},on_cancel:move|_|{},on_dismiss:move|_|{}}}
+        }
+        let mut dom = VirtualDom::new_with_props(view, P { snapshot, controls, pause, resume });
+        dom.rebuild_in_place();
+        dioxus::ssr::render(&dom)
+    }
+    #[test]
+    fn running_view_offers_pause_and_paused_view_offers_resume_with_station_reasons() {
+        let running = controlled("running", true, false);
+        assert!(running.contains("Pause sequence"));
+        assert!(!running.contains("Resume sequence"));
+        assert!(!running.contains("Pause unavailable"));
+        assert!(running.contains("Cancel unavailable: Vehicle is not in a prelaunch state"));
+        let paused = controlled("paused", false, false);
+        assert!(paused.contains("Resume sequence"));
+        assert!(!paused.contains("Pause sequence"));
+        assert!(paused.contains("Resume unavailable: Earlier valve commands are still being delivered"));
+        let ready = controlled("paused", false, true);
+        assert!(!ready.contains("Resume unavailable"));
     }
 }

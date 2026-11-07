@@ -313,6 +313,38 @@ impl Snapshot {
     }
 }
 
+/// Live server admission for one run control; `reason` explains a refusal.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gate {
+    #[serde(default)]
+    pub allowed: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+/// Station-provided Pause/Resume/Cancel admission for the current run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunControls {
+    pub key: RunKey,
+    #[serde(default)]
+    pub pause: Gate,
+    #[serde(default)]
+    pub resume: Gate,
+    #[serde(default)]
+    pub cancel: Gate,
+}
+impl RunControls {
+    fn valid(&self) -> bool {
+        self.key.valid()
+            && [&self.pause, &self.resume, &self.cancel]
+                .iter()
+                .all(|gate| gate.reason.as_ref().is_none_or(|r| r.len() <= 512))
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    Pause,
+    Resume,
+}
 // Only limits unsolicited surfacing of old results; open views never expire.
 const RECENT_RESULT_WINDOW_MS: u64 = 4000;
 #[derive(Clone, Debug, PartialEq)]
@@ -322,6 +354,8 @@ pub struct Panel {
     pub minimized: bool,
     pub visible: bool,
     pub cancel_pending: bool,
+    /// A Pause or Resume request awaiting the station's next revision.
+    pub control_pending: Option<Control>,
     pub historical: bool,
     pub applied_retired: bool,
     pub loading_steps: Vec<(String, String)>,
@@ -370,6 +404,26 @@ impl Panel {
             && self.snapshot.cancel_allowed
             && self.snapshot.kind.has_gse_safe_cancel()
             && matches!(self.snapshot.outcome, Outcome::Running | Outcome::Paused)
+    }
+    /// Pause while running, Resume while paused; both need live station admission.
+    pub fn can_control(
+        &self,
+        control: Control,
+        now: u64,
+        permission: bool,
+        gates: Option<&RunControls>,
+    ) -> bool {
+        let (outcome, gate) = match control {
+            Control::Pause => (Outcome::Running, gates.map(|g| &g.pause)),
+            Control::Resume => (Outcome::Paused, gates.map(|g| &g.resume)),
+        };
+        permission
+            && self.fresh(now)
+            && !self.cancel_pending
+            && self.control_pending.is_none()
+            && !self.historical
+            && self.snapshot.outcome == outcome
+            && gate.is_some_and(|gate| gate.allowed)
     }
 }
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -601,6 +655,8 @@ pub struct Envelope {
     pub result_links: Vec<ResultNotice>,
     #[serde(default)]
     pub board_display: BoardDisplayMap,
+    #[serde(default)]
+    pub controls: Vec<RunControls>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResultNotice {
@@ -623,6 +679,7 @@ pub struct Model {
     pub result_error: Option<String>,
     requested_details: VecDeque<RunKey>,
     release_pending: Vec<RunKey>,
+    controls: Vec<RunControls>,
 }
 impl Model {
     /// A single authenticated station observation. Validate the whole envelope
@@ -654,6 +711,10 @@ impl Model {
             || envelope.terminal.len() > MAX_TERMINAL
             || envelope.result_links.len() > MAX_RESULT_LINKS
             || envelope.board_display.len() > 2
+            || envelope.controls.len() > MAX_ACTIVE
+            || envelope.controls.iter().any(|c| {
+                !c.valid() || c.key.backend_instance != envelope.backend_instance
+            })
             || envelope
                 .board_display
                 .iter()
@@ -741,8 +802,49 @@ impl Model {
             return Err(Error::Stale);
         }
         self.board_display = envelope.board_display;
+        self.controls = envelope.controls;
         self.unavailable = envelope.reporting_error.is_some();
         Ok(())
+    }
+    /// The station's latest live Pause/Resume/Cancel admission for a run.
+    pub fn controls(&self, key: &RunKey) -> Option<&RunControls> {
+        if self.unavailable {
+            return None;
+        }
+        self.controls.iter().find(|c| &c.key == key)
+    }
+    pub fn can_control(&self, key: &RunKey, control: Control, now: u64, permission: bool) -> bool {
+        let gates = self.controls(key);
+        self.panels
+            .iter()
+            .any(|p| &p.snapshot.key == key && p.can_control(control, now, permission, gates))
+    }
+    pub fn request_control(
+        &mut self,
+        key: &RunKey,
+        control: Control,
+        now: u64,
+        permission: bool,
+    ) -> Result<RunKey, Error> {
+        if self.unavailable {
+            return Err(Error::Unavailable);
+        }
+        if !self.can_control(key, control, now, permission) {
+            return Err(Error::Permission);
+        }
+        let panel = self
+            .panels
+            .iter_mut()
+            .find(|p| &p.snapshot.key == key)
+            .ok_or(Error::NotCurrent)?;
+        panel.control_pending = Some(control);
+        // Run-key intent only; the station re-checks every gate.
+        Ok(panel.snapshot.key.clone())
+    }
+    pub fn control_failed(&mut self, key: &RunKey) {
+        if let Some(panel) = self.panels.iter_mut().find(|p| &p.snapshot.key == key) {
+            panel.control_pending = None;
+        }
     }
     fn catalog(&mut self, mut snapshot: Snapshot) {
         if !snapshot.details_complete
@@ -835,7 +937,9 @@ impl Model {
         for panel in &mut self.panels {
             if !panel.snapshot.outcome.terminal() { panel.applied_retired = true; }
             panel.cancel_pending = false;
+            panel.control_pending = None;
         }
+        self.controls.clear();
         self.board_display.clear();
         self.output_cache = OutputCache::default();
         self.release_pending.clear();
@@ -851,6 +955,7 @@ impl Model {
         self.result_error = None;
         self.requested_details.clear();
         self.release_pending.clear();
+        self.controls.clear();
         self.unavailable = true;
     }
     pub fn set_source(&mut self, epoch: u64) {
@@ -866,6 +971,7 @@ impl Model {
             self.result_error = None;
             self.requested_details.clear();
             self.release_pending.clear();
+            self.controls.clear();
         }
     }
     pub fn set_scope(&mut self, epoch: u64, backend_instance: String, reset_epoch: String) {
@@ -881,6 +987,7 @@ impl Model {
             self.result_error = None;
             self.requested_details.clear();
             self.release_pending.clear();
+            self.controls.clear();
         }
     }
     pub fn set_surface(&mut self, actions: bool) {
@@ -1003,6 +1110,10 @@ impl Model {
             } else if snapshot.details_complete {
                 panel.loading_steps.clear();
             }
+            if snapshot.revision > panel.snapshot.revision {
+                // The station has published its response to the request.
+                panel.control_pending = None;
+            }
             if first_terminal {
                 panel.cancel_pending = false;
                 // Completion closes live progress; recorded results reopen only
@@ -1029,6 +1140,7 @@ impl Model {
                 minimized: !self.on_actions,
                 visible: !snapshot.outcome.terminal(),
                 cancel_pending: false,
+                control_pending: None,
                 historical: false,
                 applied_retired: false,
                 loading_steps: Vec::new(),
@@ -1590,6 +1702,7 @@ mod envelope_tests {
             reporting_error: None,
             result_links: Vec::new(),
             board_display: Default::default(),
+            controls: Vec::new(),
         }
     }
     #[test]
@@ -1741,7 +1854,7 @@ mod applied_context_tests {
         value["outcome"]="passed".into(); value["current_step"]=serde_json::Value::Null;
         value["next_step"]=serde_json::Value::Null; value["steps"]=serde_json::json!([]); value["cancel_allowed"]=false.into();
         let terminal:Snapshot=serde_json::from_value(value).unwrap();
-        let mut envelope=Envelope {version:1,backend_instance:live.key.backend_instance.clone(),reset_epoch:live.key.reset_epoch.clone(),
+        let mut envelope=Envelope {controls:Vec::new(),version:1,backend_instance:live.key.backend_instance.clone(),reset_epoch:live.key.reset_epoch.clone(),
             cancel_api_version:1,active:vec![live.clone()],terminal:vec![terminal.clone()],reporting_error:None,result_links:Vec::new(),board_display:Default::default()};
         let mut model=Model::default();model.accept_envelope(0,envelope.clone(),10,10).unwrap();
         let original=model.panels()[0].clone();let source=model.source_epoch;let scope=model.expected_scope.clone();
@@ -1757,5 +1870,100 @@ mod applied_context_tests {
         envelope.terminal.clear();model.accept_envelope(0,envelope,22,22).unwrap();
         assert!(model.panels()[0].fresh(22));assert!(model.panels()[0].can_cancel(22,true,Some(1)));
         assert_eq!(model.cached_result(&terminal.key),Some(&terminal));
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    fn envelope(value: Snapshot) -> Envelope {
+        Envelope {
+            version: 1,
+            backend_instance: value.key.backend_instance.clone(),
+            reset_epoch: value.key.reset_epoch.clone(),
+            cancel_api_version: 1,
+            active: vec![],
+            terminal: vec![value],
+            reporting_error: None,
+            result_links: Vec::new(),
+            board_display: Default::default(),
+            controls: Vec::new(),
+        }
+    }
+    fn running(revision: u64, outcome: &str) -> Snapshot {
+        serde_json::from_value(serde_json::json!({"version":1,"key":{"backend_instance":"11111111111111111111111111111111","reset_epoch":"2222222222222222","run_id":"44444444444444444444444444444444"},"revision":revision,"kind":"nitrogen_test","outcome":outcome,"origin_client":null,"title":"Nitrogen test","message":"Watching","current_step":null,"next_step":null,"steps":[],"observed_age_ms":0,"valid_for_ms":2000,"cancel_allowed":true})).unwrap()
+    }
+    fn live(value: Snapshot, pause: bool, resume: bool, reason: &str) -> Envelope {
+        let mut header = envelope(value.clone());
+        header.terminal.clear();
+        header.controls = vec![RunControls {
+            key: value.key.clone(),
+            pause: Gate { allowed: pause, reason: (!pause).then(|| reason.into()) },
+            resume: Gate { allowed: resume, reason: (!resume).then(|| reason.into()) },
+            cancel: Gate { allowed: true, reason: None },
+        }];
+        header.active = vec![value];
+        header
+    }
+    #[test]
+    fn pause_and_resume_need_live_station_admission_and_clear_on_next_revision() {
+        let mut model = Model::default();
+        let value = running(1, "running");
+        let key = value.key.clone();
+        model.accept_envelope(0, live(value, true, false, "Already paused"), 10, 10).unwrap();
+        assert!(model.can_control(&key, Control::Pause, 10, true));
+        assert!(!model.can_control(&key, Control::Pause, 10, false), "permission");
+        assert!(!model.can_control(&key, Control::Resume, 10, true), "not paused");
+        assert!(!model.can_control(&key, Control::Pause, 5000, true), "stale");
+        assert_eq!(model.request_control(&key, Control::Pause, 10, true), Ok(key.clone()));
+        assert!(!model.can_control(&key, Control::Pause, 10, true), "one request at a time");
+        model.control_failed(&key);
+        assert!(model.can_control(&key, Control::Pause, 10, true));
+        model.request_control(&key, Control::Pause, 10, true).unwrap();
+        let paused = running(2, "paused");
+        model.accept_envelope(0, live(paused, false, true, "Already paused"), 20, 20).unwrap();
+        assert_eq!(model.panels()[0].control_pending, None);
+        assert!(model.can_control(&key, Control::Resume, 20, true));
+        assert!(!model.can_control(&key, Control::Pause, 20, true));
+        assert_eq!(model.controls(&key).unwrap().pause.reason.as_deref(), Some("Already paused"));
+        // Without the station's live gate nothing is enabled.
+        let mut silent = envelope(running(3, "paused"));
+        silent.terminal.clear();
+        silent.active = vec![running(3, "paused")];
+        model.accept_envelope(0, silent, 30, 30).unwrap();
+        assert!(model.controls(&key).is_none());
+        assert!(!model.can_control(&key, Control::Resume, 30, true));
+        // Old stations omit the field entirely.
+        let mut old = serde_json::to_value(live(running(4, "paused"), true, true, "")).unwrap();
+        old.as_object_mut().unwrap().remove("controls");
+        let old: Envelope = serde_json::from_value(old).unwrap();
+        model.accept_envelope(0, old, 40, 40).unwrap();
+        assert!(!model.can_control(&key, Control::Resume, 40, true));
+    }
+    #[test]
+    fn controls_for_another_station_or_oversized_reasons_reject_the_envelope() {
+        let mut model = Model::default();
+        let mut header = live(running(1, "running"), true, false, "x");
+        header.controls[0].key.backend_instance = "5".repeat(32);
+        assert_eq!(model.accept_envelope(0, header, 10, 10), Err(Error::Invalid));
+        let header = live(running(1, "running"), true, false, &"x".repeat(600));
+        assert_eq!(model.accept_envelope(0, header, 10, 10), Err(Error::Invalid));
+    }
+    #[test]
+    fn cancelled_run_closes_its_live_modal() {
+        let mut model = Model::default();
+        model.set_surface(true);
+        let value = running(1, "paused");
+        let key = value.key.clone();
+        model.accept_envelope(0, live(value, false, true, "Already paused"), 10, 10).unwrap();
+        assert!(model.panels()[0].visible);
+        model.request_cancel(&key, 10, true, Some(1)).unwrap();
+        let mut done = running(2, "cancelled");
+        done.cancel_allowed = false;
+        let mut header = envelope(done);
+        header.controls.clear();
+        model.accept_envelope(0, header, 20, 20).unwrap();
+        assert!(!model.panels()[0].visible, "cancel auto-closes the modal");
+        assert!(model.controls(&key).is_none());
     }
 }

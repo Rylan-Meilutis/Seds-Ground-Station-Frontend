@@ -33,3 +33,8 @@
 .gs26-sequence-steps :is([data-step-state=Current],[data-step-state=Watching]) .gs26-sequence-step-glyph{animation:gs26-sequence-step-working 1.6s linear infinite}
 @keyframes gs26-sequence-step-working{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.gs26-sequence-step-glyph{animation:none!important}}
+
+/* Pause/Resume/Cancel row; refusal reasons come from the station. */
+.gs26-sequence-controls{display:flex;flex-wrap:wrap;gap:8px}.gs26-sequence-controls button{flex:1 1 140px;padding:8px 12px}
+.gs26-sequence-view[role=dialog] .gs26-sequence-resume{background:#1f5134;border-color:#5d9c78;color:#fff}
+.gs26-sequence-view footer .gs26-sequence-control-reason{font-size:11px;color:var(--gs26-text-secondary,#d3def1);overflow-wrap:anywhere}
