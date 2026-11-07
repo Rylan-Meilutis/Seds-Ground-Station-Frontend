@@ -3863,10 +3863,10 @@ fn TelemetryDashboardInner() -> Element {
                                 MainTab::State => rsx! {
                                     div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
                                         custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:layout.test_fire_mode}
-                                        if *ground_station_view.read() && auth::can_view_actions() && flight_state.read().as_str() == "Aborted" {
+                                        if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && flight_state.read().as_str() == "Aborted" {
                                             for policy_view_key in [station_mode_observer::view_key()] { gse_panel::ClearGseAbort { key: "{policy_view_key}",} }
                                         }
-                                        if *ground_station_view.read() && auth::can_view_actions() && (layout.test_fire_mode || gse_panel::ground_visible(&flight_state.read())) {
+                                        if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && (layout.test_fire_mode || gse_panel::ground_visible(&flight_state.read())) {
                                             for policy_view_key in [station_mode_observer::view_key()] { gse_panel::GsePanel { key: "{policy_view_key}",action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false} }
                                         }
                                     }

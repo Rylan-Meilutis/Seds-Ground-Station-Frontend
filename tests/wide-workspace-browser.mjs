@@ -99,10 +99,19 @@ fixture+=`try {
  const shown=async(a,b)=>{await waitTabs([a,b]);await page.waitForFunction(([a,b])=>document.querySelector('[aria-label="First workspace pane"]').value===a&&document.querySelector('[aria-label="Second workspace pane"]').value===b,[a,b]);};
  await shown('actions','data');
  await second.selectOption('connection-status');await shown('actions','connection-status');
- await page.reload();await shown('actions','connection-status');
  await first.selectOption('connection-status');await shown('connection-status','actions');
  await rail.getByRole('link',{name:'Actions',exact:true}).click();await shown('actions','connection-status');
- await second.selectOption('data');await shown('actions','data');
+ await page.evaluate(origin=>{for(const base of ['',origin])localStorage.setItem('gs26_dashboard_customization_v1_'+base.replace(/[^a-zA-Z0-9]/g,'_')+'_ground_station_view','on');},origin);
+ await page.reload();await shown('actions','connection-status');
+ await second.selectOption('checklists');await shown('actions','checklists');
+ // Commands stay beside the dashboard, with Actions as its only ground control surface.
+ await first.selectOption('state');await shown('state','checklists');
+ await second.selectOption('actions');await shown('state','actions');
+ assert.equal(await page.locator('.gs26-actions-page').count(),1);
+ assert.equal(await page.getByText('Reconfigure GSE',{exact:true}).count(),0,'State omits its ground controls next to Actions');
+ await second.selectOption('checklists');await shown('state','checklists');
+ await page.getByText('Reconfigure GSE',{exact:true}).waitFor();
+ await second.selectOption('data');await first.selectOption('actions');await shown('actions','data');
  // The sequence host observes Actions in the SECOND pane as well.
  await rail.getByRole('link',{name:'Telemetry',exact:true}).click();await waitTabs(['data','actions']);
  const key={backend_instance:'1'.repeat(32),reset_epoch:'2'.repeat(16),run_id:'3'.repeat(32)};

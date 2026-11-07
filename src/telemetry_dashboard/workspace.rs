@@ -26,11 +26,13 @@ impl Default for Preference {
 
 fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
     match tab {
-        // State can already contain the ground controls; never add another
-        // command surface next to it. Editors and singleton media stay primary.
+        // Editors and singleton media stay primary. Next to Actions, State
+        // leaves its ground controls out so there is one command surface.
         MainTab::Actions => matches!(
             primary,
-            MainTab::Data
+            MainTab::State
+                | MainTab::Checklists
+                | MainTab::Data
                 | MainTab::ConnectionStatus
                 | MainTab::Detailed
                 | MainTab::NetworkTopology
@@ -41,7 +43,9 @@ fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
                 | MainTab::Warnings
                 | MainTab::Errors
         ),
-        MainTab::Data
+        MainTab::State
+        | MainTab::Checklists
+        | MainTab::Data
         | MainTab::ConnectionStatus
         | MainTab::Detailed
         | MainTab::NetworkTopology

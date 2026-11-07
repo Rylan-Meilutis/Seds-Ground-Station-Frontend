@@ -35,7 +35,7 @@ fn permission_or_configuration_removal_never_mounts_retired_secondary() {
     );
 }
 #[test]
-fn singleton_editors_and_duplicate_ground_control_surface_stay_out_of_secondary() {
+fn singleton_editors_stay_out_of_secondary_and_commands_can_sit_beside_any_data_view() {
     assert_eq!(
         ids(resolve(
             MainTab::State,
@@ -43,7 +43,16 @@ fn singleton_editors_and_duplicate_ground_control_surface_stay_out_of_secondary(
             &[MainTab::State, MainTab::Actions, MainTab::Data],
             true
         )),
-        ["state", "data"]
+        ["state", "actions"]
+    );
+    assert_eq!(
+        ids(resolve(
+            MainTab::Actions,
+            "checklists",
+            &[MainTab::Actions, MainTab::Checklists, MainTab::Data],
+            true
+        )),
+        ["actions", "checklists"]
     );
     assert_eq!(
         ids(resolve(
