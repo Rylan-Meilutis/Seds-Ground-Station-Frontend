@@ -4277,19 +4277,19 @@ fn record_command_press(
         owner: owner.filter(|_| allowed), origin, proxy, consumed: false, terminal_seen,
     });
 }
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn command_pointer_down(source: &str, cmd: &str, id: i32, touch: bool, is_primary: bool, proxy: bool) {
     record_command_press(source, cmd, command_owner::PressOrigin::Pointer { id, touch, button: Some(dioxus::html::input_data::MouseButton::Primary) }, is_primary, proxy, false);
 }
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn command_touch_start(source: &str, cmd: &str, single_touch: bool, proxy: bool) {
     record_command_press(source, cmd, command_owner::PressOrigin::Touch { id: 0 }, single_touch, proxy, false);
 }
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn command_mouse_down(source: &str, cmd: &str, proxy: bool) {
     record_command_press(source, cmd, command_owner::PressOrigin::Mouse { button: dioxus::html::input_data::MouseButton::Primary }, true, proxy, false);
 }
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn command_key_down(source: &str, cmd: &str, proxy: bool) {
     record_command_press(source, cmd, command_owner::PressOrigin::Keyboard, true, proxy, true);
 }
@@ -4434,9 +4434,9 @@ fn command_click_with_origin(source: &str, cmd: &str, origin: command_owner::Cli
     release_command_press(source);
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn send_cmd_from_press(cmd: &str) { command_key_down(cmd, cmd, false); }
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn send_cmd_from_click(cmd: &str) { release_command_press(cmd); }
 
 pub(crate) fn command_feedback_active(cmd: &str) -> bool {

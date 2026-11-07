@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Execute the actual vendor navigation closure and IPC handler headlessly.
 //! Only the GUI window container and OS browser spawn are replaced by fixtures.
 use std::{fs, process::Command};
