@@ -393,6 +393,9 @@ struct BoardAbortSnapshot {
     history_unknown_boards: Vec<String>,
     #[serde(default)]
     retraction: Option<RetractionInterlock>,
+    /// Server verdict: HITL reports unreadable Abort history without blocking.
+    #[serde(default = "server_launch_gate_default")]
+    history_blocks_launch: bool,
     #[serde(skip)]
     source_epoch: Option<u64>,
     #[serde(skip)]
@@ -427,8 +430,20 @@ struct BoardAbortError {
     board_label: String,
     timestamp_ms: u64,
     message: String,
+    /// Server verdict: false when the aborted board is no longer on the network.
+    #[serde(default = "server_launch_gate_default")]
+    launch_blocking: bool,
+}
+fn server_launch_gate_default() -> bool {
+    true
 }
 impl BoardAbortSnapshot {
+    fn launch_blocking_errors(&self) -> impl Iterator<Item = &BoardAbortError> {
+        self.active_errors.iter().filter(|error| error.launch_blocking)
+    }
+    fn launch_blocking_history_error(&self) -> Option<&str> {
+        self.history_error_message().filter(|_| self.history_blocks_launch)
+    }
     fn reconciled(mut self, previous: &Self, source_epoch: u64) -> Self {
         if previous.source_epoch == Some(source_epoch) && self.version < previous.version {
             return previous.clone();
@@ -460,8 +475,8 @@ impl BoardAbortSnapshot {
         self.missing_required_state.as_deref().unwrap_or_default()
     }
     fn constrain_launch_policy(&self, policy: &mut ActionPolicyMsg) {
-        if self.active_errors.is_empty()
-            && self.history_error_message().is_none()
+        if self.launch_blocking_errors().next().is_none()
+            && self.launch_blocking_history_error().is_none()
             && self.missing_required_state().is_empty()
             && !self
                 .retraction
@@ -482,16 +497,15 @@ impl BoardAbortSnapshot {
         }
     }
     fn launch_message(&self) -> Option<String> {
-        if let Some(message) = self.history_error_message() {
+        if let Some(message) = self.launch_blocking_history_error() {
             return Some(format!(
                 "Launch disabled: Abort history unavailable: {message}"
             ));
         }
-        if !self.active_errors.is_empty() {
+        if self.launch_blocking_errors().next().is_some() {
             return Some(format!(
                 "Launch disabled: {} report Abort.",
-                self.active_errors
-                    .iter()
+                self.launch_blocking_errors()
                     .map(|e| e.board_label.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -508,6 +522,29 @@ impl BoardAbortSnapshot {
 #[cfg(test)]
 mod board_abort_message_tests {
     use super::*;
+    #[test]
+    fn absent_board_abort_stays_visible_without_disabling_launch() {
+        let error=|blocking:bool|serde_json::json!({"source":"board_abort:VB","board":"VB","board_label":"Valve Board",
+            "timestamp_ms":1,"message":"m","launch_blocking":blocking});
+        let snapshot=|blocking:bool|serde_json::from_value::<BoardAbortSnapshot>(
+            serde_json::json!({"version":1,"active_errors":[error(blocking)]})).unwrap();
+        let absent=snapshot(false);
+        assert_eq!(absent.active_error_count(),1);
+        assert!(absent.launch_message().is_none());
+        assert!(snapshot(true).launch_message().unwrap().contains("Valve Board"));
+        // A station without the field keeps blocking.
+        let legacy:BoardAbortSnapshot=serde_json::from_value(serde_json::json!({"version":1,"active_errors":[
+            {"source":"s","board":"VB","board_label":"Valve Board","timestamp_ms":1,"message":"m"}]})).unwrap();
+        assert!(legacy.launch_message().is_some());
+    }
+    #[test]
+    fn hitl_history_error_is_reported_without_disabling_launch() {
+        let report=|blocks:bool|serde_json::from_value::<BoardAbortSnapshot>(serde_json::json!({
+            "version":1,"history_error":"Journal corrupt","history_blocks_launch":blocks})).unwrap();
+        assert!(report(false).launch_message().is_none());
+        assert_eq!(report(false).active_error_count(),1);
+        assert!(report(true).launch_message().unwrap().contains("Journal corrupt"));
+    }
     fn snapshot(value: serde_json::Value) -> BoardAbortSnapshot {
         serde_json::from_value(value).unwrap()
     }
