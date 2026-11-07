@@ -1,6 +1,6 @@
 # Frontend CI runners
 
-Both providers run the SAME actual `build.py --target <target> --debug|--release --no-sign` through `scripts/ci/frontend.py`. Coverage is every12 target in `scripts/build_targets.py`,24jobs/provider. This means supported architecture/build variants, not every historical OS/Xcode version. iOSdevice builds an unsigned app; simulators are built, never launched. Android builds APK variants. This is not distribution signing, notarization, device acceptance or store upload. Missing platform capability is a failed/pending gate, never successful Linux emulation.
+Both providers run the SAME actual `build.py --target <target> --debug|--release --no-sign` through `scripts/ci/frontend.py`. Coverage is every12 target in `scripts/build_targets.py`,24jobs/provider. This means supported architecture/build variants, not every historical OS/Xcode version. iOSdevice builds an unsigned app; simulators are built, never launched. Android builds APK variants signed with a fresh job-local development certificate. Each Android artifact includes `CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt`; the private key is never uploaded. These APKs are not production releases or an identity for updating installed releases. Local user signing settings remain unchanged. This is not distribution signing, notarization, device acceptance or store upload. Missing platform capability is a failed/pending gate, never successful Linux emulation.
 
 GitHub uses real hosted labels Ubuntu24.04 x64/ARM64, Windows2022/MSVC, macOS15 ARM64 and macOS15-intel. Native host+architecture is checked before bootstrap and build. GitLab needs these provisioned tags (unavailable runners remain pending):
 
@@ -20,7 +20,7 @@ Each fresh job installs Rust1.99.0+Clippy, resolves the application Cargo.lock o
 
 RUSTFLAGS/RUSTDOCFLAGS deny warnings. Inherited CARGO_ENCODED_RUSTFLAGS, CARGO_ENCODED_RUSTDOCFLAGS and target-specific CARGO_TARGET_*_RUSTFLAGS are refused, including empty values, so they cannot silently override the warning policy. The shared subprocess driver also preserves unfiltered tool output and fails nonzero exits OR recognized warning diagnostics; no upstream-warning whitelist or blanket lint suppression. Exact failed logs and build artifacts are uploaded even on failure. An empty platform stagingdirectory is a failure, not a successful build. Actual project/upstream warnings discovered by real CI are blockers to resolve, not pre-waived. The application build.py host-tool/iOS flag separation fix is already part of the reviewed base; this CI patch does not modify it.
 
-Fast contracts validate both matrices against actual target registry, correct native routing, all24 commands/profile flags, no skip/final/sign/deploy commands, fatal warnings/nonzero behavior using real Python subprocesses, and actualartifact retention configuration. They do not compile/launch frontend apps or prove runner availability. Local execution does not establish any Apple/Windows/Android build pass.
+Fast contracts validate both matrices against actual target registry, correct native routing, all24 commands/profile flags, no skip/final/production-sign/deploy commands, fatal warnings/nonzero behavior using real Python subprocesses, and actualartifact retention configuration. They do not compile/launch frontend apps or prove runner availability. Local execution does not establish any Apple/Windows/Android build pass.
 
 References: https://docs.github.com/en/actions/reference/runners/github-hosted-runners ; https://docs.gitlab.com/ci/jobs/job_control/#parallelize-large-jobs ; https://github.com/WebAssembly/binaryen/releases/expanded_assets/version_133 .
 
@@ -150,3 +150,14 @@ required, and its errors and archive validation remain fatal.
 Official Ubuntu package and command reference:
 https://packages.ubuntu.com/noble/libarchive-tools ;
 https://manpages.ubuntu.com/manpages/noble/en/man1/bsdtar.1.html .
+
+
+## Android CI development signing and prepared host tools
+
+The CI driver creates a fresh PKCS12 development key under its private `.ci-tools/android-development-signing` directory using the installed Java `keytool`. Passwords are random per job and passed by private mode-0600 file reference, never command-line values or recorded receipts. The build-only key is used explicitly by bundletool for universal APK creation; no deployment credentials, local upload key or user keychain are read. Both debug and release-profile CI APKs carry this development certificate. The signing-mode receipt contains no private key material and the key directory is outside uploaded artifact paths. Missing tools, invalid keys, incomplete signing configuration and every other tool warning still fail the job. This fixes actual unsigned-APK output rather than filtering its warning.
+
+Already-canonical Android artifacts count as recognized input to the idempotent renamer. A directory without recognized Android artifacts still reports the original warning. Container `wasm-opt --version` verification executes directly with the prepared build environment, avoiding a login shell that could replace the pinned Binaryen PATH.
+
+Android packaging fallback requires an explicit Gradle packaging/configuration failure from the current `dx` command and its generated project. A staged directory or historical log is insufficient. Rust compilation failures, including errors preceding the retained bounded diagnostic tail, fail immediately; empty or unknown Android failures cannot package stale output. Known Gradle cache and wasm-bindgen repair retries remain available and must succeed. Exception diagnostics retain at most 128 lines of 4096 characters and redact credential environment values; original streamed compiler output and the CI warning gate remain unchanged.
+
+Non-Android `dx` commands also capture their own bounded failure output through `run(capture_failure=True)`. This preserves current wasm-bindgen and staged Linux packaging repairs without reading historical global logs. Other ordinary `run()` calls retain their existing execution behavior.

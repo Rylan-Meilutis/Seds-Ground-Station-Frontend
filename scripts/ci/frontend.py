@@ -1,4 +1,4 @@
-"""CI-only native platform build driver. Never deploys, signs or launches apps."""
+"""Build-only CI. Android uses ephemeral development signing, never production credentials."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -168,7 +169,7 @@ def ci_env():
                 "RUSTDOCFLAGS": "-D warnings", "CARGO_TERM_COLOR": "never", "NO_COLOR": "1"})
     # Never forward local deployment credentials into build-only jobs.
     for key in list(env):
-        if key.startswith(("NOTARY_", "IOS_DISTRIBUTION_", "IOS_DEVELOPMENT_", "ANDROID_KEY")):
+        if key.startswith(("NOTARY_", "IOS_DISTRIBUTION_", "IOS_DEVELOPMENT_", "ANDROID_KEY", "SEDS_GS_CI_ANDROID_")):
             env.pop(key)
     bins = [ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/linuxdeploy/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
     env["PATH"] = os.pathsep.join(map(str, bins)) + os.pathsep + env.get("PATH", "")
@@ -412,6 +413,33 @@ def bootstrap(name):
     checked(["rustup", "target", "add", "wasm32-unknown-unknown"], env, "wasm-target")
 
 
+def prepare_android_development_signing(env):
+    """Create a fresh job-local key. It is not a distribution identity or an update key."""
+    directory = ROOT / ".ci-tools/android-development-signing"
+    directory.mkdir(mode=0o700)
+    key = directory / "development.p12"
+    env["SEDS_GS_CI_ANDROID_KEYSTORE"] = str(key)
+    password_file = directory / "password.txt"
+    descriptor = os.open(password_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(secrets.token_urlsafe(24) + "\n")
+    env["SEDS_GS_CI_ANDROID_KEYSTORE_PASSWORD_FILE"] = str(password_file)
+    checked(["keytool", "-genkeypair", "-noprompt", "-storetype", "PKCS12",
+             "-keystore", str(key), "-alias", "androiddebugkey", "-keyalg", "RSA",
+             "-keysize", "2048", "-validity", "3650",
+             "-dname", "CN=Android Debug,O=Android,C=US",
+             "-storepass:file", str(password_file),
+             "-keypass:file", str(password_file)],
+            env, "android-development-key")
+    if not key.is_file() or key.is_symlink():
+        raise RuntimeError("Development key generation produced no regular keystore")
+    key.chmod(0o600)
+    (ROOT / "ci-results/android-development-signing.json").write_text(json.dumps({
+        "mode": "ephemeral-ci-development-only", "production_credentials_used": False,
+        "alias": "androiddebugkey", "keystore_uploaded": False, "password_file_uploaded": False,
+        "distribution_or_update_identity": False}, indent=2) + "\n")
+
+
 def run(name, profile):
     validate_host(name)
     env = ci_env()
@@ -423,11 +451,19 @@ def run(name, profile):
             raise RuntimeError(f"Missing prepared tool: {tool}")
     if (ROOT / "artifacts" / name).exists():
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh CI checkout")
+    if name.startswith("android"):
+        prepare_android_development_signing(env)
     checked(build_command(name, profile), env, "build-" + name + "-" + profile, dioxus_progress=True)
     output = ROOT / "artifacts" / name
     files = sorted(p for p in output.rglob("*") if p.is_file())
     if not files:
         raise RuntimeError("Build produced no staged artifacts; not a successful platform build")
+    if name.startswith("android"):
+        (output / "CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt").write_text(
+            "APK signed with a fresh CI-only development certificate.\n"
+            "Not a production release or an identity for updating installed releases.\n"
+            "The private keystore is not included in this artifact.\n")
+        files = sorted(p for p in output.rglob("*") if p.is_file())
     manifest = {str(p.relative_to(ROOT)): {"bytes": p.stat().st_size,
                 "sha256": file_sha256(p)} for p in files}
     (ROOT / "ci-results/artifacts.json").write_text(json.dumps(manifest, indent=2) + "\n")

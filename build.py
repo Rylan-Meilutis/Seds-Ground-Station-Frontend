@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import gzip
+from collections import deque
 import hashlib
 import shlex
 import stat
@@ -252,7 +253,11 @@ def _contextual_failure_hints(cmd_s: str, text: str) -> list[str]:
     return hints
 
 
-def run(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> None:
+def run(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None,
+        *, capture_failure: bool = False) -> None:
+    if capture_failure:
+        run_filtered(cmd, cwd=cwd, env=env)
+        return
     cmd = [str(part) for part in cmd]
     cmd_line = f"Running: {_cmd_to_str(cmd)} (cwd={cwd})"
     print(cmd_line)
@@ -294,6 +299,42 @@ def run(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> None
         raise subprocess.CalledProcessError(rc, cmd)
 
 
+class CapturedCommandFailure(subprocess.CalledProcessError):
+    def __init__(self, returncode, cmd, output, rust_compile_failed):
+        super().__init__(returncode, cmd, output=output)
+        self.rust_compile_failed = rust_compile_failed
+
+
+def _looks_like_rust_compile_failure(text: str) -> bool:
+    plain = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text).lower()
+    return ("cargo build finished with errors" in plain
+            or "could not compile `" in plain or "compile_error!" in plain
+            or re.search(r"\berror\[e[0-9]+\]", plain) is not None)
+
+
+def _failure_diagnostic_line(line: str, environment: dict[str, str]) -> str:
+    # Retain at most 128 lines of 4096 characters; never add credentials to an
+    # exception. The original streamed tool output remains unchanged.
+    for name, value in environment.items():
+        if value and not name.upper().endswith("_FILE") and any(
+                marker in name.upper() for marker in ("PASSWORD", "TOKEN", "SECRET")):
+            line = line.replace(value, "<redacted>")
+    line = re.sub(r"(?i)(authorization:\s*bearer\s+)\S+", r"\1<redacted>", line)
+    return line[-4096:]
+
+
+def _android_gradle_fallback_allowed(failure: subprocess.CalledProcessError, project: Path) -> bool:
+    text = failure.output if isinstance(failure.output, str) else ""
+    if getattr(failure, "rust_compile_failed", False) or _looks_like_rust_compile_failure(text):
+        return False
+    # A staged directory alone is not compilation evidence. Only a current
+    # explicit Gradle failure can enter the repo's known project-patching path.
+    return ((project / "app" / "src" / "main").is_dir()
+            and "FAILURE: Build failed with an exception." in text
+            and ("Execution failed for task" in text
+                 or "A problem occurred configuring project" in text))
+
+
 def run_filtered(
         cmd: list[str],
         cwd: Path,
@@ -307,6 +348,8 @@ def run_filtered(
     merged = os.environ.copy()
     if env:
         merged.update(env)
+    failure_tail = deque(maxlen=128)
+    rust_compile_failed = False
     if LOG_FILE is None:
         proc = subprocess.Popen(
             cmd,
@@ -320,10 +363,13 @@ def run_filtered(
         assert proc.stdout is not None
         try:
             for raw_line in proc.stdout:
+                rust_compile_failed |= _looks_like_rust_compile_failure(raw_line)
+                failure_tail.append(_failure_diagnostic_line(raw_line, merged))
                 lines = line_filter(raw_line) if line_filter else [raw_line]
                 for line in lines:
                     print(line, end="")
             rc = proc.wait()
+            proc.stdout.close()
         except KeyboardInterrupt:
             proc.terminate()
             try:
@@ -333,7 +379,7 @@ def run_filtered(
                 proc.wait()
             raise
         if rc != 0:
-            raise subprocess.CalledProcessError(rc, cmd)
+            raise CapturedCommandFailure(rc, cmd, "".join(failure_tail), rust_compile_failed)
         return
 
     proc = subprocess.Popen(
@@ -348,11 +394,14 @@ def run_filtered(
     assert proc.stdout is not None
     try:
         for raw_line in proc.stdout:
+            rust_compile_failed |= _looks_like_rust_compile_failure(raw_line)
+            failure_tail.append(_failure_diagnostic_line(raw_line, merged))
             lines = line_filter(raw_line) if line_filter else [raw_line]
             for line in lines:
                 print(line, end="")
                 _append_log(line)
         rc = proc.wait()
+        proc.stdout.close()
     except KeyboardInterrupt:
         proc.terminate()
         try:
@@ -362,7 +411,7 @@ def run_filtered(
             proc.wait()
         raise
     if rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd)
+        raise CapturedCommandFailure(rc, cmd, "".join(failure_tail), rust_compile_failed)
 
 
 def run_capture(cmd: list[str], cwd: Path, env: Optional[dict[str, str]] = None) -> str:
@@ -2131,7 +2180,7 @@ def rename_android_artifacts(frontend_dir: Path) -> None:
     if not dist.exists():
         return
 
-    renamed_any = False
+    matched_any = False
     for item in sorted(dist.iterdir()):
         if not item.is_file():
             continue
@@ -2146,6 +2195,8 @@ def rename_android_artifacts(frontend_dir: Path) -> None:
                 or name.startswith(ANDROID_APP_NAME)
         ):
             continue
+
+        matched_any = True
 
         if name.startswith("app-debug"):
             new_name = ANDROID_APP_NAME + name[len("app-debug"):]
@@ -2165,7 +2216,6 @@ def rename_android_artifacts(frontend_dir: Path) -> None:
             item.rename(dst)
             item = dst
             name = new_name
-            renamed_any = True
 
         stripped = _strip_version_from_filename(name)
         stripped = _strip_android_target_suffix(stripped)
@@ -2174,9 +2224,8 @@ def rename_android_artifacts(frontend_dir: Path) -> None:
             print(f"Removing version from android artifact: {name} -> {stripped}")
             _remove_path(dst)
             item.rename(dst)
-            renamed_any = True
 
-    if not renamed_any:
+    if not matched_any:
         print("Warning: no android artifacts matched legacy name for rename.", file=sys.stderr)
 
 
@@ -2561,6 +2610,10 @@ def _patch_generated_android_sources(project_dir: Path) -> None:
 
 
 def _configure_android_signing(frontend_dir: Path, project_dir: Path) -> bool:
+    if os.environ.get("SEDS_GS_CI_ANDROID_KEYSTORE"):
+        # CI signs only the extracted APK with its fresh development key.
+        # Do not inspect local upload identities or query a user's keychain.
+        return False
     settings = _android_signing_settings(frontend_dir)
     keystore_raw = settings["ANDROID_KEYSTORE_PATH"].strip()
     alias = settings["ANDROID_KEY_ALIAS"].strip()
@@ -2737,6 +2790,21 @@ def build_android_universal_apk(frontend_dir: Path) -> Path:
         "--mode=universal",
         "--overwrite",
     ]
+    # CI uses a fresh development key, never a local/release signing identity.
+    # Password files stay private; command/log text contains references only.
+    ci_key = os.environ.get("SEDS_GS_CI_ANDROID_KEYSTORE", "")
+    ci_password_file = os.environ.get("SEDS_GS_CI_ANDROID_KEYSTORE_PASSWORD_FILE", "")
+    if ci_key or ci_password_file:
+        if not ci_key or not ci_password_file:
+            raise RuntimeError("CI Android development signing is incompletely configured")
+        key_path = Path(ci_key)
+        if not key_path.is_file() or key_path.is_symlink():
+            raise FileNotFoundError("CI Android development keystore is not a regular file")
+        password_path = Path(ci_password_file)
+        if not password_path.is_file() or password_path.is_symlink():
+            raise FileNotFoundError("CI Android development password file is not a regular file")
+        cmd += [f"--ks={key_path}", "--ks-key-alias=androiddebugkey",
+                f"--ks-pass=file:{password_path}", f"--key-pass=file:{password_path}"]
     run(cmd, cwd=frontend_dir)
 
     with zipfile.ZipFile(apks_path, "r") as zf:
@@ -3595,6 +3663,11 @@ def notarize_macos(frontend_dir: Path) -> None:
         raise RuntimeError(f"Notarization submission failed (exit {error.returncode}).") from None
     run(["xcrun", "stapler", "staple", str(target)], cwd=frontend_dir)
     verify_macos_distribution(frontend_dir, target)
+
+
+def _verify_container_wasm_opt(frontend_dir: Path, env: Optional[dict[str, str]]) -> None:
+    """Probe the prepared host tool with the same PATH as the actual build."""
+    run(["wasm-opt", "--version"], cwd=frontend_dir, env=env)
 
 
 def _prebuild_frontend_for_container(frontend_dir: Path) -> None:
@@ -5384,10 +5457,9 @@ def build_frontend(
 
             # quick sanity prints (won't install anything)
             try:
-                run(["bash", "-lc", "echo $PATH"], cwd=frontend_dir, env=env)
-                run(["bash", "-lc", "command -v wasm-opt && wasm-opt --version"], cwd=frontend_dir, env=env)
+                _verify_container_wasm_opt(frontend_dir, env)
             except Exception:
-                print("Warning: could not verify wasm-opt via bash -lc", file=sys.stderr)
+                print("Warning: could not verify wasm-opt using the inherited PATH", file=sys.stderr)
 
         # Find dx using the same PATH we will run with (important in containers)
         dx_path = None
@@ -5439,15 +5511,16 @@ def build_frontend(
 
         try:
             android_bundle_partial = False
-            if dx_line_filter is not None:
+            # Android needs this command's failure context even without a line
+            # filter or LOG_FILE; old logs cannot authorize stale packaging.
+            if platform_name == "android" or dx_line_filter is not None:
                 run_filtered(cmd, cwd=frontend_dir, env=env, line_filter=dx_line_filter)
             else:
-                run(cmd, cwd=frontend_dir, env=env)
-        except subprocess.CalledProcessError:
-            err_text = _tail_log_text()
-            if not err_text:
-                # Fallback: try to grab current stderr context if no logfile is configured.
-                err_text = "dx bundle failed"
+                run(cmd, cwd=frontend_dir, env=env, capture_failure=True)
+        except subprocess.CalledProcessError as failure:
+            err_text = failure.output if isinstance(failure.output, str) else ""
+            if not err_text.strip() or getattr(failure, "rust_compile_failed", False) or _looks_like_rust_compile_failure(err_text):
+                raise
 
             if platform_name == "android" and _looks_like_android_gradle_cache_corruption(err_text):
                 _reset_android_gradle_home(frontend_dir)
@@ -5478,7 +5551,8 @@ def build_frontend(
                             os.environ["GS_WASM_BINDGEN_CLI_VERSION"] = prior_override
             elif (
                     platform_name == "android"
-                    and (_generated_android_app_dir(frontend_dir, debug_mode) / "app" / "src" / "main").exists()
+                    and _android_gradle_fallback_allowed(
+                        failure, _generated_android_app_dir(frontend_dir, debug_mode))
             ):
                 print(
                     "Warning: dx android bundler failed after staging the Gradle project; falling back to repo-managed "
