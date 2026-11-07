@@ -10,12 +10,12 @@ fixture=fixture.replace('calibration.kg50_input=sent.input;','if(!refuseNextInpu
 fixture=fixture.replace('let heldGetStarted=null;',"let heldGetStarted=null;let refuseNextInput=false;let board={selected:'amp2',board_input:'amp2',board_age_ms:10,state:'synced'};");
 fixture=fixture.replace("  if(pathname==='/api/calibration'||pathname==='/api/calibration_config'||pathname==='/api/calibration/kg50_input'){","  if(pathname==='/api/calibration/kg50_input'&&req.method==='GET'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(board));return;}\n  if(pathname==='/api/calibration'||pathname==='/api/calibration_config'||pathname==='/api/calibration/kg50_input'){");
 if(!fixture.includes('let board='))throw Error('Input fixture changed');
-fixture+=\`try {
+fixture+=\`let page0;try {
  holdInputPosts=false;session.station_role='primary';
  const context=await browser.newContext({viewport:{width:1280,height:900}});
  await context.addInitScript(({session,origin})=>{if(!URL.parse)URL.parse=(a,b)=>{try{return new URL(a,b)}catch{return null}};localStorage.setItem('navigation-style','sidebar');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
- await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',()=>{});
- const page=await context.newPage();await page.goto(origin+'/dashboard');await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
+ await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});const liveSockets=[];await context.routeWebSocket(url=>url.pathname==='/ws',socket=>{liveSockets.push(socket);});
+ const page=await context.newPage();page0=page;await page.goto(origin+'/dashboard');await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
  const station=page.locator('.gs26-ground-station-settings');const input=station.getByLabel('50 kg input',{exact:true});
  await page.getByRole('link',{name:'Settings',exact:true}).click();await page.getByRole('navigation',{name:'Settings scope'}).getByRole('button',{name:'Ground Station',exact:true}).click();await station.getByRole('navigation',{name:'Ground Station settings sections'}).getByRole('button',{name:'Loadcells',exact:true}).click();await input.waitFor();
  // Disabled for a stated reason, and the way out is reachable from Settings.
@@ -35,13 +35,23 @@ fixture+=\`try {
  await station.getByText('DAQ confirmed: using P6 differential.',{exact:true}).waitFor();
  board={selected:'p6_differential',board_input:'p6_differential',board_age_ms:9000,state:'no_readback'};
  await station.getByText('DAQ is not reporting. Last reported P6 differential 9 s ago; its current input is unknown.',{exact:true}).waitFor();
+ // A settled choice from a dropped connection must not swallow the next one.
+ for(const socket of liveSockets.splice(0))await socket.close();
+ await station.getByRole('button',{name:'Reload settings',exact:true}).waitFor({timeout:30000});
+ for(const started=Date.now();!liveSockets.length;await page.waitForTimeout(100))assert(Date.now()-started<30000,'Client never reconnected');
+ await page.waitForTimeout(1000);await station.getByRole('button',{name:'Reload settings',exact:true}).click();await station.getByLabel('50 kg input',{exact:true}).waitFor();
+ await page.waitForFunction(()=>document.getElementById('kg50-input')?.value==='p6_differential'&&!document.getElementById('kg50-input').disabled);
+ board={selected:'amp2',board_input:'amp2',board_age_ms:10,state:'synced'};
+ const posted=inputPosts.length;await input.selectOption('amp2');await station.getByText('DAQ confirmed: using AMP2 / P8.',{exact:true}).waitFor();
+ assert.equal(inputPosts.length,posted+1);assert.equal(calibration.kg50_input,'amp2');
+ await input.selectOption('p6_differential');await page.waitForFunction(()=>document.getElementById('kg50-input')?.value==='p6_differential');
  // A failed request leaves the selector on what the station reports, not on the choice.
  board={selected:'p6_differential',board_input:'p6_differential',board_age_ms:10,state:'synced'};
  failNextInput=true;refuseNextInput=true;await input.selectOption('amp2');
  await station.getByRole('button',{name:'Confirm selected input again',exact:true}).waitFor();
  assert.equal(calibration.kg50_input,'p6_differential');assert.equal(await input.inputValue(),'p6_differential');
  await context.close();console.log('PASS actual Wasm: production actions-disabled default explains itself and is recoverable from Settings; UI shows the DAQ report rather than the saved selection');
-}catch(error){console.error('KG50_SELECTOR_FAILURE '+String(error));throw error;}finally{for(const release of postReleases.splice(0))release();await browser.close();for(const socket of serverSockets)socket.destroy();await new Promise(resolve=>server.close(resolve));}\`;
+}catch(error){console.error('KG50_SELECTOR_FAILURE '+String(error)+' '+await page0?.locator('.gs26-ground-station-settings').innerText().catch(()=>''));throw error;}finally{for(const release of postReleases.splice(0))release();await browser.close();for(const socket of serverSockets)socket.destroy();await new Promise(resolve=>server.close(resolve));}\`;
 try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}
 `;
 script=script.replaceAll('\\`','`');

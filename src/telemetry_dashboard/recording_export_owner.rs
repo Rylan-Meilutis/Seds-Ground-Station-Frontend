@@ -85,6 +85,11 @@ impl ExportOwner {
         owner.check()?;
         Ok(owner)
     }
+    /// Same station and account as at capture, though the connection may have
+    /// dropped since. An authority change still retires this identity.
+    pub(crate) fn same_station_and_account(&self) -> bool {
+        self.base == UrlConfig::base_http() && auth::request_identity_is_current(&self.identity)
+    }
     pub(crate) fn is_current(&self) -> bool {
         if !self.alive.load(Ordering::Acquire) || !(self.selection)()
             || self.policy.as_ref().is_some_and(|lease| lease.check_form_current().is_err()) {

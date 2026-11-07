@@ -293,10 +293,15 @@ pub(super) fn use_calibration_context(abort_only: Signal<bool>) -> CalibrationCo
         if selection.peek().pending() {
             return;
         }
-        let previous_owner_retired = retained_owner
-            .peek()
-            .as_ref()
-            .is_some_and(|owner| !owner.is_current());
+        // A confirmed result on a dropped connection has nothing left to recover,
+        // so a station restart must not swallow the operator's next choice.
+        let settled = matches!(
+            &*selection.peek(),
+            InputSelectionStatus::Ready | InputSelectionStatus::Confirmed(_)
+        );
+        let previous_owner_retired = retained_owner.peek().as_ref().is_some_and(|owner| {
+            !owner.is_current() && !(settled && owner.same_station_and_account())
+        });
         if previous_owner_retired {
             retained_owner.set(None);
             selection.set(InputSelectionStatus::Retired(
