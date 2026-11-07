@@ -173,6 +173,13 @@ pub fn App() -> Element {
         });
     }
 
+    rsx! { AppContent {} }
+}
+
+#[component]
+/// Router and document assets beneath the platform setup in `App`. Headless
+/// tests mount this directly because `App` needs a real desktop context.
+fn AppContent() -> Element {
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))]
     let document_assets: Element = rsx! {
         document::Script { "{ACTIVATION_GESTURE_GUARD}" }

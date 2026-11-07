@@ -56,6 +56,9 @@ fn node_text(dom: &VirtualDom, node: &VNode, template: &TemplateNode) -> String 
     }
 }
 fn settings_button(dom: &VirtualDom) -> ElementId {
+    button_with_text(dom, "Settings")
+}
+fn button_with_text(dom: &VirtualDom, text: &str) -> ElementId {
     let mut found = Vec::new();
     for node in all_nodes(dom) {
         for (index, attributes) in node.dynamic_attrs.iter().enumerate() {
@@ -66,12 +69,12 @@ fn settings_button(dom: &VirtualDom) -> ElementId {
                 let TemplateNode::Element { children, .. } = template else { panic!("actual event path"); };
                 template = &children[usize::from(*child)];
             }
-            if matches!(template, TemplateNode::Element { tag: "button", .. }) && node_text(dom, &node, template) == "Settings" {
-                found.push(node.mounted_dynamic_attribute(index, dom).expect("actual mounted Settings event"));
+            if matches!(template, TemplateNode::Element { tag: "button", .. }) && node_text(dom, &node, template) == text {
+                found.push(node.mounted_dynamic_attribute(index, dom).expect("actual mounted click event"));
             }
         }
     }
-    assert_eq!(found.len(), 1, "genuine unique Connect Settings button"); found[0]
+    assert_eq!(found.len(), 1, "genuine unique {text} button"); found[0]
 }
 fn assert_settings(dom: &VirtualDom, original_base: &str, original_status: &serde_json::Value) {
     let html = dioxus::ssr::render(dom);
@@ -165,4 +168,70 @@ async fn actual_connect_settings_click_cancels_scoped_task_while_real_discovery_
     // Probe Drop unblocks on unwind too. After this function returns, the real
     // tokio test runtime joins its blocking work; parent requires child exit0.
     drop(dom); drop(probe);
+}
+
+fn app_entry_root() -> Element {
+    use_hook(|| {
+        dioxus::history::provide_history_context(Rc::new(dioxus::history::MemoryHistory::with_initial_path("/")));
+        provide_context(Rc::new(dioxus::document::NoOpDocument) as Rc<dyn dioxus::document::Document>);
+    });
+    rsx! { AppContent {} }
+}
+fn click_button(dom: &mut VirtualDom, text: &str) {
+    let event = dioxus::html::PlatformEventData::new(Box::new(dioxus::html::SerializedMouseData::default()));
+    let button = button_with_text(dom, text);
+    dom.runtime().handle_event("click", Event::new(Rc::new(event) as Rc<dyn std::any::Any>, true), button);
+    dom.render_immediate_to_vec();
+}
+
+/// The router and document assets `App` really mounts, from the launch route.
+/// Platform bootstrap (WebView, DesktopContext, station assets) is excluded, so
+/// this is not a reproduction of a device panic and proves nothing about iOS.
+#[tokio::test(flavor = "current_thread")]
+async fn actual_app_content_entry_connect_settings_back_settings_has_no_panic() {
+    const CHILD: &str = "GS_APP_ENTRY_SETTINGS_CHILD";
+    if std::env::var(CHILD).as_deref() != Ok("1") {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let owned = std::env::temp_dir().join(format!("gs-app-entry-settings-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&owned).unwrap();
+        let exact = format!("{}::actual_app_content_entry_connect_settings_back_settings_has_no_panic", module_path!().split_once("::").unwrap().1);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &exact, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .env("XDG_DATA_HOME", owned.join("data")).env("XDG_CONFIG_HOME", owned.join("config")).env("XDG_CACHE_HOME", owned.join("cache"))
+            .spawn().unwrap();
+        let start = Instant::now();
+        let exit = loop {
+            if let Some(status) = child.try_wait().unwrap() { break Some(status); }
+            if start.elapsed() > Duration::from_secs(30) { child.kill().unwrap(); child.wait().unwrap(); break None; }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        std::fs::remove_dir_all(&owned).unwrap();
+        assert!(exit.is_some_and(|status| status.success()), "isolated app entry child failed: {exit:?}");
+        return;
+    }
+    // Connect runs genuine LAN discovery, so stay off real networks as above.
+    assert!(if_addrs::get_if_addrs().unwrap().iter().all(|interface| interface.name == "lo"));
+    let mut dom = VirtualDom::new(app_entry_root);
+    let (original_base, original_status) = dom.in_scope(ScopeId::ROOT, || {
+        assert!(UrlConfig::_stored_base_url().is_none());
+        (UrlConfig::base_http(), serde_json::to_value(crate::auth::current_status()).unwrap())
+    });
+    dom.rebuild_in_place();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !component_names(&dom).iter().any(|name| name.ends_with("Connect")) {
+        assert!(Instant::now() < deadline, "launch route did not redirect to Connect");
+        dom.process_events();
+        dom.render_immediate_to_vec();
+    }
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    for _ in 0..2 {
+        click_button(&mut dom, "Settings");
+        assert_settings(&dom, &original_base, &original_status);
+        click_button(&mut dom, "Back");
+        assert!(component_names(&dom).iter().any(|name| name.ends_with("Connect")));
+        assert!(!dioxus::ssr::render(&dom).contains("Encountered panic"));
+        dom.in_scope(ScopeId::APP, || assert_eq!(dioxus::history::history().current_route(), "/connect"));
+    }
+    drop(dom);
 }
