@@ -3300,6 +3300,28 @@ def rename_macos_dmg(frontend_dir: Path) -> Optional[Path]:
     return None
 
 
+def _macos_dmg_allocation(source: Path) -> dict[str, int]:
+    """Budget logical data independently of APFS compression/sparse allocation."""
+    block = 4096
+    logical = 0
+    allocated = block  # Root directory.
+    entries = 1
+    for directory, dirs, files in os.walk(source, followlinks=False):
+        for name in dirs + files:
+            item = Path(directory) / name
+            size = item.lstat().st_size
+            entries += 1
+            logical += size
+            # Include symlink and directory metadata without following links.
+            allocated += max(block, ((size + block - 1) // block) * block)
+    # Allow 25% plus 64MiB for filesystem/catalog overhead, rounded up to MiB.
+    # This is an explicit packaging budget, not a measured hdiutil requirement.
+    mib = 1 << 20
+    image_mib = ((allocated * 5 + 3) // 4 + 64 * mib + mib - 1) // mib
+    return {"logical_bytes": logical, "rounded_payload_bytes": allocated,
+            "entries": entries, "image_mib": image_mib}
+
+
 def rebuild_macos_dmg(frontend_dir: Path) -> Optional[Path]:
     dist = dist_dir(frontend_dir)
     app = rename_macos_app_bundle(frontend_dir) or app_bundle_path(frontend_dir)
@@ -3316,6 +3338,15 @@ def rebuild_macos_dmg(frontend_dir: Path) -> Optional[Path]:
     print(f"Creating macOS dmg: {target.name}")
     with tempfile.TemporaryDirectory(prefix="gs26_dmg_") as temp_dir:
         temp_path = Path(temp_dir)
+        allocation = _macos_dmg_allocation(app)
+        print("macOS DMG allocation: " + json.dumps({
+            **allocation, "filesystem": "HFS+", "source": str(app),
+            "staging_free_bytes": shutil.disk_usage(temp_path).free,
+            "output_free_bytes": shutil.disk_usage(dist).free,
+        }, sort_keys=True))
+        # Preserve actual host-capacity evidence separately from image sizing.
+        run(["df", "-Pk", str(app), str(dist), str(temp_path)], cwd=frontend_dir)
+        run(["du", "-sk", str(app)], cwd=frontend_dir)
         staged_app = temp_path / APP_BUNDLE_NAME
         shutil.copytree(app, staged_app, symlinks=True)
         os.symlink("/Applications", temp_path / "Applications")
@@ -3330,11 +3361,19 @@ def rebuild_macos_dmg(frontend_dir: Path) -> Optional[Path]:
                 "-ov",
                 "-format",
                 "UDZO",
+                "-fs",
+                "HFS+",
+                "-size",
+                f"{allocation['image_mib']}m",
                 str(target),
             ],
             cwd=frontend_dir,
         )
-    return target if target.exists() else None
+    if not target.is_file():
+        raise FileNotFoundError(f"hdiutil did not produce the requested DMG: {target}")
+    run(["hdiutil", "imageinfo", str(target)], cwd=frontend_dir)
+    run(["hdiutil", "verify", str(target)], cwd=frontend_dir)
+    return target
 
 
 def _pick_codesign_identity(frontend_dir: Path, regex: str, pick: str) -> str:
@@ -5374,6 +5413,10 @@ def build_frontend(
                 # Build an app bundle only. Final IPA signing/packaging is handled by our
                 # repo-local scripts so dx should not attempt automatic Apple signing here.
                 cmd.extend(["--package-types", "ios"])
+            elif platform_name == "macos":
+                # Keep the real debug/release .app; package its DMG below using
+                # an explicit allocation instead of hdiutil's implicit estimate.
+                cmd.extend(["--package-types", "macos"])
             elif platform_name == "windows":
                 _ensure_windows_icon_compat(frontend_dir)
                 cmd.extend(["--windows-subsystem", "WINDOWS"])
@@ -5473,6 +5516,8 @@ def build_frontend(
             _patch_macos_bundle_icon(frontend_dir)
             if sign_macos:
                 sign_macos_app_and_dmg(frontend_dir, include_dmg=macos_include_dmg)
+            elif macos_include_dmg:
+                rebuild_macos_dmg(frontend_dir)
         elif platform_name in {"windows", "linux"}:
             if not (platform_name == "linux" and linux_bundle_partial):
                 rename_windows_linux_artifacts(frontend_dir, platform_name)
