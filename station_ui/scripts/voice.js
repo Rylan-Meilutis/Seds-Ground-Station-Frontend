@@ -8,7 +8,7 @@ function radioLink(radio){
   $('radio-controls').hidden=!radio?.configured;
   radioAvailable=radio?.available===true;
   $('radio-enable').disabled=!session?.ready||!radioAvailable;
-  $('radio-status').textContent=radioAvailable?'Recovery radio ready · 8 kb/s push-to-talk':'Recovery radio unavailable · local voice still works';
+  $('radio-status').textContent=radioAvailable?'Recovery radio ready · 1.2 kb/s push-to-talk, about half a second delay':'Recovery radio unavailable (no RRLS link, or the primary is busy while the RRLS relays) · local voice still works';
   if(!radioAvailable){$('radio-enable').checked=false;if(session)session.radio=false;}
 }
 const notice=text=>{$('status').textContent=text;};
