@@ -5,3 +5,4 @@
 .gs26-workspace-tools label{display:flex;align-items:center;gap:6px;min-width:0;}
 .gs26-workspace-tools select{max-width:240px;background:#16202d;color:#f0f5fa;}
 @media(min-width:1440px){.gs26-workspace[data-split="true"]{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;}.gs26-workspace[data-split="true"]>.gs26-workspace-pane+ .gs26-workspace-pane{border-left:1px solid #718096;padding-left:12px;}}
+@media(min-width:1440px) and (max-width:2199px){.gs26-workspace[data-split="true"] .gs26-info-panels:not([data-wide=true])>.gs26-info-masonry{column-count:2}}

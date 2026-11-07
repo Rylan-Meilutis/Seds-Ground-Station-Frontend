@@ -111,6 +111,8 @@ fixture+=`try {
  assert.equal(await page.getByText('Reconfigure GSE',{exact:true}).count(),0,'State omits its ground controls next to Actions');
  await second.selectOption('checklists');await shown('state','checklists');
  await page.getByText('Reconfigure GSE',{exact:true}).waitFor();
+ await second.selectOption('detailed');await shown('state','detailed');
+ assert.equal(await page.locator('[data-workspace-tab="detailed"] .gs26-info-masonry').evaluate(node=>getComputedStyle(node).columnCount),'2','information panels fit the pane rather than the window');
  await second.selectOption('data');await first.selectOption('actions');await shown('actions','data');
  // The sequence host observes Actions in the SECOND pane as well.
  await rail.getByRole('link',{name:'Telemetry',exact:true}).click();await waitTabs(['data','actions']);
