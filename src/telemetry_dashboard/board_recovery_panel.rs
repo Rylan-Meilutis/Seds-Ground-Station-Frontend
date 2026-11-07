@@ -635,7 +635,7 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                                 onclick:{let current=current.clone();move |_|begin_prepare("reset_startup".into(),None,None,current.clone(),busy,pending,message)},
                                 "Reset all boards to Idle…"
                             }
-                            p{"Resets all boards, unlocks Launch and, in HITL and test-fire builds, resets the T-clock. Boards go to Startup and then Idle. Test-fire qualification and fill status must be redone before Launch. Reset requests AB supplies and igniter OFF, stepper asleep; VB pilot OFF, vent and dump OPEN, plus cancellation of queued automation. Unselected boards are best effort under a scoped policy. Calibration and network power are preserved."}
+                            p{"Resets every available board, unlocks Launch and resets the T-clock. Boards go to Startup and then Idle. A board that's missing now keeps Launch locked when it returns, until it is reset too. Qualification and fill status must be redone before Launch outside HITL. Reset requests AB supplies and igniter OFF, stepper asleep; VB pilot OFF, vent and dump OPEN, plus cancellation of queued automation. Unselected boards are best effort under a scoped policy. Calibration and network power are preserved."}
                             if let Some(reason)=reset_reason.clone(){p{"{reason}"}}
                         }
                         if let Some(recovery)=status.host_recovery.as_ref(){

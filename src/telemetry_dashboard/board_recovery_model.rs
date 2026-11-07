@@ -39,23 +39,17 @@ pub(super) struct ResetStartupPolicy {
 }
 impl ResetStartupPolicy {
     fn valid_for(&self, mode: &ModeCapability) -> bool {
-        let expected: &[&str] = match self.mode.as_str() {
-            "normal" | "testing" => &BOARD_IDS,
-            "test_fire" => &["AB", "VB", "GB", "DAQ"],
-            "hitl" => &[],
-            _ => return false,
-        };
+        // A reset covers whichever boards are available, so none are required.
+        if !matches!(self.mode.as_str(), "normal" | "testing" | "test_fire" | "hitl") {
+            return false;
+        }
         self.version == 1
             && self.global_startup_best_effort
             && self.optional_proofs
             && self.mode == mode.current
             && self.mode == mode.build_mode
             && mode.supported_modes.contains(&self.mode)
-            && self
-                .base_required_boards
-                .iter()
-                .map(String::as_str)
-                .eq(expected.iter().copied())
+            && self.base_required_boards.is_empty()
     }
 }
 #[derive(Clone, Default, Deserialize, PartialEq)]
@@ -508,7 +502,6 @@ impl Challenge {
                         .iter()
                         .all(|id| self.targets.contains(id))
                     || !self.targets.iter().all(|id| status.board(id).is_some())
-                    || (self.targets.is_empty() && policy.mode != "hitl")
                 {
                     return false;
                 }
@@ -1184,14 +1177,14 @@ mod tests {
         status.reset_startup_policy = Some(
             serde_json::from_value(serde_json::json!({
                 "version":1,"global_startup_best_effort":true,"mode":mode,
-                "base_required_boards":required,"optional_proofs":true
+                "base_required_boards":[],"optional_proofs":true
             }))
             .unwrap(),
         );
         let mut ticket = challenge();
         ticket.targets = required.clone();
         ticket.global_startup_best_effort = Some(true);
-        ticket.required_proof_boards = Some(required);
+        ticket.required_proof_boards = Some(Vec::new());
         ticket.unselected_board_verification = Some("unverified_best_effort".into());
         ticket.confirmation = format!(
             "RESET ALL STARTUP; VERIFY {}",
@@ -1309,7 +1302,6 @@ mod tests {
         ticket.confirmation = format!("RESET ALL STARTUP; VERIFY {}", ticket.targets.join(" "));
         assert!(ticket.matches(&status, "reset_startup", None, None));
         for targets in [
-            vec!["FC", "AB", "VB", "GB"],
             vec!["AB", "VB", "GB", "DAQ", "DAQ"],
             vec!["VB", "AB", "GB", "DAQ"],
             vec!["AB", "VB", "GB", "UNKNOWN"],
@@ -1347,7 +1339,7 @@ mod tests {
                         .as_mut()
                         .unwrap()
                         .base_required_boards
-                        .pop();
+                        .push("AB".into());
                 }
                 5 => status.mode_capability.build_mode = "hitl".into(),
                 6 => ticket.global_startup_best_effort = None,
