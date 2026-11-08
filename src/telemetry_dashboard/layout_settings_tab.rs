@@ -948,10 +948,13 @@ pub fn SettingsPage(
         );
     });
 
+    let station_connected = station_settings.is_some();
     rsx! {
         style { {include_str!("controls.css")} }
-        div { class:"gs26-settings", style: "--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};--gs-field-bg:{theme.panel_background_alt};--gs-field-text:{theme.text_primary};padding:16px; overflow:visible; font-family:var(--gs-font); color:{theme.text_primary};",
-            h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "{title}" }
+        div { class:"gs26-settings", "aria-label": "{title}", style: "--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};--gs-field-bg:{theme.panel_background_alt};--gs-field-text:{theme.text_primary};padding:16px; overflow:visible; font-family:var(--gs-font); color:{theme.text_primary};",
+            // Station settings exist only while connected to a station's
+            // dashboard; disconnected, Settings shows client preferences only.
+            if station_connected {
             nav { aria_label: "Settings scope", style: "display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;",
                 for (scope, label) in [("client", "Client"), ("station", "Ground Station")] {
                     button { r#type: "button", aria_pressed: settings_scope.read().as_str() == scope,
@@ -959,8 +962,11 @@ pub fn SettingsPage(
                         onclick: move |_| { super::settings_navigation::select_scope(scope); confirm_reset.set(false); }, "{label}" }
                 }
             }
-            if settings_scope.read().as_str() == "client" {
-                p { style: "color:{theme.text_muted};", "Client preferences apply to this app or browser. Account-linked preferences keep their existing synchronization." }
+            }
+            if !station_connected || settings_scope.read().as_str() == "client" {
+                p { style: "color:{theme.text_muted};margin:0 0 12px;",
+                    if station_connected { "Saved on this device. Tab layout and split view are kept per account." } else { "Saved on this device. Connect to a station for its shared settings." }
+                }
             div { style: "{settings_tab_bar_style}",
                 button {
                     style: if active_settings_tab.read().as_str() == "general" { chip_selected.clone() } else { chip_idle.clone() },
@@ -1003,7 +1009,9 @@ pub fn SettingsPage(
             }
 
             if active_settings_tab.read().as_str() == "general" {
+            if station_connected {
             p {role:"status",class:"gs26-operating-mode", {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), crate::auth::current_status().station_role.as_deref() == Some("rrls"))} }
+            }
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap:12px;",
                 div { style: "{card_style}",
                     h3 { style:"margin:0;font-size:15px;", "Antenna alignment" }

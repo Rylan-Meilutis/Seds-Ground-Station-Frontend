@@ -88,7 +88,7 @@ fn actual_native_settings_route_first_open_has_pin_context_without_connect_or_au
     let html = dioxus::ssr::render(&dom);
     assert!(html.contains("Settings"));
     assert!(html.contains("Back"), "actual route wrapper, not only inner component");
-    assert!(html.contains("Settings scope"));
+    assert!(!html.contains("Settings scope"), "disconnected Settings shows client preferences only");
     assert!(html.contains("Pin telemetry to the top bar"), "actual NativeSettingsPage provides HeaderPinSettings context");
     assert!(!html.contains("Encountered panic"));
     assert!(!html.contains("Searching this local network"));

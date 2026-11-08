@@ -78,7 +78,8 @@ fn button_with_text(dom: &VirtualDom, text: &str) -> ElementId {
 }
 fn assert_settings(dom: &VirtualDom, original_base: &str, original_status: &serde_json::Value) {
     let html = dioxus::ssr::render(dom);
-    assert!(html.contains("Settings scope") && html.contains("Pin telemetry to the top bar") && html.contains("Back"), "actual route and pin provider");
+    assert!(html.contains("Pin telemetry to the top bar") && html.contains("Back"), "actual route and pin provider");
+    assert!(!html.contains("Settings scope"), "disconnected Settings shows client preferences only");
     assert!(!html.contains("Encountered panic"));
     let names = component_names(dom);
     assert!(!names.iter().any(|name| name.ends_with("Connect")), "old Connect scope retired: {names:?}");
