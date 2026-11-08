@@ -147,6 +147,7 @@ fn TelemetryDashboardInner() -> Element {
     let layout_error = use_signal(|| None::<String>);
     let layout_error_dismissed = use_signal(|| None::<String>);
     let layout_request_base = use_signal(String::new);
+    let layout_retry_attempt = use_signal(|| 0u32);
     let calibration_has_sensors = use_signal(|| None::<bool>);
     let calibration_request_base = use_signal(String::new);
     let startup_seed_ready = use_signal(|| false);
@@ -766,6 +767,7 @@ fn TelemetryDashboardInner() -> Element {
         let mut layout_error = layout_error;
         let mut layout_error_dismissed = layout_error_dismissed;
         let mut layout_request_base = layout_request_base;
+        let mut layout_retry_attempt = layout_retry_attempt;
 
         use_effect(move || {
             let base = UrlConfig::base_http();
@@ -812,6 +814,7 @@ fn TelemetryDashboardInner() -> Element {
                         layout_loading.set(false);
                         layout_error.set(None);
                         layout_error_dismissed.set(None);
+                        layout_retry_attempt.set(0);
                         if let Ok(raw) = serde_json::to_string(&layout) {
                             persist::set_string(&cache_key, &raw);
                         }
@@ -822,6 +825,19 @@ fn TelemetryDashboardInner() -> Element {
                         let has_layout_config = layout_config.read().is_some();
                         if !has_layout_config {
                             layout_loading.set(false);
+                        }
+                        // Retry with backoff while this station stays selected, so a
+                        // reconnect racing the first load does not leave the saved
+                        // layout in place until a manual reload.
+                        let attempt = *layout_retry_attempt.peek();
+                        layout_retry_attempt.set(attempt.saturating_add(1));
+                        let delay_ms = layout_retry_delay_ms(attempt);
+                        #[cfg(target_arch = "wasm32")]
+                        gloo_timers::future::TimeoutFuture::new(delay_ms as u32).await;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        if UrlConfig::base_http() == base && *layout_request_base.peek() == base {
+                            layout_request_base.set(String::new());
                         }
                     }
                 }
@@ -4551,4 +4567,18 @@ fn send_primary_request(cmd: &str, owner: CommandOwner) {
             }
         }
     });
+}
+
+/// Backoff for automatic dashboard layout retries: 2 s, 4 s, 8 s, 16 s, then every 30 s.
+fn layout_retry_delay_ms(attempt: u32) -> u64 {
+    (2_000u64 << attempt.min(4)).min(30_000)
+}
+
+#[cfg(test)]
+mod layout_retry_tests {
+    #[test]
+    fn layout_retry_backs_off_and_caps() {
+        let delays: Vec<u64> = (0..7).map(super::layout_retry_delay_ms).collect();
+        assert_eq!(delays, vec![2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
+    }
 }

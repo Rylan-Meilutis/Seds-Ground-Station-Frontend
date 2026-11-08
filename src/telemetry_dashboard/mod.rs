@@ -1046,6 +1046,15 @@ fn user_friendly_http_error(err: &str) -> String {
     {
         return "Could not reach the Ground Station backend. Check the network connection and backend address.".to_string();
     }
+    if lower.contains("retired") || lower.contains("verified original applied station domain") {
+        return "The connection changed while loading. It will load again once the connection settles.".to_string();
+    }
+    if lower.contains("error decoding response body")
+        || lower.contains("unknown variant")
+        || lower.contains("missing field")
+    {
+        return "The Ground Station sent data this frontend could not read. Check that the frontend and backend versions match.".to_string();
+    }
     if lower.contains("invalid json") || lower.contains("expected value") {
         return "The Ground Station sent data this frontend could not read. Check that the frontend and backend versions match.".to_string();
     }
