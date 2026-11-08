@@ -867,6 +867,10 @@ mod native_settings_mount_tests {
         eprintln!("DISCONNECTED_NATIVE_SETTINGS_RENDER {html}");
         assert!(html.contains("Pin telemetry to the top bar"), "{html}");
         assert!(!html.contains("Encountered panic"), "{html}");
+        // Disconnected Settings lists client preferences only.
+        assert!(!html.contains("Settings scope"), "{html}");
+        assert!(!html.contains("Ground Station settings"), "{html}");
+        assert!(!html.contains("gs26-operating-mode"), "{html}");
     }
 
     fn existing_dashboard_pin_editor() -> Element {
