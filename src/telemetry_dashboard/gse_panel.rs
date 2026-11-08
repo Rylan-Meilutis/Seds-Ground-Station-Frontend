@@ -482,6 +482,7 @@ pub(super) fn GsePanel(
                     peak_psi: snapshot.overpressure.as_ref().and_then(|o| o["peak_psi"].as_f64()),
                     detail: snapshot.overpressure.as_ref().and_then(|o| o["message"].as_str()).unwrap_or_default().to_string(),
                 }
+                TankSensorFault { detail: snapshot.overpressure.as_ref().and_then(tank_sensor_fault).unwrap_or_default() }
                 p {style:"margin:0;color:{theme.text_primary};", "{snapshot.message}"}
                 p {style:"margin:0;", "Valve-board pressure (psi): {valve_pressure_label}"}
                 button {r#type:"button",disabled:!turbo_enabled,onclick:move |_| {
@@ -774,6 +775,51 @@ pub(super) fn OverpressureAcknowledge(latched: bool, peak_psi: Option<f64>, deta
             }
             if !message.read().is_empty() { p { role:"status", style:"margin:0;", "{message}" } }
         }
+    }
+}
+
+/// Operator text for a tank pressure sensor fault from `/api/gse/status`
+/// (`overpressure.sensor`): an implausible step (typically an unconnected,
+/// floating transducer) or a Valve Board sensor report. Never an overpressure.
+pub(super) fn tank_sensor_fault(overpressure: &serde_json::Value) -> Option<String> {
+    let sensor = &overpressure["sensor"];
+    if !sensor["fault"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    let detail = sensor["message"].as_str().unwrap_or("Tank pressure sensor fault.").to_string();
+    Some(if sensor["settling"].as_bool().unwrap_or(false) {
+        format!("{detail} Readings are settling; overpressure protection ignores them until they do.")
+    } else {
+        detail
+    })
+}
+
+/// Shown while the tank pressure sensor is implausible, invalid or stale. A
+/// warning, not an overpressure: nothing was commanded.
+#[component]
+pub(super) fn TankSensorFault(detail: String) -> Element {
+    if detail.is_empty() { return rsx! {}; }
+    rsx! {
+        div { role:"status", style:"display:grid;gap:6px;justify-items:start;padding:10px 14px;border:1px solid #d39e00;border-radius:10px;background:#3a2e08;color:#ffe9a8;",
+            strong { "Tank pressure sensor implausible / not connected" }
+            p { style:"margin:0;max-width:60ch;", "{detail}" }
+            p { style:"margin:0;max-width:60ch;font-size:12px;", "Check the tank pressure transducer connection. This is not an overpressure and no valve was moved." }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tank_sensor_fault_tests {
+    #[test]
+    fn sensor_fault_is_shown_only_when_reported() {
+        assert_eq!(super::tank_sensor_fault(&serde_json::json!({"latched":false})), None);
+        assert_eq!(super::tank_sensor_fault(&serde_json::json!({"sensor":{"fault":false,"message":null}})), None);
+        let shown = super::tank_sensor_fault(&serde_json::json!({"sensor":{"fault":true,"settling":true,
+            "message":"Tank pressure sensor implausible or not connected: valve-board reading jumped 0 -> 1038 psi in 20 ms."}})).unwrap();
+        assert!(shown.starts_with("Tank pressure sensor implausible or not connected") && shown.contains("settling"), "{shown}");
+        let board = super::tank_sensor_fault(&serde_json::json!({"sensor":{"fault":true,"settling":false,
+            "message":"Valve Board: tank pressure sensor stale; overpressure protection has no reading."}})).unwrap();
+        assert!(!board.contains("settling"));
     }
 }
 

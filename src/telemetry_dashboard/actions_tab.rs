@@ -890,6 +890,7 @@ pub fn ActionsTab(
                                             detail: operational_status.read()["overpressure"]["message"].as_str().unwrap_or_default().to_string(),
                                         }
                                     }
+                                    super::gse_panel::TankSensorFault { detail: super::gse_panel::tank_sensor_fault(&operational_status.read()["overpressure"]).unwrap_or_default() }
                                     if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
                                     super::gse_panel::InfoNote {summary:"Before the valve test",paragraphs:vec!["Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test.".into()]}
                                     label {input {r#type:"checkbox",checked:self_test_confirmation.read().confirmed(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||self_test_confirmation.read().busy()||self_test_confirmation.read().exhausted()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:{let self_test_alive=self_test_alive.clone();move |event| {
