@@ -217,6 +217,13 @@ fn operation_view(operation: &Operation) -> Element {
         p{"SDK acceptance alone is not device confirmation."}
     }}
 }
+/// "Resync AB to NitrousFill" for a resync; the generic title otherwise.
+fn confirm_title(challenge: &Challenge) -> String {
+    match (challenge.action.as_str(), challenge.targets.as_slice(), challenge.resync_target_label.as_deref()) {
+        ("resync", [board], Some(label)) => format!("Resync {board} to {label}"),
+        _ => "Confirm operator recovery action".into(),
+    }
+}
 fn challenge_scope_view(challenge: &Challenge) -> Element {
     rsx! {div{class:"gs26-recovery-confirm-scope",
                     if challenge.action=="reset_startup" && challenge.global_startup_best_effort==Some(true) {
@@ -229,6 +236,7 @@ fn challenge_scope_view(challenge: &Challenge) -> Element {
                     }
                     p{"Physical valve position is not measured by command-register readbacks."}
                     if challenge.action=="reset_startup" {p{"The reset request asks for VB vent/dump OPEN, pilot/supplies/igniter OFF and stepper asleep. Confirm the area is safe. A best-effort request does not prove unselected outputs changed."}}
+                    if challenge.action=="resync" {p{strong{"No outputs move. "}"Resync sets only the board's state machine and phase. Valves, servos, supplies, igniter and stepper stay exactly as they are; command any output explicitly afterwards."}}
     }}
 }
 fn begin_prepare(
@@ -503,7 +511,11 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
                                     // abort recovery is "Review recovery…" or Reset all boards.
                                     if board.capabilities.resync == Some(true) {
                                     button{disabled:!connected||controls_busy||!permitted||resync_reason.is_some(),title:resync_reason.clone().unwrap_or_default(),
-                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("resync".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},"Resync…"}
+                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("resync".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},
+                                        {status.resync_target_label.as_deref().map_or("Resync…".to_string(),|label|format!("Resync to {label}…"))}}
+                                    if let Some(reason)=resync_reason.clone() {
+                                        span{class:"gs26-resync-unavailable",style:"flex-basis:100%;font-size:0.85rem;line-height:1.4;overflow-wrap:anywhere;","Resync unavailable: {reason}"}
+                                    }
                                     }
     }}
 }
@@ -701,7 +713,7 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
             div{style:"position:fixed;inset:0;z-index:200000;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
                 onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape if !*busy.peek()=>{event.prevent_default();pending.set(None);},Key::Tab=>{event.prevent_default();cycle_modal_focus("gs26-recovery-confirm",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
                 div{id:"gs26-recovery-confirm",role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,960px);height:min(86dvh,860px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:12px;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;",
-                    h2{id:"board-recovery-confirm-title","Confirm operator recovery action"}
+                    h2{id:"board-recovery-confirm-title",{confirm_title(&dialog.challenge)}}
                     div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
                         p{"{dialog.challenge.summary}"}
                         {challenge_scope_view(&dialog.challenge)}
@@ -774,7 +786,7 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                                 }
                                 busy.set(false);
                             });
-                        },"Confirm recovery action"
+                        },{if dialog.challenge.action=="resync" {"Confirm resync"} else {"Confirm recovery action"}}
                     }
                 }
             }
@@ -804,6 +816,25 @@ mod tests {
         assert!(!same_reviewed_intent(&reviewed, &other));
         let mut other = fresh; other.backend_instance = "restarted".into();
         assert!(!same_reviewed_intent(&reviewed, &other));
+    }
+    fn resync_challenge() -> Challenge {
+        serde_json::from_value(serde_json::json!({"ticket":"a","backend_instance":"b","principal_context":"p","reset_epoch":"e",
+            "expires_in_ms":5000,"action":"resync","targets":["AB"],"summary":"Resync AB to NitrousFill.","confirmation":"RESYNC AB TO NITROUSFILL",
+            "resync_target_state":5,"resync_target_label":"NitrousFill","outputs_unchanged":true})).unwrap()
+    }
+    fn resync_scope() -> Element { challenge_scope_view(&resync_challenge()) }
+    #[test]
+    fn resync_review_names_board_and_phase_and_says_no_outputs_move() {
+        assert_eq!(confirm_title(&resync_challenge()), "Resync AB to NitrousFill");
+        assert_eq!(confirm_title(&reviewed_challenge()), "Confirm operator recovery action");
+        let html = render(resync_scope);
+        assert!(html.contains("No outputs move."), "{html}");
+        assert!(html.contains("command any output explicitly"));
+        // A re-prepared ticket for another phase is a different intent.
+        let mut moved = resync_challenge();
+        moved.ticket = "new".into();
+        moved.confirmation = "RESYNC AB TO ARMED".into();
+        assert!(!same_reviewed_intent(&resync_challenge(), &moved));
     }
     #[cfg(not(target_arch = "wasm32"))]
     mod refresh_native_tests { include!("board_recovery_refresh_native_tests.rs"); }

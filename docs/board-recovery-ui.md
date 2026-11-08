@@ -12,8 +12,8 @@ An operator Query requires the current board's advertised dedicated recovery
 endpoint and explicit query capability. Legacy/unknown endpoints remain disabled.
 SD retry remains a separate explicit operator action.
 
-Recover Abort and Resync require an advertised capability, a fresh two-second
-board readback and safe GS Startup/Idle/Aborted. Reset ALL to Startup additionally
+Recover Abort requires an advertised capability, a fresh two-second board
+readback and safe GS Startup/Idle/Aborted. Reset ALL to Startup additionally
 requires all seven boards' fresh boot/epoch/nonce identities and explicit
 `capabilities.reset_startup == true`; query or resync support alone is insufficient.
 Unsupported boards are listed and prevent a misleading global success claim.
@@ -21,6 +21,21 @@ Reset ALL cancels queued automation, turns AB supplies and igniter OFF, puts its
 stepper to sleep, turns the VB pilot OFF and restores vent/dump OPEN. The in-app
 confirmation explains this movement. It preserves network power, clock and
 calibration. No control uses `window.confirm` or a native JavaScript dialog.
+
+**Resync** appears only on a board whose readback advertises it
+(`capabilities.resync == true`, currently the Actuator and Valve Boards). The
+button reads "Resync to <phase>…". It sets the board's state machine and phase
+to the station's current phase without resetting it to Idle, and clears a
+latched board Abort. It is allowed only in the fill phases and Armed. When it
+is unavailable, the server's plain-language reason (`resync_blocked_reason`)
+is shown as text under the buttons, for example a latched tank overpressure,
+outputs that do not read safe, or "use Review recovery" in Idle. The review
+dialog is titled "Resync <board> to <phase>", says that no outputs move, and
+types the server phrase (`RESYNC AB TO NITROUSFILL`). It is accepted only when
+the ticket's phase matches the station's current phase and carries
+`outputs_unchanged: true`. Confirm re-prepares like every recovery action,
+so a station that changed phase is refused rather than resynced to the old
+phase. See GroundStation26 `docs/backend/board-resync.md`.
 
 An operator first prepares a server-owned 30-second ticket. The DOM dialog shows
 the exact targets, summary and confirmation phrase. Cancel sends no confirmation.

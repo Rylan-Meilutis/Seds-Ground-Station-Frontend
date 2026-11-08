@@ -194,6 +194,8 @@ pub(super) struct Board {
     pub commissioning_required: bool,
     pub identity_kind: String,
     pub first_uncertainty_reconcilable: bool,
+    /// Server's plain-language reason Resync is unavailable for this board.
+    pub resync_blocked_reason: Option<String>,
 }
 fn hex(value: &str, length: usize) -> bool {
     value.len() == length
@@ -291,6 +293,11 @@ pub(super) struct Status {
     /// Server's plain-language reason Reset ALL is not permitted right now.
     #[serde(default)]
     pub reset_startup_blocked_reason: Option<String>,
+    /// Station phase a Resync would set (fill phases and Armed only).
+    #[serde(default)]
+    pub resync_target_state: Option<u8>,
+    #[serde(default)]
+    pub resync_target_label: Option<String>,
 }
 impl Status {
     pub fn valid(&self) -> bool {
@@ -372,6 +379,9 @@ impl Status {
         action: &str,
         elapsed: u64,
     ) -> Option<String> {
+        if action == "resync" {
+            return self.resync_reason(board);
+        }
         if action != "recover_abort" {
             return self.board_reason(board, action, elapsed);
         }
@@ -391,6 +401,29 @@ impl Status {
             !recovery.publication_acknowledged && recovery.targets.iter().any(|id| id != &board.id)
         }) {
             return Some("Finish recovery of all previously selected boards first.".into());
+        }
+        None
+    }
+    /// Resync has its own window (fill phases and Armed), so it does not use the
+    /// Startup/Idle/Aborted recovery permission. PREPARE takes fresh proof.
+    pub fn resync_reason(&self, board: &Board) -> Option<String> {
+        if !self.valid() {
+            return Some("Resync is not permitted by this server/session.".into());
+        }
+        if board.capabilities.resync != Some(true) {
+            return Some("This board's firmware does not support Resync.".into());
+        }
+        if let Some(reason) = board.resync_blocked_reason.as_deref().filter(|r| !r.trim().is_empty()) {
+            return Some(reason.to_string());
+        }
+        if self.resync_target_state.is_none_or(|state| !(2..=6).contains(&state)) {
+            return Some("Resync is allowed only in the fill phases and Armed.".into());
+        }
+        if !board.query_allowed() {
+            return Some("The board's recovery endpoint is not verified.".into());
+        }
+        if self.mutating_pending() {
+            return Some("Another operation is pending.".into());
         }
         None
     }
@@ -464,6 +497,12 @@ pub(super) struct Challenge {
     pub required_proof_boards: Option<Vec<String>>,
     #[serde(default)]
     pub unselected_board_verification: Option<String>,
+    #[serde(default)]
+    pub resync_target_state: Option<u8>,
+    #[serde(default)]
+    pub resync_target_label: Option<String>,
+    #[serde(default)]
+    pub outputs_unchanged: Option<bool>,
 }
 impl Challenge {
     fn identity_matches(&self, status: &Status) -> bool {
@@ -539,7 +578,23 @@ impl Challenge {
             {
                 format!("RECOVER {id}")
             }
-            ("resync", Some(id), None) if self.targets == [id] => format!("RESYNC {id}"),
+            // The phrase names the board and the phase frozen at PREPARE; the
+            // ticket must still match the station's current phase and promise
+            // that no outputs move.
+            ("resync", Some(id), None)
+                if self.targets == [id]
+                    && self.outputs_unchanged == Some(true)
+                    && self.resync_target_state.is_some()
+                    && self.resync_target_state == status.resync_target_state =>
+            {
+                match self.resync_target_label.as_deref() {
+                    Some(label) if !label.is_empty() => {
+                        return self.confirmation == format!("RESYNC {id} TO {}", label.to_ascii_uppercase())
+                            && status.board(id).is_some();
+                    }
+                    _ => return false,
+                }
+            }
             ("reset_startup", None, None)
                 if self.targets.len() == 7
                     && BOARD_IDS.iter().all(|id| {
@@ -660,6 +715,52 @@ mod tests {
         for id in ["GS", "GW", "DAQB", "", "fc", "unknown"] {
             assert!(targeted_recovery_label(id).is_none());
         }
+    }
+
+    /// Resync follows the server's own window and reason, not the Startup/Idle/
+    /// Aborted recovery permission, and accepts only a phrase naming the board
+    /// and the frozen phase with the no-output promise.
+    #[test]
+    fn resync_uses_server_reason_and_phase_bound_phrase() {
+        let mut s = all_boards();
+        s.flight_state = Some(5);
+        s.permissions.recover = false;
+        s.resync_target_state = Some(5);
+        s.resync_target_label = Some("NitrousFill".into());
+        let ab = s.board("AB").unwrap().clone();
+        assert_eq!(s.prepare_board_reason(&ab, "resync", 0), None);
+        let mut blocked = ab.clone();
+        blocked.resync_blocked_reason = Some("A tank overpressure is latched; use Review recovery or Reset all boards.".into());
+        assert_eq!(s.prepare_board_reason(&blocked, "resync", 0).as_deref(),
+            Some("A tank overpressure is latched; use Review recovery or Reset all boards."));
+        let mut unsupported = ab.clone();
+        unsupported.capabilities.resync = Some(false);
+        assert!(s.prepare_board_reason(&unsupported, "resync", 0).unwrap().contains("does not support Resync"));
+        let mut idle = s.clone();
+        idle.resync_target_state = None;
+        assert!(idle.prepare_board_reason(&ab, "resync", 0).unwrap().contains("fill phases and Armed"));
+
+        let mut ticket = challenge();
+        ticket.action = "resync".into();
+        ticket.targets = vec!["AB".into()];
+        ticket.confirmation = "RESYNC AB TO NITROUSFILL".into();
+        ticket.resync_target_state = Some(5);
+        ticket.resync_target_label = Some("NitrousFill".into());
+        ticket.outputs_unchanged = Some(true);
+        let identity = s.confirmation.as_mut().unwrap();
+        identity.action = ticket.action.clone();
+        identity.targets = ticket.targets.clone();
+        assert!(ticket.matches(&s, "resync", Some("AB"), None));
+        let mut other = ticket.clone();
+        other.confirmation = "RESYNC AB".into();
+        assert!(!other.matches(&s, "resync", Some("AB"), None), "phrase must name the phase");
+        let mut other = ticket.clone();
+        other.outputs_unchanged = None;
+        assert!(!other.matches(&s, "resync", Some("AB"), None), "no-output promise required");
+        let mut moved = s.clone();
+        moved.resync_target_state = Some(6);
+        assert!(!ticket.matches(&moved, "resync", Some("AB"), None), "station left the reviewed phase");
+        assert!(!ticket.matches(&s, "resync", Some("VB"), None));
     }
 
     #[test]
