@@ -1316,6 +1316,8 @@ def _write_linux_appstream_metadata(frontend_dir: Path, pkg_root: Path, desktop_
     ET.SubElement(component, "url", {"type": "homepage"}).text = project_url
     ET.SubElement(component, "launchable", {"type": "desktop-id"}).text = desktop_name
     ET.SubElement(ET.SubElement(component, "provides"), "binary").text = LINUX_PACKAGE_NAME
+    ET.SubElement(ET.SubElement(component, "developer", {"id": "edu.buffalo.seds"}), "name").text = "UB SEDS"
+    ET.SubElement(component, "content_rating", {"type": "oars-1.1"})
     ET.indent(component)
     metadata = pkg_root / "usr" / "share" / "metainfo" / (identifier + ".appdata.xml")
     metadata.parent.mkdir(parents=True, exist_ok=True)
@@ -1916,6 +1918,8 @@ def build_manual_appimage(
 
         env = os.environ.copy()
         env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
+        # Skip the online AppStream lint so offline builds still package.
+        env.setdefault("LDAI_NO_APPSTREAM", "1")
         desktop_file = appdir / "usr" / "share" / "applications" / _linux_desktop_filename(frontend_dir, True)
         icon_file = appdir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / f"{LINUX_PACKAGE_NAME}.png"
         if not desktop_file.is_file() or not icon_file.is_file():
@@ -5450,6 +5454,9 @@ def build_frontend(
             env["DIOXUS_PRODUCT_NAME"] = LINUX_PACKAGE_NAME
             env["DIOXUS_APP_TITLE"] = WINDOWS_APP_NAME
             env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
+            # AppStream validation fetches the homepage URL and fails offline
+            # (e.g. a Pi build with no internet). The metadata still ships.
+            env.setdefault("LDAI_NO_APPSTREAM", "1")
 
         ensured_wasm_bindgen = _ensure_wasm_bindgen_cli(frontend_dir, host_tool_env)
         if env is not None and ensured_wasm_bindgen is not None:
