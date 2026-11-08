@@ -23,6 +23,21 @@ enum WsInMsg {
     FillTargets(FillTargetsConfig),
     RecordingStatus(RecordingStatusMsg),
     NetworkTime(NetworkTimeMsg),
+    StationModeChanged(StationModeChangedMsg),
+}
+
+/// The backend switched operating mode inside its running process. A fresh
+/// `ActionPolicy` frame follows; the layout and mode status are re-read.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+struct StationModeChangedMsg {
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    policy_epoch: Option<String>,
+    #[serde(default)]
+    layout_revision: Option<u64>,
 }
 
 #[derive(Deserialize, Debug)]

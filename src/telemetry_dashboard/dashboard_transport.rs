@@ -2135,6 +2135,10 @@ fn handle_ws_message(
             set_signal_if_changed(&mut action_policy, policy);
         }
 
+        WsInMsg::StationModeChanged(change) => {
+            note_station_mode_changed(change);
+        }
+
         WsInMsg::FillTargets(targets) => {
             set_signal_if_changed(&mut fill_targets, Some(targets));
         }

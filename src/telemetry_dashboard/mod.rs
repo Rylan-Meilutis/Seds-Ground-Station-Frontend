@@ -1401,9 +1401,14 @@ fn refresh_layout_after_ws_reconnect(
 
     layout_error.set(None);
     layout_error_dismissed.set(None);
+    let generation = next_layout_generation();
 
     spawn(async move {
-        match http_get_json::<LayoutConfig>("/api/layout").await {
+        let result = http_get_json::<LayoutConfig>("/api/layout").await;
+        if !layout_generation_current(generation) {
+            return;
+        }
+        match result {
             Ok(layout) => {
                 if let Err(err) = layout.validate() {
                     log!("[layout] reconnect validation failed: {err}");

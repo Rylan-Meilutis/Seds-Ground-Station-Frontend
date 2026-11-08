@@ -63,9 +63,6 @@ pub(super) fn owner(alive: Arc<AtomicBool>) -> Result<Rc<ExportOwner>, String> {
 pub(super) fn view_key() -> String {
     VIEW_KEY.read().clone()
 }
-pub(super) fn current_view_key() -> String {
-    key_for(&OBSERVED.peek(), super::monotonic_now_ms())
-}
 fn key_for(observed: &Option<Observation>, now: f64) -> String {
     observed.as_ref().map_or_else(
         || {

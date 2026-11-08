@@ -726,20 +726,19 @@ fn TelemetryDashboardInner() -> Element {
         });
     }
 
-    // A successful in-place policy/domain change refreshes actual backend layout
-    // and policy without restarting auth, websocket, clocks or recording IDs.
-    {
-        let mut displayed_runtime_epoch=use_signal(||None::<String>);
-        use_effect(move||{
-            let observed=station_mode_observer::OBSERVED.read().clone();
-            let Some(observed)=observed.filter(|o|o.current(monotonic_now_ms())&&o.value.admissions_open) else{return;};
-            let epoch=observed.value.policy_epoch.clone();
-            if *displayed_runtime_epoch.peek()==epoch{return;}
-            let initial=displayed_runtime_epoch.peek().is_none();
-            if initial{displayed_runtime_epoch.set(epoch);return;}
-            refresh_layout_after_runtime_mode(RuntimeLayoutSignals{layout_config,layout_loading,layout_error,layout_error_dismissed,layout_request_base,calibration_has_sensors,calibration_request_base,action_policy},displayed_runtime_epoch,epoch);
-        });
-    }
+    // A successful in-place policy/domain change (announced over the websocket
+    // or seen as a new observed epoch) refreshes actual backend layout and
+    // policy without restarting auth, websocket, clocks or recording IDs.
+    use_runtime_mode_layout_refresh(RuntimeLayoutSignals {
+        layout_config,
+        layout_loading,
+        layout_error,
+        layout_error_dismissed,
+        layout_request_base,
+        calibration_has_sensors,
+        calibration_request_base,
+        action_policy,
+    });
 
     // A mode change on the primary changes the recovery UI's action layout,
     // while every live-operation permission remains enforced by the backend.
@@ -802,8 +801,15 @@ fn TelemetryDashboardInner() -> Element {
                 layout_loading.set(false);
             }
 
+            let generation = next_layout_generation();
             spawn(async move {
-                match http_get_json::<LayoutConfig>("/api/layout").await {
+                let result = http_get_json::<LayoutConfig>("/api/layout").await;
+                if !layout_generation_current(generation) {
+                    // A newer load (for example after a runtime mode switch)
+                    // owns the displayed layout now.
+                    return;
+                }
+                match result {
                     Ok(layout) => {
                         if let Err(err) = layout.validate() {
                             log!("[layout] validation failed: {err}");
@@ -846,7 +852,10 @@ fn TelemetryDashboardInner() -> Element {
                         gloo_timers::future::TimeoutFuture::new(delay_ms as u32).await;
                         #[cfg(not(target_arch = "wasm32"))]
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                        if UrlConfig::base_http() == base && *layout_request_base.peek() == base {
+                        if UrlConfig::base_http() == base
+                            && *layout_request_base.peek() == base
+                            && layout_generation_current(generation)
+                        {
                             layout_request_base.set(String::new());
                         }
                     }
@@ -2414,8 +2423,13 @@ fn TelemetryDashboardInner() -> Element {
         let mut layout_error = layout_error;
         let mut layout_error_dismissed = layout_error_dismissed;
         let mut layout_request_base = layout_request_base;
+        let generation = next_layout_generation();
         spawn(async move {
-            match http_get_json::<LayoutConfig>("/api/layout").await {
+            let result = http_get_json::<LayoutConfig>("/api/layout").await;
+            if !layout_generation_current(generation) {
+                return;
+            }
+            match result {
                 Ok(layout) => {
                     if let Err(err) = layout.validate() {
                         log!("[layout] validation failed: {err}");
