@@ -159,7 +159,12 @@ pub(super) fn StationPairingAdmin() -> Element {
     let peer_name = other(&current.role);
     let exchange = current.exchange.clone();
     rsx! {
-        section {class:"station-positions-admin station-pairing-admin","aria-label":"Station pairing",
+        section {class:"station-positions-admin station-pairing-admin","aria-label":"Station pairing",id:"gs26-station-pairing",
+            onmounted:move |event| async move {
+                if super::settings_navigation::take_station_pairing_scroll() {
+                    let _ = event.data().scroll_to(ScrollBehavior::Smooth).await;
+                }
+            },
             h2 {"Station pairing"}
             p {strong {"{headline}"}}
             p {class:"station-location-hint","{detail}"}

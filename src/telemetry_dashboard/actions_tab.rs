@@ -306,6 +306,16 @@ fn cosmetic_confirmed(cmd: &str, requested: Option<bool>, actuated: Option<bool>
     requested.zip(actuated).and_then(|(requested, actuated)| (requested == actuated).then_some(actuated))
 }
 
+/// Owner wording for underglow/buzzer: (secondary line, badge). A backend
+/// note (owner board unreachable) replaces the bare "unconfirmed" text.
+fn cosmetic_owner_labels<'a>(confirmed: bool, owner_note: Option<&'a str>) -> (&'a str, &'static str) {
+    match (confirmed, owner_note.map(str::trim).filter(|note| !note.is_empty())) {
+        (true, _) => ("owner confirmed", "Unconfirmed"),
+        (false, Some(note)) => (note, "Owner offline"),
+        (false, None) => ("owner unconfirmed", "Unconfirmed"),
+    }
+}
+
 fn physical_output_action(cmd: &str) -> bool {
     matches!(
         cmd,
@@ -866,6 +876,9 @@ pub fn ActionsTab(
                 }
                 if let Some(status) = super::COMMAND_PROXY_STATUS.read().as_ref().filter(|status| !status.available) {
                     p {role:"status", "Primary command control unavailable: {status.reason}"}
+                    if super::settings_navigation::proxy_needs_pairing(status.paired, &status.reason) {
+                        super::settings_navigation::StationPairingShortcut {}
+                    }
                 }
                 if let Some(message) = super::COMMAND_PROXY_MESSAGE.read().clone() {
                     p {role:"status", "{message}"}
@@ -1032,10 +1045,11 @@ pub fn ActionsTab(
                                                 let unconfirmed = (physical_output_action(&action.cmd) || cosmetic_output_action(&action.cmd)) && actuated.is_none();
                                                 let requested = cosmetic_requested(&action.cmd, control.as_ref().and_then(|c| c.requested), control.as_ref().and_then(|c| c.actuated));
                                                 let requested_label = match requested { Some(true) => "Requested: On", Some(false) => "Requested: Off", None => "Requested: unknown" };
-                                                let owner_label = if actuated.is_some() { "owner confirmed" } else { "owner unconfirmed" };
+                                                let owner_note = control.as_ref().filter(|_| cosmetic_output_action(&action.cmd)).and_then(|c| c.owner_note.as_deref());
+                                                let (owner_label, unconfirmed_badge) = cosmetic_owner_labels(actuated.is_some(), owner_note);
                                                 let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
                                                 let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
-                                                let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { "Unconfirmed" } else { "Disabled" };
+                                                let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { unconfirmed_badge } else { "Disabled" };
                                                 let command_source = format!("action:{}", action.cmd);
                                                 rsx! {
                                                     button {
@@ -1118,7 +1132,7 @@ pub fn ActionsTab(
                                                         span { class:"gs26-action-copy",style: "min-width:0; flex:1 1 auto;",
                                                             span {title:"{action.label}",style:if cosmetic_output_action(&action.cmd) {"display:block;white-space:nowrap;line-height:1.25;"} else {"display:block;overflow-wrap:break-word;white-space:normal;line-height:1.25;"}, "{action.label}"}
                                                             if cosmetic_output_action(&action.cmd) {
-                                                                span {style:"display:block;font-size:11px;font-weight:400;line-height:1.3;", "{requested_label}; {owner_label}"}
+                                                                span {title:"{requested_label}; {owner_label}",style:"display:block;font-size:11px;font-weight:400;line-height:1.3;white-space:normal;overflow-wrap:anywhere;", "{requested_label}; {owner_label}"}
                                                             }
                                                             if action.group == "GSE sequence actions" {
                                                                 span {title:disabled_reason.unwrap_or(""),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;", "{reason_text}"}
@@ -1839,5 +1853,31 @@ mod disabled_reason_tests {
         control.enabled=false;
         control.disabled_reason=None;
         assert!(backend_disabled_reason(&control).is_none());
+    }
+}
+
+#[cfg(test)]
+mod owner_note_tests {
+    use super::*;
+    #[test]
+    fn unreachable_owner_note_replaces_bare_unconfirmed() {
+        let note = "RF Board not reachable; applies when it reconnects";
+        assert_eq!(cosmetic_owner_labels(false, Some(note)), (note, "Owner offline"));
+        assert_eq!(cosmetic_owner_labels(false, None), ("owner unconfirmed", "Unconfirmed"));
+        assert_eq!(cosmetic_owner_labels(false, Some("  ")), ("owner unconfirmed", "Unconfirmed"));
+        // A confirmed owner never shows a stale note.
+        assert_eq!(cosmetic_owner_labels(true, Some(note)).0, "owner confirmed");
+    }
+    #[test]
+    fn owner_note_deserializes_and_defaults_to_none() {
+        let control: super::super::ActionControl = serde_json::from_value(serde_json::json!({
+            "cmd":"ToggleAvBayUnderglow","enabled":true,"blink":"none","actuated":null,"requested":true,
+            "owner_note":"RF Board not reachable; applies when it reconnects"
+        })).unwrap();
+        assert_eq!(control.owner_note.as_deref(), Some("RF Board not reachable; applies when it reconnects"));
+        let legacy: super::super::ActionControl = serde_json::from_value(serde_json::json!({
+            "cmd":"ToggleAvBayUnderglow","enabled":true,"blink":"none","actuated":null
+        })).unwrap();
+        assert!(legacy.owner_note.is_none());
     }
 }

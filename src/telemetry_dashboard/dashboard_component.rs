@@ -270,6 +270,16 @@ fn TelemetryDashboardInner() -> Element {
             );
         }
     });
+    let mut applied_pairing_request = use_signal(|| 0_u64);
+    use_effect(move || {
+        let request = *settings_navigation::STATION_PAIRING_REQUEST.read();
+        if request != 0 && request != *applied_pairing_request.peek() {
+            applied_pairing_request.set(request);
+            let mut overlay = show_settings_overlay;
+            overlay.set(false);
+            admin_open.set(true);
+        }
+    });
     // Match the actual editor branch, including owner/permission retirement.
     // This releases only a removed editor's local lock, never a pending POST.
     let calibration_editor_mounted = *active_main_tab.read() == MainTab::Calibration

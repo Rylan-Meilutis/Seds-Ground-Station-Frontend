@@ -109,6 +109,10 @@ fn StationSettingsBody(
             },
             StationSection::Sequences=>rsx! {super::gse_panel::GseConfiguration {abort_only_mode,theme:theme.clone()}},
             StationSection::Network=>rsx! {
+                section {style:"display:grid;gap:8px;min-width:0;",h3 {"Station pairing"}
+                    p {style:"margin:0;color:{theme.text_muted};","Pair the RRLS with the primary for authenticated primary commands and relay control."}
+                    settings_navigation::StationPairingShortcut {}
+                }
                 if crate::auth::can_view_data() {super::paired_settings::PairedSettings {theme:theme.clone()}}
                 section {style:"display:grid;gap:12px;min-width:0;",h3 {"Station clocks"}
                     super::actions_tab::NetworkUtcControls {}
@@ -117,7 +121,9 @@ fn StationSettingsBody(
                 }
             },
             StationSection::Safety=>rsx! {super::about_safety::AboutSafety {}},
-            StationSection::Administration=>rsx! {section {h3 {"Administration"}button {r#type:"button",onclick:move |_|on_manage_users.call(()),"Manage users & access"}}},
+            StationSection::Administration=>rsx! {section {h3 {"Administration"}button {r#type:"button",onclick:move |_|on_manage_users.call(()),"Manage users & access"}
+                p {style:"color:{theme.text_muted};","Station pairing (RRLS and primary) is in the administration console."}
+                settings_navigation::StationPairingShortcut {}}},
         }
     }
 }

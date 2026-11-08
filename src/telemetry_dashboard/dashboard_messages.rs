@@ -83,6 +83,11 @@ pub struct ActionControl {
     /// Requested setting, separate from owner-confirmed physical state.
     #[serde(default)]
     pub requested: Option<bool>,
+    /// Why an owner-confirmed output is still unconfirmed when its owner
+    /// board is unreachable, e.g. "RF Board not reachable; applies when it
+    /// reconnects". Absent while the owner is reachable.
+    #[serde(default)]
+    pub owner_note: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]

@@ -72,6 +72,63 @@ pub(super) fn open_calibration() {
     let request = (*CALIBRATION_REQUEST.peek()).saturating_add(1);
     *CALIBRATION_REQUEST.write() = request;
 }
+/// Path shown to accounts that cannot open the admin-only pairing section.
+pub(super) const STATION_PAIRING_PATH: &str =
+    "Settings \u{2192} Station \u{2192} Administration \u{2192} Station pairing";
+/// Bumped to open Administration with Station pairing scrolled into view.
+pub(super) static STATION_PAIRING_REQUEST: GlobalSignal<u64> = Signal::global(|| 0);
+static STATION_PAIRING_SCROLL: GlobalSignal<bool> = Signal::global(|| false);
+pub(super) fn open_station_pairing() {
+    let request = (*STATION_PAIRING_REQUEST.peek()).saturating_add(1);
+    *STATION_PAIRING_SCROLL.write() = true;
+    *STATION_PAIRING_REQUEST.write() = request;
+}
+/// The pairing section consumes one pending scroll when it mounts.
+pub(super) fn take_station_pairing_scroll() -> bool {
+    let pending = *STATION_PAIRING_SCROLL.peek();
+    if pending {
+        *STATION_PAIRING_SCROLL.write() = false;
+    }
+    pending
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StationPairingLink {
+    /// Administrators get a button that opens the section.
+    Open,
+    /// Everyone else gets the path and a pointer to an administrator.
+    AskAdministrator,
+}
+pub(super) fn station_pairing_link(admin: bool) -> StationPairingLink {
+    if admin {
+        StationPairingLink::Open
+    } else {
+        StationPairingLink::AskAdministrator
+    }
+}
+/// RRLS primary-control messages that a pairing fixes.
+pub(super) fn proxy_needs_pairing(paired: bool, reason: &str) -> bool {
+    !paired || reason.to_ascii_lowercase().contains("pair")
+}
+fn current_account_is_admin() -> bool {
+    crate::auth::current_status()
+        .roles
+        .iter()
+        .any(|role| role == "admin")
+}
+/// "Open Station pairing" for administrators; the menu path otherwise.
+#[component]
+pub(super) fn StationPairingShortcut() -> Element {
+    match station_pairing_link(current_account_is_admin()) {
+        StationPairingLink::Open => rsx! {
+            button {r#type:"button",class:"gs26-station-pairing-link",style:"min-height:44px;padding:8px 14px;border-radius:10px;font:inherit;",
+                onclick:move |_|open_station_pairing(),"Open Station pairing"}
+        },
+        StationPairingLink::AskAdministrator => rsx! {
+            p {class:"gs26-station-pairing-hint",style:"margin:4px 0 0;font-size:13px;",
+                "An administrator can pair this station in {STATION_PAIRING_PATH}."}
+        },
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) enum InputSelectionStatus {
     #[default]
@@ -408,5 +465,36 @@ mod input_epoch_tests {
         assert_eq!(super::next_input_epoch(0), 1);
         assert_eq!(super::next_input_epoch(u64::MAX - 1), u64::MAX);
         assert_eq!(super::next_input_epoch(u64::MAX), u64::MAX);
+    }
+}
+
+#[cfg(test)]
+mod station_pairing_link_tests {
+    use super::*;
+    #[test]
+    fn only_administrators_get_the_direct_pairing_button() {
+        assert_eq!(station_pairing_link(true), StationPairingLink::Open);
+        assert_eq!(station_pairing_link(false), StationPairingLink::AskAdministrator);
+        assert!(STATION_PAIRING_PATH.ends_with("Administration \u{2192} Station pairing"));
+    }
+    #[test]
+    fn rrls_pairing_messages_offer_the_shortcut() {
+        let reason = "Pair this RRLS with the primary (Administration > Station pairing) for authenticated primary commands. Standalone hardware authority is unavailable.";
+        assert!(proxy_needs_pairing(true, reason));
+        assert!(proxy_needs_pairing(false, "Paired radio transport is unavailable"));
+        assert!(proxy_needs_pairing(true, "Station pairing is invalid; primary commands are disabled."));
+        assert!(!proxy_needs_pairing(true, "Primary is busy"));
+    }
+    #[test]
+    fn open_request_scrolls_once() {
+        let mut vdom = VirtualDom::new(|| rsx! {});
+        vdom.rebuild_in_place();
+        vdom.in_runtime(|| {
+            let before = *STATION_PAIRING_REQUEST.peek();
+            open_station_pairing();
+            assert_eq!(*STATION_PAIRING_REQUEST.peek(), before + 1);
+            assert!(take_station_pairing_scroll());
+            assert!(!take_station_pairing_scroll());
+        });
     }
 }

@@ -243,6 +243,11 @@ pub fn ConnectionStatusTab(
                 simulated:topology.simulated,theme:theme.clone(),
             }
             button{r#type:"button",style:"min-height:44px;margin-top:14px;padding:8px 14px;border:1px solid {theme.border};border-radius:10px;background:{theme.button_background};color:{theme.text_primary};font:inherit;",onclick:move |_|diagnostics_open.set(true),"More network diagnostics"}
+            section {"aria-label":"Station pairing",style:"margin-top:14px;display:grid;gap:6px;min-width:0;",
+                h3 {style:"margin:0;color:{theme.text_secondary};font-size:1rem;","Station pairing"}
+                p {style:"margin:0;color:{theme.text_muted};font-size:13px;","RRLS relay and primary commands need the RRLS paired with the primary."}
+                super::settings_navigation::StationPairingShortcut {}
+            }
             if diagnostics_open(){
                 div{style:"position:fixed;inset:0;z-index:9997;padding:16px;background:#000a;display:flex;align-items:center;justify-content:center;box-sizing:border-box;",onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();diagnostics_open.set(false);},Key::Tab=>{event.prevent_default();super::board_recovery_panel::cycle_modal_focus("gs26-network-diagnostics",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
                     section{id:"gs26-network-diagnostics",role:"dialog","aria-modal":"true","aria-label":"Network diagnostics",style:"width:min(100%,1100px);height:min(88dvh,900px);max-height:100%;background:{theme.panel_background};color:{theme.text_primary};border:1px solid {theme.border};border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px;min-width:0;box-sizing:border-box;",
