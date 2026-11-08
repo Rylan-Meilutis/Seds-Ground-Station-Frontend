@@ -397,10 +397,8 @@ impl Status {
         if self.mutating_pending() {
             return Some("Another operation is pending.".into());
         }
-        if self.host_recovery.as_ref().is_some_and(|recovery| {
-            !recovery.publication_acknowledged && recovery.targets.iter().any(|id| id != &board.id)
-        }) {
-            return Some("Finish recovery of all previously selected boards first.".into());
+        if let Some(reason) = self.unfinished_others_reason(&board.id) {
+            return Some(reason);
         }
         None
     }
@@ -427,6 +425,28 @@ impl Status {
         }
         None
     }
+    /// Boards of an unfinished recovery that still need it. The server drops a
+    /// board from this list once a fresh verified readback shows it healthy.
+    pub fn unfinished_boards(&self) -> Vec<String> {
+        if !self.host_recovery.as_ref().is_some_and(|recovery| !recovery.publication_acknowledged) {
+            return Vec::new();
+        }
+        self.boards
+            .iter()
+            .filter(|board| board.recovery_reason.as_deref() == Some("unfinished_recovery"))
+            .map(|board| board.id.clone())
+            .collect()
+    }
+    /// A retry may leave out boards that already read back healthy, but not one
+    /// that still needs the unfinished recovery.
+    fn unfinished_others_reason(&self, board_id: &str) -> Option<String> {
+        let others = self
+            .unfinished_boards()
+            .into_iter()
+            .filter(|id| id != board_id)
+            .collect::<Vec<_>>();
+        (!others.is_empty()).then(|| format!("Finish the unfinished recovery of {} first, or use Reset all boards.", others.join(", ")))
+    }
     pub fn board_reason(&self, board: &Board, action: &str, elapsed: u64) -> Option<String> {
         if !self.valid() || !self.permissions.recover {
             return Some("Recovery is not permitted by this server/session.".into());
@@ -448,10 +468,8 @@ impl Status {
         if self.mutating_pending() {
             return Some("Another operation is pending.".into());
         }
-        if self.host_recovery.as_ref().is_some_and(|recovery| {
-            !recovery.publication_acknowledged && recovery.targets.iter().any(|id| id != &board.id)
-        }) {
-            return Some("Finish recovery of all previously selected boards first.".into());
+        if let Some(reason) = self.unfinished_others_reason(&board.id) {
+            return Some(reason);
         }
         None
     }
@@ -836,7 +854,9 @@ mod tests {
                         verified: false,
                         publication_acknowledged: false,
                         targets: vec!["AB".into(), "VB".into()],
-                    })
+                    });
+                    s.boards.iter_mut().find(|b| b.id == "VB").unwrap().recovery_reason =
+                        Some("unfinished_recovery".into());
                 }
                 _ => {
                     s.operation = Some(Operation {
@@ -1225,9 +1245,24 @@ mod tests {
             publication_acknowledged: false,
             targets: vec!["AB".into(), "VB".into()],
         });
+        // VB read back healthy since: the server no longer lists it, so AB
+        // alone may be retried.
         assert!(
             s.board_reason(s.board("AB").unwrap(), "recover_abort", 0)
-                .is_some()
+                .is_none(),
+            "a pending board that reads back healthy does not block"
+        );
+        s.boards.iter_mut().find(|b| b.id == "VB").unwrap().recovery_reason =
+            Some("unfinished_recovery".into());
+        assert_eq!(s.unfinished_boards(), vec!["VB".to_string()]);
+        assert!(
+            s.board_reason(s.board("AB").unwrap(), "recover_abort", 0)
+                .is_some_and(|reason| reason.contains("VB"))
+        );
+        assert!(
+            s.board_reason(s.board("VB").unwrap(), "recover_abort", 0)
+                .is_none(),
+            "the board that still needs recovery can be retried alone"
         );
         assert!(
             s.reset_reason(0).is_none(),

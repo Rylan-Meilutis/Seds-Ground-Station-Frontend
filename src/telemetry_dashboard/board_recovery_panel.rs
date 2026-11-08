@@ -682,7 +682,11 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                         }
                         if let Some(recovery)=status.host_recovery.as_ref(){
                             if !recovery.publication_acknowledged && (recovery.pending || recovery.verified){
-                                p{role:"status","Previous recovery is incomplete for {recovery.targets.join(\", \")}. Check board status and explicitly retry."}
+                                if status.unfinished_boards().is_empty(){
+                                    p{role:"status","The previous recovery did not finish, but every board of it now reads back healthy. Recover any one board or use Reset all boards to finish it."}
+                                }else{
+                                    p{role:"status","Previous recovery is incomplete for {status.unfinished_boards().join(\", \")}. Recover those boards or use Reset all boards."}
+                                }
                             }
                         }
                         if let Some(operation)=status.operation.as_ref(){{operation_view(operation)}}
