@@ -288,6 +288,9 @@ pub(super) struct Status {
     pub operation: Option<Operation>,
     pub confirmation: Option<ConfirmationIdentity>,
     pub host_recovery: Option<HostRecovery>,
+    /// Server's plain-language reason Reset ALL is not permitted right now.
+    #[serde(default)]
+    pub reset_startup_blocked_reason: Option<String>,
 }
 impl Status {
     pub fn valid(&self) -> bool {
@@ -318,8 +321,14 @@ impl Status {
             .unwrap_or("Unknown")
     }
     pub fn reset_reason(&self, elapsed: u64) -> Option<String> {
-        if !self.valid() || !self.permissions.reset_startup {
+        if !self.valid() {
             return Some("Reset ALL is not permitted by this server/session.".into());
+        }
+        if !self.permissions.reset_startup {
+            return Some(match self.reset_startup_blocked_reason.as_deref() {
+                Some(reason) if !reason.trim().is_empty() => format!("Reset all boards is blocked: {reason}"),
+                _ => "Reset ALL is not permitted by this server/session.".into(),
+            });
         }
         if self.mutating_pending() {
             return Some("Another operation is pending; wait for its actual result.".into());
