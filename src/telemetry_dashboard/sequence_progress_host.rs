@@ -30,9 +30,47 @@ impl StatusObservation {
                 .is_some_and(crate::auth::request_identity_is_current)
     }
 }
-pub(super) static HISTORY_OPEN: GlobalSignal<bool> = Signal::global(|| false);
-pub(super) fn open_history() {
-    *HISTORY_OPEN.write() = true;
+/// Recent sequence observations for this station, shown as a dashboard tab.
+#[component]
+pub(super) fn SequenceHistoryTab(mut state: Signal<Model>, mut open_result: Signal<Option<RunKey>>) -> Element {
+    let history = state
+        .read()
+        .history()
+        .into_iter()
+        .map(|(key, title, outcome, timestamp)| {
+            (format!("{}:{}:{}", key.backend_instance, key.reset_epoch, key.run_id), key, title, outcome, timestamp)
+        })
+        .collect::<Vec<_>>();
+    rsx! {
+        section {class:"gs26-sequence-history-tab", "aria-label":"Sequence history",
+            header {class:"gs-section-header",
+                h2 {"Sequence history"}
+                details {class:"gs-info", summary {"About"} p {"Recent observations in this session. This is not a permanent sequence archive."}}
+            }
+            if !auth::can_view_data() {
+                p {class:"gs-notice","Sequence history requires permission to view data."}
+            } else if history.is_empty() {
+                p {class:"gs-notice","No sequence observations are retained for this station."}
+            } else {
+                div {class:"gs26-sequence-history-list",
+                    for (identity,key,title,outcome,timestamp) in history {
+                        article {key:"{identity}",class:"gs-card gs26-sequence-history-item",
+                            div {
+                                strong {"{title}"}
+                                div {class:"gs26-sequence-history-meta",
+                                    span {class:"gs-badge","{super::sequence_progress_view::outcome_label(outcome)}"}
+                                    if let Some(timestamp)=timestamp { span {"Completed {super::format_timestamp_ms_local_datetime(timestamp)}"} }
+                                }
+                            }
+                            button {r#type:"button",class:"gs-btn",onclick:move |_|{if outcome.terminal(){open_result.set(Some(key.clone()));}else{state.write().restore(&key);}},
+                                if outcome.terminal(){"Open result"}else{"Open progress"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 fn now_ms() -> u64 {
     super::monotonic_now_ms().max(0.0) as u64
@@ -99,7 +137,6 @@ pub fn SequenceProgressHost(
                     transient_transport_error.set(false);
                     state.write().retire_source();
                     status.set(StatusObservation::default());
-                    *HISTORY_OPEN.write() = false;
                 }
                 if auth::can_view_data() {
                     let policy = super::station_policy_context::capture_current().ok();
@@ -266,7 +303,6 @@ pub fn SequenceProgressHost(
                     }
                 } else {
                     observed_policy.set(None);
-                    *HISTORY_OPEN.write() = false;
                     transient_transport_error.set(false);
                     state.write().unavailable = true;
                     cancel_api.set(None);
@@ -355,41 +391,8 @@ pub fn SequenceProgressHost(
     let panel_policy_key = super::station_mode_observer::view_key();
     let transient_transport_error = transient_transport_error();
     let result_error = state.read().result_error.clone();
-    let history = if *HISTORY_OPEN.read() {
-        state
-            .read()
-            .history()
-            .into_iter()
-            .map(|(key, title, outcome, timestamp)| {
-                (
-                    format!(
-                        "{}:{}:{}",
-                        key.backend_instance, key.reset_epoch, key.run_id
-                    ),
-                    key,
-                    title,
-                    outcome,
-                    timestamp,
-                )
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
     rsx! {
         div {class:"gs26-sequence-progress-host",
-            if *HISTORY_OPEN.read()&&auth::can_view_data(){
-                div{class:"gs26-sequence-history-overlay",style:"position:fixed;inset:0;z-index:6200;background:#000a;padding:16px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;",onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();*HISTORY_OPEN.write()=false;},Key::Tab=>{event.prevent_default();super::board_recovery_panel::cycle_modal_focus("gs26-sequence-history",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
-                    section{id:"gs26-sequence-history",role:"dialog","aria-modal":"true","aria-label":"Sequence history",style:"background:var(--gs26-panel-background,#12202e);color:var(--gs26-app-text,#e7eef6);border:1px solid #496079;border-radius:14px;padding:20px;width:min(100%,960px);height:min(86dvh,860px);max-height:100%;display:flex;flex-direction:column;gap:14px;box-sizing:border-box;",
-                        header{style:"display:flex;justify-content:space-between;align-items:center;gap:12px;",h2{style:"margin:0;","Sequence history"}button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|*HISTORY_OPEN.write()=false,"Close history"}}
-                        p{style:"margin:0;","Recent observations in this session. This is not a permanent sequence archive."}
-                        div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;display:grid;gap:10px;align-content:start;",
-                            if history.is_empty(){p{"No sequence observations are retained for this station."}}
-                            for (identity,key,title,outcome,timestamp) in history {article{key:"{identity}",style:"border:1px solid #496079;border-radius:10px;padding:12px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;",div{strong{"{title}"}p{style:"margin:4px 0;","{super::sequence_progress_view::outcome_label(outcome)}"}if let Some(timestamp)=timestamp{p{style:"margin:4px 0;","Reported completion: {super::format_timestamp_ms_local_datetime(timestamp)}"}}}button{r#type:"button",onclick:move |_|{if outcome.terminal(){open_result.set(Some(key.clone()));}else{state.write().restore(&key);}*HISTORY_OPEN.write()=false;},if outcome.terminal(){"Open result"}else{"Open progress"}}}}
-                        }
-                    }
-                }
-            }
             if let Some(error)=result_error {
                 div {class:"gs26-sequence-unknown",role:"alert",
                     p {"{error}"}

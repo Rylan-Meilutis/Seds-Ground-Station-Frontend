@@ -22,7 +22,7 @@ pub(super) fn close_after_mobile_selection(mut collapsed: Signal<bool>) {
 fn group(id: &str) -> &'static str {
     match id {
         "state" | "actions" | "mission" | "map" | "vehicle" | "checklists" => "Mission",
-        "data" | "connection-status" | "detailed" | "network-topology" => "Telemetry",
+        "data" | "connection-status" | "detailed" | "network-topology" | "sequence-history" => "Telemetry",
         "crew-voice" | "media" | "stream-manager" => "Collaboration",
         "messages" | "notifications" | "warnings" | "errors" => "Activity",
         _ => "Management",
@@ -53,6 +53,7 @@ fn icon(id: &str) -> &'static str {
         "calibration" => "M4 4l16 16 M3 8l5-5 M7 12l5-5 M11 16l5-5 M15 20l5-5",
         "firmware-update" => "M8 3h8v5h5v8h-5v5H8v-5H3V8h5z M12 16V8 M9 11l3-3 3 3",
         "data-export" => "M4 3h10l6 6v12H4z M14 3v6h6 M12 11v7 M9 15l3 3 3-3",
+        "sequence-history" => "M3 12a9 9 0 1 0 3-6.7 M3 4v5h5 M12 7v5l3 3",
         "vehicle" => "M9 16l-4 3 1-6 M15 16l4 3-1-6 M9 16h6V8l-3-6-3 6z M10 20v2 M14 20v2",
         _ => "M4 5h16v14H4z M8 9h8 M8 13h8 M8 17h5",
     }

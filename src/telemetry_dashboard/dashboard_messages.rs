@@ -390,6 +390,7 @@ enum MainTab {
     Errors,
     Data,
     DataExport,
+    SequenceHistory,
 }
 
 /// Active lifecycle errors are server-authoritative and separate from acknowledged history.

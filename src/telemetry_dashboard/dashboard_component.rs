@@ -3554,7 +3554,6 @@ fn TelemetryDashboardInner() -> Element {
                                             onclick:move |_| { clear_current_dashboard_data_without_reseed(); },
                                             "Clear all graphs"
                                         }
-                                        button{r#type:"button",disabled:!auth::can_view_data(),onclick:move |_|sequence_progress_host::open_history(),"Sequence history"}
                                         {auth_button}{reload_button}{version_button}{connect_button}
                                     }
                                 }
@@ -3948,6 +3947,11 @@ fn TelemetryDashboardInner() -> Element {
                                 },
                                 MainTab::FirmwareUpdate => rsx! {
                                     for policy_view_key in [station_mode_observer::view_key()] { FirmwareUpdateTab { key: "{policy_view_key}", theme: theme.clone() } }
+                                },
+                                MainTab::SequenceHistory => rsx! {
+                                    div { class: "gs26-sequence-history-page", style: "height:100%;min-height:0;min-width:0;overflow:auto;box-sizing:border-box;padding:12px;",
+                                        sequence_progress_host::SequenceHistoryTab { state: sequence_progress, open_result: sequence_result_request }
+                                    }
                                 },
                                 MainTab::DataExport => rsx! {
                                     div { class: "gs26-export-scroll", style: "height:100%;min-height:0;min-width:0;overflow:auto;box-sizing:border-box;overscroll-behavior:contain;",

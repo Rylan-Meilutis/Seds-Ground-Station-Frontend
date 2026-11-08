@@ -58,7 +58,8 @@ fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
         | MainTab::Notifications
         | MainTab::Warnings
         | MainTab::Errors
-        | MainTab::DataExport => true,
+        | MainTab::DataExport
+        | MainTab::SequenceHistory => true,
         _ => false,
     }
 }

@@ -24,6 +24,7 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
         MainTab::Errors => "errors",
         MainTab::Data => "data",
         MainTab::DataExport => "data-export",
+        MainTab::SequenceHistory => "sequence-history",
     }
 }
 
@@ -72,6 +73,7 @@ fn _default_main_tab_label(tab: MainTab) -> String {
         MainTab::Errors => localized_copy(&lang, "Errors", "Errores", "Erreurs"),
         MainTab::Data => localized_copy(&lang, "Data", "Datos", "Donnees"),
         MainTab::DataExport => localized_copy(&lang, "Data Export", "Exportar datos", "Export de donnees"),
+        MainTab::SequenceHistory => localized_copy(&lang, "Sequence history", "Historial de secuencias", "Historique des sequences"),
     }
 }
 
@@ -127,6 +129,7 @@ fn _main_tab_from_str(s: &str) -> MainTab {
         "errors" => MainTab::Errors,
         "data" => MainTab::Data,
         "data-export" => MainTab::DataExport,
+        "sequence-history" => MainTab::SequenceHistory,
         _ => MainTab::State,
     }
 }
@@ -236,6 +239,10 @@ fn _available_main_tabs(
     // Older layouts must expose recording export without a server config migration.
     if !tabs.contains(&MainTab::DataExport) {
         tabs.push(MainTab::DataExport);
+    }
+    // Sequence history is a client view of observed sequence progress.
+    if auth::can_view_data() && !tabs.contains(&MainTab::SequenceHistory) {
+        tabs.push(MainTab::SequenceHistory);
     }
     tabs.insert(0, MainTab::State);
     tabs
