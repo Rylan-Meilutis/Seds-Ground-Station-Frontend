@@ -5,7 +5,10 @@
 // because all route pages use the same visual frame.
 
 // --- global css ---
-const GLOBAL_CSS: &str = concat!(include_str!("design_system.css"), r#"
+// Shared tokens and components; injected before GLOBAL_CSS on every platform.
+const DESIGN_SYSTEM_CSS: &str = include_str!("design_system.css");
+
+const GLOBAL_CSS: &str = r#"
 :root {
     --gs26-app-height: 100dvh;
     --gs26-app-background: #020617;
@@ -49,7 +52,7 @@ html, body {
 }
 
 * { box-sizing: border-box; }
-"#);
+"#;
 
 
 fn shell_theme() -> ThemeConfig {
