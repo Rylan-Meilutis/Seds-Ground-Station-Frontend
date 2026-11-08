@@ -957,7 +957,9 @@ pub fn ActionsTab(
                                                     && (action.cmd!="ValveSelfTest" || self_test_confirmation.read().confirmed())
                                                     && (!abort_only_mode || action.cmd == "Abort")
                                                 ;
-                                                let disabled_reason = if action.group != "GSE sequence actions" || enabled {
+                                                // Every disabled action shows why (Launch included), not only
+                                                // the GSE sequence group.
+                                                let disabled_reason = if enabled {
                                                     None
                                                 } else if !auth::can_send_command(&dispatch_cmd) {
                                                     Some("Not permitted by your account")
@@ -970,9 +972,11 @@ pub fn ActionsTab(
                                                 } else if dispatch_control.is_none() {
                                                     Some("Command missing from backend policy")
                                                 } else if !dispatch_control.unwrap().enabled {
-                                                    Some("Sequence request disabled by backend")
-                                                } else {
+                                                    Some("Disabled by GroundStation")
+                                                } else if action.cmd=="ValveSelfTest" {
                                                     Some("Confirm dry valve self-test first")
+                                                } else {
+                                                    None
                                                 };
                                                 let reason_text = disabled_reason.unwrap_or("");
 
@@ -1083,6 +1087,8 @@ pub fn ActionsTab(
                                                             }
                                                             if action.group == "GSE sequence actions" {
                                                                 span {title:disabled_reason.unwrap_or(""),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;", "{reason_text}"}
+                                                            } else if disabled_reason.is_some() {
+                                                                span {title:disabled_reason.unwrap_or(""),style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}
                                                             }
                                                         }
                                                             span {

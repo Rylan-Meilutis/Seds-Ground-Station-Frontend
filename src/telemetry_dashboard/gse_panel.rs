@@ -267,6 +267,13 @@ mod visibility_tests {
         }
     }
 }
+/// The station's own reason Launch is disabled, if it is.
+pub(super) fn launch_block_reason(policy: &ActionPolicyMsg) -> Option<String> {
+    let control = policy.controls.iter().find(|control| control.cmd == "Launch")?;
+    if control.enabled { return None; }
+    Some(control.disabled_reason.clone().filter(|reason| !reason.trim().is_empty())
+        .unwrap_or_else(|| "disabled by GroundStation".into()))
+}
 pub(super) fn ground_visible(phase: &str) -> bool {
     matches!(
         phase,
@@ -476,6 +483,9 @@ pub(super) fn GsePanel(
                     }
                     span {"Latest board observation"}
                     if show_model {span {"Animation indicates sequence activity, not measured flow"}}
+                }
+                if let Some(reason) = launch_block_reason(&action_policy.read()) {
+                    p {role:"status",style:"margin:0;padding:8px 10px;border:1px solid #b77b18;border-radius:8px;background:#3b2c11;color:#ffdc8a;", "Launch blocked: {reason}"}
                 }
                 OverpressureAcknowledge {
                     latched: snapshot.overpressure_latched,
@@ -903,6 +913,16 @@ fn clear_abort_result_message(value: &serde_json::Value) -> &'static str {
 
 #[cfg(test)]
 mod clear_abort_message_tests {
+    #[test]
+    fn launch_block_reason_uses_the_station_reason() {
+        use super::{ActionPolicyMsg, launch_block_reason};
+        let policy: ActionPolicyMsg = serde_json::from_value(serde_json::json!({"key_enabled":true,"software_buttons_enabled":true,"controls":[
+            {"cmd":"Launch","enabled":false,"blink":"none","actuated":null,"disabled_reason":"Launch is locked after the last attempt. Use Reset all boards to unlock it."}]})).unwrap();
+        assert_eq!(launch_block_reason(&policy).as_deref(), Some("Launch is locked after the last attempt. Use Reset all boards to unlock it."));
+        let open: ActionPolicyMsg = serde_json::from_value(serde_json::json!({"key_enabled":true,"software_buttons_enabled":true,"controls":[
+            {"cmd":"Launch","enabled":true,"blink":"none","actuated":null}]})).unwrap();
+        assert!(launch_block_reason(&open).is_none());
+    }
     #[test]
     fn rrls_request_is_not_reported_as_cleared() {
         assert!(super::clear_abort_result_message(&serde_json::json!({"cleared":true})).starts_with("GSE abort cleared"));
