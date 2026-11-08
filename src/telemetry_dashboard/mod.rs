@@ -253,8 +253,10 @@ const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
 const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 1_000;
 const ACTIVE_LAUNCH_CLOCK_REFRESH_MS: u32 = 100;
-const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 16;
-const CHART_RENDER_MIN_INTERVAL_MS: i64 = 16;
+// 20 Hz for numbers and 30 Hz for charts: smooth to read, and a fraction of
+// the main-thread work of rendering every display frame on a Raspberry Pi.
+const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 50;
+const CHART_RENDER_MIN_INTERVAL_MS: i64 = 33;
 const WS_STALE_RECONNECT_MS: i64 = 8_000;
 const LIVE_TELEMETRY_MAX_AGE_MS: i64 = 20 * 60 * 1000;
 const LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS: i64 = 60_000;
