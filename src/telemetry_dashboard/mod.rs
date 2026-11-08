@@ -83,6 +83,8 @@ mod station_policy_model;
 mod incoming_epoch;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod incoming_epoch_native_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod station_mode_layout_native_tests;
 mod mode_live_view;
 mod station_mode_settings;
 mod station_mode_transport;
