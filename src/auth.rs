@@ -108,7 +108,9 @@ pub fn update_command_proxy(status: Option<CommandProxyStatus>) {
     if let Ok(mut current) = CURRENT_STATUS.lock() { current.command_proxy = status; }
 }
 pub fn is_local_station_command(cmd: &str) -> bool {
-    matches!(cmd, "StartWritingNow" | "StartWritingLastTwoMinutes" | "PauseWritingDb" | "StopWritingDb" | "ResetTClock")
+    // RadioModemCheck checks this station's own radio (/api/radio/modem/check
+    // runs locally on RRLS too); it is never proxied to the primary.
+    matches!(cmd, "StartWritingNow" | "StartWritingLastTwoMinutes" | "PauseWritingDb" | "StopWritingDb" | "ResetTClock" | "RadioModemCheck")
 }
 pub fn command_uses_primary_proxy(status: &SessionStatus, cmd: &str) -> bool {
     status.station_role.as_deref() == Some("rrls") && !is_local_station_command(cmd)
