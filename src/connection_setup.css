@@ -19,10 +19,12 @@
 .gs26-station-address select { min-height: 44px; }
 .gs26-station-address input { max-width: 100%; }
 .gs26-connect-actions { min-width: 0; }
-.gs26-connect-primary-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; min-width: 0; }
+.gs26-connect-primary-actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: flex-end; margin-left: auto; min-width: 0; }
+/* Every bottom-bar button keeps one line so it matches the Explore button height. */
+.gs26-connect-actions button { white-space: nowrap; line-height: 1.2; -webkit-appearance: none; appearance: none; }
 @media (max-width: 460px) {
     .gs26-connect-actions { flex-direction: column-reverse; align-items: stretch !important; }
-    .gs26-connect-primary-actions { margin-left: 0; }
-    .gs26-connect-primary-actions > button { flex: 1 1 90px; min-width: 0; }
+    .gs26-connect-primary-actions { margin-left: 0; gap: 8px; }
+    .gs26-connect-primary-actions > button { flex: 1 1 auto; padding-left: 10px !important; padding-right: 10px !important; }
     .gs26-connect-explore { align-self: flex-start; }
 }
