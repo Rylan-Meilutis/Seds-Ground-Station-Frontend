@@ -1654,15 +1654,16 @@ fn TelemetryDashboardInner() -> Element {
                         matches!(clock.kind, LaunchClockKind::TMinus | LaunchClockKind::TPlus)
                     });
                     // Only a running T-/T+ clock shows hundredths. The wall
-                    // clock shows whole seconds, so wake on the next second
-                    // instead of re-rendering the header ten times a second.
+                    // clock shows whole seconds and data-age labels need
+                    // about a quarter second, so tick at 4 Hz (aligned to the
+                    // next second when that is sooner) instead of 10 Hz.
                     let effective_tick_ms = if !dashboard_page_visible() {
                         5_000
                     } else if launch_clock_active {
                         ACTIVE_LAUNCH_CLOCK_REFRESH_MS
                     } else {
                         let into_second = current_wallclock_ms().rem_euclid(1_000) as u32;
-                        (NETWORK_TIME_BADGE_REFRESH_MS - into_second).max(200) + 5
+                        (NETWORK_TIME_BADGE_REFRESH_MS - into_second).clamp(20, WALL_CLOCK_TICK_MS) + 5
                     };
 
                     if dashboard_page_visible() {
