@@ -7,6 +7,7 @@ pub(super) enum StationSection {
     Loadcells,
     Sequences,
     Network,
+    Safety,
     Administration,
 }
 impl StationSection {
@@ -15,6 +16,7 @@ impl StationSection {
             "loadcells" => Self::Loadcells,
             "sequences" => Self::Sequences,
             "network" => Self::Network,
+            "safety" => Self::Safety,
             "administration" => Self::Administration,
             _ => Self::Mission,
         }
@@ -25,6 +27,7 @@ impl StationSection {
             Self::Loadcells => "loadcells",
             Self::Sequences => "sequences",
             Self::Network => "network",
+            Self::Safety => "safety",
             Self::Administration => "administration",
         }
     }
@@ -34,6 +37,7 @@ impl StationSection {
             Self::Loadcells => "Loadcells",
             Self::Sequences => "Sequences & limits",
             Self::Network => "Network & clocks",
+            Self::Safety => "About safety",
             Self::Administration => "Administration",
         }
     }

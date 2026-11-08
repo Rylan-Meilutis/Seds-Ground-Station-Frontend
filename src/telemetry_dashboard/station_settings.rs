@@ -84,7 +84,7 @@ fn StationSettingsBody(
     );
     rsx! {
         nav {aria_label:"Ground Station settings sections",style:"display:flex;gap:8px;flex-wrap:wrap;",
-            for item in [StationSection::Mission,StationSection::Loadcells,StationSection::Sequences,StationSection::Network,StationSection::Administration] {
+            for item in [StationSection::Mission,StationSection::Loadcells,StationSection::Sequences,StationSection::Network,StationSection::Safety,StationSection::Administration] {
                 if item!=StationSection::Administration||admin {
                     button {r#type:"button",aria_pressed:section==item,style:if section==item{selected_style.clone()}else{idle_style.clone()},onclick:move |_|settings_navigation::select_section(item),"{item.label()}"}
                 }
@@ -116,6 +116,7 @@ fn StationSettingsBody(
                     super::recording_download::SystemClockSettings {}
                 }
             },
+            StationSection::Safety=>rsx! {super::about_safety::AboutSafety {}},
             StationSection::Administration=>rsx! {section {h3 {"Administration"}button {r#type:"button",onclick:move |_|on_manage_users.call(()),"Manage users & access"}}},
         }
     }
