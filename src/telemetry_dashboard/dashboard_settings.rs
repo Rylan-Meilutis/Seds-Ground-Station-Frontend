@@ -1110,6 +1110,16 @@ pub(crate) fn apply_window_theme(theme: &layout::ThemeConfig) {
               '--gs26-button-background': {button_background:?},
               '--gs26-button-border': {button_border:?},
               '--gs26-button-text': {button_text:?},
+              '--gs26-info-accent': {info_accent:?},
+              '--gs26-info-background': {info_background:?},
+              '--gs26-info-text': {info_text:?},
+              '--gs26-success-text': {success_text:?},
+              '--gs26-warning-background': {warning_background:?},
+              '--gs26-warning-border': {warning_border:?},
+              '--gs26-warning-text': {warning_text:?},
+              '--gs26-error-background': {error_background:?},
+              '--gs26-error-border': {error_border:?},
+              '--gs26-error-text': {error_text:?},
             }};
             const targets = [document.documentElement, document.body, document.getElementById('main')];
             for (const target of targets) {{
@@ -1119,6 +1129,11 @@ pub(crate) fn apply_window_theme(theme: &layout::ThemeConfig) {
               }}
               target.style.backgroundColor = vars['--gs26-app-background'];
               target.style.color = vars['--gs26-app-text'];
+            }}
+            const hex = String(vars['--gs26-app-background']).replace('#', '');
+            if (/^[0-9a-f]{{6}}/i.test(hex)) {{
+              const [r, g, b] = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16));
+              document.documentElement.style.colorScheme = (0.299 * r + 0.587 * g + 0.114 * b) > 140 ? 'light' : 'dark';
             }}
           }} catch (_) {{}}
         }})();
@@ -1133,6 +1148,16 @@ pub(crate) fn apply_window_theme(theme: &layout::ThemeConfig) {
         button_background = theme.button_background,
         button_border = theme.button_border,
         button_text = theme.button_text,
+        info_accent = theme.info_accent,
+        info_background = theme.info_background,
+        info_text = theme.info_text,
+        success_text = theme.success_text,
+        warning_background = theme.warning_background,
+        warning_border = theme.warning_border,
+        warning_text = theme.warning_text,
+        error_background = theme.error_background,
+        error_border = theme.error_border,
+        error_text = theme.error_text,
     ));
 }
 

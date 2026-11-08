@@ -1,0 +1,90 @@
+/* Shared design tokens and components.
+   Colours come from the active theme (see apply_window_theme); this file only
+   names them and adds spacing, radius and type scale. Fallbacks are the
+   default dark theme so pages still render before a theme is applied. */
+:root {
+  --gs-space-1: 4px; --gs-space-2: 8px; --gs-space-3: 12px;
+  --gs-space-4: 16px; --gs-space-5: 24px; --gs-space-6: 32px;
+  --gs-radius-sm: 8px; --gs-radius: 10px; --gs-radius-lg: 14px;
+  --gs-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --gs-text-xs: 12px; --gs-text-sm: 13px; --gs-text-md: 15px;
+  --gs-text-lg: 18px; --gs-text-xl: 22px;
+  --gs-surface: var(--gs26-panel-background, #0b1628);
+  --gs-surface-2: var(--gs26-panel-alt-background, #142033);
+  --gs-line: var(--gs26-border, #314156);
+  --gs-text: var(--gs26-app-text, #edf3ff);
+  --gs-text-muted: var(--gs26-text-muted, #9fb0c7);
+  --gs-accent: var(--gs26-info-accent, #7cc6ff);
+  --gs-info-bg: var(--gs26-info-background, #11233a);
+  --gs-info-text: var(--gs26-info-text, #d8eeff);
+  --gs-ok-text: var(--gs26-success-text, #6ee7b7);
+  --gs-warn-bg: var(--gs26-warning-background, #3a2a0f);
+  --gs-warn-line: var(--gs26-warning-border, #f4b860);
+  --gs-warn-text: var(--gs26-warning-text, #fde7b0);
+  --gs-danger-bg: var(--gs26-error-background, #3a1620);
+  --gs-danger-line: var(--gs26-error-border, #f07c96);
+  --gs-danger-text: var(--gs26-error-text, #ffd1db);
+  --gs-shadow: 0 1px 2px rgba(0,0,0,.18);
+}
+
+/* Buttons: neutral (default), primary, danger, ghost. */
+.gs-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--gs-space-2);
+  box-sizing: border-box; min-height: 44px; padding: 9px 16px;
+  border: 1px solid var(--gs-control-border, var(--gs26-button-border, #42536d));
+  border-radius: var(--gs-radius); background: var(--gs-control-bg, var(--gs26-button-background, #162235));
+  color: var(--gs-control-text, var(--gs26-button-text, #f3f7ff));
+  font: 600 14px/1.25 var(--gs-font); text-decoration: none; cursor: pointer; touch-action: manipulation;
+}
+.gs-btn:hover:not(:disabled) { filter: brightness(1.12); }
+.gs-btn:focus-visible { outline: 3px solid var(--gs-accent); outline-offset: 2px; }
+.gs-btn:disabled { opacity: .5; cursor: not-allowed; }
+.gs-btn--primary { background: var(--gs-accent); border-color: var(--gs-accent); color: #04121f; }
+.gs-btn--danger { background: var(--gs-danger-bg); border-color: var(--gs-danger-line); color: var(--gs-danger-text); }
+.gs-btn--ghost { background: transparent; }
+
+/* Card and section header. */
+.gs-card {
+  box-sizing: border-box; min-width: 0; display: grid; gap: var(--gs-space-3);
+  padding: var(--gs-space-4); border: 1px solid var(--gs-line); border-radius: var(--gs-radius-lg);
+  background: var(--gs-surface); color: var(--gs-text); box-shadow: var(--gs-shadow);
+}
+.gs-section-header { display: flex; align-items: center; justify-content: space-between; gap: var(--gs-space-3); flex-wrap: wrap; margin: 0; min-width: 0; }
+.gs-section-header > :is(h1,h2,h3,h4) { margin: 0; font: 700 var(--gs-text-md)/1.3 var(--gs-font); color: var(--gs-text); }
+.gs-section-label { margin: var(--gs-space-3) 0 0; font: 700 var(--gs-text-xs)/1.3 var(--gs-font); letter-spacing: .06em; text-transform: uppercase; color: var(--gs-text-muted); }
+
+/* Status badge. */
+.gs-badge {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 2px 9px; min-height: 22px;
+  border: 1px solid var(--gs-line); border-radius: 999px; background: var(--gs-surface-2);
+  font: 700 11px/1.2 var(--gs-font); letter-spacing: .04em; text-transform: uppercase; color: var(--gs-text-muted); white-space: nowrap;
+}
+.gs-badge--ok { color: var(--gs-ok-text); border-color: color-mix(in srgb, var(--gs-ok-text) 45%, transparent); }
+.gs-badge--info { color: var(--gs-info-text); background: var(--gs-info-bg); border-color: var(--gs-accent); }
+.gs-badge--warn { color: var(--gs-warn-text); background: var(--gs-warn-bg); border-color: var(--gs-warn-line); }
+.gs-badge--danger { color: var(--gs-danger-text); background: var(--gs-danger-bg); border-color: var(--gs-danger-line); }
+
+/* Form row: label above control on phones, beside it on wider screens. */
+.gs-form-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-items: center; min-width: 0; }
+.gs-form-row > label, .gs-form-row > .gs-form-label { font: 600 var(--gs-text-sm)/1.3 var(--gs-font); color: var(--gs-text-muted); }
+@media (min-width: 720px) { .gs-form-row { grid-template-columns: minmax(140px, 220px) minmax(0, 1fr); gap: var(--gs-space-3); } }
+
+/* Notice: one short line of status. Longer explanation goes in .gs-info. */
+.gs-notice { box-sizing: border-box; margin: 0; padding: 8px 12px; border: 1px solid var(--gs-line); border-radius: var(--gs-radius); background: var(--gs-surface-2); color: var(--gs-text); font: 500 var(--gs-text-sm)/1.4 var(--gs-font); overflow-wrap: anywhere; }
+.gs-notice--warn { border-color: var(--gs-warn-line); background: var(--gs-warn-bg); color: var(--gs-warn-text); }
+.gs-notice--danger { border-color: var(--gs-danger-line); background: var(--gs-danger-bg); color: var(--gs-danger-text); }
+
+/* Info disclosure: keeps safety explanations available without a wall of text. */
+details.gs-info { min-width: 0; margin: 0; color: var(--gs-text-muted); font: 400 var(--gs-text-sm)/1.45 var(--gs-font); }
+details.gs-info > summary {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px; cursor: pointer; list-style: none;
+  color: var(--gs-text-muted); font-weight: 600; border-radius: var(--gs-radius-sm);
+}
+details.gs-info > summary::-webkit-details-marker { display: none; }
+details.gs-info > summary::before {
+  content: "i"; display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none;
+  border: 1px solid currentColor; border-radius: 999px; font: italic 700 11px/1 Georgia, serif;
+}
+details.gs-info > summary:focus-visible { outline: 3px solid var(--gs-accent); outline-offset: 2px; }
+details.gs-info[open] > summary { color: var(--gs-text); }
+details.gs-info > :not(summary) { margin: 6px 0 0; padding: 8px 12px; border-left: 2px solid var(--gs-line); max-width: 72ch; }
