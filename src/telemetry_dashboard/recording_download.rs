@@ -624,9 +624,12 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
     rsx! {
         section { style:"border:1px solid {theme.border};border-radius:10px;padding:10px;color:{theme.text_primary};background:{theme.panel_background};",
             h2 { "Data Export" }
-            p { "Available in Test Fire, HITL, and normal mode. Use the recording actions to start or stop capture, then refresh this list." }
-            p { style:"font-size:12px;color:{theme.text_muted};",
-                "Full recording CSV includes every saved row with source identity, receive/source timestamps, values and payload bytes. Select channels and a formatter below to focus the export. Active recordings include committed rows up to the request; stop recording first for a complete capture."
+            p { style:"margin:0 0 8px;color:{theme.text_muted};font-size:13px;", "Pick a recording, then the data to export." }
+            details { class:"gs-info", summary {"What's included"}
+                div {
+                    p { "Available in Test Fire, HITL, and normal mode. Use the recording actions to start or stop capture, then refresh this list." }
+                    p { "Full recording CSV includes every saved row with source identity, receive/source timestamps, values and payload bytes. Select channels and a formatter below to focus the export. Active recordings include committed rows up to the request; stop recording first for a complete capture." }
+                }
             }
             div { style:"display:flex;gap:8px;flex-wrap:wrap;",
                 select { aria_label:"Recording to download", value:"{selected}", disabled:loading() || downloading(),

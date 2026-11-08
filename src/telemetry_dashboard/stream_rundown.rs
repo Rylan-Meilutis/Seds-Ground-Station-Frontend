@@ -120,7 +120,7 @@ pub(super) fn RundownEditor(broadcast: BroadcastState) -> Element {
     if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {details {class:"gs26-rundown-editor",
         summary {"Audience rundown"}
-        p {class:"gs26-studio-help","Choose data, cycle order and scene for each stage. These choices affect the audience programme only."}
+        p {class:"gs26-studio-help","Data, cycle order and scene for each stage of the audience programme."}
         if let Some(rundown)=snapshot {
             div {class:"gs26-studio-fields",
                 label {"Stage profile" select {value:selected(),onchange:move|e|selected.set(e.value()),
@@ -142,7 +142,7 @@ pub(super) fn RundownEditor(broadcast: BroadcastState) -> Element {
                 button {disabled:busy()||page.stats.len()>=24,onclick:move|_|edit(draft,selected,|p|p.stats.push(new_stat())),"Add metric"}
             }
             details {summary {"Flight phase assignments"}
-                p {class:"gs26-studio-help","Defaults keep fill data on the ground and flight data after Launch. Test-fire mode always uses its own profile."}
+                details {class:"gs-info",summary {"Defaults"} p {"Defaults keep fill data on the ground and flight data after Launch. Test-fire mode always uses its own profile."}}
                 for (name,target) in &rundown.phase_profiles {
                     {let remove_name=name.clone();rsx!{div {class:"gs26-studio-actions",span {"{name} → {target}"}button {onclick:move|_|{if let Some(r)=draft.write().as_mut(){r.phase_profiles.remove(&remove_name);}},"Remove assignment"}}}}
                 }

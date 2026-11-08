@@ -52,7 +52,7 @@ fn LayoutDesigner(broadcast:BroadcastState,streams:Vec<super::live_stream_tab::L
     if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx!{section {class:"gs26-layout-designer","aria-label":"Camera layout designer",
         h3 {"Live camera layout"}
-        p {"Arrange the tiles, choose a layout and resize the main camera. Save to fade the audience programme into this layout, including camera replays."}
+        details {class:"gs-info",summary {"How layouts apply"} p {"Arrange the tiles, choose a layout and resize the main camera. Save to fade the audience programme into this layout, including camera replays."}}
         label {"Layout" select {"aria-label":"Camera layout",value:template(),onchange:move|e|template.set(e.value()),option {value:"grid","Grid"}option {value:"main-side","Main camera and side tiles"}option {value:"featured","Featured camera"}}}
         if template()=="main-side"{label {"Main camera width" input {"aria-label":"Main camera width",r#type:"range",min:"35",max:"75",step:"1",value:split().to_string(),oninput:move|e|{if let Ok(v)=e.value().parse(){split.set(v);}}}}}
         label {input {r#type:"checkbox",checked:preview(),onchange:move|e|preview.set(e.checked())}" Live previews"}
@@ -139,7 +139,7 @@ pub(super) fn StreamStudio(
       div {class:"gs26-studio-actions",button {aria_expanded:audio_desk().to_string(),onclick:move|_|audio_desk.toggle(),if audio_desk(){"Close audio desk"}else{"Open audio desk"}}}
       if audio_desk(){div {style:"height:360px;min-height:300px;",super::media_tool_tab::MediaToolTab {id:"gs26-studio-audio",path:"/studio-audio?embedded=1",title:"Broadcast audio desk",visible:true}}}
       details {summary {"OBS browser source"}
-        p {"Use this address as an OBS Browser Source for the clean programme, without app navigation or playback controls."}
+        details {class:"gs-info",summary {"Using it in OBS"} p {"Use this address as an OBS Browser Source for the clean programme, without app navigation or playback controls."}}
         input {r#type:"url",readonly:true,"aria-label":"OBS browser source URL",value:format!("{}{}&clean=1",super::UrlConfig::base_http().trim_end_matches('/'),program_url)}
         CleanFeedLink {url:format!("{}{}&clean=1",super::UrlConfig::base_http().trim_end_matches('/'),program_url)}
       }
@@ -149,7 +149,8 @@ pub(super) fn StreamStudio(
       super::stream_rundown::RundownEditor {broadcast:broadcast.clone()}
       super::recorded_replay_controls::RecordedReplayControls {broadcast:broadcast.clone()}
       if admin {details {summary {"Stream manager roles"}
-       p {"Assigning stream master grants broadcast control only, not valve or rocket commands. Stream administrators retain management access."}
+       p {class:"gs26-studio-help","Stream master grants broadcast control only — never valve or rocket commands."}
+       details {class:"gs-info",summary {"About stream roles"} p {"Assigning stream master grants broadcast control only, not valve or rocket commands. Stream administrators retain management access."}}
        for account in accounts.read().iter() {
          {let username=account.username.clone();let enabled=account.roles.iter().any(|r|r=="stream_master");let administrator=account.roles.iter().any(|r|r=="stream_admin");
           rsx!{label {style:"display:block;padding:8px;",
@@ -325,14 +326,14 @@ fn InterviewEditor(
     let mut message = use_signal(String::new);
     if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {details {class:"gs26-interview-editor",summary {"Interview scene"}
-        p {class:"gs26-studio-help","Choose a camera/participant feed for the main view and another feed for the corner. Share a browser camera from Cameras to add a participant."}
+        details {class:"gs-info",summary {"Main and corner feeds"} p {"Choose a camera/participant feed for the main view and another feed for the corner. Share a browser camera from Cameras to add a participant."}}
         div {class:"gs26-studio-fields",
             label {"Interview camera / participant" select {value:main(),onchange:move|e|main.set(e.value()),option {value:"","Choose feed"}for s in &streams {option {value:s.id.clone(),"{s.label}"}}}}
             label {"Picture-in-picture camera" select {value:pip(),onchange:move|e|pip.set(e.value()),option {value:"","Choose feed"}for s in &streams {option {value:s.id.clone(),"{s.label}"}}}}
         }
         label {input {r#type:"checkbox",checked:main_audio(),onchange:move|e|main_audio.set(e.checked())}" Include interview-feed audio"}
         label {input {r#type:"checkbox",checked:pip_audio(),onchange:move|e|pip_audio.set(e.checked())}" Include picture-in-picture audio"}
-        p {class:"gs26-studio-help","Feed audio, commentary and crew-voice inclusion are separate choices. Use headphones when monitoring comms."}
+        details {class:"gs-info",summary {"Audio sources"} p {"Feed audio, commentary and crew-voice inclusion are separate choices. Use headphones when monitoring comms."}}
         div {class:"gs26-studio-actions",
             button {disabled:busy()||main().is_empty()||pip().is_empty()||main()==pip(),onclick:move|_|{
                 let mut request=base();request.layout="interview".into();request.interview=super::live_stream_tab::InterviewScene{main_stream_id:main(),pip_stream_id:pip(),main_audio:main_audio(),pip_audio:pip_audio()};if !authority.current(){return;}busy.set(true);
