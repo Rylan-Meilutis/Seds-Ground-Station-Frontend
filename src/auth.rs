@@ -479,7 +479,17 @@ pub async fn fetch_session_status(
     skip_tls_verify: bool,
 ) -> Result<SessionStatus, String> {
     let url = build_url(base, "/api/auth/session")?;
-    let text = auth_request_get(&url, skip_tls_verify, true, true).await?;
+    let had_token = current_token().is_some();
+    let text = match auth_request_get(&url, skip_tls_verify, true, true).await {
+        // The saved token was rejected (401 cleared it): ask again without it so
+        // the app falls back to guest access or the sign-in page instead of
+        // retrying every request with a dead token.
+        Err(_) if had_token && current_token().is_none() => {
+            debug_log::append("[auth] saved session rejected; checking again without it");
+            auth_request_get(&url, skip_tls_verify, false, false).await?
+        }
+        result => result?,
+    };
     let status = serde_json::from_str::<SessionStatus>(&text)
         .map_err(|e| format!("invalid auth JSON: {e}"))?
         .with_role_authority();

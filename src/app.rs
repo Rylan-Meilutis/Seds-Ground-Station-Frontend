@@ -454,24 +454,15 @@ fn LoginOverlay(
     back_route: Option<Route>,
     on_success_route: Route,
 ) -> Element {
-    let theme = shell_theme();
+    // Sign-in is a standalone page. Mounting the live dashboard behind it let
+    // dashboard bars and modals (many with z-index far above this card) show
+    // through and stay interactive, and ran the dashboard without a session.
     rsx! {
-        div {
-            style: "position:relative; width:100%; min-height:var(--gs26-app-height);",
-            crate::telemetry_dashboard::TelemetryDashboard {}
-            div {
-                style: format!(
-                    "position:fixed; inset:0; display:flex; align-items:center; justify-content:center; padding:24px; background:{}; backdrop-filter:blur(8px); z-index:1000;",
-                    theme.overlay_background
-                ),
-                LoginCard {
-                    title: title.clone(),
-                    subtitle: subtitle.clone(),
-                    back_route: back_route.clone(),
-                    on_success_route: on_success_route.clone(),
-                    overlay_mode: true,
-                }
-            }
+        LoginCard {
+            title: title.clone(),
+            subtitle: subtitle.clone(),
+            back_route: back_route.clone(),
+            on_success_route: on_success_route.clone(),
         }
     }
 }
