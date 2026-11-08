@@ -101,6 +101,8 @@ pub fn SequenceProgressView(
     #[props(default)] on_resume: EventHandler<RunKey>,
     /// Cold flow chosen at a nitrogen-test pressure hold.
     #[props(default)] on_hold_cold_flow: EventHandler<RunKey>,
+    /// Dump chosen at a nitrogen-test pressure hold (the run stays open).
+    #[props(default)] on_hold_dump: EventHandler<RunKey>,
 ) -> Element {
     if !panel.visible {
         return rsx! {};
@@ -256,16 +258,16 @@ pub fn SequenceProgressView(
                     }
                     if let Some(choice)=controls.as_ref().and_then(|c|c.hold_choice.clone()).filter(|_|!terminal) {
                         {let cold_ok=choice.cold_flow.allowed&&current_authority&&can_send_commands&&!unavailable;
-                        let dump_ok=choice.dump.allowed&&can_cancel;
+                        let dump_ok=choice.dump.allowed&&current_authority&&can_send_commands&&!unavailable&&panel.control_pending.is_none();
                         let cold_reason=(!cold_ok).then(||reason(Some(&choice.cold_flow)));
                         let dump_reason=(!dump_ok).then(||reason(Some(&choice.dump)));
                         rsx!{section {class:"gs26-sequence-hold-choice","data-hold-verdict":if choice.passed{"passed"}else{"failed"},
                             p {role:"status",class:"gs26-sequence-message","{choice.message}"}
                             div {class:"gs26-sequence-controls",
-                                button {class:"gs26-sequence-resume",r#type:"button","data-hold-choice":"cold-flow",disabled:!cold_ok,title:cold_reason.clone().unwrap_or_default(),onclick:move |_|on_hold_cold_flow.call(hold_cold_key.clone()),"Cold flow"}
-                                button {class:"gs26-sequence-cancel",r#type:"button","data-hold-choice":"dump",disabled:!dump_ok,title:dump_reason.clone().unwrap_or_default(),onclick:move |_|on_cancel.call(hold_dump_key.clone()),"Dump"}
+                                button {class:"gs26-sequence-resume",r#type:"button","data-hold-choice":"cold-flow",disabled:!cold_ok,title:cold_reason.clone().unwrap_or_default(),onclick:move |_|on_hold_cold_flow.call(hold_cold_key.clone()),"Cold flow · held pressure"}
+                                button {class:"gs26-sequence-cancel",r#type:"button","data-hold-choice":"dump",disabled:!dump_ok,title:dump_reason.clone().unwrap_or_default(),onclick:move |_|on_hold_dump.call(hold_dump_key.clone()),"Dump"}
                             }
-                            p {class:"gs26-sequence-legend","Cold flow opens PILOT/main through the Cold Flow interlocks after an explicit release (panel Launch can release it). Dump opens dump and vent, never PILOT, and ends at about 0 psi."}
+                            p {class:"gs26-sequence-legend","Cold flow releases the pressure this test holds, not the standalone Auto Cold Flow target, and never re-pressurises; PILOT/main opens only on explicit release (panel Launch can release it). Dump opens dump and vent, never PILOT, and this window stays open until the tank is empty. Cancel opens dump and vent, ends the test and closes this window; venting continues."}
                             if let Some(text)=&cold_reason {p {class:"gs26-sequence-control-reason","data-control":"cold-flow","Cold flow unavailable: {text}"}}
                             if let Some(text)=&dump_reason {p {class:"gs26-sequence-control-reason","data-control":"dump","Dump unavailable: {text}"}}
                         }}}
@@ -568,6 +570,10 @@ mod tests {
         assert!(passed.contains("data-hold-choice=\"cold-flow\""));
         assert!(passed.contains("data-hold-choice=\"dump\""));
         assert!(passed.contains("never PILOT"));
+        assert!(passed.contains("Cold flow · held pressure"));
+        assert!(passed.contains("not the standalone Auto Cold Flow target"));
+        assert!(passed.contains("stays open until the tank is empty"));
+        assert!(passed.contains("closes this window"));
         assert!(!passed.contains("Cold flow unavailable"));
         let failed = held(false, false, Some("Another ground sequence owns the valves"));
         assert!(failed.contains("Holding pressure for leak search. Dump when ready."));

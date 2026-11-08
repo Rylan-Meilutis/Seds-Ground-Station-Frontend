@@ -1925,6 +1925,32 @@ mod control_tests {
         header
     }
     #[test]
+    fn nitrogen_prompt_dump_keeps_the_modal_until_empty_and_cancel_closes_it() {
+        // Dump: the held (paused) run keeps running while it vents, then closes.
+        let mut model = Model::default();
+        model.set_surface(true);
+        let held = running(1, "paused");
+        let key = held.key.clone();
+        model.accept(0, held, 10, 10).unwrap();
+        assert!(model.panels()[0].visible, "the prompt is shown");
+        model.accept(0, running(2, "running"), 20, 20).unwrap();
+        assert!(model.panels()[0].visible, "Dump keeps the modal open while venting");
+        let mut done = running(3, "passed");
+        done.cancel_allowed = false;
+        model.accept(0, done, 30, 30).unwrap();
+        assert!(!model.panels()[0].visible, "finished at the zero band: closed");
+        // Cancel: the run ends at once and the modal closes.
+        let mut model = Model::default();
+        model.set_surface(true);
+        model.accept(0, running(1, "paused"), 10, 10).unwrap();
+        assert_eq!(model.request_cancel(&key, 10, true, Some(1)), Ok(key.clone()));
+        let mut cancelled = running(2, "cancelled");
+        cancelled.cancel_allowed = false;
+        model.accept(0, cancelled, 20, 20).unwrap();
+        assert!(!model.panels()[0].visible, "Cancel returns to the normal screen");
+        assert!(!model.panels()[0].cancel_pending);
+    }
+    #[test]
     fn pause_and_resume_need_live_station_admission_and_clear_on_next_revision() {
         let mut model = Model::default();
         let value = running(1, "running");

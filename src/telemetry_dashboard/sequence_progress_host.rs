@@ -437,6 +437,17 @@ pub fn SequenceProgressHost(
                                 });
                             }
                         },
+                        on_hold_dump:move |owned:OwnedRunIntent|{
+                            let OwnedRunIntent {key, owner}=owned;
+                            if !owner.is_current()||!auth::can_send_command("CancelFill"){return;}
+                            let origin=source();
+                            spawn(async move {
+                                let result=super::station_settings_request::post_captured::<RunKey,serde_json::Value>("/api/gse/sequences/dump",&key,Ok(owner.clone())).await;
+                                if !owner.is_current()||source()!=origin{return;}
+                                if let Err(error)=result{state.write().result_error=Some(format!("Dump refused: {error}"));}
+                                // The same run stays open; the station's revisions show the dump.
+                            });
+                        },
                         on_hold_cold_flow:move |owned:OwnedRunIntent|{
                             let OwnedRunIntent {key: _, owner}=owned;
                             if !owner.is_current()||!auth::can_send_command("AutoColdFlow"){return;}
@@ -507,6 +518,7 @@ fn OwnedSequenceProgressView(
     on_cancel: EventHandler<OwnedRunIntent>,
     on_release_cold_flow: EventHandler<OwnedRunIntent>,
     on_hold_cold_flow: EventHandler<OwnedRunIntent>,
+    on_hold_dump: EventHandler<OwnedRunIntent>,
     controls: Option<super::sequence_progress_model::RunControls>,
     can_pause: bool,
     can_resume: bool,
@@ -531,6 +543,9 @@ fn OwnedSequenceProgressView(
         },
         on_hold_cold_flow: move |key:RunKey| {
             if let Ok(owner)=original.capture() { on_hold_cold_flow.call(OwnedRunIntent {key,owner}); }
+        },
+        on_hold_dump: move |key:RunKey| {
+            if let Ok(owner)=original.capture() { on_hold_dump.call(OwnedRunIntent {key,owner}); }
         },
     }}
 }
