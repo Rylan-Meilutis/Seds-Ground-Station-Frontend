@@ -5,7 +5,9 @@ use std::{
     rc::Rc,
 };
 
-const MIN_WIDTH: u32 = 1440;
+// Same width rule on every platform, including iPad landscape and iPad
+// Split View; phones stay single-pane.
+const MIN_WIDTH: u32 = 1024;
 static VIEWPORT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
@@ -16,8 +18,9 @@ struct Preference {
 }
 impl Default for Preference {
     fn default() -> Self {
+        // Split view is a mode the operator turns on; off is a single pane.
         Self {
-            enabled: true,
+            enabled: false,
             primary: "data".into(),
             secondary: "actions".into(),
         }
@@ -54,7 +57,8 @@ fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
         | MainTab::Messages
         | MainTab::Notifications
         | MainTab::Warnings
-        | MainTab::Errors => true,
+        | MainTab::Errors
+        | MainTab::DataExport => true,
         _ => false,
     }
 }
@@ -170,8 +174,11 @@ pub(super) fn use_workspace(
         if !available.is_empty() && !available.contains(&*primary.peek()) {
             primary.set(available[0]);
         }
+        // Restore the saved left-hand tab only while split view is on, so a
+        // window or iPad crossing the width threshold never changes the tab.
         if !available.is_empty()
             && *wide.read()
+            && preference.read().enabled
             && *loaded_key.read() == key
             && applied_key.read().as_ref() != Some(&key)
         {
@@ -258,13 +265,15 @@ pub(super) fn WorkspaceToolbar(
     let views = available.into_iter().zip(labels).collect::<Vec<_>>();
     rsx! {
         if *workspace.wide.read() && !matches!(primary, MainTab::Mission | MainTab::StreamManager | MainTab::CrewVoice | MainTab::Media) {
-            div { class: "gs26-workspace-tools", "aria-label": "Workspace layout",
-                button { r#type: "button", "aria-pressed": secondary.is_some().to_string(),
+            div { class: "gs26-workspace-tools", "aria-label": "Workspace layout", "data-split": secondary.is_some().to_string(),
+                button { r#type: "button", class: "gs26-split-toggle", "aria-pressed": secondary.is_some().to_string(),
+                    title: if secondary.is_some() { "Show one tab" } else { "Show two tabs side by side" },
                     onclick: move |_| { let mut next = preference.read().clone(); next.enabled = !next.enabled; preference.set(next); },
-                    if secondary.is_some() { "Single pane" } else { "Two panes" }
+                    span { class: "gs26-split-icon", "aria-hidden": "true" }
+                    "Split view"
                 }
                 if let Some(secondary) = secondary {
-                    label { "First pane "
+                    label { span { "Left" }
                         select { "aria-label": "First workspace pane",
                             onchange: move |event| selected_primary.set(_main_tab_from_str(&event.value())),
                             for (tab, label) in views.iter().cloned() {
@@ -272,15 +281,27 @@ pub(super) fn WorkspaceToolbar(
                             }
                         }
                     }
-                    label { "Second pane "
+                    label { span { "Right" }
                         select { "aria-label": "Second workspace pane",
-                            onchange: move |event| { let mut next = preference.read().clone(); next.secondary = event.value(); preference.set(next); },
-                            for (tab, label) in views.iter().cloned().filter(|(tab, _)| *tab != primary && secondary_allowed(*tab, primary)) {
+                            onchange: move |event| {
+                                let chosen = _main_tab_from_str(&event.value());
+                                if chosen == primary {
+                                    // Same tab on both sides: swap them. The
+                                    // primary-change effect moves the old
+                                    // primary into the second pane.
+                                    selected_primary.set(secondary);
+                                } else {
+                                    let mut next = preference.read().clone();
+                                    next.secondary = event.value();
+                                    preference.set(next);
+                                }
+                            },
+                            for (tab, label) in views.iter().cloned().filter(|(tab, _)| *tab == primary || secondary_allowed(*tab, primary)) {
                                 option { key: "{_main_tab_to_str(tab)}", value: _main_tab_to_str(tab), selected: tab == secondary, "{label}" }
                             }
                         }
                     }
-                    button { r#type: "button", "aria-label": "Close second pane", onclick: move |_| { let mut next = preference.read().clone(); next.enabled = false; preference.set(next); }, "×" }
+                    button { r#type: "button", class: "gs26-split-close", "aria-label": "Close second pane", onclick: move |_| { let mut next = preference.read().clone(); next.enabled = false; preference.set(next); }, "×" }
                 }
             }
         }

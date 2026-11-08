@@ -60,7 +60,9 @@ fixture+=`try {
  };
  const changeLayoutMarker=()=>{fixtureLayoutRevision++;dashboardLayout.branding.app_name='Workspace fixture layout '+fixtureLayoutRevision;};
 
- await page.goto(origin+'/dashboard');await waitTabs(['data','actions']);
+ await page.goto(origin+'/dashboard');await waitTabs(['state']);
+ // Split view is an opt-in mode; turning it on restores the saved panes.
+ await page.getByRole('button',{name:'Split view',exact:true}).click();await waitTabs(['data','actions']);
  assert.equal(await page.getByRole('button',{name:'Arm',exact:true}).count(),1,'one Actions instance');
  for(const width of [1440,1920]){
   await page.setViewportSize({width,height:1000});await waitTabs(['data','actions']);
@@ -100,6 +102,8 @@ fixture+=`try {
  await shown('actions','data');
  await second.selectOption('connection-status');await shown('actions','connection-status');
  await first.selectOption('connection-status');await shown('connection-status','actions');
+ // Choosing the first pane's view on the second side swaps the two.
+ await second.selectOption('connection-status');await shown('actions','connection-status');
  await rail.getByRole('link',{name:'Actions',exact:true}).click();await shown('actions','connection-status');
  await page.evaluate(origin=>{for(const base of ['',origin])localStorage.setItem('gs26_dashboard_customization_v1_'+base.replace(/[^a-zA-Z0-9]/g,'_')+'_ground_station_view','on');},origin);
  await page.reload();await shown('actions','connection-status');
@@ -130,7 +134,7 @@ fixture+=`try {
  if(process.env.GS_WORKSPACE_EVIDENCE)await page.screenshot({path:path.join(process.env.GS_WORKSPACE_EVIDENCE,'workspace-390.png')});
  await page.setViewportSize({width:1440,height:1000});await waitTabs(['data','actions']);
  await page.getByRole('button',{name:'Close second pane',exact:true}).click();await waitTabs(['data']);
- await page.reload();await waitTabs(['data']);await page.getByRole('button',{name:'Two panes',exact:true}).click();await waitTabs(['data','actions']);
+ await page.reload();await waitTabs(['data']);await page.getByRole('button',{name:'Split view',exact:true}).click();await waitTabs(['data','actions']);
  assert.equal(commands.length,2,'resize/reload/preferences never issue commands');
  // Existing auth refresh really removes the grant and remounts its old context.
  const revokeDeadline=Date.now()+9000;fixtureSessionRevision++;session.roles=[];session.permissions.send_commands=false;const revokedReply=sessionResponse(fixtureSessionRevision,revokeDeadline);
@@ -155,8 +159,10 @@ fixture+=`try {
  await page.getByRole('navigation',{name:'Mission navigation'}).getByRole('link',{name:'Actions',exact:true}).waitFor({state:'detached',timeout:remaining(hiddenDeadline)});
  assert.equal(await pane('actions').count(),0,'hidden Actions never mounts through persisted split');
  assert.equal(await page.getByLabel('Second workspace pane').locator('option[value="actions"]').count(),0);
- session.username='other-workspace-account';fixtureSessionRevision++;changeLayoutMarker();await reloadObservedContext();await waitTabs(['data','actions']);
- assert.equal(await page.getByRole('button',{name:'Arm',exact:true}).count(),1,'another account gets its own layout choice');
+ session.username='other-workspace-account';fixtureSessionRevision++;changeLayoutMarker();await reloadObservedContext();await waitTabs(['data']);
+ assert.equal(await page.getByRole('button',{name:'Arm',exact:true}).count(),0,'another account gets its own layout choice');
+ await page.getByRole('button',{name:'Split view',exact:true}).click();await waitTabs(['data','actions']);
+ assert.equal(await page.getByRole('button',{name:'Arm',exact:true}).count(),1);
  assert.equal(popups,0);assert.deepEqual(blocked,[]);assert.deepEqual(errors,[]);
  assert.equal(requests.filter(r=>r.path==='/api/command').length,0);
  console.log(JSON.stringify({result:'PASS actual wide workspace',widths:[1440,1920,390],one_actions_instance:true,secondary_telemetry_updates:true,held_gesture_canceled:true,original_emergency_survives:true,fresh_commands:commands.length,socket_reopens_from_pane_changes:paneSwitchReopens,auth_revocation_observed:true,external_requests:blocked.length,response_failures:responseFailures,errors},null,2));
