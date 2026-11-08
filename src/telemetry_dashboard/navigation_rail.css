@@ -10,11 +10,14 @@
 .gs26-dashboard-shell[data-navigation=sidebar] .gs26-mobile-tab-picker,.gs26-dashboard-shell[data-navigation=sidebar] .gs26-tab-picker-shell:has(#dashboard-tab-picker){display:none}
 .gs26-dashboard-shell[data-navigation=tabs] .gs26-desktop-tab-title{display:none}
 @media(max-width:1199px){.gs26-dashboard-shell[data-navigation=sidebar] .gs26-mobile-sidebar-toggle{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px}}
-@keyframes gs26-button-warning{50%{background:#624b14;border-color:#facc15;color:#fff3c4}}
-@keyframes gs26-button-error{50%{background:#7f1d1d;border-color:#f87171;color:#fff}}
-[data-alert=warning]{animation:gs26-button-warning 1600ms ease-in-out infinite}
-[data-alert=error]{animation:gs26-button-error 1600ms ease-in-out infinite}
-@media(prefers-reduced-motion:reduce){[data-alert=warning],[data-alert=error]{animation:none;outline:2px solid currentColor}}
+/* Alert pulse animates only the opacity of an overlay, which the compositor
+   runs without restyling or repainting the page every frame. */
+@keyframes gs26-alert-glow{50%{opacity:1}}
+:is([data-alert=warning],[data-alert=error]){position:relative;isolation:isolate}
+:is([data-alert=warning],[data-alert=error])::after{content:"";position:absolute;inset:-1px;border:1px solid;border-radius:inherit;pointer-events:none;opacity:0;will-change:opacity;animation:gs26-alert-glow 1600ms ease-in-out infinite}
+[data-alert=warning]::after{background:rgba(250,204,21,.26);border-color:#facc15}
+[data-alert=error]::after{background:rgba(248,113,113,.3);border-color:#f87171}
+@media(prefers-reduced-motion:reduce){:is([data-alert=warning],[data-alert=error])::after{animation:none;opacity:.6}}
 .gs26-utility-menu{position:relative}.gs26-utility-menu>summary{display:flex;align-items:center;justify-content:center;box-sizing:border-box;height:44px;padding:8px 14px;border:1px solid var(--gs-control-border,#42536d);border-radius:10px;background:var(--gs-control-bg,#162235);color:var(--gs-control-text,#edf3ff);font-size:14px;font-weight:600;cursor:pointer;list-style:none}.gs26-utility-menu>summary::-webkit-details-marker{display:none}.gs26-utility-menu>summary:after{content:'⌄';margin-left:10px;color:var(--gs26-text-muted)}.gs26-utility-menu>div{box-sizing:border-box;max-width:calc(100vw - 32px);position:absolute;right:0;top:calc(100% + 8px);z-index:2200;min-width:190px;padding:6px;display:grid;gap:6px;border:1px solid var(--gs26-border);border-radius:12px;background:var(--gs26-panel-background,#0b1220);box-shadow:0 12px 32px #0006}.gs26-utility-menu>div>button{box-sizing:border-box;min-width:0;max-width:100%;width:100%;height:auto!important;text-align:left;white-space:normal;overflow-wrap:anywhere}.gs26-header-abort-menu{margin-left:8px !important;box-shadow:none !important}
 
 /* Desktop workspace columns own their space. */

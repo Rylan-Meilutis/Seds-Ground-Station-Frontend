@@ -187,10 +187,11 @@ try {
  for(const button of await warningToast.locator('button').all()) assert.equal(await button.evaluate(e=>getComputedStyle(e).fontFamily),dashboardFont,'warning popup controls inherit dashboard font');
 
  assert.equal(await page.locator('.gs26-dashboard-shell').evaluate(e=>getComputedStyle(e).boxShadow),'none','page frame does not blink');
- assert.equal(await page.locator('.gs26-status-count[data-alert=warning]').evaluate(e=>getComputedStyle(e).animationName),'gs26-button-warning');
+ // The pulse is a compositor-only opacity overlay on the alerting button.
+ assert.equal(await page.locator('.gs26-status-count[data-alert=warning]').evaluate(e=>getComputedStyle(e,'::after').animationName),'gs26-alert-glow');
  const pulseColors=await page.locator('.gs26-status-count[data-alert=warning]').evaluate(element=>{
-   const animation=element.getAnimations()[0];animation.pause();
-   const colors=[0,160,320,480,640,800].map(time=>{animation.currentTime=time;return getComputedStyle(element).backgroundColor;});
+   const animation=element.getAnimations({subtree:true})[0];animation.pause();
+   const colors=[0,160,320,480,640,800].map(time=>{animation.currentTime=time;return getComputedStyle(element,'::after').opacity;});
    animation.play();return colors;
  });
  assert(new Set(pulseColors).size>3,'warning pulse must interpolate smoothly rather than jump between two colors');
