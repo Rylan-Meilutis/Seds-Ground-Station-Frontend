@@ -13,6 +13,10 @@ mod persist {
         None
     }
 }
+// The watch companion publisher only runs in the full app.
+mod watch_companion {
+    pub fn use_demo_publisher() {}
+}
 #[component]
 fn App() -> Element {
     let mut exited = use_signal(|| false);
