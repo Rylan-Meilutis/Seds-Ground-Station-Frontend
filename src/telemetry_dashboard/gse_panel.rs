@@ -306,6 +306,10 @@ struct Status {
     baseline: Option<Noise>,
     #[serde(default)]
     valves: [Option<bool>; 5],
+    #[serde(default)]
+    overpressure_latched: bool,
+    #[serde(default)]
+    overpressure: Option<serde_json::Value>,
 }
 pub(super) async fn delay() {
     #[cfg(target_arch = "wasm32")]
@@ -472,6 +476,11 @@ pub(super) fn GsePanel(
                     }
                     span {"Latest board observation"}
                     if show_model {span {"Animation indicates sequence activity, not measured flow"}}
+                }
+                OverpressureAcknowledge {
+                    latched: snapshot.overpressure_latched,
+                    peak_psi: snapshot.overpressure.as_ref().and_then(|o| o["peak_psi"].as_f64()),
+                    detail: snapshot.overpressure.as_ref().and_then(|o| o["message"].as_str()).unwrap_or_default().to_string(),
                 }
                 p {style:"margin:0;color:{theme.text_primary};", "{snapshot.message}"}
                 p {style:"margin:0;", "Valve-board pressure (psi): {valve_pressure_label}"}
@@ -725,6 +734,49 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
 }
 
 /// Remains available while aborted, including when normal sequence controls lock.
+/// Shown while the station latches a tank overpressure. Acknowledging commands
+/// nothing; the station refuses it unless a fresh Valve Board pressure is below
+/// the relief limit, and it also acknowledges the Valve Board's relief hold.
+#[component]
+pub(super) fn OverpressureAcknowledge(latched: bool, peak_psi: Option<f64>, detail: String) -> Element {
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    let alive = super::recording_download::use_export_lifetime();
+    if !latched && message.read().is_empty() { return rsx! {}; }
+    let peak = peak_psi.map(|p| format!("{p:.0} psi")).unwrap_or_else(|| "unknown".into());
+    let permitted = auth::can_send_command("CancelFill");
+    rsx! {
+        div { role:"alert", style:"display:grid;gap:8px;justify-items:start;padding:12px 14px;border:1px solid #c0392b;border-radius:10px;background:#3a1512;color:#ffd6d0;",
+            if latched {
+                strong { "Tank overpressure latched · peak {peak}" }
+                if !detail.is_empty() { p { style:"margin:0;max-width:60ch;", "{detail}" } }
+                p { style:"margin:0;max-width:60ch;font-size:12px;", "Launch and fill stay blocked until this is acknowledged. The station accepts it only with a fresh Valve Board reading below the relief pressure, and it also releases the Valve Board relief hold. No valve is moved. Then use Reset all boards to clear board aborts." }
+                button { r#type:"button", disabled: *busy.read() || !permitted,
+                    onclick: move |_| {
+                        if !alive.load(Ordering::Acquire) || *busy.peek() || !auth::can_send_command("CancelFill") {return;}
+                        let owner = match capture_fill_owner(alive.clone()) { Ok(owner) => owner, Err(error) => {message.set(error); return;} };
+                        let request = super::station_settings_request::post_captured_no_redirect::<_,serde_json::Value>("/api/gse/overpressure/acknowledge", &serde_json::json!({}), Ok(owner.clone()));
+                        let alive = alive.clone();
+                        busy.set(true);
+                        spawn(async move {
+                            let result = request.await;
+                            if !alive.load(Ordering::Acquire) || !owner.is_current() {return;}
+                            match result {
+                                Ok(_) => message.set("Overpressure acknowledged. Valves unchanged. Use Reset all boards to clear board aborts.".into()),
+                                Err(error) => message.set(error),
+                            }
+                            busy.set(false);
+                        });
+                    },
+                    "Acknowledge overpressure"
+                }
+                if !permitted { p { style:"margin:0;font-size:12px;", "Requires permission to send fill commands." } }
+            }
+            if !message.read().is_empty() { p { role:"status", style:"margin:0;", "{message}" } }
+        }
+    }
+}
+
 #[component]
 pub(super) fn ClearGseAbort() -> Element {
     let mut confirming = use_signal(|| false);
