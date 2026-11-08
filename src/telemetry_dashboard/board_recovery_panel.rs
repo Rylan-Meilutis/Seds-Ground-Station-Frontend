@@ -100,6 +100,32 @@ impl RefreshIntent {
         Ok(fresh)
     }
 }
+/// Fresh PREPARE for an already reviewed intent. Fails closed unless the server
+/// returns the same action, targets and confirmation text the operator reviewed.
+async fn reconfirm_prepare(intent: &RefreshIntent) -> Result<Pending, String> {
+    let reviewed = &intent.original;
+    let snapshot = intent.read().await?;
+    let started = super::monotonic_now_ms();
+    let challenge = prepare_request(&snapshot, intent.owner.clone(), &reviewed.action, reviewed.board.as_deref(), reviewed.mode.as_deref()).await?;
+    intent.check_current()?;
+    if !same_reviewed_intent(&reviewed.challenge, &challenge) {
+        return Err("The station now proposes a different action or board set than you reviewed. Nothing was sent; review it again.".into());
+    }
+    let fresh = intent.read().await?;
+    if !challenge.matches(&fresh.status, &reviewed.action, reviewed.board.as_deref(), reviewed.mode.as_deref())
+        || !challenge_unexpired(started, challenge.expires_in_ms, super::monotonic_now_ms())
+    {
+        return Err("Board proof changed while preparing. Nothing was sent; review it again.".into());
+    }
+    Ok(Pending { owner: intent.owner.clone(), challenge, snapshot: fresh, received: started, action: reviewed.action.clone(), board: reviewed.board.clone(), mode: reviewed.mode.clone() })
+}
+fn same_reviewed_intent(reviewed: &Challenge, fresh: &Challenge) -> bool {
+    reviewed.action == fresh.action
+        && reviewed.targets == fresh.targets
+        && reviewed.confirmation == fresh.confirmation
+        && reviewed.backend_instance == fresh.backend_instance
+        && reviewed.principal_context == fresh.principal_context
+}
 fn prepare_request(
     snapshot: &Snapshot,
     owner: std::rc::Rc<super::recording_download::ExportOwner>,
@@ -677,7 +703,7 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                         {challenge_scope_view(&dialog.challenge)}
                         if !message.read().is_empty() {p{role:"status",style:"padding:10px;border:1px solid #b77b18;border-radius:8px;line-height:1.45;overflow-wrap:anywhere;","{message}"}}
                         if !dialog.locally_live() {
-                            p{role:"status",style:"padding:10px;border:1px solid #b77b18;border-radius:8px;background:#3b2c11;color:#ffdc8a;line-height:1.4;", "This review expired. Refresh the review to request fresh board proof, then confirm again. No action was sent."}
+                            p{role:"status",style:"padding:10px;border:1px solid #b77b18;border-radius:8px;background:#3b2c11;color:#ffdc8a;line-height:1.4;", "The board proof shown here is older than a few seconds. Confirm takes fresh proof first and sends only if the action and boards are unchanged."}
                         }
                     }
                     if !dialog.locally_live() {
@@ -701,12 +727,24 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                             }},"Refresh review"}
                     }
                     button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},disabled:*busy.read(),onclick:move |_|pending.set(None),"Cancel"}
-                    button{r#type:"button",disabled:*busy.read()||!connected||!permitted||!dialog.locally_live(),
+                    button{r#type:"button",disabled:*busy.read()||!connected||!permitted,
                         onclick:move |_|{
                             if *busy.peek()||!crate::auth::can_view_actions(){return;}
-                            let Some(owned)=pending.write().take()else{return;};
+                            let Ok(alive)=ui.alive.try_peek().map(|alive| alive.clone()) else{return;};
+                            let Some(reviewed)=pending.write().take()else{return;};
+                            // The server's board-proof window (about 5 s) starts at PREPARE, so a
+                            // human reading the review used it up before any board was reset. On
+                            // Confirm, take a fresh click owner, prepare again and confirm at once,
+                            // only if the server returns the exact action, targets and confirmation
+                            // text that were reviewed. Server-side checks are unchanged.
+                            let intent=match RefreshIntent::capture(&reviewed,alive){Ok(intent)=>intent,Err(error)=>{message.set(error);return;}};
                             busy.set(true);
+                            message.set("Taking fresh board proof for the reviewed action…".into());
                             spawn(async move{
+                                let owned=match reconfirm_prepare(&intent).await{
+                                    Ok(owned)=>owned,
+                                    Err(error)=>{if intent.check_current().is_ok(){message.set(error);busy.set(false);}return;}
+                                };
                                 if !owned.owner.is_current(){return;}
                                 let fresh=read_status().await;
                                 if !owned.owner.is_current(){return;}
@@ -743,6 +781,26 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn reviewed_challenge() -> Challenge {
+        serde_json::from_value(serde_json::json!({"ticket":"a","backend_instance":"b","principal_context":"p","reset_epoch":"e",
+            "expires_in_ms":5000,"action":"reset_startup","targets":["AB","VB"],"summary":"s","confirmation":"RESET ALL STARTUP; VERIFY AB VB"})).unwrap()
+    }
+    #[test]
+    fn confirm_reprepare_accepts_only_the_reviewed_intent() {
+        let reviewed = reviewed_challenge();
+        let mut fresh = reviewed_challenge();
+        fresh.ticket = "new-ticket".into();
+        fresh.reset_epoch = "e2".into();
+        assert!(same_reviewed_intent(&reviewed, &fresh), "new ticket/epoch for the same intent is allowed");
+        let mut other = fresh.clone(); other.targets = vec!["AB".into()];
+        assert!(!same_reviewed_intent(&reviewed, &other));
+        let mut other = fresh.clone(); other.confirmation = "RESET ALL STARTUP; VERIFY AB".into();
+        assert!(!same_reviewed_intent(&reviewed, &other));
+        let mut other = fresh.clone(); other.action = "recover_abort".into();
+        assert!(!same_reviewed_intent(&reviewed, &other));
+        let mut other = fresh; other.backend_instance = "restarted".into();
+        assert!(!same_reviewed_intent(&reviewed, &other));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     mod refresh_native_tests { include!("board_recovery_refresh_native_tests.rs"); }
     #[test]
