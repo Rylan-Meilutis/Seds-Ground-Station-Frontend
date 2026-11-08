@@ -24,20 +24,32 @@ static CURRENT_HOST_SCOPE: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new
 const AUTH_STORAGE_KEY: &str = "auth_session_v1";
 const AUTH_STORAGE_LIMIT: usize = 20;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub struct Permissions {
-    #[serde(default)]
-    pub view_data: bool,
-    #[serde(default)]
-    pub send_commands: bool,
-    #[serde(default)]
-    pub set_system_time: bool,
-    #[serde(default)]
-    pub voice_transmit: bool,
-    #[serde(default)]
-    pub camera_publish: bool,
-    #[serde(default)]
-    pub sign_checklists: bool,
+/// Every permission flag is declared once; `Permissions::all()` and
+/// `PERMISSION_NAMES` are generated from the same list, so an administrator
+/// session can never be shown as missing a flag added later.
+macro_rules! permission_set {
+    ($($field:ident),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+        pub struct Permissions {
+            $(#[serde(default)] pub $field: bool,)+
+        }
+        impl Permissions {
+            /// Every permission granted: what an application administrator holds.
+            pub const fn all() -> Self {
+                Self { $($field: true,)+ }
+            }
+        }
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub const PERMISSION_NAMES: &[&str] = &[$(stringify!($field),)+];
+    };
+}
+permission_set! {
+    view_data,
+    send_commands,
+    set_system_time,
+    voice_transmit,
+    camera_publish,
+    sign_checklists,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,11 +260,30 @@ fn authority_changed(before: &SessionStatus, after: &SessionStatus) -> bool {
         || before.can_edit_calibration != after.can_edit_calibration
 }
 
+impl SessionStatus {
+    fn signed_in_admin(&self) -> bool {
+        self.authenticated && !self.anonymous && self.roles.iter().any(|role| role == "admin")
+    }
+    /// A signed-in administrator always holds every permission, whatever an
+    /// older backend or a saved session reported. Station-level admission
+    /// (such as the RRLS primary proxy) is still checked separately.
+    pub fn with_role_authority(mut self) -> Self {
+        if self.signed_in_admin() {
+            self.permissions = Permissions::all();
+            self.allowed_commands.clear();
+            self.can_view_calibration = Some(true);
+            self.can_edit_calibration = Some(true);
+        }
+        self
+    }
+}
+
 pub fn current_status() -> SessionStatus {
     CURRENT_STATUS
         .lock()
         .map(|slot| slot.clone())
         .unwrap_or_default()
+        .with_role_authority()
 }
 
 pub fn station_app_name() -> &'static str {
@@ -450,7 +481,8 @@ pub async fn fetch_session_status(
     let url = build_url(base, "/api/auth/session")?;
     let text = auth_request_get(&url, skip_tls_verify, true, true).await?;
     let status = serde_json::from_str::<SessionStatus>(&text)
-        .map_err(|e| format!("invalid auth JSON: {e}"))?;
+        .map_err(|e| format!("invalid auth JSON: {e}"))?
+        .with_role_authority();
     #[cfg(target_arch = "wasm32")]
     configure_browser_discovery(status.station_pairing.as_ref());
     if let Ok(mut session_slot) = CURRENT_SESSION.lock() {
@@ -1188,5 +1220,66 @@ mod primary_proxy_permissions {
         assert!(status.command_proxy.is_none());
         assert!(!can_send_command_for_status(&status,"Launch"));
         assert!(!command_uses_primary_proxy(&status,"ResetTClock"));
+    }
+}
+
+#[cfg(test)]
+mod admin_authority_tests {
+    use super::*;
+    fn admin(permissions: Permissions) -> SessionStatus {
+        SessionStatus {
+            authenticated: true,
+            roles: vec!["admin".into()],
+            permissions,
+            allowed_commands: vec!["Pilot".into()],
+            can_view_calibration: Some(false),
+            can_edit_calibration: None,
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn permission_names_cover_every_serialized_flag() {
+        let value = serde_json::to_value(Permissions::default()).unwrap();
+        let mut stored: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
+        let mut listed: Vec<_> = PERMISSION_NAMES.iter().map(|n| n.to_string()).collect();
+        stored.sort();
+        listed.sort();
+        assert_eq!(stored, listed);
+        let all = serde_json::to_value(Permissions::all()).unwrap();
+        assert!(all.as_object().unwrap().values().all(|v| v == &serde_json::Value::Bool(true)));
+    }
+    #[test]
+    fn admin_status_holds_every_permission_whatever_was_reported() {
+        let mut variants = vec![Permissions::default(), Permissions::all()];
+        for name in PERMISSION_NAMES {
+            let mut only = serde_json::to_value(Permissions::default()).unwrap();
+            only[*name] = true.into();
+            variants.push(serde_json::from_value(only).unwrap());
+        }
+        for reported in variants {
+            let status = admin(reported).with_role_authority();
+            assert_eq!(status.permissions, Permissions::all());
+            let value = serde_json::to_value(status.permissions).unwrap();
+            for name in PERMISSION_NAMES {
+                assert_eq!(value[*name], true, "{name}");
+            }
+            assert!(status.allowed_commands.is_empty());
+            assert_eq!(status.can_edit_calibration, Some(true));
+            assert!(camera_permission(&status) && voice_permission(&status));
+            assert!(can_send_command_for_status(&status, "FirmwareUpdate"));
+        }
+    }
+    #[test]
+    fn non_admin_and_anonymous_status_is_unchanged() {
+        let operator = Permissions { view_data: true, ..Default::default() };
+        let mut status = admin(operator);
+        status.roles = vec!["stream_admin".into()];
+        assert_eq!(status.clone().with_role_authority().permissions, operator);
+        let mut status = admin(operator);
+        status.anonymous = true;
+        assert_eq!(status.with_role_authority().permissions, operator);
+        let mut status = admin(operator);
+        status.authenticated = false;
+        assert_eq!(status.with_role_authority().permissions, operator);
     }
 }

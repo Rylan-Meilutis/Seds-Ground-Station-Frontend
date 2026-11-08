@@ -91,6 +91,7 @@ impl Server{
                     let reply=match(method.as_str(),path.as_str()){
                         ("GET","/api/admin/users")=>serde_json::json!([account]),
                         ("POST","/api/admin/users")|("POST","/api/admin/users/create")=>{let mut v=body.clone();v.as_object_mut().unwrap().remove("password");v},
+                        ("POST","/api/admin/users/delete")=>serde_json::json!({"deleted":body["username"]}),
                         ("GET","/api/station_positions")=>serde_json::json!({"revision":0,"ground_station":null,"rrls":null}),
                         ("GET","/api/station/pairing")=>serde_json::json!({"role":"primary","paired":false,"source":null,"error":null,"peers":[],"fingerprint":null,"restart_required":false,"can_manage":true,"radio_available":true,"unpair_available":false,"exchange":null,"primary_link":null}),
                         ("GET","/api/recordings")=>serde_json::json!([{"id":"record-r","bytes":1,"active":false}]),
@@ -293,4 +294,24 @@ async fn actual_current_owner401_is_original_error_without_auth_clear_or_retry()
     assert!(!html(&dom).contains("This panel has retired"));assert!(!html(&dom).contains("Account saved"));
     assert_original_post(&server,"/api/admin/users");
     let (busy,message)=admin_read()();assert!(!busy);assert!(message.contains("401"),"unchanged-owner actual error/cleanup remains visible to original Signal observer");
+}
+
+#[tokio::test(flavor="current_thread")]
+async fn actual_admin_delete_requires_confirmation_then_removes_the_row(){
+    if !isolated("actual_admin_delete_requires_confirmation_then_removes_the_row"){return;}
+    let server=Server::new();let mut dom=dom(&server,"admin");
+    until(&mut dom,&server,|d|html(d).contains("Save target-original")).await;
+    assert!(html(&dom).contains("1 accounts · 1 active"));
+    click(&dom,"Delete target-original");render(&mut dom);
+    assert!(html(&dom).contains("Delete target-original?"),"destructive action asks first");
+    assert_eq!(server.count("POST","/api/admin/users/delete"),0);
+    click(&dom,"Delete permanently");
+    until(&mut dom,&server,|d|html(d).contains("Deleted target-original")).await;
+    assert_eq!(server.count("POST","/api/admin/users/delete"),1);
+    let rows=server.rows.lock().unwrap();
+    let row=rows.iter().find(|r|r.path=="/api/admin/users/delete").unwrap();
+    assert_eq!(row.body,serde_json::json!({"username":"target-original"}));
+    assert_eq!(row.headers.get("authorization").map(String::as_str),Some("Bearer neutral-original"));
+    drop(rows);
+    assert!(!html(&dom).contains("Save target-original"));
 }
