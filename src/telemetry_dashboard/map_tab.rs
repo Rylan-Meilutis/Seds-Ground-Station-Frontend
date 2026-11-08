@@ -685,7 +685,7 @@ pub fn MapTab(
                     div { style: "display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:10px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:0.82rem; font-weight:700; line-height:1.2;",
                         span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{map_error_text}" }
                         button {
-                            style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer; flex:0 0 auto;",
+                            style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:var(--gs-font); cursor:pointer; flex:0 0 auto;",
                             onclick: {
                                 let mut dismissed_map_runtime_error_token = dismissed_map_runtime_error_token;
                                 let token = map_runtime_error_token.read().clone();
@@ -730,7 +730,7 @@ pub fn MapTab(
                     div { style: "margin:0 8px; display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:10px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:0.82rem; font-weight:700; line-height:1.2;",
                         span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{map_error_text}" }
                         button {
-                            style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer; flex:0 0 auto;",
+                            style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:var(--gs-font); cursor:pointer; flex:0 0 auto;",
                             onclick: {
                                 let mut dismissed_map_runtime_error_token = dismissed_map_runtime_error_token;
                                 let token = map_runtime_error_token.read().clone();

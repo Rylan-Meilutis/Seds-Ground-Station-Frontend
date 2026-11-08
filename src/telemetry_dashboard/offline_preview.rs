@@ -84,6 +84,7 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
         theme.button_text
     );
     rsx! {
+        style {{include_str!("../design_system.css")}}
         style {{include_str!("navigation_rail.css")}}
         style {{include_str!("controls.css")}}
         style {{include_str!("offline_preview.css")}}

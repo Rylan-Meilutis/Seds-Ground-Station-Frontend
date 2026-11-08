@@ -1,4 +1,4 @@
-.gs26-sequence-view,.gs26-sequence-chip{font-family:system-ui,-apple-system,BlinkMacSystemFont;color:var(--gs26-app-text,#e7eef6);background:var(--gs26-panel-background,#12202e);border:1px solid #496079;box-shadow:0 16px 60px #0005;box-sizing:border-box;z-index:1200}
+.gs26-sequence-view,.gs26-sequence-chip{font-family:var(--gs-font);color:var(--gs26-app-text,#e7eef6);background:var(--gs26-panel-background,#12202e);border:1px solid #496079;box-shadow:0 16px 60px #0005;box-sizing:border-box;z-index:1200}
 .gs26-sequence-view{position:fixed;right:16px;bottom:max(16px,env(safe-area-inset-bottom));width:min(960px,calc(100vw - 32px));height:min(84dvh,880px);max-height:calc(100dvh - 112px);border-radius:18px;display:flex;flex-direction:column;overflow:hidden;padding:18px;gap:12px}
 .gs26-sequence-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;overflow-anchor:none;display:flex;flex-direction:column;gap:12px;padding:2px;}
 .gs26-sequence-view>header,.gs26-sequence-view>footer{flex:0 0 auto;}

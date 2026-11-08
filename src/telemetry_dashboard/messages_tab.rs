@@ -2,7 +2,7 @@ use super::{PersistentNotification, format_timestamp_ms_clock, prelude::*};
 
 #[component]
 pub fn MessagesTab(history: Signal<Vec<PersistentNotification>>, theme: ThemeConfig) -> Element {
-    let font_stack = "system-ui, -apple-system, BlinkMacSystemFont";
+    let font_stack = "var(--gs-font)";
     let entries = history.read().clone();
 
     rsx! {

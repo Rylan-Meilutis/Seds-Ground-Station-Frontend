@@ -76,7 +76,7 @@ pub fn Connect() -> Element {
         div {
             class: "gs26-connect-screen",
             style: format!(
-                "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+                "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:var(--gs-font);",
                 theme.app_background, theme.text_primary
             ),
             style { {include_str!("connection_setup.css")} }

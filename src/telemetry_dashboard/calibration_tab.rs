@@ -2677,7 +2677,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         "Calibration Fit"
                     }
                     div {
-                        style: "color:{fit_color}; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; white-space:pre-wrap; word-break:break-word; line-height:1.45; min-height:20px;",
+                        style: "color:{fit_color}; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; white-space:pre-wrap; word-break:break-word; line-height:1.45; min-height:20px;",
                         "{fit_equation_text}"
                     }
                 }
@@ -3075,7 +3075,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         div {
                             style: "display:grid; gap:6px; padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt};",
                             div { style: "font-size:12px; font-weight:700; color:{theme.text_secondary}; text-transform:uppercase; letter-spacing:0.04em;", "Current Points" }
-                            pre { style: "margin:0; font-size:12px; line-height:1.5; color:{theme.text_primary}; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{sequence_points_summary}" }
+                            pre { style: "margin:0; font-size:12px; line-height:1.5; color:{theme.text_primary}; white-space:pre-wrap; word-break:break-word; font-family:var(--gs-font-mono);", "{sequence_points_summary}" }
                         }
                         div { style: "display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap;",
                             button {
@@ -3180,7 +3180,7 @@ fn metric_card(theme: &ThemeConfig, label: &str, value: String) -> Element {
         div { style: "padding:10px 12px; border:1px solid {theme.border_soft}; border-radius:12px; background:{theme.panel_background_alt};",
             div { style: "font-size:11px; color:{theme.text_muted}; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.04em;", "{label}" }
             div {
-                style: "font-size:14px; color:{theme.text_primary}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; min-width:14ch; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; font-weight:700;",
+                style: "font-size:14px; color:{theme.text_primary}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; min-width:14ch; text-align:right; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; font-weight:700;",
                 "{value}"
             }
         }

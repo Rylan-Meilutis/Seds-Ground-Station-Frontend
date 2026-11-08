@@ -602,7 +602,7 @@ fn metric_card(theme: &ThemeConfig, title: &str, rows: Vec<(&'static str, String
                 for (label, value) in rows {
                     div { style: "display:flex; justify-content:space-between; gap:16px; align-items:flex-start; min-width:0;",
                         span { style: "color:{theme.text_muted}; font-size:12px; flex:0 0 auto;", "{label}" }
-                        span { style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
+                        span { style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
                     }
                 }
             }
@@ -618,7 +618,7 @@ fn metric_card_owned(theme: &ThemeConfig, title: &str, rows: Vec<(String, String
                 for (label, value) in rows {
                     div { style: "display:flex; justify-content:space-between; gap:16px; align-items:flex-start; min-width:0;",
                         span { style: "color:{theme.text_muted}; font-size:12px; flex:0 0 auto;", "{label}" }
-                        span { style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
+                        span { style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
                     }
                 }
             }
@@ -646,7 +646,7 @@ fn prefetch_status_card(theme: &ThemeConfig) -> Element {
                 for (label, id) in rows {
                     div { style: "display:flex; justify-content:space-between; gap:16px; align-items:flex-start; min-width:0;",
                         span { style: "color:{theme.text_muted}; font-size:12px; flex:0 0 auto;", "{label}" }
-                        span { id: "{id}", style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "--" }
+                        span { id: "{id}", style: "color:{theme.text_primary}; font-size:13px; text-align:right; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "--" }
                     }
                 }
             }
@@ -754,7 +754,7 @@ fn td_style(theme: &ThemeConfig) -> String {
 
 fn td_style_mono(theme: &ThemeConfig) -> String {
     format!(
-        "padding:8px 6px; border-bottom:1px solid {}; color:{}; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums; white-space:normal; overflow-wrap:anywhere; word-break:break-word;",
+        "padding:8px 6px; border-bottom:1px solid {}; color:{}; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; white-space:normal; overflow-wrap:anywhere; word-break:break-word;",
         theme.border_soft, theme.text_secondary
     )
 }

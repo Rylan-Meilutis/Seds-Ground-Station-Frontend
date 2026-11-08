@@ -1185,7 +1185,7 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
             span { style: "color:#cbd5e1; display:inline-flex; align-items:baseline; white-space:nowrap;",
                 "({label}:"
                 span {
-                    style: "display:inline-flex; align-items:baseline; width:16ch; padding-left:0.4ch; white-space:nowrap; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-variant-numeric:tabular-nums;",
+                    style: "display:inline-flex; align-items:baseline; width:16ch; padding-left:0.4ch; white-space:nowrap; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums;",
                     span { "{ts}" }
                     span { ")" }
                 }

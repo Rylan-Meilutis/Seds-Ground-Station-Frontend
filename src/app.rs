@@ -314,7 +314,7 @@ fn LoginCard(
         div {
             style: if overlay_mode {
                 format!(
-                    "width:min(560px, 92vw); color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+                    "width:min(560px, 92vw); color:{}; font-family:var(--gs-font);",
                     theme.text_primary
                 )
             } else {
@@ -484,7 +484,7 @@ pub fn Login() -> Element {
         return rsx! {
             div {
                 style: format!(
-                    "height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+                    "height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:var(--gs-font);",
                     shell_theme().app_background,
                     shell_theme().text_primary
                 ),
@@ -541,7 +541,7 @@ pub fn Settings() -> Element {
     rsx! {
         div {
             style: format!(
-                "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+                "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:var(--gs-font);",
                 theme.app_background, theme.text_primary
             ),
             div {
@@ -588,7 +588,7 @@ pub fn Version() -> Element {
     rsx! {
         div {
             style: format!(
-                "position:fixed; inset:0; overflow-y:auto; overflow-x:hidden; display:flex; align-items:flex-start; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;",
+                "position:fixed; inset:0; overflow-y:auto; overflow-x:hidden; display:flex; align-items:flex-start; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:var(--gs-font); overscroll-behavior:contain; -webkit-overflow-scrolling:touch;",
                 theme.app_background,
                 theme.text_primary
             ),
@@ -619,7 +619,7 @@ pub fn Dashboard() -> Element {
             return rsx! {
                 div {
                     style: format!(
-                        "height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+                        "height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:var(--gs-font);",
                         theme.app_background,
                         theme.text_primary
                     ),
@@ -699,7 +699,7 @@ pub fn Dashboard() -> Element {
     let access_key = serde_json::json!([access.username,access.roles,access.permissions]).to_string();
     let content = match auth_state.read().as_ref() {
         None => rsx! {
-            div { style: format!("height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;", shell_theme().app_background, shell_theme().text_primary),
+            div { style: format!("height:var(--gs26-app-height); display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:var(--gs-font);", shell_theme().app_background, shell_theme().text_primary),
                 div {
                     style: format!("padding:20px; border:1px solid {}; border-radius:16px; background:{}; width:min(560px, calc(100% - 32px)); min-width:0; box-sizing:border-box; overflow-wrap:anywhere;", shell_theme().border_strong, shell_theme().panel_background),
                     h1 { style: "margin:0 0 10px 0; font-size:22px;", "Checking session..." }

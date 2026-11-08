@@ -95,7 +95,7 @@ fn ensure_document_inline_style(id: &str, text: &str) {
 
 fn shell_page_style(theme: &ThemeConfig) -> String {
     format!(
-        "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow-y:auto; overflow-x:hidden; display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont;",
+        "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow-y:auto; overflow-x:hidden; display:flex; align-items:center; justify-content:center; background:{}; color:{}; font-family:var(--gs-font);",
         theme.app_background, theme.text_primary
     )
 }
@@ -109,14 +109,14 @@ fn shell_card_style(theme: &ThemeConfig, width: &str) -> String {
 
 fn shell_button_style(theme: &ThemeConfig) -> String {
     format!(
-        "min-height:44px; padding:10px 14px; border-radius:12px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer;",
+        "min-height:44px; padding:10px 14px; border-radius:12px; border:1px solid {}; background:{}; color:{}; font-family:var(--gs-font); cursor:pointer;",
         theme.button_border, theme.button_background, theme.button_text
     )
 }
 
 fn shell_button_alt_style(theme: &ThemeConfig) -> String {
     format!(
-        "min-height:44px; padding:10px 14px; border-radius:12px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; cursor:pointer;",
+        "min-height:44px; padding:10px 14px; border-radius:12px; border:1px solid {}; background:{}; color:{}; font-family:var(--gs-font); cursor:pointer;",
         theme.tab_shell_border, theme.panel_background_alt, theme.text_primary
     )
 }

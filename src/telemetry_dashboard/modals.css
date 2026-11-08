@@ -4,7 +4,7 @@
 [aria-labelledby="board-recovery-confirm-title"],
 .gs26-sequence-view,
 .gs26-sequence-chip {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont;
+  font-family:var(--gs-font);
   line-height: 1.5;
 }
 .gs26-modal :is(h1,h2,h3,h4,p,label),

@@ -14,7 +14,7 @@ pub fn NotificationsTab(
         .cloned()
         .collect::<Vec<_>>();
     let has_history = !entries.is_empty();
-    let font_stack = "system-ui, -apple-system, BlinkMacSystemFont";
+    let font_stack = "var(--gs-font)";
     let clear_button_style = format!(
         "padding:0.25rem 0.65rem; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.75rem; font-family:{}; cursor:{}; opacity:{};",
         theme.button_border,

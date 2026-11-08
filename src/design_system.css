@@ -6,7 +6,10 @@
   --gs-space-1: 4px; --gs-space-2: 8px; --gs-space-3: 12px;
   --gs-space-4: 16px; --gs-space-5: 24px; --gs-space-6: 32px;
   --gs-radius-sm: 8px; --gs-radius: 10px; --gs-radius-lg: 14px;
-  --gs-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* One UI font everywhere. system-ui alone has no fallback on WebKitGTK/older
+     WebViews, which then render Times; always end in a generic family. */
+  --gs-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+  --gs-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
   --gs-text-xs: 12px; --gs-text-sm: 13px; --gs-text-md: 15px;
   --gs-text-lg: 18px; --gs-text-xl: 22px;
   --gs-surface: var(--gs26-panel-background, #0b1628);
@@ -26,6 +29,9 @@
   --gs-danger-text: var(--gs26-error-text, #ffd1db);
   --gs-shadow: 0 1px 2px rgba(0,0,0,.18);
 }
+html, body { font-family: var(--gs-font); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+:where(button, input, select, textarea) { font-family: inherit; }
+:where(code, pre, kbd, samp) { font-family: var(--gs-font-mono); }
 
 /* Buttons: neutral (default), primary, danger, ghost. */
 .gs-btn {

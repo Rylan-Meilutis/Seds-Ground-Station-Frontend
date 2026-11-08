@@ -1403,7 +1403,7 @@ fn flight_setup_metric(label: &str, value: String, theme: &ThemeConfig) -> Eleme
     rsx! {
         div { style: "padding:10px 12px; border-radius:10px; border:1px solid {theme.border}; background:{theme.panel_background_alt};",
             div { style: "font-size:11px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px;", "{translate_text(label)}" }
-            div { style: "font-size:14px; color:{theme.text_primary}; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;", "{value}" }
+            div { style: "font-size:14px; color:{theme.text_primary}; font-family:var(--gs-font-mono);", "{value}" }
         }
     }
 }

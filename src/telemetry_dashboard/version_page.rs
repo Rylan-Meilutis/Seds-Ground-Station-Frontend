@@ -151,7 +151,7 @@ pub fn VersionTab(theme: ThemeConfig) -> Element {
     }
 
     rsx! {
-        div { style: "padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
+        div { style: "padding:16px; overflow:visible; font-family:var(--gs-font); color:{theme.text_primary};",
             h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "Version" }
 
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px;",
@@ -196,7 +196,7 @@ fn SectionCard(
     rows: Vec<(&'static str, String)>,
 ) -> Element {
     rsx! {
-        div { style: "padding:14px; border:1px solid {theme.border}; border-radius:14px; background:{theme.panel_background}; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
+        div { style: "padding:14px; border:1px solid {theme.border}; border-radius:14px; background:{theme.panel_background}; font-family:var(--gs-font); color:{theme.text_primary};",
             div { style: "font-size:14px; color:{theme.text_muted}; margin-bottom:10px;", "{title}" }
             div { style: "display:flex; flex-direction:column; gap:10px;",
                 for (label, value) in rows {

@@ -215,15 +215,15 @@ pub fn SettingsPage(
         theme.border, theme.panel_background
     );
     let chip_selected = format!(
-        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:700; cursor:pointer;",
+        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:var(--gs-font); font-size:0.9rem; font-weight:700; cursor:pointer;",
         theme.info_accent, theme.info_background, theme.text_primary
     );
     let chip_idle = format!(
-        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:600; cursor:pointer;",
+        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:var(--gs-font); font-size:0.9rem; font-weight:600; cursor:pointer;",
         theme.button_border, theme.button_background, theme.button_text
     );
     let chip_disabled = format!(
-        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:600; cursor:not-allowed; opacity:0.5; filter:saturate(0.7);",
+        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:var(--gs-font); font-size:0.9rem; font-weight:600; cursor:not-allowed; opacity:0.5; filter:saturate(0.7);",
         theme.button_border, theme.button_background, theme.button_text
     );
     let settings_tab_bar_style = format!(
@@ -756,11 +756,11 @@ pub fn SettingsPage(
         "Supprime les jetons locaux, les reglages enregistres, les tuiles en cache et les caches de donnees du frontend.",
     );
     let danger_idle = format!(
-        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:700; cursor:pointer;",
+        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:var(--gs-font); font-size:0.9rem; font-weight:700; cursor:pointer;",
         theme.warning_border, theme.warning_background, theme.warning_text
     );
     let confirm_idle = format!(
-        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:system-ui, -apple-system, BlinkMacSystemFont; font-size:0.9rem; font-weight:700; cursor:pointer;",
+        "padding:8px 12px; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-family:var(--gs-font); font-size:0.9rem; font-weight:700; cursor:pointer;",
         theme.button_border, theme.button_background, theme.button_text
     );
     let reset_confirm_title = localized_copy(
@@ -950,7 +950,7 @@ pub fn SettingsPage(
 
     rsx! {
         style { {include_str!("controls.css")} }
-        div { class:"gs26-settings", style: "--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};--gs-field-bg:{theme.panel_background_alt};--gs-field-text:{theme.text_primary};padding:16px; overflow:visible; font-family:system-ui, -apple-system, BlinkMacSystemFont; color:{theme.text_primary};",
+        div { class:"gs26-settings", style: "--gs-control-bg:{theme.button_background};--gs-control-border:{theme.button_border};--gs-control-text:{theme.button_text};--gs-field-bg:{theme.panel_background_alt};--gs-field-text:{theme.text_primary};padding:16px; overflow:visible; font-family:var(--gs-font); color:{theme.text_primary};",
             h2 { style: "margin:0 0 14px 0; color:{theme.text_primary};", "{title}" }
             nav { aria_label: "Settings scope", style: "display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;",
                 for (scope, label) in [("client", "Client"), ("station", "Ground Station")] {
@@ -1323,21 +1323,21 @@ pub fn SettingsPage(
                         div {
                             id: "gs26-prefetch-user-estimate-text",
                             "data-waiting-text": "{prefetch_estimate_waiting}",
-                            style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width:0;",
+                            style: "font-size:13px; color:{theme.text_primary}; font-family:var(--gs-font-mono); min-width:0;",
                             "{prefetch_estimate_waiting}"
                         }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_estimate_rocket_label}" }
                         div {
                             id: "gs26-prefetch-rocket-estimate-text",
                             "data-waiting-text": "{prefetch_estimate_waiting}",
-                            style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width:0;",
+                            style: "font-size:13px; color:{theme.text_primary}; font-family:var(--gs-font-mono); min-width:0;",
                             "{prefetch_estimate_waiting}"
                         }
                         div { style: "font-size:13px; color:{theme.text_soft};", "{prefetch_estimate_combined_label}" }
                         div {
                             id: "gs26-prefetch-combined-estimate-text",
                             "data-waiting-text": "{prefetch_estimate_waiting}",
-                            style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width:0;",
+                            style: "font-size:13px; color:{theme.text_primary}; font-family:var(--gs-font-mono); min-width:0;",
                             "{prefetch_estimate_waiting}"
                         }
                     }
@@ -1827,7 +1827,7 @@ pub fn SettingsPage(
                         div { style: "display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:6px 14px; align-items:center; max-width:520px;",
                             for (label, value) in storage_breakdown.iter() {
                                 div { style: "font-size:13px; color:{theme.text_soft}; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;", "{label}" }
-                                div { style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align:right;", "{value}" }
+                                div { style: "font-size:13px; color:{theme.text_primary}; font-family:var(--gs-font-mono); text-align:right;", "{value}" }
                             }
                         }
                     }
@@ -1845,7 +1845,7 @@ pub fn SettingsPage(
                             div { style: "display:flex; flex-direction:column; gap:8px;",
                                 for artifact in log_artifacts.iter().cloned() {
                                     div { style: "display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:10px 12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background_alt};",
-                                        div { style: "font-size:13px; color:{theme.text_primary}; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;", "{artifact.label}" }
+                                        div { style: "font-size:13px; color:{theme.text_primary}; font-family:var(--gs-font-mono);", "{artifact.label}" }
                                         button {
                                             style: chip_idle.clone(),
                                             onclick: {

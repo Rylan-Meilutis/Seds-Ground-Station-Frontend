@@ -1339,12 +1339,12 @@ fn render_node(
                             div {
                                 style: "display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border-radius:10px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:0.8rem;",
                                 span { "Network TX" }
-                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.packets_sent)} pkt / {format_byte_count(stats.bytes_sent)}" }
+                                span { style: "font-family:var(--gs-font-mono); color:{theme.text_primary};", "{format_packet_count(stats.packets_sent)} pkt / {format_byte_count(stats.bytes_sent)}" }
                             }
                             div {
                                 style: "display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border-radius:10px; border:1px solid {theme.border_soft}; background:{theme.panel_background_alt}; color:{theme.text_secondary}; font-size:0.8rem;",
                                 span { "Network RX" }
-                                span { style: "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; color:{theme.text_primary};", "{format_packet_count(stats.packets_received)} pkt / {format_byte_count(stats.bytes_received)}" }
+                                span { style: "font-family:var(--gs-font-mono); color:{theme.text_primary};", "{format_packet_count(stats.packets_received)} pkt / {format_byte_count(stats.bytes_received)}" }
                             }
                         }
                     } else {

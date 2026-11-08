@@ -658,7 +658,7 @@ fn render_board_table(
         theme.border_soft, theme.app_background, theme.text_primary
     );
     let numeric_cell_style = format!(
-        "padding:8px; border-bottom:1px solid {}; background:{}; color:{}; min-width:0; white-space:nowrap; font-variant-numeric:tabular-nums; font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;",
+        "padding:8px; border-bottom:1px solid {}; background:{}; color:{}; min-width:0; white-space:nowrap; font-variant-numeric:tabular-nums; font-family:var(--gs-font-mono);",
         theme.border_soft, theme.app_background, theme.text_primary
     );
     let border_right = format!("border-right:1px solid {};", theme.border_soft);
