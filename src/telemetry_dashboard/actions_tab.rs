@@ -1117,13 +1117,18 @@ pub(super) fn MissionSettings(
     layout.show_flight_setup = true;
     layout.show_fill_targets = true;
     let mut auto_zero = use_signal(|| None::<bool>);
+    let mut zero_before_launch = use_signal(|| None::<bool>);
     let mut auto_zero_busy = use_signal(|| false);
     let mut auto_zero_message = use_signal(String::new);
     use_effect(move || {
         if !settings_owner.current() { return; }
         spawn(async move {
             match settings_owner.get::<serde_json::Value>("/api/auto_zero").await {
-                Ok(value) => auto_zero.set(value["enabled"].as_bool()),
+                Ok(value) => {
+                    auto_zero.set(value["enabled"].as_bool());
+                    // Older stations omit the opt-in field; it is off there.
+                    zero_before_launch.set(value["enabled"].as_bool().map(|_| value["before_launch"].as_bool().unwrap_or(false)));
+                }
                 Err(_) if !settings_owner.current() => (),
                 Err(error) => {
                     auto_zero_message.set(format!("Automatic zero settings unavailable: {error}"))
@@ -1194,7 +1199,11 @@ pub(super) fn MissionSettings(
                         auto_zero_busy.set(true);
                         spawn(async move {
                             match settings_owner.post::<_, serde_json::Value>("/api/auto_zero", &serde_json::json!({"enabled": enabled})).await {
-                                Ok(saved) => { auto_zero.set(saved["enabled"].as_bool()); auto_zero_message.set("Automatic zero setting saved".into()); }
+                                Ok(saved) => {
+                                    auto_zero.set(saved["enabled"].as_bool());
+                                    zero_before_launch.set(Some(saved["before_launch"].as_bool().unwrap_or(false)));
+                                    auto_zero_message.set("Automatic zero setting saved".into());
+                                }
                                 Err(_) if !settings_owner.current() => return,
                                 Err(error) => auto_zero_message.set(format!("Setting not changed: {error}")),
                             }
@@ -1207,6 +1216,32 @@ pub(super) fn MissionSettings(
             super::gse_panel::ControlHelp {title:"automatic zero",paragraphs:vec![
                 "Fill uses 200 recent samples when stable within ±0.8 kg. Otherwise it captures 200 fresh samples and ignores isolated outliers.".into(),
                 "Turning this off preserves the existing tare. Offsets beyond ±0.8 kg require inspection and manual tare.".into()
+            ]}
+            label {
+                input { r#type: "checkbox", checked: zero_before_launch().unwrap_or(false),
+                    disabled: zero_before_launch().is_none() || auto_zero_busy() || abort_only_mode || !auth::can_edit_calibration(),
+                    onchange: move |event| {
+                        let before_launch = event.checked();
+                        auto_zero_busy.set(true);
+                        spawn(async move {
+                            match settings_owner.post::<_, serde_json::Value>("/api/auto_zero", &serde_json::json!({"before_launch": before_launch})).await {
+                                Ok(saved) => {
+                                    auto_zero.set(saved["enabled"].as_bool());
+                                    zero_before_launch.set(Some(saved["before_launch"].as_bool().unwrap_or(false)));
+                                    auto_zero_message.set("Zero before Launch setting saved".into());
+                                }
+                                Err(_) if !settings_owner.current() => return,
+                                Err(error) => auto_zero_message.set(format!("Setting not changed: {error}")),
+                            }
+                            auto_zero_busy.set(false);
+                        });
+                    }
+                }
+                " Zero loadcell before Launch"
+            }
+            super::gse_panel::ControlHelp {title:"zero before Launch",paragraphs:vec![
+                "Off by default. When on, pressing Launch first zeroes the 1000 kg loadcell (at least 100 samples, up to 10 seconds, same ±0.8 kg check) and sends the tare to the DAQ. Launch, T-10 and the DAQ launch file start only after that, so the launch file uses the new zero.".into(),
+                "Cancel, Stop or Abort during the zero cancels the Launch. If the zero fails, Launch is still sent and warns that the previous calibration is in use. When on, it replaces the zero that otherwise runs during the countdown.".into()
             ]}
             if !auto_zero_message().is_empty() { p { "{auto_zero_message}" } }
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap:12px; align-items:start; width:100%; max-width:none; box-sizing:border-box;",

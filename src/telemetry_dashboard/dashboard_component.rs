@@ -3308,6 +3308,7 @@ fn TelemetryDashboardInner() -> Element {
                         }
                         station_mode::OperatingModeNotice {visible:false}
                         recovery_marker::RecoveryRuntime {}
+                        launch_zero_notice::LaunchZeroNotice {action_policy, theme:theme.clone()}
                         if !*WS_CONNECTED_SIGNAL.read() || layout_cached_error_banner.is_some() {
                             aside {
                                 role:"alert", class:"gs26-connection-notice gs26-layout-notice",

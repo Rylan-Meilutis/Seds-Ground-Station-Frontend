@@ -184,7 +184,7 @@ fn summary(key: &str, value: &Value) -> Vec<(String, String)> {
             ];
         }
         "mission/auto_zero_preference" => {
-            return vec![(
+            let mut rows = vec![(
                 "Automatic zeroing".into(),
                 if value["enabled"] == true {
                     "Enabled"
@@ -193,6 +193,10 @@ fn summary(key: &str, value: &Value) -> Vec<(String, String)> {
                 }
                 .into(),
             )];
+            if value["before_launch"] == true {
+                rows.push(("Zero before Launch".into(), "Enabled".into()));
+            }
+            return rows;
         }
         "mission/saved_station_positions" => {
             return [("ground_station", "GroundStation"), ("rrls", "RRLS")]
@@ -492,6 +496,13 @@ mod tests {
         assert_eq!(
             summary("mission/auto_zero_preference", &json!({"enabled":true})),
             vec![("Automatic zeroing".into(), "Enabled".into())]
+        );
+        assert_eq!(
+            summary("mission/auto_zero_preference", &json!({"enabled":false,"before_launch":true})),
+            vec![
+                ("Automatic zeroing".into(), "Disabled".into()),
+                ("Zero before Launch".into(), "Enabled".into())
+            ]
         );
         assert!(short(&"😀".repeat(100)).chars().count() <= 81);
         assert_eq!(limits.len(), 5);

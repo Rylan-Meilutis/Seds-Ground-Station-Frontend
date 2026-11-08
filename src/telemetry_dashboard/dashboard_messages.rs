@@ -94,7 +94,21 @@ pub struct ActionPolicyMsg {
     pub hitl_launch_interlock_satisfied: bool,
     #[serde(default)]
     pub local_phase_controls: bool,
+    /// A Launch press held behind the opt-in loadcell zero.
+    #[serde(default)]
+    pub launch_zero: Option<LaunchZeroStatus>,
     pub controls: Vec<ActionControl>,
+}
+
+/// Progress of the opt-in "Zero loadcell before Launch" capture.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct LaunchZeroStatus {
+    pub remaining_s: u64,
+    #[serde(default)]
+    pub samples: u32,
+    /// The zero is finished and Launch is being sent; Cancel no longer applies.
+    #[serde(default)]
+    pub sending: bool,
 }
 
 impl ActionPolicyMsg {
@@ -106,6 +120,7 @@ impl ActionPolicyMsg {
             hitl_button_interlock_satisfied: true,
             hitl_launch_interlock_satisfied: true,
             local_phase_controls: false,
+            launch_zero: None,
             controls: Vec::new(),
         }
     }
