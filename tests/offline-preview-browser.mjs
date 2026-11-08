@@ -14,8 +14,11 @@ try {
  const stored=await page.evaluate(()=>JSON.stringify({...localStorage}));
  const nav=page.getByRole('navigation',{name:'Mission navigation'});
  const open=async label=>{await nav.getByRole('link',{name:label,exact:true}).click();await page.getByRole('heading',{name:label,exact:true}).waitFor();};
- await open('Dashboard');await page.getByText('12.40 kg',{exact:true}).waitFor();
- await open('Mission');assert.equal(await page.getByRole('button',{name:'Fire',exact:true}).isDisabled(),true);
+ await open('Dashboard');await page.getByText('0.03 kg',{exact:true}).waitFor();
+ await open('Mission');assert.equal(await page.getByRole('button',{name:'Launch',exact:true}).isDisabled(),true);
+ await page.getByRole('button',{name:'Show sequence progress example'}).click();const sequence=page.getByRole('dialog',{name:'Automatic fill (example)'});
+ for(const name of ['Pause sequence','Cancel sequence'])assert.equal(await sequence.getByRole('button',{name,exact:true}).isDisabled(),true,'example sequence controls are disabled');
+ await sequence.getByRole('button',{name:'Close example'}).click();
  await page.getByLabel('Example phase').selectOption('Armed');
  assert.equal(await page.locator('.gs26-preview-steps li[data-active=true]').innerText(),'Armed');
  await open('Data');await page.getByRole('tab',{name:'Tank pressure',exact:true}).click();

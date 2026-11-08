@@ -34,23 +34,64 @@ fn title(id: &str) -> &str {
         .find_map(|(key, label)| (*key == id).then_some(*label))
         .unwrap_or("Settings")
 }
+// Example values match an idle stand as the backend reports it: tared
+// loadcells near zero, an empty tank, and batteries inside their 13.6-15.2 V
+// (ground) and 6.3-8.4 V (rocket power) ranges.
 fn readings(test_fire: bool) -> Vec<(&'static str, &'static str, &'static str)> {
     let mut rows = vec![
-        ("50 kg loadcell", "12.40 kg", "DAQ"),
-        ("Tank pressure", "0.00 psi", "VB"),
-        ("Fill box battery", "16.10 V", "GB"),
-        ("Valve board battery", "16.20 V", "VB"),
+        ("50 kg loadcell", "0.03 kg", "DAQ"),
+        ("Tank pressure", "0.4 psi", "VB"),
+        ("Gateway battery", "14.8 V", "GB"),
+        ("Valve board battery", "14.9 V", "VB"),
     ];
     if test_fire {
-        rows.push(("1000 kg loadcell", "0.00 kg", "DAQ"));
+        rows.extend([("1000 kg loadcell", "0.00 kg", "DAQ"), ("Chamber pressure", "0.0 psi", "DAQ")]);
     } else {
         rows.extend([
-            ("Rocket battery", "16.35 V", "PB"),
-            ("Rocket GPS", "Example lock · 12 satellites", "FC"),
+            ("Rocket battery", "7.9 V", "PB"),
+            ("Rocket GPS", "3D fix · 11 satellites", "FC"),
         ]);
     }
     rows
 }
+
+/// Boards the backend reports for each mode (test fire hides FC, RF and PB),
+/// with the BoardStatus age a healthy link shows.
+fn boards(test_fire: bool) -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut rows = vec![
+        ("Valve Board", "VB", "80 ms"),
+        ("Gateway Board", "GB", "60 ms"),
+        ("Actuator Board", "AB", "90 ms"),
+        ("DAQ Board", "DAQ", "40 ms"),
+    ];
+    if !test_fire {
+        rows.extend([("Flight Computer", "FC", "120 ms"), ("RF Board", "RF", "150 ms"), ("Power Board", "PB", "110 ms")]);
+    }
+    rows
+}
+
+/// VALVE_STATE as the dashboard labels it: (output, owner-confirmed state).
+const VALVES: &[(&str, &str)] = &[
+    ("Pilot", "Closed"),
+    ("Vent", "Open"),
+    ("Dump", "Closed"),
+    ("Nitrogen", "Closed"),
+    ("Nitrous", "Closed"),
+    ("Igniter", "Closed"),
+    ("Fill Lines", "Installed"),
+];
+
+/// FlightState order from the backend, as the UI spaces it.
+const PHASES: &[&str] = &["Idle", "Pre Fill", "Fill Test", "Nitrogen Fill", "Nitrous Fill", "Armed", "Launch"];
+
+/// Automatic fill steps from the backend's sequence progress projection.
+const FILL_STEPS: &[(&str, &str)] = &[
+    ("Confirm fill configuration", "Passed"),
+    ("Reach automatic cutoff mass", "Current"),
+    ("Confirm all outputs closed", "Next"),
+    ("Settle and assess calibrated mass", "Next"),
+    ("Record verified fill result", "Next"),
+];
 
 #[component]
 pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element {
@@ -62,6 +103,7 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
     let mut phase = use_signal(|| "Idle".to_string());
     let mut sensor = use_signal(|| "Loadcell".to_string());
     let mut checks = use_signal(|| vec![false; CHECKS.len()]);
+    let mut sequence_open = use_signal(|| false);
     let current = active();
     let items = PAGES
         .iter()
@@ -118,28 +160,82 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
                     }
                     p {class:"gs26-preview-note","A sample layout for learning the app. Your station’s pages and access depend on its configuration."}
                     if current == "state" {
-                        div {class:"gs26-preview-status",span {"Status: Example"}span {"Flight state: {phase}"}span {"T− 00:10.00"}}
+                        div {class:"gs26-preview-status",span {"Status: Nominal"}span {"Flight state: {phase}"}span {"T− 00:10.00"}}
                         div {class:"gs26-preview-cards",
                             for (label,value,sender) in readings(test_fire()) {
                                 article {class:"gs26-preview-card",span {"{label}"}strong {"{value}"}small {"Example · {sender}"}}
                             }
                         }
-                        p {class:"gs26-preview-note","Pin the readings you need on the dashboard; follow procedure progress on Mission."}
+                        section {class:"gs26-preview-panel",
+                            h2 {"Valves"}
+                            div {class:"gs26-preview-valves",
+                                for (name,state) in VALVES {
+                                    div {class:"gs26-preview-valve",span {"{name}"}
+                                        span {class:if *state=="Open" {"gs-badge gs-badge--warn"} else {"gs-badge gs-badge--ok"},"{state}"}
+                                    }
+                                }
+                            }
+                            p {class:"gs26-preview-note","Owner-confirmed board feedback. Requested: Off · owner confirmed."}
+                        }
                     } else if current == "mission" {
                         section {class:"gs26-preview-panel",
                             h2 {if test_fire() {"Test-fire procedure"}else{"Launch procedure"}}
                             div {class:"gs26-preview-options",label {r#for:"preview-phase","Example phase"}
                                 select {id:"preview-phase",value:phase(),onchange:move|e|phase.set(e.value()),
-                                    for name in ["Idle","Fill","Armed","Fire"] {option {value:name,"{name}"}}
+                                    for name in PHASES {option {value:*name,"{name}"}}
                                 }
                             }
-                            ol {class:"gs26-preview-steps",for name in ["Idle","Fill","Armed","Fire"] {
-                                li {"data-active":(phase()==name).to_string(),"{name}"}
+                            ol {class:"gs26-preview-steps",for name in PHASES {
+                                li {"data-active":(phase()==*name).to_string(),"{name}"}
                             }}
-                            div {class:"gs26-preview-actions",for label in ["Valve self-test","Nitrogen test","Start fill","Arm","Fire","Abort"] {
+                            h3 {class:"gs-section-label","Manual GSE valves"}
+                            div {class:"gs26-preview-actions",for label in ["Pilot","Vent","Dump","Nitrogen","Nitrous","Igniter","Fill Lines"] {
                                 button {r#type:"button",disabled:true,"{label}"}
                             }}
+                            h3 {class:"gs-section-label","GSE sequence actions"}
+                            div {class:"gs26-preview-actions",for label in ["Valve self-test","Nitrogen test","Start fill","Pause fill","Cancel fill","Turbocharge"] {
+                                button {r#type:"button",disabled:true,"{label}"}
+                            }}
+                            h3 {class:"gs-section-label","Flight controls"}
+                            div {class:"gs26-preview-actions",
+                                button {r#type:"button",disabled:true,"Launch"}
+                                button {r#type:"button",disabled:true,"Reset all boards to Idle…"}
+                                button {r#type:"button",class:"gs26-preview-abort",disabled:true,"Abort"}
+                            }
+                            div {class:"gs-notice gs-notice--warn","Launch is locked after the last attempt. Use Reset all boards to unlock it."}
+                            details {class:"gs-info",summary {"Reset and launch rules"}
+                                div {
+                                    p {"Reset all boards is accepted in Startup, Idle, Aborted, the fill phases, Launch, Landed and Recovery once station work is idle, and refused from Ascent through Reefing."}
+                                    p {"Boards that miss a reset keep Launch locked: “Launch locked: AB missed the last reset. Use Reset all boards.” A board reporting Abort disables Launch until it recovers."}
+                                }
+                            }
+                            div {class:"gs-form-row gs26-preview-fill-source",
+                                label {r#for:"preview-fill-source","Fill cutoff loadcell"}
+                                select {id:"preview-fill-source",disabled:true,
+                                    option {value:"kg50",selected:true,"50 kg loadcell (signed calibrated value)"}
+                                    option {value:"kg1000_absolute","1000 kg loadcell (absolute calibrated value)"}
+                                }
+                            }
+                            p {class:"gs26-preview-note","Changing the cutoff loadcell is refused while a fill or zero capture is active."}
+                            button {r#type:"button",onclick:move |_|sequence_open.set(true),"Show sequence progress example"}
                             details {summary {"About procedure controls"}p {"A connected station checks permissions, checklist requirements, sensor freshness, topology and valve interlocks. Preview cannot qualify a procedure or operate outputs."}}
+                        }
+                        if sequence_open() {
+                            div {class:"gs26-preview-sequence-backdrop",
+                                section {class:"gs26-preview-sequence gs-card",role:"dialog","aria-modal":"true","aria-label":"Automatic fill (example)",
+                                    header {class:"gs-section-header",h2 {"Automatic fill"}span {class:"gs-badge gs-badge--info","In progress"}}
+                                    p {class:"gs26-preview-note","Example only. Watching 50 kg loadcell: 6.42 kg of 8.00 kg target · fresh 120 ms ago."}
+                                    ol {class:"gs26-preview-sequence-steps",
+                                        for (label,state) in FILL_STEPS {li {"data-step-state":*state,span {class:"gs-badge","{state}"}span {"{label}"}}}
+                                    }
+                                    div {class:"gs26-preview-actions",
+                                        button {r#type:"button",disabled:true,"Pause sequence"}
+                                        button {r#type:"button",disabled:true,"Cancel sequence"}
+                                        button {r#type:"button",autofocus:true,onclick:move |_|sequence_open.set(false),"Close example"}
+                                    }
+                                    p {class:"gs26-preview-note","When paused, Pause becomes Resume sequence. Cancel asks the station for a safe cancel and waits for its result."}
+                                }
+                            }
                         }
                     } else if current == "data" {
                         section {class:"gs26-preview-panel",h2 {"Sensor history"}
@@ -158,10 +254,22 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
                             p {class:"gs26-preview-note","On a connected station, select a sensor and subtab to inspect its values and history. Raw telemetry is retained separately from display filters."}
                         }
                     } else if current == "network-topology" {
+                        section {class:"gs26-preview-panel",h2 {"Network health"}
+                            div {class:"gs26-preview-boards",
+                                for (label,sender,age) in boards(test_fire()) {
+                                    div {class:"gs26-preview-board",
+                                        span {strong {"{label}"} small {" {sender}"}}
+                                        span {class:"gs-badge gs-badge--ok","Healthy"}
+                                        small {"Last seen {age} ago · 0 disconnects"}
+                                    }
+                                }
+                            }
+                        }
                         section {class:"gs26-preview-panel",h2 {"Example topology"}
-                            div {class:"gs26-preview-links",span {"GroundStation"}span {"Ethernet → Gateway → CAN → DAQ / Valve / Actuator"}}
-                            if !test_fire() {div {class:"gs26-preview-links",span {"GroundStation"}span {"Radio → RF → CAN → FC / Power"}}}
-                            p {class:"gs26-preview-note","Detailed Info shows observed board health, disconnects and reconnects. These example routes do not indicate a real link."}
+                            div {class:"gs26-preview-links",span {"Ground Station Router"}span {"network → Gateway → CAN → DAQ / Valve / Actuator"}}
+                            if !test_fire() {div {class:"gs26-preview-links",span {"Ground Station Router"}span {"relay (RRLS) → RF → CAN → FC / Power"}}}
+                            div {class:"gs26-preview-links",span {"Station pairing"}span {class:"gs-badge gs-badge--ok","Paired"}span {"Primary link connected · RRLS forwarding"}}
+                            p {class:"gs26-preview-note","These example routes do not indicate a real link."}
                         }
                     } else if current == "map" {
                         section {class:"gs26-preview-panel",h2 {"Recovery map"}
