@@ -6,6 +6,8 @@ enum WsInMsg {
     Telemetry(TelemetryRow),
     TelemetryBatch(Vec<TelemetryRow>),
     FlightState(FlightStateMsg),
+    MissionPhase(mission_phase::MissionPhaseView),
+    FlightMaxima(mission_phase::FlightMaximaView),
     LaunchClock(LaunchClockMsg),
     Warning(AlertMsg),
     Error(AlertMsg),

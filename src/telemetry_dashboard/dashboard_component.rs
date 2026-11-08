@@ -228,6 +228,25 @@ fn TelemetryDashboardInner() -> Element {
         layout, *abort_only_mode.read(), *calibration_has_sensors.read(), &dashboard_customization.read(),
     )).unwrap_or_default();
     let workspace = workspace::use_workspace(active_main_tab, workspace_available.clone(), *streamer_mode.read());
+    {
+        // Switch to Map once per landing when the dashboard is open and the
+        // user enabled it. Reloading while already Landed is not a landing.
+        let mut previous_phase = use_signal(|| None::<mission_phase::Phase>);
+        use_effect(move || {
+            let Some(current) = MISSION_PHASE.read().clone() else { return; };
+            let previous = *previous_phase.peek();
+            if previous != Some(current.phase) {
+                previous_phase.set(Some(current.phase));
+            }
+            let enabled = persist::get_or(MAP_AFTER_LANDING_STORAGE_KEY, "off") == "on";
+            let switched = persist::get_string(LANDING_MAP_SWITCH_STORAGE_KEY).and_then(|v| v.parse::<i64>().ok());
+            let open = workspace.tabs.peek().contains(&MainTab::State);
+            if mission_phase::should_switch_to_map(previous, &current, enabled, open, switched) {
+                persist::set_string(LANDING_MAP_SWITCH_STORAGE_KEY, &current.since_ms.to_string());
+                open_dashboard_tool(MainTab::Map, active_main_tab, dashboard_customization);
+            }
+        });
+    }
 
     // Configuration and procedures share one selection lifetime, while the
     // calibration editor mounts only on its dedicated page.
@@ -3828,6 +3847,14 @@ fn TelemetryDashboardInner() -> Element {
                                     }
                                 }
                                 div { class: "gs26-status-flight", style: "color:{theme.info_text};",
+                                    if let Some(phase) = MISSION_PHASE.read().as_ref() {
+                                        span { class: "gs26-status-phase", "data-phase": phase.phase.key(), title: "Mission phase (detailed state: {phase.detailed})", style: "flex:0 0 auto; margin-right:10px;",
+                                            span { style: "color:{theme.text_soft};", "Phase: " }
+                                            strong { class: "gs26-status-phase-label", "{phase.phase.label()}" }
+                                            if phase.comms_loss_landed { span { style: "color:#fbbf24;", " (FC contact lost)" } }
+                                            if phase.manual_only { span { style: "color:{theme.text_soft};", " (manual)" } }
+                                        }
+                                    }
                                     span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"Flight state\", \"Estado de vuelo\", \"Etat de vol\")}: " }
                                     span {
                                         style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",

@@ -2029,6 +2029,18 @@ fn handle_ws_message(
             set_signal_if_changed(&mut flight_state, st.state);
         }
 
+        WsInMsg::MissionPhase(phase) => {
+            if MISSION_PHASE.peek().as_ref() != Some(&phase) {
+                *MISSION_PHASE.write() = Some(phase);
+            }
+        }
+
+        WsInMsg::FlightMaxima(maxima) => {
+            if *FLIGHT_MAXIMA.peek() != maxima {
+                *FLIGHT_MAXIMA.write() = maxima;
+            }
+        }
+
         WsInMsg::LaunchClock(clock) => {
             set_signal_if_changed(&mut launch_clock, Some(clock));
         }

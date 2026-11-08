@@ -412,8 +412,33 @@ pub fn DetailedTab(
                 "Mission State",
                 vec![
                     (
+                        "Mission phase",
+                        super::MISSION_PHASE
+                            .read()
+                            .as_ref()
+                            .map(|phase| {
+                                let mut text = phase.phase.label().to_string();
+                                if phase.comms_loss_landed {
+                                    text.push_str(" (FC contact lost)");
+                                }
+                                if phase.manual_only {
+                                    text.push_str(" (manual)");
+                                }
+                                text
+                            })
+                            .unwrap_or_else(|| translate_text("Unavailable")),
+                    ),
+                    (
                         "Flight state",
                         translate_text(&display_flight_state(&flight_state.read())),
+                    ),
+                    (
+                        "Disconnect aborts",
+                        super::MISSION_PHASE
+                            .read()
+                            .as_ref()
+                            .map(|phase| if phase.disconnect_aborts_armed { "Armed" } else { "Not armed" }.to_string())
+                            .unwrap_or_else(|| translate_text("Unavailable")),
                     ),
                     (
                         "Rocket time",

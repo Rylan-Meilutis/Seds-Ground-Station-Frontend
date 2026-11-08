@@ -1163,6 +1163,7 @@ pub fn SettingsPage(
                         }
                     }
                 }
+                MapAfterLandingSetting { theme: theme.clone(), chip_selected: chip_selected.clone(), chip_idle: chip_idle.clone() }
                 div { style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
                     div { style: "font-size:13px; color:{theme.text_muted};", "{user_location_title}" }
                     div { style: "font-size:13px; color:{theme.text_soft};", "{user_location_desc}" }
@@ -2103,6 +2104,28 @@ pub fn SettingsPage(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// "Switch to Map after landing": when the dashboard is open and the mission
+/// phase changes to Landed, the Map tab opens once for that landing.
+#[component]
+fn MapAfterLandingSetting(theme: ThemeConfig, chip_selected: String, chip_idle: String) -> Element {
+    let mut enabled = use_signal(|| super::persist::get_or(super::MAP_AFTER_LANDING_STORAGE_KEY, "off") == "on");
+    let value = *enabled.read();
+    let mut set = move |on: bool| {
+        super::persist::set_string(super::MAP_AFTER_LANDING_STORAGE_KEY, if on { "on" } else { "off" });
+        enabled.set(on);
+    };
+    rsx! {
+        div { class: "gs26-setting-map-after-landing", style: "display:flex; flex-direction:column; gap:8px; margin-top:10px;",
+            div { style: "font-size:13px; color:{theme.text_muted};", "Switch to Map after landing" }
+            div { style: "font-size:13px; color:{theme.text_soft};", "When the dashboard is open and the rocket lands, open the Map tab once." }
+            div { style: "display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+                button { "aria-pressed": "{value}", style: if value { chip_selected.clone() } else { chip_idle.clone() }, onclick: move |_| set(true), "On" }
+                button { "aria-pressed": "{!value}", style: if !value { chip_selected.clone() } else { chip_idle.clone() }, onclick: move |_| set(false), "Off" }
             }
         }
     }

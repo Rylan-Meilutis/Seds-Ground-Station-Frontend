@@ -6,6 +6,9 @@ mod card_values;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct Card {
+    /// Stable identity used by per-phase profiles. Assigned on load.
+    #[serde(default)]
+    id: String,
     #[serde(default)]
     pinned: bool,
     #[serde(default)]
@@ -192,6 +195,7 @@ fn defaults() -> Vec<Card> {
         ),
     ] {
         cards.push(Card {
+            id: default_card_id(section, label, dt, index),
             pinned: false,
             stream_id: String::new(),
             width: default_width(),
@@ -208,18 +212,114 @@ fn defaults() -> Vec<Card> {
             visible: true,
         });
     }
+    cards.extend(flight_cards());
     cards
 }
+
+fn default_card_id(section: &str, label: &str, data_type: &str, index: usize) -> String {
+    let slug: String = format!("{section}-{label}-{data_type}-{index}")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    slug.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-")
+}
+
+/// Flight cards: hidden in the base dashboard, shown on top by the default
+/// In flight and Landed phase profiles.
+fn flight_cards() -> Vec<Card> {
+    let card = |id: &str, label: &str, data_type: &str, index: usize, unit: &str, min: f32, max: f32, display: &str| Card {
+        id: id.into(),
+        pinned: false,
+        stream_id: String::new(),
+        width: default_width(),
+        precision: 1,
+        label: label.into(),
+        section: "Flight".into(),
+        data_type: data_type.into(),
+        sender: if matches!(display, "map" | "maxima") || data_type == "VEHICLE_SPEED" { String::new() } else { "FC".into() },
+        index,
+        unit: unit.into(),
+        display: display.into(),
+        min,
+        max,
+        visible: false,
+    };
+    vec![
+        card("flight-altitude", "Altitude", "BAROMETER_DATA", 2, "m", 0.0, 5000.0, "trend"),
+        card("flight-speed", "Vertical speed", "VEHICLE_SPEED", 0, "m/s", -500.0, 500.0, "trend"),
+        card("flight-accel", "Acceleration (Z)", "ACCEL_DATA", 2, "m/s²", -200.0, 200.0, "trend"),
+        card("flight-gyro-x", "Gyro roll", "GYRO_DATA", 0, "deg/s", -1000.0, 1000.0, "trend"),
+        card("flight-gyro-y", "Gyro pitch", "GYRO_DATA", 1, "deg/s", -1000.0, 1000.0, "trend"),
+        card("flight-gyro-z", "Gyro yaw", "GYRO_DATA", 2, "deg/s", -1000.0, 1000.0, "trend"),
+        card("flight-max-altitude", "Max altitude", "FLIGHT_MAXIMA", 0, "m", 0.0, 1.0, "maxima"),
+        card("flight-max-speed", "Max speed", "FLIGHT_MAXIMA", 1, "m/s", 0.0, 1.0, "maxima"),
+        card("flight-max-accel", "Max acceleration", "FLIGHT_MAXIMA", 2, "m/s²", 0.0, 1.0, "maxima"),
+        {
+            let mut map = card("flight-mini-map", "Rocket position", "MINI_MAP", 0, "", 0.0, 1.0, "map");
+            map.width = "wide".into();
+            map
+        },
+    ]
+}
+
+/// Telemetry readouts can be pinned to the header; maps, maxima and cameras cannot.
+fn pinnable(card: &Card) -> bool {
+    !matches!(card.display.as_str(), "camera" | "map" | "maxima")
+}
+
+/// Give every card a unique stable id (older saved cards have none).
+fn ensure_ids(cards: &mut [Card]) {
+    let mut seen = std::collections::HashSet::new();
+    for card in cards.iter_mut() {
+        if card.id.is_empty() || seen.contains(&card.id) {
+            let base = default_card_id(&card.section, &card.label, &card.data_type, card.index);
+            let mut id = base.clone();
+            let mut n = 2;
+            while seen.contains(&id) {
+                id = format!("{base}-{n}");
+                n += 1;
+            }
+            card.id = id;
+        }
+        seen.insert(card.id.clone());
+    }
+}
+
+fn new_card_id(cards: &[Card], base: &str) -> String {
+    let mut n = cards.len() + 1;
+    loop {
+        let id = format!("{base}-{n}");
+        if !cards.iter().any(|card| card.id == id) {
+            return id;
+        }
+        n += 1;
+    }
+}
+
+/// Saved dashboards get the hidden flight cards appended once (version 4),
+/// without touching their order or visibility.
+fn migrate_flight_cards(cards: &mut Vec<Card>) {
+    for card in flight_cards() {
+        if cards.len() >= 32 {
+            break;
+        }
+        if !cards.iter().any(|existing| existing.id == card.id) {
+            cards.push(card);
+        }
+    }
+}
+
 fn valid(cards: &[Card]) -> bool {
     cards.iter().filter(|c| c.pinned).count() <= 8
         && !cards.is_empty()
         && cards.len() <= 32
         && cards.iter().all(|c| {
             !c.section.trim().is_empty() && c.section.len() < 64 && c.precision <= 6
-                && ["number", "bar", "gauge", "trend", "state", "camera"].contains(&c.display.as_str())
+                && ["number", "bar", "gauge", "trend", "state", "camera", "map", "maxima"].contains(&c.display.as_str())
                 && ["normal", "wide", "full"].contains(&c.width.as_str())
                 && c.stream_id.len() <= 64
-                && (c.display != "camera" || !c.pinned)
+                && (pinnable(c) || !c.pinned)
+                && c.id.len() <= 128
                 && c.min.is_finite()
                 && c.max.is_finite()
                 && c.max > c.min
@@ -241,7 +341,7 @@ fn save(cards: &[Card]) {
     if valid(cards)
         && let Ok(json) = serde_json::to_string(cards) {
             persist::set_string(&storage_key(), &json);
-            persist::set_string(&format!("{}_defaults_version", storage_key()), "3");
+            persist::set_string(&format!("{}_defaults_version", storage_key()), "4");
         }
 }
 
@@ -281,15 +381,46 @@ pub(super) fn load_cards() -> Vec<Card> {
         .filter(|cards| valid(cards))
         .unwrap_or_else(defaults);
     let version = persist::get_string(&format!("{}_defaults_version", storage_key()));
-    if version.as_deref() != Some("3") {
-        // Version2 already migrated the loadcell. Preserve later explicit choices.
-        if version.as_deref() != Some("2") {
-            migrate_default_loadcell_trend(&mut cards);
+    ensure_ids(&mut cards);
+    if version.as_deref() != Some("4") {
+        if version.as_deref() != Some("3") {
+            // Version2 already migrated the loadcell. Preserve later explicit choices.
+            if version.as_deref() != Some("2") {
+                migrate_default_loadcell_trend(&mut cards);
+            }
+            migrate_default_pressure_cards(&mut cards);
         }
-        migrate_default_pressure_cards(&mut cards);
+        migrate_flight_cards(&mut cards);
         save(&cards);
     }
     cards
+}
+
+fn profiles_key() -> String {
+    format!("{}_phase_profiles_v1", storage_key())
+}
+
+/// Per-phase card profiles, saved with the dashboard card layout.
+pub(super) fn load_profiles() -> super::mission_phase::PhaseProfiles {
+    persist::get_string(&profiles_key())
+        .and_then(|raw| serde_json::from_str::<super::mission_phase::PhaseProfiles>(&raw).ok())
+        .filter(|profiles| profiles.valid())
+        .unwrap_or_default()
+}
+
+fn save_profiles(profiles: &super::mission_phase::PhaseProfiles) {
+    if profiles.valid()
+        && let Ok(json) = serde_json::to_string(profiles)
+    {
+        persist::set_string(&profiles_key(), &json);
+    }
+}
+
+/// Base indices with visibility for the dashboard shown in `phase`.
+fn phase_view(cards: &[Card], profiles: &super::mission_phase::PhaseProfiles, phase: Option<super::mission_phase::Phase>) -> Vec<(usize, bool)> {
+    let ids: Vec<&str> = cards.iter().map(|card| card.id.as_str()).collect();
+    let visible: Vec<bool> = cards.iter().map(|card| card.visible).collect();
+    super::mission_phase::profile_order(&ids, &visible, phase.and_then(|phase| profiles.profile(phase)))
 }
 
 fn data_type_choices(
@@ -412,6 +543,9 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
     }));
     let mut editing = use_signal(|| false);
     let mut aggregate = use_signal(|| false);
+    let mut profiles = use_signal(load_profiles);
+    let mut preview_phase = use_signal(|| None::<super::mission_phase::Phase>);
+    let mut edit_phase = use_signal(|| super::mission_phase::Phase::InFlight);
     let mut cameras = use_signal(super::live_stream_tab::LiveStreamConfig::default);
     let mut camera_error = use_signal(|| "Loading cameras…".to_string());
     use_future(move || async move {
@@ -446,9 +580,26 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
         .chain(["", "%", "kg", "N", "psi", "psig", "bar", "kPa", "MPa", "V", "A", "°C", "m", "m/s", "m/s²", "g", "deg", "rad", "s", "ms"].map(str::to_string)));
     (section_choices, sender_choices, unit_choices)
     } else { (Vec::new(), Vec::new(), Vec::new()) };
+    let live_phase = super::mission_phase::MISSION_PHASE.read().as_ref().map(|view| view.phase);
+    let profiles_snapshot = profiles.read().clone();
+    let shown_phase = (*preview_phase.read()).or(if profiles_snapshot.auto_switch { live_phase } else { None });
+    let view: Vec<(usize, bool)> = if *editing.read() {
+        (0..snapshot.len()).map(|index| (index, true)).collect()
+    } else {
+        phase_view(&snapshot, &profiles_snapshot, shown_phase)
+    };
     let mut sections = Vec::new();
-    for card in &snapshot { if (card.visible || *editing.read()) && !sections.contains(&card.section) { sections.push(card.section.clone()); } }
-    rsx! {section {class:"gs26-custom-dashboard",style:"color:{theme.text_primary};--card-button-bg:{theme.button_background};--card-button-border:{theme.button_border};--card-button-text:{theme.button_text};",
+    for (index, visible) in &view { let card = &snapshot[*index]; if *visible && !sections.contains(&card.section) { sections.push(card.section.clone()); } }
+    let phase_key = shown_phase.map(|phase| phase.key()).unwrap_or("base");
+    let phase_caption = match (*preview_phase.read(), live_phase) {
+        (Some(phase), _) => format!("Previewing the {} dashboard", phase.label()),
+        (None, Some(phase)) if profiles_snapshot.auto_switch => format!("{} dashboard · switches with the mission phase", phase.label()),
+        (None, Some(phase)) => format!("Base dashboard · phase {} (automatic switching off)", phase.label()),
+        (None, None) => "Base dashboard · waiting for mission phase".to_string(),
+    };
+    let edit_phase_value = *edit_phase.read();
+    let edit_profile = profiles_snapshot.profile(edit_phase_value).cloned().unwrap_or_default();
+    rsx! {section {class:"gs26-custom-dashboard","data-phase-profile":phase_key,style:"color:{theme.text_primary};--card-button-bg:{theme.button_background};--card-button-border:{theme.button_border};--card-button-text:{theme.button_text};",
         style { {r#"
             .gs26-custom-dashboard { container-type:inline-size; }
             .gs26-card-grid { display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px; }
@@ -475,29 +626,81 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
                 else {"10min after Launch admission · retained for this launch session"}
             }else{"Live · last 60 seconds"}}
             button {onclick:move |_| {let next=!*editing.read();editing.set(next); }, if *editing.read(){"Done"}else{"Customize dashboard"}}
+            if !*editing.read() {
+                label {style:"display:flex;gap:6px;align-items:center;",
+                    "Show "
+                    select {aria_label:"Dashboard phase profile",style:"width:auto;",
+                        onchange:move |e:Event<FormData>| preview_phase.set(super::mission_phase::Phase::from_key(&e.value())),
+                        option {value:"auto",selected:preview_phase.read().is_none(),"Automatic"}
+                        for phase in super::mission_phase::Phase::ALL {
+                            option {value:phase.key(),selected:*preview_phase.read()==Some(phase),"{phase.label()}"}
+                        }
+                    }
+                }
+                small {class:"gs26-phase-profile-caption","{phase_caption}"}
+            }
             if *editing.read() {
                 button {onclick:move |_|{let next=defaults();save(&next);cards.set(next);},"Restore defaults"}
-                button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.label="New telemetry card".into();next.push(card);save(&next);cards.set(next);},"Add card"}
-                button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.label="Live camera".into();card.section="Cameras".into();card.display="camera".into();card.width="wide".into();next.push(card);save(&next);cards.set(next);},"Add camera"}
+                button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.id=new_card_id(&next,"card");card.label="New telemetry card".into();next.push(card);save(&next);cards.set(next);},"Add card"}
+                button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.id=new_card_id(&next,"camera");card.label="Live camera".into();card.section="Cameras".into();card.display="camera".into();card.width="wide".into();next.push(card);save(&next);cards.set(next);},"Add camera"}
             }
         }
         if *editing.read() {p {"Saved for this user and GroundStation on this device. Choose a source, display, visibility and order. Changes do not affect acquisition or safety controls."}}
+        if *editing.read() {
+            fieldset {class:"gs26-phase-profiles",style:"border:1px solid #475569;border-radius:8px;padding:10px;margin:10px 0;",
+                legend {"Phase profiles"}
+                label {style:"display:block;margin-bottom:6px;",
+                    input {r#type:"checkbox",checked:profiles_snapshot.auto_switch,onchange:move |e:Event<FormData>|{let mut next=profiles.read().clone();next.auto_switch=e.checked();save_profiles(&next);profiles.set(next);}}
+                    " Switch the dashboard automatically with the mission phase"
+                }
+                label {"Profile for "
+                    select {aria_label:"Profile phase",style:"width:auto;",onchange:move |e:Event<FormData>|{if let Some(phase)=super::mission_phase::Phase::from_key(&e.value()){edit_phase.set(phase);}},
+                        for phase in super::mission_phase::Phase::ALL {option {value:phase.key(),selected:phase==edit_phase_value,"{phase.label()}"}}
+                    }
+                }
+                small {style:"display:block;margin:6px 0;","Cards marked On top are shown first in this phase, in this order, even if hidden on the base dashboard. Other cards follow in the base order."}
+                button {onclick:move |_|{let mut next=profiles.read().clone();let defaults=super::mission_phase::PhaseProfiles::default();match defaults.profile(edit_phase_value){Some(p)=>{*next.profile_mut(edit_phase_value)=p.clone();}None=>{next.profiles.remove(edit_phase_value.key());}}save_profiles(&next);profiles.set(next);},"Restore this phase's default"}
+                for (index,card) in snapshot.iter().enumerate() {
+                    {
+                        let id=card.id.clone();
+                        let top_pos=edit_profile.top.iter().position(|t|*t==id);
+                        let mode=if top_pos.is_some(){"top"}else if edit_profile.hidden.contains(&id){"hidden"}else{"base"};
+                        let top_len=edit_profile.top.len();
+                        rsx!{div {key:"profile-{index}",style:"display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;",
+                            span {style:"min-width:180px;","{card.section} · {card.label}"}
+                            select {aria_label:"Phase placement for {card.label}",style:"width:auto;",
+                                onchange:{let id=id.clone();move |e:Event<FormData>|{let mut next=profiles.read().clone();let p=next.profile_mut(edit_phase_value);p.top.retain(|t|*t!=id);p.hidden.retain(|h|*h!=id);match e.value().as_str(){"top"=>p.top.push(id.clone()),"hidden"=>p.hidden.push(id.clone()),_=>{}}save_profiles(&next);profiles.set(next);}},
+                                option {value:"base",selected:mode=="base","Base"}
+                                option {value:"top",selected:mode=="top","On top"}
+                                option {value:"hidden",selected:mode=="hidden","Hidden"}
+                            }
+                            if let Some(pos)=top_pos {
+                                button {disabled:pos==0,onclick:move |_|{let mut next=profiles.read().clone();next.profile_mut(edit_phase_value).top.swap(pos,pos-1);save_profiles(&next);profiles.set(next);},"Earlier"}
+                                button {disabled:pos+1==top_len,onclick:move |_|{let mut next=profiles.read().clone();next.profile_mut(edit_phase_value).top.swap(pos,pos+1);save_profiles(&next);profiles.set(next);},"Later"}
+                            }
+                        }}
+                    }
+                }
+            }
+        }
         for section in sections {
             h3 {"{section}"}
             div {class:"gs26-card-grid",
-                for (index,card) in snapshot.iter().enumerate().filter(|(_,c)|c.section==section && (c.visible || *editing.read())) {
-                    div {key:"card-{index}",class:"gs26-dashboard-card","data-width":card.width.clone(),"data-display":card.display.clone(),style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
+                for (index,card,shown) in view.iter().map(|(index,shown)|(*index,&snapshot[*index],*shown)).filter(|(_,c,shown)|c.section==section && *shown) {
+                    div {key:"card-{index}",class:"gs26-dashboard-card","data-card-id":card.id.clone(),"data-width":card.width.clone(),"data-display":card.display.clone(),style:"min-width:0;border:1px solid #475569;border-radius:8px;padding:12px;background:{theme.panel_background_alt};",
                         if *editing.read() {
                             CardEditor {card:card.clone(),data_layout:data_layout.clone(),section_choices:section_choices.clone(),sender_choices:sender_choices.clone(),unit_choices:unit_choices.clone(),type_choices:type_choices.clone(),cameras:cameras.read().streams.clone(),onchange:move |next:Card|{let mut all=cards.read().clone();all[index]=next;if valid(&all){save(&all);cards.set(all);}}}
                             button {disabled:index==0,onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index-1);save(&all);cards.set(all);},"Move up"}
                             button {disabled:index+1==snapshot.len(),onclick:move |_|{let mut all=cards.read().clone();all.swap(index,index+1);save(&all);cards.set(all);},"Move down"}
                             button {disabled:snapshot.len()==1,onclick:move |_|{let mut all=cards.read().clone();all.remove(index);save(&all);cards.set(all);},"Remove"}
                         }
-                        if card.visible {
+                        if shown && (card.visible || !*editing.read()) {
                             if card.display == "camera" { CameraCard {card:card.clone(),config:cameras.read().clone(),error:camera_error.read().clone()} }
+                            else if card.display == "maxima" { MaximaCard {card:card.clone()} }
+                            else if card.display == "map" { MiniMapCard {card:card.clone(),dom_id:format!("gs26-mini-map-{}",card.id)} }
                             else { TelemetryCard {card:display_card(card.clone(),test_fire_mode), aggregate:*aggregate.read(), thrust:test_fire_mode && card.data_type=="LOADCELL_WEIGHT_KG", show_min_max:extrema_policies.read().get(index).copied().unwrap_or(card.display=="trend")} }
                         }
-                        if *editing.read() && card.display != "camera" {
+                        if *editing.read() && pinnable(card) {
                         button { disabled: !card.pinned && snapshot.iter().filter(|c| c.pinned).count() >= 8,
                             onclick: move |_| { let mut all=cards.read().clone(); all[index].pinned = !all[index].pinned; save(&all); cards.set(all); },
                             if card.pinned { "Unpin from top bar" } else { "Pin to top bar" }
@@ -506,6 +709,126 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
                 }
             }
         }
+    }}
+}
+
+#[component]
+fn MaximaCard(card: Card) -> Element {
+    use super::mission_phase::{format_extreme, MaxQuantity, FLIGHT_MAXIMA};
+    let quantity = MaxQuantity::from_index(card.index);
+    let maxima = FLIGHT_MAXIMA.read().clone();
+    let (fc, gs) = maxima.quantity(quantity);
+    let primary_style = if fc.is_some() { "font-size:15px;margin-top:4px;" } else { "font-size:20px;font-weight:600;margin-top:6px;" };
+    rsx! {section {class:"gs26-maxima-card","data-quantity":"{card.index}",
+        strong {class:"gs26-card-label","{card.label}"}
+        if let Some(fc) = fc {
+            div {class:"gs26-maxima-fc",style:"font-size:20px;font-weight:600;margin-top:6px;","{format_extreme(quantity, fc)}"}
+            small {style:"display:block;color:#94a3b8;","FC-reported value (authoritative)"}
+        }
+        if let Some(first) = gs.first() {
+            div {class:"gs26-maxima-value",style:"{primary_style}","{format_extreme(quantity, first)}"}
+        }
+        for other in gs.iter().skip(1) {
+            small {class:"gs26-maxima-other",style:"display:block;color:#94a3b8;","{format_extreme(quantity, other)}"}
+        }
+        if fc.is_none() && gs.is_empty() {
+            small {style:"display:block;color:#94a3b8;margin-top:6px;",
+                if maxima.tracking {"Waiting for flight telemetry"} else {"Tracks from T+ · cleared by T-clock reset or Reset all boards"}
+            }
+        }
+    }}
+}
+
+/// Small offline-tile map around the rocket. MapLibre is created only while
+/// the card is on screen (IntersectionObserver) and positions are pushed at
+/// most every 2 s, only when they change and the page is visible.
+const MINI_MAP_JS: &str = r#"(function(){if(window.gs26MiniMap)return;
+const maps=new Map();const colors={rocket:'#f97316',ground_station:'#38bdf8',rrls:'#facc15'};
+const ok=p=>p&&Number.isFinite(p.lat)&&Number.isFinite(p.lon)&&Math.abs(p.lat)<=90&&Math.abs(p.lon)<=180;
+const dist=(a,b)=>{const R=6371000,r=Math.PI/180,dl=(b.lat-a.lat)*r,dn=(b.lon-a.lon)*r;const h=Math.sin(dl/2)**2+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(h));};
+function create(id){const st=maps.get(id),el=document.getElementById(id);if(!st||!el||st.map||!st.visible)return;
+ if(!window.maplibregl){el.dataset.miniMapState='no-library';return;}
+ const r=st.last&&ok(st.last.rocket)?st.last.rocket:null;
+ st.map=new window.maplibregl.Map({container:el,interactive:false,attributionControl:false,fadeDuration:0,center:r?[r.lon,r.lat]:[0,0],zoom:r?15:1,style:{version:8,sources:{t:{type:'raster',tiles:[st.tiles],tileSize:256,maxzoom:17}},layers:[{id:'t',type:'raster',source:'t'}]}});
+ st.map.on('error',()=>{el.dataset.miniMapTiles='error';});st.map.on('load',()=>{el.dataset.miniMapState='ready';apply(id);});}
+function apply(id){const st=maps.get(id);if(!st||!st.map||!st.last)return;const s=st.last,r=s.rocket;
+ for(const k of ['rocket','ground_station','rrls']){const p=s[k];let m=st.markers[k];const inView=ok(p)&&(k==='rocket'||(ok(r)&&dist(r,p)<=3000));
+  if(!inView){if(m){m.remove();delete st.markers[k];}continue;}
+  if(!m){const d=document.createElement('div');d.className='gs26-mini-map-marker';d.dataset.marker=k;d.title=k;d.style.cssText='width:12px;height:12px;border-radius:50%;background:'+colors[k]+';border:2px solid #0b1220;box-shadow:0 0 0 2px '+colors[k];m=st.markers[k]=new window.maplibregl.Marker({element:d}).setLngLat([p.lon,p.lat]).addTo(st.map);}
+  m.setLngLat([p.lon,p.lat]);m.getElement().style.opacity=p.stale?'.45':'1';}
+ if(!ok(r))return;const pts=['ground_station','rrls'].map(k=>s[k]).filter(p=>ok(p)&&dist(r,p)<=3000);
+ if(!pts.length){st.map.jumpTo({center:[r.lon,r.lat],zoom:15});return;}
+ const b=new window.maplibregl.LngLatBounds([r.lon,r.lat],[r.lon,r.lat]);for(const p of pts)b.extend([p.lon,p.lat]);st.map.fitBounds(b,{padding:28,maxZoom:16,duration:0});}
+window.gs26MiniMap={
+ mount(id,tiles){if(maps.has(id))return;const st={tiles,markers:{},visible:false,map:null,last:null};maps.set(id,st);
+  const observe=n=>{const el=document.getElementById(id);if(!maps.has(id))return;if(!el){if(n<120)setTimeout(()=>observe(n+1),50);return;}
+   el.dataset.miniMapState='waiting';st.io=new IntersectionObserver(es=>{for(const e of es){st.visible=e.isIntersecting;el.dataset.miniMapVisible=String(st.visible);if(st.visible){create(id);apply(id);}}});st.io.observe(el);};observe(0);},
+ update(id,s){const st=maps.get(id);if(!st)return;st.last=s;const el=document.getElementById(id);if(el){el.dataset.rocketLat=ok(s.rocket)?s.rocket.lat.toFixed(6):'';el.dataset.rocketLon=ok(s.rocket)?s.rocket.lon.toFixed(6):'';el.dataset.updates=String((+el.dataset.updates||0)+1);}if(st.visible){create(id);apply(id);}},
+ destroy(id){const st=maps.get(id);if(!st)return;maps.delete(id);st.io&&st.io.disconnect();st.map&&st.map.remove();}};})();"#;
+
+#[derive(Clone, PartialEq, Default, Deserialize)]
+struct StationPoint { latitude: f64, longitude: f64, #[serde(default)] stale: bool }
+#[derive(Clone, PartialEq, Default, Deserialize)]
+struct StationPoints { #[serde(default)] ground_station: Option<StationPoint>, #[serde(default)] rrls: Option<StationPoint> }
+
+fn mini_map_snapshot(rocket: Option<(f64, f64)>, altitude_m: Option<f64>, stations: &StationPoints) -> String {
+    let point = |p: &Option<StationPoint>| p.as_ref().map(|p| serde_json::json!({"lat":p.latitude,"lon":p.longitude,"stale":p.stale}));
+    serde_json::json!({
+        "rocket": rocket.map(|(lat, lon)| serde_json::json!({"lat":lat,"lon":lon,"alt":altitude_m})),
+        "ground_station": point(&stations.ground_station),
+        "rrls": point(&stations.rrls),
+    }).to_string()
+}
+
+#[component]
+fn MiniMapCard(card: Card, dom_id: String) -> Element {
+    let mut readout = use_signal(String::new);
+    let mount_id = dom_id.clone();
+    use_effect(move || {
+        let tiles = super::map_tiles_url();
+        super::js_eval(&format!("{MINI_MAP_JS};window.gs26MiniMap.mount({mount_id:?},{tiles:?});"));
+    });
+    let drop_id = dom_id.clone();
+    use_drop(move || super::js_eval(&format!("window.gs26MiniMap&&window.gs26MiniMap.destroy({drop_id:?});")));
+    let loop_id = dom_id.clone();
+    use_future(move || {
+        let id = loop_id.clone();
+        async move {
+            let mut stations = StationPoints::default();
+            let mut last_sent = String::new();
+            let mut tick: u32 = 0;
+            loop {
+                if super::dashboard_page_visible() {
+                    if tick % 3 == 0
+                        && let Ok(next) = super::http_get_json::<StationPoints>("/api/antenna/status").await
+                    {
+                        stations = next;
+                    }
+                    tick = tick.wrapping_add(1);
+                    let rocket = super::latest_rocket_gps_from_store();
+                    let altitude = super::latest_rocket_gps_altitude_m_from_store();
+                    let snapshot = mini_map_snapshot(rocket, altitude, &stations);
+                    if snapshot != last_sent {
+                        super::js_eval(&format!("window.gs26MiniMap&&window.gs26MiniMap.update({id:?},{snapshot});"));
+                        last_sent = snapshot;
+                        let text = match rocket {
+                            Some((lat, lon)) => format!("Rocket {lat:.5}°, {lon:.5}°{}", altitude.map(|a| format!(" · {a:.0} m")).unwrap_or_default()),
+                            None => "Waiting for rocket GPS".to_string(),
+                        };
+                        if *readout.peek() != text { readout.set(text); }
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                gloo_timers::future::TimeoutFuture::new(2000).await;
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    });
+    rsx! {section {class:"gs26-mini-map-card",
+        strong {class:"gs26-card-label","{card.label}"}
+        div {id:"{dom_id}",class:"gs26-mini-map",role:"img",aria_label:"Map around the rocket",style:"position:relative;height:220px;margin-top:8px;border-radius:6px;overflow:hidden;background:#102032;"}
+        small {class:"gs26-mini-map-readout",style:"display:block;color:#94a3b8;margin-top:4px;", if readout.read().is_empty() {"Waiting for rocket GPS"} else {"{readout}"}}
     }}
 }
 
@@ -541,11 +864,18 @@ fn CardEditor(card: Card, data_layout: super::layout::DataTabLayout,
         label {"Section " select {aria_label:"Section",value:card.section.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.section=e.value();onchange.call(c);}},
             for name in section_choices {option {selected:name==card.section,value:name.clone(),"{name}"}}
         }}
-        label {"Display " select {aria_label:"Display",value:card.display.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.display=e.value();if c.display=="camera" {c.pinned=false;}onchange.call(c);}},
-            for kind in ["number","bar","gauge","trend","state","camera"] {option {selected:kind==card.display,value:kind,"{kind}"}}
+        label {"Display " select {aria_label:"Display",value:card.display.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.display=e.value();if !pinnable(&c) {c.pinned=false;}match c.display.as_str(){"map"=>{c.data_type="MINI_MAP".into();c.min=0.;c.max=1.;}"maxima"=>{c.data_type="FLIGHT_MAXIMA".into();c.index=c.index.min(2);c.min=0.;c.max=1.;}_=>{}}onchange.call(c);}},
+            for kind in ["number","bar","gauge","trend","state","camera","map","maxima"] {option {selected:kind==card.display,value:kind,"{kind}"}}
         }}
         label {"Card width " select {aria_label:"Card width",value:card.width.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.width=e.value();onchange.call(c);}},option {selected:card.width=="normal",value:"normal","Normal"} option {selected:card.width=="wide",value:"wide","Wide"} option {selected:card.width=="full",value:"full","Full width"}}}
-        if card.display == "camera" {
+        if card.display == "maxima" {
+            label {"Quantity " select {aria_label:"Maximum quantity",value:"{card.index}",onchange:{let card=card.clone();move |e:Event<FormData>|{if let Ok(index)=e.value().parse::<usize>(){let mut c=card.clone();c.index=index.min(2);onchange.call(c);}}},
+                for (index,name) in ["Max altitude","Max speed","Max acceleration"].iter().enumerate() {option {selected:index==card.index,value:"{index}","{name}"}}
+            }}
+            small {"Computed by the GroundStation for the current flight; FC-reported maxima are shown as authoritative when received."}
+        } else if card.display == "map" {
+            small {"Small offline map around the rocket's latest position, with the GroundStation and RRLS when in view."}
+        } else if card.display == "camera" {
             label {"Camera source " select {aria_label:"Camera source",value:card.stream_id.clone(),onchange:{let card=card.clone();move |e:Event<FormData>|{let mut c=card.clone();c.stream_id=e.value();onchange.call(c);}},
                 option {selected:card.stream_id.is_empty(),value:"","Choose a camera"}
                 if !card.stream_id.is_empty() && !cameras.iter().any(|c|c.id==card.stream_id) {option {selected:true,value:card.stream_id.clone(),"{card.stream_id} (unavailable)"}}
@@ -797,7 +1127,7 @@ pub(super) fn HeaderPinSettings() -> Element {
         h3 {"Pin telemetry to the top bar ({count}/8)"}
         p {"Pinned values remain visible beside the clock and status as you switch tabs. Edit their sources and formatting in Dashboard."}
         div {style:"display:flex;gap:8px 16px;flex-wrap:wrap;",
-            for (index, card) in snapshot.iter().enumerate().filter(|(_,card)|card.display != "camera") {
+            for (index, card) in snapshot.iter().enumerate().filter(|(_,card)|pinnable(card)) {
                 label {
                     input {r#type:"checkbox",checked:card.pinned,disabled:!card.pinned && count>=8,
                         onchange:move |event:Event<FormData>|{let mut all=cards.read().clone();all[index].pinned=event.checked();if valid(&all){save(&all);cards.set(all);}}
@@ -972,6 +1302,66 @@ mod tests {
 #[cfg(test)]
 mod phase_tests {
     use super::*;
+    #[test]
+    fn defaults_carry_hidden_flight_cards_with_stable_unique_ids() {
+        let cards = defaults();
+        assert!(valid(&cards));
+        let mut ids: Vec<_> = cards.iter().map(|c| c.id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), cards.len());
+        for id in super::super::mission_phase::FLIGHT_CARD_IDS {
+            let card = cards.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id}"));
+            assert!(!card.visible && card.section == "Flight", "{id}");
+            assert!(!pinnable(card) || card.display == "trend");
+        }
+    }
+
+    #[test]
+    fn in_flight_profile_shows_flight_cards_first_and_fill_profile_keeps_base() {
+        let cards = defaults();
+        let profiles = super::super::mission_phase::PhaseProfiles::default();
+        let flight = phase_view(&cards, &profiles, Some(super::super::mission_phase::Phase::InFlight));
+        let first: Vec<&str> = flight.iter().take(10).map(|(i, _)| cards[*i].id.as_str()).collect();
+        assert_eq!(first, super::super::mission_phase::FLIGHT_CARD_IDS);
+        assert!(flight.iter().take(10).all(|(_, shown)| *shown));
+        // Fill data still follows, visible, below the flight data.
+        assert!(flight.iter().skip(10).any(|(i, shown)| *shown && cards[*i].section == "Fill System"));
+        let fill = phase_view(&cards, &profiles, Some(super::super::mission_phase::Phase::Fill));
+        assert_eq!(cards[fill[0].0].section, "Fill System");
+        assert!(fill.iter().all(|(i, shown)| *shown == cards[*i].visible));
+        let landed = phase_view(&cards, &profiles, Some(super::super::mission_phase::Phase::Landed));
+        assert_eq!(cards[landed[0].0].id, "flight-mini-map");
+    }
+
+    #[test]
+    fn saved_layouts_gain_flight_cards_once_and_get_ids() {
+        let mut saved: Vec<Card> = defaults().into_iter().filter(|c| c.section != "Flight").collect();
+        for card in &mut saved { card.id.clear(); }
+        saved[1] = saved[0].clone();
+        ensure_ids(&mut saved);
+        let mut ids: Vec<_> = saved.iter().map(|c| c.id.clone()).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), saved.len());
+        migrate_flight_cards(&mut saved);
+        let len = saved.len();
+        migrate_flight_cards(&mut saved);
+        assert_eq!(saved.len(), len);
+        assert!(saved.iter().any(|c| c.id == "flight-mini-map" && !c.visible));
+        assert!(valid(&saved));
+        let mut full = vec![defaults()[0].clone(); 32];
+        ensure_ids(&mut full);
+        migrate_flight_cards(&mut full);
+        assert_eq!(full.len(), 32);
+    }
+
+    #[test]
+    fn map_and_maxima_cards_cannot_be_pinned() {
+        let mut cards = defaults();
+        let map = cards.iter().position(|c| c.display == "map").unwrap();
+        cards[map].pinned = true;
+        assert!(!valid(&cards));
+    }
     #[test]
     fn test_fire_formats_thrust_without_hiding_dashboard_cards() {
         let thrust=display_card(defaults().into_iter().find(|c|c.data_type=="LOADCELL_WEIGHT_KG").unwrap(),true);
