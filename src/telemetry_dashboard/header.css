@@ -1,6 +1,6 @@
 /* Header and status bar. Loaded after the shell's inline rules. */
 .gs26-dashboard-shell :is(.gs26-header-row, .gs26-header-secondary) button { font-family: var(--gs-font); letter-spacing: 0; }
-.gs26-dashboard-shell .gs26-header-actions-list > button,
+.gs26-dashboard-shell .gs26-header-actions-list > button:not([class*=abort]),
 .gs26-dashboard-shell .gs26-header-menu-toggle,
 .gs26-dashboard-shell .gs26-title-tab-toggle { border-radius: var(--gs-radius) !important; font-weight: 650 !important; min-height: 40px; }
 .gs26-status-shell { border-radius: var(--gs-radius-lg) !important; padding: 6px 12px !important; }
@@ -31,7 +31,8 @@
 @media (max-height: 500px) and (orientation: landscape) {
   .gs26-dashboard-shell { padding: 4px 8px !important; }
   .gs26-dashboard-shell .gs26-header-row { min-height: 40px; margin-bottom: 4px !important; }
-  .gs26-dashboard-shell .gs26-header-row button,
+  /* Abort keeps its full 44 px target; only the other header controls shrink. */
+  .gs26-dashboard-shell .gs26-header-row button:not([class*=abort]),
   .gs26-dashboard-shell .gs26-header-row summary { min-height: 36px !important; padding-top: 4px !important; padding-bottom: 4px !important; }
   .gs26-dashboard-shell .gs26-header-secondary { margin-bottom: 4px !important; }
   .gs26-status-shell {
