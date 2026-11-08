@@ -19,6 +19,10 @@
 .gs26-station-address select { min-height: 44px; }
 .gs26-station-address input { max-width: 100%; }
 .gs26-connect-actions { min-width: 0; }
+.gs26-connect-primary-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; min-width: 0; }
 @media (max-width: 460px) {
-    .gs26-connect-actions > button { flex: 1 1 120px; min-width: 0; }
+    .gs26-connect-actions { flex-direction: column-reverse; align-items: stretch !important; }
+    .gs26-connect-primary-actions { margin-left: 0; }
+    .gs26-connect-primary-actions > button { flex: 1 1 90px; min-width: 0; }
+    .gs26-connect-explore { align-self: flex-start; }
 }

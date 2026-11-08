@@ -126,13 +126,6 @@ pub fn Connect() -> Element {
                     }
 
                     div { style: "margin-bottom:16px; display:flex; flex-direction:column; gap:8px;",
-                        button {
-                            id: "discover-stations",
-                            style: shell_button_style(&theme),
-                            disabled: discovering(),
-                            onclick: move |_| discover_stations(),
-                            if discovering() { "Searching…" } else { "Discover stations" }
-                        }
                         div { role: "status", aria_live: "polite", style: "font-size:13px; color:{theme.text_muted};", "{discovery_status()}" }
                         for station in stations() {
                             button {
@@ -405,12 +398,23 @@ pub fn Connect() -> Element {
                     }
                 }
 
-                div { class: "gs26-connect-actions", style: format!("display:flex; gap:12px; margin-top:16px; padding-top:16px; justify-content:flex-end; flex-wrap:wrap; border-top:1px solid {};", theme.border_soft),
+                // Explore sits alone on the left; the station actions (Discover,
+                // Test connection, Connect) are grouped on the right.
+                div { class: "gs26-connect-actions", style: format!("display:flex; gap:12px; margin-top:16px; padding-top:16px; align-items:center; flex-wrap:wrap; border-top:1px solid {};", theme.border_soft),
                     button {
+                        class: "gs26-connect-explore",
                         style: shell_button_alt_style(&theme),
                         disabled: testing(),
                         onclick: move |_| { let _ = nav.replace(Route::Preview {}); },
                         "Explore offline"
+                    }
+                    div { class: "gs26-connect-primary-actions",
+                    button {
+                        id: "discover-stations",
+                        style: shell_button_alt_style(&theme),
+                        disabled: discovering(),
+                        onclick: move |_| discover_stations(),
+                        if discovering() { "Searching…" } else { "Discover" }
                     }
                     button {
                         style: shell_button_alt_style(&theme),
@@ -491,6 +495,7 @@ pub fn Connect() -> Element {
                             let _ = nav.replace(Route::Dashboard {});
                         },
                         "Connect"
+                    }
                     }
                 }
             }
