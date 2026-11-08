@@ -21,6 +21,7 @@ mod command_owner;
 use command_owner::{CommandOwner, QueuedCommand};
 mod connection_status_tab;
 mod connectivity_health;
+mod radio_modem_health;
 mod custom_dashboard;
 mod dashboard_history;
 mod telemetry_reseed_continuity;

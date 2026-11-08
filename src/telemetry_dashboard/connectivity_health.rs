@@ -21,7 +21,9 @@ pub fn ConnectivityHealthSection(
     let mut busy = use_signal(|| false);
     let mut message = use_signal(String::new);
     let mut token = use_signal(|| None::<u32>);
+    let modem_theme = theme.clone();
     rsx! {
+        super::radio_modem_health::RadioModemHealth { ws_connected, theme: modem_theme }
         NetworkHealthSection {
             rows, ws_connected, generated_ms, simulated, theme,
             recovery_renderer: |(slot, board_id, ws_connected, theme): (super::network_health::RecoverySlot, String, bool, ThemeConfig)| {
