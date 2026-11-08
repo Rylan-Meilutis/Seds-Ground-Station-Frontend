@@ -100,8 +100,8 @@ impl Controls {
             return Some("Current station controls inhibit mode changes.".into());
         }
         let target = self.target()?;
-        // A restart option replaces the backend process, so it does not wait
-        // for the in-place epoch-fenced transport.
+        // A server-fenced option (a restart, or an idle-only in-process switch)
+        // does not wait for the in-place epoch-fenced transport.
         if !super::station_policy_context::CLIENT_EPOCH_INTEGRATION_READY && !target.restarts() {
             return Some("Mode switching is unavailable until this client and backend complete epoch-fenced transport qualification.".into());
         }
@@ -216,6 +216,7 @@ impl Controls {
         };
         let owner = prepared.owner;
         let restarts = prepared.challenge.target.restarts();
+        let in_process = prepared.challenge.target.switches_in_process();
         let request = transport::confirm(Ok(owner.clone()), &request_body);
         *NOTICE.write()=Some(Notice{identity,base:super::UrlConfig::base_http(),skip_tls:super::UrlConfig::_skip_tls_verify(),request:request_body.clone(),target:prepared.challenge.target,message:"Submitted; actual mode is unconfirmed. Status readback will identify this exact transition. This request is never resent automatically.".into()});
         self.dialog.set(None);
@@ -230,6 +231,7 @@ impl Controls {
             self.operation_owner.set(None);
             self.busy.set(false);
             let message=match result.and_then(|v|serde_json::from_value::<contract::Accepted>(v).map_err(|_|"Unsupported receipt".to_owned())) {
+                Ok(receipt) if receipt.matches(&request_body)&&in_process=>"Backend accepted the switch and changes mode in place once the station is still idle. Your sign-in and connection are kept; the layout and controls refresh on their own, and status readback will confirm the new mode or report why it was refused.".into(),
                 Ok(receipt) if receipt.matches(&request_body)&&restarts=>"Backend accepted the switch and is restarting into the selected build. Live data pauses for a few seconds and reconnects on its own; status readback will confirm the new mode.".into(),
                 Ok(receipt) if receipt.matches(&request_body)=>"Backend accepted the transition as pending. Awaiting actual combination and new-epoch readback.".into(),
                 Ok(_)=>"Receipt mismatched; outcome remains unconfirmed. Read status; do not resend automatically.".into(),
@@ -356,7 +358,9 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
         if simulation.is_none(){p{"The execution domain is unknown. No hardware domain is assumed."}}
         if let Some(target)=target.as_ref(){p{"Draft only: {target.label}. Output domain: {target.output_domain}."}}else{p{"This mode/Simulation combination is not advertised. No target is inferred."}}
         if let Some(reason)=reason.as_ref(){p{"{reason}"}}
-        if target.as_ref().is_some_and(contract::OptionEntry::restarts) {
+        if target.as_ref().is_some_and(contract::OptionEntry::switches_in_process) {
+            p{style:"margin:0;","Changing these drafts sends no actions. Apply requires backend preparation and explicit confirmation, then the station backend switches mode in place while the station is idle: the layout and controls refresh automatically, and your sign-in and connection are kept."}
+        } else if target.as_ref().is_some_and(contract::OptionEntry::restarts) {
             p{style:"margin:0;","Changing these drafts sends no actions. Apply requires backend preparation and explicit confirmation, then the station backend restarts into the selected build: live data pauses for a few seconds and reconnects, and your sign-in is kept."}
         } else {
             p{style:"margin:0;","Changing these drafts sends no actions. Apply requires backend preparation, explicit confirmation and authoritative readback. A mode change does not restart your session."}
