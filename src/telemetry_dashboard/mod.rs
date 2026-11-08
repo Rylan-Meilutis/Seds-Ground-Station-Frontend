@@ -99,6 +99,7 @@ mod antenna_math;
 mod map_stations;
 pub mod map_tab;
 pub mod warnings_tab;
+mod watch_companion;
 
 use crate::app::Route;
 use crate::auth;

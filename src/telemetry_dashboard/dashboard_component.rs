@@ -210,6 +210,7 @@ fn TelemetryDashboardInner() -> Element {
     });
     let flight_state = use_signal(|| "Startup".to_string());
     let board_status = use_signal(Vec::<BoardStatusEntry>::new);
+    watch_companion::use_live_publisher(flight_state, launch_clock, board_status, network_time);
     let network_topology = use_signal(NetworkTopologyMsg::default);
     let frontend_network_metrics = use_signal(FrontendNetworkMetrics::default);
     let abort_only_mode = use_signal(|| false);

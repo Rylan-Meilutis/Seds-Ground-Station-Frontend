@@ -54,6 +54,7 @@ fn readings(test_fire: bool) -> Vec<(&'static str, &'static str, &'static str)> 
 
 #[component]
 pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element {
+    super::watch_companion::use_demo_publisher();
     let mut active = use_signal(|| "state".to_string());
     let mut collapsed = use_signal(|| false);
     let mut sidebar = use_signal(|| true);

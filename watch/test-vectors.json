@@ -1,0 +1,308 @@
+{
+ "_comment": "Shared vectors for the Rust phone core, the Swift watch core and the Kotlin Wear core. Distances: haversine, R=6371008.8 m. Bearings: initial great-circle, true north, null = no bearing (closer than 1 m or origin at a pole), \"any\" = not checked.",
+ "geodesy": [
+  {
+   "name": "spaceport_to_las_cruces",
+   "from": [
+    32.9904,
+    -106.975
+   ],
+   "to": [
+    32.3199,
+    -106.7637
+   ],
+   "distance_m": 77135.8943,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 165.08326
+  },
+  {
+   "name": "short_north_11m",
+   "from": [
+    32.9904,
+    -106.975
+   ],
+   "to": [
+    32.9905,
+    -106.975
+   ],
+   "distance_m": 11.1195,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 0.0
+  },
+  {
+   "name": "short_east_25m",
+   "from": [
+    32.9904,
+    -106.975
+   ],
+   "to": [
+    32.9904,
+    -106.97473226
+   ],
+   "distance_m": 24.9711,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 89.99993
+  },
+  {
+   "name": "walk_1500m_sw",
+   "from": [
+    32.9904,
+    -106.975
+   ],
+   "to": [
+    32.981,
+    -106.986
+   ],
+   "distance_m": 1464.6344,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 224.47047
+  },
+  {
+   "name": "sub_metre_no_bearing",
+   "from": [
+    40.0,
+    -75.0
+   ],
+   "to": [
+    40.000005,
+    -75.0
+   ],
+   "distance_m": 0.556,
+   "distance_tol_m": 0.01,
+   "bearing_deg": null
+  },
+  {
+   "name": "coincident",
+   "from": [
+    40.0,
+    -75.0
+   ],
+   "to": [
+    40.0,
+    -75.0
+   ],
+   "distance_m": 0.0,
+   "distance_tol_m": 0.01,
+   "bearing_deg": null
+  },
+  {
+   "name": "across_north_pole",
+   "from": [
+    89.9,
+    0.0
+   ],
+   "to": [
+    89.9,
+    180.0
+   ],
+   "distance_m": 22239.016,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 0.0
+  },
+  {
+   "name": "near_north_pole_quarter",
+   "from": [
+    89.9,
+    0.0
+   ],
+   "to": [
+    89.9,
+    90.0
+   ],
+   "distance_m": 15725.3551,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 45.00004
+  },
+  {
+   "name": "from_north_pole",
+   "from": [
+    90.0,
+    0.0
+   ],
+   "to": [
+    89.9,
+    45.0
+   ],
+   "distance_m": 11119.508,
+   "distance_tol_m": 0.01,
+   "bearing_deg": null
+  },
+  {
+   "name": "across_south_pole",
+   "from": [
+    -89.95,
+    10.0
+   ],
+   "to": [
+    -89.95,
+    -170.0
+   ],
+   "distance_m": 11119.508,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 180.0
+  },
+  {
+   "name": "antimeridian_east",
+   "from": [
+    0.0,
+    179.9995
+   ],
+   "to": [
+    0.0,
+    -179.9995
+   ],
+   "distance_m": 111.1951,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 90.0
+  },
+  {
+   "name": "antimeridian_west",
+   "from": [
+    0.0,
+    -179.9995
+   ],
+   "to": [
+    0.0,
+    179.9995
+   ],
+   "distance_m": 111.1951,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 270.0
+  },
+  {
+   "name": "southern_hemisphere_km",
+   "from": [
+    -33.8688,
+    151.2093
+   ],
+   "to": [
+    -33.8568,
+    151.2153
+   ],
+   "distance_m": 1444.7779,
+   "distance_tol_m": 0.01,
+   "bearing_deg": 22.54927
+  },
+  {
+   "name": "antipodal",
+   "from": [
+    10.0,
+    20.0
+   ],
+   "to": [
+    -10.0,
+    -160.0
+   ],
+   "distance_m": 20015114.3078,
+   "distance_tol_m": 1.0,
+   "bearing_deg": "any"
+  }
+ ],
+ "distance_format": [
+  {
+   "m": 0.4,
+   "metric": "0 m",
+   "imperial": "1 ft"
+  },
+  {
+   "m": 12.0,
+   "metric": "12 m",
+   "imperial": "39 ft"
+  },
+  {
+   "m": 304.0,
+   "metric": "304 m",
+   "imperial": "997 ft"
+  },
+  {
+   "m": 999.4,
+   "metric": "999 m",
+   "imperial": "0.62 mi"
+  },
+  {
+   "m": 999.6,
+   "metric": "1.00 km",
+   "imperial": "0.62 mi"
+  },
+  {
+   "m": 1234.0,
+   "metric": "1.23 km",
+   "imperial": "0.77 mi"
+  },
+  {
+   "m": 12345.0,
+   "metric": "12.3 km",
+   "imperial": "7.67 mi"
+  },
+  {
+   "m": 1609.344,
+   "metric": "1.61 km",
+   "imperial": "1.00 mi"
+  },
+  {
+   "m": 20000.0,
+   "metric": "20.0 km",
+   "imperial": "12.4 mi"
+  }
+ ],
+ "age_format": [
+  {
+   "ms": 0,
+   "text": "0s"
+  },
+  {
+   "ms": 4900,
+   "text": "4s"
+  },
+  {
+   "ms": 59999,
+   "text": "59s"
+  },
+  {
+   "ms": 60000,
+   "text": "1m 00s"
+  },
+  {
+   "ms": 125000,
+   "text": "2m 05s"
+  },
+  {
+   "ms": 3780000,
+   "text": "1h 03m"
+  },
+  {
+   "ms": -5,
+   "text": "0s"
+  }
+ ],
+ "arrow": [
+  {
+   "bearing_true": 0,
+   "heading_true": 90,
+   "declination": 10,
+   "arrow": 270,
+   "bearing_magnetic": 350
+  },
+  {
+   "bearing_true": 350,
+   "heading_true": 10,
+   "declination": -7.5,
+   "arrow": 340,
+   "bearing_magnetic": 357.5
+  },
+  {
+   "bearing_true": 180,
+   "heading_true": 180,
+   "declination": 0,
+   "arrow": 0,
+   "bearing_magnetic": 180
+  },
+  {
+   "bearing_true": 45,
+   "heading_true": 300,
+   "declination": 8.25,
+   "arrow": 105,
+   "bearing_magnetic": 36.75
+  }
+ ]
+}

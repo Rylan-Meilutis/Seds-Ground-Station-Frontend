@@ -992,6 +992,14 @@ pub fn SettingsPage(
                     onclick: move |_| active_settings_tab.set("maintenance".to_string()),
                     "{settings_tab_maintenance}"
                 }
+                button {
+                    style: if active_settings_tab.read().as_str() == "watch" { chip_selected.clone() } else { chip_idle.clone() },
+                    onclick: move |_| active_settings_tab.set("watch".to_string()),
+                    "Watch"
+                }
+            }
+            if active_settings_tab.read().as_str() == "watch" {
+                super::watch_companion::WatchSettingsSection { theme: theme.clone() }
             }
 
             if active_settings_tab.read().as_str() == "general" {
