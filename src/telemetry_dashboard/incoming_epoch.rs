@@ -122,7 +122,18 @@ pub(super) fn mode_family(ty: &str) -> bool {
         | "LaunchClock" | "AlertConditions" | "BoardStatus" | "BoardAbort"
         | "NetworkTopology" | "ActionPolicy" | "FillTargets" | "NetworkTime"
         | "Warning" | "Error" | "AlertAckState" | "Notifications" | "Notification"
-        | "Messages" | "RecordingStatus")
+        | "Messages" | "RecordingStatus" | "MissionPhase" | "FlightMaxima")
+}
+
+#[cfg(test)]
+mod mode_family_tests {
+    #[test]
+    fn mission_phase_and_flight_maxima_are_current_station_messages() {
+        for ty in ["MissionPhase", "FlightMaxima", "FlightState"] {
+            assert!(super::mode_family(ty), "{ty}");
+        }
+        assert!(!super::mode_family("UnknownFamily"));
+    }
 }
 
 #[derive(serde::Deserialize)]
