@@ -125,6 +125,8 @@ fixture+=`let observedPage=null;let observedPhase="settings-setup";try {
  assert.equal(await page.getByRole('button',{name:'Save Fill Targets',exact:true}).count(),0,'Actions contains no duplicate station editor');
  assert.equal(await page.getByRole('button',{name:'Save PT limit',exact:true}).count(),0,'Actions has no duplicate PT editor');
  assert.equal(await page.getByLabel('Maximum acceptable empty-tank PT offset (psi)',{exact:true}).count(),0);
+ // The guidance lives in the "Before the valve test" disclosure.
+ await page.getByText('Before the valve test',{exact:true}).click();
  assert(await page.getByText('Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test.',{exact:true}).isVisible());
  assert.equal(await page.getByLabel(/Unlock dry valve self-test/).count(),1,'per-run isolation confirmation remains');
  gseStatus.phase='filling';await page.locator('button[data-sequence-state="In progress"]').filter({hasText:'Start fill'}).waitFor();

@@ -94,3 +94,12 @@
 .gs26-dashboard-shell button.gs26-action-control {height:auto !important;min-height:44px !important;row-gap:6px;align-content:center}
 .gs26-action-copy {min-width:0;overflow-wrap:anywhere}
 .gs26-action-badge {max-width:100%;box-sizing:border-box;white-space:normal;overflow-wrap:anywhere}
+
+/* Actions page: status lines read as quiet notes, sections as cards. The
+   command buttons themselves keep their own colours and layout. */
+.gs26-actions-page p[role=status]{margin:0;padding:6px 10px;border-left:3px solid var(--gs-line,#314156);border-radius:0 var(--gs-radius-sm,8px) var(--gs-radius-sm,8px) 0;background:var(--gs-surface-2,#142033);font-size:var(--gs-text-sm,13px);line-height:1.4;color:var(--gs-text-muted,#9fb0c7)}
+.gs26-actions-page > div > h3, .gs26-actions-page h3 {margin:16px 0 0 !important;font-size:var(--gs-text-xs,12px) !important;font-weight:700 !important;letter-spacing:.06em !important;text-transform:uppercase;color:var(--gs-text-muted,#9fb0c7) !important}
+.gs26-actions-page fieldset{min-width:0;margin:0;padding:12px 14px;display:grid;gap:10px;border:1px solid var(--gs-line,#314156);border-radius:var(--gs-radius-lg,14px);background:var(--gs-surface,#0b1628)}
+.gs26-actions-page fieldset > legend{padding:0 6px;font-weight:700;font-size:var(--gs-text-sm,13px)}
+.gs26-actions-page label:has(> input[type=checkbox]){display:flex;align-items:flex-start;gap:10px;line-height:1.4}
+.gs26-actions-page details:not(.gs-info) > summary{min-height:36px;display:flex;align-items:center;cursor:pointer;color:var(--gs-text-muted,#9fb0c7);font-size:var(--gs-text-sm,13px)}

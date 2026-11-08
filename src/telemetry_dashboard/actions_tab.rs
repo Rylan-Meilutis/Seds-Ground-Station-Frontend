@@ -550,7 +550,7 @@ pub(super) fn NetworkUtcControls() -> Element {
         fieldset {
             legend { "Network UTC time" }
             if recovery {
-                p { "The primary validates and applies this network UTC request; the RRLS machine clock is unchanged." }
+                super::gse_panel::InfoNote {summary:"Applied by the primary",paragraphs:vec!["The primary validates and applies this network UTC request; the RRLS machine clock is unchanged.".into()]}
             }
             div {
                 label {
@@ -595,7 +595,7 @@ pub(super) fn NetworkUtcControls() -> Element {
                         busy.set(false);
                     });
                 }, "Use client time" }
-                p { "Sets the station's network UTC source. Clock corrections apply gradually; the server system clock is unchanged." }
+                super::gse_panel::InfoNote {summary:"About network UTC",paragraphs:vec!["Sets the station's network UTC source. Clock corrections apply gradually; the server system clock is unchanged.".into()]}
             }
             p { role: "status", "{message}" }
         }
@@ -884,7 +884,7 @@ pub fn ActionsTab(
                                         p {"Pressure limits, dry self-test confirmation and qualification changes must be made at the primary ground station."}
                                     }
                                     if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
-                                    p { "Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test." }
+                                    super::gse_panel::InfoNote {summary:"Before the valve test",paragraphs:vec!["Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test.".into()]}
                                     label {input {r#type:"checkbox",checked:self_test_confirmation.read().confirmed(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||self_test_confirmation.read().busy()||self_test_confirmation.read().exhausted()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:{let self_test_alive=self_test_alive.clone();move |event| {
                                         if abort_only_mode||auth::current_status().station_role.as_deref()==Some("rrls")||!auth::can_send_command("ValveSelfTest") {return;}
                                         let mut next=self_test_confirmation.peek().clone();
@@ -1723,7 +1723,8 @@ fn PrimaryCommandRequest(abort_only_mode: bool) -> Element {
     rsx! {
         fieldset {
             legend {"Request execution at primary"}
-            p {"This can actuate hardware if the primary permits it. The primary checks current permissions, mode and interlocks. Stale display state does not grant permission or confirm an output."}
+            p {class:"gs-notice gs-notice--warn","Can actuate hardware if the primary permits it."}
+            super::gse_panel::InfoNote {summary:"How the primary decides",paragraphs:vec!["The primary checks current permissions, mode and interlocks. Stale display state does not grant permission or confirm an output.".into()]}
             label {"Command "
                 select {"aria-label":"Primary execution command",value:"{selected}",disabled:no_choices||pending,onchange:move |event|selected.set(event.value()),
                     option {value:"","Choose a command"}

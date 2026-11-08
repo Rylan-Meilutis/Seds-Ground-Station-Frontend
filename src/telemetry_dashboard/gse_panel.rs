@@ -234,6 +234,17 @@ pub(super) fn ControlHelp(
         }
     }
 }
+/// Inline disclosure for explanations that should stay available without
+/// filling the page: a one-line summary that expands in place.
+#[component]
+pub(super) fn InfoNote(summary: String, paragraphs: Vec<String>) -> Element {
+    rsx! {
+        details { class: "gs-info",
+            summary { "{summary}" }
+            div { for paragraph in paragraphs { p { style: "margin:0 0 6px;", "{paragraph}" } } }
+        }
+    }
+}
 #[cfg(test)]
 mod visibility_tests {
     #[test]
@@ -486,7 +497,7 @@ pub(super) fn GsePanel(
                         busy.set(false);
                     });
                 },"Turbocharge"}
-                p {style:"margin:0;font-size:12px;", "Turbocharge uses the configured nitrous pressure target. It confirms every valve closed, admits nitrogen only, then closes nitrogen and verifies settled mass. It never starts launch."}
+                InfoNote {summary:"About Turbocharge",paragraphs:vec!["Turbocharge uses the configured nitrous pressure target. It confirms every valve closed, admits nitrogen only, then closes nitrogen and verifies settled mass. It never starts launch.".into()]}
                 if !turbo_enabled {p {style:"margin:0;font-size:12px;","{turbo_reason}"}}
                 div {style:"display:flex;gap:24px;flex-wrap:wrap;color:{theme.text_muted};font-size:12px;font-variant-numeric:tabular-nums;",
                     span {"GS-calibrated PT: {pressure_label}"}
@@ -1033,7 +1044,7 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
     rsx! {
         section { class: "gs26-station-gse-settings", style: "display:grid;gap:12px;min-width:0;",
             h3 { "GSE limits and plumbing" }
-            p { "Configuration changes affect the next operation. Existing permissions and interlocks still apply." }
+            p { class: "gs-section-note", style: "margin:0;color:var(--gs-text-muted);font-size:var(--gs-text-sm);", "Changes apply to the next operation; permissions and interlocks still apply." }
             super::plumbing_drive::PlumbingDriveSelector { theme: theme.clone() }
                     details {
                     summary {style:"cursor:pointer;color:{theme.text_muted};font-size:13px;","Nitrogen test settings"}
