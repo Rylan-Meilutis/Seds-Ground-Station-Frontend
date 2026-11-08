@@ -67,6 +67,15 @@ pub(super) struct RfModem {
     pub rtscts: Option<u16>,
 }
 
+/// Raw-UART radio receive quality reported by the backend.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct ReceiveQuality {
+    #[serde(default)]
+    pub good_frames_last_minute: u64,
+    #[serde(default)]
+    pub crc_failures_last_minute: u64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(super) struct ModemStatus {
     #[serde(default)]
@@ -91,6 +100,8 @@ pub(super) struct ModemStatus {
     pub report: Option<ModemReport>,
     #[serde(default)]
     pub rf_board: Option<RfModem>,
+    #[serde(default)]
+    pub receive_quality: Option<ReceiveQuality>,
 }
 
 #[derive(Deserialize)]
@@ -106,6 +117,7 @@ pub(super) fn outcome_label(status: &ModemStatus) -> &'static str {
         None => "Radio modem not checked yet",
         Some("matched") => "Radio modem settings match the profile",
         Some("applied") => "Radio modem settings corrected and verified",
+        Some("reset") => "Radio modem reset and the serial port reopened",
         Some("mismatch") => "Radio modem settings differ from the profile",
         Some("skipped") => "Radio modem check skipped",
         Some("no_response") => "Radio modem did not answer; running on its current settings",
@@ -143,6 +155,19 @@ pub(super) fn rf_values(rf: &RfModem) -> String {
         v(rf.dest_id),
         v(rf.rtscts)
     )
+}
+
+/// "Receive quality (last minute): 120 good frames, 3 CRC failures (2%)".
+pub(super) fn receive_quality_line(q: &ReceiveQuality) -> Option<String> {
+    let total = q.good_frames_last_minute + q.crc_failures_last_minute;
+    (total > 0).then(|| {
+        format!(
+            "Receive quality (last minute): {} good frames, {} CRC failures ({}%)",
+            q.good_frames_last_minute,
+            q.crc_failures_last_minute,
+            q.crc_failures_last_minute * 100 / total
+        )
+    })
 }
 
 /// Shown when the operator selected the opt-in low-latency profile.
@@ -219,15 +244,19 @@ pub fn RadioModemHealth(ws_connected: bool, theme: ThemeConfig) -> Element {
             Ok(owner.clone()),
         );
         busy.set(true);
-        message.set("Requesting a modem check; the radio pauses for a few seconds.".into());
+        message.set(if mode == "reset" {
+            "Requesting a radio reset; the radio pauses for a few seconds.".into()
+        } else {
+            "Requesting a modem check; the radio pauses for a few seconds.".into()
+        });
         spawn(async move {
             let result = call.await;
             if !owner.is_current() {
                 return;
             }
             match result {
-                Ok(reply) if reply.accepted => message.set("Modem check started.".into()),
-                Ok(_) => message.set("Modem check was not accepted.".into()),
+                Ok(reply) if reply.accepted => message.set(if mode == "reset" { "Radio reset started.".into() } else { "Modem check started.".into() }),
+                Ok(_) => message.set(if mode == "reset" { "Radio reset was not accepted.".into() } else { "Modem check was not accepted.".into() }),
                 Err(error) => message.set(error),
             }
             busy.set(false);
@@ -295,6 +324,9 @@ pub fn RadioModemHealth(ws_connected: bool, theme: ThemeConfig) -> Element {
                     }
                 }
             }
+            if let Some(line) = state.receive_quality.as_ref().and_then(receive_quality_line) {
+                p { style: "margin:8px 0 0; color:{theme.text_secondary};", "{line}" }
+            }
             if let Some(reason) = &state.blocked_reason {
                 p { style: "margin:8px 0 0; color:{theme.text_secondary};", "Modem changes are unavailable: {reason}." }
             }
@@ -303,6 +335,9 @@ pub fn RadioModemHealth(ws_connected: bool, theme: ThemeConfig) -> Element {
                     onclick: move |_| request("verify"), "Verify modem" }
                 button { r#type: "button", style: "min-height:44px;", disabled: !allowed,
                     onclick: move |_| request("fix"), "Fix modem settings" }
+                button { r#type: "button", style: "min-height:44px;", disabled: !allowed,
+                    title: "Reboot the radio modem (ATZ) and reopen its serial port. Settings are not changed.",
+                    onclick: move |_| request("reset"), "Reset radio" }
             }
             if !message.read().is_empty() { p { role: "status", style: "margin:8px 0 0;", "{message}" } }
         }
@@ -386,6 +421,22 @@ mod tests {
         assert!(rf_label(Some(&failed)).contains("failed"));
         let pending = RfModem { pending: true, ..Default::default() };
         assert!(rf_label(Some(&pending)).contains("pending"));
+    }
+
+    #[test]
+    fn reset_outcome_and_receive_quality_are_shown() {
+        let status: ModemStatus = serde_json::from_str(
+            r#"{"available":true,"report":{"outcome":"reset","summary":"modem rebooted"},
+            "receive_quality":{"good_frames_last_minute":97,"crc_failures_last_minute":3,
+            "good_frames_total":1000,"crc_failures_total":30}}"#,
+        )
+        .unwrap();
+        assert_eq!(outcome_label(&status), "Radio modem reset and the serial port reopened");
+        assert_eq!(
+            receive_quality_line(status.receive_quality.as_ref().unwrap()).unwrap(),
+            "Receive quality (last minute): 97 good frames, 3 CRC failures (3%)"
+        );
+        assert!(receive_quality_line(&ReceiveQuality::default()).is_none());
     }
 
     #[test]
