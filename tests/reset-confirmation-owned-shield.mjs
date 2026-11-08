@@ -107,7 +107,7 @@ export async function verifyRetiredResetAuth({commandPage,actionButton,requests}
     const count=requests.length;await actionButton('ResetFlightState').click();
     const dialog=commandPage.getByRole('alertdialog',{name:'Confirm reset'});await dialog.waitFor({state:'visible'});
     const stale=await dialog.getByRole('button',{name:'Confirm reset',exact:true}).elementHandle();
-    await commandPage.getByRole('button',{name:/^SIGN OUT/,includeHidden:true}).evaluate(e=>e.click());
+    await commandPage.getByRole('button',{name:/^Sign out/,includeHidden:true}).evaluate(e=>e.click());
     await actionButton('ResetFlightState').waitFor({state:'detached'});
     await stale.evaluate(e=>e.click());
     await commandPage.waitForTimeout(500);

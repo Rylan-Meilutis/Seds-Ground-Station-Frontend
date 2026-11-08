@@ -61,7 +61,7 @@ fixture+=`try {
  plumbing.board.mode='stepper';plumbing.board.result='ok';plumbing.desired.mode='stepper';plumbing.pending=false;await page.waitForTimeout(1200);
  await select.selectOption('auxiliary');await release.check();holdSave=true;oldSave401=true;await save.click();while(saves.length<2)await new Promise(r=>setTimeout(r,10));
  await page.getByRole('button',{name:'Close',exact:true}).click();
- const signout=page.getByRole('button',{name:'SIGN OUT ui-test',exact:true,includeHidden:true});await revealHeaderControl(signout);await signout.click();
+ const signout=page.getByRole('button',{name:'Sign out ui-test',exact:true,includeHidden:true});await revealHeaderControl(signout);await signout.click();
  await page.getByLabel('Username',{exact:true}).fill('new-user');await page.getByLabel('Password',{exact:true}).fill('browser-fixture');await page.getByRole('button',{name:'Sign In',exact:true}).click();
  console.log('PHASE new-login-settings');await page.waitForTimeout(1500);await openDriveSettings();if(!await page.getByRole('region',{name:'Fill-line drive'}).count()){console.error('POST LOGIN BODY',await page.locator('body').innerText());console.error('POST LOGIN ERRORS',errors);const choose=page.getByRole('button',{name:/Choose tab/});if(await choose.count()){await choose.click();await page.getByRole('button',{name:'Actions',exact:true}).click();}}await page.getByRole('region',{name:'Fill-line drive'}).waitFor({timeout:15000});releaseSave();await page.waitForTimeout(1200);
  assert(await page.evaluate(()=>localStorage.getItem('auth_session_v1').includes('ui-token-2')),'new authenticated token survives old401');assert(seenTokens.has('Bearer ui-token-2'),'new context makes actual authenticated readback requests');

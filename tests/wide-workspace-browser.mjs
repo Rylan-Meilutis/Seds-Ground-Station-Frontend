@@ -55,7 +55,7 @@ fixture+=`try {
   const layout=layoutResponse.body;assert.deepEqual(layout.main_tabs,expectedTabs);assert.equal(layout.branding.app_name,expectedName);await assertSession(authResponse,expectedSession);
   await page.waitForFunction(name=>document.querySelector('#gs26-sidebar-navigation')?.getAttribute('aria-label')===name+' pages',expectedName,{timeout:remaining(deadline)});
   await page.getByRole('navigation',{name:'Mission navigation'}).waitFor({timeout:remaining(deadline)});
-  await page.getByText('SIGN OUT '+expectedSession.username,{exact:true}).waitFor({state:'attached',timeout:remaining(deadline)});
+  await page.getByText('Sign out '+expectedSession.username,{exact:true}).waitFor({state:'attached',timeout:remaining(deadline)});
   return deadline;
  };
  const changeLayoutMarker=()=>{fixtureLayoutRevision++;dashboardLayout.branding.app_name='Workspace fixture layout '+fixtureLayoutRevision;};

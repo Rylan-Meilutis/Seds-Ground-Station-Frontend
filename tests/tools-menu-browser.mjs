@@ -13,7 +13,7 @@ fixture+=`try {
   await context.addInitScript(({session,origin})=>localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]})),{session,origin});
   await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
   const page=await context.newPage();await page.goto(origin+'/dashboard');
-  const account=page.locator('.gs26-utility-menu button').filter({hasText:/SIGN OUT/});await account.waitFor({state:'attached'});
+  const account=page.locator('.gs26-utility-menu button').filter({hasText:/Sign out/});await account.waitFor({state:'attached'});
   const menu=page.locator('.gs26-header-menu-toggle'),collapsed=await menu.isVisible();if(collapsed)await menu.click();
   if(collapsed){const panel=await page.locator('#gs26-mobile-menu').boundingBox();console.log('Expanded responsive Menu:',JSON.stringify({viewport:[width,height],panel}));if(panel.x<0||panel.x+panel.width>width||panel.y+panel.height>height)failures.push('Tools dropdown outside viewport '+width+'x'+height);assert.equal(await page.locator('#gs26-mobile-menu nav').count(),0,'Tools contains no page navigation');}
   const tools=page.locator('.gs26-utility-menu');if(!await tools.evaluate(e=>e.open))await tools.locator('summary').click();

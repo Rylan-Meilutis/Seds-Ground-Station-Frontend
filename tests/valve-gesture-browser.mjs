@@ -110,7 +110,7 @@ try {
  {const c=await open();await c.down();await c.update(null,false);await c.up();await c.finish('current Close permission revoked',[]);}
  {const c=await open();await c.down();await c.page.waitForTimeout(700);await c.up();await c.finish('held gesture exceeds actual650ms limit',[]);}
  {const c=await open();await c.down();await c.page.evaluate(()=>{const next=new URL(location.origin);next.hostname='localhost';localStorage.setItem('gs_base_url',next.origin);if(next.origin===location.origin)throw Error('Station fixture must change normalized host');});await c.up();await c.finish('actual persisted station identity changed',[]);}
- {const c=await open();await c.down();await c.page.getByRole('button',{name:/^SIGN OUT/,includeHidden:true}).evaluate(e=>e.click());await c.primary.waitFor({state:'detached'});await c.up();await c.finish('actual signout revokes auth and unmounts Actions',[]);}
+ {const c=await open();await c.down();await c.page.getByRole('button',{name:/^Sign out/,includeHidden:true}).evaluate(e=>e.click());await c.primary.waitFor({state:'detached'});await c.up();await c.finish('actual signout revokes auth and unmounts Actions',[]);}
  {const c=await open();await c.down();await c.page.getByRole('button',{name:/Choose tab/}).evaluate(e=>e.click());await c.page.getByRole('button',{name:'Dashboard',exact:true}).evaluate(e=>e.click());await c.primary.waitFor({state:'detached'});await c.up();await c.finish('actual tab switch unmounts held control',[]);}
  for(const changed of [false,true]){
   const c=await open({touch:true});await c.down();if(changed)await c.update(false);await c.up();const events=await c.page.evaluate(()=>window.valveEvents);assert(events.some(e=>e.type==='touchstart'&&e.trusted),'Real browser touch path taken');assert(events.some(e=>e.type==='mousedown'&&e.trusted),'Real compatibility mouse path taken');await c.finish('real mobile touch '+(changed?'Close→OFF drops compatibility click':'stable Close exactly once'),changed?[]:['NitrogenClose']);
@@ -135,11 +135,11 @@ try {
  {const c=await open();await c.primary.dispatchEvent('click',{button:0});await c.finish('unarmed click cannot infer current Close',[]);}
  {const c=await open({touch:true});await c.syntheticTouch();await c.cancel();await c.update(false);await c.ghost();await c.primary.dispatchEvent('click',{button:0});await c.finish('unarmed remount-like compatibility click has no fallback',[]);}
 
- {const c=await open();await c.primary.focus();await c.page.keyboard.down('Space');await c.page.getByRole('button',{name:/^SIGN OUT/,includeHidden:true}).evaluate(e=>e.click());await c.primary.waitFor({state:'detached'});await c.page.keyboard.up('Space');await c.finish('held Space actual signout revokes auth and unmounts',[]);}
+ {const c=await open();await c.primary.focus();await c.page.keyboard.down('Space');await c.page.getByRole('button',{name:/^Sign out/,includeHidden:true}).evaluate(e=>e.click());await c.primary.waitFor({state:'detached'});await c.page.keyboard.up('Space');await c.finish('held Space actual signout revokes auth and unmounts',[]);}
  {const c=await open({touch:true});await c.syntheticTouch();await c.page.getByRole('button',{name:/Choose tab/}).evaluate(e=>e.click());await c.page.getByRole('button',{name:'Dashboard',exact:true}).evaluate(e=>e.click());await c.primary.waitFor({state:'detached'});await c.page.getByRole('button',{name:/Choose tab/}).evaluate(e=>e.click());await c.page.getByRole('button',{name:'Actions',exact:true}).evaluate(e=>e.click());await c.primary.waitFor();await c.update(false);await c.ghost();assert.deepEqual(c.requests,[],'Retired component touch cannot produce new Open');await c.primary.click();await c.finish('actual Actions remount ghost drops then fresh pointer works',['Nitrogen']);}
  // Shell controls formerly had independent touchend actions which bypassed
  // click cancellation. Exercise actual Dioxus overlay open and Close controls.
- for(const [label,title] of [['SETTINGS','Settings'],['VERSION','UBSEDS GS']]) {
+ for(const [label,title] of [['Settings','Settings'],['Version','UBSEDS GS']]) {
   const c=await open({touch:true});await c.page.setViewportSize({width:390,height:280});
   await c.page.locator('.gs26-header-menu-toggle').filter({hasText:'Tools'}).click();
   const button=c.page.getByRole('button',{name:label,exact:true});await button.scrollIntoViewIfNeeded();

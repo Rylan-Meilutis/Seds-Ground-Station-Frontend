@@ -1989,16 +1989,16 @@ fn TelemetryDashboardInner() -> Element {
         translate_text("Attention")
     };
     let status_label_style = if !active_warning_alert && !active_error_alert {
-        "display:inline-flex; align-items:center; min-width:12ch; color:#22c55e; font-weight:600; flex:0 0 auto;"
+        "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-success-text,#22c55e); font-weight:600; flex:0 0 auto;"
     } else {
-        "display:inline-flex; align-items:center; min-width:12ch; color:#e5e7eb; font-weight:600; flex:0 0 auto;"
+        "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-warning-text,#fde68a); font-weight:600; flex:0 0 auto;"
     };
     let errors_status_style = format!(
-        "display:inline-flex; align-items:center; min-width:12ch; color:#fecaca; opacity:{}; flex:0 0 auto;",
+        "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-error-text,#fecaca); opacity:{}; flex:0 0 auto;",
         if has_errors { "1" } else { "0" }
     );
     let warnings_status_style = format!(
-        "display:inline-flex; align-items:center; min-width:13ch; color:#fde68a; opacity:{}; flex:0 0 auto;",
+        "display:inline-flex; align-items:center; min-width:13ch; color:var(--gs26-warning-text,#fde68a); opacity:{}; flex:0 0 auto;",
         if has_warnings { "1" } else { "0" }
     );
     // Initial flightstate (HTTP)
@@ -2249,7 +2249,7 @@ fn TelemetryDashboardInner() -> Element {
                         show_version_overlay.set(true);
                     }
                 },
-                {translate_text("VERSION")}
+                {translate_text("Version")}
             }
         }
     };
@@ -2275,26 +2275,26 @@ fn TelemetryDashboardInner() -> Element {
                         show_settings_overlay.set(true);
                     }
                 },
-                {translate_text("SETTINGS")}
+                {translate_text("Settings")}
             }
         }
     };
 
-    let reload_button_label = translate_text("RELOAD");
+    let reload_button_label = translate_text("Reload");
     let close_button_label = translate_text("Close");
     let _version_title = localized_copy(&language_snapshot, "UBSEDS GS", "UBSEDS GS", "UBSEDS GS");
     let settings_title = localized_copy(&language_snapshot, "Settings", "Ajustes", "Parametres");
     let sign_in_label = localized_copy(
         &language_snapshot,
-        "SIGN IN",
-        "INICIAR SESIÓN",
-        "SE CONNECTER",
+        "Sign in",
+        "Iniciar sesión",
+        "Se connecter",
     );
     let sign_out_prefix = localized_copy(
         &language_snapshot,
-        "SIGN OUT",
-        "CERRAR SESIÓN",
-        "SE DECONNECTER",
+        "Sign out",
+        "Cerrar sesión",
+        "Se déconnecter",
     );
     let auth_label = auth::current_session()
         .and_then(|session| session.session.username)
@@ -2838,7 +2838,7 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-status-row {{ grid-column:1; grid-row:1; }}
              .gs26-status-flight {{ display:flex; align-items:baseline; gap:0.35rem; min-width:0; width:fit-content; max-width:100%; flex-wrap:nowrap; white-space:nowrap; line-height:1.1; margin:0; padding:0.04rem 0.12rem 0.07rem 0; }}
              .gs26-status-flight {{ grid-column:1; grid-row:2; }}
-             .gs26-launch-clock {{ display:inline-flex; align-items:baseline; line-height:1; white-space:nowrap; vertical-align:baseline; color:#f8fafc; font-weight:800; }}
+             .gs26-launch-clock {{ display:inline-flex; align-items:baseline; line-height:1; white-space:nowrap; vertical-align:baseline; color:var(--gs26-app-text,#f8fafc); font-weight:800; }}
              .gs26-launch-clock-value {{ display:inline-flex; align-items:baseline; width:9ch; padding-left:0.35ch; line-height:1; text-align:left; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; }}
              .gs26-status-network {{ grid-column:2; grid-row:1; justify-self:end; line-height:1; }}
              .gs26-status-launch {{ grid-column:2; grid-row:2; justify-self:end; line-height:1; }}
@@ -3293,6 +3293,7 @@ fn TelemetryDashboardInner() -> Element {
             ",
 
                         style {{include_str!("navigation_rail.css")}}
+                        style {{include_str!("header.css")}}
                         if !*streamer_mode.read() && *navigation_rail::SIDEBAR_NAVIGATION.read() {
                             navigation_rail::NavigationRail {
                                 items:_configured_main_tabs(&layout,*abort_only_mode.read(),*calibration_has_sensors.read(),&dashboard_customization.read()).into_iter().map(|tab|navigation_rail::NavigationItem{id:_main_tab_to_str(tab).into(),label:_main_tab_label(&layout,tab)}).collect(),

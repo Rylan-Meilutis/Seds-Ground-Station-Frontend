@@ -1,0 +1,27 @@
+/* Header and status bar. Loaded after the shell's inline rules. */
+.gs26-dashboard-shell :is(.gs26-header-row, .gs26-header-secondary) button { font-family: var(--gs-font); letter-spacing: 0; }
+.gs26-dashboard-shell .gs26-header-actions-list > button,
+.gs26-dashboard-shell .gs26-header-menu-toggle,
+.gs26-dashboard-shell .gs26-title-tab-toggle { border-radius: var(--gs-radius) !important; font-weight: 650 !important; min-height: 40px; }
+.gs26-status-shell { border-radius: var(--gs-radius-lg) !important; padding: 6px 12px !important; }
+.gs26-status-row, .gs26-status-flight { font-size: var(--gs-text-sm); }
+.gs26-network-time-label { color: var(--gs-text-muted); font-size: var(--gs-text-xs); text-transform: uppercase; letter-spacing: .05em; }
+
+/* Phones: two compact rows (state left, clocks right) instead of four centred lines. */
+@media (max-width: 860px) {
+  .gs26-status-shell {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    justify-items: start !important; text-align: left !important;
+    column-gap: 8px !important; row-gap: 2px !important; padding: 6px 10px !important;
+  }
+  .gs26-status-row { grid-column: 1 !important; grid-row: 1 !important; justify-self: start !important; justify-content: flex-start !important; gap: 6px !important; }
+  .gs26-status-flight { grid-column: 1 !important; grid-row: 2 !important; justify-self: start !important; justify-content: flex-start !important; }
+  .gs26-status-network { grid-column: 2 !important; grid-row: 1 !important; justify-self: end !important; font-size: var(--gs-text-xs); }
+  .gs26-status-launch { grid-column: 2 !important; grid-row: 2 !important; justify-self: end !important; }
+  .gs26-status-ack { grid-column: 1 / -1 !important; grid-row: 3 !important; justify-self: start !important; }
+  .gs26-network-time-label { display: none; }
+  .gs26-status-row .gs26-status-value { min-width: 0 !important; }
+}
+@media (max-width: 380px) {
+  .gs26-status-network { display: none; }
+}

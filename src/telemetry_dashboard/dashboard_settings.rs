@@ -46,12 +46,12 @@ fn builtin_translation(lang: &str, text: &str) -> Option<&'static str> {
 fn builtin_translation_es(text: &str) -> Option<&'static str> {
     Some(match text {
         "ABORT" => "ABORTAR",
-        "VERSION" => "VERSIÓN",
-        "CONNECT" => "CONECTAR",
-        "RELOAD" => "RECARGAR",
-        "SETTINGS" => "AJUSTES",
-        "SIGN IN" => "INICIAR SESIÓN",
-        "SIGN OUT" => "CERRAR SESIÓN",
+        "Version" => "Versión",
+        "Connect" => "Conectar",
+        "Reload" => "Recargar",
+        "Settings" => "Ajustes",
+        "Sign in" => "Iniciar sesión",
+        "Sign out" => "Cerrar sesión",
         "Menu" => "Menú",
         "Close menu" => "Cerrar menú",
         "Actions Disabled" => "Acciones Desactivadas",
@@ -1182,12 +1182,11 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
     };
     rsx! {
         span { style: "display:inline-flex; align-items:baseline; flex:0 0 auto; min-width:0; line-height:1; vertical-align:baseline;",
-            span { style: "color:#cbd5e1; display:inline-flex; align-items:baseline; white-space:nowrap;",
-                "({label}:"
+            span { class: "gs26-network-time", style: "color:var(--gs26-text-secondary,#cbd5e1); display:inline-flex; align-items:baseline; white-space:nowrap;",
+                span { class: "gs26-network-time-label", "{label}" }
                 span {
-                    style: "display:inline-flex; align-items:baseline; width:16ch; padding-left:0.4ch; white-space:nowrap; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums;",
+                    style: "display:inline-flex; align-items:baseline; width:15ch; padding-left:0.5ch; white-space:nowrap; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; color:var(--gs26-app-text,#f8fafc);",
                     span { "{ts}" }
-                    span { ")" }
                 }
             }
         }
