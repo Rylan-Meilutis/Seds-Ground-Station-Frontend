@@ -96,6 +96,68 @@ async fn read_location_once(
     connection: &zbus::Connection,
     client_path: &OwnedObjectPath,
 ) -> Result<Option<(f64, f64, Option<f64>)>, String> {
+    Ok(read_fix(connection, client_path)
+        .await?
+        .map(|fix| (fix.latitude, fix.longitude, fix.altitude_m)))
+}
+
+async fn stop_client(connection: &zbus::Connection, client_path: &OwnedObjectPath) {
+    if let Ok(client) = Proxy::new(
+        connection,
+        GEOCLUE_SERVICE,
+        client_path.as_str(),
+        GEOCLUE_CLIENT_IFACE,
+    )
+    .await
+    {
+        let _ = client.call::<_, _, ()>("Stop", &()).await;
+    }
+}
+
+/// One explicit reading: start a GeoClue client, wait for its first location,
+/// then stop the client. Dropping the future closes the bus connection, which
+/// also ends the GeoClue client.
+pub async fn one_shot(
+    timeout: std::time::Duration,
+) -> Result<crate::telemetry_dashboard::gps::DeviceFix, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let (connection, client_path) =
+        tokio::time::timeout_at(deadline, open_geoclue_client())
+            .await
+            .map_err(|_| "The location service did not respond. Enter coordinates manually.".to_string())?
+            .map_err(|e| {
+                eprintln!("{e}");
+                "Location service (GeoClue) is unavailable or refused this app. Enable location services or enter coordinates.".to_string()
+            })?;
+    let result = loop {
+        match tokio::time::timeout_at(deadline, read_fix(&connection, &client_path)).await {
+            Ok(Ok(Some(fix))) => break Ok(fix),
+            Ok(Ok(None)) => {}
+            Ok(Err(e)) => {
+                eprintln!("{e}");
+                break Err("The location service failed. Enter coordinates manually.".to_string());
+            }
+            Err(_) => break Err(String::new()),
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break Err(String::new());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    stop_client(&connection, &client_path).await;
+    result.map_err(|e| {
+        if e.is_empty() {
+            "The device did not find its location in time. Try again or enter coordinates.".into()
+        } else {
+            e
+        }
+    })
+}
+
+async fn read_fix(
+    connection: &zbus::Connection,
+    client_path: &OwnedObjectPath,
+) -> Result<Option<crate::telemetry_dashboard::gps::DeviceFix>, String> {
     let client = Proxy::new(
         connection,
         GEOCLUE_SERVICE,
@@ -129,12 +191,15 @@ async fn read_location_once(
         .map_err(|e| format!("Linux GeoClue longitude read failed: {e}"))?;
     let altitude: Result<f64, _> = location.get_property("Altitude").await;
     let altitude = altitude.ok().filter(|value| value.is_finite());
+    let accuracy: Result<f64, _> = location.get_property("Accuracy").await;
 
-    if lat.is_finite() && lon.is_finite() && !(lat.abs() < 0.000_001 && lon.abs() < 0.000_001) {
-        Ok(Some((lat, lon, altitude)))
-    } else {
-        Ok(None)
+    Ok(crate::telemetry_dashboard::gps::DeviceFix {
+        latitude: lat,
+        longitude: lon,
+        altitude_m: altitude,
+        accuracy_m: accuracy.ok(),
     }
+    .checked())
 }
 
 pub async fn run(

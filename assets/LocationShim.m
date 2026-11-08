@@ -35,6 +35,8 @@ static volatile int g_gs26_heading_started = 0;
 static volatile int g_gs26_location_callback_seen = 0;
 static volatile int g_gs26_heading_callback_seen = 0;
 static volatile int g_gs26_last_location_error_code = 0;
+static volatile double g_gs26_last_horizontal_accuracy = NAN;
+static volatile double g_gs26_last_location_unix_s = NAN;
 
 @interface GS26LocationShim : NSObject <CLLocationManagerDelegate>
 @property(nonatomic, strong) CLLocationManager *mgr;
@@ -171,6 +173,9 @@ static volatile int g_gs26_last_location_error_code = 0;
   if (!last || !self.cb)
     return;
   g_gs26_location_callback_seen = 1;
+  g_gs26_last_horizontal_accuracy =
+      last.horizontalAccuracy >= 0 ? last.horizontalAccuracy : NAN;
+  g_gs26_last_location_unix_s = last.timestamp.timeIntervalSince1970;
   double altitude = NAN;
   if (@available(iOS 4.2, macOS 10.7, *)) {
     altitude = last.verticalAccuracy >= 0 ? last.altitude : NAN;
@@ -239,6 +244,12 @@ int gs26_heading_callback_seen(void) { return g_gs26_heading_callback_seen; }
 int gs26_last_location_error_code(void) {
   return g_gs26_last_location_error_code;
 }
+// Horizontal accuracy (metres) and fix time of the most recent location;
+// NAN until a location has been delivered.
+double gs26_last_horizontal_accuracy(void) {
+  return g_gs26_last_horizontal_accuracy;
+}
+double gs26_last_location_unix_s(void) { return g_gs26_last_location_unix_s; }
 
 #pragma mark - Keep awake (iOS only)
 

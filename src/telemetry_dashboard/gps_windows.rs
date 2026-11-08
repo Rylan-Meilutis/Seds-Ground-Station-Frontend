@@ -59,6 +59,55 @@ fn read_location_once_blocking() -> Result<Option<(f64, f64, Option<f64>)>, Stri
     }
 }
 
+fn read_fix_blocking() -> Result<crate::telemetry_dashboard::gps::DeviceFix, String> {
+    let access = Geolocator::RequestAccessAsync()
+        .map_err(|e| format!("Windows location access request failed: {e}"))?
+        .join()
+        .map_err(|e| format!("Windows location access status failed: {e}"))?;
+    if access != GeolocationAccessStatus::Allowed {
+        return Err(
+            "Location access is off for this app. Allow it in Windows Settings > Privacy & security > Location, or enter coordinates."
+                .into(),
+        );
+    }
+    let locator = Geolocator::new().map_err(|e| format!("Windows Geolocator init failed: {e}"))?;
+    let _ = locator.SetDesiredAccuracy(PositionAccuracy::High);
+    let coordinate = locator
+        .GetGeopositionAsync()
+        .and_then(|operation| operation.join())
+        .and_then(|position| position.Coordinate())
+        .map_err(|e| {
+            format!("The device location is unavailable ({e}). Enter coordinates manually.")
+        })?;
+    let basic = coordinate
+        .Point()
+        .and_then(|point| point.Position())
+        .map_err(|e| {
+            format!("The device location is unavailable ({e}). Enter coordinates manually.")
+        })?;
+    crate::telemetry_dashboard::gps::DeviceFix {
+        latitude: basic.Latitude,
+        longitude: basic.Longitude,
+        altitude_m: Some(basic.Altitude),
+        accuracy_m: coordinate.Accuracy().ok(),
+    }
+    .checked()
+    .ok_or_else(|| "The device did not provide valid coordinates.".to_string())
+}
+
+/// One explicit reading through the Windows location service.
+pub async fn one_shot(
+    timeout: std::time::Duration,
+) -> Result<crate::telemetry_dashboard::gps::DeviceFix, String> {
+    match tokio::time::timeout(timeout, tokio::task::spawn_blocking(read_fix_blocking)).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("The location request failed. Enter coordinates manually.".into()),
+        Err(_) => Err(
+            "The device did not find its location in time. Try again or enter coordinates.".into(),
+        ),
+    }
+}
+
 pub async fn run(
     mut user_gps: Signal<Option<(f64, f64)>>,
     mut user_altitude_m: Signal<Option<f64>>,

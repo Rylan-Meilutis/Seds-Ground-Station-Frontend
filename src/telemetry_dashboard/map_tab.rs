@@ -695,6 +695,7 @@ pub fn MapTab(
                         }
                     }
                 }
+                super::map_stations::MapStations { theme: theme.clone() }
                 div { style: "flex:1; min-height:0; width:100%;",
                     {map_canvas(&theme)}
                 }
@@ -740,6 +741,7 @@ pub fn MapTab(
                     }
                 }
 
+                super::map_stations::MapStations { theme: theme.clone() }
                 div { style: "flex:1 1 auto; min-height:0; width:100%; overflow:hidden;",
                     {map_canvas(&theme)}
                 }

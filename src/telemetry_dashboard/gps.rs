@@ -6,6 +6,64 @@ use dioxus_signals::Signal;
 
 const NATIVE_ALTITUDE_SYNC_MS: u64 = 250;
 
+/// One operating-system location reading for an explicit operator request.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeviceFix {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub altitude_m: Option<f64>,
+    pub accuracy_m: Option<f64>,
+}
+
+impl DeviceFix {
+    /// Rejects non-finite, out-of-range and null-island (0, 0) readings.
+    pub fn checked(self) -> Option<Self> {
+        let usable = self.latitude.is_finite()
+            && self.longitude.is_finite()
+            && (-90.0..=90.0).contains(&self.latitude)
+            && (-180.0..=180.0).contains(&self.longitude)
+            && !(self.latitude.abs() < 0.000_001 && self.longitude.abs() < 0.000_001);
+        usable.then_some(Self {
+            // GeoClue reports an unknown altitude as -DBL_MAX.
+            altitude_m: self
+                .altitude_m
+                .filter(|v| v.is_finite() && (-15_000.0..=100_000.0).contains(v)),
+            accuracy_m: self.accuracy_m.filter(|v| v.is_finite() && *v >= 0.0),
+            ..self
+        })
+    }
+}
+
+/// Asks the operating system for one fresh location, used where the desktop or
+/// iOS WebView does not grant page geolocation. Web and Android builds use the
+/// WebView's `getCurrentPosition` instead. No watch is left running afterwards
+/// beyond whatever the dashboard's own GPS driver already runs.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub async fn one_shot_location(timeout: std::time::Duration) -> Result<DeviceFix, String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::telemetry_dashboard::gps_linux::one_shot(timeout).await
+    }
+    #[cfg(target_os = "windows")]
+    {
+        crate::telemetry_dashboard::gps_windows::one_shot(timeout).await
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        crate::telemetry_dashboard::gps_apple::one_shot(timeout).await
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "ios"
+    )))]
+    {
+        let _ = timeout;
+        Err("This device has no location service. Enter coordinates manually.".into())
+    }
+}
+
 /// Imperative start (only meaningful on platforms that need it).
 /// Safe to call multiple times.
 pub fn start_gps_updates(_user_gps: Signal<Option<(f64, f64)>>) {
@@ -192,4 +250,38 @@ mod imp {
 
     pub fn start(_user_gps: Signal<Option<(f64, f64)>>) {}
     pub fn stop() {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceFix;
+
+    #[test]
+    fn one_shot_fix_rejects_impossible_readings_and_drops_unknown_fields() {
+        let fix = DeviceFix {
+            latitude: 43.0,
+            longitude: -78.8,
+            altitude_m: Some(-f64::MAX),
+            accuracy_m: Some(-1.0),
+        };
+        let checked = fix.checked().unwrap();
+        assert_eq!((checked.altitude_m, checked.accuracy_m), (None, None));
+        let good = DeviceFix {
+            altitude_m: Some(190.0),
+            accuracy_m: Some(8.0),
+            ..fix
+        };
+        assert_eq!(good.checked(), Some(good));
+        for (lat, lon) in [(0.0, 0.0), (91.0, 0.0), (0.5, 181.0), (f64::NAN, 1.0)] {
+            assert!(
+                DeviceFix {
+                    latitude: lat,
+                    longitude: lon,
+                    ..fix
+                }
+                .checked()
+                .is_none()
+            );
+        }
+    }
 }

@@ -75,6 +75,8 @@ let mapMainThreadWatchdogTimer = null;
 let mapMainThreadWatchdogLastTickAt = 0;
 let overlaySourceSyncFrame = null;
 let lastOverlaySyncKey = "";
+// GroundStation/RRLS positions from /api/antenna/status: live GPS or a saved fallback.
+let stationMarkers = [];
 let lastOverlaySyncAtMs = 0;
 let mapInitPhase = "idle";
 let mapInitTrace = [];
@@ -288,10 +290,13 @@ const GUIDE_LAYER_ID = "gs26-guide-layer";
 const USER_LAYER_ID = "gs26-user-layer";
 const ROCKET_LAYER_ID = "gs26-rocket-layer";
 const USER_HEADING_LAYER_ID = "gs26-user-heading-layer";
+const STATION_LAYER_ID = "gs26-station-layer";
 const OVERLAY_ROLE_GUIDE = "guide";
 const OVERLAY_ROLE_ROCKET = "rocket";
 const OVERLAY_ROLE_USER = "user";
 const OVERLAY_ROLE_USER_HEADING = "user-heading";
+const OVERLAY_ROLE_STATION = "station";
+const STATION_LABELS = {gs: "GS", rrls: "RRLS"};
 const MAP_STATE_STORAGE_KEY = "gs26_ground_map_state_v3";
 const MAP_MAX_ZOOM_STORAGE_KEY = "gs26_ground_map_max_zoom_v1";
 const USER_ICON_IMAGE_ID = "gs26-user-icon";
@@ -1888,8 +1893,38 @@ function headingFeatureCollection(latLng, headingDeg) {
     };
 }
 
-function overlayFeatureCollection(rocketLatLng, userLatLng, headingDeg) {
+function stationIconImageId(role, live) {
+    return `gs26-station-${role}-${live ? "live" : "saved"}`;
+}
+
+function normalizeStationMarkers(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const entry of list) {
+        if (!entry || !Object.prototype.hasOwnProperty.call(STATION_LABELS, entry.role)) continue;
+        const lat = Number(entry.lat);
+        const lon = Number(entry.lon);
+        if (!isUsableLatLng(lat, lon) || out.some(existing => existing.role === entry.role)) continue;
+        out.push({role: entry.role, latLng: [lat, lon], live: entry.live === true});
+    }
+    return out;
+}
+
+function stationMarkersDataKey(stations) {
+    return stations.map(station => `${station.role}:${station.live ? 1 : 0}:${pointDataKey(station.latLng)}`).join(";") || SOURCE_EMPTY_KEY;
+}
+
+function overlayFeatureCollection(rocketLatLng, userLatLng, headingDeg, stations) {
     const features = [];
+    for (const station of Array.isArray(stations) ? stations : []) {
+        features.push({
+            type: "Feature",
+            geometry: {
+                type: "Point", coordinates: [station.latLng[1], station.latLng[0]],
+            },
+            properties: {role: OVERLAY_ROLE_STATION, station: station.role, icon: stationIconImageId(station.role, station.live)},
+        });
+    }
     if (Array.isArray(rocketLatLng)) {
         features.push({
             type: "Feature",
@@ -2006,8 +2041,38 @@ function createHeadingArrowImage() {
     });
 }
 
+// Live station GPS: solid badge. Saved fallback: dashed amber outline.
+function createStationIconImage(label, live) {
+    return createMarkerCanvas(64, (ctx, size) => {
+        ctx.clearRect(0, 0, size, size);
+        const x = 4, y = size * 0.5 - 13, w = size - 8, h = 26;
+        ctx.fillStyle = live ? "#0f766e" : "rgba(15, 23, 42, 0.88)";
+        ctx.strokeStyle = live ? "#f8fafc" : "#fbbf24";
+        ctx.lineWidth = 2;
+        if (!live && typeof ctx.setLineDash === "function") ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.fill();
+        ctx.stroke();
+        if (typeof ctx.setLineDash === "function") ctx.setLineDash([]);
+        ctx.fillStyle = "#f8fafc";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "bold 14px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+        ctx.fillText(label, size * 0.5, size * 0.5 + 1);
+    });
+}
+
 function ensureMapMarkerImages() {
     if (!groundMap || typeof groundMap.hasImage !== "function" || typeof groundMap.addImage !== "function") return;
+    for (const role of Object.keys(STATION_LABELS)) {
+        for (const live of [true, false]) {
+            const id = stationIconImageId(role, live);
+            if (!groundMap.hasImage(id)) {
+                groundMap.addImage(id, createStationIconImage(STATION_LABELS[role], live), {pixelRatio: 1});
+            }
+        }
+    }
     if (!groundMap.hasImage(USER_ICON_IMAGE_ID)) {
         groundMap.addImage(USER_ICON_IMAGE_ID, createUserIconImage(), {pixelRatio: 1});
     }
@@ -3466,6 +3531,7 @@ function syncOverlaySourcesNow() {
         pointDataKey(userLatLng),
         headingDataKey(userLatLng, displayHeadingDeg),
         guideLineDataKey(lastRocketLatLng, userLatLng),
+        stationMarkersDataKey(stationMarkers),
     ].join("|");
     if (overlaySyncKey === lastOverlaySyncKey) {
         return;
@@ -3476,8 +3542,19 @@ function syncOverlaySourcesNow() {
             lastRocketLatLng,
             userLatLng,
             hasUsableUserHeading() ? displayHeadingDeg : NaN,
+            stationMarkers,
         ),
     );
+}
+
+function setGroundMapStations(list) {
+    const next = normalizeStationMarkers(list);
+    if (stationMarkersDataKey(next) === stationMarkersDataKey(stationMarkers)) return;
+    stationMarkers = next;
+    if (usingRasterFallback()) {
+        renderRasterFallbackMap();
+    }
+    scheduleOverlaySourceSync();
 }
 
 function scheduleOverlaySourceSync() {
@@ -4771,6 +4848,17 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
                 "line-color": "#ef4444", "line-width": 3, "line-opacity": 0.95,
             },
         }, {
+            id: STATION_LAYER_ID,
+            type: "symbol",
+            source: OVERLAY_SOURCE_ID,
+            filter: ["all", ["==", ["geometry-type"], "Point"], ["==", ["get", "role"], OVERLAY_ROLE_STATION]],
+            layout: {
+                "icon-image": ["get", "icon"],
+                "icon-size": 0.9,
+                "icon-allow-overlap": true,
+                "icon-ignore-placement": true,
+            },
+        }, {
             id: ROCKET_LAYER_ID,
             type: "symbol",
             source: OVERLAY_SOURCE_ID,
@@ -4825,14 +4913,21 @@ function rememberRasterFallbackView() {
     syncWindowMapControlState();
 }
 
-function createRasterFallbackMarker(parent, label, color, left, top) {
+function createRasterFallbackMarker(parent, label, color, left, top, station) {
     const marker = document.createElement("div");
     marker.textContent = label;
+    if (station) {
+        marker.style.padding = "2px 6px";
+        marker.style.background = station.live ? "#0f766e" : "rgba(15, 23, 42, 0.88)";
+        marker.style.border = station.live ? "2px solid #f8fafc" : "2px dashed #fbbf24";
+        marker.style.color = "#f8fafc";
+        marker.style.fontWeight = "700";
+    }
     marker.style.position = "absolute";
     marker.style.left = `${Math.round(left)}px`;
     marker.style.top = `${Math.round(top)}px`;
     marker.style.transform = "translate(-50%, -50%)";
-    marker.style.fontSize = "26px";
+    marker.style.fontSize = station ? "14px" : "26px";
     marker.style.lineHeight = "1";
     marker.style.textShadow = "0 0 2px #000, 0 0 5px #000, 0 2px 8px rgba(0,0,0,0.35)";
     marker.style.filter = `drop-shadow(0 0 0 ${color})`;
@@ -4943,16 +5038,19 @@ function renderRasterFallbackMap() {
         if (!needed.has(url)) { img.remove(); layers.tiles.delete(url); }
     }
 
-    const addMarkerIfVisible = (latLng, label, color) => {
+    const addMarkerIfVisible = (latLng, label, color, station) => {
         if (!Array.isArray(latLng)) return;
         const point = latLonToWorldPointAtZoom(latLng[0], latLng[1], zoom);
         const left = point.x - topLeftX;
         const top = point.y - topLeftY;
         if (left < -24 || left > width + 24 || top < -24 || top > height + 24) return;
-        createRasterFallbackMarker(overlay, label, color, left, top);
+        createRasterFallbackMarker(overlay, label, color, left, top, station);
         layers.markers.push(overlay.lastChild);
     };
 
+    for (const station of stationMarkers) {
+        addMarkerIfVisible(station.latLng, STATION_LABELS[station.role], "#0f766e", station);
+    }
     addMarkerIfVisible(lastRocketLatLng, "🚀", "#fca5a5");
     addMarkerIfVisible(currentUserAnchorLatLng(), "🧍", "#93c5fd");
 }
@@ -5971,6 +6069,7 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
 
     api.initGroundMap = safeMapCallback("api initGroundMap", initGroundMap);
     api.updateGroundMapMarkers = safeMapCallback("api updateGroundMapMarkers", updateGroundMapMarkers);
+    api.setGroundMapStations = safeMapCallback("api setGroundMapStations", setGroundMapStations);
     api.centerGroundMapOn = safeMapCallback("api centerGroundMapOn", centerGroundMapOn);
     api.getLastUserLatLng = safeMapCallback("api getLastUserLatLng", getLastUserLatLng);
     api.scheduleHighResTilePrefetch = safeMapCallback("api scheduleHighResTilePrefetch", scheduleHighResTilePrefetch);
@@ -6062,6 +6161,7 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
 
     window.initGroundMap = api.initGroundMap;
     window.updateGroundMapMarkers = api.updateGroundMapMarkers;
+    window.setGroundMapStations = api.setGroundMapStations;
     window.centerGroundMapOn = api.centerGroundMapOn;
     window.getLastUserLatLng = api.getLastUserLatLng;
     window.setGroundMapPrefetchContext = api.setGroundMapPrefetchContext;
@@ -6078,6 +6178,9 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     window.setGroundMapCacheBudgetBytes = api.setCacheBudgetBytes;
     window.clearGroundMapTileCaches = api.clearGroundMapTileCaches;
 
+    if (Array.isArray(window.__gs26_pending_stations)) {
+        api.setGroundMapStations(window.__gs26_pending_stations);
+    }
     window.__gs26_ground_station_loaded = true;
     try {
         window.dispatchEvent(new CustomEvent("gs26-ground-map-ready"));

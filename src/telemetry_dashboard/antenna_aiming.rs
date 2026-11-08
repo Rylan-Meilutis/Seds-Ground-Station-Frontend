@@ -12,8 +12,26 @@ struct Fix {
     age_ms: u64,
     stale: bool,
     source: String,
+    #[serde(default)]
+    accuracy_m: Option<f64>,
+    /// Administrator-saved station position rather than live GPS.
+    #[serde(default)]
+    manual: bool,
 }
 impl Fix {
+    /// Caption naming where a position came from; saved fallbacks say so.
+    fn label(&self) -> String {
+        let accuracy = self
+            .accuracy_m
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|v| format!(" ±{v:.0} m"))
+            .unwrap_or_default();
+        if self.manual && !self.source.starts_with("Saved") {
+            format!("Saved {}{accuracy}", self.source)
+        } else {
+            format!("{}{accuracy}", self.source)
+        }
+    }
     fn position(&self, geoid: Option<f64>) -> Position {
         let mut altitude = self.altitude_m;
         let mut datum = match self.altitude_reference.as_str() {
@@ -275,7 +293,11 @@ pub fn AntennaAiming(
         .unwrap_or_else(|| "Elevation unavailable".into());
     let source_label = source
         .as_ref()
-        .map(|f| f.source.clone())
+        .map(|f| match destination.as_ref().filter(|d| d.manual) {
+            // A saved target is a fallback, so name it next to the origin.
+            Some(d) => format!("{} → {}", f.label(), d.label()),
+            None => f.label(),
+        })
         .unwrap_or_else(|| "No fix".into());
     rsx! {
         style { {include_str!("antenna_aiming.css")} }
@@ -343,5 +365,30 @@ pub fn AntennaAiming(
                 if *manual.read(){div {class:"aim-options",label {"True bearing (°)" input {r#type:"number",value:heading.read().clone(),oninput:move|e|heading.set(e.value())}} label {"Elevation (°)" input {r#type:"number",min:"-90",max:"90",value:pitch.read().clone(),oninput:move|e|pitch.set(e.value())}}}}
             }
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::Fix;
+    #[test]
+    fn caption_marks_saved_positions_and_reports_accuracy() {
+        let saved = Fix {
+            source: "Saved RRLS (device location)".into(),
+            accuracy_m: Some(11.6),
+            manual: true,
+            ..Default::default()
+        };
+        assert_eq!(saved.label(), "Saved RRLS (device location) ±12 m");
+        let live = Fix {
+            source: "GroundStation GPS".into(),
+            ..Default::default()
+        };
+        assert_eq!(live.label(), "GroundStation GPS");
+        let unlabelled = Fix {
+            source: "RRLS".into(),
+            manual: true,
+            ..Default::default()
+        };
+        assert_eq!(unlabelled.label(), "Saved RRLS");
     }
 }

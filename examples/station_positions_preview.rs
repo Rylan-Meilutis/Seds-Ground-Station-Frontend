@@ -51,6 +51,18 @@ async fn http_post_json<B: Serialize, T: DeserializeOwned>(
 // Standalone preview only: this has one document and a synthetic local API,
 // never production authentication, mode capabilities, epochs or board authority.
 // Actual mode/transport ownership is qualified using the main application.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+mod gps {
+    pub struct DeviceFix {
+        pub latitude: f64,
+        pub longitude: f64,
+        pub altitude_m: Option<f64>,
+        pub accuracy_m: Option<f64>,
+    }
+    pub async fn one_shot_location(_: std::time::Duration) -> Result<DeviceFix, String> {
+        Err("Browser fixture only".into())
+    }
+}
 mod station_mode_observer {
     pub fn view_key() -> &'static str { "isolated-positions-preview" }
 }
