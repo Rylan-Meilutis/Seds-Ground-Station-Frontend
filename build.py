@@ -2557,6 +2557,11 @@ def _configure_android_app_gradle(frontend_dir: Path, project_dir: Path) -> None
                     "}\n"
                 )
 
+    # Wear OS companion bridge (platform/android/kotlin/.../WatchBridge.kt).
+    wearable_dep = '    implementation("com.google.android.gms:play-services-wearable:19.0.0")\n'
+    if "play-services-wearable" not in raw and "dependencies {\n" in raw:
+        raw = raw.replace("dependencies {\n", "dependencies {\n" + wearable_dep, 1)
+
     gradle_file.write_text(raw, encoding="utf-8")
 
     settings_gradle = project_dir / "settings.gradle"

@@ -81,30 +81,38 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
         .join(out_subdir);
     fs::create_dir_all(&out_dir).unwrap();
 
-    let obj = out_dir.join("LocationShim.o");
     let lib = out_dir.join("libgs26location.a");
-    let mut cmd = Command::new("xcrun");
-    cmd.arg("--sdk")
-        .arg(sdk)
-        .arg("clang")
-        .arg("-target")
-        .arg(clang_target)
-        .arg("-isysroot")
-        .arg(&sdk_path)
-        .arg("-fobjc-arc")
-        .arg("-c")
-        .arg(&src)
-        .arg("-o")
-        .arg(&obj);
-    // compile .m -> .o
-    run(cmd);
+    // The watch companion bridge (WatchConnectivity) exists only on iOS.
+    let ios = target.contains("apple-ios");
+    let watch_src = manifest_dir.join("assets/WatchBridge.m");
+    println!("cargo:rerun-if-changed={}", watch_src.display());
+    let mut sources = vec![(src, out_dir.join("LocationShim.o"))];
+    if ios {
+        sources.push((watch_src, out_dir.join("WatchBridge.o")));
+    }
+    for (source, obj) in &sources {
+        let mut cmd = Command::new("xcrun");
+        cmd.arg("--sdk")
+            .arg(sdk)
+            .arg("clang")
+            .arg("-target")
+            .arg(clang_target)
+            .arg("-isysroot")
+            .arg(&sdk_path)
+            .arg("-fobjc-arc")
+            .arg("-c")
+            .arg(source)
+            .arg("-o")
+            .arg(obj);
+        // compile .m -> .o
+        run(cmd);
+    }
     let mut cmd = Command::new("xcrun");
 
-    cmd.arg("libtool")
-        .arg("-static")
-        .arg("-o")
-        .arg(&lib)
-        .arg(&obj);
+    cmd.arg("libtool").arg("-static").arg("-o").arg(&lib);
+    for (_, obj) in &sources {
+        cmd.arg(obj);
+    }
     // archive -> .a
     run(cmd);
 
@@ -117,6 +125,9 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=Network");
     println!("cargo:rustc-link-lib=objc");
+    if ios {
+        println!("cargo:rustc-link-lib=framework=WatchConnectivity");
+    }
 }
 
 fn build_windows_resources(manifest_dir: &Path, target: &str) {
