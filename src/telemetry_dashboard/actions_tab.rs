@@ -694,11 +694,46 @@ fn UnavailableControls(policy: ActionPolicyMsg, actions: Vec<(String, String)>, 
 /// Keeps the reset next to Launch. The dialog is the existing recovery tool, so
 /// it carries the same server-issued ticket and typed confirmation. It owns its
 /// status polling only while open.
+/// Dashboard controls for returning to Nominal after an abort: clear the
+/// station's own abort and acknowledge abort alerts, or reset every system.
+/// Board aborts persist on the boards until Reset all systems or Review recovery.
 #[component]
-fn ResetBoardsEntry(theme: ThemeConfig) -> Element {
-    let mut open = use_signal(|| false);
+pub(super) fn AbortClearBar(theme: ThemeConfig, station_aborted: bool, on_ack: EventHandler<()>) -> Element {
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    let permitted = auth::can_send_command("ValveSelfTest");
     rsx!{
-        button{r#type:"button",style:"min-height:44px;padding:8px 12px;align-self:flex-start;",onclick:move |_|open.set(true),"Reset all boards to Idle…"}
+        section{role:"region","aria-label":"Abort controls",style:"display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;margin:0 0 12px;border:1px solid {theme.border_soft};border-radius:10px;background:{theme.panel_background};",
+            button{r#type:"button",style:"min-height:44px;padding:8px 12px;",disabled:*busy.read()||!permitted,
+                onclick:move |_|{
+                    if *busy.peek(){return;}
+                    on_ack.call(());
+                    if !station_aborted {message.set("Abort alerts acknowledged. Board aborts clear with Reset all systems.".into());return;}
+                    let owner=match super::recording_download::ExportOwner::capture_ordinary_selected(||true){Ok(owner)=>owner,Err(error)=>{message.set(error);return;}};
+                    let request=super::station_settings_request::post_captured_no_redirect::<_,serde_json::Value>("/api/gse/abort/clear",&serde_json::json!({}),Ok(owner.clone()));
+                    busy.set(true);
+                    spawn(async move{
+                        let result=request.await;
+                        if !owner.is_current(){return;}
+                        message.set(match result{Ok(_)=>"Station abort cleared and alerts acknowledged. Board aborts clear with Reset all systems.".into(),Err(error)=>error});
+                        busy.set(false);
+                    });
+                },
+                "Clear aborts"
+            }
+            ResetBoardsEntry{theme:theme.clone(),label:Some("Reset all systems…".to_string())}
+            if !permitted {span{style:"font-size:12px;","Requires command permission."}}
+            if !message.read().is_empty(){p{role:"status",style:"margin:0;flex-basis:100%;font-size:12px;","{message}"}}
+        }
+    }
+}
+
+#[component]
+fn ResetBoardsEntry(theme: ThemeConfig, #[props(default)] label: Option<String>) -> Element {
+    let mut open = use_signal(|| false);
+    let label = label.unwrap_or_else(|| "Reset all boards to Idle…".into());
+    rsx!{
+        button{r#type:"button",style:"min-height:44px;padding:8px 12px;align-self:flex-start;",onclick:move |_|open.set(true),"{label}"}
         if open(){ResetBoardsDialog{theme:theme.clone(),on_close:move |_|open.set(false)}}
     }
 }

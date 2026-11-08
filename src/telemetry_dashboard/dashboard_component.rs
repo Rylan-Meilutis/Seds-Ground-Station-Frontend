@@ -3909,6 +3909,28 @@ fn TelemetryDashboardInner() -> Element {
                                 MainTab::Checklists => rsx! {for policy_view_key in [station_mode_observer::view_key()] { checklists::ChecklistsTab { key: "{policy_view_key}",theme:theme.clone()} }},
                                 MainTab::State => rsx! {
                                     div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
+                                        if *ground_station_view.read() && auth::can_view_actions()
+                                            && (flight_state.read().as_str() == "Aborted" || active_error_alert || active_warning_alert) {
+                                            actions_tab::AbortClearBar {
+                                                theme: theme.clone(),
+                                                station_aborted: flight_state.read().as_str() == "Aborted",
+                                                on_ack: {
+                                                    let mut ack_warning_ts = ack_warning_ts;
+                                                    let mut ack_error_ts = ack_error_ts;
+                                                    let remote_alert_acks_enabled = remote_alert_acks_enabled;
+                                                    move |_| {
+                                                        if *remote_alert_acks_enabled.read() {
+                                                            if let Ok(owner)=recording_download::ExportOwner::capture_ordinary_selected(||true) {
+                                                                let request=post_remote_alert_ack(latest_warning_ts,latest_error_ts,owner);
+                                                                spawn(async move { let _ = request.await; });
+                                                            }
+                                                        }
+                                                        ack_warning_ts.set(latest_warning_ts);
+                                                        ack_error_ts.set(latest_error_ts);
+                                                    }
+                                                },
+                                            }
+                                        }
                                         custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:layout.test_fire_mode}
                                         if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && flight_state.read().as_str() == "Aborted" {
                                             for policy_view_key in [station_mode_observer::view_key()] { gse_panel::ClearGseAbort { key: "{policy_view_key}",} }
