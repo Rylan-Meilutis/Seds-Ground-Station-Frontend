@@ -1642,12 +1642,10 @@ fn TelemetryDashboardInner() -> Element {
     {
         let alive = alive.clone();
         let launch_clock = launch_clock;
-        let network_time = network_time;
 
         use_effect(move || {
             let alive = alive.clone();
             let launch_clock = launch_clock;
-            let network_time = network_time;
             let epoch = *WS_EPOCH.read();
 
             spawn(async move {
@@ -1655,13 +1653,16 @@ fn TelemetryDashboardInner() -> Element {
                     let launch_clock_active = launch_clock.read().as_ref().is_some_and(|clock| {
                         matches!(clock.kind, LaunchClockKind::TMinus | LaunchClockKind::TPlus)
                     });
-                    let network_time_active = network_time.read().is_some();
+                    // Only a running T-/T+ clock shows hundredths. The wall
+                    // clock shows whole seconds, so wake on the next second
+                    // instead of re-rendering the header ten times a second.
                     let effective_tick_ms = if !dashboard_page_visible() {
                         5_000
-                    } else if launch_clock_active || network_time_active {
+                    } else if launch_clock_active {
                         ACTIVE_LAUNCH_CLOCK_REFRESH_MS
                     } else {
-                        NETWORK_TIME_BADGE_REFRESH_MS
+                        let into_second = current_wallclock_ms().rem_euclid(1_000) as u32;
+                        (NETWORK_TIME_BADGE_REFRESH_MS - into_second).max(200) + 5
                     };
 
                     if dashboard_page_visible() {

@@ -298,9 +298,15 @@ pub(crate) fn format_timestamp_ms_clock(ms_epoch: i64) -> String {
     }
 }
 
-/// Formats the network-synchronized wall clock for dashboard display.
+/// Formats the network-synchronized wall clock for dashboard display, to the
+/// second. Hundredths are reserved for the launch clock.
 fn format_network_time(ms_epoch: i64) -> String {
-    format_timestamp_ms_clock(ms_epoch)
+    let full = format_timestamp_ms_clock(ms_epoch);
+    // "HH:MM:SS:cc[ AM]" -> "HH:MM:SS[ AM]"
+    match full.get(8..11) {
+        Some(centis) if centis.starts_with(':') => format!("{}{}", &full[..8], &full[11..]),
+        _ => full,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
