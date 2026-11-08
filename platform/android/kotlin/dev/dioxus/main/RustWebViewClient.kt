@@ -35,6 +35,19 @@ class RustWebViewClient(private val context: Context): WebViewClient() {
     private var pendingUrlRedirect: String? = null
     private val tileCacheDir = File(context.cacheDir, "gs26-map-tiles").apply { mkdirs() }
 
+    init {
+        lockPhonesToPortrait(context)
+    }
+
+    /** Phones (smallest width < 600 dp) stay portrait because the header leaves
+     *  no room for content in landscape. Tablets keep every orientation. */
+    private fun lockPhonesToPortrait(context: Context) {
+        val activity = context as? android.app.Activity ?: return
+        if (activity.resources.configuration.smallestScreenWidthDp < 600) {
+            activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
+        }
+    }
+
     private val assetLoader = WebViewAssetLoader.Builder()
         .setDomain(assetLoaderDomain())
         .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(context))
