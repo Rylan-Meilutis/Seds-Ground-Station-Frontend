@@ -44,13 +44,23 @@ pub(super) struct OptionEntry {
     pub reason: Option<String>,
     pub transition_kind: String,
     pub output_domain: String,
+    /// Newer backends hold every mode in one process and switch while idle,
+    /// without restarting. Absent on older backends, which restart instead.
+    #[serde(default)]
+    pub in_process: bool,
 }
 impl OptionEntry {
-    /// The backend applies this option by a controlled restart into another
-    /// installed build. The restart replaces the whole backend process, so it
-    /// is its own fence and needs no per-request epoch protocol.
+    /// The backend fences this switch itself and needs no per-request epoch
+    /// protocol: either a controlled restart into another installed build, or
+    /// (with `in_process`) an idle-only switch inside the running backend that
+    /// the backend still advertises as `restart` for older clients.
     pub fn restarts(&self) -> bool {
         self.transition_kind == "restart"
+    }
+    /// The server-fenced switch happens inside the running backend: sign-in
+    /// and connection are kept and the layout and controls refresh in place.
+    pub fn switches_in_process(&self) -> bool {
+        self.restarts() && self.in_process
     }
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -534,6 +544,40 @@ pub(super) mod tests {
         let in_place = Snapshot::decode(raw.clone()).unwrap();
         assert!(in_place.reason("third-sim", 0., 1.).is_some());
         raw["options"][0]["transition_kind"] = "reboot".into();
+        assert!(Snapshot::decode(raw).is_err());
+    }
+    #[test]
+    fn in_process_flag_is_optional_and_keeps_server_fenced_gating() {
+        // Older backends never send the flag: they restart into another build.
+        let old = example_snapshot();
+        assert!(!old.options[0].in_process);
+        assert!(!old.options[0].switches_in_process());
+        let mut raw = example();
+        raw["epoch_fencing_supported"] = false.into();
+        raw["options"][0]["transition_kind"] = "restart".into();
+        let restart_only = Snapshot::decode(raw.clone()).unwrap();
+        assert!(restart_only.options[0].restarts());
+        assert!(!restart_only.options[0].switches_in_process());
+        raw["options"][0]["in_process"] = true.into();
+        raw["policy_epoch"] = "boot-1a2b:epoch-3".into();
+        let s = Snapshot::decode(raw.clone()).unwrap();
+        let option = s.option("third-sim").unwrap();
+        assert!(option.in_process && option.restarts() && option.switches_in_process());
+        assert!(s.reason("third-sim", 0., 1.).is_none());
+        let mut busy = s.clone();
+        busy.options[0].available = false;
+        busy.options[0].reason = Some("Station is not idle: a sequence is running".into());
+        assert_eq!(
+            busy.reason("third-sim", 0., 1.).as_deref(),
+            Some("Station is not idle: a sequence is running")
+        );
+        // The flag never relaxes the original-epoch requirement of in_place.
+        raw["options"][0]["transition_kind"] = "in_place".into();
+        let in_place = Snapshot::decode(raw.clone()).unwrap();
+        assert!(in_place.options[0].in_process);
+        assert!(!in_place.options[0].switches_in_process());
+        assert!(in_place.reason("third-sim", 0., 1.).is_some());
+        raw["options"][0]["in_process"] = "yes".into();
         assert!(Snapshot::decode(raw).is_err());
     }
     #[test]
