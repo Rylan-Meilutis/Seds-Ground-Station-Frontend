@@ -331,12 +331,30 @@ pub struct RunControls {
     pub resume: Gate,
     #[serde(default)]
     pub cancel: Gate,
+    /// The nitrogen test holds pressure and offers Cold flow or Dump.
+    #[serde(default)]
+    pub hold_choice: Option<HoldChoice>,
+}
+/// Station-provided choice at a nitrogen-test pressure hold, with reasons.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldChoice {
+    pub message: String,
+    #[serde(default)]
+    pub passed: bool,
+    #[serde(default)]
+    pub cold_flow: Gate,
+    #[serde(default)]
+    pub dump: Gate,
 }
 impl RunControls {
     fn valid(&self) -> bool {
+        let choice = self.hold_choice.as_ref();
         self.key.valid()
+            && choice.is_none_or(|c| c.message.len() <= 512)
             && [&self.pause, &self.resume, &self.cancel]
-                .iter()
+                .into_iter()
+                .chain(choice.map(|c| &c.cold_flow))
+                .chain(choice.map(|c| &c.dump))
                 .all(|gate| gate.reason.as_ref().is_none_or(|r| r.len() <= 512))
     }
 }
@@ -1901,6 +1919,7 @@ mod control_tests {
             pause: Gate { allowed: pause, reason: (!pause).then(|| reason.into()) },
             resume: Gate { allowed: resume, reason: (!resume).then(|| reason.into()) },
             cancel: Gate { allowed: true, reason: None },
+            hold_choice: None,
         }];
         header.active = vec![value];
         header

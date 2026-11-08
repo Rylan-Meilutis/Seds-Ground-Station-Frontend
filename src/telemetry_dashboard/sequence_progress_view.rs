@@ -99,6 +99,8 @@ pub fn SequenceProgressView(
     #[props(default = false)] can_resume: bool,
     #[props(default)] on_pause: EventHandler<RunKey>,
     #[props(default)] on_resume: EventHandler<RunKey>,
+    /// Cold flow chosen at a nitrogen-test pressure hold.
+    #[props(default)] on_hold_cold_flow: EventHandler<RunKey>,
 ) -> Element {
     if !panel.visible {
         return rsx! {};
@@ -110,6 +112,8 @@ pub fn SequenceProgressView(
     let release_key = key.clone();
     let pause_key = key.clone();
     let resume_key = key.clone();
+    let hold_cold_key = key.clone();
+    let hold_dump_key = key.clone();
     let dismiss_key = key.clone();
     let keyboard_key = key.clone();
     let terminal = panel.snapshot.outcome.terminal();
@@ -249,6 +253,22 @@ pub fn SequenceProgressView(
                         if panel.snapshot.cold_flow_release_allowed {
                             button {class:"gs26-sequence-cancel",r#type:"button",disabled:!current_authority||!can_release_cold_flow,onclick:move |_|on_release_cold_flow.call(release_key.clone()),"Cold Flow · open PILOT/main"}
                         }
+                    }
+                    if let Some(choice)=controls.as_ref().and_then(|c|c.hold_choice.clone()).filter(|_|!terminal) {
+                        {let cold_ok=choice.cold_flow.allowed&&current_authority&&can_send_commands&&!unavailable;
+                        let dump_ok=choice.dump.allowed&&can_cancel;
+                        let cold_reason=(!cold_ok).then(||reason(Some(&choice.cold_flow)));
+                        let dump_reason=(!dump_ok).then(||reason(Some(&choice.dump)));
+                        rsx!{section {class:"gs26-sequence-hold-choice","data-hold-verdict":if choice.passed{"passed"}else{"failed"},
+                            p {role:"status",class:"gs26-sequence-message","{choice.message}"}
+                            div {class:"gs26-sequence-controls",
+                                button {class:"gs26-sequence-resume",r#type:"button","data-hold-choice":"cold-flow",disabled:!cold_ok,title:cold_reason.clone().unwrap_or_default(),onclick:move |_|on_hold_cold_flow.call(hold_cold_key.clone()),"Cold flow"}
+                                button {class:"gs26-sequence-cancel",r#type:"button","data-hold-choice":"dump",disabled:!dump_ok,title:dump_reason.clone().unwrap_or_default(),onclick:move |_|on_cancel.call(hold_dump_key.clone()),"Dump"}
+                            }
+                            p {class:"gs26-sequence-legend","Cold flow opens PILOT/main through the Cold Flow interlocks after an explicit release (panel Launch can release it). Dump opens dump and vent, never PILOT, and ends at about 0 psi."}
+                            if let Some(text)=&cold_reason {p {class:"gs26-sequence-control-reason","data-control":"cold-flow","Cold flow unavailable: {text}"}}
+                            if let Some(text)=&dump_reason {p {class:"gs26-sequence-control-reason","data-control":"dump","Dump unavailable: {text}"}}
+                        }}}
                     }
                     if panel.cancel_pending {p {role:"status","Cancellation requested. Waiting for the station's safe-cancel result."}}
                     if panel.control_pending.is_some() {p {role:"status","Request sent. Waiting for the station to confirm it."}}
@@ -484,6 +504,7 @@ mod tests {
             pause: super::super::sequence_progress_model::Gate { allowed: pause, reason: (!pause).then(|| "Already paused".into()) },
             resume: super::super::sequence_progress_model::Gate { allowed: resume, reason: (!resume).then(|| "Earlier valve commands are still being delivered".into()) },
             cancel: super::super::sequence_progress_model::Gate { allowed: false, reason: Some("Vehicle is not in a prelaunch state".into()) },
+            hold_choice: None,
         };
         #[derive(Props, Clone, PartialEq)]
         struct P { snapshot: Snapshot, controls: super::super::sequence_progress_model::RunControls, pause: bool, resume: bool }
@@ -511,5 +532,56 @@ mod tests {
         assert!(paused.contains("Resume unavailable: Earlier valve commands are still being delivered"));
         let ready = controlled("paused", false, true);
         assert!(!ready.contains("Resume unavailable"));
+    }
+
+    fn held(passed: bool, cold: bool, cold_reason: Option<&str>) -> String {
+        let snapshot:Snapshot=serde_json::from_value(serde_json::json!({"version":1,"key":{"backend_instance":"11111111111111111111111111111111","reset_epoch":"2222222222222222","run_id":"33333333333333333333333333333333"},"revision":1,"kind":"nitrogen_test","outcome":"paused","origin_client":null,"title":"Nitrogen test","message":"Holding","current_step":null,"next_step":null,"steps":[],"observed_age_ms":0,"valid_for_ms":2000,"cancel_allowed":true})).unwrap();
+        let controls: super::super::sequence_progress_model::RunControls = serde_json::from_value(serde_json::json!({
+            "key": snapshot.key.clone(),
+            "pause": {"allowed": false, "reason": "Already paused"},
+            "resume": {"allowed": false, "reason": "Resume is available once the test is paused"},
+            "cancel": {"allowed": true},
+            "hold_choice": {
+                "message": if passed {"Nitrogen test passed: holding top-step pressure. Choose Cold flow or Dump."} else {"Nitrogen test failed: leak. Holding pressure for leak search. Dump when ready."},
+                "passed": passed,
+                "cold_flow": {"allowed": cold, "reason": cold_reason},
+                "dump": {"allowed": true}
+            }
+        })).unwrap();
+        #[derive(Props, Clone, PartialEq)]
+        struct P { snapshot: Snapshot, controls: super::super::sequence_progress_model::RunControls }
+        fn view(p: P) -> Element {
+            let mut model = Model::default();
+            model.set_surface(true);
+            model.accept(0, p.snapshot.clone(), 0, 0).unwrap();
+            let panel = model.panels()[0].clone();
+            rsx! {SequenceProgressView{panel,now_ms:0,can_send_commands:true,cancel_api_version:Some(1),controls:Some(p.controls),on_minimize:move|_|{},on_restore:move|_|{},on_cancel:move|_|{},on_dismiss:move|_|{}}}
+        }
+        let mut dom = VirtualDom::new_with_props(view, P { snapshot, controls });
+        dom.rebuild_in_place();
+        dioxus::ssr::render(&dom)
+    }
+    #[test]
+    fn nitrogen_hold_offers_cold_flow_and_dump_with_station_reasons() {
+        let passed = held(true, true, None);
+        assert!(passed.contains("Choose Cold flow or Dump"));
+        assert!(passed.contains("data-hold-choice=\"cold-flow\""));
+        assert!(passed.contains("data-hold-choice=\"dump\""));
+        assert!(passed.contains("never PILOT"));
+        assert!(!passed.contains("Cold flow unavailable"));
+        let failed = held(false, false, Some("Another ground sequence owns the valves"));
+        assert!(failed.contains("Holding pressure for leak search. Dump when ready."));
+        assert!(failed.contains("data-hold-verdict=\"failed\""));
+        assert!(failed.contains("Cold flow unavailable: Another ground sequence owns the valves"));
+        assert!(!failed.contains("Dump unavailable"));
+    }
+    #[test]
+    fn older_station_controls_without_a_hold_choice_still_parse() {
+        let controls: super::super::sequence_progress_model::RunControls = serde_json::from_value(serde_json::json!({
+            "key": {"backend_instance":"11111111111111111111111111111111","reset_epoch":"2222222222222222","run_id":"33333333333333333333333333333333"},
+            "pause": {"allowed": true}, "resume": {"allowed": false}, "cancel": {"allowed": true}
+        })).unwrap();
+        assert!(controls.hold_choice.is_none());
+        assert!(!controlled("running", true, false).contains("data-hold-choice"));
     }
 }
