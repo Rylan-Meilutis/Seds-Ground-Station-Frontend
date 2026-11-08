@@ -38,6 +38,35 @@ pub(super) struct ModemReport {
     pub data_mode: String,
 }
 
+/// The RF board's own startup modem check, from its BOARD_HEALTH.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct RfModem {
+    #[serde(default)]
+    pub outcome: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub pending: bool,
+    #[serde(default)]
+    pub needs_attention: bool,
+    #[serde(default)]
+    pub eeprom_saved: bool,
+    #[serde(default)]
+    pub forwarding_entries: bool,
+    #[serde(default)]
+    pub max_data: Option<u16>,
+    #[serde(default)]
+    pub max_retries: Option<u16>,
+    #[serde(default)]
+    pub global_retries: Option<u16>,
+    #[serde(default)]
+    pub serial_break_ms: Option<u16>,
+    #[serde(default)]
+    pub dest_id: Option<u16>,
+    #[serde(default)]
+    pub rtscts: Option<u16>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(super) struct ModemStatus {
     #[serde(default)]
@@ -60,6 +89,8 @@ pub(super) struct ModemStatus {
     pub needs_attention: bool,
     #[serde(default)]
     pub report: Option<ModemReport>,
+    #[serde(default)]
+    pub rf_board: Option<RfModem>,
 }
 
 #[derive(Deserialize)]
@@ -80,6 +111,38 @@ pub(super) fn outcome_label(status: &ModemStatus) -> &'static str {
         Some("no_response") => "Radio modem did not answer; running on its current settings",
         Some(_) => "Radio modem check failed; running on its current settings",
     }
+}
+
+pub(super) fn rf_label(rf: Option<&RfModem>) -> &'static str {
+    let Some(rf) = rf else {
+        return "RF modem not reported";
+    };
+    if rf.pending {
+        return "RF modem check pending";
+    }
+    match rf.outcome.as_str() {
+        "matched" if !rf.needs_attention => "RF modem settings match the profile",
+        "applied" if !rf.needs_attention => "RF modem settings corrected and verified",
+        "matched" | "applied" => "RF modem settings match; see the warning",
+        "mismatch" => "RF modem settings differ from the profile",
+        "skipped" => "RF modem check skipped",
+        "no_response" => "RF modem did not answer; running on its current settings",
+        _ => "RF modem check failed; running on its current settings",
+    }
+}
+
+/// S3/S4/S5/S6/S11/RTSCTS as the RF board read them.
+pub(super) fn rf_values(rf: &RfModem) -> String {
+    let v = |v: Option<u16>| v.map_or_else(|| "unread".to_string(), |v| v.to_string());
+    format!(
+        "S3 {} · S4 {} · S5 {} · S6 {} · S11 {} · RTSCTS {}",
+        v(rf.max_data),
+        v(rf.max_retries),
+        v(rf.global_retries),
+        v(rf.serial_break_ms),
+        v(rf.dest_id),
+        v(rf.rtscts)
+    )
 }
 
 /// Shown when the operator selected the opt-in low-latency profile.
@@ -208,6 +271,30 @@ pub fn RadioModemHealth(ws_connected: bool, theme: ThemeConfig) -> Element {
                     }
                 }
             }
+            {
+                let rf = state.rf_board.as_ref();
+                let rf_warn = rf.is_some_and(|r| r.needs_attention && !r.pending);
+                rsx! {
+                    div { style: "margin:8px 0 0; padding-top:8px; border-top:1px solid {theme.border_soft};",
+                        p { role: if rf_warn { "alert" } else { "status" }, style: "margin:4px 0;",
+                            strong { "{rf_label(rf)}" } }
+                        if let Some(rf) = rf {
+                            p { style: "margin:4px 0; color:{theme.text_secondary};", "{rf.summary}" }
+                            if !rf.pending {
+                                if rf.outcome != "skipped" {
+                                    p { style: "margin:4px 0; color:{theme.text_secondary}; font-size:0.9rem;", "{rf_values(rf)}" }
+                                }
+                                if rf.eeprom_saved {
+                                    p { style: "margin:4px 0; color:{theme.text_secondary};", "The RF board saved settings to its modem and restarted it." }
+                                }
+                                if rf.forwarding_entries {
+                                    p { style: "margin:4px 0;", "⚠ RF modem forwarding table has entries: modem-level relaying duplicates traffic beside the software RRLS relay" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(reason) = &state.blocked_reason {
                 p { style: "margin:8px 0 0; color:{theme.text_secondary};", "Modem changes are unavailable: {reason}." }
             }
@@ -280,6 +367,25 @@ mod tests {
         assert_eq!(profile_notes(&status).len(), 1);
         status.opt_in_profile = false;
         assert!(profile_notes(&status).is_empty());
+    }
+
+    #[test]
+    fn rf_board_result_is_shown_beside_the_station_result() {
+        let status: ModemStatus = serde_json::from_str(
+            r#"{"available":true,"rf_board":{"outcome":"applied","map_source":"ati5_names","mode":"fix",
+            "eeprom_saved":true,"pending":false,"needs_attention":false,"max_data":3968,"max_retries":10,
+            "global_retries":10,"serial_break_ms":50,"dest_id":32768,"rtscts":0,"air_speed":64,
+            "summary":"RF modem settings written, saved and verified after reboot","received_unix_ms":5}}"#,
+        )
+        .unwrap();
+        let rf = status.rf_board.as_ref().unwrap();
+        assert_eq!(rf_label(Some(rf)), "RF modem settings corrected and verified");
+        assert_eq!(rf_values(rf), "S3 3968 · S4 10 · S5 10 · S6 50 · S11 32768 · RTSCTS 0");
+        assert_eq!(rf_label(None), "RF modem not reported");
+        let failed = RfModem { outcome: "verify_failed".into(), ..Default::default() };
+        assert!(rf_label(Some(&failed)).contains("failed"));
+        let pending = RfModem { pending: true, ..Default::default() };
+        assert!(rf_label(Some(&pending)).contains("pending"));
     }
 
     #[test]
