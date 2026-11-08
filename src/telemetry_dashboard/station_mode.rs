@@ -14,6 +14,10 @@ pub(super) fn current_snapshot() -> Value {
     }
 }
 
+fn is_simulated_primary(mode: &Value) -> bool {
+    mode["execution_mode"].as_str() == Some("simulated_primary")
+        && mode["output_domain"].as_str() == Some("simulated")
+}
 fn is_flight_sim(mode: &Value) -> bool {
     mode["execution_mode"].as_str() == Some("flight_sim")
         && mode["output_domain"].as_str() == Some("simulated")
@@ -45,7 +49,9 @@ pub(super) fn description(mode: &Value, observer: bool) -> String {
     } else {
         ""
     };
-    if observer {
+    if observer && is_simulated_primary(mode) {
+        format!("RRLS observer · SIMULATED paired primary (no radio) · {scope}: {name}{freshness} · Live operations remain read-only")
+    } else if observer {
         format!("RRLS observer · {scope}: {name}{freshness} · Live operations remain read-only")
     } else {
         format!("{scope}: {name}{freshness}")
@@ -185,6 +191,10 @@ mod tests {
         assert!(description(&mode, true).contains("Primary operating mode: Testing"));
         mode["synchronized"] = Value::Bool(false);
         assert!(description(&mode, true).contains("last known; not synchronized"));
+        mode["execution_mode"] = Value::String("simulated_primary".into());
+        assert!(!description(&mode, true).contains("SIMULATED"), "needs both domain fields");
+        mode["output_domain"] = Value::String("simulated".into());
+        assert!(description(&mode, true).contains("SIMULATED paired primary"));
     }
     #[test]
     fn flight_sim_notice_requires_both_current_execution_domain_fields() {

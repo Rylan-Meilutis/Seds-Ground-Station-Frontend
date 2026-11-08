@@ -45,6 +45,14 @@ pub(super) struct OptionEntry {
     pub transition_kind: String,
     pub output_domain: String,
 }
+impl OptionEntry {
+    /// The backend applies this option by a controlled restart into another
+    /// installed build. The restart replaces the whole backend process, so it
+    /// is its own fence and needs no per-request epoch protocol.
+    pub fn restarts(&self) -> bool {
+        self.transition_kind == "restart"
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(super) struct Permissions {
     pub can_change: bool,
@@ -149,7 +157,7 @@ impl Snapshot {
                 text(&o.id, 256)
                     && text(&o.label, 512)
                     && text(&o.output_domain, 512)
-                    && o.transition_kind == "in_place"
+                    && matches!(o.transition_kind.as_str(), "in_place" | "restart")
                     && self.modes.iter().any(|m| m.id == o.mode_id)
                     && o.reason.as_ref().is_none_or(|v| prose(v, 4096))
                     && !self.options[..i].iter().any(|p| {
@@ -188,9 +196,10 @@ impl Snapshot {
         if self.policy_epoch.is_none() {
             return Some("The station's actual policy epoch is unknown.".into());
         }
+        let restarts = self.option(target).is_some_and(OptionEntry::restarts);
         // Mode repair has its own exact capability/ticket authority. Ordinary
         // admission closure alone cannot forbid a backend-advertised repair.
-        if !self.epoch_fencing_supported {
+        if !self.epoch_fencing_supported && !restarts {
             return Some("The station's original-epoch protocol is not available.".into());
         }
         if !self.permissions.can_change {
@@ -505,6 +514,27 @@ pub(super) mod tests {
             error: None,
         });
         assert!(s.reason("third-sim", 0., 1.).is_some());
+    }
+    #[test]
+    fn restart_options_need_no_epoch_fencing_but_in_place_options_still_do() {
+        let mut raw = example();
+        raw["epoch_fencing_supported"] = false.into();
+        raw["options"][0]["transition_kind"] = "restart".into();
+        let s = Snapshot::decode(raw.clone()).unwrap();
+        assert!(s.option("third-sim").unwrap().restarts());
+        assert!(s.reason("third-sim", 0., 1.).is_none());
+        let mut closed = s.clone();
+        closed.options[0].available = false;
+        closed.options[0].reason = Some("Station is not idle: the T clock is running".into());
+        assert_eq!(closed.reason("third-sim", 0., 1.).as_deref(), Some("Station is not idle: the T clock is running"));
+        let mut unknown = s.clone();
+        unknown.policy_epoch = None;
+        assert!(unknown.reason("third-sim", 0., 1.).is_some());
+        raw["options"][0]["transition_kind"] = "in_place".into();
+        let in_place = Snapshot::decode(raw.clone()).unwrap();
+        assert!(in_place.reason("third-sim", 0., 1.).is_some());
+        raw["options"][0]["transition_kind"] = "reboot".into();
+        assert!(Snapshot::decode(raw).is_err());
     }
     #[test]
     fn origin_capability_is_optional_for_older_v2_but_required_flag_never_invents_form_token() {

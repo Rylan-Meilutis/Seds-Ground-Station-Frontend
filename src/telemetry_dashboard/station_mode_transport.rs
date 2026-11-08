@@ -157,11 +157,43 @@ async fn request(
 }
 fn decode(status: u16, text: &str) -> Result<serde_json::Value, String> {
     if !(200..300).contains(&status) {
-        return Err(format!(
-            "Station mode request returned HTTP {status}; no mode change is confirmed."
-        ));
+        return Err(match server_reason(text) {
+            Some(reason) => format!("{reason} (HTTP {status}; no mode change is confirmed.)"),
+            None => format!("Station mode request returned HTTP {status}; no mode change is confirmed."),
+        });
     }
     serde_json::from_str(text).map_err(|_| "Invalid station mode response.".into())
+}
+/// The server's refusal text, from `{"error": ...}` or a short plain body.
+/// Bounded and stripped of control characters; it is display text only.
+fn server_reason(text: &str) -> Option<String> {
+    let raw = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| value["error"].as_str().map(str::to_owned))
+        .or_else(|| (!text.trim_start().starts_with(['{', '[', '<'])).then(|| text.to_owned()))?;
+    let clean: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(400)
+        .collect();
+    let clean = clean.trim();
+    (!clean.is_empty()).then(|| clean.to_owned())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn refusals_show_the_server_reason_and_never_claim_a_change() {
+        let error = decode(409, r#"{"error":"Station is not idle: the T clock is running"}"#).unwrap_err();
+        assert!(error.starts_with("Station is not idle: the T clock is running"));
+        assert!(error.contains("HTTP 409") && error.contains("no mode change is confirmed"));
+        assert!(decode(403, "Application administrator required").unwrap_err().starts_with("Application administrator required"));
+        let plain = decode(502, "<html>bad gateway</html>").unwrap_err();
+        assert!(plain.starts_with("Station mode request returned HTTP 502"));
+        let hostile = decode(409, "{\"error\":\"a\\nb\\u0007c\"}").unwrap_err();
+        assert!(hostile.starts_with("abc"));
+        assert_eq!(decode(200, "{\"ok\":true}").unwrap()["ok"], true);
+    }
 }
 async fn bounded<T>(
     future: impl std::future::Future<Output = Result<T, String>>,
