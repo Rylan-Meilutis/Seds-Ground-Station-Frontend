@@ -43,6 +43,27 @@ async function upload(input,url,metadata,token,check,onRetire){
   throw error;
  }finally{if(input.__sdAbort===controller)input.__sdAbort=null;}
 }
+// Station-side copy from the board SD download panel: same reservation and
+// import endpoint family; the station streams its own file into the import.
+async function importDownloaded(input,url,metadata,source,token,check,onRetire){
+ if(typeof check!=='function'||typeof onRetire!=='function')throw Error('Original export owner is required');
+ if(!source||typeof source.name!=='string'||source.name!==metadata?.filename)throw Error('Downloaded SD source changed; choose it again.');
+ const controller=new AbortController();if(input)input.__sdAbort=controller;
+ onRetire(()=>controller.abort());
+ const headers=token?{Authorization:'Bearer '+token}:{};let pending=null;
+ try{
+  const prepared=await guarded(check,()=>fetch(url,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(metadata),signal:controller.signal}));
+  if(!prepared.ok)throw Error(await guarded(check,()=>prepared.text()));
+  pending=await guarded(check,()=>prepared.json());
+  if(typeof pending.upload_id!=='string'||!/^\d{1,40}$/.test(pending.upload_id))throw Error('Invalid import reservation');
+  const response=await guarded(check,()=>fetch(url+'/'+pending.upload_id+'/download',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(source),signal:controller.signal}));
+  if(!response.ok)throw Error(await guarded(check,()=>response.text()));
+  return JSON.stringify(await guarded(check,()=>response.json()));
+ }catch(error){
+  if(pending&&typeof pending.upload_id==='string'&&/^\d{1,40}$/.test(pending.upload_id))await fetch(url+'/'+pending.upload_id,{method:'DELETE',headers}).catch(()=>{});
+  throw error;
+ }finally{if(input&&input.__sdAbort===controller)input.__sdAbort=null;}
+}
 async function saveSource(url,token,name,check,onRetire){
  if(typeof check!=='function'||typeof onRetire!=='function')throw Error('Original export owner is required');
  if(typeof globalThis.showSaveFilePicker!=='function')throw Error('Streamed SD saving requires a browser with the File System Access API or the native station app. The source remains stored on the station.');
@@ -59,5 +80,5 @@ async function saveSource(url,token,name,check,onRetire){
  finally{reader.releaseLock();}
  return 'Byte-exact original SD source saved.';
 }
-globalThis.GSSDImport={upload,saveSource,runOwned};
+globalThis.GSSDImport={upload,importDownloaded,saveSource,runOwned};
 })();

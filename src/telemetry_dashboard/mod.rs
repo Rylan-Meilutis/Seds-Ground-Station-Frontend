@@ -70,6 +70,7 @@ mod launch_zero_notice;
 mod recovery_status;
 mod report_studio;
 mod reseed_buffer;
+mod sd_board_download;
 mod sd_recording_import;
 mod sequence_indicator;
 mod station_mode;

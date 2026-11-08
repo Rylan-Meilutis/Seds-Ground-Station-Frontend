@@ -1,4 +1,5 @@
-//! Explicit saved-file recovery. Uploads never address board transports.
+//! Explicit saved-file recovery. Uploads never address board transports; a
+//! station-side copy fetched by the board SD download panel can be used instead.
 use super::recording_download::{ExportOwner, eval_owned, saved_json};
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -48,6 +49,7 @@ async fn save_original(
 pub(super) fn SDRecordingImport(recording: String, onimport: EventHandler<String>) -> Element {
     let input_id = use_hook(|| UPLOAD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let mut filename = use_signal(String::new);
+    let mut net_source = use_signal(|| None::<super::sd_board_download::DownloadedSource>);
     let mut manifest = use_signal(String::new);
     let mut board = use_signal(String::new);
     let mut boot = use_signal(String::new);
@@ -99,11 +101,19 @@ pub(super) fn SDRecordingImport(recording: String, onimport: EventHandler<String
     });
     rsx! {details{style:"padding:12px;border:1px solid #64748b;border-radius:8px;margin:12px 0;",
         summary{"Original FC / DAQ SD sources and recording recovery"}
+        super::sd_board_download::SdBoardDownload{busy:busy(),onselect:move|source:super::sd_board_download::DownloadedSource|{
+            input_epoch.set(input_epoch.with_peek(|epoch|epoch.saturating_add(1)));
+            filename.set(source.name.clone());
+            if board.peek().trim().is_empty(){board.set(source.board.clone());}
+            status.set(format!("Using station copy {}/{} ({} bytes) as the SD CSV.",source.dir,source.name,source.bytes));
+            net_source.set(Some(source));
+        }}
         if crate::auth::is_admin(){
         p{"Select a closed network recording, then stream one uncompressed firmware CSV and its recorded configuration/assignment manifest. Recovery creates a new recording; the original remains selectable."}
         label{"SD CSV " input{id:"sd-source-{input_id}",r#type:"file",accept:".csv,.CSV",disabled:busy(),onchange:move|event|{
             let Some(file)=event.files().first().cloned()else{return};
             input_epoch.set(input_epoch.with_peek(|epoch|epoch.saturating_add(1)));
+            net_source.set(None);
             filename.set(file.name());status.set("CSV selected. The browser will stream this file directly to disk; it is not read into an application buffer.".into());
         }}}
         p{"{filename}"}
@@ -132,7 +142,7 @@ pub(super) fn SDRecordingImport(recording: String, onimport: EventHandler<String
             textarea{aria_label:"SD import assignment manifest",rows:16,style:"width:100%;font-family:monospace;",value:"{manifest}",disabled:busy(),oninput:move|e|{input_epoch.set(input_epoch.with_peek(|epoch|epoch.saturating_add(1)));manifest.set(e.value());}}
         }
         button{disabled:busy()||recording.is_empty()||filename.read().is_empty()||board.read().trim().is_empty()||boot.read().trim().is_empty(),onclick:move|_|{
-            let target=import_recording.clone();let source_name=filename();let board_id=board();let boot_id=boot();
+            let target=import_recording.clone();let source_name=filename();let board_id=board();let boot_id=boot();let network_source=net_source.peek().clone().filter(|source|source.name==source_name);
             let parsed=serde_json::from_str::<serde_json::Value>(&manifest());
             let mut metadata=match parsed{Ok(serde_json::Value::Object(map))=>serde_json::Value::Object(map),_=>{status.set("Load or enter a valid assignment manifest.".into());return}};
             metadata["board_id"]=board_id.into();metadata["boot_id"]=boot_id.into();
@@ -146,7 +156,10 @@ pub(super) fn SDRecordingImport(recording: String, onimport: EventHandler<String
             busy.set(true);status.set("Importing and resolving saved samples…".into());
             spawn(async move{
                 let metadata=serde_json::json!({"manifest":metadata,"filename":source_name});
-                let script=format!("{}\nreturn await GSSDImport.runOwned((check,onRetire)=>GSSDImport.upload(document.getElementById('sd-source-{input_id}'),{url},{metadata},{token},check,onRetire));",include_str!("../../station_ui/sd-recording-upload.js"),token=serde_json::to_string(&token).unwrap(),url=serde_json::to_string(&url).unwrap(),metadata=serde_json::to_string(&metadata).unwrap());
+                let script=match network_source{
+                    Some(source)=>format!("{}\nreturn await GSSDImport.runOwned((check,onRetire)=>GSSDImport.importDownloaded(document.getElementById('sd-source-{input_id}'),{url},{metadata},{source},{token},check,onRetire));",include_str!("../../station_ui/sd-recording-upload.js"),token=serde_json::to_string(&token).unwrap(),url=serde_json::to_string(&url).unwrap(),metadata=serde_json::to_string(&metadata).unwrap(),source=serde_json::json!({"board":source.board,"dir":source.dir,"name":source.name})),
+                    None=>format!("{}\nreturn await GSSDImport.runOwned((check,onRetire)=>GSSDImport.upload(document.getElementById('sd-source-{input_id}'),{url},{metadata},{token},check,onRetire));",include_str!("../../station_ui/sd-recording-upload.js"),token=serde_json::to_string(&token).unwrap(),url=serde_json::to_string(&url).unwrap(),metadata=serde_json::to_string(&metadata).unwrap()),
+                };
                 let result=eval_owned(&script,owner.clone()).await.and_then(|text|serde_json::from_str::<serde_json::Value>(&text).map_err(|e|e.to_string()));
                 if !owner.is_current(){busy.set(false);return;}
                 match result{Ok(result)=>{if let Some(id)=result["recording"].as_str(){onimport.call(id.to_owned());status.set(format!("Recovered recording selected: {id}. {} rows; {} network rows superseded in this resolved view. Original network and byte-exact SD source remain available. {} unresolved samples retained in provenance.",result["summary"]["rows"],result["summary"]["network_suppressed_in_resolved_view"],result["summary"]["unresolved_samples"]));}},Err(error)=>status.set(format!("SD recovery failed or canceled: {error}"))}
