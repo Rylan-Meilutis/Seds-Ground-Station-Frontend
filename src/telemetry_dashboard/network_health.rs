@@ -38,6 +38,16 @@ fn temperature(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> 
     }
     "Unavailable".to_owned()
 }
+/// The board's own BOARD_HEALTH report. Version 0 carries only the DAQ SD and
+/// launch-log status, published before or without a board health report.
+fn board_health(row: &NetworkBoardHealthEntry) -> Option<&BoardDiagnostics> {
+    row.diagnostics.as_ref().filter(|report| report.version != 0)
+}
+/// Shown in place of the SD status when the DAQ has not reported it yet.
+fn daq_recording_pending(row: &NetworkBoardHealthEntry) -> Option<&'static str> {
+    (row.sender_id == "DAQ" && row.diagnostics.is_none())
+        .then_some("No SD recording status received from the DAQ yet. It reports every 5 s.")
+}
 fn duration(ms: u64) -> String {
     let seconds = ms / 1000;
     if seconds < 60 {
@@ -318,7 +328,7 @@ pub fn NetworkHealthSection(
                                             if let Some(render) = recovery_renderer { {render.call((RecoverySlot::Details, board_id.clone(), ws_connected, theme.clone()))} }
                                             section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Internal diagnostics"}
                                 p { "Observed for {duration(row.observed_ms)} · Offline {duration(row.offline_ms)} · Receive observations {row.rx_observations}" }
-                                if let Some(report) = &row.diagnostics {
+                                if let Some(report) = board_health(row) {
                                     {let report_age = report.received_age_ms.saturating_add(elapsed);
                                      let uptime_ms = report.uptime_ticks.saturating_mul(1000) / u64::from(report.uptime_frequency_hz.max(1));
                                      rsx! {
@@ -344,7 +354,7 @@ pub fn NetworkHealthSection(
                                         if let Some(overruns)=report.adc_overruns { p { "ADC queue overruns: {overruns}" } }
                                         p { "Diagnostic send refusals: {report.diagnostic_send_failures}" }
                                      }}
-                                } else { p { "Internal diagnostics unavailable from this firmware." } }                                            }
+                                } else if row.diagnostics.is_some() { p { "No board health report received yet." } } else { p { "Internal diagnostics unavailable from this firmware." } }                                            }
                                             section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Storage and recording"}
                             if row.sender_id == "DAQ" {
                                 if let Some(report) = &row.diagnostics {
@@ -352,6 +362,9 @@ pub fn NetworkHealthSection(
                                         theme:theme.clone(), retry_allowed:sd_retry_allowed,
                                         retry_busy:sd_retry_busy, retry_message:sd_retry_message.clone(),
                                         retry_token:sd_retry_token, on_retry:on_sd_retry }
+                                }
+                                if let Some(pending) = daq_recording_pending(row) {
+                                    p { role:"status", "data-sd-state":"unknown", "{pending}" }
                                 }
                             }
                                                 if row.sender_id!="DAQ"{p{"No storage actions are advertised for this node."}}
@@ -386,6 +399,19 @@ fn service_fault_summary(report: &BoardDiagnostics) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn daq_recording_state_is_never_silently_missing() {
+        let mut row = NetworkBoardHealthEntry { sender_id: "DAQ".into(), healthy: true, ..Default::default() };
+        assert!(daq_recording_pending(&row).is_some(), "an absent report is said out loud");
+        row.diagnostics = Some(BoardDiagnostics { sd_flags: Some(7), sd_status_received_age_ms: Some(0), ..Default::default() });
+        assert!(daq_recording_pending(&row).is_none());
+        assert!(board_health(&row).is_none(), "an SD-only report is not board health");
+        row.diagnostics.as_mut().unwrap().version = 1;
+        assert!(board_health(&row).is_some());
+        row.sender_id = "AB".into();
+        row.diagnostics = None;
+        assert!(daq_recording_pending(&row).is_none());
+    }
     #[test]
     fn launch_confirmation_requires_current_exact_application_report() {
         assert_eq!(launch_log_state(None, true, 0).0, "No confirmation yet");
