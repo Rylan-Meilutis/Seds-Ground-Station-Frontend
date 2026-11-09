@@ -195,7 +195,7 @@ pub(super) fn StationPairingAdmin() -> Element {
                                 post("/api/station/pairing/start",start_body(),"Pairing window open.");
                             },"Start pairing with the {peer_name}"}
                         }
-                        p {class:"station-location-hint","Start pairing on both stations within five minutes. They talk over the radio, so the RRLS must hear the primary. No addresses are needed: each station finds the other on its own."}
+                        p {class:"station-location-hint","Start pairing on both stations within five minutes. They talk over the radio, so the RRLS must hear the primary."}
                     } else {
                         p {class:"station-location-hint","Pairing from the UI needs the GroundStation–RRLS radio role on this station."}
                     }
