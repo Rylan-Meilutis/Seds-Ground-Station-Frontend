@@ -122,13 +122,18 @@ fn send(
     });
 }
 
+/// Pairing never asks for an address: each station advertises its own and
+/// learns the other's over the radio exchange or LAN discovery.
+fn start_body() -> serde_json::Value {
+    serde_json::json!({})
+}
+
 #[component]
 pub(super) fn StationPairingAdmin() -> Element {
     let authority = neutral_request_owner::use_factory();
     let mut status = use_signal(|| None::<Status>);
     let mut message = use_signal(String::new);
     let busy = use_signal(|| false);
-    let mut own_url = use_signal(super::UrlConfig::base_http);
     let mut code = use_signal(String::new);
     let mut confirm_unpair = use_signal(|| false);
     use_future(move || {
@@ -184,16 +189,13 @@ pub(super) fn StationPairingAdmin() -> Element {
             if current.can_manage {
                 if !current.paired && current.error.is_none() && !open {
                     if current.radio_available {
-                        label {"This station's address, as apps reach it"
-                            input {r#type:"url",value:own_url.read().clone(),disabled:*busy.read(),oninput:move|e|own_url.set(e.value())}}
                         div {class:"station-location-actions",
                             button {disabled:*busy.read(),onclick:move |_|{
-                                let url=own_url.read().trim().to_string();
                                 code.set(String::new());
-                                post("/api/station/pairing/start",serde_json::json!({"own_url":url}),"Pairing window open.");
+                                post("/api/station/pairing/start",start_body(),"Pairing window open.");
                             },"Start pairing with the {peer_name}"}
                         }
-                        p {class:"station-location-hint","Start pairing on both stations within five minutes. They talk over the radio, so the RRLS must hear the primary."}
+                        p {class:"station-location-hint","Start pairing on both stations within five minutes. They talk over the radio, so the RRLS must hear the primary. No addresses are needed: each station finds the other on its own."}
                     } else {
                         p {class:"station-location-hint","Pairing from the UI needs the GroundStation–RRLS radio role on this station."}
                     }
@@ -237,6 +239,10 @@ mod tests {
     use super::*;
     fn parse(json: &str) -> Status {
         serde_json::from_str(json).unwrap()
+    }
+    #[test]
+    fn starting_pairing_sends_no_address() {
+        assert_eq!(super::start_body(), serde_json::json!({}));
     }
     #[test]
     fn states_are_named_plainly_and_broken_pairing_is_not_paired() {
