@@ -35,3 +35,16 @@ pub(super) fn RecoveryStatus() -> Element {
     };
     rsx! {div {class:"gs26-recovery-status",role:"status",style:"flex:0 0 auto;padding:5px 12px;font-size:12px;border-bottom:1px solid #435165;", "{label}"}}
 }
+
+#[cfg(test)]
+mod backend_contract_tests {
+    use super::Status;
+    #[test]
+    fn rrls_status_decodes_for_a_station_and_a_relaying_rrls() {
+        let idle: Status = crate::backend_contract::decode("rrls/status");
+        assert!(!idle.enabled && idle.role.is_none() && !idle.forwarding && !idle.relay_requested);
+        let relaying: Status = crate::backend_contract::decode("rrls/status-relaying");
+        assert!(relaying.enabled && relaying.forwarding && relaying.relay_requested);
+        assert_eq!(relaying.role.as_deref(), Some("rrls"));
+    }
+}

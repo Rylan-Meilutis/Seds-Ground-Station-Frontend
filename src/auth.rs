@@ -1295,3 +1295,42 @@ mod admin_authority_tests {
         assert_eq!(status.with_role_authority().permissions, operator);
     }
 }
+
+#[cfg(test)]
+mod backend_contract_tests {
+    use super::*;
+    use crate::backend_contract::{decode, fixture};
+    #[test]
+    fn session_status_decodes_signed_in_and_anonymous() {
+        let operator: SessionStatus = decode("auth/session-operator");
+        let operator = operator.with_role_authority();
+        assert!(operator.authenticated && !operator.anonymous);
+        assert_eq!(operator.username.as_deref(), Some("operator"));
+        assert_eq!(operator.session_type.as_deref(), Some("session"));
+        assert!(operator.permissions.view_data && operator.permissions.send_commands);
+        assert_eq!(operator.allowed_commands, ["Abort", "StationMode"]);
+        assert!(operator.expires_at_ms.is_some());
+        assert_eq!(operator.station_role.as_deref(), Some("primary"));
+        assert_eq!(operator.operating_mode.as_ref().unwrap()["effective_mode"], "normal");
+        let proxy = operator.command_proxy.as_ref().expect("command_proxy");
+        assert!(proxy.supported && !proxy.reason.is_empty());
+        // Every permission the UI knows is sent by the backend.
+        let raw = fixture("auth/session-operator");
+        for name in PERMISSION_NAMES {
+            assert!(raw["permissions"].get(*name).is_some(), "backend permissions lack {name}");
+        }
+
+        let anonymous: SessionStatus = decode("auth/session-anonymous");
+        assert!(anonymous.anonymous && !anonymous.authenticated);
+        assert!(anonymous.username.is_none() && anonymous.expires_at_ms.is_none());
+        assert!(!anonymous.permissions.send_commands);
+    }
+    #[test]
+    fn login_challenge_decodes() {
+        let challenge: LoginChallengeResponse = decode("auth/challenge");
+        assert_eq!(challenge.algorithm, "pbkdf2_sha256");
+        assert!(challenge.iterations > 0);
+        assert!(!challenge.challenge_id.is_empty());
+        assert!(!challenge.salt_b64.is_empty() && !challenge.server_nonce_b64.is_empty());
+    }
+}

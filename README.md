@@ -447,10 +447,24 @@ cargo test
 
 The current suite covers layout parsing/validation, sender-aware chart series, launch-clock monotonic behavior, and state/data chart regressions, including current loadcell display behavior.
 
+Backend contract tests decode real GroundStation26 replies and websocket frames
+(copied into `tests/fixtures/backend-contract/`) with the UI's own types:
+
+```bash
+cargo test backend_contract -- --test-threads=1
+python3 scripts/check_backend_contract_fixtures.py   # copy matches ../GroundStation26? --update refreshes it
+GS_CONTRACT_FIXTURES_DIR=../GroundStation26/backend/tests/contract-fixtures cargo test backend_contract -- --test-threads=1
+```
+
+The backend regenerates its fixtures with
+`GS_UPDATE_CONTRACT_FIXTURES=1 cargo test -p groundstation_backend contract_fixtures`.
+See [`docs/backend-contract-tests.md`](docs/backend-contract-tests.md).
+
 ## Reference Files
 
 - Acceleration graph screening and peak preservation: [`docs/acceleration-display.md`](docs/acceleration-display.md)
 - API reference: [`docs/backend-api.md`](docs/backend-api.md)
+- Backend contract tests: [`docs/backend-contract-tests.md`](docs/backend-contract-tests.md)
 - Streaming notes: [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md)
 - Minimal layout example: [`docs/api-examples/layout.minimal.json`](docs/api-examples/layout.minimal.json)
 - WebSocket examples: [`docs/api-examples/websocket-messages.json`](docs/api-examples/websocket-messages.json)

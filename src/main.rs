@@ -3,6 +3,8 @@ mod native_assets;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_navigation;
 mod auth;
+#[cfg(test)]
+mod backend_contract;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_station;
 mod debug_log;

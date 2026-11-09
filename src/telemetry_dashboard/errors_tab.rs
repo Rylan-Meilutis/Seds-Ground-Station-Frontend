@@ -318,3 +318,12 @@ mod badge_tests {
         assert_eq!(undismissed_error_history(&records, reviewed_events.iter().copied(), cutoff), 1);
     }
 }
+
+#[cfg(test)]
+mod backend_contract_tests {
+    #[test]
+    fn history_clear_reply_decodes() {
+        let reply: super::ClearHistoryReply = crate::backend_contract::decode("alerts/history-clear");
+        assert!(reply.cleared_through_ms > 0);
+    }
+}
