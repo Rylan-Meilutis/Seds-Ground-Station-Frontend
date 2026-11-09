@@ -11,6 +11,15 @@ file with the UI's own serde types:
   confirmation and switch (`station_mode_contract`), `StationModeChanged`,
   `/api/station_mode`, board recovery status, action policy with `network_note`,
   alerts and `history_cleared_through_ms`, radio modem, `radio_tx_budget`.
+- `board_abort_dismissal_tests.rs`: on `board-abort/status-hitl`, Dismiss is
+  offered on every board's Abort, and dismissals survive a reload on the
+  Errors and Connection Status tabs until a board aborts again.
+- `station_settings_request_tests.rs`: the isolation checkbox's request
+  reaches a loopback station and matches `requests/gse-self-test-confirmation`
+  (path, method and body the backend decodes).
+- `live_station_mode_switch_decodes_with_the_ui_contract`: with
+  `GS_LIVE_STATION_MODE_DIR`, decodes a mode review captured from a running
+  station (FirmwareSimulator `test-full-network.py --ui-contract`).
 - Inline `backend_contract_tests` modules in `src/auth.rs` (session, login
   challenge), `errors_tab.rs` (history clear reply) and `recovery_status.rs`
   (`/api/rrls/status`), where the types are private.

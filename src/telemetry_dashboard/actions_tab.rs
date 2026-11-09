@@ -767,6 +767,31 @@ fn ResetBoardsDialog(theme: ThemeConfig, on_close: EventHandler<()>) -> Element 
     }
 }
 
+/// The isolation checkbox's request, captured synchronously in its change
+/// handler: an ordinary owner (station policy lease) bound to this checkbox
+/// ticket, and the POST it sends. `post_captured` refuses an owner without
+/// the ordinary policy lease before any I/O, so a non-ordinary owner here
+/// means the confirmation never reaches the station.
+pub(super) fn isolation_confirmation_request(
+    desired: bool,
+    selected: impl Fn() -> bool + 'static,
+) -> Result<
+    (
+        std::rc::Rc<super::recording_download::ExportOwner>,
+        impl std::future::Future<Output = Result<serde_json::Value, String>> + 'static,
+    ),
+    String,
+> {
+    let owner = super::recording_download::ExportOwner::capture_ordinary_selected(selected)?;
+    let request = super::station_settings_request::post_captured::<_, serde_json::Value>(
+        ISOLATION_CONFIRMATION_PATH,
+        &serde_json::json!({"confirmed": desired}),
+        Ok(owner.clone()),
+    );
+    Ok((owner, request))
+}
+pub(super) const ISOLATION_CONFIRMATION_PATH: &str = "/api/gse/self-test-confirmation";
+
 #[component]
 pub fn ActionsTab(
     layout: ActionsTabLayout,
@@ -950,10 +975,9 @@ pub fn ActionsTab(
                                         let Some(ticket)=ticket else{return;};
                                         let alive=self_test_alive.clone();
                                         let selected=self_test_confirmation;
-                                        let owner=super::recording_download::ExportOwner::capture_ordinary_selected(move || alive.load(std::sync::atomic::Ordering::Acquire)&&selected.try_peek().is_ok_and(|model|model.owns(ticket)));
-                                        let owner=match owner {Ok(owner)=>owner,Err(error)=>{let mut next=self_test_confirmation.peek().clone();next.finish(ticket,Err(error),super::monotonic_now_ms());self_test_confirmation.set(next);return;}};
+                                        let captured=isolation_confirmation_request(ticket.desired,move || alive.load(std::sync::atomic::Ordering::Acquire)&&selected.try_peek().is_ok_and(|model|model.owns(ticket)));
+                                        let (owner,request)=match captured {Ok(captured)=>captured,Err(error)=>{let mut next=self_test_confirmation.peek().clone();next.finish(ticket,Err(error),super::monotonic_now_ms());self_test_confirmation.set(next);return;}};
                                         self_test_owner.set(Some(owner.clone()));
-                                        let request=super::station_settings_request::post_captured::<_,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":ticket.desired}),Ok(owner.clone()));
                                         spawn(async move {
                                             let result=request.await;
                                             if !owner.is_current(){return;}

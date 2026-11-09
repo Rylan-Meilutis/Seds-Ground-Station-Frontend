@@ -87,6 +87,8 @@ mod incoming_epoch_native_tests;
 mod station_mode_layout_native_tests;
 #[cfg(test)]
 mod backend_contract_tests;
+#[cfg(test)]
+mod board_abort_dismissal_tests;
 mod mode_live_view;
 mod station_mode_settings;
 mod station_mode_transport;

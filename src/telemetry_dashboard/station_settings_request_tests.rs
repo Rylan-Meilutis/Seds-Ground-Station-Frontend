@@ -802,3 +802,33 @@ async fn held_qualification_401_cannot_clear_new_session_and_fresh_explicit_conf
         }
     }
 }
+/// The Actions tab's isolation checkbox (UI 790627f): its confirmation must
+/// leave the UI and match what the station decodes, recorded by the backend
+/// in `requests/gse-self-test-confirmation` (GroundStation26 contract
+/// fixture). Before the fix its owner had no ordinary policy lease, so
+/// `post_captured` refused it locally and the station never saw the click.
+#[tokio::test(flavor = "current_thread")]
+async fn isolation_checkbox_confirmation_reaches_the_station_as_the_backend_decodes_it() {
+    let contract = crate::backend_contract::fixture("requests/gse-self-test-confirmation");
+    let line = format!("{} {} ", contract["method"].as_str().unwrap(), contract["path"].as_str().unwrap());
+    for desired in [true, false] {
+        let server = Server::new(200, false);
+        let dom = dom(&server.base);
+        let captured = dom.in_scope(ScopeId::ROOT, || {
+            super::super::actions_tab::isolation_confirmation_request(desired, || true)
+        });
+        let (_owner, request) = captured.expect("the checkbox captures its request owner");
+        let mut request = Box::pin(request);
+        in_dom(&dom, request.as_mut())
+            .await
+            .unwrap_or_else(|e| panic!("the isolation confirmation never reached the station: {e}"));
+        let rows = server.requests.lock().unwrap();
+        assert_eq!(rows.len(), 1, "one confirmation per click");
+        assert!(rows[0].0.starts_with(&line), "{} is not {line}", rows[0].0.lines().next().unwrap_or(""));
+        assert!(rows[0].0.to_ascii_lowercase().contains("authorization: bearer settings-original"));
+        let sent: serde_json::Value = serde_json::from_str(&rows[0].1).unwrap();
+        let mut expected = contract["body"].clone();
+        expected["confirmed"] = desired.into();
+        assert_eq!(sent, expected, "the body the station decodes");
+    }
+}

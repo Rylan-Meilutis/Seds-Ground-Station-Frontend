@@ -57,6 +57,46 @@ fn station_mode_review_and_switch_decode_with_the_ui_contract() {
     assert!(applied_by(&request, &challenge.target, &after, 0.0, 1.0), "the switch reads back as applied");
 }
 
+/// The same round trip on a review captured from a running station:
+/// FirmwareSimulator `test-full-network.py --ui-contract` writes each switch's
+/// `snapshot.json`, `prepare.json`, `confirm.json` and `after.json` to
+/// `contract-live/<label>/` and runs this test with
+/// `GS_LIVE_STATION_MODE_DIR` pointing there. Without it there is nothing to
+/// decode and the test returns.
+#[test]
+fn live_station_mode_switch_decodes_with_the_ui_contract() {
+    let Some(dir) = std::env::var_os("GS_LIVE_STATION_MODE_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let read = |name: &str| -> Option<Value> {
+        let path = dir.join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path).ok()?;
+        Some(serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display())))
+    };
+    let before = Snapshot::decode(read("snapshot").expect("snapshot.json"))
+        .unwrap_or_else(|e| panic!("the UI rejects the live mode snapshot: {e}"));
+    let challenge: Challenge = serde_json::from_value(read("prepare").expect("prepare.json"))
+        .unwrap_or_else(|e| panic!("Unsupported mode challenge (live): {e}"));
+    let binding = before
+        .binding(&challenge.binding.target_id)
+        .expect("the live snapshot offers the reviewed target");
+    assert!(challenge.matches(&binding), "the live challenge does not match the snapshot it reviews");
+    assert!(challenge.fresh(0.0, 1.0));
+    let Some(receipt) = read("confirm") else { return };
+    let accepted: Accepted = serde_json::from_value(receipt)
+        .unwrap_or_else(|e| panic!("the UI rejects the live confirmation receipt: {e}"));
+    let request = Confirmation {
+        binding: challenge.binding.clone(),
+        ticket: challenge.ticket.clone(),
+        transition_id: challenge.transition_id.clone(),
+        confirmation: challenge.required_confirmation.clone().unwrap_or_default(),
+    };
+    assert!(accepted.matches(&request), "the live receipt does not match its request");
+    let after = Snapshot::decode(read("after").expect("after.json"))
+        .unwrap_or_else(|e| panic!("the UI rejects the live snapshot after the switch: {e}"));
+    assert!(applied_by(&request, &challenge.target, &after, 0.0, 1.0), "the live switch does not read back as applied");
+}
+
 #[test]
 fn station_mode_changed_frame_decodes_as_a_websocket_message() {
     let message: WsInMsg = decode("websocket/station-mode-changed");
