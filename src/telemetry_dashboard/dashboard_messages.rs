@@ -490,7 +490,29 @@ impl BoardAbortError {
     fn dismissal_key(&self) -> (String, u64) {
         (self.board.clone(), self.timestamp_ms)
     }
-
+}
+/// Dismissals survive a reload: one abort occurrence stays dismissed until the
+/// board aborts again (a new abort time).
+const DISMISSED_BOARD_ABORTS_STORAGE_KEY: &str = "gs_dismissed_board_aborts";
+const DISMISSED_BOARD_ABORTS_KEPT: usize = 64;
+fn load_dismissed_board_aborts() -> std::collections::BTreeSet<(String, u64)> {
+    persist::get_string(DISMISSED_BOARD_ABORTS_STORAGE_KEY)
+        .and_then(|text| serde_json::from_str::<Vec<(String, u64)>>(&text).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+fn dismiss_board_abort(key: (String, u64)) {
+    let mut dismissed = DISMISSED_BOARD_ABORTS.write();
+    dismissed.insert(key);
+    // Keep the newest abort times only.
+    let mut entries: Vec<_> = dismissed.iter().cloned().collect();
+    entries.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
+    entries.truncate(DISMISSED_BOARD_ABORTS_KEPT);
+    *dismissed = entries.iter().cloned().collect();
+    if let Ok(text) = serde_json::to_string(&entries) {
+        persist::set_string(DISMISSED_BOARD_ABORTS_STORAGE_KEY, &text);
+    }
 }
 impl BoardAbortSnapshot {
     fn launch_blocking_errors(&self) -> impl Iterator<Item = &BoardAbortError> {
