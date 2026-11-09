@@ -325,6 +325,21 @@ pub fn NetworkHealthSection(
                                 }
                             }
                                             }
+                                            // Storage sits directly below network history.
+                                            section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Storage and recording"}
+                            if row.sender_id == "DAQ" {
+                                if let Some(report) = &row.diagnostics {
+                                    SdHealth { report:report.clone(), connected:ws_connected, elapsed,
+                                        theme:theme.clone(), retry_allowed:sd_retry_allowed,
+                                        retry_busy:sd_retry_busy, retry_message:sd_retry_message.clone(),
+                                        retry_token:sd_retry_token, on_retry:on_sd_retry }
+                                }
+                                if let Some(pending) = daq_recording_pending(row) {
+                                    p { role:"status", "data-sd-state":"unknown", "{pending}" }
+                                }
+                            }
+                                                if row.sender_id!="DAQ"{p{"No storage actions are advertised for this node."}}
+                                            }
                                             if let Some(render) = recovery_renderer { {render.call((RecoverySlot::Details, board_id.clone(), ws_connected, theme.clone()))} }
                                             section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Internal diagnostics"}
                                 p { "Observed for {duration(row.observed_ms)} · Offline {duration(row.offline_ms)} · Receive observations {row.rx_observations}" }
@@ -355,20 +370,6 @@ pub fn NetworkHealthSection(
                                         p { "Diagnostic send refusals: {report.diagnostic_send_failures}" }
                                      }}
                                 } else if row.diagnostics.is_some() { p { "No board health report received yet." } } else { p { "Internal diagnostics unavailable from this firmware." } }                                            }
-                                            section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Storage and recording"}
-                            if row.sender_id == "DAQ" {
-                                if let Some(report) = &row.diagnostics {
-                                    SdHealth { report:report.clone(), connected:ws_connected, elapsed,
-                                        theme:theme.clone(), retry_allowed:sd_retry_allowed,
-                                        retry_busy:sd_retry_busy, retry_message:sd_retry_message.clone(),
-                                        retry_token:sd_retry_token, on_retry:on_sd_retry }
-                                }
-                                if let Some(pending) = daq_recording_pending(row) {
-                                    p { role:"status", "data-sd-state":"unknown", "{pending}" }
-                                }
-                            }
-                                                if row.sender_id!="DAQ"{p{"No storage actions are advertised for this node."}}
-                                            }
                                         }
                                     }
                                 }
