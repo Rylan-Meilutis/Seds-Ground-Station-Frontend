@@ -2039,16 +2039,12 @@ fn TelemetryDashboardInner() -> Element {
     } else {
         "display:none;".to_string()
     };
-    let status_label = if !active_warning_alert && !active_error_alert {
-        translate_text("Nominal")
-    } else {
-        translate_text("Attention")
-    };
-    let status_label_style = if !active_warning_alert && !active_error_alert {
-        "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-success-text,#22c55e); font-weight:600; flex:0 0 auto;"
-    } else {
-        "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-warning-text,#fde68a); font-weight:600; flex:0 0 auto;"
-    };
+    let station_status = StationStatus::of(
+        mission_phase::current_state(&flight_state.read()).aborted,
+        active_warning_alert || active_error_alert,
+    );
+    let status_label = translate_text(station_status.label());
+    let status_label_style = station_status.style();
     let errors_status_style = format!(
         "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-error-text,#fecaca); opacity:{}; flex:0 0 auto;",
         if has_errors { "1" } else { "0" }
@@ -3887,17 +3883,14 @@ fn TelemetryDashboardInner() -> Element {
                                     }
                                 }
                                 {
-                                    // One state: the phase, with the detailed flight state only as its detail.
+                                    // State is the current flight state.
                                     let state_view = mission_phase::current_state(&flight_state.read());
-                                    let detail_color = if state_view.aborted { theme.error_text.to_string() } else if state_view.comms_loss_landed { theme.warning_text.to_string() } else { theme.text_soft.to_string() };
+                                    let state_color = if state_view.aborted { theme.error_text.to_string() } else if state_view.comms_loss_landed { theme.warning_text.to_string() } else { theme.info_text.to_string() };
                                     rsx! {
                                         div { class: "gs26-status-flight", style: "color:{theme.info_text};",
                                             span { class: "gs26-status-phase", "data-phase": state_view.phase.map(|p| p.key()).unwrap_or("unknown"), title: "{translate_text(&state_view.text())}", style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
                                                 span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"State\", \"Estado\", \"État\")}: " }
-                                                strong { class: "gs26-status-phase-label", "{translate_text(state_view.phase_label())}" }
-                                                if let Some(detail) = state_view.detail.as_ref().filter(|_| state_view.phase.is_some()) {
-                                                    span { class: "gs26-status-phase-detail", style: "color:{detail_color};", " · {translate_text(detail)}" }
-                                                }
+                                                strong { class: "gs26-status-phase-label", style: "color:{state_color};", "{translate_text(&state_view.text())}" }
                                             }
                                         }
                                     }
@@ -4627,5 +4620,54 @@ mod layout_retry_tests {
     fn layout_retry_backs_off_and_caps() {
         let delays: Vec<u64> = (0..7).map(super::layout_retry_delay_ms).collect();
         assert_eq!(delays, vec![2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
+    }
+}
+
+/// Header status: Aborted while the flight state is Aborted, Attention while
+/// any warning or error needs the operator, otherwise Nominal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StationStatus {
+    Aborted,
+    Attention,
+    Nominal,
+}
+
+impl StationStatus {
+    fn of(aborted: bool, attention: bool) -> Self {
+        if aborted {
+            Self::Aborted
+        } else if attention {
+            Self::Attention
+        } else {
+            Self::Nominal
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Aborted => "Aborted",
+            Self::Attention => "Attention",
+            Self::Nominal => "Nominal",
+        }
+    }
+    fn style(self) -> &'static str {
+        match self {
+            Self::Aborted => "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-error-text,#fecaca); font-weight:600; flex:0 0 auto;",
+            Self::Attention => "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-warning-text,#fde68a); font-weight:600; flex:0 0 auto;",
+            Self::Nominal => "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-success-text,#22c55e); font-weight:600; flex:0 0 auto;",
+        }
+    }
+}
+
+#[cfg(test)]
+mod station_status_tests {
+    use super::StationStatus;
+
+    #[test]
+    fn aborted_outranks_attention_and_nominal() {
+        assert_eq!(StationStatus::of(true, false), StationStatus::Aborted);
+        assert_eq!(StationStatus::of(true, true), StationStatus::Aborted);
+        assert_eq!(StationStatus::of(false, true), StationStatus::Attention);
+        assert_eq!(StationStatus::of(false, false), StationStatus::Nominal);
+        assert_eq!(StationStatus::of(true, false).label(), "Aborted");
     }
 }

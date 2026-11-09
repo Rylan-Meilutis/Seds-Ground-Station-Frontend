@@ -94,6 +94,8 @@ pub(crate) fn detailed_label(detailed: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StateView {
     pub phase: Option<Phase>,
+    /// Detailed flight state key ("NitrousFill", "Aborted"), empty when unknown.
+    pub detailed: String,
     pub detail: Option<String>,
     pub aborted: bool,
     pub comms_loss_landed: bool,
@@ -112,8 +114,10 @@ impl StateView {
                 let label = detailed_label(&message.detailed);
                 (!message.detailed.is_empty() && label != message.phase.label()).then_some(label)
             });
+            let detailed = if message.detailed.is_empty() { flight_state } else { &message.detailed };
             return StateView {
                 phase: Some(message.phase),
+                detailed: detailed.to_string(),
                 detail,
                 aborted: message.aborted || message.detailed == "Aborted",
                 comms_loss_landed: message.comms_loss_landed,
@@ -127,6 +131,7 @@ impl StateView {
         };
         StateView {
             phase,
+            detailed: flight_state.to_string(),
             detail,
             aborted: flight_state == "Aborted",
             comms_loss_landed: false,
@@ -138,12 +143,12 @@ impl StateView {
         self.phase.map(Phase::label).unwrap_or("Unknown")
     }
 
-    /// "Fill · Nitrous fill", "Idle" or "Unknown".
+    /// The current flight state ("Nitrous fill", "Aborted") or "Unknown".
+    /// This is what the operator sees as State; the phase only groups layouts.
     pub(crate) fn text(&self) -> String {
-        match &self.detail {
-            Some(detail) if self.phase.is_some() => format!("{} · {detail}", self.phase_label()),
-            Some(detail) => detail.clone(),
-            None => self.phase_label().to_string(),
+        match self.detailed.as_str() {
+            "" | "Unknown" => "Unknown".into(),
+            detailed => detailed_label(detailed),
         }
     }
 }
@@ -425,17 +430,17 @@ mod tests {
     }
 
     #[test]
-    fn one_state_comes_from_the_phase_message() {
+    fn state_is_the_current_flight_state() {
         let fill = message(serde_json::json!({
             "phase":"fill","label":"Fill","detail":"Nitrous fill","detailed":"NitrousFill"
         }));
-        // The separate detailed-state signal never produces a second state.
+        // The phase message's detailed state wins over the separate signal.
         let view = StateView::resolve(Some(&fill), "Idle");
-        assert_eq!(view.text(), "Fill · Nitrous fill");
+        assert_eq!(view.text(), "Nitrous fill");
         let overlay = message(serde_json::json!({
             "phase":"fill","label":"Fill","detail":"GSE fill active","detailed":"Idle"
         }));
-        assert_eq!(StateView::resolve(Some(&overlay), "Idle").text(), "Fill · GSE fill active");
+        assert_eq!(StateView::resolve(Some(&overlay), "Idle").text(), "Idle");
         let idle = message(serde_json::json!({"phase":"idle","detail":null,"detailed":"Idle"}));
         assert_eq!(StateView::resolve(Some(&idle), "Idle").text(), "Idle");
         let aborted = message(serde_json::json!({
@@ -443,34 +448,34 @@ mod tests {
         }));
         let view = StateView::resolve(Some(&aborted), "Aborted");
         assert!(view.aborted);
-        assert_eq!(view.text(), "In flight · Aborted");
+        assert_eq!(view.text(), "Aborted");
     }
 
     #[test]
-    fn older_stations_still_show_one_consistent_state() {
+    fn older_stations_still_show_the_flight_state() {
         // Phase message without `detail`.
         let old = message(serde_json::json!({"phase":"in_flight","detailed":"Coast"}));
-        assert_eq!(StateView::resolve(Some(&old), "Coast").text(), "In flight · Coast");
+        assert_eq!(StateView::resolve(Some(&old), "Coast").text(), "Coast");
         let old = message(serde_json::json!({"phase":"launch","detailed":"Launch"}));
         assert_eq!(StateView::resolve(Some(&old), "Launch").text(), "Launch");
         // No phase message at all: derived from the detailed state alone.
         for (detailed, shown) in [
             ("Startup", "Startup"),
             ("Idle", "Idle"),
-            ("PreFill", "Fill · Pre-fill"),
-            ("FillTest", "Fill · Fill test"),
-            ("NitrogenFill", "Fill · Nitrogen fill"),
-            ("NitrousFill", "Fill · Nitrous fill"),
-            ("Armed", "Fill · Armed"),
+            ("PreFill", "Pre-fill"),
+            ("FillTest", "Fill test"),
+            ("NitrogenFill", "Nitrogen fill"),
+            ("NitrousFill", "Nitrous fill"),
+            ("Armed", "Armed"),
             ("Launch", "Launch"),
-            ("Ascent", "In flight · Ascent"),
-            ("Coast", "In flight · Coast"),
-            ("Apogee", "In flight · Apogee"),
-            ("Descent", "In flight · Descent"),
-            ("Reefing", "In flight · Reefing"),
+            ("Ascent", "Ascent"),
+            ("Coast", "Coast"),
+            ("Apogee", "Apogee"),
+            ("Descent", "Descent"),
+            ("Reefing", "Reefing"),
             ("Landed", "Landed"),
-            ("Recovery", "Landed · Recovery"),
-            ("Aborted", "Idle · Aborted"),
+            ("Recovery", "Recovery"),
+            ("Aborted", "Aborted"),
         ] {
             assert_eq!(StateView::resolve(None, detailed).text(), shown, "{detailed}");
         }
