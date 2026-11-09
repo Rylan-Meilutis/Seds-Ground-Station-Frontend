@@ -11,11 +11,7 @@ pub fn ErrorsTab(
     let active = super::BOARD_ABORT_SIGNAL
         .read()
         .visible_active_errors(&super::DISMISSED_BOARD_ABORTS.read());
-    let hitl = super::station_mode_observer::OBSERVED
-        .read()
-        .as_ref()
-        .and_then(|observed| observed.value.current.as_ref())
-        .is_some_and(|current| current.mode_id == "hitl");
+
     let history_error = super::BOARD_ABORT_SIGNAL
         .read()
         .history_error_message()
@@ -69,7 +65,7 @@ pub fn ErrorsTab(
                         style: "border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; padding:10px; border-radius:10px;",
                         strong { "Active: {error.board_label}" }
                         p { "{error.message}" }
-                        if error.dismissible(hitl) {
+                        if error.dismissible {
                             button {
                                 r#type: "button",
                                 style: "{ack_button_style}",
@@ -79,7 +75,7 @@ pub fn ErrorsTab(
                                 },
                                 "Dismiss"
                             }
-                            small { style: "display:block; margin-top:6px;", "Hides this AV-bay Abort until the board aborts again. Launch still follows the station." }
+                            small { style: "display:block; margin-top:6px;", "Hides this Abort until the board aborts again. Launch still follows the station." }
                         } else {
                             small { "Clears only after a fresh confirmed report from this board. Acknowledging history does not clear it." }
                         }

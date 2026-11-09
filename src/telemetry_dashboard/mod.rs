@@ -460,7 +460,7 @@ static ALERT_CONDITION_VIEW: GlobalSignal<alert_conditions::View> = Signal::glob
 
 static BOARD_ABORT_SIGNAL: GlobalSignal<BoardAbortSnapshot> =
     Signal::global(BoardAbortSnapshot::default);
-/// AV-bay abort errors the operator dismissed in HITL, by board and abort time.
+/// Abort errors the operator dismissed (HITL), by board and abort time.
 /// Display only: Launch still follows the server. A later Abort shows again.
 static DISMISSED_BOARD_ABORTS: GlobalSignal<std::collections::BTreeSet<(String, u64)>> =
     Signal::global(std::collections::BTreeSet::new);

@@ -479,6 +479,9 @@ struct BoardAbortError {
     /// Server verdict: false when the aborted board is no longer on the network.
     #[serde(default = "server_launch_gate_default")]
     launch_blocking: bool,
+    /// Server verdict: the operator may dismiss it from the list (HITL).
+    #[serde(default)]
+    dismissible: bool,
 }
 fn server_launch_gate_default() -> bool {
     true
@@ -487,11 +490,7 @@ impl BoardAbortError {
     fn dismissal_key(&self) -> (String, u64) {
         (self.board.clone(), self.timestamp_ms)
     }
-    /// In HITL the AV bay is often off the bench; its aborts can be dismissed
-    /// instead of sitting in the error list until the board is recovered.
-    fn dismissible(&self, hitl: bool) -> bool {
-        hitl && matches!(self.board.as_str(), "RF" | "FC" | "PB")
-    }
+
 }
 impl BoardAbortSnapshot {
     fn launch_blocking_errors(&self) -> impl Iterator<Item = &BoardAbortError> {
@@ -586,14 +585,11 @@ impl BoardAbortSnapshot {
 mod board_abort_message_tests {
     use super::*;
     #[test]
-    fn hitl_can_dismiss_av_bay_aborts_until_they_abort_again() {
+    fn dismissed_aborts_hide_until_the_board_aborts_again() {
         let snapshot: BoardAbortSnapshot = serde_json::from_value(serde_json::json!({"version":1,"active_errors":[
             {"source":"board_abort:RF","board":"RF","board_label":"RF Board","timestamp_ms":10,"message":"m"},
             {"source":"board_abort:VB","board":"VB","board_label":"Valve Board","timestamp_ms":11,"message":"m"}]})).unwrap();
         let rf = snapshot.active_errors[0].clone();
-        let vb = snapshot.active_errors[1].clone();
-        assert!(rf.dismissible(true) && !rf.dismissible(false), "AV bay, HITL only");
-        assert!(!vb.dismissible(true), "fill boards are never dismissed");
         let mut dismissed = std::collections::BTreeSet::new();
         dismissed.insert(rf.dismissal_key());
         assert_eq!(snapshot.active_error_count_visible(&dismissed), 1);
