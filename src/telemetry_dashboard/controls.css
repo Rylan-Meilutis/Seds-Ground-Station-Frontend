@@ -63,8 +63,9 @@
 .gs26-message-card {display:flex !important;flex-wrap:wrap;align-items:center !important;gap:8px !important;padding:12px !important;line-height:1.45}
 .gs26-message-card .gs26-message-body {flex:1 0 100% !important;max-height:min(24vh,9rem);overflow:auto;font-size:14px;line-height:1.5;white-space:pre-wrap}
 .gs26-message-card button {flex:none;min-height:44px;min-width:44px;padding:8px 12px !important;font-size:14px !important;line-height:20px;white-space:normal;overflow-wrap:anywhere;touch-action:manipulation}
-.gs26-notification-stack {top:max(72px,env(safe-area-inset-top)) !important;right:max(12px,env(safe-area-inset-right)) !important;width:min(420px,calc(100vw - 24px)) !important;max-height:40dvh !important;overscroll-behavior:contain}
-.gs26-warning-toast {bottom:max(12px,env(safe-area-inset-bottom)) !important;right:max(12px,env(safe-area-inset-right)) !important;width:min(420px,calc(100vw - 24px)) !important}
+.gs26-notification-stack {pointer-events:auto;max-height:40dvh !important;overscroll-behavior:contain}
+.gs26-warning-toast {pointer-events:auto}
+.gs26-toast-dock {bottom:max(12px,env(safe-area-inset-bottom)) !important;right:max(12px,env(safe-area-inset-right)) !important;width:min(420px,calc(100vw - 24px)) !important;max-height:calc(100dvh - 24px)}
 @media(max-width:600px){
  .gs26-message-history>div:first-child {align-items:flex-start !important}
  .gs26-message-history h2 {flex:1 0 100% !important}

@@ -4229,71 +4229,74 @@ fn TelemetryDashboardInner() -> Element {
                         }
                     }
                     }
-                    if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && !workspace.contains(MainTab::Warnings) {
-                        aside {role:"alert",class:"gs26-warning-toast gs26-message-card",style:"font-family:{dashboard_font_stack};position:fixed;bottom:16px;right:16px;z-index:2200;width:min(420px,calc(100vw - 32px));padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
-                            div {class:"gs26-message-body",style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
-                            button {style:"font-family:inherit;",onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
-                            button {style:"font-family:inherit;","aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
+                    // Bottom-right, never over the status header and its T clock.
+                    div { class:"gs26-toast-dock", style:"position:fixed; bottom:16px; right:16px; z-index:2200; width:min(420px, calc(100vw - 32px)); display:flex; flex-direction:column-reverse; gap:8px; pointer-events:none;",
+                        if active_warning_alert && latest_warning_ts > *warning_toast_dismissed.read() && !workspace.contains(MainTab::Warnings) {
+                            aside {role:"alert",class:"gs26-warning-toast gs26-message-card",style:"font-family:{dashboard_font_stack};width:100%;padding:12px;box-sizing:border-box;border:1px solid #a68a42;border-radius:10px;background:#302711;color:#fff3c4;display:flex;gap:10px;align-items:center;",
+                                div {class:"gs26-message-body",style:"flex:1;min-width:0;overflow-wrap:anywhere;",strong {"Warning"} if let Some(warning)=warnings.read().iter().max_by_key(|w|w.timestamp_ms) {p {style:"margin:4px 0;","{warning.message}"}}}
+                                button {style:"font-family:inherit;",onclick:move |_|active_main_tab.set(MainTab::Warnings),"View"}
+                                button {style:"font-family:inherit;","aria-label":"Dismiss warning notification",onclick:move |_|warning_toast_dismissed.set(latest_warning_ts),"×"}
+                            }
                         }
-                    }
-                    if !workspace.contains(MainTab::Notifications) && !notifications.read().is_empty() {
-                        div {
-                            class:"gs26-notification-stack",
-                            style: "position:fixed; top:88px; right:16px; z-index:2000; width:min(420px, calc(100vw - 32px)); max-height:min(40vh, 280px); display:flex; flex-direction:column; gap:8px; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; pointer-events:none; font-family:{dashboard_font_stack};",
-                            for n in notifications.read().iter() {
-                                div {
-                                    class:"gs26-message-card",
-                                    style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0; box-shadow:0 16px 40px rgba(0,0,0,0.35); pointer-events:auto; font-family:{dashboard_font_stack};",
-                                    span { class:"gs26-message-body", style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
-                                    if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
-                                        && auth::can_send_command(action_cmd)
-                                    {
-                                        button {
-                                            style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer; touch-action:manipulation;",
-                                            onpointerdown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_pointer_down_event(&source,&cmd,&event,false);}},
-                                            onpointerup: {let source=format!("notification:{}",n.id);move |event|{command_pointer_up_event(&source,&event);}},
-                                            onpointercancel: {let source=format!("notification:{}",n.id);move |event|{command_pointer_cancel_event(&source,&event);}},
-                                            ontouchstart: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_touch_start_event(&source,&cmd,&event,false);}},
-                                            ontouchend: {let source=format!("notification:{}",n.id);move |event|{command_touch_end_event(&source,&event);}},
-                                            ontouchcancel: {let source=format!("notification:{}",n.id);move |event|{command_touch_cancel_event(&source,&event);}},
-                                            onmousedown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_mouse_down_event(&source,&cmd,&event,false);}},
-                                            onmouseup: {let source=format!("notification:{}",n.id);move |event|{command_mouse_up_event(&source,&event);}},
-                                            onkeydown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_key_down_event(&source,&cmd,&event,false);}},
-                                            onkeyup: {let source=format!("notification:{}",n.id);move |event|{command_key_up_event(&source,&event);}},
-                                            onclick: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_click(&source,&cmd,&event,false);}},
-                                            {translate_text(action_label)}
-                                        }
-                                    }
-                                    button {
-                                        style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer;",
-                                        onclick: {
-                                            let id = n.id;
-                                            let ts = n.timestamp_ms;
-                                            let mut notifications = notifications;
-                                            let mut dismissed_notifications = dismissed_notifications;
-                                            let mut unread_notification_ids = unread_notification_ids;
-                                            move |_| {
-                                                let mut v = notifications.read().clone();
-                                                v.retain(|x| x.id != id);
-                                                notifications.set(v);
-                                                let mut unread = unread_notification_ids.read().clone();
-                                                unread.retain(|x| *x != id);
-                                                unread_notification_ids.set(unread);
-                                                let mut ids = dismissed_notifications.read().clone();
-                                                let item = DismissedNotification {
-                                                    id,
-                                                    timestamp_ms: ts,
-                                                };
-                                                if !ids.contains(&item) {
-                                                    ids.push(item);
-                                                    ids.sort_by_key(|x| (x.id, x.timestamp_ms));
-                                                    dismissed_notifications.set(ids.clone());
-                                                    persist_dismissed_notifications(&ids);
-                                                }
-
+                        if !workspace.contains(MainTab::Notifications) && !notifications.read().is_empty() {
+                            div {
+                                class:"gs26-notification-stack",
+                                style: "width:100%; max-height:min(40vh, 280px); display:flex; flex-direction:column; gap:8px; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto; pointer-events:none; font-family:{dashboard_font_stack};",
+                                for n in notifications.read().iter() {
+                                    div {
+                                        class:"gs26-message-card",
+                                        style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0; box-shadow:0 16px 40px rgba(0,0,0,0.35); pointer-events:auto; font-family:{dashboard_font_stack};",
+                                        span { class:"gs26-message-body", style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
+                                        if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
+                                            && auth::can_send_command(action_cmd)
+                                        {
+                                            button {
+                                                style: "padding:0.2rem 0.65rem; border-radius:999px; border:1px solid {theme.info_accent}; background:{theme.info_background}; color:{theme.info_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer; touch-action:manipulation;",
+                                                onpointerdown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_pointer_down_event(&source,&cmd,&event,false);}},
+                                                onpointerup: {let source=format!("notification:{}",n.id);move |event|{command_pointer_up_event(&source,&event);}},
+                                                onpointercancel: {let source=format!("notification:{}",n.id);move |event|{command_pointer_cancel_event(&source,&event);}},
+                                                ontouchstart: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_touch_start_event(&source,&cmd,&event,false);}},
+                                                ontouchend: {let source=format!("notification:{}",n.id);move |event|{command_touch_end_event(&source,&event);}},
+                                                ontouchcancel: {let source=format!("notification:{}",n.id);move |event|{command_touch_cancel_event(&source,&event);}},
+                                                onmousedown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_mouse_down_event(&source,&cmd,&event,false);}},
+                                                onmouseup: {let source=format!("notification:{}",n.id);move |event|{command_mouse_up_event(&source,&event);}},
+                                                onkeydown: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_key_down_event(&source,&cmd,&event,false);}},
+                                                onkeyup: {let source=format!("notification:{}",n.id);move |event|{command_key_up_event(&source,&event);}},
+                                                onclick: {let cmd=action_cmd.to_string();let source=format!("notification:{}",n.id);move |event|{command_click(&source,&cmd,&event,false);}},
+                                                {translate_text(action_label)}
                                             }
-                                        },
-                                        {translate_text("Dismiss")}
+                                        }
+                                        button {
+                                            style: "padding:0.2rem 0.55rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; font-family:{dashboard_font_stack}; cursor:pointer;",
+                                            onclick: {
+                                                let id = n.id;
+                                                let ts = n.timestamp_ms;
+                                                let mut notifications = notifications;
+                                                let mut dismissed_notifications = dismissed_notifications;
+                                                let mut unread_notification_ids = unread_notification_ids;
+                                                move |_| {
+                                                    let mut v = notifications.read().clone();
+                                                    v.retain(|x| x.id != id);
+                                                    notifications.set(v);
+                                                    let mut unread = unread_notification_ids.read().clone();
+                                                    unread.retain(|x| *x != id);
+                                                    unread_notification_ids.set(unread);
+                                                    let mut ids = dismissed_notifications.read().clone();
+                                                    let item = DismissedNotification {
+                                                        id,
+                                                        timestamp_ms: ts,
+                                                    };
+                                                    if !ids.contains(&item) {
+                                                        ids.push(item);
+                                                        ids.sort_by_key(|x| (x.id, x.timestamp_ms));
+                                                        dismissed_notifications.set(ids.clone());
+                                                        persist_dismissed_notifications(&ids);
+                                                    }
+
+                                                }
+                                            },
+                                            {translate_text("Dismiss")}
+                                        }
                                     }
                                 }
                             }
