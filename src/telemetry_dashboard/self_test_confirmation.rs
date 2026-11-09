@@ -1,5 +1,7 @@
 //! Client confirmation projection. Backend permissions/interlocks remain authoritative.
-const FRESH_MS: f64 = 1_500.0;
+// The status host polls 1 s after each response, so samples arrive every
+// 1 s plus round trip. 1.5 s expired evidence between samples and flickered.
+const FRESH_MS: f64 = 3_500.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Ticket {
     pub serial: u64,
@@ -233,7 +235,7 @@ mod tests {
             m.observe(1, 1, 1., now, Some(false));
             assert!(m.confirmed());
         }
-        m.observe(1, 1, 1., 1503., Some(false));
+        m.observe(1, 1, 1., 3503., Some(false));
         assert!(!m.confirmed());
         assert_eq!(m.notice, Notice::Unavailable);
     }
@@ -253,7 +255,7 @@ mod tests {
     }
     #[test]
     fn invalid_metadata_and_owner_retirement_never_reconfirm_cached_value() {
-        for requested in [f64::NAN, f64::INFINITY, 12., -2000.] {
+        for requested in [f64::NAN, f64::INFINITY, 12., -5000.] {
             let mut m = Model::new(1);
             m.observe(1, 1, requested, 10., Some(true));
             assert!(!m.confirmed());
