@@ -293,7 +293,11 @@ pub(super) struct Status {
     /// Server's plain-language reason Reset ALL is not permitted right now.
     #[serde(default)]
     pub reset_startup_blocked_reason: Option<String>,
-    /// Station phase a Resync would set (fill phases and Armed only).
+    /// Server's plain-language reason Review recovery is not permitted.
+    #[serde(default)]
+    pub recover_blocked_reason: Option<String>,
+    /// Station phase a Resync would set (Startup/Idle outside test fire, the
+    /// fill phases and Armed).
     #[serde(default)]
     pub resync_target_state: Option<u8>,
     #[serde(default)]
@@ -386,7 +390,10 @@ impl Status {
             return self.board_reason(board, action, elapsed);
         }
         if !self.valid() || !self.permissions.recover {
-            return Some("Recovery is not permitted by this server/session.".into());
+            return Some(match self.recover_blocked_reason.as_deref() {
+                Some(reason) if self.valid() && !reason.trim().is_empty() => format!("Review recovery is blocked: {reason}"),
+                _ => "Recovery is not permitted by this server/session.".into(),
+            });
         }
         if !matches!(self.flight_state, Some(0 | 1 | 15)) {
             return Some("Recovery requires GS Startup, Idle or Aborted.".into());
@@ -402,7 +409,7 @@ impl Status {
         }
         None
     }
-    /// Resync has its own window (fill phases and Armed), so it does not use the
+    /// Resync has its own window (the station's phase), so it does not use the
     /// Startup/Idle/Aborted recovery permission. PREPARE takes fresh proof.
     pub fn resync_reason(&self, board: &Board) -> Option<String> {
         if !self.valid() {
@@ -414,8 +421,8 @@ impl Status {
         if let Some(reason) = board.resync_blocked_reason.as_deref().filter(|r| !r.trim().is_empty()) {
             return Some(reason.to_string());
         }
-        if self.resync_target_state.is_none_or(|state| !(2..=6).contains(&state)) {
-            return Some("Resync is allowed only in the fill phases and Armed.".into());
+        if self.resync_target_state.is_none_or(|state| state > 6) {
+            return Some("Resync is not available in the station's current phase.".into());
         }
         if !board.query_allowed() {
             return Some("The board's recovery endpoint is not verified.".into());
@@ -598,10 +605,11 @@ impl Challenge {
             }
             // The phrase names the board and the phase frozen at PREPARE; the
             // ticket must still match the station's current phase and promise
-            // that no outputs move.
+            // that no outputs move (to a fill phase or Armed). To Startup or
+            // Idle the board stops its launch sequence and drives outputs safe.
             ("resync", Some(id), None)
                 if self.targets == [id]
-                    && self.outputs_unchanged == Some(true)
+                    && self.outputs_unchanged == Some(self.resync_target_state.is_some_and(|state| state > 1))
                     && self.resync_target_state.is_some()
                     && self.resync_target_state == status.resync_target_state =>
             {
@@ -756,7 +764,11 @@ mod tests {
         assert!(s.prepare_board_reason(&unsupported, "resync", 0).unwrap().contains("does not support Resync"));
         let mut idle = s.clone();
         idle.resync_target_state = None;
-        assert!(idle.prepare_board_reason(&ab, "resync", 0).unwrap().contains("fill phases and Armed"));
+        assert!(idle.prepare_board_reason(&ab, "resync", 0).unwrap().contains("current phase"));
+        let mut station_idle = s.clone();
+        station_idle.resync_target_state = Some(1);
+        station_idle.resync_target_label = Some("Idle".into());
+        assert_eq!(station_idle.prepare_board_reason(&ab, "resync", 0), None, "Resync to Idle is offered");
 
         let mut ticket = challenge();
         ticket.action = "resync".into();
