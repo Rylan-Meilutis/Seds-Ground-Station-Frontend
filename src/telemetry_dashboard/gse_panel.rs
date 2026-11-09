@@ -748,6 +748,77 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
 /// Shown while the station latches a tank overpressure. Acknowledging commands
 /// nothing; the station refuses it unless a fresh Valve Board pressure is below
 /// the relief limit, and it also acknowledges the Valve Board's relief hold.
+/// HITL: an operator who knows the tank is good skips the nitrogen test and
+/// goes straight to fill. The station decides availability and says why not.
+#[component]
+pub(super) fn HitlNitrogenOverride(status: Signal<serde_json::Value>, disabled: bool) -> Element {
+    let mut open = use_signal(|| false);
+    let mut reason = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    let mut owner = use_signal(|| None::<Rc<ExportOwner>>);
+    let alive = super::recording_download::use_export_lifetime();
+    let open_alive = alive.clone();
+    let confirm_alive = alive.clone();
+    let value = status.read().clone();
+    let Some(state) = value.get("nitrogen_override").cloned() else {
+        return rsx! {};
+    };
+    let permitted = !disabled && auth::can_send_command("NitrogenTest");
+    let available = state["available"].as_bool() == Some(true) && permitted;
+    let blocked = state["blocked_reason"].as_str().map(str::to_string);
+    rsx! {
+        section {"aria-label":"Nitrogen test override",style:"padding:12px;border:1px solid #526579;border-radius:10px;display:grid;gap:8px;",
+            if state["active"].as_bool() == Some(true) {
+                p {style:"margin:0;color:#e6b85c;","⚠ Nitrogen test overridden; fill is available."}
+            } else {
+                button {style:"min-height:44px;justify-self:start;",disabled:!available||*busy.read(),onclick:move |_|{
+                    if !open_alive.load(Ordering::Acquire) {return;}
+                    match capture_fill_owner(open_alive.clone()) {
+                        Ok(captured) => {owner.set(Some(captured));open.set(true);reason.set(String::new());message.set(String::new());},
+                        Err(error) => message.set(error),
+                    }
+                },"Override nitrogen test…"}
+                if let Some(blocked)=blocked {p {role:"status",style:"margin:0;","Override unavailable: {blocked}."}}
+                else if !permitted {p {role:"status",style:"margin:0;","Sign in with an account allowed to run the nitrogen test."}}
+            }
+            if !message.read().is_empty() {p {role:"status",style:"margin:0;","{message}"}}
+            if *open.read() {
+                div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
+                    div {class:"gs26-modal",role:"dialog","aria-modal":"true","aria-label":"Override nitrogen test",
+                        style:"background:var(--gs26-panel-background,#122231);color:var(--gs26-app-text,#edf3fa);border:1px solid var(--gs26-border,#526579);border-radius:14px;padding:20px;width:min(100%,420px);box-sizing:border-box;display:grid;gap:12px;",
+                        h3 {style:"margin:0;","Skip the nitrogen test?"}
+                        p {style:"margin:0;","For a tank you know is good. Fill's pressure, valve and interlock checks still apply."}
+                        label {"Reason" textarea {"aria-label":"Nitrogen test override reason",maxlength:"500",value:reason(),oninput:move |event|reason.set(event.value()),style:"width:100%;min-height:72px;box-sizing:border-box;"}}
+                        div {style:"display:flex;gap:12px;flex-wrap:wrap;",
+                            button {disabled:*busy.read(),onclick:move |_|{if *busy.peek() {return;} open.set(false);owner.set(None);},"Cancel"}
+                            button {class:"gs26-modal-danger",disabled:*busy.read()||reason.read().trim().is_empty(),onclick:move |_|{
+                                if !confirm_alive.load(Ordering::Acquire) {return;}
+                                let text=reason.peek().trim().to_string();if text.is_empty() {return;}
+                                let Some(captured)=owner.peek().clone().filter(|o| o.is_current()) else {
+                                    open.set(false);owner.set(None);
+                                    message.set("Station, login or connection changed. Open the override again.".into());return;
+                                };
+                                let request=super::station_settings_request::post_captured_no_redirect::<_,serde_json::Value>("/api/gse/cold-flow/override",&serde_json::json!({"reason":text}),Ok(captured.clone()));
+                                let alive=confirm_alive.clone();busy.set(true);
+                                spawn(async move {
+                                    let result=request.await;
+                                    if !alive.load(Ordering::Acquire) || !captured.is_current() {return;}
+                                    match result {
+                                        Ok(_)=>{message.set("Nitrogen test overridden. Fill is available.".into());open.set(false);owner.set(None);},
+                                        Err(error)=>message.set(error),
+                                    }
+                                    busy.set(false);
+                                });
+                            },"Skip nitrogen test"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub(super) fn OverpressureAcknowledge(latched: bool, peak_psi: Option<f64>, detail: String) -> Element {
     let mut busy = use_signal(|| false);
