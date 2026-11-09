@@ -95,14 +95,13 @@ pub struct ActionControl {
     pub enabled: bool,
     pub blink: BlinkMode,
     pub actuated: Option<bool>,
-    /// Requested setting, separate from owner-confirmed physical state.
+    /// Requested setting, separate from the confirmed state.
     #[serde(default)]
     pub requested: Option<bool>,
-    /// Why an owner-confirmed output is still unconfirmed when its owner
-    /// board is unreachable, e.g. "RF Board not reachable; applies when it
-    /// reconnects". Absent while the owner is reachable.
+    /// Network-variable outputs (underglow, buzzer): "Waiting for network
+    /// confirmation" while the GS has seen no network value at all.
     #[serde(default)]
-    pub owner_note: Option<String>,
+    pub network_note: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]

@@ -296,9 +296,9 @@ fn cosmetic_requested(cmd: &str, requested: Option<bool>, legacy_actuated: Optio
     cosmetic_output_action(cmd).then_some(requested.or(legacy_actuated)).flatten()
 }
 
-/// A backend that reports `requested` sends `actuated` only once the owner
-/// board has acknowledged that request. Older backends sent their stored
-/// request as `actuated`, which is never owner feedback.
+/// A backend that reports `requested` sends `actuated` only once the network
+/// carries that request. Older backends sent their stored request as
+/// `actuated`, which is never network feedback.
 fn cosmetic_confirmed(cmd: &str, requested: Option<bool>, actuated: Option<bool>) -> Option<bool> {
     if !cosmetic_output_action(cmd) {
         return None;
@@ -306,13 +306,14 @@ fn cosmetic_confirmed(cmd: &str, requested: Option<bool>, actuated: Option<bool>
     requested.zip(actuated).and_then(|(requested, actuated)| (requested == actuated).then_some(actuated))
 }
 
-/// Owner wording for underglow/buzzer: (secondary line, badge). A backend
-/// note (owner board unreachable) replaces the bare "unconfirmed" text.
-fn cosmetic_owner_labels<'a>(confirmed: bool, owner_note: Option<&'a str>) -> (&'a str, &'static str) {
-    match (confirmed, owner_note.map(str::trim).filter(|note| !note.is_empty())) {
-        (true, _) => ("owner confirmed", "Unconfirmed"),
-        (false, Some(note)) => (note, "Owner offline"),
-        (false, None) => ("owner unconfirmed", "Unconfirmed"),
+/// Underglow and buzzer are SEDSnet network variables with no owner board:
+/// (secondary line, badge). Plain "Unconfirmed" until the network carries the
+/// request; the backend note says when no network value was seen at all.
+fn cosmetic_network_labels<'a>(confirmed: bool, network_note: Option<&'a str>) -> (&'a str, &'static str) {
+    match (confirmed, network_note.map(str::trim).filter(|note| !note.is_empty())) {
+        (true, _) => ("Confirmed", "Unconfirmed"),
+        (false, Some(note)) => (note, "Unconfirmed"),
+        (false, None) => ("Unconfirmed", "Unconfirmed"),
     }
 }
 
@@ -1045,8 +1046,8 @@ pub fn ActionsTab(
                                                 let unconfirmed = (physical_output_action(&action.cmd) || cosmetic_output_action(&action.cmd)) && actuated.is_none();
                                                 let requested = cosmetic_requested(&action.cmd, control.as_ref().and_then(|c| c.requested), control.as_ref().and_then(|c| c.actuated));
                                                 let requested_label = match requested { Some(true) => "Requested: On", Some(false) => "Requested: Off", None => "Requested: unknown" };
-                                                let owner_note = control.as_ref().filter(|_| cosmetic_output_action(&action.cmd)).and_then(|c| c.owner_note.as_deref());
-                                                let (owner_label, unconfirmed_badge) = cosmetic_owner_labels(actuated.is_some(), owner_note);
+                                                let network_note = control.as_ref().filter(|_| cosmetic_output_action(&action.cmd)).and_then(|c| c.network_note.as_deref());
+                                                let (network_label, unconfirmed_badge) = cosmetic_network_labels(actuated.is_some(), network_note);
                                                 let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
                                                 let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
                                                 let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { unconfirmed_badge } else { "Disabled" };
@@ -1132,7 +1133,7 @@ pub fn ActionsTab(
                                                         span { class:"gs26-action-copy",style: "min-width:0; flex:1 1 auto;",
                                                             span {title:"{action.label}",style:if cosmetic_output_action(&action.cmd) {"display:block;white-space:nowrap;line-height:1.25;"} else {"display:block;overflow-wrap:break-word;white-space:normal;line-height:1.25;"}, "{action.label}"}
                                                             if cosmetic_output_action(&action.cmd) {
-                                                                span {title:"{requested_label}; {owner_label}",style:"display:block;font-size:11px;font-weight:400;line-height:1.3;white-space:normal;overflow-wrap:anywhere;", "{requested_label}; {owner_label}"}
+                                                                span {title:"{requested_label}; {network_label}",style:"display:block;font-size:11px;font-weight:400;line-height:1.3;white-space:normal;overflow-wrap:anywhere;", "{requested_label}; {network_label}"}
                                                             }
                                                             if action.group == "GSE sequence actions" {
                                                                 span {title:disabled_reason.unwrap_or(""),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;", "{reason_text}"}
@@ -1825,9 +1826,9 @@ mod cosmetic_request_truth_tests {
             }
             assert_eq!(cosmetic_requested(cmd, Some(false), Some(true)), Some(false));
             assert_eq!(cosmetic_requested(cmd, None, Some(true)), Some(true));
-            // Legacy desired-as-actuated is not owner feedback.
+            // Legacy desired-as-actuated is not network feedback.
             assert_eq!(cosmetic_confirmed(cmd, None, Some(true)), None);
-            // Only an owner-acknowledged value equal to the request is shown.
+            // Only a network value equal to the request is shown.
             assert_eq!(cosmetic_confirmed(cmd, Some(false), None), None);
             assert_eq!(cosmetic_confirmed(cmd, Some(false), Some(true)), None);
             assert_eq!(cosmetic_confirmed(cmd, Some(false), Some(false)), Some(false));
@@ -1857,27 +1858,42 @@ mod disabled_reason_tests {
 }
 
 #[cfg(test)]
-mod owner_note_tests {
+mod network_note_tests {
     use super::*;
     #[test]
-    fn unreachable_owner_note_replaces_bare_unconfirmed() {
-        let note = "RF Board not reachable; applies when it reconnects";
-        assert_eq!(cosmetic_owner_labels(false, Some(note)), (note, "Owner offline"));
-        assert_eq!(cosmetic_owner_labels(false, None), ("owner unconfirmed", "Unconfirmed"));
-        assert_eq!(cosmetic_owner_labels(false, Some("  ")), ("owner unconfirmed", "Unconfirmed"));
-        // A confirmed owner never shows a stale note.
-        assert_eq!(cosmetic_owner_labels(true, Some(note)).0, "owner confirmed");
-    }
-    #[test]
-    fn owner_note_deserializes_and_defaults_to_none() {
+    fn underglow_labels_show_no_owner_text() {
+        let waiting = "Waiting for network confirmation";
+        let legacy_owner = "RF Board not reachable; applies when it reconnects";
+        let cases = [
+            (cosmetic_network_labels(false, Some(waiting)), (waiting, "Unconfirmed")),
+            (cosmetic_network_labels(false, None), ("Unconfirmed", "Unconfirmed")),
+            (cosmetic_network_labels(false, Some("  ")), ("Unconfirmed", "Unconfirmed")),
+            (cosmetic_network_labels(true, Some(waiting)), ("Confirmed", "Unconfirmed")),
+        ];
+        for (labels, expected) in cases {
+            assert_eq!(labels, expected);
+            for text in [labels.0, labels.1] {
+                assert!(!text.to_lowercase().contains("owner") && !text.contains("Board"), "{text}");
+            }
+        }
+        // An older backend's owner note is ignored, never shown.
         let control: super::super::ActionControl = serde_json::from_value(serde_json::json!({
             "cmd":"ToggleAvBayUnderglow","enabled":true,"blink":"none","actuated":null,"requested":true,
-            "owner_note":"RF Board not reachable; applies when it reconnects"
+            "owner_note":legacy_owner
         })).unwrap();
-        assert_eq!(control.owner_note.as_deref(), Some("RF Board not reachable; applies when it reconnects"));
+        assert!(control.network_note.is_none());
+        assert_eq!(cosmetic_network_labels(false, control.network_note.as_deref()).0, "Unconfirmed");
+    }
+    #[test]
+    fn network_note_deserializes_and_defaults_to_none() {
+        let control: super::super::ActionControl = serde_json::from_value(serde_json::json!({
+            "cmd":"ToggleAvBayUnderglow","enabled":true,"blink":"none","actuated":null,"requested":true,
+            "network_note":"Waiting for network confirmation"
+        })).unwrap();
+        assert_eq!(control.network_note.as_deref(), Some("Waiting for network confirmation"));
         let legacy: super::super::ActionControl = serde_json::from_value(serde_json::json!({
             "cmd":"ToggleAvBayUnderglow","enabled":true,"blink":"none","actuated":null
         })).unwrap();
-        assert!(legacy.owner_note.is_none());
+        assert!(legacy.network_note.is_none());
     }
 }
