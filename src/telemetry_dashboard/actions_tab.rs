@@ -950,7 +950,7 @@ pub fn ActionsTab(
                                         let Some(ticket)=ticket else{return;};
                                         let alive=self_test_alive.clone();
                                         let selected=self_test_confirmation;
-                                        let owner=super::recording_download::ExportOwner::capture_selected(move || alive.load(std::sync::atomic::Ordering::Acquire)&&selected.try_peek().is_ok_and(|model|model.owns(ticket)));
+                                        let owner=super::recording_download::ExportOwner::capture_ordinary_selected(move || alive.load(std::sync::atomic::Ordering::Acquire)&&selected.try_peek().is_ok_and(|model|model.owns(ticket)));
                                         let owner=match owner {Ok(owner)=>owner,Err(error)=>{let mut next=self_test_confirmation.peek().clone();next.finish(ticket,Err(error),super::monotonic_now_ms());self_test_confirmation.set(next);return;}};
                                         self_test_owner.set(Some(owner.clone()));
                                         let request=super::station_settings_request::post_captured::<_,serde_json::Value>("/api/gse/self-test-confirmation",&serde_json::json!({"confirmed":ticket.desired}),Ok(owner.clone()));
