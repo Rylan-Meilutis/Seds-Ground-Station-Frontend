@@ -281,6 +281,13 @@ pub fn NetworkHealthSection(
                             }
                             if let Some(render) = recovery_renderer { p{style:"margin:8px 0;",{render.call((RecoverySlot::State, board_id.clone(), ws_connected, theme.clone()))}} }
                             p{style:"margin:8px 0;color:{theme.text_secondary};","Disconnects: {row.disconnects}"}
+                            if let Some(offset) = row.clock_offset_ms {
+                                if clock_desynced(offset) {
+                                    p{role:"alert",style:"margin:8px 0;padding:6px 8px;border:1px solid {theme.error_border};background:{theme.error_background};color:{theme.error_text};border-radius:8px;","Clock out of sync: {clock_offset_text(offset)}"}
+                                } else {
+                                    p{style:"margin:8px 0;color:{theme.text_secondary};","Clock: in sync ({clock_offset_text(offset)})"}
+                                }
+                            }
                             if let Some(render) = recovery_renderer { {render.call((RecoverySlot::Actions, board_id.clone(), ws_connected, theme.clone()))} }
                             button{r#type:"button",style:"min-height:44px;margin-top:8px;",onclick:{let id=board_id.clone();move |_|more_info.set(Some(id.clone()))},"More info"}
                             if more_info.read().as_deref()==Some(board_id.as_str()){
@@ -297,6 +304,9 @@ pub fn NetworkHealthSection(
                                 dt { "Temperature" } dd { style: "margin:0;", "{temperature(row, ws_connected, elapsed)}" }
                                 dt { "Last received" } dd { style: "margin:0;", "{age} ago" }
                                 dt { "Disconnects" } dd { style: "margin:0;", "{row.disconnects}" }
+                                if let Some(offset) = row.clock_offset_ms {
+                                    dt { "Clock offset" } dd { style: "margin:0;", "{clock_offset_text(offset)}" }
+                                }
                                 dt { "Reconnects" } dd { style: "margin:0;", "{row.reconnects}" }
                                 dt { "Availability" } dd { style: "margin:0;", "{availability:.1}%" }
                                 dt { "Longest outage" } dd { style: "margin:0;", "{duration(row.longest_outage_ms)}" }
@@ -576,5 +586,37 @@ pub fn GeneralNetworkHealthSummary(
             if simulated { p { "Simulated network" } }
             p { style: "color:{theme.text_secondary};", "Per-board diagnostics and recovery are in Connectivity." }
         }
+    }
+}
+
+/// Beyond radio transit delay; recovery commands need the board within 15 s.
+const CLOCK_DESYNC_MS: i64 = 2_000;
+fn clock_desynced(offset_ms: i64) -> bool {
+    offset_ms.unsigned_abs() > CLOCK_DESYNC_MS as u64
+}
+fn clock_offset_text(offset_ms: i64) -> String {
+    let side = if offset_ms >= 0 { "ahead of" } else { "behind" };
+    let ms = offset_ms.unsigned_abs();
+    let amount = if ms < 10_000 {
+        format!("{ms} ms")
+    } else if ms < 3_600_000 {
+        format!("{:.1} min", ms as f64 / 60_000.0)
+    } else if ms < 86_400_000 * 2 {
+        format!("{:.1} h", ms as f64 / 3_600_000.0)
+    } else {
+        format!("{:.0} days", ms as f64 / 86_400_000.0)
+    };
+    format!("{amount} {side} the station")
+}
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    #[test]
+    fn small_offsets_are_in_sync_and_uptime_clocks_are_flagged() {
+        assert!(!clock_desynced(-40));
+        assert!(!clock_desynced(1_500));
+        assert!(clock_desynced(-1_794_183_000_000));
+        assert_eq!(clock_offset_text(-25), "25 ms behind the station");
+        assert!(clock_offset_text(-1_794_183_000_000).ends_with("days behind the station"));
     }
 }

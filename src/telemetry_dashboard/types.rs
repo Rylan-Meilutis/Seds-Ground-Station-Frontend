@@ -356,6 +356,9 @@ pub struct NetworkBoardHealthEntry {
     pub offline_ms: u64,
     pub longest_outage_ms: u64,
     pub current_outage_ms: u64,
+    /// Board network time minus station receive time from its latest packet.
+    #[serde(default)]
+    pub clock_offset_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
