@@ -1971,7 +1971,22 @@ fn TelemetryDashboardInner() -> Element {
                     .any(|error| error.source == record.key && error.board == record.source)
         })
         .count();
-    let active_error_count = active_board_error_count + condition_error_count - board_abort_overlap;
+    // A dismissed abort's matching condition record is dismissed with it.
+    let dismissed_abort_conditions = condition_records
+        .iter()
+        .filter(|record| {
+            record.state == alert_conditions::ConditionState::Active
+                && record.severity == alert_conditions::Severity::Error
+                && BOARD_ABORT_SIGNAL.read().active_errors.iter().any(|error| {
+                    error.source == record.key
+                        && error.board == record.source
+                        && DISMISSED_BOARD_ABORTS.read().contains(&error.dismissal_key())
+                })
+        })
+        .count();
+    let condition_error_count = condition_error_count.saturating_sub(dismissed_abort_conditions);
+    let active_error_count =
+        (active_board_error_count + condition_error_count + dismissed_abort_conditions).saturating_sub(board_abort_overlap);
     let warn_count_label = if !condition_status.snapshot_current
         && unacked_warning_count + condition_warning_count == 0
     {

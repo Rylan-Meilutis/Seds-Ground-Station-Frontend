@@ -68,7 +68,7 @@ pub fn ErrorsTab(
                         if error.dismissible {
                             button {
                                 r#type: "button",
-                                style: "{ack_button_style}",
+                                style: "padding:0.25rem 0.65rem; border-radius:999px; border:1px solid {theme.button_border}; background:{theme.button_background}; color:{theme.button_text}; font-size:0.75rem; cursor:pointer;",
                                 onclick: {
                                     let key = error.dismissal_key();
                                     move |_| { super::DISMISSED_BOARD_ABORTS.write().insert(key.clone()); }
