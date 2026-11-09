@@ -1014,7 +1014,7 @@ pub fn ActionsTab(
                                                 } else if !auth::can_send_command(&dispatch_cmd) {
                                                     Some("Not permitted by your account")
                                                 } else if abort_only_mode {
-                                                    Some("Abort-only mode is enabled")
+                                                    Some("Actions Disabled is on (header toggle)")
                                                 } else if let Some(reason) = dispatch_control.and_then(backend_disabled_reason) {
                                                     Some(reason)
                                                 } else if !action_policy_snapshot.software_buttons_enabled {
