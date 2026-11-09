@@ -232,7 +232,7 @@ pub fn ConnectionStatusTab(
     rsx! {
         div { style: "padding:16px; height:100%; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:auto;",
             h2 { style: "margin:0 0 12px 0; color:{theme.text_primary};", "{title}" }
-            for error in super::BOARD_ABORT_SIGNAL.read().active_errors.iter() {
+            for error in super::BOARD_ABORT_SIGNAL.read().visible_active_errors(&super::DISMISSED_BOARD_ABORTS.read()).iter() {
                 div { key: "{error.source}", role: "alert", style:"padding:10px; margin-bottom:8px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; border-radius:10px;",
                     strong { "Active ERROR: {error.board_label}" }
                     p { "{error.message}" }
