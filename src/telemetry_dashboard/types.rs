@@ -294,6 +294,10 @@ pub struct BoardDiagnostics {
     pub uptime_frequency_hz: u32,
     pub reset_flags: u32,
     pub watchdog_missing_mask: u32,
+    /// RF/PB router services that failed to start and are being retried,
+    /// e.g. "OTA storage unavailable". Empty on older backends/boards.
+    #[serde(default)]
+    pub service_faults: Vec<String>,
     pub heap_live_bytes: Option<u32>,
     pub heap_peak_bytes: Option<u32>,
     pub heap_region_bytes: Option<u32>,

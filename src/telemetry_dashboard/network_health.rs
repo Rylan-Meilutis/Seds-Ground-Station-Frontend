@@ -315,6 +315,9 @@ pub fn NetworkHealthSection(
                                         p { "Reported uptime {duration(uptime_ms)} · {report.uptime_frequency_hz} ticks/s" }
                                         if report_age > 15_000 { p { role: "status", "Diagnostic report stale · {duration(report_age)} ago" } }
                                         p { "Reset flags: {report.reset_flags:#010x} · Watchdog pending: {report.watchdog_missing_mask:#x}" }
+                                        if let Some(faults) = service_fault_summary(report) {
+                                            p { role: "alert", style: "color:{theme.warning_text};", "{faults}" }
+                                        }
                                         if let (Some(live),Some(peak),Some(region))=(report.heap_live_bytes,report.heap_peak_bytes,report.heap_region_bytes) {
                                             p { "Allocator live / peak / region: {live} / {peak} / {region} bytes" }
                                         }
@@ -354,6 +357,20 @@ pub fn NetworkHealthSection(
             if rows.is_empty() { p { "No boards observed in this mode." } }
         }
     }
+}
+
+/// Operator line for board services that failed to start. The board keeps
+/// routing and retries them every 5 s; None when every service started.
+fn service_fault_summary(report: &BoardDiagnostics) -> Option<String> {
+    let faults: Vec<&str> = report
+        .service_faults
+        .iter()
+        .map(|fault| fault.trim())
+        .filter(|fault| !fault.is_empty())
+        .collect();
+    (!faults.is_empty()).then(|| {
+        format!("Service faults (still routing, retrying every 5 s): {}", faults.join(", "))
+    })
 }
 
 #[cfg(test)]
@@ -426,6 +443,22 @@ mod tests {
             launch_log_state(Some(&status), true, 0).0,
             "Unverified launch clock"
         );
+    }
+
+    #[test]
+    fn service_faults_are_summarised_only_when_present() {
+        let mut report = BoardDiagnostics::default();
+        assert_eq!(service_fault_summary(&report), None);
+        report.service_faults = vec!["OTA storage unavailable".into(), " ".into()];
+        assert_eq!(
+            service_fault_summary(&report).as_deref(),
+            Some("Service faults (still routing, retrying every 5 s): OTA storage unavailable")
+        );
+        let old: BoardDiagnostics = serde_json::from_str(
+            r#"{"version":1,"received_age_ms":0,"uptime_ticks":0,"uptime_frequency_hz":1000,"reset_flags":0,"watchdog_missing_mask":0,"heap_live_bytes":null,"heap_peak_bytes":null,"heap_region_bytes":null,"allocation_failures":null,"admission_refusals":0,"can_rx_drops":null,"can_tx_rejected":null,"uart_rx_drops":null,"tx_queue_high_water":null,"sd_accepted_records":null,"sd_processed_records":null,"sd_rejected_records":null,"sd_flushed_records":null,"sd_write_errors":null,"sd_max_write_ms":null,"adc_overruns":null,"diagnostic_send_failures":0}"#,
+        )
+        .unwrap();
+        assert!(old.service_faults.is_empty(), "older backends omit the field");
     }
 
     #[test]
