@@ -593,9 +593,9 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
     let phase_key = shown_phase.map(|phase| phase.key()).unwrap_or("base");
     let phase_caption = match (*preview_phase.read(), live_phase) {
         (Some(phase), _) => format!("Previewing the {} dashboard", phase.label()),
-        (None, Some(phase)) if profiles_snapshot.auto_switch => format!("{} dashboard · switches with the mission phase", phase.label()),
-        (None, Some(phase)) => format!("Base dashboard · phase {} (automatic switching off)", phase.label()),
-        (None, None) => "Base dashboard · waiting for mission phase".to_string(),
+        (None, Some(phase)) if profiles_snapshot.auto_switch => format!("{} dashboard · switches with the state", phase.label()),
+        (None, Some(phase)) => format!("Base dashboard · state {} (automatic switching off)", phase.label()),
+        (None, None) => "Base dashboard · waiting for the station state".to_string(),
     };
     let edit_phase_value = *edit_phase.read();
     let edit_profile = profiles_snapshot.profile(edit_phase_value).cloned().unwrap_or_default();
@@ -651,7 +651,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
                 legend {"Phase profiles"}
                 label {style:"display:block;margin-bottom:6px;",
                     input {r#type:"checkbox",checked:profiles_snapshot.auto_switch,onchange:move |e:Event<FormData>|{let mut next=profiles.read().clone();next.auto_switch=e.checked();save_profiles(&next);profiles.set(next);}}
-                    " Switch the dashboard automatically with the mission phase"
+                    " Switch the dashboard automatically with the state"
                 }
                 label {"Profile for "
                     select {aria_label:"Profile phase",style:"width:auto;",onchange:move |e:Event<FormData>|{if let Some(phase)=super::mission_phase::Phase::from_key(&e.value()){edit_phase.set(phase);}},

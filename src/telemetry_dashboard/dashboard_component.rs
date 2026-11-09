@@ -3872,19 +3872,20 @@ fn TelemetryDashboardInner() -> Element {
                                         warnings_tab::ClearWarningsButton {latest_warning_ts,ack_warning_ts}
                                     }
                                 }
-                                div { class: "gs26-status-flight", style: "color:{theme.info_text};",
-                                    if let Some(phase) = MISSION_PHASE.read().as_ref() {
-                                        span { class: "gs26-status-phase", "data-phase": phase.phase.key(), title: "Mission phase (detailed state: {phase.detailed})", style: "flex:0 0 auto; margin-right:10px;",
-                                            span { style: "color:{theme.text_soft};", "Phase: " }
-                                            strong { class: "gs26-status-phase-label", "{phase.phase.label()}" }
-                                            if phase.comms_loss_landed { span { style: "color:#fbbf24;", " (FC contact lost)" } }
-                                            if phase.manual_only { span { style: "color:{theme.text_soft};", " (manual)" } }
+                                {
+                                    // One state: the phase, with the detailed flight state only as its detail.
+                                    let state_view = mission_phase::current_state(&flight_state.read());
+                                    let detail_color = if state_view.aborted { theme.error_text.to_string() } else if state_view.comms_loss_landed { theme.warning_text.to_string() } else { theme.text_soft.to_string() };
+                                    rsx! {
+                                        div { class: "gs26-status-flight", style: "color:{theme.info_text};",
+                                            span { class: "gs26-status-phase", "data-phase": state_view.phase.map(|p| p.key()).unwrap_or("unknown"), title: "{translate_text(&state_view.text())}", style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"State\", \"Estado\", \"État\")}: " }
+                                                strong { class: "gs26-status-phase-label", "{translate_text(state_view.phase_label())}" }
+                                                if let Some(detail) = state_view.detail.as_ref().filter(|_| state_view.phase.is_some()) {
+                                                    span { class: "gs26-status-phase-detail", style: "color:{detail_color};", " · {translate_text(detail)}" }
+                                                }
+                                            }
                                         }
-                                    }
-                                    span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"Flight state\", \"Estado de vuelo\", \"Etat de vol\")}: " }
-                                    span {
-                                        style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{translate_text(&display_flight_state(&flight_state.read()))}"
                                     }
                                 }
                                 div { class: "gs26-status-network",

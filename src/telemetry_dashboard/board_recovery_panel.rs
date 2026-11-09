@@ -671,7 +671,7 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                     if let Some(current)=current.clone(){
                         {let status=&current.status;let reset_reason=status.reset_reason(current.elapsed());let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());rsx!{
                         p{"Operator: {operator}."}
-                        p{"GS state: {status.flight_state.map(|n|n.to_string()).unwrap_or_else(||\"Unknown\".into())}. Automatic actions inhibited: {status.automatic_actions_inhibited}."}
+                        p{"GS state: {status.global_state_label()}. Automatic actions inhibited: {status.automatic_actions_inhibited}."}
                         div{class:"gs26-reset-all",
                             button{disabled:!connected||controls_busy||!permitted||reset_reason.is_some(),title:reset_reason.clone().unwrap_or_default(),
                                 onclick:{let current=current.clone();move |_|begin_prepare("reset_startup".into(),None,None,current.clone(),busy,pending,message)},

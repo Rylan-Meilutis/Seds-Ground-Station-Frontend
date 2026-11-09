@@ -82,6 +82,22 @@ const VALVES: &[(&str, &str)] = &[
 ];
 
 /// FlightState order from the backend, as the UI spaces it.
+/// The one operator state for an example step, as the live header shows it:
+/// the phase, with the detailed step only as its detail ("Fill · Nitrous fill").
+fn example_state(step: &str) -> String {
+    match step {
+        "Idle" | "Launch" => step.to_string(),
+        "Pre Fill" => "Fill · Pre-fill".into(),
+        other => {
+            let mut words = other.split(' ');
+            let first = words.next().unwrap_or_default().to_string();
+            let rest: Vec<String> = words.map(str::to_lowercase).collect();
+            let detail = std::iter::once(first).chain(rest).collect::<Vec<_>>().join(" ");
+            format!("Fill · {detail}")
+        }
+    }
+}
+
 const PHASES: &[&str] = &["Idle", "Pre Fill", "Fill Test", "Nitrogen Fill", "Nitrous Fill", "Armed", "Launch"];
 
 /// Automatic fill steps from the backend's sequence progress projection.
@@ -101,6 +117,7 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
     let mut sidebar = use_signal(|| true);
     let mut test_fire = use_signal(|| false);
     let mut phase = use_signal(|| "Idle".to_string());
+    let preview_state = example_state(&phase());
     let mut sensor = use_signal(|| "Loadcell".to_string());
     let mut checks = use_signal(|| vec![false; CHECKS.len()]);
     let mut sequence_open = use_signal(|| false);
@@ -160,7 +177,7 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
                     }
                     p {class:"gs26-preview-note","A sample layout for learning the app. Your station’s pages and access depend on its configuration."}
                     if current == "state" {
-                        div {class:"gs26-preview-status",span {"Status: Nominal"}span {"Flight state: {phase}"}span {"T− 00:10.00"}}
+                        div {class:"gs26-preview-status",span {"Status: Nominal"}span {"State: {preview_state}"}span {"T− 00:10.00"}}
                         div {class:"gs26-preview-cards",
                             for (label,value,sender) in readings(test_fire()) {
                                 article {class:"gs26-preview-card",span {"{label}"}strong {"{value}"}small {"Example · {sender}"}}
@@ -180,7 +197,7 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
                     } else if current == "mission" {
                         section {class:"gs26-preview-panel",
                             h2 {if test_fire() {"Test-fire procedure"}else{"Launch procedure"}}
-                            div {class:"gs26-preview-options",label {r#for:"preview-phase","Example phase"}
+                            div {class:"gs26-preview-options",label {r#for:"preview-phase","Example step"}
                                 select {id:"preview-phase",value:phase(),onchange:move|e|phase.set(e.value()),
                                     for name in PHASES {option {value:*name,"{name}"}}
                                 }
@@ -323,5 +340,21 @@ mod tests {
         assert!(readings(true).iter().any(|r| r.0 == "1000 kg loadcell"));
         assert!(!readings(false).iter().any(|r| r.0 == "1000 kg loadcell"));
         assert!(!readings(true).iter().any(|r| r.2 == "FC" || r.2 == "PB"));
+    }
+    #[test]
+    fn example_state_shows_one_state_with_the_step_as_detail() {
+        let shown: Vec<String> = PHASES.iter().map(|step| example_state(step)).collect();
+        assert_eq!(
+            shown,
+            [
+                "Idle",
+                "Fill · Pre-fill",
+                "Fill · Fill test",
+                "Fill · Nitrogen fill",
+                "Fill · Nitrous fill",
+                "Fill · Armed",
+                "Launch"
+            ]
+        );
     }
 }

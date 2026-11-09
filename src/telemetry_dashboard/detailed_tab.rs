@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use super::network_topology_tab::collect_endpoint_rows;
 use super::types::{
     FlightState, NetworkTopologyMsg, NetworkTopologyNodeKind, NetworkTopologyStats,
-    NetworkTopologyStatus, display_flight_state,
+    NetworkTopologyStatus,
 };
 use super::{
     AlertMsg, FrontendNetworkMetrics, NetworkTimeSync, PersistentNotification,
@@ -412,25 +412,11 @@ pub fn DetailedTab(
                 "Mission State",
                 vec![
                     (
-                        "Mission phase",
-                        super::MISSION_PHASE
-                            .read()
-                            .as_ref()
-                            .map(|phase| {
-                                let mut text = phase.phase.label().to_string();
-                                if phase.comms_loss_landed {
-                                    text.push_str(" (FC contact lost)");
-                                }
-                                if phase.manual_only {
-                                    text.push_str(" (manual)");
-                                }
-                                text
-                            })
-                            .unwrap_or_else(|| translate_text("Unavailable")),
-                    ),
-                    (
-                        "Flight state",
-                        translate_text(&display_flight_state(&flight_state.read())),
+                        // One state: the phase, with the detailed flight state as its detail.
+                        "State",
+                        translate_text(
+                            &super::mission_phase::current_state(&flight_state.read()).text(),
+                        ),
                     ),
                     (
                         "Disconnect aborts",

@@ -135,7 +135,7 @@ use notifications_tab::NotificationsTab;
 use serde::{Deserialize, Serialize};
 use types::{
     BoardStatusEntry, BoardStatusMsg, FlightState, NetworkTopologyMsg, TelemetryRow,
-    TelemetryTextId, display_flight_state, intern_telemetry_text, resolve_telemetry_text,
+    TelemetryTextId, intern_telemetry_text, resolve_telemetry_text,
 };
 use vehicle_tab::VehicleTab;
 use version_page::VersionTab;

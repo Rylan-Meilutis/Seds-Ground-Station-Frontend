@@ -90,7 +90,7 @@ Snapshot (phone → watch), abridged:
 {"v":1,"seq":42,"mode":"live",
  "station":{"name":"GroundStation","role":"primary","link":"connected","telemetry_age_ms":350},
  "account":{"signed_in":true,"sync":"synced"},
- "items":{"flight_state":{"label":"Flight state","text":"Descent","unit":"","age_ms":0,"stale":false,"level":"normal"},
+ "items":{"flight_state":{"label":"State","text":"In flight · Descent","unit":"","age_ms":0,"stale":false,"level":"normal"},
           "t_clock":{"label":"T-clock","text":"T+ 01:23","unit":"","age_ms":0,"stale":false,"level":"normal","clock":{"kind":"tplus","ms":83000}},
           "altitude":{"label":"Altitude","text":"1234","value":1234.0,"unit":"m","age_ms":200,"stale":false,"level":"normal"}},
  "pages":[{"id":"flight","kind":"items","title":"Flight","items":["flight_state","t_clock","altitude","velocity"]},

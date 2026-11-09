@@ -87,8 +87,9 @@ const FAST: i64 = 10_000;
 
 pub const ITEMS: &[ItemDef] = &[
     ItemDef {
+        // One operator state ("In flight · Descent"); the id stays for saved settings.
         id: "flight_state",
-        label: "Flight state",
+        label: "State",
         group: "Flight",
         source: Source::FlightState,
     },

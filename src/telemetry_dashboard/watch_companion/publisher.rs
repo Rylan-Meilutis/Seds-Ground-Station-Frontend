@@ -247,7 +247,11 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                 if rate.due(monotonic_now_ms(), active, &settings) {
                     seq += 1;
                     let antenna = LAST_ANTENNA.lock().ok().and_then(|g| g.clone());
-                    let flight = flight_state.peek().clone();
+                    let view = crate::telemetry_dashboard::mission_phase::StateView::resolve(
+                        crate::telemetry_dashboard::mission_phase::MISSION_PHASE.peek().as_ref(),
+                        &flight_state.peek(),
+                    );
+                    let flight = if view.phase.is_some() || view.detail.is_some() { view.text() } else { String::new() };
                     let clock = clock_from(
                         launch_clock.peek().as_ref(),
                         (*network_time.peek()).map(compensated_network_time_ms),

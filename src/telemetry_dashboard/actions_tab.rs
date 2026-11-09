@@ -627,7 +627,7 @@ fn request_gate_diagnostics(status: &serde_json::Value, recovery: bool) -> Strin
         None => "unknown",
     };
     format!(
-        "{scope}: mode={mode} · state={} · prelaunch={} · valve interlock={} · {} · {}",
+        "{scope}: mode={mode} · detailed state={} · prelaunch={} · valve interlock={} · {} · {}",
         gate["flight_state"].as_str().unwrap_or("unknown"),
         gate["prelaunch"]
             .as_bool()

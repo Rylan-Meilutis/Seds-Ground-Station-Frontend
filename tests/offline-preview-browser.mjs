@@ -19,7 +19,7 @@ try {
  await page.getByRole('button',{name:'Show sequence progress example'}).click();const sequence=page.getByRole('dialog',{name:'Automatic fill (example)'});
  for(const name of ['Pause sequence','Cancel sequence'])assert.equal(await sequence.getByRole('button',{name,exact:true}).isDisabled(),true,'example sequence controls are disabled');
  await sequence.getByRole('button',{name:'Close example'}).click();
- await page.getByLabel('Example phase').selectOption('Armed');
+ await page.getByLabel('Example step').selectOption('Armed');
  assert.equal(await page.locator('.gs26-preview-steps li[data-active=true]').innerText(),'Armed');
  await open('Data');await page.getByRole('tab',{name:'Tank pressure',exact:true}).click();
  assert.equal(await page.getByRole('tab',{name:'Tank pressure',exact:true}).getAttribute('aria-selected'),'true');

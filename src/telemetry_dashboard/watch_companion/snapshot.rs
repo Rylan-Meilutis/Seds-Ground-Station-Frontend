@@ -43,6 +43,7 @@ pub struct Inputs<'a> {
     pub now_ms: i64,
     pub station: Station,
     pub account: Account,
+    /// The one operator state, already formatted ("In flight · Descent").
     pub flight_state: &'a str,
     pub clock: Option<Clock>,
     /// `(seen, total)`
@@ -102,7 +103,7 @@ fn item_value(def: &registry::ItemDef, input: &Inputs<'_>, rocket: Option<&Targe
                 return unknown(def.label);
             }
             ItemValue {
-                text: super::super::types::display_flight_state(input.flight_state),
+                text: input.flight_state.to_string(),
                 level: Level::Normal,
                 age_ms: Some(0),
                 ..unknown(def.label)
@@ -335,7 +336,7 @@ pub fn demo(seq: u64, now_ms: i64, settings: &WatchSettings, account: Account) -
             telemetry_age_ms: Some(400),
         },
         account,
-        flight_state: "Descent",
+        flight_state: "In flight · Descent",
         clock: Some(Clock {
             kind: "tplus",
             ms: 95_000 + t * 1000,
@@ -401,7 +402,7 @@ mod tests {
                 signed_in: true,
                 sync: "synced",
             },
-            flight_state: "Descent",
+            flight_state: "In flight · Descent",
             clock: Some(Clock {
                 kind: "tplus",
                 ms: 83_000,
@@ -527,7 +528,7 @@ mod tests {
                 .iter()
                 .all(|t| t.demo_offset.is_some() && t.label.contains("demo"))
         );
-        assert_eq!(s.items["flight_state"].text, "Descent");
+        assert_eq!(s.items["flight_state"].text, "In flight · Descent");
         assert!(serde_json::to_vec(&s).unwrap().len() < MAX_MESSAGE_BYTES);
     }
 
