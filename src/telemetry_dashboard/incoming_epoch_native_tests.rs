@@ -508,3 +508,41 @@ async fn actual_dashboard_reset_uses_original_mode_permit_and_preserves_archives
         assert!(TELEMETRY_QUEUE.lock().unwrap().is_empty());assert_eq!(archive.read()[0].id,77);
     });
 }
+
+fn receive_alert_ack(dom:&VirtualDom, epoch:&str, connection:u64, acks:(Signal<i64>,Signal<i64>), warning:i64, error:i64) {
+    let frame=serde_json::json!({"ty":"AlertAckState","epoch_scope":"mode","policy_epoch":epoch,
+        "data":{"warning_ack_timestamp_ms":warning,"error_ack_timestamp_ms":error,"history_cleared_through_ms":0}});
+    dom.in_scope(ScopeId::ROOT,||handle_ws_message(
+        &frame.to_string(),connection,
+        Signal::new(Vec::<AlertMsg>::new()),Signal::new(Vec::<AlertMsg>::new()),acks.0,acks.1,Signal::new(true),
+        Signal::new(Vec::<PersistentNotification>::new()),Signal::new(Vec::<PersistentNotification>::new()),
+        Signal::new(Vec::<PersistentNotification>::new()),Signal::new(Vec::<DismissedNotification>::new()),Signal::new(Vec::<u64>::new()),
+        Signal::new(ActionPolicyMsg::default_locked()),Signal::new(RecordingStatusMsg{mode:"idle".into(),db_path:None}),Signal::new(None),Signal::new(None),Signal::new(None),
+        Signal::new(NetworkTopologyMsg::default()),Signal::new(0),Signal::new(0),Signal::new("Unknown".into()),Signal::new(Vec::<BoardStatusEntry>::new()),
+        Signal::new(None),Signal::new(None),Signal::new(None),Signal::new(None),
+    ));
+}
+
+/// The station keeps the shared alert acknowledgements across restarts. An
+/// acknowledgement this viewer remembers from before (another station, or a
+/// station whose clock came back behind it) must not hide a new occurrence:
+/// each connection starts from the station's own state, and acknowledgements
+/// only move forward within a connection.
+#[tokio::test(flavor="current_thread")]
+async fn each_connection_starts_from_the_station_alert_acknowledgements() {
+    if !child("each_connection_starts_from_the_station_alert_acknowledgements") { return; }
+    let server=Server::new(); let dom=dom(&server.base);
+    let raw=mode_get_completion(&dom).await.expect("actual owned loopback ModeGET success");
+    let epoch=raw["policy_epoch"].as_str().unwrap().to_owned();
+    let (acks,first)=dom.in_scope(ScopeId::ROOT,||((Signal::new(5_000i64),Signal::new(6_000i64)),ALERT_CONDITION_VIEW.write().begin_connection()));
+    let read=|acks:(Signal<i64>,Signal<i64>)| dom.in_scope(ScopeId::ROOT,||(*acks.0.read(),*acks.1.read()));
+    receive_alert_ack(&dom,&epoch,first,acks,1_000,1_500);
+    assert_eq!(read(acks),(1_000,1_500),"the station's state replaces older remembered acknowledgements");
+    receive_alert_ack(&dom,&epoch,first,acks,900,900);
+    assert_eq!(read(acks),(1_000,1_500),"within a connection acknowledgements never move back");
+    receive_alert_ack(&dom,&epoch,first,acks,2_000,2_500);
+    assert_eq!(read(acks),(2_000,2_500));
+    let second=dom.in_scope(ScopeId::ROOT,||ALERT_CONDITION_VIEW.write().begin_connection());
+    receive_alert_ack(&dom,&epoch,second,acks,1_200,1_300);
+    assert_eq!(read(acks),(1_200,1_300),"a reconnect starts from the station again");
+}

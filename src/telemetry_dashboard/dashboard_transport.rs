@@ -1913,6 +1913,24 @@ mod cleared_history_tests {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The connection whose first shared acknowledgement state was applied.
+static ALERT_ACK_CONNECTION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// True for the first acknowledgement state on a connection (its identity
+/// from `begin_connection`, which starts at 1).
+fn first_alert_ack_state_on(connection: u64) -> bool {
+    ALERT_ACK_CONNECTION.swap(connection, std::sync::atomic::Ordering::Relaxed) != connection
+}
+
+/// The station keeps the shared acknowledgements across restarts, so its
+/// first state on a connection replaces what this viewer remembered: an older
+/// acknowledgement from another station, or one ahead of a station clock that
+/// came back behind it, would otherwise hide a new occurrence. Later states on
+/// the same connection only move acknowledgements forward.
+fn merge_remote_alert_ack(local_ms: i64, station_ms: i64, first_on_connection: bool) -> i64 {
+    if first_on_connection { station_ms } else { local_ms.max(station_ms) }
+}
+
 fn handle_ws_message(
     s: &str,
     condition_connection:u64,
@@ -2112,12 +2130,17 @@ fn handle_ws_message(
             // A station-wide history clear applies to every viewer, acks or not.
             drop_cleared_alert_history(warnings, errors, ack_state.history_cleared_through_ms);
             if *remote_alert_acks_enabled.read() {
-                let next_warning_ack =
-                    (*ack_warning_ts.read()).max(ack_state.warning_ack_timestamp_ms);
+                let first = first_alert_ack_state_on(condition_connection);
+                let next_warning_ack = merge_remote_alert_ack(
+                    *ack_warning_ts.read(),
+                    ack_state.warning_ack_timestamp_ms,
+                    first,
+                );
                 if next_warning_ack != *ack_warning_ts.read() {
                     ack_warning_ts.set(next_warning_ack);
                 }
-                let next_error_ack = (*ack_error_ts.read()).max(ack_state.error_ack_timestamp_ms);
+                let next_error_ack =
+                    merge_remote_alert_ack(*ack_error_ts.read(), ack_state.error_ack_timestamp_ms, first);
                 if next_error_ack != *ack_error_ts.read() {
                     ack_error_ts.set(next_error_ack);
                 }
