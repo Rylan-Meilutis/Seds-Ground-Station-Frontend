@@ -1889,7 +1889,8 @@ fn TelemetryDashboardInner() -> Element {
     // Derived state
     let warn_count = warnings.read().len();
     let err_count = errors.read().len();
-    let active_board_error_count = BOARD_ABORT_SIGNAL.read().active_error_count();
+    let active_board_error_count =
+        BOARD_ABORT_SIGNAL.read().active_error_count_visible(&DISMISSED_BOARD_ABORTS.read());
     let format_capped_alert_count = |count: usize| {
         if count >= 500 {
             "500+".to_string()

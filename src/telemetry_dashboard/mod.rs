@@ -458,6 +458,10 @@ static ALERT_CONDITION_VIEW: GlobalSignal<alert_conditions::View> = Signal::glob
 
 static BOARD_ABORT_SIGNAL: GlobalSignal<BoardAbortSnapshot> =
     Signal::global(BoardAbortSnapshot::default);
+/// AV-bay abort errors the operator dismissed in HITL, by board and abort time.
+/// Display only: Launch still follows the server. A later Abort shows again.
+static DISMISSED_BOARD_ABORTS: GlobalSignal<std::collections::BTreeSet<(String, u64)>> =
+    Signal::global(std::collections::BTreeSet::new);
 static ACTION_POLICY_RESYNC_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 static TELEMETRY_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);
 pub(crate) static CHART_RENDER_EPOCH: GlobalSignal<u64> = Signal::global(|| 0);

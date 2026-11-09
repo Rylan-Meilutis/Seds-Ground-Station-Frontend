@@ -483,6 +483,16 @@ struct BoardAbortError {
 fn server_launch_gate_default() -> bool {
     true
 }
+impl BoardAbortError {
+    fn dismissal_key(&self) -> (String, u64) {
+        (self.board.clone(), self.timestamp_ms)
+    }
+    /// In HITL the AV bay is often off the bench; its aborts can be dismissed
+    /// instead of sitting in the error list until the board is recovered.
+    fn dismissible(&self, hitl: bool) -> bool {
+        hitl && matches!(self.board.as_str(), "RF" | "FC" | "PB")
+    }
+}
 impl BoardAbortSnapshot {
     fn launch_blocking_errors(&self) -> impl Iterator<Item = &BoardAbortError> {
         self.active_errors.iter().filter(|error| error.launch_blocking)
@@ -515,7 +525,14 @@ impl BoardAbortSnapshot {
         }
     }
     fn active_error_count(&self) -> usize {
-        self.active_errors.len() + usize::from(self.history_error_message().is_some())
+        self.active_error_count_visible(&Default::default())
+    }
+    /// Active errors still shown: dismissed AV-bay aborts are left out.
+    fn visible_active_errors(&self, dismissed: &std::collections::BTreeSet<(String, u64)>) -> Vec<BoardAbortError> {
+        self.active_errors.iter().filter(|error| !dismissed.contains(&error.dismissal_key())).cloned().collect()
+    }
+    fn active_error_count_visible(&self, dismissed: &std::collections::BTreeSet<(String, u64)>) -> usize {
+        self.visible_active_errors(dismissed).len() + usize::from(self.history_error_message().is_some())
     }
     fn missing_required_state(&self) -> &[String] {
         self.missing_required_state.as_deref().unwrap_or_default()
@@ -568,6 +585,23 @@ impl BoardAbortSnapshot {
 #[cfg(test)]
 mod board_abort_message_tests {
     use super::*;
+    #[test]
+    fn hitl_can_dismiss_av_bay_aborts_until_they_abort_again() {
+        let snapshot: BoardAbortSnapshot = serde_json::from_value(serde_json::json!({"version":1,"active_errors":[
+            {"source":"board_abort:RF","board":"RF","board_label":"RF Board","timestamp_ms":10,"message":"m"},
+            {"source":"board_abort:VB","board":"VB","board_label":"Valve Board","timestamp_ms":11,"message":"m"}]})).unwrap();
+        let rf = snapshot.active_errors[0].clone();
+        let vb = snapshot.active_errors[1].clone();
+        assert!(rf.dismissible(true) && !rf.dismissible(false), "AV bay, HITL only");
+        assert!(!vb.dismissible(true), "fill boards are never dismissed");
+        let mut dismissed = std::collections::BTreeSet::new();
+        dismissed.insert(rf.dismissal_key());
+        assert_eq!(snapshot.active_error_count_visible(&dismissed), 1);
+        assert_eq!(snapshot.visible_active_errors(&dismissed)[0].board, "VB");
+        let mut again = snapshot.clone();
+        again.active_errors[0].timestamp_ms = 99;
+        assert_eq!(again.active_error_count_visible(&dismissed), 2, "a new Abort shows again");
+    }
     #[test]
     fn absent_board_abort_stays_visible_without_disabling_launch() {
         let error=|blocking:bool|serde_json::json!({"source":"board_abort:VB","board":"VB","board_label":"Valve Board",
