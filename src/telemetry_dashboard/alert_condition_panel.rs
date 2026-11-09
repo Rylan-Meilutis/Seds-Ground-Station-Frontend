@@ -7,7 +7,7 @@ use super::{
 pub(super) fn ConditionRows(severity: Severity, theme: ThemeConfig) -> Element {
     let view = super::ALERT_CONDITION_VIEW.read();
     let board_abort = super::BOARD_ABORT_SIGNAL.read().active_errors.clone();
-    let records = view
+    let mut records = view
         .snapshot()
         .map(|snapshot| {
             snapshot
@@ -24,6 +24,10 @@ pub(super) fn ConditionRows(severity: Severity, theme: ThemeConfig) -> Element {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    // Newest at the top: the latest raise or resolution leads.
+    records.sort_by_key(|record| {
+        std::cmp::Reverse(record.resolved_at_ms.unwrap_or(0).max(record.raised_at_ms))
+    });
     let summary = view.summary(false, false);
     rsx! {
         if severity==Severity::Warning && !summary.snapshot_current {

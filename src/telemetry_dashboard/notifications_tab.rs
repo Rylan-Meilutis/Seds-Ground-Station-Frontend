@@ -8,11 +8,9 @@ pub fn NotificationsTab(
     #[props(default)] sequence_results: Vec<super::sequence_progress_model::ResultNotice>,
     #[props(default)] on_sequence_result: Option<EventHandler<super::sequence_progress_model::RunKey>>,
 ) -> Element {
-    let entries = history
-        .read()
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
+    // Newest at the top so a fresh notification is visible without scrolling.
+    let mut entries = history.read().clone();
+    entries.sort_by_key(|n| std::cmp::Reverse(n.timestamp_ms));
     let has_history = !entries.is_empty();
     let font_stack = "var(--gs-font)";
     let clear_button_style = format!(

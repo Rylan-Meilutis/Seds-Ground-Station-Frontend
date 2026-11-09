@@ -15,6 +15,12 @@ pub fn ErrorsTab(
         .map(str::to_owned);
     let has_errors = !errors.read().is_empty();
     let condition_view=super::ALERT_CONDITION_VIEW.read().clone();
+    let shown = super::alert_conditions::newest_first(errors.read().iter().filter(|event| {
+        !matches!(
+            condition_view.event_projection(event.condition.as_ref(), event.timestamp_ms <= ack_timestamp_ms),
+            super::alert_conditions::EventProjection::Represented
+        )
+    }));
     let ack_button_style = format!(
         "padding:0.25rem 0.65rem; border-radius:999px; border:1px solid {}; background:{}; color:{}; font-size:0.75rem; cursor:{}; opacity:{};",
         theme.button_border,
@@ -59,7 +65,7 @@ pub fn ErrorsTab(
                         small { "Clears only after a fresh confirmed report from this board. Acknowledging history does not clear it." }
                     }
                 }
-                for e in errors.read().iter().filter(|event|!matches!(condition_view.event_projection(event.condition.as_ref(),event.timestamp_ms<=ack_timestamp_ms),super::alert_conditions::EventProjection::Represented)) {
+                for e in shown.iter() {
                     {
                         let acknowledged = e.timestamp_ms <= ack_timestamp_ms;
                         let projection=condition_view.event_projection(e.condition.as_ref(),acknowledged);

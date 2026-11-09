@@ -402,9 +402,33 @@ fn valid(snapshot: &Snapshot) -> bool {
     true
 }
 
+/// History rows newest first, so the latest event is at the top of the list.
+pub(crate) fn newest_first<'a>(
+    events: impl Iterator<Item = &'a super::AlertMsg>,
+) -> Vec<super::AlertMsg> {
+    let mut events = events.cloned().collect::<Vec<_>>();
+    events.sort_by_key(|event| std::cmp::Reverse(event.timestamp_ms));
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_rows_list_the_newest_first() {
+        let alert = |timestamp_ms| super::super::AlertMsg {
+            timestamp_ms,
+            message: String::new(),
+            condition: None,
+        };
+        let events = [alert(10), alert(30), alert(20)];
+        let order = newest_first(events.iter())
+            .iter()
+            .map(|event| event.timestamp_ms)
+            .collect::<Vec<_>>();
+        assert_eq!(order, [30, 20, 10]);
+    }
     fn record(state: ConditionState) -> Record {
         Record {
             key: "board_offline:DAQ".into(),

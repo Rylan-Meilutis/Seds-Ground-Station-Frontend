@@ -9,6 +9,12 @@ pub fn WarningsTab(
     let latest_warning_ts = warnings.read().iter().map(|w| w.timestamp_ms).max().unwrap_or(0);
     let ack_timestamp_ms = *ack_warning_ts.read();
     let condition_view=super::ALERT_CONDITION_VIEW.read().clone();
+    let shown = super::alert_conditions::newest_first(warnings.read().iter().filter(|event| {
+        !matches!(
+            condition_view.event_projection(event.condition.as_ref(), event.timestamp_ms <= ack_timestamp_ms),
+            super::alert_conditions::EventProjection::Represented
+        )
+    }));
 
     rsx! {
         div { class:"gs26-message-history", style: "padding:4px 0 0 0; color:{theme.text_primary}; height:100%; box-sizing:border-box;",
@@ -20,7 +26,7 @@ pub fn WarningsTab(
 
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 super::alert_condition_panel::ConditionRows {severity:super::alert_conditions::Severity::Warning,theme:theme.clone()}
-                for w in warnings.read().iter().filter(|event|!matches!(condition_view.event_projection(event.condition.as_ref(),event.timestamp_ms<=ack_timestamp_ms),super::alert_conditions::EventProjection::Represented)) {
+                for w in shown.iter() {
                     {
                         let acknowledged = w.timestamp_ms <= ack_timestamp_ms;
                         let projection=condition_view.event_projection(w.condition.as_ref(),acknowledged);
