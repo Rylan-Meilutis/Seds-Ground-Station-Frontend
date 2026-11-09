@@ -64,6 +64,9 @@ pub struct AlertMsg {
 pub struct AlertAckStateMsg {
     pub warning_ack_timestamp_ms: i64,
     pub error_ack_timestamp_ms: i64,
+    /// Station-wide history clear: events at or before this time are gone.
+    #[serde(default)]
+    pub history_cleared_through_ms: i64,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

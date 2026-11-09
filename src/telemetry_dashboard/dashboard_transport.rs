@@ -1874,6 +1874,44 @@ fn try_handle_ws_telemetry_message_fast(
     true
 }
 
+/// Remove events at or before an operator history clear. Returns whether any left.
+fn retain_alerts_after(alerts: &mut Vec<AlertMsg>, cutoff_ms: i64) -> bool {
+    let before = alerts.len();
+    alerts.retain(|alert| alert.timestamp_ms > cutoff_ms);
+    alerts.len() != before
+}
+
+fn drop_cleared_alert_history(
+    mut warnings: Signal<Vec<AlertMsg>>,
+    mut errors: Signal<Vec<AlertMsg>>,
+    cutoff_ms: i64,
+) {
+    if cutoff_ms <= 0 {
+        return;
+    }
+    for list in [&mut warnings, &mut errors] {
+        let mut next = list.read().clone();
+        if retain_alerts_after(&mut next, cutoff_ms) {
+            list.set(next);
+        }
+    }
+}
+
+#[cfg(test)]
+mod cleared_history_tests {
+    use super::*;
+    #[test]
+    fn a_history_clear_drops_only_events_at_or_before_the_cutoff() {
+        let alert = |timestamp_ms| AlertMsg { timestamp_ms, message: "fixture".into(), condition: None };
+        let mut alerts = vec![alert(90), alert(100), alert(101)];
+        assert!(retain_alerts_after(&mut alerts, 100));
+        assert_eq!(alerts.iter().map(|a| a.timestamp_ms).collect::<Vec<_>>(), vec![101]);
+        assert!(!retain_alerts_after(&mut alerts, 100));
+        let ack: AlertAckStateMsg = serde_json::from_str(r#"{"warning_ack_timestamp_ms":1,"error_ack_timestamp_ms":2}"#).unwrap();
+        assert_eq!(ack.history_cleared_through_ms, 0, "older stations omit the clear field");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_ws_message(
     s: &str,
@@ -2071,6 +2109,8 @@ fn handle_ws_message(
 
         WsInMsg::AlertConditions(snapshot)=>{ALERT_CONDITION_VIEW.write().ingest(condition_connection,snapshot);}
         WsInMsg::AlertAckState(ack_state) => {
+            // A station-wide history clear applies to every viewer, acks or not.
+            drop_cleared_alert_history(warnings, errors, ack_state.history_cleared_through_ms);
             if *remote_alert_acks_enabled.read() {
                 let next_warning_ack =
                     (*ack_warning_ts.read()).max(ack_state.warning_ack_timestamp_ms);

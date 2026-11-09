@@ -6,6 +6,8 @@
 
 const WARNING_ACK_STORAGE_KEY: &str = "gs_last_warning_ack_ts";
 const ERROR_ACK_STORAGE_KEY: &str = "gs_last_error_ack_ts";
+/// Header badge only: resolved error history this viewer has dismissed.
+const ERROR_DISMISS_STORAGE_KEY: &str = "gs_error_badge_dismissed_ts";
 const MAIN_TAB_STORAGE_KEY: &str = "gs_main_tab";
 const DATA_TAB_STORAGE_KEY: &str = "gs_data_tab";
 const BASE_URL_STORAGE_KEY: &str = "gs_base_url";
@@ -159,6 +161,7 @@ fn cache_storage_measured_bytes() -> u64 {
     let preference_bytes = [
         WARNING_ACK_STORAGE_KEY,
         ERROR_ACK_STORAGE_KEY,
+        ERROR_DISMISS_STORAGE_KEY,
         MAIN_TAB_STORAGE_KEY,
         DATA_TAB_STORAGE_KEY,
         BASE_URL_STORAGE_KEY,
@@ -208,6 +211,7 @@ fn cache_storage_stats_rows() -> Vec<(String, String)> {
     let preference_bytes = [
         WARNING_ACK_STORAGE_KEY,
         ERROR_ACK_STORAGE_KEY,
+        ERROR_DISMISS_STORAGE_KEY,
         MAIN_TAB_STORAGE_KEY,
         DATA_TAB_STORAGE_KEY,
         BASE_URL_STORAGE_KEY,

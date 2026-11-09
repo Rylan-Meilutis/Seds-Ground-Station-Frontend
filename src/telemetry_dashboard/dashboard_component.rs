@@ -583,6 +583,8 @@ fn TelemetryDashboardInner() -> Element {
 
     let ack_warning_ts = use_signal(|| parse_i64(st_warn_ack.read().as_str()));
     let ack_error_ts = use_signal(|| parse_i64(st_err_ack.read().as_str()));
+    let dismissed_error_ts =
+        use_signal(|| parse_i64(&persist::get_or(ERROR_DISMISS_STORAGE_KEY, "0")));
     let warning_event_counter = use_signal(|| 0u64);
     let error_event_counter = use_signal(|| 0u64);
 
@@ -1369,6 +1371,9 @@ fn TelemetryDashboardInner() -> Element {
             persist::set_string(ERROR_ACK_STORAGE_KEY, &v);
         });
     }
+    use_effect(move || {
+        persist::set_string(ERROR_DISMISS_STORAGE_KEY, &dismissed_error_ts.read().to_string());
+    });
     {
         use_effect(move || {
             let v = st_base_url.read().clone();
@@ -1973,14 +1978,32 @@ fn TelemetryDashboardInner() -> Element {
     } else {
         format_capped_alert_count(unacked_warning_count + condition_warning_count)
     };
-    let err_count_label = if active_error_count > 0 {
-        format!(
-            "{active_error_count} active / {} history",
-            format_capped_alert_count(err_count + condition_error_history)
-        )
-    } else {
-        format_capped_alert_count(err_count + condition_error_history)
-    };
+    // The badge counts active errors only. Resolved and reviewed history stays
+    // in the Errors tab; the badge lists it until this viewer dismisses it.
+    let reviewed_error_times = errors
+        .read()
+        .iter()
+        .filter(|event| {
+            let projection = condition_view.event_projection(
+                event.condition.as_ref(),
+                event.timestamp_ms <= *ack_error_ts.read(),
+            );
+            !projection.attention()
+                && !matches!(projection, alert_conditions::EventProjection::Represented)
+        })
+        .map(|event| event.timestamp_ms)
+        .collect::<Vec<_>>();
+    let error_badge = errors_tab::error_badge(
+        active_error_count,
+        unacked_error_count,
+        errors_tab::undismissed_error_history(
+            condition_records,
+            reviewed_error_times.iter().copied(),
+            *dismissed_error_ts.read(),
+        ),
+    );
+    let error_dismiss_cutoff =
+        errors_tab::dismiss_cutoff(condition_records, reviewed_error_times.iter().copied());
 
     let latest_warning_ts = warnings
         .read()
@@ -2047,7 +2070,7 @@ fn TelemetryDashboardInner() -> Element {
     let status_label_style = station_status.style();
     let errors_status_style = format!(
         "display:inline-flex; align-items:center; min-width:12ch; color:var(--gs26-error-text,#fecaca); opacity:{}; flex:0 0 auto;",
-        if has_errors { "1" } else { "0" }
+        if error_badge.visible { "1" } else { "0" }
     );
     let warnings_status_style = format!(
         "display:inline-flex; align-items:center; min-width:13ch; color:var(--gs26-warning-text,#fde68a); opacity:{}; flex:0 0 auto;",
@@ -3862,10 +3885,17 @@ fn TelemetryDashboardInner() -> Element {
                                         onclick:move |_|active_main_tab.set(MainTab::Errors),
                                         "data-alert":if active_error_alert {"error"}else{"none"},
                                         class: "gs26-status-count",
-                                        disabled:!has_errors,
-                                        "data-active": if has_errors { "true" } else { "false" },
+                                        disabled:!error_badge.visible,
+                                        "data-active": if error_badge.visible { "true" } else { "false" },
                                         style: "{errors_status_style}",
-                                        {format!("{}: {}", translate_text("Errors"), err_count_label)}
+                                        {format!("{}: {}", translate_text("Errors"), error_badge.label)}
+                                    }
+                                    if error_badge.dismissible > 0 {
+                                        errors_tab::DismissResolvedErrorsButton {
+                                            count: error_badge.dismissible,
+                                            cutoff_ms: error_dismiss_cutoff,
+                                            dismissed_error_ts,
+                                        }
                                     }
                                     if active_warning_alert {
                                     button {
@@ -4160,7 +4190,10 @@ fn TelemetryDashboardInner() -> Element {
                                                         ack_error_ts.set(latest_error_ts);
                                                     }
                                                 }
-                                            }
+                                            },
+                                            on_history_cleared: move |cutoff_ms: i64| {
+                                                drop_cleared_alert_history(warnings, errors, cutoff_ms);
+                                            },
                                         }
                                     }
                                 },

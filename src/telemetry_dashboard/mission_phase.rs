@@ -138,11 +138,6 @@ impl StateView {
         }
     }
 
-    /// Phase label, or "Unknown" before any state has arrived.
-    pub(crate) fn phase_label(&self) -> &'static str {
-        self.phase.map(Phase::label).unwrap_or("Unknown")
-    }
-
     /// The current flight state ("Nitrous fill", "Aborted") or "Unknown".
     /// This is what the operator sees as State; the phase only groups layouts.
     pub(crate) fn text(&self) -> String {
