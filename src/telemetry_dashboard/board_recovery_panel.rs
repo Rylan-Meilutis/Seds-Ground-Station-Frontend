@@ -237,7 +237,7 @@ fn challenge_scope_view(challenge: &Challenge) -> Element {
                     p{"Physical valve position is not measured by command-register readbacks."}
                     if challenge.action=="reset_startup" {p{"The reset request asks for VB vent/dump OPEN, pilot/supplies/igniter OFF and stepper asleep. Confirm the area is safe. A best-effort request does not prove unselected outputs changed."}}
                     if challenge.action=="resync" && challenge.outputs_unchanged==Some(true) {p{strong{"No outputs move. "}"Resync sets only the board's state machine and phase. Valves, servos, supplies, igniter and stepper stay exactly as they are; command any output explicitly afterwards."}}
-                    if challenge.action=="resync" && challenge.outputs_unchanged!=Some(true) {p{strong{"No Abort needed. "}"The board leaves its current state, including Launch: it stops its own launch sequence, drives its outputs to their safe state and returns to the station's phase without latching an Abort."}}
+                    if challenge.action=="resync" && challenge.outputs_unchanged!=Some(true) {p{strong{"No Abort needed. "}"The board leaves its current state, including Launch: it stops its own launch sequence, drives every output to its safe state (igniter and supplies off, valves safe, stepper asleep) and only then returns to the station's phase, without latching an Abort. Its outputs need only read back consistently beforehand; Resync to a fill phase or Armed still requires them already safe."}}
     }}
 }
 fn begin_prepare(
