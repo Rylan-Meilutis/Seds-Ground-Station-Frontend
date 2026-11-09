@@ -22,7 +22,10 @@ pub(super) fn GroundStationSettings(
     // Ordinary policy retirement refreshes only ordinary drafts. The separately
     // owned mode control survives closure so explicit backend repair stays reachable.
     rsx! {super::station_mode_settings::ModeRequestNotice {theme:theme.clone()}
-        super::station_mode_settings::StationModeSettings {theme:theme.clone(),inhibited:abort_only_mode}
+        // A mode change is station configuration with its own server checks
+        // and typed confirmation, not an output action: Actions Disabled does
+        // not lock it.
+        super::station_mode_settings::StationModeSettings {theme:theme.clone(),inhibited:false}
         for (current_revision, policy_view_key) in [(revision(), super::station_mode_observer::view_key())] {
         StationSettingsBody {key:"station-settings-{current_revision}-{policy_view_key}",layout:layout.clone(),action_policy,fill_targets,calibration_context,abort_only_mode,theme:theme.clone(),on_manage_users,
             on_reload:move |_|revision.set(revision().saturating_add(1)),
