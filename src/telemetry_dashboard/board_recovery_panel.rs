@@ -671,14 +671,18 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
                     section{style:"padding:14px;border:1px solid var(--gs26-border,#405269);border-radius:10px;margin-bottom:14px;",h4{style:"margin:0 0 10px;","Launch readiness"}super::board_abort_readiness::BoardAbortReadiness{}}
                     if let Some(current)=current.clone(){
                         {let status=&current.status;let reset_reason=status.reset_reason(current.elapsed());let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());rsx!{
-                        p{"Operator: {operator}."}
-                        p{"GS state: {status.global_state_label()}. Automatic actions inhibited: {status.automatic_actions_inhibited}."}
+                        p{"Operator: {operator} · Station: {status.global_state_label()}"}
+                        if status.automatic_actions_inhibited {p{role:"status","Automatic actions are inhibited."}}
                         div{class:"gs26-reset-all",
                             button{disabled:!connected||controls_busy||!permitted||reset_reason.is_some(),title:reset_reason.clone().unwrap_or_default(),
                                 onclick:{let current=current.clone();move |_|begin_prepare("reset_startup".into(),None,None,current.clone(),busy,pending,message)},
                                 "Reset all boards to Idle…"
                             }
-                            p{"Resets every available board, unlocks Launch and resets the T-clock. Boards go to Startup and then Idle. A board that's missing now keeps Launch locked when it returns, until it is reset too. Qualification and fill status must be redone before Launch outside HITL. Reset requests AB supplies and igniter OFF, stepper asleep; VB pilot OFF, vent and dump OPEN, plus cancellation of queued automation. Unselected boards are best effort under a scoped policy. Calibration and network power are preserved."}
+                            p{"Returns every connected board to Idle, unlocks Launch and resets the T-clock."}
+                            details{summary{"What Reset does"}
+                                p{"Boards go to Startup, then Idle. A board missing now keeps Launch locked when it returns, until it is reset too. Outside HITL, qualification and fill status must be redone before Launch."}
+                                p{"Outputs: AB supplies and igniter off, stepper asleep; VB pilot off, vent and dump open; queued automation cancelled. Calibration and network power are kept."}
+                            }
                             if let Some(reason)=reset_reason.clone(){p{"{reason}"}}
                         }
                         if let Some(recovery)=status.host_recovery.as_ref(){
