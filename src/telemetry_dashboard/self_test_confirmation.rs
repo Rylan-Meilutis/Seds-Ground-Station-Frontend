@@ -26,7 +26,7 @@ impl Notice {
             Self::Empty => "",
             Self::Pending => "Saving isolation confirmation…",
             Self::Accepted => "Self-test confirmation accepted. Backend interlocks still apply.",
-            Self::Locked => "Self-test locked.",
+            Self::Locked => "Isolation confirmation cleared; self-test stays locked until it is confirmed again.",
             Self::Consumed => {
                 "Confirmation consumed by the last run. Confirm isolation again before retrying self-test."
             }
@@ -69,6 +69,11 @@ impl Model {
     }
     pub fn confirmed(&self) -> bool {
         self.confirmed == Some(true)
+    }
+    /// Changes with every request, so the checkbox is rebuilt from the
+    /// station's answer and a refused click never stays drawn as ticked.
+    pub fn serial(&self) -> u64 {
+        self.serial
     }
     pub fn busy(&self) -> bool {
         self.pending.is_some()

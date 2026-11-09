@@ -942,7 +942,7 @@ pub fn ActionsTab(
                                     super::gse_panel::TankSensorFault { detail: super::gse_panel::tank_sensor_fault(&operational_status.read()["overpressure"]).unwrap_or_default() }
                                     if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
                                     super::gse_panel::InfoNote {summary:"Before the valve test",paragraphs:vec!["Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test.".into()]}
-                                    label {input {r#type:"checkbox",checked:self_test_confirmation.read().confirmed(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||self_test_confirmation.read().busy()||self_test_confirmation.read().exhausted()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:{let self_test_alive=self_test_alive.clone();move |event| {
+                                    label {for confirm_key in [format!("self-test-confirm-{}-{}", self_test_confirmation.read().serial(), self_test_confirmation.read().busy())] {input {key:"{confirm_key}",r#type:"checkbox",checked:self_test_confirmation.read().confirmed(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||self_test_confirmation.read().busy()||self_test_confirmation.read().exhausted()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:{let self_test_alive=self_test_alive.clone();move |event| {
                                         if abort_only_mode||auth::current_status().station_role.as_deref()==Some("rrls")||!auth::can_send_command("ValveSelfTest") {return;}
                                         let mut next=self_test_confirmation.peek().clone();
                                         let ticket=next.begin(event.checked(),*super::WS_EPOCH.peek(),super::monotonic_now_ms());
@@ -960,7 +960,7 @@ pub fn ActionsTab(
                                             let mut next=self_test_confirmation.peek().clone();
                                             if next.finish(ticket,result.map(|_|()),super::monotonic_now_ms()){self_test_confirmation.set(next);}
                                         });
-                                    }}} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
+                                    }}}} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
                                     p {role:"status","{self_test_confirmation.read().notice.text()}"}
                                     super::gse_panel::QualificationStatus {status:operational_status,disabled:abort_only_mode}
                                     super::gse_panel::HitlNitrogenOverride {status:operational_status,disabled:abort_only_mode}
