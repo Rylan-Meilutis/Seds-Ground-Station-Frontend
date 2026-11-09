@@ -97,7 +97,7 @@ impl Controls {
     }
     fn reason(&self, inhibited: bool) -> Option<String> {
         if inhibited {
-            return Some("Current station controls inhibit mode changes.".into());
+            return Some("Actions are disabled on this screen. Select Actions Disabled in the header to enable actions, then review the mode change.".into());
         }
         let target = self.target()?;
         // A server-fenced option (a restart, or an idle-only in-process switch)
