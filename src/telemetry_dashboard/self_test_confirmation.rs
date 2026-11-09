@@ -1,7 +1,10 @@
 //! Client confirmation projection. Backend permissions/interlocks remain authoritative.
-// The status host polls 1 s after each response, so samples arrive every
-// 1 s plus round trip. 1.5 s expired evidence between samples and flickered.
-const FRESH_MS: f64 = 3_500.0;
+// The status host polls 1 s after each response, but skips a beat (1 s more)
+// whenever a sample is rejected or the read context changes, so gaps of
+// several seconds are normal. 3.5 s still expired between samples and
+// flickered "unavailable". The station re-checks the confirmation when the
+// self-test is requested, so this only governs what the screen shows.
+const FRESH_MS: f64 = 10_000.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Ticket {
     pub serial: u64,
@@ -26,7 +29,7 @@ impl Notice {
             Self::Empty => "",
             Self::Pending => "Saving isolation confirmation…",
             Self::Accepted => "Self-test confirmation accepted. Backend interlocks still apply.",
-            Self::Locked => "Isolation confirmation cleared; self-test stays locked until it is confirmed again.",
+            Self::Locked => "Tick the box above to confirm isolation and unlock the valve self-test.",
             Self::Consumed => {
                 "Confirmation consumed by the last run. Confirm isolation again before retrying self-test."
             }
@@ -240,7 +243,7 @@ mod tests {
             m.observe(1, 1, 1., now, Some(false));
             assert!(m.confirmed());
         }
-        m.observe(1, 1, 1., 3503., Some(false));
+        m.observe(1, 1, 1., 10_003., Some(false));
         assert!(!m.confirmed());
         assert_eq!(m.notice, Notice::Unavailable);
     }
@@ -260,7 +263,7 @@ mod tests {
     }
     #[test]
     fn invalid_metadata_and_owner_retirement_never_reconfirm_cached_value() {
-        for requested in [f64::NAN, f64::INFINITY, 12., -5000.] {
+        for requested in [f64::NAN, f64::INFINITY, 12., -15_000.] {
             let mut m = Model::new(1);
             m.observe(1, 1, requested, 10., Some(true));
             assert!(!m.confirmed());
