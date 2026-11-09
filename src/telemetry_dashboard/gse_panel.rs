@@ -780,7 +780,8 @@ pub(super) fn HitlNitrogenOverride(status: Signal<serde_json::Value>, disabled: 
                     }
                 },"Override nitrogen test…"}
                 if let Some(blocked)=blocked {p {role:"status",style:"margin:0;","Override unavailable: {blocked}."}}
-                else if !permitted {p {role:"status",style:"margin:0;","Sign in with an account allowed to run the nitrogen test."}}
+                else if disabled {p {role:"status",style:"margin:0;","Actions are disabled on this screen. Select Actions Disabled in the header to enable them."}}
+                else if !permitted {p {role:"status",style:"margin:0;","Your account is not allowed to run the nitrogen test."}}
             }
             if !message.read().is_empty() {p {role:"status",style:"margin:0;","{message}"}}
             if *open.read() {
