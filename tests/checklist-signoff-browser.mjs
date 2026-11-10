@@ -111,7 +111,7 @@ try {
    localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session:status,remember_me:true}}]}));
   },{status,origin});
   await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
-  await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
+  await context.routeWebSocket(url=>url.pathname==='/ws',s=>{s.onMessage(()=>{});const beat=setInterval(()=>s.send(JSON.stringify({ty:'NetworkTime',data:{timestamp_ms:Date.now()}})),500);s.onClose(()=>clearInterval(beat));});
   await context.route('**/api/auth/session',async route=>route.fulfill({json:status}));
   const page=await context.newPage();await page.goto(origin+'/dashboard');
   await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
@@ -143,6 +143,8 @@ try {
  assert(await page.getByRole('button',{name:'Sign off checklist',exact:true}).isDisabled());
  await context.close();
  ({context,page}=await open([],{sign_checklists:true}));
+ // The checklist view appears once the station connection is up; wait for it, not a fixed moment.
+ await page.getByText('Shared progress',{exact:false}).first().waitFor();
  assert.equal(await page.getByRole('button',{name:'Sign off checklist',exact:true}).count(),1,'explicit reviewer permission grants review UI without admin role');
  await context.close();
  // A legacy station omits signoffs entirely. Preserve its item-completion

@@ -37,9 +37,9 @@ async fn display_tick() {
 }
 #[component]
 pub fn BoardAbortReadiness(#[props(default = false)] show_hitl_interlocks: bool) -> Element {
-    // The view key changes on reconnect too, so a check in flight across a
-    // reconnect cannot leave "Check launch readiness" disabled.
-    let view_key = super::station_mode_observer::view_key();
+    // Remount on reconnect too, so a check in flight across a reconnect cannot
+    // leave "Check launch readiness" disabled.
+    let view_key = super::station_mode_observer::connection_view_key();
     rsx! { for key in [view_key] {
         OwnedBoardAbortReadiness { key:"{key}", show_hitl_interlocks }
     } }

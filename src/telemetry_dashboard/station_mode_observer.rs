@@ -63,9 +63,8 @@ pub(super) fn owner(alive: Arc<AtomicBool>) -> Result<Rc<ExportOwner>, String> {
 pub(super) fn view_key() -> String {
     VIEW_KEY.read().clone()
 }
-/// The connection a view's request owners were captured on. Policy-keyed
-/// views remount when it changes, so a reconnect gives them fresh owners
-/// instead of leaving controls whose captured owner retired for good.
+/// The connection a view's request owners were captured on (socket epoch and
+/// disconnect count; the first connect after load changes neither).
 fn connection_generation() -> String {
     let disconnects = super::FRONTEND_NETWORK_METRICS_STATE
         .lock()
@@ -73,12 +72,21 @@ fn connection_generation() -> String {
         .unwrap_or(u64::MAX);
     format!("{}:{disconnects}", *super::WS_EPOCH.peek())
 }
+/// `view_key` plus the connection. Operational views (Actions, Checklists,
+/// the dashboard GSE panel) remount after a reconnect so their controls get
+/// fresh request owners; otherwise every control whose captured owner retired
+/// with the old connection did nothing until the page was reopened. Settings
+/// and calibration keep `view_key` and their explicit Reload instead, so an
+/// unsaved draft is never discarded by a reconnect.
+pub(super) fn connection_view_key() -> String {
+    let _connected = *super::WS_CONNECTED_SIGNAL.read();
+    format!("{}|{}", view_key(), connection_generation())
+}
 fn key_for(observed: &Option<Observation>, now: f64) -> String {
-    let connection = connection_generation();
     observed.as_ref().map_or_else(
         || {
             format!(
-                "mode-unknown:{}:{connection}",
+                "mode-unknown:{}",
                 super::station_policy_context::view_generation()
             )
         },
@@ -91,7 +99,6 @@ fn key_for(observed: &Option<Observation>, now: f64) -> String {
                 o.value.admissions_open,
                 o.current(now),
                 super::station_policy_context::view_generation(),
-                &connection,
             ))
             .unwrap_or_else(|_| "mode-unavailable".into())
         },

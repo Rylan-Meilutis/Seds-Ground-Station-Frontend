@@ -3973,7 +3973,7 @@ fn TelemetryDashboardInner() -> Element {
                                         "data-workspace-tab": _main_tab_to_str(pane_tab),
                                         "aria-label": _main_tab_label(&layout, pane_tab),
                             match pane_tab {
-                                MainTab::Checklists => rsx! {for policy_view_key in [station_mode_observer::view_key()] { checklists::ChecklistsTab { key: "{policy_view_key}",theme:theme.clone()} }},
+                                MainTab::Checklists => rsx! {for policy_view_key in [station_mode_observer::connection_view_key()] { checklists::ChecklistsTab { key: "{policy_view_key}",theme:theme.clone()} }},
                                 MainTab::State => rsx! {
                                     div { style:"height:100%;overflow:auto;padding:12px;box-sizing:border-box;",
                                         if *ground_station_view.read() && auth::can_view_actions()
@@ -4000,10 +4000,10 @@ fn TelemetryDashboardInner() -> Element {
                                         }
                                         custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:layout.test_fire_mode}
                                         if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && flight_state.read().as_str() == "Aborted" {
-                                            for policy_view_key in [station_mode_observer::view_key()] { gse_panel::ClearGseAbort { key: "{policy_view_key}",} }
+                                            for policy_view_key in [station_mode_observer::connection_view_key()] { gse_panel::ClearGseAbort { key: "{policy_view_key}",} }
                                         }
                                         if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && (layout.test_fire_mode || gse_panel::ground_visible(&flight_state.read())) {
-                                            for policy_view_key in [station_mode_observer::view_key()] { gse_panel::GsePanel { key: "{policy_view_key}",action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false} }
+                                            for policy_view_key in [station_mode_observer::connection_view_key()] { gse_panel::GsePanel { key: "{policy_view_key}",action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false} }
                                         }
                                     }
                                 },
@@ -4070,7 +4070,7 @@ fn TelemetryDashboardInner() -> Element {
                                 },
                                 MainTab::Actions => rsx! {
                                     div { class: "gs26-actions-page", style: "height:100%; width:100%; max-width:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden;",
-                                    for policy_view_key in [station_mode_observer::view_key()] { ActionsTab { key: "{policy_view_key}",
+                                    for policy_view_key in [station_mode_observer::connection_view_key()] { ActionsTab { key: "{policy_view_key}",
                                         layout: layout.actions_tab.clone(),
                                         action_policy: action_policy,
                                         recording_status: recording_status,
