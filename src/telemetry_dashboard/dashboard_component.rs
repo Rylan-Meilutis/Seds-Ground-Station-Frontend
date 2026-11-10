@@ -3963,7 +3963,10 @@ fn TelemetryDashboardInner() -> Element {
                                 }
                             }
                             div { class: "gs26-workspace", "data-split": (workspace.tabs.read().len() == 2).to_string(),
-                                style: if media_visible || voice_visible { "display:none;" } else { "" },
+                                // Name the visible display too: switching the style back to "" leaves
+                                // the earlier display:none in place, so leaving Share camera or Voice
+                                // Chat for another tab showed a blank page.
+                                style: if media_visible || voice_visible { "display:none;" } else { "display:grid;" },
                                 for (pane_index, pane_tab) in workspace.tabs.read().clone().into_iter().enumerate() {
                                     section { key: "workspace-pane-{pane_index}", class: "gs26-workspace-pane",
                                         "data-workspace-pane": if pane_index == 0 { "primary" } else { "secondary" },
