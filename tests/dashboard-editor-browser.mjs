@@ -16,7 +16,9 @@ fixture+=`try {
  for(const editor of await editors.all()) {
   assert.equal(await editor.locator('input').count(),1,'only the user label accepts text');
   assert.equal(await editor.getByLabel('Title',{exact:true}).count(),1);
-  for(const name of['Section','Display','Card width','Data type','Board','Channel','Unit label','Decimal places','Display range'])assert.equal(await editor.getByLabel(name,{exact:true}).locator('option').count()>0,true,name+' has choices');
+  // Camera, map and maxima cards show no single telemetry value, so they have no data-source fields.
+  const telemetry=!['camera','map','maxima'].includes(await editor.getByLabel('Display',{exact:true}).inputValue());
+  for(const name of['Section','Display','Card width',...(telemetry?['Data type','Board','Channel','Unit label','Decimal places','Display range']:[])])assert.equal(await editor.getByLabel(name,{exact:true}).locator('option').count()>0,true,name+' has choices');
   assert.equal(await editor.locator('input[type=number],textarea').count(),0,'no numeric or arbitrary source fields');
  }
  const first=editors.first();await first.getByLabel('Title',{exact:true}).fill('Chamber monitor');
