@@ -10,7 +10,7 @@ fixture=fixture.replace('let cameraOnline=true;',`let cameraOnline=true;let held
 fixture=fixture.replace("  if(pathname==='/test-camera')",`  if(pathname==='/api/auth/session'){authReplies++;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(session));return;}
   if(req.method==='POST'&&(pathname==='/api/command'||pathname==='/api/gse/abort/clear')){
     let raw='';for await(const chunk of req)raw+=chunk;fillRequests.push({path:pathname,body:JSON.parse(raw),authorization:req.headers.authorization});
-    if(heldPath===pathname){await new Promise(resolve=>pending.push(resolve));res.statusCode=401;}res.setHeader('Content-Type','application/json');res.end('{}');return;
+    if(heldPath===pathname){await new Promise(resolve=>pending.push(resolve));res.statusCode=401;}res.setHeader('Content-Type','application/json');res.end(pathname==='/api/gse/abort/clear'?'{"cleared":true}':'{}');return;
   }
   if(pathname==='/test-camera')`);
 fixture=fixture.replace("if(pathname==='/api/gse/status' && gseStatus){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(gseStatus));return;}","if(pathname==='/api/gse/status' && gseStatus){const snapshot=JSON.stringify(gseStatus),code=statusReplyCode;if(heldPath===pathname)await new Promise(resolve=>pending.push(resolve));res.statusCode=code;res.setHeader('Content-Type','application/json');res.end(snapshot);return;}");

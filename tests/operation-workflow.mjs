@@ -150,18 +150,14 @@ try {
  assert(await pilot.getByText('Unconfirmed',{exact:true}).isVisible(),'local send feedback must not assert physical confirmation');
  assert.equal(wsCommands.filter(packet=>packet.cmd==='Pilot').length,1);
 
- const closeNitrogen=page.getByRole('button',{name:/Close nitrogen/});
- await closeNitrogen.waitFor();
- assert.equal(await closeNitrogen.evaluate(e=>e.style.opacity),'0.62','an available physical control must not glow while unconfirmed');
- for(const observed of [true,false,true,false]) {
-   actionPolicy.controls.find(c=>c.cmd==='NitrogenClose').actuated=observed;
-   primarySocket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy}));
-   await page.waitForFunction(({observed})=>{
-     const button=[...document.querySelectorAll('button')].find(e=>e.textContent.includes('Close nitrogen'));
-     return button?.style.opacity===(observed?'1':'0.62');
-   },{observed});
-   assert(!await closeNitrogen.getByText('Unconfirmed',{exact:true}).isVisible());
- }
+ // Nitrogen open and close share one toggle (its close is dispatched when the
+ // supply reads open or unknown); there is no separate Close nitrogen control,
+ // and the close command's readback never lights the toggle.
+ assert.equal(await page.getByRole('button',{name:/Close nitrogen/}).count(),0);
+ actionPolicy.controls.find(c=>c.cmd==='NitrogenClose').actuated=true;primarySocket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy}));
+ await page.waitForFunction(()=>[...document.querySelectorAll('button')].find(e=>e.textContent.includes('Nitrogen safety fixture'))?.dataset.dispatchCommand==='NitrogenClose');
+ assert(await page.getByRole('button',{name:/Nitrogen safety fixture/}).getByText('Unconfirmed',{exact:true}).isVisible(),'close readback is not open/closed proof for the toggle');
+ actionPolicy.controls.find(c=>c.cmd==='NitrogenClose').actuated=null;primarySocket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy}));
  assert.equal(wsCommands.filter(packet=>packet.cmd==='NitrogenClose').length,0,'status rendering must not issue a command');
  for(const cmd of physicalValveCommands) {
    const button=page.getByRole('button',{name:new RegExp(`${cmd} safety fixture`)});
@@ -199,7 +195,7 @@ try {
  await page.reload();await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
  await page.getByRole('link',{name:'Actions',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('[aria-label="Mission workflow"] [aria-current="step"]')?.textContent==='Fire');
- await page.getByRole('link',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Ground Station',exact:true}).click();
+ await page.getByRole('link',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Ground Station',exact:true}).click();await page.getByRole('button',{name:'Network & clocks',exact:true}).click();
  await page.getByLabel('UTC date and time',{exact:true}).fill('2026-10-26T22:00');
  const setUtc=page.getByRole('button',{name:'Set network UTC',exact:true});
  assert(await setUtc.isEnabled(),'UTC must remain available after launch');
