@@ -11,6 +11,8 @@ fixture=fixture.replace("let broadcastState=example('live-streams').broadcast;",
 const metric=label=>({label,binding:{data_type:'BATTERY_VOLTAGE',sender_id:'PB',index:0,scale:1,offset:0},unit:'V',precision:2,source:'telemetry',format:'number'});
 broadcastState.rundown={flight_phase_version:1,profiles:Object.fromEntries(['ground','flight','recovery','test_fire'].map(id=>[id,{title:id,cycle_seconds:5,stats_per_page:2,scene:'inherit',stats:[metric('Battery'),metric('Current')]}])),phase_profiles:{}};let rejectSave=false;`);
 fixture=fixture.replace('const next=JSON.parse(body);assert.equal(next.revision,broadcastState.revision);',"const next=JSON.parse(body);assert.equal(next.rundown.flight_phase_version,1);if(rejectSave||next.revision!==broadcastState.revision){res.statusCode=409;res.end('Broadcast changed; reload settings');return;}");
+// The base fixture imports a sibling helper by relative path, which a data: URL module cannot resolve.
+fixture=fixture.replace("from './reset-confirmation-owned-shield.mjs'","from "+JSON.stringify(pathToFileURL(path.resolve('tests/reset-confirmation-owned-shield.mjs')).href));
 fixture=fixture.replace("process.env.PLAYWRIGHT_MODULE || 'playwright'",JSON.stringify(process.env.PLAYWRIGHT_MODULE?pathToFileURL(path.resolve(process.env.PLAYWRIGHT_MODULE)).href:import.meta.resolve('playwright')));
 fixture+=`try{
  const context=await browser.newContext({viewport:{width:1280,height:900}});

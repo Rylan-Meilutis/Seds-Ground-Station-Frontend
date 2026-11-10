@@ -54,13 +54,13 @@ try {
  await open('Mission');
  for(const button of await page.locator('.gs26-preview-actions button').all())assert(await button.isDisabled(),'operational output always disabled');
  assert.equal(await page.evaluate(()=>JSON.stringify({...localStorage})),stored,'preview cannot change persisted account/station preferences');
- assert.deepEqual(requests,[],'no HTTP API/media requests');assert.deepEqual(ws,[],'no WebSocket connections');assert.deepEqual(errors,[]);
+ assert.deepEqual(requests,[],'no HTTP API/media requests');assert.deepEqual(ws.filter(url=>new URL(url).pathname!=='/_dioxus'),[],'no WebSocket connections (a debug build\'s /_dioxus dev-tools socket is not the app)');assert.deepEqual(errors,[]);
  await open('Checklists');await page.locator('.gs26-preview-main input[type=checkbox]').first().check();
  await page.getByRole('button',{name:'Exit preview'}).click();await page.getByRole('heading',{name:'Connection setup'}).waitFor();
  await page.getByRole('button',{name:'Explore offline'}).click();await page.getByRole('heading',{name:'Dashboard',exact:true}).waitFor();
  await page.getByText('Rocket GPS',{exact:true}).waitFor();
  await open('Checklists');assert.equal(await page.locator('.gs26-preview-main input[type=checkbox]').first().isChecked(),false,'training progress discarded after exit/remount');
  assert.equal(await page.evaluate(()=>JSON.stringify({...localStorage})),stored);
- assert.deepEqual(requests,[]);assert.deepEqual(ws,[]);assert.deepEqual(errors,[]);
+ assert.deepEqual(requests,[]);assert.deepEqual(ws.filter(url=>new URL(url).pathname!=='/_dioxus'),[]);assert.deepEqual(errors,[]);
  console.log('PASS: offline pages, mode-sensitive examples, local checklist, phase/sensor navigation, sidebar/tabs, four viewport widths, disabled outputs, zero network and unchanged storage');
 } finally {await browser.close();}
