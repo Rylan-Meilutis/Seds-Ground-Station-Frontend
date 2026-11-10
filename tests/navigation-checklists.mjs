@@ -93,7 +93,7 @@ try {
  },{session,origin});
  const sockets=new Set();
  await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
- await context.routeWebSocket(url=>url.pathname==='/ws',s=>{sockets.add(s);s.onClose(()=>sockets.delete(s));s.onMessage(()=>{});});
+ await context.routeWebSocket(url=>url.pathname==='/ws',s=>{sockets.add(s);const beat=setInterval(()=>s.send(JSON.stringify({ty:'NetworkTime',data:{timestamp_ms:Date.now()}})),500);s.onClose(()=>{clearInterval(beat);sockets.delete(s);});s.onMessage(()=>{});});
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(origin+'/dashboard');
  const rail=page.getByRole('navigation',{name:'Mission navigation'});await rail.waitFor();
@@ -218,7 +218,7 @@ try {
   await profile.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
   const mobile=await profile.newPage();await mobile.goto(origin+'/dashboard');
   const menu=mobile.locator('.gs26-header-menu-toggle');await menu.waitFor();
-  const authButton=mobile.locator('.gs26-utility-menu button').filter({hasText:/SIGN (IN|OUT)/});
+  const authButton=mobile.locator('.gs26-utility-menu button').filter({hasText:/sign (in|out)/i});
   await authButton.waitFor({state:'attached'});
   assert.equal(await authButton.count(),1,'account action stays in Tools');
   assert.equal(await mobile.getByText(/queue drops/i).count(),0,'queue counters are kept out of the regular UI');

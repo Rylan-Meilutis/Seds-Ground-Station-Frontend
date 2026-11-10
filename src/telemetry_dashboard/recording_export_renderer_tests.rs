@@ -401,3 +401,23 @@ async fn actual_report_button_rejects_late_preview_after_prop_or_auth_change() {
         });
     }
 }
+
+/// A view mounted before its connection first came up (the tab a page opens
+/// on) keeps its request owner when that connection connects. Any later drop
+/// still retires it.
+#[test]
+fn owner_captured_before_first_connect_survives_the_connect_but_not_a_drop() {
+    let dom = dom("http://fixture.invalid");
+    dashboard::FRONTEND_NETWORK_METRICS_STATE.lock().unwrap().ws_connected = false;
+    let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture().unwrap());
+    dom.in_scope(ScopeId::ROOT, || {
+        dashboard::FRONTEND_NETWORK_METRICS_STATE.lock().unwrap().ws_connected = true;
+        assert!(owner.is_current(), "the first connect is not a connection change");
+        {
+            let mut metrics = dashboard::FRONTEND_NETWORK_METRICS_STATE.lock().unwrap();
+            metrics.ws_connected = false;
+            metrics.ws_disconnects_total += 1;
+        }
+        assert!(!owner.is_current(), "a drop after connecting retires it");
+    });
+}

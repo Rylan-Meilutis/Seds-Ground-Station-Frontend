@@ -98,8 +98,12 @@ impl ExportOwner {
         let Ok(metrics) = super::super::FRONTEND_NETWORK_METRICS_STATE.lock() else {
             return false;
         };
+        // A view captured before its connection first came up (the tab a page
+        // opens on) stays current when that same connection connects: no
+        // disconnect happened, and the epoch, station and account checks below
+        // still apply. Any later drop counts as a disconnect and retires it.
         let connection = self.disconnects == metrics.ws_disconnects_total
-            && self.connected == metrics.ws_connected;
+            && (self.connected == metrics.ws_connected || !self.connected);
         drop(metrics);
         connection
             && Arc::ptr_eq(&self.alive, &dashboard_alive())
