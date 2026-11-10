@@ -45,7 +45,12 @@ fixture+=`try {
  assert(await page.getByRole('button',{name:'Board state checks: off',exact:true}).isVisible(),'HITL optional proof remains primary-confirmed');assert.match(await page.locator('section[aria-label="Launch readiness"]').innerText(),/Stored history is unconfirmed for FC/);
  // Old HTTP success across a reconnect must not clear a new source epoch.
  while(await check.isDisabled())await page.waitForTimeout(20);holdRefresh=true;refreshStart=new Promise(resolve=>refreshStarted=resolve);await check.click();await refreshStart;const before=connections;for(const socket of sockets)socket.close();const deadline=Date.now()+12000;while(connections<=before&&Date.now()<deadline)await page.waitForTimeout(20);assert(connections>before,'reconnected fixture');
- boardAbort={...boardAbort,version:1,history_error:'New connection history failure'};push('BoardAbort',boardAbort);push('ActionPolicy',actionPolicy);await page.getByText(/New connection history failure/).first().waitFor();releaseRefresh();await page.getByText('Connection changed; check current readiness again.',{exact:true}).waitFor();assert(await launch.isDisabled());
+ boardAbort={...boardAbort,version:1,history_error:'New connection history failure'};push('BoardAbort',boardAbort);push('ActionPolicy',actionPolicy);await page.getByText(/New connection history failure/).first().waitFor();releaseRefresh();
+ // The held reply belongs to the retired connection: it is dropped, never applied. The new
+ // connection's failure stays, Launch stays disabled, and the check is usable again.
+ await page.waitForTimeout(600);assert.equal(await page.getByText('Fixture readiness response',{exact:true}).count(),0,'old-connection reply is not reported as current');
+ await page.getByText(/New connection history failure/).first().waitFor();assert(await launch.isDisabled());
+ await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(e=>e.textContent==='Check launch readiness'&&!e.disabled),null,{timeout:5000});
  assert.deepEqual(commands,[],'readiness, acknowledgments and reports never send Launch or interlock commands');assert.deepEqual(errors,[]);console.log('PASS history error current-source retention, same-version lateHTTP, absent/stale/failed source, acknowledgment independence, scopedmissing and HITLoptional rawunknown');
 }finally{releaseRefresh?.();await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}`;
 try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}

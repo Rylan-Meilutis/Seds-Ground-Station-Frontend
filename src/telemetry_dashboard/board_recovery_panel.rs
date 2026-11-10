@@ -605,11 +605,11 @@ pub(super) fn RecoveryBoardDetails(
     }
     if display.commissioning {p{class:"gs-notice","Storage or identity setup needs explicit confirmation; it is not a completed reset."}}
     if let Some(text)=display.message.as_ref(){p{style:"margin:0;","{text}"}}
+    if let Some((_, description))=super::board_recovery_model::targeted_recovery_label(&board_id){p{style:"margin:0;font-size:var(--gs-text-sm);color:var(--gs-text-muted);","{description}"}}
     if let Some(reason)=recover_reason.clone(){p{class:"gs-notice","Recovery unavailable: {reason}"}}
     details{class:"gs-info",summary{"About these readbacks"}
         p{"Physical valve position is not verified by GPIO/servo command registers."
             if display.physical_verified {" The server claims physical verification, but these fields alone do not establish valve position."}}
-        if let Some((_, description))=super::board_recovery_model::targeted_recovery_label(&board_id){p{"{description}"}}
     }
     if let Some(operation)=raw.and_then(|board|board.operation.as_ref()){{operation_view(operation)}}
     }}
