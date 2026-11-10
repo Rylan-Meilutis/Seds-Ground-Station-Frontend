@@ -206,12 +206,15 @@ try {
  await recorder.click();await page.waitForTimeout(150);
  assert.equal(wsCommands.filter(packet=>packet.cmd==='StartWritingNow').length,1);
  assert.deepEqual(proxyRequests,['Pilot','Pilot']);
+ // Network UTC lives in Settings › Ground Station › Network & clocks.
+ await page.getByRole('link',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Ground Station',exact:true}).click();await page.getByRole('button',{name:'Network & clocks',exact:true}).click();
  await page.getByRole('button',{name:'Use client time',exact:true}).click();
  await page.getByText('Network UTC request queued at RRLS; waiting for primary acceptance.',{exact:true}).waitFor();
  assert.equal(networkUtcUpdates.length,1);assert.equal(networkUtcUpdates[0].source,'client');
  assert(Math.abs(networkUtcUpdates[0].utc_ms-Date.now())<5000);
  assert.equal(await page.getByText('Network UTC source updated.',{exact:true}).count(),0,'HTTP202 UTC admission is not application');
  proxyStatus.last={...proxyStatus.pending,phase:'unknown',error:'No UTC primary result'};proxyStatus.pending=null;
+ await page.getByRole('button',{name:'Close',exact:true}).first().click();await page.getByRole('link',{name:'Actions',exact:true}).click();await pilot.waitFor();
  proxyStatus.available=false;proxyStatus.connected=false;proxyStatus.reason='No primary hardware authority';
  await page.waitForFunction(()=>[...document.querySelectorAll('button')].find(e=>e.textContent.includes('Pilot safety fixture'))?.disabled===true);
  const before=proxyRequests.length;await pilot.click({force:true});await page.waitForTimeout(100);assert.equal(proxyRequests.length,before);
