@@ -127,7 +127,7 @@ pub(super) fn RecoveryMarker() -> Element {
     });
     let session = current.clock.session.clone();
     let reset_allowed = !*busy.read() && can_mark && !current.reset.pending;
-    rsx! {div {class:"gs26-recovery-marker",style:"padding:12px;border:1px solid #435165;border-radius:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;",
+    rsx! {div {class:"gs26-recovery-marker",style:"padding:var(--gs-space-3);border:1px solid var(--gs-line);border-radius:var(--gs-radius);display:flex;gap:var(--gs-space-2);align-items:center;flex-wrap:wrap;",
         strong {style:"flex:1 0 100%;", "Recovery"}
         button {disabled, title:"Record arrival at the rocket; does not send a hardware command",onclick:move |_|{
             busy.set(true);let session=session.clone();spawn(async move {

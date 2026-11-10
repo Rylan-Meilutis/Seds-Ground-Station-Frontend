@@ -203,18 +203,23 @@ fn acceptance_message(value: &Accepted) -> &'static str {
     "Request accepted; awaiting fresh device confirmation."
 }
 fn operation_view(operation: &Operation) -> Element {
-    rsx! {div{role:"status",class:"gs26-recovery-operation",
+    let scope = if operation.global_startup_best_effort == Some(true) {
+        let proof = if operation.targets.is_empty() {
+            "No proof targets; no board completion or readback is claimed.".to_string()
+        } else {
+            format!("Selected proof targets: {}.", operation.targets.join(", "))
+        };
+        format!("Global Startup broadcast is best effort; unselected boards remain unverified. {proof}")
+    } else {
+        format!("Targets: {}.", operation.targets.join(", "))
+    };
+    rsx! {div{role:"status",class:"gs26-recovery-operation gs-notice",style:"display:grid;gap:var(--gs-space-1);",
         strong{"{operation.label()} — {operation.phase}"}
-        p{"{operation.message}"}
+        if !operation.message.is_empty() {span{"{operation.message}"}}
         if operation.completed && operation.success == Some(true) && operation.reset_applied_state == Some(0) {
-            p{"Reset applied Startup. Normal initialization may advance the station to Idle."}
+            span{"Startup applied; normal initialization may advance to Idle."}
         }
-        if operation.global_startup_best_effort == Some(true) {
-            p{"Global Startup broadcast: best effort. Unselected boards remain unverified."}
-            if operation.targets.is_empty() {p{"Proof targets: none. This result claims no board completion or readback."}}
-            else {p{"Selected proof targets: {operation.targets.join(\", \")}."}}
-        } else {p{"Targets: {operation.targets.join(\", \")}."}}
-        p{"SDK acceptance alone is not device confirmation."}
+        span{style:"color:var(--gs-text-muted);","{scope} Acceptance alone is not device confirmation."}
     }}
 }
 /// "Resync AB to NitrousFill" for a resync; the generic title otherwise.
@@ -225,19 +230,19 @@ fn confirm_title(challenge: &Challenge) -> String {
     }
 }
 fn challenge_scope_view(challenge: &Challenge) -> Element {
-    rsx! {div{class:"gs26-recovery-confirm-scope",
-                    if challenge.action=="reset_startup" && challenge.global_startup_best_effort==Some(true) {
-                        p{"A GLOBAL Startup request targets ALL boards on a best-effort basis. The server summary describes this attempt; commissioning or identity reconciliation alone does not complete a reset. Only the frozen proof targets below are verified; unselected boards remain unverified."}
-                        if challenge.targets.is_empty(){p{"Proof targets: NONE (explicit HITL host-only policy). No board completion or readback is claimed."}}
-                        else {p{"Frozen proof targets: {challenge.targets.join(\", \")}."}}
-                    }else{
-                        p{"Frozen targets: {challenge.targets.join(\", \")}. Server verifies board proof at confirmation; acceptance alone does not prove safe state."}
-                        p{"Only the frozen targets above are requested."}
-                    }
-                    p{"Physical valve position is not measured by command-register readbacks."}
-                    if challenge.action=="reset_startup" {p{"The reset request asks for VB vent/dump OPEN, pilot/supplies/igniter OFF and stepper asleep. Confirm the area is safe. A best-effort request does not prove unselected outputs changed."}}
-                    if challenge.action=="resync" && challenge.outputs_unchanged==Some(true) {p{strong{"No outputs move. "}"Resync sets only the board's state machine and phase. Valves, servos, supplies, igniter and stepper stay exactly as they are; command any output explicitly afterwards."}}
-                    if challenge.action=="resync" && challenge.outputs_unchanged!=Some(true) {p{strong{"No Abort needed. "}"The board leaves its current state, including Launch: it stops its own launch sequence, drives every output to its safe state (igniter and supplies off, valves safe, stepper asleep) and only then returns to the station's phase, without latching an Abort. Its outputs need only read back consistently beforehand; Resync to a fill phase or Armed still requires them already safe."}}
+    let global = challenge.action=="reset_startup" && challenge.global_startup_best_effort==Some(true);
+    rsx! {div{class:"gs26-recovery-confirm-scope",style:"display:grid;gap:var(--gs-space-2);",
+        if global {
+            p{style:"margin:0;","A GLOBAL Startup request targets ALL boards; unselected boards remain unverified."}
+            if challenge.targets.is_empty(){p{style:"margin:0;",strong{"Proof targets: "}"NONE (explicit HITL host-only policy). No board completion is claimed."}}
+            else {p{style:"margin:0;",strong{"Proof targets: "}"{challenge.targets.join(\", \")}"}}
+        }else{
+            p{style:"margin:0;",strong{"Frozen targets: "}"{challenge.targets.join(\", \")}. The server checks board proof at confirm."}
+        }
+        if challenge.action=="reset_startup" {p{class:"gs-notice gs-notice--warn",strong{"Outputs move. "}"VB vent and dump OPEN; pilot, supplies and igniter OFF; stepper asleep. Confirm the area is safe. A best-effort request does not prove unselected outputs changed."}}
+        if challenge.action=="resync" && challenge.outputs_unchanged==Some(true) {p{class:"gs-notice",strong{"No outputs move. "}"Only the board's state and phase change; command any output explicitly afterwards."}}
+        if challenge.action=="resync" && challenge.outputs_unchanged!=Some(true) {p{class:"gs-notice gs-notice--warn",strong{"No Abort needed. "}"The board stops its own launch sequence, drives every output safe, then returns to the station's phase. Fill phases and Armed still require outputs already safe."}}
+        p{style:"margin:0;font-size:var(--gs-text-sm);color:var(--gs-text-muted);","Valve position is not measured; readbacks are command registers."}
     }}
 }
 fn begin_prepare(
@@ -580,31 +585,34 @@ pub(super) fn RecoveryBoardDetails(
         display.outputs.as_str()
     };
     let _ = ws_connected;
-    rsx! {section{class:"gs26-board-proof",style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",
+    rsx! {section{class:"gs26-board-proof",style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;display:grid;gap:var(--gs-space-2);",
     h4{style:"margin:0;","Device readback and recovery"}
     if let Some(notice)=raw.and_then(|board|board.recovery_notice()) {
-        p{role:"status",style:"padding:10px;border:1px solid {theme.warning_border};border-radius:8px;background:{theme.warning_background};color:{theme.warning_text};line-height:1.45;overflow-wrap:anywhere;",strong{"Recovery required. "}"{notice}"}
+        p{role:"status",class:"gs-notice gs-notice--warn",strong{"Recovery required. "}"{notice}"}
     }
-    if display.retained{p{class:"gs26-retained-readback","Last confirmed readback retained while refreshing. Commands still require current server proof."}}
-                                            dl{style:"display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:8px 12px;margin:18px 0;",
-                                                dt{"Actual board state"}dd{style:"margin:0;","{state} ({freshness})"}
-                                                dt{"Abort latched"}dd{style:"margin:0;","{display_bool(display.abort_latched)}"}
-                                                dt{"Safe output registers"}dd{style:"margin:0;","{display_bool(display.safe_outputs)}"}
-                                                dt{"Boot identity"}dd{style:"margin:0;","{boot_label}"}
-                                                dt{"Recovery epoch"}dd{style:"margin:0;","{epoch_label}"}
-                                                dt{"Query nonce"}dd{style:"margin:0;",{if display.nonce.is_empty(){"Unknown"}else{display.nonce.as_str()}}}
-                                                dt{"Readback age"}dd{style:"margin:0;",{display.age_ms.map(|age|format!("{age} ms")).unwrap_or_else(||"Unknown".into())}}
-                                                dt{"Remaining server lease"}dd{style:"margin:0;",{display.lease_ms.map(|lease|format!("{lease} ms")).unwrap_or_else(||"Not issued".into())}}
-                                                dt{"Output source"}dd{style:"margin:0;","{display.output_source}"}
-                                                dt{"Output bits"}dd{style:"margin:0;","{bits}"}
-                                            }
-                                if display.commissioning {p{"Storage or identity setup requires explicit confirmation; it is not a completed reset."}}
-                                            p{"Physical valve position is not verified by GPIO/servo command registers."}
-                                if display.physical_verified {p{"Server claims physical verification; these command-register fields alone do not establish valve position."}}
-                                if let Some(text)=display.message.as_ref(){p{"{text}"}}
-                                            if let Some((_, description))=super::board_recovery_model::targeted_recovery_label(&board_id){p{"{description}"}}
-                                            if let Some(reason)=recover_reason.clone(){p{"Recovery unavailable: {reason}"}}
-                                            if let Some(operation)=raw.and_then(|board|board.operation.as_ref()){{operation_view(operation)}}    }}
+    if display.retained{p{class:"gs26-retained-readback gs-notice","Last confirmed readback kept while refreshing. Commands still need current server proof."}}
+    dl{style:"display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--gs-space-2) var(--gs-space-3);margin:0;font-size:0.9rem;",
+        dt{"Actual board state"}dd{style:"margin:0;","{state} ({freshness})"}
+        dt{"Abort latched"}dd{style:"margin:0;","{display_bool(display.abort_latched)}"}
+        dt{"Safe output registers"}dd{style:"margin:0;","{display_bool(display.safe_outputs)}"}
+        dt{"Boot identity"}dd{style:"margin:0;","{boot_label}"}
+        dt{"Recovery epoch"}dd{style:"margin:0;","{epoch_label}"}
+        dt{"Query nonce"}dd{style:"margin:0;",{if display.nonce.is_empty(){"Unknown"}else{display.nonce.as_str()}}}
+        dt{"Readback age"}dd{style:"margin:0;",{display.age_ms.map(|age|format!("{age} ms")).unwrap_or_else(||"Unknown".into())}}
+        dt{"Remaining server lease"}dd{style:"margin:0;",{display.lease_ms.map(|lease|format!("{lease} ms")).unwrap_or_else(||"Not issued".into())}}
+        dt{"Output source"}dd{style:"margin:0;","{display.output_source}"}
+        dt{"Output bits"}dd{style:"margin:0;","{bits}"}
+    }
+    if display.commissioning {p{class:"gs-notice","Storage or identity setup needs explicit confirmation; it is not a completed reset."}}
+    if let Some(text)=display.message.as_ref(){p{style:"margin:0;","{text}"}}
+    if let Some(reason)=recover_reason.clone(){p{class:"gs-notice","Recovery unavailable: {reason}"}}
+    details{class:"gs-info",summary{"About these readbacks"}
+        p{"Physical valve position is not verified by GPIO/servo command registers."
+            if display.physical_verified {" The server claims physical verification, but these fields alone do not establish valve position."}}
+        if let Some((_, description))=super::board_recovery_model::targeted_recovery_label(&board_id){p{"{description}"}}
+    }
+    if let Some(operation)=raw.and_then(|board|board.operation.as_ref()){{operation_view(operation)}}
+    }}
 }
 #[component]
 pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
@@ -654,54 +662,155 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
             }
         });
     };
+    let mut section = use_signal(|| ToolsSection::Boards);
     let current = snapshot.read().clone().filter(|snapshot| snapshot.read_context.as_ref().is_some_and(|context| context.check_current().is_ok()));
-    let controls_busy = *busy.read() || pending.read().is_some();
-    let permitted = crate::auth::can_view_actions();
     let connected = connected(ui, ws_connected);
+    let tab = |id: ToolsSection, label: &'static str| {
+        let selected = section() == id;
+        rsx! {button{r#type:"button",role:"tab","aria-selected":"{selected}",class:if selected {"gs-btn gs-btn--primary"} else {"gs-btn"},onclick:move |_|section.set(id),"{label}"}}
+    };
     rsx! {
         button{r#type:"button",onclick:move |_|open.set(true),"Recovery tools"}
         if open(){
-            div{style:"position:fixed;inset:0;z-index:199998;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;",onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();open.set(false);},Key::Tab=>{event.prevent_default();cycle_modal_focus("gs26-recovery-tools",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
-                div{id:"gs26-recovery-tools",role:"dialog","aria-modal":"true","aria-label":"Recovery tools",style:"background:{theme.panel_background};color:{theme.text_primary};padding:20px;border-radius:14px;width:min(100%,960px);height:min(88dvh,900px);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;gap:12px;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;font:inherit;",
-                    h3{"Recovery tools"}
-                    button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|open.set(false),"Close tools"}
-                    button{onclick:refresh,"Refresh local status"}
-                    div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
-                    if !status_error.read().is_empty(){p{role:"alert","{status_error}"}}
-                    section{style:"padding:14px;border:1px solid var(--gs26-border,#405269);border-radius:10px;margin-bottom:14px;",h4{style:"margin:0 0 10px;","Launch readiness"}super::board_abort_readiness::BoardAbortReadiness{}}
-                    if let Some(current)=current.clone(){
-                        {let status=&current.status;let reset_reason=status.reset_reason(current.elapsed());let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());rsx!{
-                        p{"Operator: {operator} · Station: {status.global_state_label()}"}
-                        if status.automatic_actions_inhibited {p{role:"status","Automatic actions are inhibited."}}
-                        div{class:"gs26-reset-all",
-                            button{disabled:!connected||controls_busy||!permitted||reset_reason.is_some(),title:reset_reason.clone().unwrap_or_default(),
-                                onclick:{let current=current.clone();move |_|begin_prepare("reset_startup".into(),None,None,current.clone(),busy,pending,message)},
-                                "Reset all boards to Idle…"
-                            }
-                            p{"Returns every connected board to Idle, unlocks Launch and resets the T-clock."}
-                            details{summary{"What Reset does"}
-                                p{"Boards go to Startup, then Idle. A board missing now keeps Launch locked when it returns, until it is reset too. Outside HITL, qualification and fill status must be redone before Launch."}
-                                p{"Outputs: AB supplies and igniter off, stepper asleep; VB pilot off, vent and dump open; queued automation cancelled. Calibration and network power are kept."}
-                            }
-                            if let Some(reason)=reset_reason.clone(){p{"{reason}"}}
+            div{style:"position:fixed;inset:0;z-index:199998;background:#000a;display:flex;align-items:center;justify-content:center;padding:var(--gs-space-4);box-sizing:border-box;",onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();open.set(false);},Key::Tab=>{event.prevent_default();cycle_modal_focus("gs26-recovery-tools",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
+                div{id:"gs26-recovery-tools",role:"dialog","aria-modal":"true","aria-label":"Recovery tools",style:"background:{theme.panel_background};color:{theme.text_primary};padding:var(--gs-space-4);border-radius:var(--gs-radius-lg);width:min(100%,880px);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;gap:var(--gs-space-3);overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;font:inherit;",
+                    div{class:"gs-section-header",
+                        h3{"Recovery tools"}
+                        div{style:"display:flex;gap:var(--gs-space-2);flex-wrap:wrap;",
+                            button{r#type:"button",class:"gs-btn gs-btn--ghost",onclick:refresh,"Refresh local status"}
+                            button{r#type:"button",class:"gs-btn",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|open.set(false),"Close tools"}
                         }
-                        if let Some(recovery)=status.host_recovery.as_ref(){
-                            if !recovery.publication_acknowledged && (recovery.pending || recovery.verified){
-                                if status.unfinished_boards().is_empty(){
-                                    p{role:"status","The previous recovery did not finish, but every board of it now reads back healthy. Recover any one board or use Reset all boards to finish it."}
-                                }else{
-                                    p{role:"status","Previous recovery is incomplete for {status.unfinished_boards().join(\", \")}. Recover those boards or use Reset all boards."}
-                                }
-                            }
-                        }
-                        if let Some(operation)=status.operation.as_ref(){{operation_view(operation)}}
+                    }
+                    if let Some(current)=current.as_ref() {
+                        {let status=&current.status;let operator=status.principal.username.clone().unwrap_or_else(||"Unidentified".into());rsx!{
+                            p{style:"margin:0;color:var(--gs-text-muted);font-size:var(--gs-text-sm);","Operator {operator} · Station {status.global_state_label()}"}
+                            if status.automatic_actions_inhibited {p{role:"status",class:"gs-notice gs-notice--warn","Automatic actions are inhibited."}}
                         }}
-                    }else{p{"Recovery status unavailable. No control action is enabled."}}
+                    }
+                    div{role:"tablist","aria-label":"Recovery sections",style:"display:flex;gap:var(--gs-space-2);flex-wrap:wrap;",
+                        {tab(ToolsSection::Boards,"Boards")}
+                        {tab(ToolsSection::Reset,"Reset")}
+                        {tab(ToolsSection::Launch,"Launch readiness")}
+                    }
+                    div{class:"gs26-modal-scroll-body",role:"tabpanel",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;display:grid;gap:var(--gs-space-3);align-content:start;",
+                        if !status_error.read().is_empty(){p{role:"alert",class:"gs-notice gs-notice--danger","{status_error}"}}
+                        match (section(), current.clone()) {
+                            (ToolsSection::Launch, _) => rsx!{super::board_abort_readiness::BoardAbortReadiness{}},
+                            (_, None) => rsx!{p{class:"gs-notice","Recovery status unavailable. No control action is enabled."}},
+                            (ToolsSection::Boards, Some(current)) => boards_section(&current, ws_connected),
+                            (ToolsSection::Reset, Some(current)) => reset_section(&current, connected, (busy, pending, message)),
+                        }
                     }
                 }
             }
         }
     }
+}
+#[derive(Clone, Copy, PartialEq)]
+enum ToolsSection { Boards, Reset, Launch }
+/// One row per reported board: state, latched abort, and its own recovery commands.
+fn boards_section(current: &Snapshot, ws_connected: bool) -> Element {
+    let boards: Vec<Board> = BOARD_IDS.iter().filter_map(|id| current.status.board(id).cloned()).collect();
+    rsx! {
+        if boards.is_empty() {p{class:"gs-notice","No boards are reported yet."}}
+        for board in boards {
+            {let reason = board.recovery_notice().and_then(|_| current.status.prepare_board_reason(&board, "recover_abort", current.elapsed()));
+            let state = if board.state_label.is_empty() {"Unknown".to_string()} else {board.state_label.clone()};
+            rsx!{article{key:"{board.id}","data-recovery-board":"{board.id}",style:"display:grid;gap:var(--gs-space-1);padding:var(--gs-space-3);border:1px solid var(--gs-line);border-radius:var(--gs-radius);min-width:0;",
+                div{style:"display:flex;flex-wrap:wrap;gap:var(--gs-space-2);align-items:center;",
+                    strong{"{board.id}"}
+                    if !board.label.is_empty() && board.label != board.id {span{style:"color:var(--gs-text-muted);font-size:var(--gs-text-sm);","{board.label}"}}
+                    span{class:"gs-badge","{state}"}
+                    if board.abort_latched == Some(true) {span{class:"gs-badge gs-badge--danger","Abort latched"}}
+                }
+                if let Some(reason)=reason {p{style:"margin:0;font-size:var(--gs-text-sm);color:var(--gs-text-muted);","Recovery unavailable: {reason}"}}
+                RecoveryBoardActions{board_id:board.id.clone(),ws_connected}
+            }}}
+        }
+    }
+}
+/// Reset all boards: one button, one server-issued confirmation.
+fn reset_section(current: &Snapshot, connected: bool, ui: (Signal<bool>, Signal<Option<Pending>>, Signal<String>)) -> Element {
+    let (busy, pending, message) = ui;
+    let status = current.status.clone();
+    let reset_reason = status.reset_reason(current.elapsed());
+    let controls_busy = *busy.read() || pending.read().is_some();
+    let permitted = crate::auth::can_view_actions();
+    rsx! {
+        div{class:"gs26-reset-all",style:"display:grid;gap:var(--gs-space-2);justify-items:start;",
+            button{class:"gs-btn gs-btn--danger",disabled:!connected||controls_busy||!permitted||reset_reason.is_some(),title:reset_reason.clone().unwrap_or_default(),
+                onclick:{let current=current.clone();move |_|begin_prepare("reset_startup".into(),None,None,current.clone(),busy,pending,message)},
+                "Reset all boards to Idle…"
+            }
+            p{style:"margin:0;","Returns every connected board to Idle, unlocks Launch and resets the T-clock."}
+            if let Some(reason)=reset_reason.clone(){p{role:"status",class:"gs-notice gs-notice--warn","Unavailable: {reason}"}}
+            details{class:"gs-info",summary{"What Reset does"}
+                p{"Boards go to Startup, then Idle. A board missing now keeps Launch locked when it returns, until it is reset too. Outside HITL, qualification and fill status must be redone before Launch."}
+                p{"Outputs: AB supplies and igniter off, stepper asleep; VB pilot off, vent and dump open; queued automation cancelled. Calibration and network power are kept."}
+            }
+        }
+        if let Some(recovery)=status.host_recovery.as_ref(){
+            if !recovery.publication_acknowledged && (recovery.pending || recovery.verified){
+                if status.unfinished_boards().is_empty(){
+                    p{role:"status",class:"gs-notice","The previous recovery did not finish, but its boards now read back healthy. Recover any one board or reset all boards to finish it."}
+                }else{
+                    p{role:"status",class:"gs-notice gs-notice--warn","Previous recovery is incomplete for {status.unfinished_boards().join(\", \")}. Recover those boards or reset all boards."}
+                }
+            }
+        }
+        if let Some(operation)=status.operation.as_ref(){{operation_view(operation)}}
+    }
+}
+/// Reset all boards from anywhere (Actions, abort bar): the button opens the
+/// single server-issued confirmation directly, with no intermediate dialog.
+/// Recovery status is polled only while this flow is running.
+#[component]
+pub(super) fn ResetAllBoards(#[props(default)] label: Option<String>) -> Element {
+    let mut active = use_signal(|| false);
+    let mut outcome = use_signal(String::new);
+    let label = label.unwrap_or_else(|| "Reset all boards to Idle…".into());
+    rsx! {
+        div{class:"gs26-reset-entry",style:"display:contents;",
+            button{r#type:"button",class:"gs-btn",disabled:active(),onclick:move |_|{outcome.set(String::new());active.set(true);},"{label}"}
+            if active() {ResetFlow{on_done:move |text:String|{outcome.set(text);active.set(false);}}}
+            if !outcome.read().is_empty() {p{role:"status",class:"gs-notice",style:"flex-basis:100%;","{outcome}"}}
+        }
+    }
+}
+#[component]
+fn ResetFlow(on_done: EventHandler<String>) -> Element {
+    use_recovery_provider();
+    let ui = use_context::<RecoveryUi>();
+    let ws_connected = *super::WS_CONNECTED_SIGNAL.read();
+    let mut started = use_signal(|| false);
+    let mut reviewed = use_signal(|| false);
+    use_effect(move || {
+        let snapshot = ui.snapshot.read().clone();
+        let has_pending = ui.pending.read().is_some();
+        let is_busy = *ui.busy.read();
+        let text = ui.message.read().clone();
+        let error = ui.status_error.read().clone();
+        if !*started.peek() {
+            if let Some(snapshot) = snapshot {
+                started.set(true);
+                if let Some(reason) = snapshot.status.reset_reason(snapshot.elapsed()) {
+                    on_done.call(format!("Reset unavailable: {reason}"));
+                    return;
+                }
+                begin_prepare("reset_startup".into(), None, None, snapshot, ui.busy, ui.pending, ui.message);
+            } else if !error.is_empty() {
+                on_done.call(format!("Reset unavailable: {error}"));
+            }
+            return;
+        }
+        if has_pending {
+            reviewed.set(true);
+        } else if !is_busy {
+            // Preparation refused, the review was cancelled, or Confirm finished.
+            on_done.call(if *reviewed.peek() && text.is_empty() { "Reset cancelled; nothing was sent.".into() } else { text });
+        }
+    });
+    rsx! {RecoveryDialogs{ws_connected}}
 }
 #[component]
 pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
@@ -721,16 +830,17 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
         if let Some(dialog)=dialog {
             div{style:"position:fixed;inset:0;z-index:200000;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
                 onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape if !*busy.peek()=>{event.prevent_default();pending.set(None);},Key::Tab=>{event.prevent_default();cycle_modal_focus("gs26-recovery-confirm",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
-                div{id:"gs26-recovery-confirm",role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:22px;border-radius:14px;width:min(100%,960px);height:min(86dvh,860px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:12px;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;",
-                    h2{id:"board-recovery-confirm-title",{confirm_title(&dialog.challenge)}}
-                    div{class:"gs26-modal-scroll-body",style:"flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
-                        p{"{dialog.challenge.summary}"}
+                div{id:"gs26-recovery-confirm",role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:var(--gs-space-5);border-radius:var(--gs-radius-lg);width:min(100%,720px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:var(--gs-space-3);overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;",
+                    h2{id:"board-recovery-confirm-title",style:"margin:0;font-size:var(--gs-text-lg);",{confirm_title(&dialog.challenge)}}
+                    div{class:"gs26-modal-scroll-body",style:"flex:0 1 auto;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
+                        p{style:"margin:0 0 var(--gs-space-2);","{dialog.challenge.summary}"}
                         {challenge_scope_view(&dialog.challenge)}
                         if !message.read().is_empty() {p{role:"status",style:"padding:10px;border:1px solid #b77b18;border-radius:8px;line-height:1.45;overflow-wrap:anywhere;","{message}"}}
                         if !dialog.locally_live() {
                             p{role:"status",style:"padding:10px;border:1px solid #b77b18;border-radius:8px;background:#3b2c11;color:#ffdc8a;line-height:1.4;", "The board proof shown here is older than a few seconds. Confirm takes fresh proof first and sends only if the action and boards are unchanged."}
                         }
                     }
+                    div{style:"display:flex;flex-wrap:wrap;gap:var(--gs-space-2);justify-content:flex-end;",
                     if !dialog.locally_live() {
                         button{r#type:"button",disabled:*busy.read()||!connected||!permitted,
                             onclick:{let original=dialog.clone();move |_|{
@@ -752,7 +862,7 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                             }},"Refresh review"}
                     }
                     button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},disabled:*busy.read(),onclick:move |_|pending.set(None),"Cancel"}
-                    button{r#type:"button",disabled:*busy.read()||!connected||!permitted,
+                    button{r#type:"button",class:"gs26-modal-danger",disabled:*busy.read()||!connected||!permitted,
                         onclick:move |_|{
                             if *busy.peek()||!crate::auth::can_view_actions(){return;}
                             let Ok(alive)=ui.alive.try_peek().map(|alive| alive.clone()) else{return;};
@@ -796,6 +906,7 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                                 busy.set(false);
                             });
                         },{if dialog.challenge.action=="resync" {"Confirm resync"} else {"Confirm recovery action"}}
+                    }
                     }
                 }
             }
@@ -945,7 +1056,7 @@ mod tests {
     fn actual_host_only_result_never_renders_board_readback_confirmation() {
         let html = render(host_result);
         assert!(html.contains("Host Startup reset; no board proof"));
-        assert!(html.contains("Unselected boards remain unverified"));
+        assert!(html.contains("unselected boards remain unverified"));
         assert!(!html.contains("Confirmed by board readbacks"));
     }
     #[test]
@@ -953,7 +1064,7 @@ mod tests {
         let html = render(selected_result);
         assert!(html.contains("Selected boards verified; global broadcast best effort"));
         assert!(html.contains("Selected proof targets: AB, VB, GB, DAQ"));
-        assert!(html.contains("Unselected boards remain unverified"));
+        assert!(html.contains("unselected boards remain unverified"));
     }
     #[test]
     fn actual_confirmation_scope_discloses_global_best_effort_and_host_only_none() {

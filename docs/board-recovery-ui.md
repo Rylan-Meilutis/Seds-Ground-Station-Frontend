@@ -30,15 +30,22 @@ latched board Abort. It is allowed only in the fill phases and Armed. When it
 is unavailable, the server's plain-language reason (`resync_blocked_reason`)
 is shown as text under the buttons, for example a latched tank overpressure,
 outputs that do not read safe, or "use Review recovery" in Idle. The review
-dialog is titled "Resync <board> to <phase>", says that no outputs move, and
-types the server phrase (`RESYNC AB TO NITROUSFILL`). It is accepted only when
+dialog is titled "Resync <board> to <phase>" and says that no outputs move;
+the server phrase (`RESYNC AB TO NITROUSFILL`) is sent back automatically. It is accepted only when
 the ticket's phase matches the station's current phase and carries
 `outputs_unchanged: true`. Confirm re-prepares like every recovery action,
 so a station that changed phase is refused rather than resynced to the old
 phase. See GroundStation26 `docs/backend/board-resync.md`.
 
 An operator first prepares a server-owned 30-second ticket. The DOM dialog shows
-the exact targets, summary and confirmation phrase. Cancel sends no confirmation.
+the exact targets and summary; nothing is typed. Cancel sends no confirmation.
+
+**Recovery tools** (Connection) groups commands into sections: **Boards** (one
+row per board with its state, a latched Abort, and Query / Recover / Resync),
+**Reset** (Reset all boards and the previous recovery's result) and **Launch
+readiness**. **Reset all boards** on Actions and on the abort bar opens its
+single confirmation directly; a refused reset shows the server's reason inline
+and opens nothing.
 Before Confirm, the client fetches current status and checks backend, principal,
 reset epoch, the server-owned ticket identity, exact targets and permissions. It
 also rechecks local station/session/permission and consumes the dialog once.

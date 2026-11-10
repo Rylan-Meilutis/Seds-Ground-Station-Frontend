@@ -113,10 +113,10 @@ fn OwnedBoardAbortReadiness(show_hitl_interlocks: bool) -> Element {
             retraction_history::RetractionHistoryRepair {}
         }
         if show_hitl_interlocks&&hitl {
-            fieldset {legend {"HITL enforcement at the primary"}
-                p {"Changing enforcement does not sign off checklists or change their history. Launch still requires current primary authority."}
+            fieldset {style:"grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));",legend {"HITL enforcement at the primary"}
+                p {style:"grid-column:1/-1;margin:0;font-size:var(--gs-text-sm);color:var(--gs-text-muted);","Applied by the primary. Checklists and their history are unchanged."}
                 if crate::auth::current_status().station_role.as_deref()==Some("rrls") {
-                    p {role:"status","{super::station_mode::configuration_description(&mode)}"}
+                    p {role:"status",style:"grid-column:1/-1;","{super::station_mode::configuration_description(&mode)}"}
                 }
                 for (index,(name,label)) in [("TogglePlumbingDelayInterlock","Retraction minimum 45 seconds"),("ToggleChecklistInterlock","Checklist enforcement"),("ToggleSupplyInterlock","Nitrogen/nitrous one at a time"),("ToggleBoardStateProofInterlock","Board state checks")].into_iter().enumerate() {
                     {

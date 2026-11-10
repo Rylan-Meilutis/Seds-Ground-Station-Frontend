@@ -686,7 +686,7 @@ fn UnavailableControls(policy: ActionPolicyMsg, actions: Vec<(String, String)>, 
     }).collect();
     if rows.is_empty() && !open() { return rsx!{}; }
     rsx!{
-        if !rows.is_empty() {button{r#type:"button",style:"min-height:44px;padding:8px 12px;align-self:flex-start;",onclick:move |_|open.set(true),"Why are controls unavailable?"}}
+        if !rows.is_empty() {button{r#type:"button",class:"gs-btn",onclick:move |_|open.set(true),"Why are controls unavailable?"}}
         if open(){
             div{style:"position:fixed;inset:0;z-index:199999;background:#000a;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));display:flex;align-items:center;justify-content:center;box-sizing:border-box;",onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();open.set(false);},Key::Tab=>{event.prevent_default();super::board_recovery_panel::cycle_modal_focus("gs26-unavailable-controls",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
                 section{id:"gs26-unavailable-controls",role:"dialog","aria-modal":"true","aria-label":"Unavailable controls",style:"width:min(100%,760px);max-height:88dvh;min-width:0;padding:18px;border-radius:14px;border:1px solid {theme.border};background:{theme.panel_background};color:{theme.text_primary};display:flex;flex-direction:column;gap:12px;box-sizing:border-box;",
@@ -702,9 +702,6 @@ fn UnavailableControls(policy: ActionPolicyMsg, actions: Vec<(String, String)>, 
     }
 }
 
-/// Keeps the reset next to Launch. The dialog is the existing recovery tool, so
-/// it carries the same server-issued ticket and typed confirmation. It owns its
-/// status polling only while open.
 /// Dashboard controls for returning to Nominal after an abort: clear the
 /// station's own abort and acknowledge abort alerts, or reset every system.
 /// Board aborts persist on the boards until Reset all systems or Review recovery.
@@ -714,8 +711,8 @@ pub(super) fn AbortClearBar(theme: ThemeConfig, station_aborted: bool, on_ack: E
     let mut message = use_signal(String::new);
     let permitted = auth::can_send_command("ValveSelfTest");
     rsx!{
-        section{role:"region","aria-label":"Abort controls",style:"display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;margin:0 0 12px;border:1px solid {theme.border_soft};border-radius:10px;background:{theme.panel_background};",
-            button{r#type:"button",style:"min-height:44px;padding:8px 12px;",disabled:*busy.read()||!permitted,
+        section{role:"region","aria-label":"Abort controls",style:"display:flex;flex-wrap:wrap;gap:var(--gs-space-2);align-items:center;padding:var(--gs-space-3);margin:0 0 var(--gs-space-3);border:1px solid {theme.border_soft};border-radius:var(--gs-radius);background:{theme.panel_background};",
+            button{r#type:"button",class:"gs-btn",disabled:*busy.read()||!permitted,
                 onclick:move |_|{
                     if *busy.peek(){return;}
                     on_ack.call(());
@@ -732,38 +729,10 @@ pub(super) fn AbortClearBar(theme: ThemeConfig, station_aborted: bool, on_ack: E
                 },
                 "Clear aborts"
             }
-            ResetBoardsEntry{theme:theme.clone(),label:Some("Reset all systems…".to_string())}
-            if !permitted {span{style:"font-size:12px;","Requires command permission."}}
-            if !message.read().is_empty(){p{role:"status",style:"margin:0;flex-basis:100%;font-size:12px;","{message}"}}
+            super::board_recovery_panel::ResetAllBoards{label:Some("Reset all systems…".to_string())}
+            if !permitted {span{style:"font-size:var(--gs-text-xs);color:var(--gs-text-muted);","Requires command permission."}}
+            if !message.read().is_empty(){p{role:"status",class:"gs-notice",style:"flex-basis:100%;","{message}"}}
         }
-    }
-}
-
-#[component]
-fn ResetBoardsEntry(theme: ThemeConfig, #[props(default)] label: Option<String>) -> Element {
-    let mut open = use_signal(|| false);
-    let label = label.unwrap_or_else(|| "Reset all boards to Idle…".into());
-    rsx!{
-        button{r#type:"button",style:"min-height:44px;padding:8px 12px;align-self:flex-start;",onclick:move |_|open.set(true),"{label}"}
-        if open(){ResetBoardsDialog{theme:theme.clone(),on_close:move |_|open.set(false)}}
-    }
-}
-
-#[component]
-fn ResetBoardsDialog(theme: ThemeConfig, on_close: EventHandler<()>) -> Element {
-    super::board_recovery_panel::use_recovery_provider();
-    let ws_connected = *super::WS_CONNECTED_SIGNAL.read();
-    rsx!{
-        div{style:"position:fixed;inset:0;z-index:9000;background:#000a;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));display:flex;align-items:center;justify-content:center;box-sizing:border-box;",
-            section{role:"dialog","aria-modal":"true","aria-label":"Reset all boards",style:"width:min(100%,760px);max-height:88dvh;min-width:0;padding:16px;display:flex;flex-direction:column;gap:12px;background:{theme.panel_background};border:1px solid {theme.border_soft};border-radius:12px;box-sizing:border-box;overflow-y:auto;",
-                header{style:"display:flex;justify-content:space-between;align-items:center;gap:12px;",
-                    h3{style:"margin:0;","Reset all boards"}
-                    button{r#type:"button",style:"min-height:44px;padding:8px 12px;",onclick:move |_|on_close.call(()),"Close"}
-                }
-                super::board_recovery_panel::RecoveryTools{ws_connected,theme:theme.clone()}
-            }
-        }
-        super::board_recovery_panel::RecoveryDialogs{ws_connected}
     }
 }
 
@@ -871,33 +840,31 @@ pub fn ActionsTab(
     let software_buttons_enabled = action_policy_snapshot.software_buttons_enabled;
     rsx! {
         div {
+            class: "gs26-actions-body",
             style: "
-                padding:16px;
+                padding:var(--gs-space-4);
                 display:flex;
                 flex-direction:column;
-                gap:12px;
+                gap:var(--gs-space-3);
                 width:100%;
                 max-width:none;
                 box-sizing:border-box;
                 align-self:stretch;
             ",
             style { "{ACTION_BLINK_CSS}" }
-            h2 { style: "margin:0 0 8px 0; color:{theme.text_primary};", "{translate_text(\"Actions\")}" }
-            p  { style: "margin:0 0 12px 0; color:{theme.text_soft}; font-size:0.9rem;",
-                "Controls follow backend permissions and interlocks."
-            }
+            h2 { style: "margin:0; color:{theme.text_primary}; font-size:var(--gs-text-lg);", "{translate_text(\"Actions\")}" }
             super::board_abort_readiness::BoardAbortReadiness {show_hitl_interlocks:true}
-            section {"aria-label":"Recovery actions",
+            section {"aria-label":"Recovery actions",class:"gs26-actions-stack",
                 super::recovery_status::RecoveryStatus {}
                 super::recovery_marker::RecoveryMarker {}
             }
             if auth::current_status().station_role.as_deref() == Some("rrls") {
-                p {role:"status",style:"margin:0 0 12px;color:{theme.text_muted};font-size:13px;",
+                p {role:"status",
                     {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), true)}
                 }
             }
             if auth::current_status().station_role.as_deref() == Some("rrls") {
-                p { role:"status", style:"margin:0 0 12px;color:{theme.text_muted};font-size:13px;",
+                p { role:"status",
                     {primary_proxy_message(super::COMMAND_PROXY_STATUS.read().as_ref())}
                 }
                 if let Some(status) = super::COMMAND_PROXY_STATUS.read().as_ref().filter(|status| !status.available) {
@@ -917,22 +884,19 @@ pub fn ActionsTab(
                 div {role:"alert",style:"padding:10px 12px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};font-size:0.95rem;line-height:1.45;min-width:0;max-width:100%;overflow-wrap:anywhere;box-sizing:border-box;","{error}"}
             }
             if abort_only_mode {
-                div {
-                    style: "margin:0; padding:6px 10px; border-radius:8px; border:1px solid {theme.error_border}; background:{theme.error_background}; color:{theme.error_text}; font-size:11px; line-height:1.25;",
+                p {class:"gs-notice gs-notice--danger",
                     "{translate_text(\"Disable Actions is enabled. All action and flight-state buttons except Abort are disabled.\")}"
                 }
             }
-            if let Some(message) = super::BOARD_ABORT_SIGNAL.read().launch_message() {
-                p { role: "alert", style: "color:{theme.error_text};", "{message}" }
-            }
             if !software_buttons_enabled {
-                div {
-                    style: "margin:0; padding:8px 10px; border-radius:8px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:11px; line-height:1.3;",
+                p {class:"gs-notice gs-notice--warn",
                     "{action_buttons_disabled_message(&action_policy.read())}"
                 }
             }
-            ResetBoardsEntry {theme:theme.clone()}
-            UnavailableControls {policy:action_policy_snapshot.clone(),actions:visible_actions.iter().map(|action|(action.cmd.clone(),action.label.clone())).collect(),theme:theme.clone()}
+            div {class:"gs26-actions-row",style:"display:flex;flex-wrap:wrap;gap:var(--gs-space-2);align-items:center;",
+                super::board_recovery_panel::ResetAllBoards {}
+                UnavailableControls {policy:action_policy_snapshot.clone(),actions:visible_actions.iter().map(|action|(action.cmd.clone(),action.label.clone())).collect(),theme:theme.clone()}
+            }
             if visible_actions.is_empty() {
                 div {
                     style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background}; color:{theme.text_muted}; font-size:13px;",
@@ -943,7 +907,7 @@ pub fn ActionsTab(
                     style: "
                         display:flex;
                         flex-direction:column;
-                        gap:12px;
+                        gap:var(--gs-space-3);
                         width:100%;
                         max-width:none;
                         box-sizing:border-box;
@@ -952,7 +916,7 @@ pub fn ActionsTab(
                     for row in action_rows.iter() {
                         match row {
                             ActionLayoutRow::Heading(label) => rsx! {
-                                h3 {style:"margin:12px 0 0;color:{theme.text_muted};font-size:12px;letter-spacing:.08em;text-transform:uppercase;","{label}"}
+                                h3 {class:"gs-section-label","{label}"}
                                 if *label=="GSE sequence actions" {
                                     if auth::current_status().station_role.as_deref()==Some("rrls") {
                                         p {"Pressure limits, dry self-test confirmation and qualification changes must be made at the primary ground station."}
@@ -996,7 +960,7 @@ pub fn ActionsTab(
                             },
                             ActionLayoutRow::Spacer => rsx! {
                                 div {
-                                    style: "height:14px;"
+                                    style: "height:var(--gs-space-1);"
                                 }
                             },
                             ActionLayoutRow::Items(items) => rsx! {
@@ -1004,7 +968,7 @@ pub fn ActionsTab(
                                     style: "
                                         display:grid;
                                         grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-                                        gap:12px;
+                                        gap:var(--gs-space-3);
                                         align-items:stretch;
                                         width:100%;
                                         max-width:none;

@@ -193,7 +193,7 @@ pub(super) fn AutoColdFlow(
                 }
                 span {"aria-hidden":badge.is_empty(),style:"visibility:{badge_visibility};flex:0 0 auto;padding:0.14rem 0.42rem;border-radius:999px;border:1px solid rgba(255,255,255,0.16);background:rgba(0,0,0,0.18);color:rgba(255,255,255,0.82);font-size:0.68rem;font-weight:800;line-height:1;text-transform:uppercase;letter-spacing:0.04em;", "{badge}"}
             }
-            small {"Standalone: pressurizes with nitrogen to its own Cold Flow target, then isolates and waits. No ignition or launch countdown. (Cold flow from a nitrogen test prompt releases the test's held pressure instead.)"}
+            small {style:"color:var(--gs-text-muted);line-height:1.4;","Pressurizes with nitrogen to its own Cold Flow target, then isolates and waits. No ignition or countdown."}
             if !message().is_empty(){p {role:"status",style:"margin:0;","{message}"}}
         }
     }

@@ -46,7 +46,7 @@
   outline-offset: 3px;
 }
 .gs26-modal .gs26-modal-danger,
-[aria-labelledby="board-recovery-confirm-title"] #board-recovery-confirm-phrase ~ button:last-child {
+[aria-labelledby="board-recovery-confirm-title"] button.gs26-modal-danger {
   background: #9e2636;
   border-color: #dd7180;
   color: #fff;

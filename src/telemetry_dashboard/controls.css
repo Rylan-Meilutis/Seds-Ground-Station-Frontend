@@ -104,3 +104,12 @@
 .gs26-actions-page fieldset > legend{padding:0 6px;font-weight:700;font-size:var(--gs-text-sm,13px)}
 .gs26-actions-page label:has(> input[type=checkbox]){display:flex;align-items:flex-start;gap:10px;line-height:1.4}
 .gs26-actions-page details:not(.gs-info) > summary{min-height:36px;display:flex;align-items:center;cursor:pointer;color:var(--gs-text-muted,#9fb0c7);font-size:var(--gs-text-sm,13px)}
+/* Actions page rhythm: every stacked block uses the shared spacing scale, so
+   status notes, their buttons and the recovery cards never touch. */
+.gs26-actions-page section[aria-label="Launch readiness"],
+.gs26-actions-page .gs26-actions-stack{display:grid;gap:var(--gs-space-2,8px);min-width:0}
+.gs26-actions-page section[aria-label="Launch readiness"] > button,
+.gs26-actions-page .gs26-actions-row > .gs26-reset-entry > button{justify-self:start;margin:0}
+.gs26-actions-page section[aria-label="Launch readiness"] > p[role=alert]{margin:0;font-weight:600;color:var(--gs-danger-text,#ffd1db)}
+.gs26-actions-page .gs26-recovery-status{grid-area:auto;padding:6px 10px;border:1px solid var(--gs-line,#314156);border-radius:var(--gs-radius-sm,8px);background:var(--gs-surface-2,#142033);color:var(--gs-text-muted,#9fb0c7)}
+.gs26-actions-page .gs26-cold-flow-start > button{height:auto !important;min-height:44px !important}

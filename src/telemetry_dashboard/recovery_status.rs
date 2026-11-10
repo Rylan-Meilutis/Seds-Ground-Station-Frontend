@@ -33,7 +33,7 @@ pub(super) fn RecoveryStatus() -> Element {
         _ if state.relay_requested => "GroundStation · waiting for recovery relay readiness",
         _ => "GroundStation · direct AV-bay path",
     };
-    rsx! {div {class:"gs26-recovery-status",role:"status",style:"flex:0 0 auto;padding:5px 12px;font-size:12px;border-bottom:1px solid #435165;", "{label}"}}
+    rsx! {div {class:"gs26-recovery-status",role:"status",style:"flex:0 0 auto;font-size:var(--gs-text-xs);", "{label}"}}
 }
 
 #[cfg(test)]
