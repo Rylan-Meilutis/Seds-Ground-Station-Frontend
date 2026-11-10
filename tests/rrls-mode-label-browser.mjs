@@ -5,11 +5,12 @@ import {pathToFileURL} from 'node:url';
 const source=fs.readFileSync('tests/operation-workflow.mjs','utf8'),boundary=source.indexOf('try {\n const context=');
 if(boundary<0)throw Error('Operation fixture boundary changed');
 let fixture=source.slice(0,boundary).replace("process.env.PLAYWRIGHT_MODULE || 'playwright'",JSON.stringify(process.env.PLAYWRIGHT_MODULE?pathToFileURL(path.resolve(process.env.PLAYWRIGHT_MODULE)).href:import.meta.resolve('playwright')));
-fixture=fixture.replace('authenticated:true,anonymous:false','authenticated:true,anonymous:false,station_role:"rrls"');
+// No primary mode has been observed yet: the RRLS must say so, not assume Normal.
+fixture=fixture.replace('authenticated:true,anonymous:false','authenticated:true,anonymous:false,station_role:"rrls",operating_mode:{}');
 fixture+=`try {
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
  await context.addInitScript(({session,origin})=>localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]})),{session,origin});
- await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
+ await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>{s.onMessage(()=>{});const beat=setInterval(()=>s.send(JSON.stringify({ty:'NetworkTime',data:{timestamp_ms:Date.now()}})),500);s.onClose(()=>clearInterval(beat));});
  const page=await context.newPage(),errors=[],posts=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',request=>{if(request.method()==='POST')posts.push(request.url());});
  await page.goto(origin+'/dashboard');await page.getByRole('link',{name:'Actions',exact:true}).click();
  await page.getByText('Sequence diagnostics',{exact:true}).click();

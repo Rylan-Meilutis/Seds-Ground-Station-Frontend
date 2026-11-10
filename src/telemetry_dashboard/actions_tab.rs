@@ -812,7 +812,7 @@ pub fn ActionsTab(
         let recovery=auth::current_status().station_role.as_deref()==Some("rrls");
         let indicators=sequence_indicators(status,super::board_recovery_guard::status_age_ms(observation.requested_at_ms,now),recovery);
         if *displayed_sequence.peek()!=indicators {displayed_sequence.set(indicators);}
-        let next=if let Some(error)=observation.error.as_ref() {format!("Cannot read backend GSE gate: {error}")}
+        let next=if let Some(error)=observation.error.as_ref() {format!("Cannot read {} GSE gate: {error}",if recovery {"RRLS local backend"} else {"backend"})}
         else {request_gate_diagnostics(status,recovery)};
         if *gse_request_gate.peek()!=next {gse_request_gate.set(next);}
     });
