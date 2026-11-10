@@ -37,7 +37,9 @@ fixture+=${'`'}try {
   fs.mkdirSync(process.env.GS_UI_ARTIFACT_DIR,{recursive:true});await page.waitForTimeout(2500);
   for(const [width,tag] of [[1280,'desktop'],[390,'narrow']]){await page.setViewportSize({width,height:1000});await page.waitForTimeout(400);await panel.screenshot({path:path.join(process.env.GS_UI_ARTIFACT_DIR,'board-health-'+tag+'.png')});}
   await page.setViewportSize({width:1280,height:1000});}
- await until(async()=>await health('AB','state')==='unhealthy','aborted board State is unhealthy');
+ // The fixture's AB already has a latched Abort; wait for the Aborted readback itself.
+ await until(async()=>/Aborted/.test(await line('AB','state').innerText()),'aborted readback reaches the State line');
+ assert.equal(await health('AB','state'),'unhealthy','aborted board State is unhealthy');
  assert.equal(await health('AB','network'),'healthy','an aborted board is still reachable');
  assert.match(await line('AB','state').innerText(),/Aborted/);
  assert.equal(await card('AB').getByText('Healthy',{exact:true}).count(),1,'only the Network line may say Healthy for an aborted board');
