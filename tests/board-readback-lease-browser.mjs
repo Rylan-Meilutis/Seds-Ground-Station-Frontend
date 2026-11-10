@@ -27,14 +27,16 @@ fixture+=`try {
  await page.goto(origin+'/dashboard');await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();await page.getByRole('link',{name:'Connection',exact:true}).click();
  const ab=page.locator('.gs26-board-recovery [data-board="AB"]');
  await ab.waitFor();await ab.getByRole('button',{name:'More info',exact:true}).click();
+ // The lease decides whether a readback is shown as fresh. Recover and Resync no longer
+ // gate on it in the browser: the station takes fresh proof when it prepares them.
  const details=page.getByRole('dialog',{name:'Board details',exact:true});await details.waitFor();await details.getByText('Missing lease',{exact:true}).waitFor();
  const stale=()=>details.getByText('Startup (unconfirmed/stale)',{exact:true});
- await stale().waitFor();assert(await ab.getByRole('button',{name:'Resync…'}).isDisabled(),'missing backend lease denies');
+ await stale().waitFor();// missing backend lease: never shown as fresh
  lease=123;delayMs=250;stage='Short lease delayed';
- await details.getByText('Short lease delayed',{exact:true}).waitFor();await stale().waitFor();assert(await ab.getByRole('button',{name:'Resync…'}).isDisabled(),'123ms lease expires during250ms transport');
+ await details.getByText('Short lease delayed',{exact:true}).waitFor();await stale().waitFor();// 123ms lease expires during 250ms transport
  lease=12345;delayMs=0;stage='Backend long lease';
- await details.getByText('Backend long lease',{exact:true}).waitFor();await details.getByText('Startup (fresh)',{exact:true}).waitFor();assert(await ab.getByRole('button',{name:'Resync…'}).isEnabled(),'server lease wins over diagnostic90s age and any local2/5s constant');
- lease=0;stage='Backend expired';await details.getByText('Backend expired',{exact:true}).waitFor();await stale().waitFor();assert(await ab.getByRole('button',{name:'Resync…'}).isDisabled(),'zero server lease denies immediately');
+ await details.getByText('Backend long lease',{exact:true}).waitFor();await details.getByText('Startup (fresh)',{exact:true}).waitFor();// server lease wins over diagnostic 90s age and any local 2/5s constant
+ lease=0;stage='Backend expired';await details.getByText('Backend expired',{exact:true}).waitFor();await stale().waitFor();// zero server lease is stale at once
  await details.getByRole('button',{name:'Close details',exact:true}).click();await details.waitFor({state:'detached'});
  assert.equal(writes,0,'viewing details and status polling cannot issue board commands');assert.deepEqual(errors,[]);await context.close();
  console.log('PASS server-owned readback lease: absent/zero deny,123ms includes transport,arbitrary12345ms server window independent of diagnostic age,no command writes');
