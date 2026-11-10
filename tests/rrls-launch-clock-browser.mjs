@@ -29,7 +29,13 @@ fixture+=`try {
  const sockets=new Set(),commands=[];await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>{sockets.add(s);s.onClose(()=>sockets.delete(s));s.onMessage(msg=>commands.push(JSON.parse(msg)));});
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());await page.goto(origin+'/dashboard');await page.getByRole('link',{name:'Actions',exact:true}).click();
  const reset=page.getByRole('button',{name:'Request T clock reset',exact:true});await reset.waitFor();await page.waitForTimeout(4000);assert((await page.locator('body').innerText({timeout:3000})).includes('Mark recovered'),'retained TPlus without network time cannot freeze the UI');
- const retained={...recovery.clock};await reset.click();await page.waitForTimeout(500);assert.deepEqual(commands,[{cmd:'ResetTClock'}]);
+ // A station refusal is shown on the button, not swallowed by a press that sends nothing.
+ const refused=JSON.parse(JSON.stringify(actionPolicy));refused.controls.find(c=>c.cmd==='ResetTClock').enabled=false;refused.controls.find(c=>c.cmd==='ResetTClock').disabled_reason='Fixture: T clock reset refused';
+ for(const socket of sockets)socket.send(JSON.stringify({ty:'ActionPolicy',data:refused}));await page.getByText('T clock reset unavailable: Fixture: T clock reset refused',{exact:true}).waitFor();assert(await reset.isDisabled());
+ for(const socket of sockets)socket.send(JSON.stringify({ty:'ActionPolicy',data:actionPolicy}));await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(b=>b.textContent==='Request T clock reset'&&!b.disabled));
+ // ResetTClock is a local RRLS operation: it goes over this station's own socket, never the primary command proxy.
+ const retained={...recovery.clock};await reset.click();
+ const confirmReset=page.getByRole('alertdialog',{name:'Confirm reset'});await confirmReset.waitFor();assert.deepEqual(commands,[],'nothing is sent before the in-app confirmation');await confirmReset.getByRole('button',{name:'Confirm reset',exact:true}).click();for(let n=0;n<200&&!commands.length;n++)await page.waitForTimeout(25);assert.deepEqual(commands,[{cmd:'ResetTClock'}]);
  recovery.reset.pending=true;recovery.synchronized=false;await page.getByText('Primary T clock reset pending · clock retained',{exact:true}).waitFor({timeout:5000});assert.deepEqual(recovery.clock,retained);assert(await reset.isDisabled());
  recovery.clock={session:'b'.repeat(32),t0_utc_ms:null};recovery.reset.pending=false;recovery.synchronized=true;for(const socket of sockets)socket.send(JSON.stringify({ty:'LaunchClock',data:{kind:'idle',anchor_timestamp_ms:null,duration_ms:null}}));
  await page.getByText('Primary T clock reset pending · clock retained',{exact:true}).waitFor({state:'detached',timeout:5000});assert(await page.getByRole('button',{name:'Mark recovered',exact:true}).isDisabled());

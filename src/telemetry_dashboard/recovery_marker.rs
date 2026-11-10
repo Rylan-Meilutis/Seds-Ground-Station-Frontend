@@ -126,7 +126,22 @@ pub(super) fn RecoveryMarker() -> Element {
         )
     });
     let session = current.clock.session.clone();
-    let reset_allowed = !*busy.read() && can_mark && !current.reset.pending;
+    // ResetTClock is a local RRLS operation (its backend asks the primary), so
+    // it goes over this station's own socket, never the primary command proxy.
+    // When this station would refuse it, say so rather than take a press that
+    // sends nothing.
+    let policy = super::ACTION_POLICY_SIGNAL.read();
+    let refusal = if !crate::auth::can_send_command("ResetTClock") {
+        Some("not permitted for this account".to_string())
+    } else if !super::action_policy_control_enabled(&policy, "ResetTClock") {
+        Some(policy.controls.iter().find(|c| c.cmd == "ResetTClock")
+            .and_then(|c| c.disabled_reason.clone()).filter(|r| !r.trim().is_empty())
+            .unwrap_or_else(|| "disabled by this station".into()))
+    } else {
+        None
+    };
+    drop(policy);
+    let reset_allowed = !*busy.read() && can_mark && !current.reset.pending && refusal.is_none();
     rsx! {div {class:"gs26-recovery-marker",style:"padding:var(--gs-space-3);border:1px solid var(--gs-line);border-radius:var(--gs-radius);display:flex;gap:var(--gs-space-2);align-items:center;flex-wrap:wrap;",
         strong {style:"flex:1 0 100%;", "Recovery"}
         button {disabled, title:"Record arrival at the rocket; does not send a hardware command",onclick:move |_|{
@@ -139,21 +154,22 @@ pub(super) fn RecoveryMarker() -> Element {
         },if marked.is_some(){"Rocket reached"}else{"Mark recovered"}}
         if let Some(text)=text {span{role:"status","{text}"}}
         if auth.station_role.as_deref()==Some("rrls") && current.clock_reset_request_supported {
-            button {disabled:!reset_allowed,
-                onpointerdown:move |event|{if reset_allowed {super::command_pointer_down_event("recovery:tclock","ResetTClock",&event,true);}},
+            button {disabled:!reset_allowed,title:refusal.clone().unwrap_or_default(),
+                onpointerdown:move |event|{if reset_allowed {super::command_pointer_down_event("recovery:tclock","ResetTClock",&event,false);}},
                 onpointerup:move |event|{super::command_pointer_up_event("recovery:tclock",&event);},
                 onpointercancel:move |event|{super::command_pointer_cancel_event("recovery:tclock",&event);},
-                ontouchstart:move |event|{if reset_allowed {super::command_touch_start_event("recovery:tclock","ResetTClock",&event,true);}},
+                ontouchstart:move |event|{if reset_allowed {super::command_touch_start_event("recovery:tclock","ResetTClock",&event,false);}},
                 ontouchend:move |event|{super::command_touch_end_event("recovery:tclock",&event);},
                 ontouchcancel:move |event|{super::command_touch_cancel_event("recovery:tclock",&event);},
-                onmousedown:move |event|{if reset_allowed {super::command_mouse_down_event("recovery:tclock","ResetTClock",&event,true);}},
+                onmousedown:move |event|{if reset_allowed {super::command_mouse_down_event("recovery:tclock","ResetTClock",&event,false);}},
                 onmouseup:move |event|{super::command_mouse_up_event("recovery:tclock",&event);},
-                onkeydown:move |event|{if reset_allowed {super::command_key_down_event("recovery:tclock","ResetTClock",&event,true);}},
+                onkeydown:move |event|{if reset_allowed {super::command_key_down_event("recovery:tclock","ResetTClock",&event,false);}},
                 onkeyup:move |event|{super::command_key_up_event("recovery:tclock",&event);},
-                onclick:move |event|{if reset_allowed {super::command_click("recovery:tclock","ResetTClock",&event,true);}},
+                onclick:move |event|{if reset_allowed {super::command_click("recovery:tclock","ResetTClock",&event,false);}},
                 "Request T clock reset"
             }
         }
+        if auth.station_role.as_deref()==Some("rrls") && current.clock_reset_request_supported {if let Some(reason)=refusal.as_ref() {span{role:"status","T clock reset unavailable: {reason}"}}}
         if current.reset.pending {span{role:"status","Primary T clock reset pending · clock retained"}}
         if let Some(error)=current.reset.error {span{role:"alert","Primary reset: {error}"}}
         if current.clock_known==Some(false) {span{role:"alert","Saved T0 is unknown · explicit primary T clock reset required"}}
