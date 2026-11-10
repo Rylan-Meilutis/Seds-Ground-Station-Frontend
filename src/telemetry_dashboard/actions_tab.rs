@@ -647,6 +647,9 @@ fn request_gate_diagnostics(status: &serde_json::Value, recovery: bool) -> Strin
     )
 }
 
+/// How long the last good GSE status stays on screen while reads fail (matches
+/// the self-test confirmation's freshness window).
+const STATUS_FRESH_MS: u64 = 10_000;
 const SEQUENCE_INDICATOR_COMMANDS: [&str; 6] = ["ValveSelfTest", "NitrogenTest", "StartFill", "PauseFill", "CancelFill", "Turbocharge"];
 type SequenceIndicators = [Option<super::sequence_indicator::Progress>; 6];
 fn sequence_indicators(status: &serde_json::Value, age_ms: u64, rrls: bool) -> SequenceIndicators {
@@ -807,7 +810,12 @@ pub fn ActionsTab(
             if *displayed_sequence.peek()!=next {displayed_sequence.set(next);}
             return;
         }
-        let status=&observation.value;
+        // A read that keeps failing leaves the last good status in place with only
+        // its error set. Past the freshness window that status (qualification,
+        // overpressure, physical panel) is no longer current: say so instead.
+        let unavailable=serde_json::json!({"unavailable":true});
+        let status=if observation.error.is_some()
+            && super::board_recovery_guard::status_age_ms(observation.requested_at_ms,now)>STATUS_FRESH_MS {&unavailable} else {&observation.value};
         if *operational_status.peek()!=*status {operational_status.set(status.clone());}
         let recovery=auth::current_status().station_role.as_deref()==Some("rrls");
         let indicators=sequence_indicators(status,super::board_recovery_guard::status_age_ms(observation.requested_at_ms,now),recovery);
