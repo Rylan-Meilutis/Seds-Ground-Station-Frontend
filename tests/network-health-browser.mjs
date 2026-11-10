@@ -12,7 +12,8 @@ try {
  const sensor=page.locator('article').filter({hasText:'New-runtime-sensor-with-long-name'});
  // Cards keep the headline count; full counters and diagnostics are in More info.
  const details=async card=>{await card.getByRole('button',{name:'More info',exact:true}).click();const dialog=page.getByRole('dialog',{name:'Board details'});await dialog.waitFor();const text=await dialog.innerText();await dialog.getByRole('button',{name:'Close details',exact:true}).click();await dialog.waitFor({state:'detached'});return text;};
- assert.match(await sensor.innerText(),/Disconnects: 3/);
+ // The card's Network line says whether the board is reporting; counters are in More info.
+ assert.equal(await sensor.locator('[data-health-line="network"]').getAttribute('data-health'),'unhealthy');
  assert.match(await details(sensor),/Disconnects\s+3\s+Reconnects\s+2/);
  const valve=page.locator('article').filter({hasText:'VB'});
  const valveInfo=await details(valve);

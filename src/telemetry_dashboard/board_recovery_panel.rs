@@ -439,8 +439,41 @@ fn connected(ui: RecoveryUi, ws_connected: bool) -> bool {
             .as_ref()
             .is_some_and(|snapshot| snapshot.binding == ConnectionBinding::current())
 }
+/// What the board's State line shows. Abort (latched, reported or pushed) and
+/// a required recovery are unhealthy; no state, a paused AV-bay query or a
+/// readback that is not fresh is stale. Only a fresh, non-aborted state is healthy.
+pub(super) fn state_health(
+    state: &str,
+    fresh: bool,
+    abort_latched: Option<bool>,
+    recovery_required: bool,
+    abort_pushed: bool,
+    queries_paused: bool,
+) -> (super::network_health::board_display::Health, String) {
+    use super::network_health::board_display::Health;
+    let aborted = abort_latched == Some(true) || state == "Aborted" || abort_pushed;
+    if aborted || recovery_required {
+        let label = match (state.is_empty() || state == "Aborted", aborted) {
+            (true, _) => "Aborted".to_string(),
+            (false, true) => format!("{state} · abort latched"),
+            (false, false) => format!("{state} · recovery required"),
+        };
+        return (Health::Unhealthy, label);
+    }
+    if state.is_empty() {
+        return (Health::Stale, "Unknown".into());
+    }
+    if queries_paused {
+        return (Health::Stale, format!("{state} · status queries paused"));
+    }
+    if !fresh {
+        return (Health::Stale, format!("{state} · not current"));
+    }
+    (Health::Healthy, state.to_string())
+}
 #[component]
 pub(super) fn RecoveryBoardState(board_id: String) -> Element {
+    use super::network_health::board_display::{Health, health_line};
     let ui = use_context::<RecoveryUi>();
     let _ = *super::HEADER_CLOCK_TICK.read();
     let current = ui.snapshot.read().clone().filter(|snapshot| snapshot.read_context.as_ref().is_some_and(|context| context.check_current().is_ok()));
@@ -454,16 +487,24 @@ pub(super) fn RecoveryBoardState(board_id: String) -> Element {
     );
     let local_gs = board_id == "GS"
         && crate::auth::current_status().station_role.as_deref() != Some("rrls");
-    let label = if local_gs {
-        current.as_ref()
+    let abort_pushed = super::BOARD_ABORT_SIGNAL.read().board_aborted(&board_id);
+    let (health, value) = if local_gs {
+        let label = current.as_ref()
             .filter(|snapshot| snapshot.binding == ConnectionBinding::current())
-            .map_or("Unknown", |snapshot| snapshot.status.global_state_label())
-    } else if display.state.is_empty() {
-        "Unknown"
+            .map_or("Unknown", |snapshot| snapshot.status.global_state_label());
+        match label {
+            "Unknown" => (Health::Stale, label.to_string()),
+            "Aborted" => (Health::Unhealthy, label.to_string()),
+            _ => (Health::Healthy, label.to_string()),
+        }
     } else {
-        display.state.as_str()
+        let raw = current.as_ref().and_then(|snapshot| snapshot.status.board(&board_id));
+        let queries_paused = matches!(board_id.as_str(), "RF" | "FC" | "PB")
+            && current.as_ref().is_some_and(|snapshot| snapshot.status.av_bay_status_queries_paused.is_some());
+        state_health(&display.state, display.fresh && !display.retained, display.abort_latched,
+            raw.is_some_and(|board| board.recovery_required), abort_pushed, queries_paused)
     };
-    rsx! {span{class:"gs26-recovery-state","{label}"}}
+    health_line("state", "State", health, &value)
 }
 #[component]
 pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Element {
@@ -1028,6 +1069,20 @@ mod tests {
         let mut dom = VirtualDom::new(component);
         dom.rebuild_in_place();
         dioxus::ssr::render(&dom)
+    }
+    #[test]
+    fn state_line_never_calls_an_aborted_stale_or_paused_board_healthy() {
+        use super::super::network_health::board_display::Health;
+        assert_eq!(state_health("Idle", true, Some(false), false, false, false), (Health::Healthy, "Idle".into()));
+        assert_eq!(state_health("Aborted", true, Some(true), false, false, false).0, Health::Unhealthy);
+        assert_eq!(state_health("Startup", true, Some(true), false, false, false), (Health::Unhealthy, "Startup · abort latched".into()));
+        assert_eq!(state_health("Idle", true, Some(false), false, true, false).0, Health::Unhealthy, "an Abort push is unhealthy");
+        assert_eq!(state_health("Idle", true, Some(false), true, false, false).0, Health::Unhealthy, "a required recovery is unhealthy");
+        assert_eq!(state_health("Idle", false, Some(false), false, false, false).0, Health::Stale, "a readback that is not fresh is stale");
+        assert_eq!(state_health("Idle", true, Some(false), false, false, true).0, Health::Stale, "paused AV-bay queries are stale");
+        assert_eq!(state_health("", true, None, false, false, false), (Health::Stale, "Unknown".into()));
+        // An Abort outranks staleness: a stale aborted board is still unhealthy.
+        assert_eq!(state_health("Aborted", false, Some(true), false, false, true).0, Health::Unhealthy);
     }
     #[test]
     fn network_health_follows_server_policy_not_displayed_age() {

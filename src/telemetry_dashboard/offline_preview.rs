@@ -276,8 +276,8 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
                                 for (label,sender,age) in boards(test_fire()) {
                                     div {class:"gs26-preview-board",
                                         span {strong {"{label}"} small {" {sender}"}}
-                                        span {class:"gs-badge gs-badge--ok","Healthy"}
-                                        small {"Last seen {age} ago · 0 disconnects"}
+                                        {super::network_health::board_display::health_line("network", "Network", super::network_health::board_display::Health::Healthy, &format!("seen {age} ago"))}
+                                        {super::network_health::board_display::health_line("state", "State", super::network_health::board_display::Health::Healthy, "Idle (example)")}
                                     }
                                 }
                             }

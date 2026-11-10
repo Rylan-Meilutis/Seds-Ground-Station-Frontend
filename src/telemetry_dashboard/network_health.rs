@@ -95,6 +95,24 @@ fn launch_log_state(
     }
     ("Launch clock accepted", "good")
 }
+/// The card's SD line, only for a board whose diagnostics carry storage
+/// health. A fault or dropped/failed writes are unhealthy; a status that is
+/// stale, starting or pending is stale.
+fn sd_health(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> Option<(board_display::Health, String)> {
+    use board_display::Health;
+    let report = row.diagnostics.as_ref()?;
+    if report.sd_flags.is_none() && report.sd_status_received_age_ms.is_none() {
+        return None;
+    }
+    let (label, state) = sd_state(report, connected, elapsed);
+    let dropped = report.sd_rejected_records.unwrap_or(0).saturating_add(report.sd_write_errors.unwrap_or(0));
+    Some(match state {
+        "error" => (Health::Unhealthy, label.to_string()),
+        _ if dropped > 0 && state != "unknown" => (Health::Unhealthy, format!("{label} · {dropped} dropped")),
+        "good" | "idle" => (Health::Healthy, label.to_string()),
+        _ => (Health::Stale, label.to_string()),
+    })
+}
 // Status is based on successful device I/O, never just enqueue acceptance.
 fn sd_state(
     report: &BoardDiagnostics,
@@ -285,12 +303,16 @@ pub fn NetworkHealthSection(
                      let board_id=row.sender_id.clone();
                      rsx! {
                         article { key: "{row.sender_id}","data-board":"{row.sender_id}",class:"gs26-board-recovery-card", style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px; min-width:0; overflow-wrap:anywhere;",
-                            div { style: "display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; align-items:center;",
-                                strong { "{row.sender_id}" }
-                                {board_display::health_badge(ok)}
+                            strong { "{row.sender_id}" }
+                            // One indicator per aspect: a reachable board that has aborted is
+                            // Network healthy but State unhealthy, never one "Healthy" badge.
+                            div { class: "gs26-health-lines", style: "display:grid;gap:var(--gs-space-1,4px);margin:var(--gs-space-2,8px) 0;min-width:0;",
+                                {board_display::health_line("network", "Network", if ok {board_display::Health::Healthy} else {board_display::Health::Unhealthy}, &format!("seen {age} ago"))}
+                                if let Some(render) = recovery_renderer { {render.call((RecoverySlot::State, board_id.clone(), ws_connected, theme.clone()))} }
+                                if let Some((health, value)) = sd_health(row, ws_connected, elapsed) {
+                                    {board_display::health_line("sd", "SD", health, &value)}
+                                }
                             }
-                            if let Some(render) = recovery_renderer { p{style:"margin:8px 0;",{render.call((RecoverySlot::State, board_id.clone(), ws_connected, theme.clone()))}} }
-                            p{style:"margin:8px 0;color:{theme.text_secondary};","Disconnects: {row.disconnects}"}
                             if let Some(offset) = row.clock_offset_ms {
                                 if clock_desynced(offset) {
                                     p{role:"alert",style:"margin:8px 0;padding:6px 8px;border:1px solid {theme.error_border};background:{theme.error_background};color:{theme.error_text};border-radius:8px;","Clock out of sync: {clock_offset_text(offset)}"}

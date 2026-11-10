@@ -7,6 +7,11 @@ mod layout;
 mod navigation_rail;
 #[path = "../src/telemetry_dashboard/offline_preview.rs"]
 mod offline_preview;
+#[path = "../src/telemetry_dashboard/network_health/board_display.rs"]
+mod board_display_impl;
+mod network_health {
+    pub(crate) use super::board_display_impl as board_display;
+}
 // The shared rail declares a saved preference signal; preview does not use it.
 mod persist {
     pub fn get_string(_: &str) -> Option<String> {

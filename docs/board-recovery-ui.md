@@ -1,7 +1,14 @@
 # Connectivity recovery controls
 
 Connectivity contains per-board network health, diagnostics, actual board state
-and explicit recovery controls. Detailed Info retains general network statistics.
+and explicit recovery controls. Each board card shows up to three short lines, each
+with its own indicator: **Network** (the backend's health verdict for the
+link and when the board was last seen), **State** (the actual readback: an
+Abort latch, an Abort push or a required recovery is Unhealthy; no state, a
+readback that is not fresh or paused AV-bay status queries is Stale, never
+Healthy) and **SD** (only for boards whose diagnostics report storage; a
+fault or dropped or failed writes is Unhealthy). A reachable board that has
+aborted therefore reads Network Healthy and State Unhealthy. Detailed Info retains general network statistics.
 Missing board state is **Unknown**, even when GS is in Startup. Healthy network
 traffic does not establish an abort latch, safe output state or recovery support.
 GPIO/servo command-register readback is not physical valve-position sensing.

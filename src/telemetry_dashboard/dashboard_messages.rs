@@ -515,6 +515,10 @@ fn dismiss_board_abort(key: (String, u64)) {
     }
 }
 impl BoardAbortSnapshot {
+    /// The station's Abort push for this board is still active.
+    pub(super) fn board_aborted(&self, board: &str) -> bool {
+        self.active_errors.iter().any(|error| error.board == board)
+    }
     fn launch_blocking_errors(&self) -> impl Iterator<Item = &BoardAbortError> {
         self.active_errors.iter().filter(|error| error.launch_blocking)
     }
