@@ -557,6 +557,10 @@ pub(super) fn RecoveryBoardDetails(
         .unwrap_or_else(|| {
             Some("Current server proof is unavailable; controls remain disabled.".into())
         });
+    // Background AV-bay queries paused: the long explanation goes in the
+    // row's "About these readbacks" disclosure, not in the row text.
+    let av_bay_paused = matches!(board_id.as_str(), "RF" | "FC" | "PB")
+        && current.as_ref().is_some_and(|snapshot| snapshot.status.av_bay_status_queries_paused.is_some());
     let state = if display.state.is_empty() {
         "Unknown"
     } else {
@@ -608,6 +612,7 @@ pub(super) fn RecoveryBoardDetails(
     if let Some((_, description))=super::board_recovery_model::targeted_recovery_label(&board_id){p{style:"margin:0;font-size:var(--gs-text-sm);color:var(--gs-text-muted);","{description}"}}
     if let Some(reason)=recover_reason.clone(){p{class:"gs-notice","Recovery unavailable: {reason}"}}
     details{class:"gs-info",summary{"About these readbacks"}
+        if av_bay_paused {p{"Automatic status queries to the AV bay are paused while its radio link is degraded. The row shows the last board readback; the board's own status reports still arrive. Query or Recover asks the board directly."}}
         p{"Physical valve position is not verified by GPIO/servo command registers."
             if display.physical_verified {" The server claims physical verification, but these fields alone do not establish valve position."}}
     }

@@ -302,6 +302,10 @@ pub(super) struct Status {
     pub resync_target_state: Option<u8>,
     #[serde(default)]
     pub resync_target_label: Option<String>,
+    /// Why background status queries to the AV bay (RF, FC, PB) are paused,
+    /// or None while they run.
+    #[serde(default)]
+    pub av_bay_status_queries_paused: Option<String>,
 }
 impl Status {
     pub fn valid(&self) -> bool {
@@ -707,6 +711,15 @@ mod tests {
             "../../tests/fixtures/board-recovery/prepare-example.json"
         ))
         .unwrap()
+    }
+    #[test]
+    fn the_av_bay_query_pause_reason_is_read_from_status() {
+        assert_eq!(status().av_bay_status_queries_paused, None);
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/board-recovery/status-example.json")).unwrap();
+        value["av_bay_status_queries_paused"] = "an AV-bay status query went unanswered".into();
+        let paused: Status = serde_json::from_value(value).unwrap();
+        assert_eq!(paused.av_bay_status_queries_paused.as_deref(), Some("an AV-bay status query went unanswered"));
     }
     #[test]
     fn targeted_recovery_labels_and_confirmation_remain_exact_board_scopes() {
