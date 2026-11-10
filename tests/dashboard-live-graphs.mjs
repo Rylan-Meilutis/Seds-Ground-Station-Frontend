@@ -68,7 +68,9 @@ try {
  },25);
  await page.waitForTimeout(Number(process.env.GS_GRAPH_STRESS_MS||10000));clearInterval(interval);await page.waitForTimeout(300);
  const updates=await page.evaluate(()=>changes);
- assert(updates.length>=seq*0.7,'dashboard follows real40Hz source instead of independent5Hz sampler');
+ // Renders are capped at 20 Hz (half this 40 Hz source); an independent 5 Hz sampler would
+ // show at most an eighth of the samples.
+ assert(updates.length>=seq*0.35,'dashboard follows the live source at the 20 Hz render cap, not an independent 5 Hz sampler: '+updates.length+'/'+seq);
  assert.equal(await card.locator('.gs26-card-value').innerText(),`${seq}.00 kg`,'last source sample visible');
  {
    await page.getByRole('button',{name:/Choose tab/}).click();await page.getByRole('button',{name:'Telemetry',exact:true}).click();

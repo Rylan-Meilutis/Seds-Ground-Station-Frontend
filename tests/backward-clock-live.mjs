@@ -27,14 +27,14 @@ try {
  try {
   await page.getByText('1000 kg loadcell',{exact:true}).waitFor();
   await page.waitForTimeout(7500);
-  const trend=page.locator('.gs26-custom-dashboard polyline').first();await trend.waitFor();
-  const before=(await trend.getAttribute('points')).trim().split(/\\s+/).length;
+  const trend=page.locator('.gs26-custom-dashboard svg[role=img] path').first();await trend.waitFor();
+  const before=(await trend.getAttribute('d')).trim().split(/\\s+/).length;
   assert(before>50,'trend is populated before clock correction: '+before);
   clockOffset=-600000;await page.evaluate(()=>window.__clockOffset=-600000);
   await page.waitForTimeout(600);clearInterval(timer);send();
   const expected=sequence.toFixed(2)+' kg';await page.getByText(expected,{exact:true}).first().waitFor({timeout:2500});
   assert.equal(await page.getByText(expected,{exact:true}).count(),2,'both loadcells update after backward clock step');
-  const after=(await trend.getAttribute('points')).trim().split(/\\s+/).length;
+  const after=(await trend.getAttribute('d')).trim().split(/\\s+/).length;
   assert(after>=2&&after<50,'display trend starts a new epoch instead of retaining future points: '+after);
   assert.deepEqual(errors,[]);
   console.log('PASS actual Wasm: both loadcells remain live after client clock -10min; trend epoch '+before+'→'+after+' points');

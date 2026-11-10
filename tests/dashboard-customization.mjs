@@ -308,32 +308,47 @@ try{
   assert(await exportPanel.evaluate(el=>el.scrollTop>0),'export scroll reaches lower controls');
   await page.screenshot({path:'/tmp/gs-export-mobile.png',fullPage:true});
   await page.setViewportSize({width:390,height:844});
+  // The console never lets the last administrator be demoted, so give the station a
+  // second one before changing test-admin's role.
+  adminAccounts.push({...structuredClone(adminAccounts[0]),username:'second-admin'});
   session.roles=['admin'];await page.reload();
   await page.locator('.gs26-header-menu-toggle').filter({hasText:'Tools'}).click();
   await openAdmin();
   await page.getByRole('heading',{name:'Administration',exact:true}).waitFor();
   assert.equal(await page.getByRole('button',{name:'Broadcast studio',exact:true}).count(),0,'admin has no stream redirect');
   assert.equal(await page.getByRole('button',{name:'Voice chat',exact:true}).count(),0,'admin has no voice redirect');
-  await page.getByLabel('Application administrator',{exact:true}).uncheck();
-  await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
+  // The console shows each account as a card; edits happen in its "Edit <name>" panel,
+  // and removing or narrowing access asks once before saving.
+  const account=name=>page.locator('.gs26-admin li.admin-user').filter({has:page.getByRole('heading',{name,exact:true})});
+  const editor=async name=>{const card=account(name);const panel=card.locator('details.admin-editor');if(!await panel.evaluate(e=>e.open))await card.getByText('Edit '+name,{exact:true}).click();return card;};
+  const save=async name=>{await page.getByRole('button',{name:'Save '+name,exact:true}).click();const confirm=page.getByRole('dialog',{name:'Confirm account change'}).or(page.getByRole('alertdialog',{name:'Confirm account change'}));if(await confirm.count()&&await confirm.isVisible())await confirm.getByRole('button',{name:'Confirm and save',exact:true}).click();};
+  let card=await editor('test-admin');
+  await card.getByRole('radio',{name:/^Custom access/}).check();
+  await save('test-admin');
   await page.getByText('Account saved',{exact:true}).waitFor();
   assert(!adminAccounts[0].roles.includes('admin'));
-  await page.getByLabel('Application administrator',{exact:true}).check();
-  await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
-  await page.getByText('Account saved',{exact:true}).waitFor();
-  assert(adminAccounts[0].roles.includes('admin'));
-  await page.getByLabel('Join and transmit crew voice',{exact:true}).check();
-  await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
+  card=await editor('test-admin');
+  await card.getByLabel('Join and talk on crew voice',{exact:true}).check();
+  await save('test-admin');
   await page.getByText('Account saved',{exact:true}).waitFor();
   assert.equal(adminAccounts[0].permissions.voice_transmit,true);
-  assert.equal(adminAccounts[0].permissions.send_commands,false,'stored explicit grants remain separate from inherited admin authority');
-  await page.getByLabel('Disable account',{exact:true}).check();
-  await page.getByRole('button',{name:'Save test-admin',exact:true}).click();
+  assert.equal(adminAccounts[0].permissions.send_commands,false,'stored explicit grants stay separate from the role');
+  card=await editor('test-admin');
+  await card.getByRole('radio',{name:/^Administrator/}).check();
+  await save('test-admin');
+  await page.getByText('Account saved',{exact:true}).waitFor();
+  assert(adminAccounts[0].roles.includes('admin'));
+  card=await editor('test-admin');
+  await card.getByLabel(/^Disable/).check();
+  await save('test-admin');
   await page.getByText(/Keep at least one enabled/).waitFor();
-  await page.getByLabel('Disable account',{exact:true}).uncheck();
+  card=await editor('test-admin');
+  await card.getByLabel(/^Disable/).uncheck();
+  await page.getByText('Add user',{exact:true}).click();
   await page.getByLabel('Username',{exact:true}).fill('new-viewer');
   await page.getByLabel('Temporary password',{exact:true}).fill('FakeTestPassword42');
-  await page.getByRole('button',{name:'Create viewer',exact:true}).click();
+  await page.getByRole('radio',{name:/^Viewer/}).check();
+  await page.getByRole('button',{name:'Create account',exact:true}).click();
   await page.getByRole('heading',{name:'new-viewer',exact:true}).waitFor();
   assert.equal(await page.getByLabel('Temporary password',{exact:true}).inputValue(),'');
   await page.setViewportSize({width:320,height:780});
@@ -343,9 +358,10 @@ try{
   await page.getByRole('button',{name:'Close',exact:true}).click();
   adminAccounts.push({...structuredClone(adminAccounts[0]),username:'ui-test'});
   await openAdmin();
-  const ownAccount=page.locator('.gs26-admin article').filter({has:page.getByRole('heading',{name:'ui-test',exact:true})});
-  assert(await ownAccount.getByLabel('Application administrator',{exact:true}).isDisabled(),'cannot edit own admin role');
-  assert(await ownAccount.getByLabel('Disable account',{exact:true}).isDisabled(),'cannot disable own account');
+  const ownAccount=page.locator('.gs26-admin li.admin-user').filter({has:page.getByRole('heading',{name:'ui-test',exact:true})});
+  await ownAccount.getByText('Edit ui-test',{exact:true}).click();
+  assert(await ownAccount.getByRole('radio',{name:/^Custom access/}).isDisabled(),'cannot remove own admin role');
+  assert(await ownAccount.getByLabel(/^Disable/).isDisabled(),'cannot disable own account');
   await page.getByRole('button',{name:'Back to settings',exact:true}).click();
   await page.getByRole('button',{name:'Close',exact:true}).click();
   session.roles=[]; session.username='other-user'; session.permissions.send_commands=false;
@@ -362,14 +378,17 @@ try{
   await page.frameLocator('#gs26-media').getByText('Media tool fixture').waitFor({state:'visible'});
   assert((await page.locator('#gs26-media').boundingBox()).height>300,'cameras fill mobile tab');
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'media fits mobile width');
+  // Leaving Share camera for another tab must show that tab, not a blank page.
+  await choose();await page.getByRole('button',{name:'Telemetry',exact:true}).click();await page.locator('.gs26-workspace').waitFor({state:'visible',timeout:5000});
   for(const source of ['kg50','kg1000_absolute']) {
     fillSource=source;
     await page.reload();await choose();await page.getByRole('button',{name:'Telemetry',exact:true}).click();
     for(const tab of ['LOADCELL','DAQ']) {
-      await page.getByRole('button',{name:/Show data tabs/}).click();
+      // The tab strip collapses behind a toggle only where it does not fit.
+      const tabsToggle=page.getByRole('button',{name:/(Show|Hide) data tabs/});await tabsToggle.waitFor();if(/^Show/.test(await tabsToggle.innerText()))await tabsToggle.click();
       await page.getByRole('button',{name:tab,exact:true}).click();
       for(const cell of ['1000 kg','50 kg']) {
-        await page.getByRole('button',{name:/Show subtabs/}).click();
+        const subtabsToggle=page.getByRole('button',{name:/(Show|Hide) subtabs/});await subtabsToggle.waitFor();if(/^Show/.test(await subtabsToggle.innerText()))await subtabsToggle.click();
         await page.getByRole('button',{name:cell,exact:true}).click();
         const expected=cell===(source==='kg50'?'50 kg':'1000 kg');
         if(expected) await page.getByText('Fill %',{exact:true}).first().waitFor({state:'visible'});
@@ -434,7 +453,7 @@ try{
   if(process.env.GS_TYPED_ALERT_RESULT)fs.writeFileSync(process.env.GS_TYPED_ALERT_RESULT,JSON.stringify(conditionChecks,null,2));
   const unconfirmedOutputs=new Set(['Dump','NormallyOpen','NitrogenClose','NitrousClose','Pilot','Igniter','RetractPlumbing']);
   for(const cmd of commands){
-    if(cmd==='ValveSelfTest'){const isolated=commandPage.getByRole('checkbox',{name:/gas supplies are isolated/});await isolated.uncheck();await commandPage.getByText('Self-test locked.',{exact:true}).waitFor();await commandPage.getByText(/Fixture isolation 2:false/).waitFor({state:'attached'});assert.equal(await isolated.isChecked(),false,'current locked status has reached this UI before renewed confirmation');await isolated.check();await commandPage.getByText('Self-test confirmation accepted. Backend interlocks still apply.',{exact:true}).waitFor();}
+    if(cmd==='ValveSelfTest'){const isolated=commandPage.getByRole('checkbox',{name:/gas supplies are isolated/});await isolated.click();await commandPage.getByText('Tick the box above to confirm isolation and unlock the valve self-test.',{exact:true}).waitFor();await commandPage.getByText(/Fixture isolation 2:false/).waitFor({state:'attached'});assert.equal(await isolated.isChecked(),false,'current locked status has reached this UI before renewed confirmation');await isolated.click();await commandPage.getByText('Self-test confirmation accepted. Backend interlocks still apply.',{exact:true}).waitFor();}
     if(cmd==='ValveSelfTest')assert.deepEqual(selfTestConfirmations,[{confirmed:true},{confirmed:false},{confirmed:true}],'renewing isolation sends a fresh actual confirmation, not an already-checked no-op');
     const count=requests.length;
     const button=actionButton(cmd);

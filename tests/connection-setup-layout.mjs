@@ -13,7 +13,7 @@ const protocolStyle=productionStyle('position:relative; min-width:0; border-righ
 const selectStyle=productionStyle('width:100%; height:100%; min-width:0; min-height:44px;');
 const inputStyle=productionStyle('width:100%; min-width:0; padding:12px; border:none;');
 assert.match(source,/include_str!\("connection_setup.css"\)/);
-assert.match(source,/use_effect\(move \|\| discover_stations\(\)\)/,'discovery begins without trusting or selecting hints');
+assert.match(source,/use_effect\((move \|\| )?discover_stations(\(\))?\)/,'discovery begins without trusting or selecting hints');
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY});
 try {
  const page=await browser.newPage();

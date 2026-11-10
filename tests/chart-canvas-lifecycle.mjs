@@ -5,7 +5,7 @@ const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
 let js=fs.readFileSync('src/telemetry_dashboard/data_chart.rs','utf8').split('fn chart_canvas_renderer_bootstrap()')[1].split('r##"')[1].split('"##,')[0];
 for(const [key,value]of Object.entries({chart_grid_left:96,chart_grid_right_pad:20,chart_grid_top:20,chart_grid_bottom_pad:52}))js=js.replaceAll('{'+key+'}',String(value));
 js=js.replaceAll('{{','{').replaceAll('}}','}');
-const browser=await chromium.launch({headless:true});
+const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY});
 try {
 for(const viewport of [{width:1200,height:800},{width:390,height:844}]){
  const page=await browser.newPage({viewport});const errors=[];page.on('pageerror',e=>errors.push(e.message));

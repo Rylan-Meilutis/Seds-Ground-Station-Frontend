@@ -32,20 +32,22 @@ try {
  const timer=setInterval(()=>send(),40);
  try {
   const card=name=>page.locator('.gs26-dashboard-card').filter({has:page.getByText(name,{exact:true})});
-  await card('50 kg loadcell').locator('polyline').waitFor();await card('1000 kg loadcell').locator('polyline').waitFor();
-  const first50=await card('50 kg loadcell').locator('polyline').getAttribute('points'),first1000=await card('1000 kg loadcell').locator('polyline').getAttribute('points');
+  await card('50 kg loadcell').locator('svg[role=img] path').waitFor();await card('1000 kg loadcell').locator('svg[role=img] path').waitFor();
+  const first50=await card('50 kg loadcell').locator('svg[role=img] path').getAttribute('d'),first1000=await card('1000 kg loadcell').locator('svg[role=img] path').getAttribute('d');
   await page.waitForTimeout(500);clearInterval(timer);send();
   const expected=sequence.toFixed(2)+' kg';await card('50 kg loadcell').getByText(expected,{exact:true}).waitFor();await card('1000 kg loadcell').getByText(expected,{exact:true}).waitFor();
-  assert.notEqual(await card('50 kg loadcell').locator('polyline').getAttribute('points'),first50);
-  assert.notEqual(await card('1000 kg loadcell').locator('polyline').getAttribute('points'),first1000);
-  for(const name of ['50 kg loadcell','1000 kg loadcell']){const points=await card(name).locator('polyline').getAttribute('points');assert(new Set(points.trim().split(/\\s+/).map(point=>point.split(',')[1])).size>1,name+' trend must not be flat');}
+  assert.notEqual(await card('50 kg loadcell').locator('svg[role=img] path').getAttribute('d'),first50);
+  assert.notEqual(await card('1000 kg loadcell').locator('svg[role=img] path').getAttribute('d'),first1000);
+  for(const name of ['50 kg loadcell','1000 kg loadcell']){const points=await card(name).locator('svg[role=img] path').getAttribute('d');assert(new Set(points.trim().split(/\\s+/).map(point=>point.slice(1).split(',')[1])).size>1,name+' trend must not be flat');}
   await card('Tank pressure').getByRole('img').waitFor();await card('Chamber pressure').getByRole('img').waitFor();
   await page.getByRole('link',{name:'Telemetry',exact:true}).click();
   for(const label of ['Tank pressure','Combustion chamber pressure']){await page.getByRole('button',{name:label,exact:true}).click();await page.locator('canvas[id^=gs26-chart-canvas]').first().waitFor();}
   await page.getByRole('link',{name:'Dashboard',exact:true}).click();
   await page.getByRole('button',{name:'Customize dashboard',exact:true}).click();
   let types=page.getByRole('combobox',{name:'Data type',exact:true});
-  assert.equal(await types.count(),5);
+  // Four saved cards, the migrated chamber-pressure card and the six flight cards every
+  // dashboard gains (altitude, vertical speed, acceleration, three gyro axes).
+  assert.equal(await types.count(),11);
   assert.equal(await types.first().locator('option[value="SCHEMA_PICKER_TEST"]').textContent(),'Schema picker sensor (SCHEMA_PICKER_TEST)');
   assert.equal(await types.first().locator('option[value="OFFLINE_CUSTOM_TYPE"]').count(),1);
   send(true);await types.first().locator('option[value="AAA_RUNTIME_CUSTOM_TYPE"]').waitFor({state:'attached',timeout:3000});assert.equal(await types.first().inputValue(),'LOADCELL_50_WEIGHT_KG','inserting a sorted earlier option preserves selection');
