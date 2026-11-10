@@ -297,8 +297,11 @@ impl Challenge {
     pub fn fresh(&self, received: f64, now: f64) -> bool {
         elapsed(received, now, self.expires_in_ms) && self.expires_in_ms <= 15000
     }
-    pub fn confirms(&self, value: &str) -> bool {
-        self.required_confirmation.as_deref().unwrap_or("") == value
+    /// The value sent back on Confirm. Current backends issue no phrase; an
+    /// older one that still does gets its own phrase back, so the operator
+    /// never types anything.
+    pub fn echo(&self) -> String {
+        self.required_confirmation.clone().unwrap_or_default()
     }
 }
 #[derive(Clone, Serialize)]
@@ -446,8 +449,11 @@ pub(super) mod tests {
         let s = example_snapshot();
         let c = challenge(&s);
         assert!(c.matches(&c.binding));
-        assert!(c.confirms("SIMULATE"));
-        assert!(!c.confirms("simulate"));
+        assert_eq!(c.echo(), "SIMULATE", "an older backend's phrase is echoed, never typed");
+        let mut current = challenge(&s);
+        current.required_confirmation = None;
+        assert!(current.matches(&current.binding));
+        assert_eq!(current.echo(), "", "a current backend issues no phrase");
         assert!(c.fresh(100., 15100.));
         assert!(!c.fresh(100., 15100.01));
         let request = Confirmation {

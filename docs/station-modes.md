@@ -68,9 +68,11 @@ echoes that binding and supplies a one-use `ticket`, a `transition_id` known bef
 Confirm, the exact `current` and `target` descriptors, server-owned `summary`,
 nullable `required_confirmation`, and `expires_in_ms` in 1–15,000 ms.
 
-A themed in-app confirmation shows the server text and optional exact phrase.
-Confirm POSTs to `/api/station-modes/confirm`, retaining the original binding,
-`ticket`, `transition_id`, and `confirmation`. Changing mode or Simulation drafts
+A themed in-app confirmation shows the server text. Nothing is typed: the
+Confirm button is the confirmation. Confirm POSTs to `/api/station-modes/confirm`,
+retaining the original binding, `ticket` and `transition_id`; `confirmation` is
+empty, or the server's own phrase echoed back when an older backend still
+issues `required_confirmation`. Changing mode or Simulation drafts
 never sends a command. Changing backend, account, authority, epoch, revision or
 target invalidates the old review; it never retargets a dialog.
 

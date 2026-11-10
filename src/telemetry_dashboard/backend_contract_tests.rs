@@ -34,8 +34,9 @@ fn station_mode_review_and_switch_decode_with_the_ui_contract() {
         assert_eq!(challenge.target, *before.option(target).unwrap());
         assert_eq!(challenge.target.switches_in_process(), in_process);
         assert!(challenge.fresh(0.0, 1.0));
-        let phrase = challenge.required_confirmation.clone().unwrap();
-        assert!(challenge.confirms(&phrase));
+        // The station issues no phrase: nothing is typed and nothing is echoed.
+        assert_eq!(challenge.required_confirmation, None, "{name} asks the operator to type");
+        assert_eq!(challenge.echo(), "");
     }
 
     // The receipt answers the third review (the one confirmed).
@@ -49,7 +50,7 @@ fn station_mode_review_and_switch_decode_with_the_ui_contract() {
         binding: challenge.binding.clone(),
         ticket: challenge.ticket.clone(),
         transition_id: challenge.transition_id.clone(),
-        confirmation: challenge.required_confirmation.clone().unwrap(),
+        confirmation: challenge.echo(),
     };
     assert!(accepted.matches(&request), "confirmation receipt does not match its request");
 

@@ -75,7 +75,6 @@ struct Controls {
     applied_selection: Signal<Option<String>>,
     simulation: Signal<Option<bool>>,
     dialog: Signal<Option<Prepared>>,
-    phrase: Signal<String>,
     busy: Signal<bool>,
     operation_owner: Signal<Option<Rc<ExportOwner>>>,
     serial: Signal<u64>,
@@ -174,7 +173,6 @@ impl Controls {
                         owner,
                     };
                     if prepared.valid(super::monotonic_now_ms()) {
-                        self.phrase.set(String::new());
                         self.dialog.set(Some(prepared));
                     } else {
                         self.message.set(
@@ -196,10 +194,7 @@ impl Controls {
         let Some(prepared) = self.dialog.peek().clone() else {
             return;
         };
-        if self.reason(inhibited).is_some()
-            || !prepared.valid(super::monotonic_now_ms())
-            || !prepared.challenge.confirms(&self.phrase.peek())
-        {
+        if self.reason(inhibited).is_some() || !prepared.valid(super::monotonic_now_ms()) {
             self.dialog.set(None);
             self.message
                 .set("Mode confirmation retired or expired; nothing was sent.".into());
@@ -208,11 +203,14 @@ impl Controls {
         let Some(identity) = crate::auth::request_identity() else {
             return;
         };
+        let echoed = prepared.challenge.echo();
         let request_body = contract::Confirmation {
             binding: prepared.challenge.binding,
             ticket: prepared.challenge.ticket,
             transition_id: prepared.challenge.transition_id,
-            confirmation: self.phrase.peek().clone(),
+            // Nothing is typed. An older backend that still issues a phrase
+            // gets it echoed back; the click on Confirm is the confirmation.
+            confirmation: echoed,
         };
         let owner = prepared.owner;
         let restarts = prepared.challenge.target.restarts();
@@ -220,7 +218,6 @@ impl Controls {
         let request = transport::confirm(Ok(owner.clone()), &request_body);
         *NOTICE.write()=Some(Notice{identity,base:super::UrlConfig::base_http(),skip_tls:super::UrlConfig::_skip_tls_verify(),request:request_body.clone(),target:prepared.challenge.target,message:"Submitted; actual mode is unconfirmed. Status readback will identify this exact transition. This request is never resent automatically.".into()});
         self.dialog.set(None);
-        self.phrase.set(String::new());
         self.operation_owner.set(Some(owner.clone()));
         self.busy.set(true);
         spawn(async move {
@@ -256,7 +253,6 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
         applied_selection: use_signal(|| None::<String>),
         simulation: use_signal(|| None::<bool>),
         dialog: use_signal(|| None::<Prepared>),
-        phrase: use_signal(String::new),
         busy: use_signal(|| false),
         operation_owner: use_signal(|| None::<Rc<ExportOwner>>),
         serial: use_signal(|| 0_u64),
@@ -267,7 +263,12 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
     let mut sync = controls.clone();
     use_effect(move || {
         let observed = observer::OBSERVED.read().clone();
-        let now = *observer::CLOCK.read();
+        // CLOCK only wakes this effect (every 100 ms). Judge the review with
+        // the actual monotonic time: CLOCK can trail a review prepared since
+        // its last tick, and a review "received in the future" reads as
+        // expired, closing it before the operator can confirm.
+        let _tick = *observer::CLOCK.read();
+        let now = super::monotonic_now_ms();
         if !sync.alive() {
             return;
         }
@@ -284,7 +285,6 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
             sync.operation_owner.set(None);
             sync.busy.set(false);
             sync.dialog.set(None);
-            sync.phrase.set(String::new());
             sync.message
                 .set("Original mode request owner retired; no automatic resend.".into());
         }
@@ -313,7 +313,6 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
         }
         if sync.dialog.peek().as_ref().is_some_and(|d| !d.valid(now)) {
             sync.dialog.set(None);
-            sync.phrase.set(String::new());
             sync.message
                 .set("Mode confirmation retired or expired; no automatic resend.".into());
         }
@@ -335,53 +334,51 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
     let review = controls.clone();
     let mut cancel = controls.clone();
     let confirm = controls.clone();
-    let mut phrase = controls.clone();
-    let button = format!(
-        "font:inherit;min-height:44px;padding:9px 14px;border:1px solid {};border-radius:8px;background:{};color:{};",
-        theme.border, theme.button_background, theme.text_primary
-    );
-    rsx! {section{class:"gs26-station-mode",style:"display:grid;gap:10px;padding:14px;border:1px solid {theme.border};border-radius:10px;font:inherit;min-width:0;overflow-wrap:anywhere;",
-        h3{"Operating mode and Simulation"}
+    let current = observed.as_ref().and_then(|o| o.value.current.clone());
+    let changed = target.as_ref().is_some_and(|t| current.as_ref().is_none_or(|c| c.id != t.id));
+    let how = if target.as_ref().is_some_and(contract::OptionEntry::switches_in_process) {
+        "Switches in place while the station is idle. Sign-in and connection are kept; layout and controls refresh."
+    } else if target.as_ref().is_some_and(contract::OptionEntry::restarts) {
+        "The station restarts into the selected mode. Live data pauses for a few seconds and reconnects."
+    } else {
+        "Applied by the station after review and confirmation."
+    };
+    rsx! {section{class:"gs26-station-mode gs-card",style:"gap:var(--gs-space-3);overflow-wrap:anywhere;",
+        div{class:"gs-section-header",h3{"Operating mode"}
+            button{r#type:"button",class:"gs-btn gs-btn--ghost",onclick:move|_|{let n=(*observer::REFRESH.peek()).saturating_add(1);*observer::REFRESH.write()=n;},"Refresh mode status"}
+        }
         if let Some(o)=observed.as_ref(){
-            p{if o.current(now){"Actual backend-reported combination: "}else{"Last reported combination (unverified): "}strong{"{o.value.current.as_ref().map_or(\"Unknown\",|c|c.label.as_str())}"}}
-            if let Some(c)=&o.value.current {p{"Simulation: {c.simulation}. Output domain: {c.output_domain}."}}
-            if let Some(t)=&o.value.transition {p{role:"status","Transition {t.state}: {t.phase}."}if let Some(e)=&t.error {p{role:"alert","{e}"}}}
-            if let Some(reason)=&o.value.reason {p{"{reason}"}}
-        }else{p{role:"status","This backend has not provided a usable V2 mode capability. Existing fixed-mode operation is unchanged."}}
-        label{r#for:"station-operating-mode","Policy mode"}
-        select{id:"station-operating-mode",aria_label:"Station operating mode",style:"font:inherit;min-height:44px;max-width:100%;",value:"{selected}",disabled:!can_draft,
-            onchange:move|e|{if !choose.alive()||*choose.busy.peek()||choose.dialog.peek().is_some(){return;}let mode=e.value();if observer::OBSERVED.peek().as_ref().is_some_and(|o|o.current(super::monotonic_now_ms())&&o.value.modes.iter().any(|m|m.id==mode)){choose.selected.set(mode);}},
-            option{value:"","Choose a backend mode"}
-            if let Some(o)=&observed {for mode in &o.value.modes {option{value:"{mode.id}","{mode.label}"}}}
+            p{style:"margin:0;",if o.current(now){"Current: "}else{"Last reported (unverified): "}strong{"{o.value.current.as_ref().map_or(\"Unknown\",|c|c.label.as_str())}"}}
+            if let Some(t)=&o.value.transition {p{role:"status",class:"gs-notice","Transition {t.state}: {t.phase}."}if let Some(e)=&t.error {p{role:"alert",class:"gs-notice gs-notice--danger","{e}"}}}
+            if let Some(reason)=&o.value.reason {p{class:"gs-notice","{reason}"}}
+        }else{p{role:"status",class:"gs-notice","This backend has not provided a usable V2 mode capability. Existing fixed-mode operation is unchanged."}}
+        div{class:"gs-form-row",
+            label{r#for:"station-operating-mode","Mode"}
+            select{id:"station-operating-mode",aria_label:"Station operating mode",style:"font:inherit;min-height:44px;max-width:100%;",value:"{selected}",disabled:!can_draft,
+                onchange:move|e|{if !choose.alive()||*choose.busy.peek()||choose.dialog.peek().is_some(){return;}let mode=e.value();if observer::OBSERVED.peek().as_ref().is_some_and(|o|o.current(super::monotonic_now_ms())&&o.value.modes.iter().any(|m|m.id==mode)){choose.selected.set(mode);}},
+                option{value:"","Choose a backend mode"}
+                if let Some(o)=&observed {for mode in &o.value.modes {option{value:"{mode.id}","{mode.label}"}}}
+            }
         }
-        label{input{r#type:"checkbox",aria_label:"Simulate telemetry and actions",checked:simulation==Some(true),disabled:!can_draft||simulation.is_none(),onchange:move|e|{if toggle.alive()&&!*toggle.busy.peek()&&toggle.dialog.peek().is_none(){toggle.simulation.set(Some(e.checked()));}}} "Simulation — incoming data and actions"}
-        if simulation.is_none(){p{"The execution domain is unknown. No hardware domain is assumed."}}
-        if let Some(target)=target.as_ref(){p{"Draft only: {target.label}. Output domain: {target.output_domain}."}}else{p{"This mode/Simulation combination is not advertised. No target is inferred."}}
-        if let Some(reason)=reason.as_ref(){p{"{reason}"}}
-        if target.as_ref().is_some_and(contract::OptionEntry::switches_in_process) {
-            p{style:"margin:0;","Changing these drafts sends no actions. Apply requires backend preparation and explicit confirmation, then the station backend switches mode in place while the station is idle: the layout and controls refresh automatically, and your sign-in and connection are kept."}
-        } else if target.as_ref().is_some_and(contract::OptionEntry::restarts) {
-            p{style:"margin:0;","Changing these drafts sends no actions. Apply requires backend preparation and explicit confirmation, then the station backend restarts into the selected build: live data pauses for a few seconds and reconnects, and your sign-in is kept."}
-        } else {
-            p{style:"margin:0;","Changing these drafts sends no actions. Apply requires backend preparation, explicit confirmation and authoritative readback. A mode change does not restart your session."}
+        label{style:"display:flex;gap:var(--gs-space-2);align-items:center;",input{r#type:"checkbox",aria_label:"Simulate telemetry and actions",checked:simulation==Some(true),disabled:!can_draft||simulation.is_none(),onchange:move|e|{if toggle.alive()&&!*toggle.busy.peek()&&toggle.dialog.peek().is_none(){toggle.simulation.set(Some(e.checked()));}}} "Simulation (incoming data and actions)"}
+        if simulation.is_none(){p{class:"gs-notice","Execution domain unknown; no hardware domain is assumed."}}
+        if let Some(target)=target.as_ref(){if changed{p{style:"margin:0;","Selected: {target.label}"}}}else{p{class:"gs-notice","This mode/Simulation combination is not advertised. No target is inferred."}}
+        if changed {if let Some(reason)=reason.as_ref(){p{role:"status",class:"gs-notice gs-notice--warn","{reason}"}}}
+        div{style:"display:flex;gap:var(--gs-space-2);flex-wrap:wrap;align-items:center;",
+            button{r#type:"button",class:"gs-btn gs-btn--primary",disabled:busy||dialog.is_some()||reason.is_some()||target.is_none(),onclick:move|_|review.clone().prepare(inhibited),"Review mode change"}
+            details{class:"gs-info",summary{"How switching works"}p{"{how} The station checks it is idle at review, at confirm and at the switch. Changing the selection sends nothing."}}
         }
-        div{style:"display:flex;gap:8px;flex-wrap:wrap;",
-            button{r#type:"button",style:"{button}",disabled:busy||dialog.is_some()||reason.is_some()||target.is_none(),onclick:move|_|review.clone().prepare(inhibited),"Review mode change"}
-            button{r#type:"button",style:"{button}",onclick:move|_|{let n=(*observer::REFRESH.peek()).saturating_add(1);*observer::REFRESH.write()=n;},"Refresh mode status"}
-        }
-        if !observer::ERROR.read().is_empty(){p{role:"status","Mode observation: {observer::ERROR}"}}
-        if !controls.message.read().is_empty(){p{role:"status","{controls.message}"}}
+        if !observer::ERROR.read().is_empty(){p{role:"status",class:"gs-notice","Mode observation: {observer::ERROR}"}}
+        if !controls.message.read().is_empty(){p{role:"status",class:"gs-notice","{controls.message}"}}
         if let Some(prepared)=dialog.as_ref() {
-            div{style:"position:fixed;inset:0;z-index:200100;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;",
-                div{class:"gs26-modal",role:"alertdialog",aria_modal:true,aria_label:"Review station mode change",style:"font:inherit;max-width:560px;width:100%;max-height:85vh;overflow:auto;padding:20px;border-radius:12px;background:{theme.panel_background};color:{theme.text_primary};border:1px solid {theme.border};",
-                    h3{"Review station mode change"}p{"{prepared.challenge.summary}"}p{"Requested: {prepared.challenge.target.label}. Output domain: {prepared.challenge.target.output_domain}."}
-                    if let Some(required)=&prepared.challenge.required_confirmation {
-                        label{r#for:"station-mode-phrase","Type exactly: {required}"}
-                        input{id:"station-mode-phrase",aria_label:"Mode confirmation phrase",value:"{controls.phrase}",oninput:move|e|phrase.phrase.set(e.value())}
-                    }
-                    div{style:"display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;",
-                        button{style:"{button}",onclick:move|_|{cancel.dialog.set(None);cancel.phrase.set(String::new());},"Cancel review"}
-                        button{style:"{button}",disabled:busy||!prepared.valid(now)||!prepared.challenge.confirms(&controls.phrase.read()),onclick:move|_|confirm.clone().confirm(inhibited),"Confirm mode change"}
+            div{style:"position:fixed;inset:0;z-index:200100;background:#000a;display:flex;align-items:center;justify-content:center;padding:var(--gs-space-4);box-sizing:border-box;",
+                div{class:"gs26-modal",role:"alertdialog",aria_modal:true,aria_label:"Review station mode change",style:"font:inherit;max-width:560px;width:100%;max-height:85vh;overflow:auto;padding:20px;border-radius:12px;background:{theme.panel_background};color:{theme.text_primary};border:1px solid {theme.border};display:grid;gap:var(--gs-space-3);",
+                    h3{style:"margin:0;","Switch to {prepared.challenge.target.label}?"}
+                    p{style:"margin:0;","{prepared.challenge.summary}"}
+                    p{style:"margin:0;color:var(--gs-text-muted);","Output domain: {prepared.challenge.target.output_domain}"}
+                    div{style:"display:flex;gap:var(--gs-space-2);flex-wrap:wrap;justify-content:flex-end;",
+                        button{onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move|_|cancel.dialog.set(None),"Cancel review"}
+                        button{class:"gs26-modal-primary",disabled:busy||!prepared.valid(super::monotonic_now_ms()),onclick:move|_|confirm.clone().confirm(inhibited),"Confirm mode change"}
                     }
                 }
             }
