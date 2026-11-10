@@ -79,6 +79,36 @@ mod backward_clock_latest_tests {
 }
 
 #[cfg(test)]
+mod chart_placement_latest_tests {
+    use super::*;
+    /// Chart history placement spreads a radio burst back to its source
+    /// spacing; the latest-value readout must still show the newest value
+    /// with its true receipt time, so its age is the real age.
+    #[test]
+    fn burst_placement_leaves_latest_value_and_age_true() {
+        let received = 1_700_000_400_000;
+        let rows: Vec<_> = (0..5)
+            .map(|i| {
+                let mut row = TelemetryRow {
+                    source_timestamp_ms: Some(received - 900 + i * 200), timestamp_ms: received,
+                    received_timestamp_ms: received, data_type: "PLACEMENT_LATEST_TEST".into(),
+                    sender_id: "FC".into(), data_type_id: Default::default(),
+                    sender_id_id: Default::default(), values: vec![Some(i as f32)],
+                };
+                row.refresh_interned_ids();
+                row
+            })
+            .collect();
+        // Same order as the live ingest: latest values, then chart history.
+        update_latest_telemetry_batch(&rows);
+        data_chart::charts_cache_ingest_rows(&rows);
+        let latest = latest_telemetry_row("PLACEMENT_LATEST_TEST", Some("FC")).unwrap();
+        assert_eq!(latest.values, vec![Some(4.0)]);
+        assert_eq!(latest.received_timestamp_ms, received);
+    }
+}
+
+#[cfg(test)]
 mod reseed_continuity_tests {
     use super::*;
     fn row(time: i64, value: f32) -> TelemetryRow {

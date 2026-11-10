@@ -418,6 +418,65 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
 // Internals
 // ============================================================
 
+// Chart history placement. A radio link delivers a stream in bursts, and a
+// WebSocket batch carries one client receipt time, so receipt-time plotting
+// stacks a burst into one 20 ms bucket and leaves a flat hold between bursts.
+// Rows with a canonical source time are instead placed at their source
+// spacing, anchored to the stream's lowest recent latency so the newest row
+// of a burst sits at its receipt. Placement never moves a row later than its
+// receipt, never fills time the source did not cover (lost samples stay a
+// gap), and applies to chart history only: latest-value and age displays read
+// the unmodified rows.
+const PLACEMENT_WINDOW_MS: i64 = 10_000;
+const PLACEMENT_CLOCK_STEP_MS: i64 = 5_000;
+const PLACEMENT_MAX_BACKFILL_MS: i64 = 5_000;
+
+#[derive(Default)]
+struct StreamPlacement {
+    // (receipt, receipt - source) over the recent window.
+    latency: VecDeque<(i64, i64)>,
+    last: Option<i64>,
+}
+
+impl StreamPlacement {
+    /// Records one row's latency. Every row of a batch is observed before any
+    /// is placed, so a burst anchors on its newest (lowest-latency) row.
+    fn observe(&mut self, received: i64, source: Option<i64>) {
+        let Some(source) = source else { return };
+        let latency = received.saturating_sub(source);
+        while self
+            .latency
+            .front()
+            .is_some_and(|(at, _)| *at < received.saturating_sub(PLACEMENT_WINDOW_MS))
+        {
+            self.latency.pop_front();
+        }
+        let floor = self.latency.iter().map(|(_, l)| *l).min();
+        // A board clock step (or a backlog older than the window) restarts
+        // placement at receipt instead of stacking rows on the last one.
+        if floor.is_some_and(|floor| latency.saturating_sub(floor) > PLACEMENT_CLOCK_STEP_MS) {
+            self.latency.clear();
+        }
+        self.latency.push_back((received, latency));
+    }
+
+    fn place(&mut self, received: i64, source: Option<i64>) -> i64 {
+        let mut placed = received;
+        if let Some(source) = source {
+            let latency = received.saturating_sub(source);
+            let offset = self.latency.iter().map(|(_, l)| *l).min().unwrap_or(latency);
+            placed = source
+                .saturating_add(offset)
+                .clamp(received.saturating_sub(PLACEMENT_MAX_BACKFILL_MS), received);
+        }
+        if let Some(last) = self.last {
+            placed = placed.max(last.min(received));
+        }
+        self.last = Some(placed);
+        placed
+    }
+}
+
 struct ChartsCache {
     charts: HashMap<ChartSeriesKey, CachedChart>,
     raw_rows: BTreeMap<ChartRawRowKey, TelemetryRow>,
@@ -425,6 +484,7 @@ struct ChartsCache {
     interested_until_generation: HashMap<ChartSeriesKey, u64>,
     generation: u64,
     newest_ts: i64,
+    placement: HashMap<ChartSeriesKey, StreamPlacement>,
 }
 
 impl ChartsCache {
@@ -436,6 +496,7 @@ impl ChartsCache {
             interested_until_generation: HashMap::new(),
             generation: 0,
             newest_ts: 0,
+            placement: HashMap::new(),
         }
     }
 
@@ -446,13 +507,44 @@ impl ChartsCache {
         self.interested_until_generation.clear();
         self.generation = 0;
         self.newest_ts = 0;
+        self.placement.clear();
     }
 
     fn ingest_row(&mut self, r: &TelemetryRow) {
         self.ingest_rows(std::slice::from_ref(r));
     }
 
+    /// Chart copies of `rows`, in receipt order, with `received_timestamp_ms`
+    /// set to their chart placement. The input rows are never modified.
+    fn placed_rows(&mut self, rows: &[TelemetryRow]) -> Vec<TelemetryRow> {
+        let mut ordered = rows.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|row| telemetry_row_received_ms(row));
+        for row in &ordered {
+            self.placement
+                .entry(ChartSeriesKey::from_row(row))
+                .or_default()
+                .observe(telemetry_row_received_ms(row), row.source_timestamp_ms);
+        }
+        ordered
+            .into_iter()
+            .map(|row| {
+                let mut placed = row.clone();
+                placed.received_timestamp_ms = self
+                    .placement
+                    .entry(ChartSeriesKey::from_row(row))
+                    .or_default()
+                    .place(telemetry_row_received_ms(row), row.source_timestamp_ms);
+                placed
+            })
+            .collect()
+    }
+
     fn ingest_rows(&mut self, rows: &[TelemetryRow]) {
+        let placed = self.placed_rows(rows);
+        self.ingest_placed_rows(&placed);
+    }
+
+    fn ingest_placed_rows(&mut self, rows: &[TelemetryRow]) {
         self.generation = self.generation.wrapping_add(1).max(1);
         // A websocket/UI flush can contain rows in a different order from their
         // receipt timestamps. Feed the fixed-bucket cache chronologically:
@@ -488,7 +580,7 @@ impl ChartsCache {
 
     fn store_rows_for_later(&mut self, rows: &[TelemetryRow]) {
         self.generation = self.generation.wrapping_add(1).max(1);
-        for row in rows {
+        for row in &self.placed_rows(rows) {
             self.store_raw_row_without_prune(row);
             self.note_source_row(row);
         }
@@ -716,6 +808,76 @@ mod tests {
             super::CachedChart::stabilize_raw_range(&mut lo, &mut hi);
             assert!(lo.is_finite() && hi.is_finite() && lo < hi);
         }
+    }
+
+    fn sourced(data_type: &str, received: i64, source: i64, value: f32) -> TelemetryRow {
+        let mut row = TelemetryRow {
+            source_timestamp_ms: Some(source), timestamp_ms: received,
+            received_timestamp_ms: received,
+            data_type: data_type.into(), data_type_id: Default::default(),
+            sender_id: "FC".into(), sender_id_id: Default::default(),
+            values: vec![Some(value)],
+        };
+        row.refresh_interned_ids();
+        row
+    }
+
+    fn bucket_ids(cache: &mut super::ChartsCache, key: &str) -> Vec<i64> {
+        cache.get(key, 1200.0, 260.0);
+        cache.charts[&super::ChartSeriesKey::from_query(key)]
+            .buckets.iter().map(|bucket| bucket.id).collect()
+    }
+
+    /// A radio burst delivers five 5 Hz samples in one batch at one client
+    /// time. The chart keeps their source spacing, newest at the receipt.
+    #[test]
+    fn burst_rows_plot_at_their_source_spacing() {
+        let base = 1_700_000_100_000;
+        let received = base + 1_400;
+        let rows: Vec<_> = (0..5)
+            .map(|i| sourced("BAROMETER_DATA", received, base + i * 200, i as f32))
+            .collect();
+        let mut cache = super::ChartsCache::new();
+        cache.ensure_interested_chart(super::ChartSeriesKey::from_query("BAROMETER_DATA@@FC"));
+        cache.ingest_rows(&rows);
+        let ids = bucket_ids(&mut cache, "BAROMETER_DATA@@FC");
+        let step = 200 / super::BUCKET_MS;
+        let newest = received.div_euclid(super::BUCKET_MS);
+        assert_eq!(ids, (0..5).map(|i| newest - (4 - i) * step).collect::<Vec<_>>());
+        // The input rows, which also feed latest-value displays, are untouched.
+        assert!(rows.iter().all(|row| row.received_timestamp_ms == received));
+    }
+
+    /// Samples lost on the link stay a gap: placement never fills time the
+    /// source did not cover.
+    #[test]
+    fn lost_samples_remain_a_gap() {
+        let base = 1_700_000_200_000;
+        let mut cache = super::ChartsCache::new();
+        cache.ensure_interested_chart(super::ChartSeriesKey::from_query("BAROMETER_DATA@@FC"));
+        cache.ingest_rows(&[0, 200, 400].map(|s| sourced("BAROMETER_DATA", base + 1_000, base + s, 1.0)));
+        // 600..2200 never arrived.
+        cache.ingest_rows(&[2_400, 2_600].map(|s| sourced("BAROMETER_DATA", base + 3_000, base + s, 2.0)));
+        let ids = bucket_ids(&mut cache, "BAROMETER_DATA@@FC");
+        assert_eq!(ids.len(), 5);
+        let gap = ids[3] - ids[2];
+        assert!(gap * super::BUCKET_MS >= 1_800, "lost samples must leave a gap, got {} ms", gap * super::BUCKET_MS);
+        assert!(ids.windows(2).all(|pair| pair[1] > pair[0]));
+    }
+
+    /// A board clock step must not stack or drop history.
+    #[test]
+    fn source_clock_step_restarts_placement_at_receipt() {
+        let base = 1_700_000_300_000;
+        let mut cache = super::ChartsCache::new();
+        cache.ensure_interested_chart(super::ChartSeriesKey::from_query("BAROMETER_DATA@@FC"));
+        cache.ingest_rows(&[sourced("BAROMETER_DATA", base, base - 100, 1.0)]);
+        // The source clock jumps 48 s back (as seen on AV-bay boards).
+        cache.ingest_rows(&[sourced("BAROMETER_DATA", base + 200, base - 48_000, 2.0)]);
+        cache.ingest_rows(&[sourced("BAROMETER_DATA", base + 400, base - 47_800, 3.0)]);
+        let ids = bucket_ids(&mut cache, "BAROMETER_DATA@@FC");
+        assert_eq!(ids.len(), 3);
+        assert_eq!(*ids.last().unwrap(), (base + 400).div_euclid(super::BUCKET_MS));
     }
 
     #[test]
