@@ -30,14 +30,17 @@ try {
  await context.route('**/api/station_mode',route=>modeUnavailable?route.fulfill({status:503,body:'fixture offline'}):route.fulfill({json:new URL(route.request().url()).origin===relayOrigin?relayMode:primaryMode}));
  await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(()=>{}));
  const page=await context.newPage(),errors=[],posts=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',request=>{if(request.method()==='POST')posts.push(new URL(request.url()).pathname);});
- await page.goto(origin+'/dashboard');await page.locator('.gs26-operating-mode').filter({hasText:'Operating mode: HITL'}).waitFor();
+ await page.goto(origin+'/dashboard');
+ // A primary shows its mode in Settings; the header no longer carries it.
+ await page.getByRole('link',{name:'Settings',exact:true}).click();await page.locator('.gs26-operating-mode').filter({hasText:'Operating mode: HITL'}).waitFor();await page.getByRole('button',{name:'Close',exact:true}).first().click();
  await page.getByRole('link',{name:'Actions',exact:true}).click();
  const tabs=await page.getByRole('navigation',{name:'Mission navigation'}).innerText();
  primaryOffline=true;
  for(let i=0;i<3;i++)await page.evaluate(()=>window.GS26StationDiscovery.check());
  await page.waitForURL(relayOrigin+'/**');
  await page.goto(relayOrigin+'/dashboard');
- const notice=page.locator('.gs26-operating-mode');
+ // An RRLS states the primary's mode on Actions, above its read-only controls.
+ await page.getByRole('link',{name:'Actions',exact:true}).click();const notice=page.locator('[role=status]').filter({hasText:'RRLS observer'}).first();
  await notice.filter({hasText:'Primary operating mode: HITL'}).waitFor();
  assert.match(await notice.innerText(),/Primary operating mode: HITL.*read-only/);assert.doesNotMatch(await notice.innerText(),/Local build|Normal/,'main notice must not imply conflicting primary mode');
  assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).innerText(),tabs,'mode handover retains configured navigation');
@@ -45,7 +48,7 @@ try {
  await page.getByText('Sequence diagnostics',{exact:true}).click();
  assert.match(await page.locator('details').filter({has:page.getByText('Sequence diagnostics',{exact:true})}).innerText(),/RRLS local backend: mode=non-HITL/,'local interlocks retain their real build context');
  relayMode={...relayMode,synchronized:false};await notice.filter({hasText:'last known; not synchronized'}).waitFor();
- await page.reload();await notice.filter({hasText:'last known; not synchronized'}).waitFor();
+ await page.reload();await page.getByRole('link',{name:'Actions',exact:true}).click();await notice.filter({hasText:'last known; not synchronized'}).waitFor();
  relayMode={...relayMode,synchronized:true,effective_mode:'normal'};await notice.filter({hasText:'Primary operating mode: Normal'}).waitFor();
  relayMode={...relayMode,effective_mode:'testing'};await notice.filter({hasText:'Primary operating mode: Testing'}).waitFor();
  modeUnavailable=true;await notice.filter({hasText:'last known; not synchronized'}).waitFor();
