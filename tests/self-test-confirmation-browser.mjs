@@ -22,6 +22,9 @@ for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label
   {id:'small',label:'50 kg',data_type:'KG50',channels:['Raw'],chart:{enabled:true},chart_groups:[],summary_items:[]}
 ]});
 
+// Current stations wrap every GSE status in a sequence-progress envelope; the UI
+// treats a status without one as unavailable.
+const withSequenceProgress=status=>({sequence_progress:{version:1,backend_instance:'1'.repeat(32),reset_epoch:'2'.repeat(16),cancel_api_version:1,active:[],terminal:[],reporting_error:null},...status});
 const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
   if(pathname.startsWith('/api/calibration'))calibrationRequests.push({path:pathname,method:req.method});
@@ -60,7 +63,7 @@ const server=http.createServer(async(req,res)=>{
     res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;
   }
   if(pathname==='/api/action_policy'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(actionPolicy));return;}
-  if(pathname==='/api/gse/status' && gseStatus){statusRequests++;const snapshot=JSON.stringify(gseStatus);if(holdStatus)await new Promise(resolve=>heldStatus.push(resolve));statusResponses++;res.setHeader('Content-Type','application/json');res.end(snapshot);return;}
+  if(pathname==='/api/gse/status' && gseStatus){statusRequests++;const snapshot=JSON.stringify(withSequenceProgress(gseStatus));if(holdStatus)await new Promise(resolve=>heldStatus.push(resolve));statusResponses++;res.setHeader('Content-Type','application/json');res.end(snapshot);return;}
   if(pathname==='/api/gse/qualification/reset'){
     assert.equal(req.method,'POST');assert.equal(req.headers.authorization,'Bearer ui-token');
     qualificationResets++;gseStatus.qualification={self_test:false,nitrogen_test:false,fill_target:false,fault:null};
@@ -94,7 +97,7 @@ try{
  gseStatus={phase:'idle',message:'Initial confirmation snapshot false',nitrogen_passed:false,self_test_locked:false,current_step_psi:0,pressure_psi:null,baseline:null,dry_self_test_confirmed:false,request_gate:{hitl_mode:true,flight_state:'Startup',prelaunch:true,button_interlock_satisfied:true}};
  const context=await browser.newContext({viewport:{width:1280,height:900}});
  await context.addInitScript(({session,origin})=>{if(!URL.parse)URL.parse=(a,b)=>{try{return new URL(a,b)}catch{return null}};localStorage.setItem('navigation-style','tabs');localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
- await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',socket=>socket.onMessage(()=>{}));
+ await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',socket=>{socket.onMessage(()=>{});const beat=setInterval(()=>socket.send(JSON.stringify({ty:'NetworkTime',data:{timestamp_ms:Date.now()}})),500);socket.onClose(()=>clearInterval(beat));});
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/dashboard');await page.getByRole('button',{name:/Choose tab/}).click();await page.getByRole('button',{name:'Actions',exact:true}).click();
  await page.getByText(/Initial confirmation snapshot false/).waitFor({state:'attached'});
  const isolated=page.getByRole('checkbox',{name:/gas supplies are isolated/});assert.equal(await isolated.isChecked(),false);

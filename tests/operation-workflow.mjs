@@ -73,6 +73,8 @@ const server=http.createServer(async(req,res)=>{
     }
     res.end(JSON.stringify(adminAccounts));return;
   }
+  // Current stations wrap every GSE status in a sequence-progress envelope; the UI treats a status without one as unavailable.
+  if(pathname==='/api/gse/status'&&gseStatus&&!gseStatus.sequence_progress)gseStatus.sequence_progress={version:1,backend_instance:'1'.repeat(32),reset_epoch:'2'.repeat(16),cancel_api_version:1,active:[],terminal:[],reporting_error:null};
   if(pathname==='/api/gse/status' && gseUnavailable){res.statusCode=503;res.end('offline fixture');return;}
   if(pathname==='/api/gse/cold-flow/override'){
     assert.equal(req.method,'POST');assert.equal(req.headers.authorization,'Bearer ui-token');
