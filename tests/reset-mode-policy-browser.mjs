@@ -36,34 +36,40 @@ fixture+=`try {
  const commands=[],errors=[],dialogs=[];await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});await context.routeWebSocket(url=>url.pathname==='/ws',s=>s.onMessage(m=>commands.push(JSON.parse(m))));
  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',async d=>{dialogs.push(d.type());await d.dismiss();});
  await page.goto(origin+'/dashboard');await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();await page.getByRole('link',{name:'Connection',exact:true}).click();
- const panel=page.locator('.gs26-board-recovery'),button=panel.getByRole('button',{name:'Reset ALL to Startup…'}),modal=page.getByRole('alertdialog');await panel.waitFor();
+ // Reset all boards lives in Recovery tools > Reset; its result is shown there too.
+ await page.locator('.gs26-network-health').getByRole('button',{name:'Recovery tools',exact:true}).click();
+ const panel=page.getByRole('dialog',{name:'Recovery tools',exact:true});await panel.getByRole('tab',{name:'Reset',exact:true}).click();
+ const button=panel.getByRole('button',{name:'Reset all boards to Idle…',exact:true}),modal=page.getByRole('alertdialog');await button.waitFor();
+ const resetEnabled=()=>page.waitForFunction(()=>Array.from(document.querySelectorAll('#gs26-recovery-tools button')).find(b=>b.textContent==='Reset all boards to Idle…')?.disabled===false);
  assert(await button.isDisabled(),'legacy still needs all seven fresh readbacks');
  for(const mode of ['normal','test_fire','hitl']){
-  scopeOptional=[];boardRecovery=JSON.parse(JSON.stringify(boardRecoveryInitial));
+  boardRecovery=JSON.parse(JSON.stringify(boardRecoveryInitial));
   boardRecovery.mode_capability={...boardRecovery.mode_capability,current:mode,build_mode:mode,supported_modes:[mode],runtime_switch_supported:false};
   const required=mode==='normal'?['RF','FC','PB','AB','VB','GB','DAQ']:mode==='test_fire'?['AB','VB','GB','DAQ']:[];
-  boardRecovery.reset_startup_policy={version:1,global_startup_best_effort:true,mode,base_required_boards:required,optional_proofs:true};
+  // The station requires no boards up front: a reset covers whichever boards are
+  // available, and PREPARE freezes that set as the proof targets.
+  scopeOptional=required;boardRecovery.reset_startup_policy={version:1,global_startup_best_effort:true,mode,base_required_boards:[],optional_proofs:true};
   for(const b of boardRecovery.boards){b.age_ms=null;b.state=null;b.boot=null;b.nonce=null;b.epoch=null;b.capabilities={query:false,reset_startup:false,endpoint_verified:false};}
-  await panel.getByText('Active: '+mode+'; server build: '+mode+'.',{exact:true}).waitFor();await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Reset ALL to Startup…')?.disabled);
+  await resetEnabled();
   const before=confirmed.length;await button.click();await modal.waitFor();assert.match(await modal.innerText(),/GLOBAL Startup request targets ALL boards/);assert.doesNotMatch(await modal.innerText(),/Only the frozen targets above are requested/);
   for(const width of[320,390,844,1280]){await page.setViewportSize({width,height:1000});assert(await modal.evaluate(e=>e.getBoundingClientRect().left>=0&&e.getBoundingClientRect().right<=innerWidth),'C12modal fits '+mode+' '+width);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'C12page fits '+width);}
-  const phrase='RESET ALL STARTUP; VERIFY '+(required.length?required.join(' '):'NONE');await modal.getByLabel('Type '+phrase+' to confirm').fill(phrase);await modal.getByRole('button',{name:'Confirm recovery action'}).click();await page.waitForFunction(n=>document.body.innerText.includes('Request accepted'),before);assert.equal(confirmed.length,before+1);assert.equal(confirmed.at(-1).confirmation,phrase);assert.deepEqual(Object.keys(prepared.at(-1)).sort(),['action','backend_instance','board','mode','reset_epoch']);
+  const phrase='RESET ALL STARTUP; VERIFY '+(required.length?required.join(' '):'NONE');assert.equal(await modal.locator('input').count(),0,'nothing to type');await modal.getByRole('button',{name:'Confirm recovery action'}).click();await page.waitForFunction(n=>document.body.innerText.includes('Request accepted'),before);assert.equal(confirmed.length,before+1);assert.equal(confirmed.at(-1).confirmation,phrase);assert.deepEqual(Object.keys(prepared.at(-1)).sort(),['action','backend_instance','board','mode','reset_epoch']);
   boardRecovery.operation={...boardRecovery.operation,completed:true,success:true,phase:'completed',reset_applied_state:0};
   if(mode==='hitl'){await panel.getByText('Host Startup reset; no board proof — completed',{exact:true}).waitFor();assert.doesNotMatch(await panel.innerText(),/Confirmed by board readbacks/);}
   else await panel.getByText('Selected boards verified; global broadcast best effort — completed',{exact:true}).waitFor();
-  assert.match(await panel.innerText(),/Unselected boards remain unverified/);boardRecovery.operation=null;
+  assert.match(await panel.innerText(),/unselected boards remain unverified/i);boardRecovery.operation=null;
  }
  // Ordinary client/server TestFire scope may include actually observed optional Abort targets.
- boardRecovery.mode_capability={...boardRecovery.mode_capability,current:'test_fire',build_mode:'test_fire',supported_modes:['test_fire']};boardRecovery.reset_startup_policy={version:1,global_startup_best_effort:true,mode:'test_fire',base_required_boards:['AB','VB','GB','DAQ'],optional_proofs:true};scopeOptional=['FC'];
- await panel.getByText('Active: test_fire; server build: test_fire.',{exact:true}).waitFor();await button.click();await modal.waitFor();assert.match(await modal.innerText(),/Frozen proof targets: FC, AB, VB, GB, DAQ/);await modal.getByRole('button',{name:'Cancel',exact:true}).click();await modal.waitFor({state:'detached'});
+ boardRecovery.mode_capability={...boardRecovery.mode_capability,current:'test_fire',build_mode:'test_fire',supported_modes:['test_fire']};boardRecovery.reset_startup_policy={version:1,global_startup_best_effort:true,mode:'test_fire',base_required_boards:[],optional_proofs:true};scopeOptional=['FC','AB','VB','GB','DAQ'];
+ await resetEnabled();await button.click();await modal.waitFor();assert.match(await modal.innerText(),/Proof targets: FC, AB, VB, GB, DAQ/);await modal.getByRole('button',{name:'Cancel',exact:true}).click();await modal.waitFor({state:'detached'});
  // Actual observed status changes retire confirmations, never silently retry.
  for(const field of ['mode','reset_epoch','principal','permission']){
   await button.click();await modal.waitFor();const count=confirmed.length,preparedBefore=prepared.length;
   if(field==='mode')boardRecovery.mode_capability.current='normal';else if(field==='reset_epoch')boardRecovery.reset_epoch='0000000000000002';else if(field==='principal')boardRecovery.principal.context='d'.repeat(32);else boardRecovery.permissions.reset_startup=false;
   await modal.waitFor({state:'detached'});assert.equal(confirmed.length,count);assert.equal(prepared.length,preparedBefore,'no automatic reprepare');
-  boardRecovery.mode_capability.current='test_fire';boardRecovery.permissions.reset_startup=true;await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Reset ALL to Startup…')?.disabled);
+  boardRecovery.mode_capability.current='test_fire';boardRecovery.permissions.reset_startup=true;await resetEnabled();
  }
- boardRecovery.reset_startup_policy={...boardRecovery.reset_startup_policy,version:2};await page.waitForFunction(()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Reset ALL to Startup…')?.disabled);
+ boardRecovery.reset_startup_policy={...boardRecovery.reset_startup_policy,version:2};await page.waitForFunction(()=>Array.from(document.querySelectorAll('#gs26-recovery-tools button')).find(b=>b.textContent==='Reset all boards to Idle…')?.disabled);
  boardRecovery.reset_startup_policy=null;await page.waitForTimeout(1100);assert(await button.isDisabled(),'null policy never narrows legacy unknown-board requirements');
  const beforeMalformed={prepared:prepared.length,confirmed:confirmed.length};boardRecovery.mode_capability={...boardRecovery.mode_capability,current:'hitl',build_mode:'hitl',supported_modes:['hitl']};boardRecovery.reset_startup_policy={version:1,global_startup_best_effort:true,mode:'hitl',optional_proofs:true};await panel.getByText('Recovery status unavailable. No control action is enabled.',{exact:true}).waitFor();assert.equal(prepared.length,beforeMalformed.prepared);assert.equal(confirmed.length,beforeMalformed.confirmed);
  assert.deepEqual(commands,[],'no telemetry command escape');assert.deepEqual(dialogs,[],'no browser popup');assert.deepEqual(errors,[]);await context.close();console.log('PASS actualWasm ordinaryclient C12 normal/testfire/hitl exactscope NONE hostonly/selected/global labels, optionalAbort, stale mode/epoch/principal/permission retirement, legacy/null/unknown failclosed, no automatic retry or directcommand');
