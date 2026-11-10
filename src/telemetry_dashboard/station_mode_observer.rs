@@ -63,11 +63,22 @@ pub(super) fn owner(alive: Arc<AtomicBool>) -> Result<Rc<ExportOwner>, String> {
 pub(super) fn view_key() -> String {
     VIEW_KEY.read().clone()
 }
+/// The connection a view's request owners were captured on. Policy-keyed
+/// views remount when it changes, so a reconnect gives them fresh owners
+/// instead of leaving controls whose captured owner retired for good.
+fn connection_generation() -> String {
+    let disconnects = super::FRONTEND_NETWORK_METRICS_STATE
+        .lock()
+        .map(|metrics| metrics.ws_disconnects_total)
+        .unwrap_or(u64::MAX);
+    format!("{}:{disconnects}", *super::WS_EPOCH.peek())
+}
 fn key_for(observed: &Option<Observation>, now: f64) -> String {
+    let connection = connection_generation();
     observed.as_ref().map_or_else(
         || {
             format!(
-                "mode-unknown:{}",
+                "mode-unknown:{}:{connection}",
                 super::station_policy_context::view_generation()
             )
         },
@@ -80,6 +91,7 @@ fn key_for(observed: &Option<Observation>, now: f64) -> String {
                 o.value.admissions_open,
                 o.current(now),
                 super::station_policy_context::view_generation(),
+                &connection,
             ))
             .unwrap_or_else(|_| "mode-unavailable".into())
         },

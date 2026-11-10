@@ -37,10 +37,9 @@ async fn display_tick() {
 }
 #[component]
 pub fn BoardAbortReadiness(#[props(default = false)] show_hitl_interlocks: bool) -> Element {
-    // A reconnect retires this view's request owner for good, so remount with
-    // a fresh one: otherwise a check in flight across the reconnect leaves
-    // "Check launch readiness" disabled until the page is reopened.
-    let view_key = format!("{}:{}", super::station_mode_observer::view_key(), *WS_EPOCH.read());
+    // The view key changes on reconnect too, so a check in flight across a
+    // reconnect cannot leave "Check launch readiness" disabled.
+    let view_key = super::station_mode_observer::view_key();
     rsx! { for key in [view_key] {
         OwnedBoardAbortReadiness { key:"{key}", show_hitl_interlocks }
     } }
