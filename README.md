@@ -447,6 +447,21 @@ cargo test
 
 The current suite covers layout parsing/validation, sender-aware chart series, launch-clock monotonic behavior, and state/data chart regressions, including current loadcell display behavior.
 
+Run the browser suite (real Wasm against synthetic stations; no hardware):
+
+```bash
+PLAYWRIGHT_MODULE=/path/to/node_modules/playwright/index.mjs CHROME_BINARY=/path/to/chrome \
+  scripts/run-browser-suite.sh [--media] [--jobs N] [--skip-build] [--gs ../GroundStation26]
+```
+
+It builds the release bundle and the preview examples, produces the inputs some
+tests need (Rust-exported replay HTML, GroundStation's display-history fixture,
+its chamber layout), serves the previews, runs every test in `tests/` and stops
+everything it started. `--media` also starts the isolated media fixture (Docker
+MediaMTX, synthetic AAC cameras, `serve_synthetic_media`, a debugging Chrome and
+a recording clip) for the broadcast, model and crew-voice tests; without it those
+are reported as skipped. See GroundStation26 `docs/backend/broadcast-studio.md`.
+
 Backend contract tests decode real GroundStation26 replies and websocket frames
 (copied into `tests/fixtures/backend-contract/`) with the UI's own types:
 

@@ -14,7 +14,7 @@ fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(pathname==='
  }
  if(pathname==='/api/recovery'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(recovery));return;}
  if(pathname==='/api/recovery/export.json'){assert.equal(req.headers.authorization,'Bearer ui-token');exports.push(pathname);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({events:recovery.events}));return;}
- if(pathname==='/api/launch_clock'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(recovery.clock.t0_utc_ms?{kind:'t_plus',anchor_timestamp_ms:recovery.clock.t0_utc_ms,duration_ms:null}:{kind:'idle',anchor_timestamp_ms:null,duration_ms:null}));return;}
+ if(pathname==='/api/launch_clock'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(recovery.clock?.t0_utc_ms?{kind:'t_plus',anchor_timestamp_ms:recovery.clock.t0_utc_ms,duration_ms:null}:{kind:'idle',anchor_timestamp_ms:null,duration_ms:null}));return;}
  if(pathname==='/api/checklists'||`);
 fixture=fixture.replace("authenticated:true,anonymous:false","authenticated:true,anonymous:false,station_role:'rrls'");
 fixture=fixture.replace("let actionPolicy=example('action-policy');","let actionPolicy=example('action-policy');actionPolicy.controls.push({cmd:'ResetTClock',enabled:true,blink:'none',actuated:null});");
