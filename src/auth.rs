@@ -103,6 +103,10 @@ pub struct CommandProxyStatus {
     pub pending: Option<CommandProxyRequest>,
     pub last: Option<CommandProxyRequest>,
     #[serde(default)] pub reason: String,
+    /// RRLS takeover: the primary is out of range; these AV-bay commands go to
+    /// this RRLS's own command endpoint, not the proxy.
+    #[serde(default)] pub takeover: bool,
+    #[serde(default)] pub takeover_commands: Vec<String>,
 }
 pub fn update_command_proxy(status: Option<CommandProxyStatus>) {
     if let Ok(mut current) = CURRENT_STATUS.lock() { current.command_proxy = status; }
@@ -114,6 +118,14 @@ pub fn is_local_station_command(cmd: &str) -> bool {
 }
 pub fn command_uses_primary_proxy(status: &SessionStatus, cmd: &str) -> bool {
     status.station_role.as_deref() == Some("rrls") && !is_local_station_command(cmd)
+        && !rrls_takeover_command(status, cmd)
+}
+/// An RRLS holding a takeover sends this AV-bay command itself.
+pub fn rrls_takeover_command(status: &SessionStatus, cmd: &str) -> bool {
+    status.station_role.as_deref() == Some("rrls")
+        && status.command_proxy.as_ref().is_some_and(|proxy| {
+            proxy.takeover && proxy.takeover_commands.iter().any(|name| name == cmd)
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1243,6 +1255,19 @@ mod primary_proxy_permissions {
         status.command_proxy=None;
         assert!(!can_send_command_for_status(&status,"Pilot"));
         assert!(can_send_command_for_status(&status,"StartWritingNow"));
+    }
+    #[test]
+    fn rrls_takeover_sends_only_listed_av_bay_commands_itself() {
+        // Primary out of range: no proxy available, but the RRLS holds a takeover.
+        let mut status=SessionStatus {station_role:Some("rrls".into()),roles:vec!["admin".into()],command_proxy:Some(CommandProxyStatus {supported:true,paired:true,takeover:true,takeover_commands:vec!["DeployParachute".into()],..Default::default()}),..Default::default()};
+        assert!(!command_uses_primary_proxy(&status,"DeployParachute"));
+        assert!(can_send_command_for_status(&status,"DeployParachute"));
+        // Fill and launch controls still need the primary.
+        assert!(command_uses_primary_proxy(&status,"Nitrous"));
+        assert!(!can_send_command_for_status(&status,"Nitrous"));
+        status.command_proxy.as_mut().unwrap().takeover=false;
+        assert!(command_uses_primary_proxy(&status,"DeployParachute"));
+        assert!(!can_send_command_for_status(&status,"DeployParachute"));
     }
     #[test]
     fn legacy_session_without_proxy_does_not_gain_hardware_authority() {
