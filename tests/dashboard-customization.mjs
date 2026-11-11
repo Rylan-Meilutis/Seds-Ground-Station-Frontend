@@ -510,8 +510,8 @@ try{
   await commandPage.getByRole('button',{name:'Pin to top bar',exact:true}).first().click();
   await commandPage.getByRole('button',{name:'Done',exact:true}).click();
   const cardCount=await commandPage.locator('.gs26-dashboard-card').count();
-  for (const phase of ['Launch','Ascent','Recovery']) {
-    commandSocket.send(JSON.stringify({ty:'FlightState',data:{state:phase}}));
+  for (const [state,fc,phase] of [['Launch',null,'Launch'],['InFlight','Ascent','In flight'],['Landed','Recovery','Landed']]) {
+    commandSocket.send(JSON.stringify({ty:'FlightState',data:{state,fill_phase:null,fc_phase:fc&&{value:null,label:fc,source:'fc_state_report',age_ms:0}}}));
     await commandPage.locator('.gs26-status-flight').getByText(phase,{exact:true}).waitFor();
     assert.equal(await commandPage.locator('.gs26-dashboard-card').count(),cardCount,'Dashboard stays stable in '+phase);
     await commandPage.locator('[aria-label="Pinned telemetry"]').getByText('50 kg loadcell',{exact:true}).waitFor();
