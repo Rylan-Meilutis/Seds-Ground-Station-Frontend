@@ -80,6 +80,9 @@ html, body { font-family: var(--gs-font); -webkit-text-size-adjust: 100%; text-s
 .gs-notice--warn { border-color: var(--gs-warn-line); background: var(--gs-warn-bg); color: var(--gs-warn-text); }
 .gs-notice--danger { border-color: var(--gs-danger-line); background: var(--gs-danger-bg); color: var(--gs-danger-text); }
 
+/* Why a control is disabled: short visible text under or beside it. */
+.gs-disabled-reason { display: block; flex-basis: 100%; min-width: 0; margin: 2px 0 0; font: 400 var(--gs-text-xs)/1.35 var(--gs-font); color: var(--gs-text-muted); overflow-wrap: anywhere; }
+
 /* Info disclosure: keeps safety explanations available without a wall of text. */
 details.gs-info { min-width: 0; margin: 0; color: var(--gs-text-muted); font: 400 var(--gs-text-sm)/1.45 var(--gs-font); }
 details.gs-info > summary {

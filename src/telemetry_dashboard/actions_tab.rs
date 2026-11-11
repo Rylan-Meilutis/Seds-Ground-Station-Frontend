@@ -121,6 +121,19 @@ fn cancel_supply_gesture(gesture: &mut Signal<Option<SupplyGesture>>, base: &str
 }
 
 #[cfg(test)]
+mod network_utc_reason_tests {
+    #[test]
+    fn rrls_network_utc_says_why_it_is_unavailable() {
+        let proxy = |available: bool, reason: &str| -> crate::auth::CommandProxyStatus {
+            serde_json::from_value(serde_json::json!({"available":available,"reason":reason,"primary_mode":null,"pending":null,"last":null})).unwrap()
+        };
+        assert_eq!(super::network_utc_reason(false, None), None);
+        assert_eq!(super::network_utc_reason(true, Some(&proxy(true, ""))), None);
+        assert_eq!(super::network_utc_reason(true, Some(&proxy(false, "Primary link lost."))).as_deref(), Some("Primary link lost."));
+        assert_eq!(super::network_utc_reason(true, None).as_deref(), Some("The primary is not reachable through the command relay."));
+    }
+}
+#[cfg(test)]
 mod sequence_action_tests {
     use super::*;
 
@@ -606,11 +619,27 @@ pub(super) fn NetworkUtcControls() -> Element {
                         busy.set(false);
                     });
                 }, "Use client time" }
+                super::disabled_reason::DisabledReason {
+                    subject: "Network UTC".to_string(),
+                    reason: network_utc_reason(recovery, super::COMMAND_PROXY_STATUS.read().as_ref()),
+                    control: "network-utc".to_string(),
+                }
                 super::gse_panel::InfoNote {summary:"About network UTC",paragraphs:vec!["Sets the station's network UTC source. Clock corrections apply gradually; the server system clock is unchanged.".into()]}
             }
             p { role: "status", "{message}" }
         }
     }
+}
+
+/// Why the RRLS cannot set network UTC: the primary applies it through the
+/// command relay, which must be available.
+fn network_utc_reason(recovery: bool, proxy: Option<&auth::CommandProxyStatus>) -> Option<String> {
+    if !recovery || proxy.is_some_and(|status| status.available) {
+        return None;
+    }
+    Some(proxy.map(|status| status.reason.trim()).filter(|reason| !reason.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "The primary is not reachable through the command relay.".into()))
 }
 
 fn request_gate_diagnostics(status: &serde_json::Value, recovery: bool) -> String {
@@ -1133,7 +1162,7 @@ pub fn ActionsTab(
                                                                 span {title:"{requested_label}; {network_label}",style:"display:block;font-size:11px;font-weight:400;line-height:1.3;white-space:normal;overflow-wrap:anywhere;", "{requested_label}; {network_label}"}
                                                             }
                                                             if action.group == "GSE sequence actions" {
-                                                                span {title:disabled_reason.unwrap_or(""),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;", "{reason_text}"}
+                                                                span {title:disabled_reason.unwrap_or(""),style:"display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;min-height:1.3em;overflow:hidden;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}
                                                             } else if disabled_reason.is_some() {
                                                                 span {title:disabled_reason.unwrap_or(""),style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}
                                                             }
@@ -1381,6 +1410,9 @@ pub(super) fn MissionSettings(
                                         });
                                     },
                                     "{translate_text(\"Apply To Flight Computer\")}"
+                                }
+                                if abort_only_mode {
+                                    super::disabled_reason::DisabledReason {subject:"Apply".to_string(),reason:Some("Actions Disabled is on (header toggle).".to_string()),control:"apply-flight-setup".to_string()}
                                 }
                                 if !flight_setup_status.read().is_empty() {
                                     div { style: "font-size:12px; color:{theme.text_muted};", "{flight_setup_status.read().clone()}" }

@@ -189,7 +189,7 @@ pub(super) fn AutoColdFlow(
             },
                 span {style:"min-width:0;flex:1 1 auto;",
                     span {style:"display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.25;", "Auto Cold Flow"}
-                    span {title:reason.clone(),style:"display:block;height:1.3em;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:nowrap;",if !enabled {"{reason}"}}
+                    span {title:reason.clone(),style:"display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;min-height:1.3em;overflow:hidden;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;",if !enabled {"{reason}"}}
                 }
                 span {"aria-hidden":badge.is_empty(),style:"visibility:{badge_visibility};flex:0 0 auto;padding:0.14rem 0.42rem;border-radius:999px;border:1px solid rgba(255,255,255,0.16);background:rgba(0,0,0,0.18);color:rgba(255,255,255,0.82);font-size:0.68rem;font-weight:800;line-height:1;text-transform:uppercase;letter-spacing:0.04em;", "{badge}"}
             }

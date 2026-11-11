@@ -46,6 +46,7 @@ mod info_panels;
 pub mod layout;
 mod sequence_progress_model;
 mod cold_flow;
+mod disabled_reason;
 mod sequence_progress_view;
 mod sequence_progress_host;
 mod layout_settings_tab;

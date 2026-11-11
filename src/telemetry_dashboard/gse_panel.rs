@@ -581,8 +581,7 @@ pub(super) fn PhysicalPanelStatus(status: Signal<serde_json::Value>) -> Element 
 // stale rendered enabled button cannot authorize a changed operation state.
 fn qualification_access(value: &serde_json::Value, disabled: bool, busy: bool) -> (bool, bool) {
     let Some(qualification) = value.get("qualification") else {return (false, false);};
-    let can_reset = !disabled && !busy && auth::can_send_command("ValveSelfTest")
-        && value["request_gate"]["flight_state"].as_str().is_some_and(|s| matches!(s, "Startup" | "Idle"));
+    let can_reset = qualification_reset_reason(value, disabled, busy, auth::can_send_command("ValveSelfTest")).is_none();
     let can_override = can_reset && auth::can_send_command("NitrogenTest")
         && value["topology_stable"].as_bool() == Some(true)
         && qualification["fault"].as_str().is_none()
@@ -592,6 +591,32 @@ fn qualification_access(value: &serde_json::Value, disabled: bool, busy: bool) -
         && qualification["nitrogen_test"].as_bool() != Some(true)
         && qualification["nitrogen_override"]["operator"].as_str().is_none();
     (can_reset, can_override)
+}
+
+/// Why "Reset operation checks" is unavailable, or None when it can open.
+pub(super) fn qualification_reset_reason(value: &serde_json::Value, disabled: bool, busy: bool, permitted: bool) -> Option<String> {
+    super::disabled_reason::first_reason(&[
+        (value.get("qualification").is_none(), "Operation check status is unavailable."),
+        (disabled, "Actions Disabled is on (header toggle)."),
+        (!permitted, "Not permitted by your account."),
+        (!value["request_gate"]["flight_state"].as_str().is_some_and(|s| matches!(s, "Startup" | "Idle")), "Only in Startup or Idle."),
+        (busy, "Waiting for the current request."),
+    ])
+}
+#[cfg(test)]
+mod reason_tests {
+    #[test]
+    fn reset_operation_checks_says_why_it_is_disabled() {
+        let idle = serde_json::json!({"qualification":{},"request_gate":{"flight_state":"Idle"}});
+        assert_eq!(super::qualification_reset_reason(&idle, false, false, true), None);
+        let reason = |value: &serde_json::Value, disabled, busy, permitted| super::qualification_reset_reason(value, disabled, busy, permitted).unwrap();
+        assert_eq!(reason(&serde_json::json!({}), false, false, true), "Operation check status is unavailable.");
+        assert_eq!(reason(&idle, true, false, true), "Actions Disabled is on (header toggle).");
+        assert_eq!(reason(&idle, false, false, false), "Not permitted by your account.");
+        let fill = serde_json::json!({"qualification":{},"request_gate":{"flight_state":"Fill"}});
+        assert_eq!(reason(&fill, false, false, true), "Only in Startup or Idle.");
+        assert_eq!(reason(&idle, false, true, true), "Waiting for the current request.");
+    }
 }
 
 #[component]
@@ -677,6 +702,7 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
                     Err(error) => message.set(error),
                 }
             },"Reset operation checks"}
+            super::disabled_reason::DisabledReason {subject:"Reset".to_string(),reason:qualification_reset_reason(&value,disabled,*busy.read(),auth::can_send_command("ValveSelfTest")),control:"reset-operation-checks".to_string()}
             p {role:"status",style:"margin:0;","{message}"}
             if *override_open.read() {
                 div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
@@ -941,6 +967,9 @@ pub(super) fn ClearGseAbort() -> Element {
                     }
                 },
                 "Clear GSE abort"
+            }
+            if !auth::can_send_command("ValveSelfTest") {
+                super::disabled_reason::DisabledReason {reason:Some("Requires command permission.".to_string()),control:"clear-gse-abort".to_string()}
             }
             if *confirming.read() {
                 p { style:"margin:0;max-width:48ch;", "Confirm the system is safe. This clears the ground station operation abort, returns it to Idle and resets operation checks. It does not clear individual board aborts or command outputs. In Connectivity → Board state and recovery, request fresh status and use Recover Abort for boards that support it. Unsupported or unavailable board recovery requires local servicing." }

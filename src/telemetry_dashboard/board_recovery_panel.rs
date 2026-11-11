@@ -1,6 +1,7 @@
 //! Operator-only recovery UI. Polling reads local status; it never issues queries/actions.
 use super::board_recovery_guard::{ConnectionBinding, challenge_unexpired, status_age_ms};
 use super::board_recovery_model::*;
+use super::disabled_reason::{DisabledReason, first_reason};
 use super::layout::ThemeConfig;
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -226,8 +227,16 @@ fn operation_view(operation: &Operation) -> Element {
 fn confirm_title(challenge: &Challenge) -> String {
     match (challenge.action.as_str(), challenge.targets.as_slice(), challenge.resync_target_label.as_deref()) {
         ("resync", [board], Some(label)) => format!("Resync {board} to {label}"),
+        (FC_RESET_ACTION, _, _) => "Reset FC to Startup".into(),
         _ => "Confirm operator recovery action".into(),
     }
+}
+/// The station's warning for an FC reset while the FC reports Launch or a
+/// flight phase, shown first and prominently in the one confirmation.
+fn fc_reset_warning(pending: &Pending) -> Option<String> {
+    (pending.challenge.action == FC_RESET_ACTION).then_some(())?;
+    pending.snapshot.status.board("FC")?.reset_fc_startup_warning.as_deref()
+        .map(str::trim).filter(|warning| !warning.is_empty()).map(str::to_string)
 }
 fn challenge_scope_view(challenge: &Challenge) -> Element {
     let global = challenge.action=="reset_startup" && challenge.global_startup_best_effort==Some(true);
@@ -240,9 +249,10 @@ fn challenge_scope_view(challenge: &Challenge) -> Element {
             p{style:"margin:0;",strong{"Frozen targets: "}"{challenge.targets.join(\", \")}. The server checks board proof at confirm."}
         }
         if challenge.action=="reset_startup" {p{class:"gs-notice gs-notice--warn",strong{"Outputs move. "}"VB vent and dump OPEN; pilot, supplies and igniter OFF; stepper asleep. Confirm the area is safe. A best-effort request does not prove unselected outputs changed."}}
+        if challenge.action==FC_RESET_ACTION {p{class:"gs-notice",strong{"Deployment history is kept. "}"The FC returns to Startup from its current state without an Abort. It will not launch again until a new Launch after a verified Startup; a running pyro pulse is never cut."}}
         if challenge.action=="resync" && challenge.outputs_unchanged==Some(true) {p{class:"gs-notice",strong{"No outputs move. "}"Only the board's state and phase change; command any output explicitly afterwards."}}
         if challenge.action=="resync" && challenge.outputs_unchanged!=Some(true) {p{class:"gs-notice gs-notice--warn",strong{"No Abort needed. "}"The board stops its own launch sequence, drives every output safe, then returns to the station's phase. Fill phases and Armed still require outputs already safe."}}
-        p{style:"margin:0;font-size:var(--gs-text-sm);color:var(--gs-text-muted);","Valve position is not measured; readbacks are command registers."}
+        if challenge.action!=FC_RESET_ACTION {p{style:"margin:0;font-size:var(--gs-text-sm);color:var(--gs-text-muted);","Valve position is not measured; readbacks are command registers."}}
     }}
 }
 fn begin_prepare(
@@ -276,7 +286,7 @@ fn begin_prepare_internal(
     let reason = match action.as_str() {
         "reset_startup" => snapshot.status.reset_reason(snapshot.elapsed()),
         "change_mode" => snapshot.status.mode_reason(mode.as_deref().unwrap_or("")),
-        "recover_abort" | "resync" => board
+        "recover_abort" | "resync" | FC_RESET_ACTION => board
             .as_deref()
             .and_then(|id| snapshot.status.board(id))
             .map(|board| {
@@ -491,11 +501,11 @@ pub(super) fn RecoveryBoardState(board_id: String) -> Element {
     let (health, value) = if local_gs {
         let label = current.as_ref()
             .filter(|snapshot| snapshot.binding == ConnectionBinding::current())
-            .map_or("Unknown", |snapshot| snapshot.status.global_state_label());
-        match label {
-            "Unknown" => (Health::Stale, label.to_string()),
-            "Aborted" => (Health::Unhealthy, label.to_string()),
-            _ => (Health::Healthy, label.to_string()),
+            .map_or_else(|| "Unknown".to_string(), |snapshot| snapshot.status.global_state_label());
+        match label.as_str() {
+            "Unknown" => (Health::Stale, label),
+            "Aborted" => (Health::Unhealthy, label),
+            _ => (Health::Healthy, label),
         }
     } else {
         let raw = current.as_ref().and_then(|snapshot| snapshot.status.board(&board_id));
@@ -519,7 +529,8 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
     if !BOARD_IDS.contains(&board_id.as_str()) {
         return rsx! {};
     }
-    let unavailable = || rsx! {div{class:"gs26-recovery-actions",style:"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;",button{disabled:true,"Query board"}button{disabled:true,{targeted_recovery_label(&board_id).map_or("Recovery unavailable",|(label,_)|label)}}}};
+    let unavailable = || rsx! {div{class:"gs26-recovery-actions",style:"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;",button{disabled:true,"Query board"}button{disabled:true,{targeted_recovery_label(&board_id).map_or("Recovery unavailable",|(label,_)|label)}}
+        DisabledReason{reason:Some("Recovery status from the station is unavailable.".to_string())}}};
     let Some(current) = snapshot.read().clone().filter(|snapshot| snapshot.read_context.as_ref().is_some_and(|context| context.check_current().is_ok())) else {
         return unavailable();
     };
@@ -533,11 +544,22 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
     let query_allowed = status.permissions.query && board.query_allowed();
     let recover_reason = status.prepare_board_reason(&board, "recover_abort", current.elapsed());
     let resync_reason = status.prepare_board_reason(&board, "resync", current.elapsed());
+    let fc_reset = status.fc_reset_advertised(&board);
+    let fc_reset_reason = status.fc_reset_reason(&board);
+    // What the operator reads under each disabled button, most basic cause first.
+    let ui_reason = |needs_permission: bool| first_reason(&[
+        (!connected, "Station connection is down."),
+        (needs_permission && !permitted, "Not permitted by your account."),
+        (controls_busy, "Waiting for the current recovery step."),
+    ]);
+    let query_reason = ui_reason(false).or_else(|| status.query_reason(&board));
+    let recover_shown_reason = ui_reason(true).or_else(|| recover_reason.clone());
+    let fc_reset_shown_reason = ui_reason(true).or_else(|| fc_reset_reason.clone());
     rsx! {div{class:"gs26-recovery-actions",style:"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;",
                                     if board.recovery_notice().is_some() {
                                         span { role:"status",class:"gs26-recovery-required",style:"display:inline-flex;align-items:center;min-height:28px;padding:3px 9px;border:1px solid #b77b18;border-radius:999px;background:#3b2c11;color:#ffdc8a;font-size:0.85rem;font-weight:700;line-height:1.3;", "Recovery required" }
                                     }
-                                    button{disabled:!connected||controls_busy||!query_allowed,title:if query_allowed{"Request fresh status through the advertised dedicated recovery endpoint"}else{"Unsupported: no verified dedicated recovery endpoint"},
+                                    button{disabled:query_reason.is_some()||!query_allowed,title:"Request fresh status through the advertised dedicated recovery endpoint",
                                         onclick:{let board_id=board_id.clone();let binding=current.binding.clone();let policy_owner=current.policy_owner.clone();move |_|{
                                             if *busy.peek()||pending.peek().is_some()||binding!=ConnectionBinding::current(){return;}
                                             let owner=match policy_owner.clone(){Ok(owner)if owner.check_ordinary().is_ok()=>owner,_=>{message.set("Original policy view retired. Refresh status before querying.".into());return;}};
@@ -552,16 +574,30 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
                                         }},
                                         "Query board"
                                     }
-                                    button{disabled:!connected||controls_busy||!permitted||recover_reason.is_some(),title:recover_reason.clone().unwrap_or_default(),
+                                    if fc_reset {
+                                    // The FC reset from any state replaces FC abort recovery:
+                                    // one button, one station confirmation.
+                                    button{class:"gs-btn gs-btn--danger","data-recovery-action":FC_RESET_ACTION,disabled:fc_reset_shown_reason.is_some(),
+                                        onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare(FC_RESET_ACTION.into(),Some(id.clone()),None,current.clone(),busy,pending,message)},
+                                        "Reset FC to Startup…"}
+                                    } else {
+                                    button{disabled:recover_shown_reason.is_some(),
                                         onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("recover_abort".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},{if board.recovery_notice().is_some() {"Review recovery…"} else {super::board_recovery_model::targeted_recovery_label(&board_id).map_or("Recovery unavailable", |(label, _)| label)}}}
+                                    }
+                                    DisabledReason{subject:"Query".to_string(),reason:query_reason.clone(),control:"query".to_string()}
+                                    if fc_reset {
+                                        DisabledReason{subject:"Reset".to_string(),reason:fc_reset_shown_reason.clone(),control:FC_RESET_ACTION.to_string()}
+                                    } else {
+                                        DisabledReason{subject:"Recovery".to_string(),reason:recover_shown_reason.clone(),control:"recover_abort".to_string()}
+                                    }
                                     // Only shown when the station advertises Resync for this board;
                                     // abort recovery is "Review recovery…" or Reset all boards.
                                     if board.capabilities.resync == Some(true) {
-                                    button{disabled:!connected||controls_busy||!permitted||resync_reason.is_some(),title:resync_reason.clone().unwrap_or_default(),
+                                    button{disabled:!connected||controls_busy||!permitted||resync_reason.is_some(),
                                         onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("resync".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},
                                         {status.resync_target_label.as_deref().map_or("Resync…".to_string(),|label|format!("Resync to {label}…"))}}
-                                    if let Some(reason)=resync_reason.clone() {
-                                        span{class:"gs26-resync-unavailable",style:"flex-basis:100%;font-size:0.85rem;line-height:1.4;overflow-wrap:anywhere;","Resync unavailable: {reason}"}
+                                    if let Some(reason)=ui_reason(true).or(resync_reason.clone()) {
+                                        span{class:"gs26-resync-unavailable gs-disabled-reason","data-control":"resync","Resync unavailable: {reason}"}
                                     }
                                     }
     }}
@@ -760,8 +796,7 @@ fn boards_section(current: &Snapshot, ws_connected: bool) -> Element {
     rsx! {
         if boards.is_empty() {p{class:"gs-notice","No boards are reported yet."}}
         for board in boards {
-            {let reason = board.recovery_notice().and_then(|_| current.status.prepare_board_reason(&board, "recover_abort", current.elapsed()));
-            let state = if board.state_label.is_empty() {"Unknown".to_string()} else {board.state_label.clone()};
+            {let state = if board.state_label.is_empty() {"Unknown".to_string()} else {board.state_label.clone()};
             rsx!{article{key:"{board.id}","data-recovery-board":"{board.id}",style:"display:grid;gap:var(--gs-space-1);padding:var(--gs-space-3);border:1px solid var(--gs-line);border-radius:var(--gs-radius);min-width:0;",
                 div{style:"display:flex;flex-wrap:wrap;gap:var(--gs-space-2);align-items:center;",
                     strong{"{board.id}"}
@@ -769,7 +804,6 @@ fn boards_section(current: &Snapshot, ws_connected: bool) -> Element {
                     span{class:"gs-badge","{state}"}
                     if board.abort_latched == Some(true) {span{class:"gs-badge gs-badge--danger","Abort latched"}}
                 }
-                if let Some(reason)=reason {p{style:"margin:0;font-size:var(--gs-text-sm);color:var(--gs-text-muted);","Recovery unavailable: {reason}"}}
                 RecoveryBoardActions{board_id:board.id.clone(),ws_connected}
             }}}
         }
@@ -879,7 +913,11 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                 div{id:"gs26-recovery-confirm",role:"alertdialog","aria-modal":"true","aria-labelledby":"board-recovery-confirm-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:var(--gs-space-5);border-radius:var(--gs-radius-lg);width:min(100%,720px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:var(--gs-space-3);overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;",
                     h2{id:"board-recovery-confirm-title",style:"margin:0;font-size:var(--gs-text-lg);",{confirm_title(&dialog.challenge)}}
                     div{class:"gs26-modal-scroll-body",style:"flex:0 1 auto;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
-                        p{style:"margin:0 0 var(--gs-space-2);","{dialog.challenge.summary}"}
+                        if let Some(warning)=fc_reset_warning(&dialog) {
+                            p{role:"alert",class:"gs-notice gs-notice--danger gs26-fc-reset-warning",style:"margin:0 0 var(--gs-space-2);font-weight:700;","{warning}"}
+                        }
+                        {let summary=fc_reset_warning(&dialog).map_or(dialog.challenge.summary.clone(),|warning|dialog.challenge.summary.replace(&warning,"").trim().to_string());
+                        rsx!{if !summary.is_empty(){p{style:"margin:0 0 var(--gs-space-2);","{summary}"}}}}
                         {challenge_scope_view(&dialog.challenge)}
                         if !message.read().is_empty() {p{role:"status",style:"padding:10px;border:1px solid #b77b18;border-radius:8px;line-height:1.45;overflow-wrap:anywhere;","{message}"}}
                         if !dialog.locally_live() {
@@ -951,7 +989,7 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                                 }
                                 busy.set(false);
                             });
-                        },{if dialog.challenge.action=="resync" {"Confirm resync"} else {"Confirm recovery action"}}
+                        },{if dialog.challenge.action=="resync" {"Confirm resync"} else if dialog.challenge.action==FC_RESET_ACTION {"Reset FC to Startup"} else {"Confirm recovery action"}}
                     }
                     }
                 }
@@ -1001,6 +1039,21 @@ mod tests {
         moved.ticket = "new".into();
         moved.confirmation = "RESYNC AB TO ARMED".into();
         assert!(!same_reviewed_intent(&resync_challenge(), &moved));
+    }
+    fn fc_reset_challenge() -> Challenge {
+        serde_json::from_value(serde_json::json!({"ticket":"a","backend_instance":"b","principal_context":"p","reset_epoch":"e",
+            "expires_in_ms":5000,"action":"reset_fc_startup","targets":["FC"],"summary":"Reset the FC to Startup.",
+            "confirmation":"RESET FC TO STARTUP"})).unwrap()
+    }
+    fn fc_reset_scope() -> Element { challenge_scope_view(&fc_reset_challenge()) }
+    #[test]
+    fn fc_reset_review_is_one_titled_confirmation_that_keeps_history() {
+        assert_eq!(confirm_title(&fc_reset_challenge()), "Reset FC to Startup");
+        let html = render(fc_reset_scope);
+        assert!(html.contains("Deployment history is kept."), "{html}");
+        assert!(html.contains("without an Abort"), "{html}");
+        assert!(!html.contains("Valve position"), "FC reset has no valve readbacks: {html}");
+        assert!(!html.contains("Outputs move."), "{html}");
     }
     #[cfg(not(target_arch = "wasm32"))]
     mod refresh_native_tests { include!("board_recovery_refresh_native_tests.rs"); }

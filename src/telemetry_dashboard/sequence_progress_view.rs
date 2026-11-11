@@ -254,6 +254,9 @@ pub fn SequenceProgressView(
                         p {class:"gs26-sequence-legend","Cold Flow opens PILOT/main only. No igniter or launch countdown. Cancel closes supplies/main, then dump and vent."}
                         if panel.snapshot.cold_flow_release_allowed {
                             button {class:"gs26-sequence-cancel",r#type:"button",disabled:!current_authority||!can_release_cold_flow,onclick:move |_|on_release_cold_flow.call(release_key.clone()),"Cold Flow · open PILOT/main"}
+                            if !current_authority||!can_release_cold_flow {
+                                p {class:"gs26-sequence-control-reason","data-control":"cold-flow-release","Release unavailable: {local_reason.clone().unwrap_or_else(|| \"This session cannot release Cold Flow\".into())}"}
+                            }
                         }
                     }
                     if let Some(choice)=controls.as_ref().and_then(|c|c.hold_choice.clone()).filter(|_|!terminal) {

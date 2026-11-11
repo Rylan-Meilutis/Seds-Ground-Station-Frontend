@@ -93,6 +93,9 @@ pub(super) struct Capabilities {
     pub prepare_recover: Option<bool>,
     pub resync: Option<bool>,
     pub reset_startup: Option<bool>,
+    /// FC only: the GS-authorised reset to Startup from any state may be
+    /// prepared now. Absent from stations without that reset.
+    pub reset_startup_any_state: Option<bool>,
     pub endpoint_verified: bool,
     pub hardened_transport: Option<bool>,
 }
@@ -196,7 +199,30 @@ pub(super) struct Board {
     pub first_uncertainty_reconcilable: bool,
     /// Server's plain-language reason Resync is unavailable for this board.
     pub resync_blocked_reason: Option<String>,
+    /// The station's short reason per capability; null while it is available.
+    pub blocked_reasons: BlockedReasons,
+    /// FC only: why the reset from any state cannot be prepared now.
+    pub reset_startup_any_state_blocked_reason: Option<String>,
+    /// FC only: set while the FC reports Launch or a flight phase.
+    pub reset_fc_startup_warning: Option<String>,
+    /// FC only: the FC's own detailed phase.
+    pub fc_phase: Option<super::mission_phase::FcPhase>,
 }
+#[derive(Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub(super) struct BlockedReasons {
+    pub query: Option<String>,
+    pub recover: Option<String>,
+    pub prepare_recover: Option<String>,
+    pub resync: Option<String>,
+    pub reset_startup_any_state: Option<String>,
+}
+fn reason(text: &Option<String>) -> Option<String> {
+    text.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)
+}
+/// The FC reset to Startup from any state: its action and the station phrase.
+pub(super) const FC_RESET_ACTION: &str = "reset_fc_startup";
+pub(super) const FC_RESET_PHRASE: &str = "RESET FC TO STARTUP";
 fn hex(value: &str, length: usize) -> bool {
     value.len() == length
         && value.bytes().any(|byte| byte != b'0')
@@ -296,6 +322,9 @@ pub(super) struct Status {
     /// Server's plain-language reason Review recovery is not permitted.
     #[serde(default)]
     pub recover_blocked_reason: Option<String>,
+    /// GS fill sub-phase while the network state is Fill.
+    pub fill_phase: Option<String>,
+    pub fill_phase_label: Option<String>,
     /// Station phase a Resync would set (Startup/Idle outside test fire, the
     /// fill phases and Armed).
     #[serde(default)]
@@ -324,16 +353,57 @@ impl Status {
         self.operation.as_ref().is_some_and(mutation)
             || self.boards.iter().any(|board| board.operation.as_ref().is_some_and(mutation))
     }
-    /// GS is the server's global state, not a recoverable MCU identity.
-    pub fn global_state_label(&self) -> &'static str {
-        const LABELS: [&str; 16] = [
-            "Startup", "Idle", "Pre Fill", "Fill Test", "Nitrogen Fill", "Nitrous Fill",
-            "Armed", "Launch", "Ascent", "Coast", "Apogee", "Descent", "Reefing", "Landed",
-            "Recovery", "Aborted",
-        ];
-        self.flight_state
-            .and_then(|value| LABELS.get(value as usize).copied())
-            .unwrap_or("Unknown")
+    /// GS is the server's global state, not a recoverable MCU identity:
+    /// the network state with the fill step or FC phase beside it.
+    pub fn global_state_label(&self) -> String {
+        use super::mission_phase::{StateDetail, StateView, network_state_value};
+        let Some(network) = self.flight_state.and_then(network_state_value) else {
+            return "Unknown".into();
+        };
+        let detail = StateDetail {
+            fill_phase: self.fill_phase.clone(),
+            fill_phase_label: self.fill_phase_label.clone(),
+            fc_phase: self.board("FC").and_then(|fc| fc.fc_phase.clone()),
+        };
+        StateView::resolve(None, network, &detail).text()
+    }
+    /// The FC reset from any state is offered when the station advertises it.
+    pub fn fc_reset_advertised(&self, board: &Board) -> bool {
+        board.id == "FC" && board.capabilities.reset_startup_any_state.is_some()
+    }
+    /// Why the FC reset to Startup cannot be prepared now. No flight-state
+    /// gate here: the station decides, and the FC refuses during a pyro pulse.
+    pub fn fc_reset_reason(&self, board: &Board) -> Option<String> {
+        if !self.valid() {
+            return Some("Recovery is not permitted by this server/session.".into());
+        }
+        if board.id != "FC" {
+            return Some("Only the FC has this reset.".into());
+        }
+        if board.capabilities.reset_startup_any_state != Some(true) {
+            return Some(
+                reason(&board.reset_startup_any_state_blocked_reason)
+                    .or_else(|| reason(&board.blocked_reasons.reset_startup_any_state))
+                    .unwrap_or_else(|| "Not advertised by the station.".into()),
+            );
+        }
+        if self.mutating_pending() {
+            return Some("Another operation is pending.".into());
+        }
+        None
+    }
+    /// Why Query board is unavailable, in the station's words when it has them.
+    pub fn query_reason(&self, board: &Board) -> Option<String> {
+        if self.permissions.query && board.query_allowed() {
+            return None;
+        }
+        Some(reason(&board.blocked_reasons.query).unwrap_or_else(|| {
+            if !self.permissions.query {
+                "Queries are not permitted by this server/session.".into()
+            } else {
+                "No verified dedicated recovery endpoint.".into()
+            }
+        }))
     }
     pub fn reset_reason(&self, elapsed: u64) -> Option<String> {
         if !self.valid() {
@@ -390,6 +460,9 @@ impl Status {
         if action == "resync" {
             return self.resync_reason(board);
         }
+        if action == FC_RESET_ACTION {
+            return self.fc_reset_reason(board);
+        }
         if action != "recover_abort" {
             return self.board_reason(board, action, elapsed);
         }
@@ -403,7 +476,9 @@ impl Status {
             return Some("Recovery requires GS Startup, Idle or Aborted.".into());
         }
         if board.capabilities.prepare_recover != Some(true) || !board.query_allowed() {
-            return Some("Recovery preparation is not advertised by this server/board.".into());
+            return Some(reason(&board.blocked_reasons.prepare_recover).unwrap_or_else(|| {
+                "Recovery preparation is not advertised by this server/board.".into()
+            }));
         }
         if self.mutating_pending() {
             return Some("Another operation is pending.".into());
@@ -420,7 +495,8 @@ impl Status {
             return Some("Resync is not permitted by this server/session.".into());
         }
         if board.capabilities.resync != Some(true) {
-            return Some("This board's firmware does not support Resync.".into());
+            return Some(reason(&board.blocked_reasons.resync)
+                .unwrap_or_else(|| "This board's firmware does not support Resync.".into()));
         }
         if let Some(reason) = board.resync_blocked_reason.as_deref().filter(|r| !r.trim().is_empty()) {
             return Some(reason.to_string());
@@ -624,6 +700,9 @@ impl Challenge {
                     }
                     _ => return false,
                 }
+            }
+            (FC_RESET_ACTION, Some("FC"), None) if self.targets == ["FC"] => {
+                return self.confirmation == FC_RESET_PHRASE && status.board("FC").is_some();
             }
             ("reset_startup", None, None)
                 if self.targets.len() == 7
@@ -1621,5 +1700,120 @@ mod tests {
                 "present capability must explicitly include {field}"
             );
         }
+    }
+    fn fc_status() -> Status {
+        let mut s = all_boards();
+        let fc = s.boards.iter_mut().find(|b| b.id == "FC").unwrap();
+        fc.capabilities.reset_startup_any_state = Some(true);
+        s
+    }
+    #[test]
+    fn station_state_shows_network_state_with_fill_step_or_fc_phase() {
+        let mut s: Status = serde_json::from_value({
+            let mut value = serde_json::to_value(serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../tests/fixtures/board-recovery/status-example.json"
+            )).unwrap()).unwrap();
+            value["flight_state"] = 16.into();
+            value["flight_state_label"] = "In flight".into();
+            value["fill_phase"] = serde_json::Value::Null;
+            let fc = value["boards"].as_array_mut().unwrap().iter_mut().find(|b| b["id"] == "FC").unwrap();
+            fc["fc_phase"] = serde_json::json!({"value":11,"label":"Descent","source":"fc_state_report","age_ms":1200});
+            value
+        }).unwrap();
+        assert_eq!(s.global_state_label(), "In flight · Descent");
+        s.flight_state = Some(2);
+        s.fill_phase = Some("NitrousFill".into());
+        s.fill_phase_label = Some("Nitrous fill".into());
+        assert_eq!(s.global_state_label(), "Fill · Nitrous fill");
+        s.flight_state = Some(13);
+        s.boards.iter_mut().find(|b| b.id == "FC").unwrap().fc_phase =
+            Some(super::super::mission_phase::FcPhase { value: Some(14), label: "Recovery".into(), ..Default::default() });
+        assert_eq!(s.global_state_label(), "Landed · Recovery");
+        // Retired values from an older station map to their network state.
+        s.flight_state = Some(9);
+        s.boards.iter_mut().find(|b| b.id == "FC").unwrap().fc_phase = None;
+        assert_eq!(s.global_state_label(), "In flight");
+        s.flight_state = Some(4);
+        s.fill_phase = None;
+        s.fill_phase_label = None;
+        assert_eq!(s.global_state_label(), "Fill");
+        s.flight_state = Some(15);
+        assert_eq!(s.global_state_label(), "Aborted");
+    }
+    #[test]
+    fn fc_reset_from_any_state_follows_the_station_capability_not_the_flight_state() {
+        let mut s = fc_status();
+        for state in [0, 1, 2, 6, 7, 13, 15, 16] {
+            s.flight_state = Some(state);
+            let fc = s.board("FC").unwrap().clone();
+            assert!(s.fc_reset_advertised(&fc));
+            assert_eq!(s.fc_reset_reason(&fc), None, "state {state}");
+            assert_eq!(s.prepare_board_reason(&fc, FC_RESET_ACTION, 0), None, "state {state}");
+        }
+        // The station's reason is shown as given.
+        let fc = s.boards.iter_mut().find(|b| b.id == "FC").unwrap();
+        fc.capabilities.reset_startup_any_state = Some(false);
+        fc.reset_startup_any_state_blocked_reason = Some("A recovery charge is firing.".into());
+        let fc = s.board("FC").unwrap().clone();
+        assert_eq!(s.fc_reset_reason(&fc).as_deref(), Some("A recovery charge is firing."));
+        let fc = s.boards.iter_mut().find(|b| b.id == "FC").unwrap();
+        fc.reset_startup_any_state_blocked_reason = None;
+        fc.blocked_reasons.reset_startup_any_state = Some("FC firmware lacks the reset.".into());
+        let fc = s.board("FC").unwrap().clone();
+        assert_eq!(s.fc_reset_reason(&fc).as_deref(), Some("FC firmware lacks the reset."));
+        // A station without the reset never shows it.
+        let mut old = fc_status();
+        old.boards.iter_mut().find(|b| b.id == "FC").unwrap().capabilities.reset_startup_any_state = None;
+        assert!(!old.fc_reset_advertised(old.board("FC").unwrap()));
+        // A pending mutation still owns admission.
+        let mut busy = fc_status();
+        busy.operation = Some(Operation { action: "recover_abort".into(), phase: "applying".into(), ..Default::default() });
+        assert_eq!(busy.fc_reset_reason(busy.board("FC").unwrap()).as_deref(), Some("Another operation is pending."));
+    }
+    #[test]
+    fn fc_reset_challenge_binds_the_fc_and_the_single_station_phrase() {
+        let s = fc_status();
+        let mut c = challenge();
+        c.action = FC_RESET_ACTION.into();
+        c.targets = vec!["FC".into()];
+        c.confirmation = FC_RESET_PHRASE.into();
+        let mut s = s;
+        s.confirmation = Some(identity(&c));
+        assert!(c.matches(&s, FC_RESET_ACTION, Some("FC"), None));
+        assert!(!c.matches(&s, FC_RESET_ACTION, Some("AB"), None));
+        assert!(!c.matches(&s, "recover_abort", Some("FC"), None));
+        let mut wrong = c.clone();
+        wrong.confirmation = "RECOVER FC".into();
+        assert!(!wrong.matches(&s, FC_RESET_ACTION, Some("FC"), None));
+        let mut wide = c.clone();
+        wide.targets = vec!["FC".into(), "AB".into()];
+        s.confirmation = Some(identity(&wide));
+        assert!(!wide.matches(&s, FC_RESET_ACTION, Some("FC"), None));
+    }
+    #[test]
+    fn station_blocked_reasons_replace_generic_text() {
+        let mut s = all_boards();
+        let ab = s.boards.iter_mut().find(|b| b.id == "AB").unwrap();
+        ab.capabilities.query = Some(false);
+        ab.capabilities.prepare_recover = Some(false);
+        ab.capabilities.resync = Some(false);
+        ab.blocked_reasons = BlockedReasons {
+            query: Some("Board is powered off.".into()),
+            prepare_recover: Some("Board is powered off.".into()),
+            resync: Some("Not available on this board.".into()),
+            ..Default::default()
+        };
+        s.flight_state = Some(1);
+        s.permissions.recover = true;
+        s.permissions.query = true;
+        let ab = s.board("AB").unwrap().clone();
+        assert_eq!(s.query_reason(&ab).as_deref(), Some("Board is powered off."));
+        assert_eq!(s.prepare_board_reason(&ab, "recover_abort", 0).as_deref(), Some("Board is powered off."));
+        assert_eq!(s.resync_reason(&ab).as_deref(), Some("Not available on this board."));
+        // Without the station's words, a short generic reason is still given.
+        let mut plain = s.clone();
+        plain.boards.iter_mut().for_each(|b| b.blocked_reasons = BlockedReasons::default());
+        let ab = plain.board("AB").unwrap().clone();
+        assert_eq!(plain.query_reason(&ab).as_deref(), Some("No verified dedicated recovery endpoint."));
     }
 }

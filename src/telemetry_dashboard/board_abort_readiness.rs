@@ -126,8 +126,8 @@ fn OwnedBoardAbortReadiness(show_hitl_interlocks: bool) -> Element {
                         let control=policy.controls.iter().find(|control|control.cmd==name);
                         let current_known=control.and_then(|control|control.actuated);
                         let known=current_known.or_else(||super::station_mode::configuration_setting(&mode,index));
-                        let enabled=synchronized&&current_known.is_some()&&control.is_some_and(|control|control.enabled)
-                            &&crate::auth::can_send_command(name)&&WS_SENDER.read().is_some();
+                        let reason=interlock_reason(synchronized,current_known.is_some(),control,crate::auth::can_send_command(name),WS_SENDER.read().is_some());
+                        let enabled=reason.is_none();
                         let state=known.map_or("unknown",|value|if value{"on"}else{"off"});
                         let source=rendered_source.clone();
                         rsx! {button {disabled:!enabled,onclick:move |_|{
@@ -137,16 +137,64 @@ fn OwnedBoardAbortReadiness(show_hitl_interlocks: bool) -> Element {
                             if let Some(sender)=WS_SENDER.read().clone(){
                                 match sender.send_cmd(name){Ok(())=>message.set("Policy change requested; awaiting primary confirmation.".into()),Err(error)=>message.set(error)}
                             }
-                        },"{label}: {state}"}}
+                        },"{label}: {state}"}
+                        super::disabled_reason::DisabledReason{reason,control:name.to_string()}}
                     }
                 }
             }
         }
     }}
 }
+/// Why a HITL interlock toggle cannot be requested now.
+fn interlock_reason(
+    synchronized: bool,
+    state_known: bool,
+    control: Option<&super::ActionControl>,
+    permitted: bool,
+    connected: bool,
+) -> Option<String> {
+    if !connected {
+        return Some("Station connection is down.".into());
+    }
+    if !permitted {
+        return Some("Not permitted by your account.".into());
+    }
+    if !synchronized {
+        return Some("Waiting for the primary's mode.".into());
+    }
+    let Some(control) = control else {
+        return Some("The primary does not offer this control.".into());
+    };
+    if !control.enabled {
+        return Some(control.disabled_reason.clone().filter(|r| !r.trim().is_empty())
+            .unwrap_or_else(|| "Disabled by the primary.".into()));
+    }
+    if !state_known {
+        return Some("Waiting for the primary to report this setting.".into());
+    }
+    None
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interlock_buttons_say_why_they_are_disabled() {
+        let control = |enabled: bool, reason: Option<&str>| -> super::super::ActionControl {
+            serde_json::from_value(serde_json::json!({
+                "cmd":"ToggleChecklistInterlock","enabled":enabled,"blink":"none","actuated":true,
+                "disabled_reason":reason
+            }))
+            .unwrap()
+        };
+        assert_eq!(interlock_reason(true, true, Some(&control(true, None)), true, true), None);
+        assert_eq!(interlock_reason(true, true, Some(&control(false, Some("Only in HITL."))), true, true).as_deref(), Some("Only in HITL."));
+        assert_eq!(interlock_reason(true, true, Some(&control(false, None)), true, true).as_deref(), Some("Disabled by the primary."));
+        assert_eq!(interlock_reason(true, true, None, true, true).as_deref(), Some("The primary does not offer this control."));
+        assert_eq!(interlock_reason(false, true, Some(&control(true, None)), true, true).as_deref(), Some("Waiting for the primary's mode."));
+        assert_eq!(interlock_reason(true, false, Some(&control(true, None)), true, true).as_deref(), Some("Waiting for the primary to report this setting."));
+        assert_eq!(interlock_reason(true, true, Some(&control(true, None)), false, true).as_deref(), Some("Not permitted by your account."));
+        assert_eq!(interlock_reason(true, true, Some(&control(true, None)), true, false).as_deref(), Some("Station connection is down."));
+    }
     #[test]
     fn countdown_is_presentation_only_and_clock_rollback_never_fabricates_elapsed_time() {
         assert_eq!(remaining_display_ms(45_000, 100.0, 1_100.0), Some(44_000));
