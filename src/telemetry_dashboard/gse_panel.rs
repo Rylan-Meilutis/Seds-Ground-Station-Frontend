@@ -702,7 +702,7 @@ pub(super) fn QualificationStatus(status: Signal<serde_json::Value>, disabled: b
                     Err(error) => message.set(error),
                 }
             },"Reset operation checks"}
-            super::disabled_reason::DisabledReason {subject:"Reset".to_string(),reason:qualification_reset_reason(&value,disabled,*busy.read(),auth::can_send_command("ValveSelfTest")),control:"reset-operation-checks".to_string()}
+            super::disabled_reason::DisabledReason {subject:"Reset".to_string(),reason:auth::primary_proxy_unavailable_reason("ValveSelfTest").filter(|_|!can_reset).or_else(||qualification_reset_reason(&value,disabled,*busy.read(),auth::can_send_command("ValveSelfTest"))),control:"reset-operation-checks".to_string()}
             p {role:"status",style:"margin:0;","{message}"}
             if *override_open.read() {
                 div {style:"position:fixed;inset:0;background:#000a;z-index:6000;display:grid;place-items:center;padding:20px;",
@@ -969,7 +969,7 @@ pub(super) fn ClearGseAbort() -> Element {
                 "Clear GSE abort"
             }
             if !auth::can_send_command("ValveSelfTest") {
-                super::disabled_reason::DisabledReason {reason:Some("Requires command permission.".to_string()),control:"clear-gse-abort".to_string()}
+                super::disabled_reason::DisabledReason {reason:Some(auth::primary_proxy_unavailable_reason("ValveSelfTest").unwrap_or_else(||"Requires command permission.".to_string())),control:"clear-gse-abort".to_string()}
             }
             if *confirming.read() {
                 p { style:"margin:0;max-width:48ch;", "Confirm the system is safe. This clears the ground station operation abort, returns it to Idle and resets operation checks. It does not clear individual board aborts or command outputs. In Connectivity → Board state and recovery, request fresh status and use Recover Abort for boards that support it. Unsupported or unavailable board recovery requires local servicing." }

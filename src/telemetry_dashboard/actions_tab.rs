@@ -129,8 +129,8 @@ mod network_utc_reason_tests {
         };
         assert_eq!(super::network_utc_reason(false, None), None);
         assert_eq!(super::network_utc_reason(true, Some(&proxy(true, ""))), None);
-        assert_eq!(super::network_utc_reason(true, Some(&proxy(false, "Primary link lost."))).as_deref(), Some("Primary link lost."));
-        assert_eq!(super::network_utc_reason(true, None).as_deref(), Some("The primary is not reachable through the command relay."));
+        assert_eq!(super::network_utc_reason(true, Some(&proxy(false, "waiting for capability"))).as_deref(), Some("Primary GS link not ready: waiting for capability"));
+        assert_eq!(super::network_utc_reason(true, None).as_deref(), Some("Primary GS link not ready"));
     }
 }
 #[cfg(test)]
@@ -638,8 +638,8 @@ fn network_utc_reason(recovery: bool, proxy: Option<&auth::CommandProxyStatus>) 
         return None;
     }
     Some(proxy.map(|status| status.reason.trim()).filter(|reason| !reason.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "The primary is not reachable through the command relay.".into()))
+        .map(|reason| format!("Primary GS link not ready: {reason}"))
+        .unwrap_or_else(|| "Primary GS link not ready".into()))
 }
 
 fn request_gate_diagnostics(status: &serde_json::Value, recovery: bool) -> String {

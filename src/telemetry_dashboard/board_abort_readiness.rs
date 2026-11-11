@@ -126,7 +126,8 @@ fn OwnedBoardAbortReadiness(show_hitl_interlocks: bool) -> Element {
                         let control=policy.controls.iter().find(|control|control.cmd==name);
                         let current_known=control.and_then(|control|control.actuated);
                         let known=current_known.or_else(||super::station_mode::configuration_setting(&mode,index));
-                        let reason=interlock_reason(synchronized,current_known.is_some(),control,crate::auth::can_send_command(name),WS_SENDER.read().is_some());
+                        let reason=crate::auth::primary_proxy_unavailable_reason(name)
+                            .or_else(||interlock_reason(synchronized,current_known.is_some(),control,crate::auth::can_send_command(name),WS_SENDER.read().is_some()));
                         let enabled=reason.is_none();
                         let state=known.map_or("unknown",|value|if value{"on"}else{"off"});
                         let source=rendered_source.clone();
