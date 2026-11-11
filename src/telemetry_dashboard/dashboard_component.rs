@@ -3936,7 +3936,10 @@ fn TelemetryDashboardInner() -> Element {
                                         div { class: "gs26-status-flight", style: "color:{theme.info_text};",
                                             span { class: "gs26-status-phase", "data-phase": state_view.phase.map(|p| p.key()).unwrap_or("unknown"), title: "{translate_text(&state_view.text())}", style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
                                                 span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"State\", \"Estado\", \"État\")}: " }
-                                                strong { class: "gs26-status-phase-label", style: "color:{state_color};", "{translate_text(&state_view.text())}" }
+                                                strong { class: "gs26-status-phase-label", style: "color:{state_color};", "{translate_text(&state_view.label())}" }
+                                                if let Some(detail) = state_view.detail.clone() {
+                                                    span { class: "gs26-status-phase-detail", style: "color:{theme.text_soft}; margin-left:6px; overflow:hidden; text-overflow:ellipsis;", "· {translate_text(&detail)}" }
+                                                }
                                             }
                                         }
                                     }

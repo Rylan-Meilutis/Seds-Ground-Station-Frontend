@@ -250,7 +250,9 @@ mod visibility_tests {
     #[test]
     fn ground_equipment_is_hidden_from_launch_onward() {
         for phase in [
+            "Startup",
             "Idle",
+            "Fill",
             "PreFill",
             "FillTest",
             "NitrogenFill",
@@ -260,8 +262,8 @@ mod visibility_tests {
             assert!(super::ground_visible(phase));
         }
         for phase in [
-            "Launch", "Ascent", "Coast", "Apogee", "Descent", "Reefing", "Landed", "Recovery",
-            "Aborted",
+            "Launch", "InFlight", "Ascent", "Coast", "Apogee", "Descent", "Reefing", "Landed",
+            "Recovery", "Aborted", "Unknown", "",
         ] {
             assert!(!super::ground_visible(phase));
         }
@@ -274,11 +276,11 @@ pub(super) fn launch_block_reason(policy: &ActionPolicyMsg) -> Option<String> {
     Some(control.disabled_reason.clone().filter(|reason| !reason.trim().is_empty())
         .unwrap_or_else(|| "disabled by GroundStation".into()))
 }
+/// Ground equipment shows on the ground: Startup, Idle, Fill and Armed.
+/// Retired fill names from older stations count as Fill.
 pub(super) fn ground_visible(phase: &str) -> bool {
-    matches!(
-        phase,
-        "Startup" | "Idle" | "PreFill" | "FillTest" | "NitrogenFill" | "NitrousFill" | "Armed"
-    )
+    super::mission_phase::network_state(phase)
+        .is_some_and(|(network, _)| matches!(network, "Startup" | "Idle" | "Fill" | "Armed"))
 }
 
 #[derive(Clone, Default, Deserialize)]

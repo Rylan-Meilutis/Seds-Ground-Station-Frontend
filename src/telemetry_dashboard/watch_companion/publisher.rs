@@ -250,6 +250,7 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                     let view = crate::telemetry_dashboard::mission_phase::StateView::resolve(
                         crate::telemetry_dashboard::mission_phase::MISSION_PHASE.peek().as_ref(),
                         &flight_state.peek(),
+                        &crate::telemetry_dashboard::mission_phase::FLIGHT_STATE_DETAIL.peek(),
                     );
                     let flight = if view.phase.is_some() || view.detail.is_some() { view.text() } else { String::new() };
                     let clock = clock_from(

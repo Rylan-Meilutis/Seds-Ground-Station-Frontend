@@ -2082,6 +2082,9 @@ fn handle_ws_message(
         }
 
         WsInMsg::FlightState(st) => {
+            if *FLIGHT_STATE_DETAIL.peek() != st.detail {
+                *FLIGHT_STATE_DETAIL.write() = st.detail;
+            }
             set_signal_if_changed(&mut flight_state, st.state);
         }
 

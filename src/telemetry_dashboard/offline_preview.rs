@@ -222,7 +222,7 @@ pub fn OfflinePreview(on_exit: EventHandler<()>, theme: ThemeConfig) -> Element 
                             div {class:"gs-notice gs-notice--warn","Launch is locked after the last attempt. Use Reset all boards to unlock it."}
                             details {class:"gs-info",summary {"Reset and launch rules"}
                                 div {
-                                    p {"Reset all boards is accepted in Startup, Idle, Aborted, the fill phases, Launch, Landed and Recovery once station work is idle, and refused from Ascent through Reefing."}
+                                    p {"Reset all boards is accepted in Startup, Idle, Aborted, Fill, Armed, Launch and Landed once station work is idle, and refused In flight."}
                                     p {"Boards that miss a reset keep Launch locked: “Launch locked: AB missed the last reset. Use Reset all boards.” A board reporting Abort disables Launch until it recovers."}
                                 }
                             }

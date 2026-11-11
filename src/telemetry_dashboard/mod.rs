@@ -19,7 +19,7 @@ mod checklists;
 mod command_confirmation;
 mod command_owner;
 use command_owner::{CommandOwner, QueuedCommand};
-use mission_phase::{FLIGHT_MAXIMA, MISSION_PHASE};
+use mission_phase::{FLIGHT_MAXIMA, FLIGHT_STATE_DETAIL, MISSION_PHASE};
 mod connection_status_tab;
 mod connectivity_health;
 mod radio_modem_health;

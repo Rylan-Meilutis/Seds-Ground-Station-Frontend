@@ -54,33 +54,105 @@ impl Phase {
     pub(crate) fn from_key(key: &str) -> Option<Phase> {
         Phase::ALL.into_iter().find(|phase| phase.key() == key)
     }
-    /// The detailed state's own phase, with no station context. Matches the
-    /// station's `detailed_phase` (HITL column of docs/system/mission-phases.md).
+    /// The phase of a flight state name, with no station context. Retired
+    /// names from older stations map as the network contract says.
     /// Aborted keeps a previous In flight or Landed, otherwise reads Idle.
     pub(crate) fn of_detailed(detailed: &str, previous: Option<Phase>) -> Option<Phase> {
-        Some(match detailed {
+        Some(match network_state(detailed)?.0 {
             "Startup" => Phase::Startup,
             "Idle" => Phase::Idle,
-            "PreFill" | "FillTest" | "NitrogenFill" | "NitrousFill" | "Armed" => Phase::Fill,
+            "Fill" | "Armed" => Phase::Fill,
             "Launch" => Phase::Launch,
-            "Ascent" | "Coast" | "Apogee" | "Descent" | "ParachuteDeploy" | "Reefing" => {
-                Phase::InFlight
-            }
-            "Landed" | "Recovery" => Phase::Landed,
-            "Aborted" => match previous {
+            "InFlight" => Phase::InFlight,
+            "Landed" => Phase::Landed,
+            _ => match previous {
                 Some(Phase::InFlight) => Phase::InFlight,
                 Some(Phase::Landed) => Phase::Landed,
                 _ => Phase::Idle,
             },
-            _ => return None,
         })
     }
 }
 
-/// Operator label of a detailed flight state, used only as secondary detail.
-/// Matches the station's `detailed_label`.
+/// The network FLIGHT_STATE values the station may report, by number.
+pub(crate) const NETWORK_STATES: [(u8, &str); 8] = [
+    (0, "Startup"),
+    (1, "Idle"),
+    (2, "Fill"),
+    (6, "Armed"),
+    (7, "Launch"),
+    (13, "Landed"),
+    (15, "Aborted"),
+    (16, "InFlight"),
+];
+
+/// A flight state name as its network state, plus the retired detailed name
+/// it came from. Retired names (older stations) map to the nearest network
+/// value: fill steps to Fill, Ascent..Reefing to InFlight, Recovery to Landed.
+pub(crate) fn network_state(name: &str) -> Option<(&'static str, Option<&'static str>)> {
+    if let Some((_, network)) = NETWORK_STATES.iter().find(|(_, network)| *network == name) {
+        return Some((network, None));
+    }
+    let (network, retired) = match name {
+        "PreFill" => ("Fill", "PreFill"),
+        "FillTest" => ("Fill", "FillTest"),
+        "NitrogenFill" => ("Fill", "NitrogenFill"),
+        "NitrousFill" => ("Fill", "NitrousFill"),
+        "Ascent" => ("InFlight", "Ascent"),
+        "Coast" => ("InFlight", "Coast"),
+        "Apogee" => ("InFlight", "Apogee"),
+        "Descent" => ("InFlight", "Descent"),
+        "ParachuteDeploy" => ("InFlight", "Descent"),
+        "Reefing" => ("InFlight", "Reefing"),
+        "Recovery" => ("Landed", "Recovery"),
+        _ => return None,
+    };
+    note_retired_state(name);
+    Some((network, Some(retired)))
+}
+
+/// The network state of a FLIGHT_STATE number, retired numbers mapped as
+/// [`network_state`] maps their names.
+pub(crate) fn network_state_value(value: u8) -> Option<&'static str> {
+    const RETIRED: [(u8, &str); 9] = [
+        (3, "FillTest"),
+        (4, "NitrogenFill"),
+        (5, "NitrousFill"),
+        (8, "Ascent"),
+        (9, "Coast"),
+        (10, "Apogee"),
+        (11, "Descent"),
+        (12, "Reefing"),
+        (14, "Recovery"),
+    ];
+    if let Some((_, network)) = NETWORK_STATES.iter().find(|(number, _)| *number == value) {
+        return Some(network);
+    }
+    let (_, name) = RETIRED.iter().find(|(number, _)| *number == value)?;
+    network_state(name).map(|(network, _)| network)
+}
+
+/// Retired values are a contract violation by the station; log each once.
+fn note_retired_state(name: &str) {
+    if name == "PreFill" {
+        // The old name of network value 2 (now Fill), not a retired value.
+        return;
+    }
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut seen) = SEEN.lock() else { return };
+    if seen.iter().any(|known| known == name) {
+        return;
+    }
+    seen.push(name.to_string());
+    crate::debug_log::append(&format!(
+        "Flight state contract violation: the station reported retired state {name}; shown as its network state."
+    ));
+}
+
+/// Operator label of a flight state name. Matches the station's labels.
 pub(crate) fn detailed_label(detailed: &str) -> String {
     match detailed {
+        "InFlight" => "In flight".into(),
         "PreFill" => "Pre-fill".into(),
         "FillTest" => "Fill test".into(),
         "NitrogenFill" => "Nitrogen fill".into(),
@@ -90,68 +162,142 @@ pub(crate) fn detailed_label(detailed: &str) -> String {
     }
 }
 
-/// The one operator-visible state: the phase plus optional secondary detail.
+/// The FC's own detailed phase, from its state report or flight state.
+#[derive(Deserialize, Clone, Debug, PartialEq, Default)]
+pub(crate) struct FcPhase {
+    #[serde(default)]
+    pub value: Option<u8>,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+}
+
+/// Secondary detail the station sends with the network state: the GS fill
+/// sub-phase and the FC's detailed phase. Absent from older stations.
+#[derive(Deserialize, Clone, Debug, PartialEq, Default)]
+pub(crate) struct StateDetail {
+    #[serde(default)]
+    pub fill_phase: Option<String>,
+    #[serde(default)]
+    pub fill_phase_label: Option<String>,
+    #[serde(default)]
+    pub fc_phase: Option<FcPhase>,
+}
+
+impl StateDetail {
+    fn fill_label(&self) -> Option<String> {
+        self.fill_phase_label
+            .clone()
+            .filter(|label| !label.trim().is_empty())
+            .or_else(|| self.fill_phase.as_deref().filter(|p| !p.is_empty()).map(detailed_label))
+    }
+    fn fc_label(&self) -> Option<String> {
+        self.fc_phase
+            .as_ref()
+            .map(|phase| phase.label.clone())
+            .filter(|label| !label.trim().is_empty())
+    }
+    fn is_empty(&self) -> bool {
+        self.fill_label().is_none() && self.fc_label().is_none()
+    }
+}
+
+/// The detail from the WS `FlightState` message, beside the state signal.
+pub(crate) static FLIGHT_STATE_DETAIL: GlobalSignal<StateDetail> = Signal::global(StateDetail::default);
+
+/// The one operator-visible state: the network state plus optional secondary
+/// detail ("In flight · Descent", "Fill · Nitrous fill", "Landed · Recovery").
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StateView {
     pub phase: Option<Phase>,
-    /// Detailed flight state key ("NitrousFill", "Aborted"), empty when unknown.
+    /// Network state name ("InFlight", "Fill", "Aborted"), empty when unknown.
     pub detailed: String,
+    /// The fill sub-phase or FC phase shown beside the state.
     pub detail: Option<String>,
     pub aborted: bool,
     pub comms_loss_landed: bool,
 }
 
 impl StateView {
-    /// Prefer the station's `MissionPhase` message; it carries the phase and
-    /// the detailed state it was derived from, so they always agree. A station
-    /// without the message (or before its first one) gets the phase of the
-    /// bare detailed state.
-    pub(crate) fn resolve(message: Option<&MissionPhaseView>, flight_state: &str) -> StateView {
-        if let Some(message) = message {
-            let detail = message.detail.clone().or_else(|| {
-                // Stations before `detail`: name the detailed state when it
-                // adds information.
-                let label = detailed_label(&message.detailed);
-                (!message.detailed.is_empty() && label != message.phase.label()).then_some(label)
-            });
-            let detailed = if message.detailed.is_empty() { flight_state } else { &message.detailed };
-            return StateView {
-                phase: Some(message.phase),
-                detailed: detailed.to_string(),
-                detail,
-                aborted: message.aborted || message.detailed == "Aborted",
-                comms_loss_landed: message.comms_loss_landed,
-            };
-        }
-        let phase = Phase::of_detailed(flight_state, None);
-        let label = detailed_label(flight_state);
-        let detail = match phase {
-            Some(phase) => (label != phase.label()).then_some(label),
-            None => (!flight_state.is_empty()).then_some(label),
+    /// Prefer the station's `MissionPhase` message; its detailed state and
+    /// detail fields win over the separate state signal. A station without
+    /// the message (or before its first one) gets the bare state and the
+    /// `FlightState` message's detail.
+    pub(crate) fn resolve(
+        message: Option<&MissionPhaseView>,
+        flight_state: &str,
+        signal_detail: &StateDetail,
+    ) -> StateView {
+        let (phase, raw, detail_fields, aborted, comms_loss_landed) = match message {
+            Some(message) => {
+                let raw = if message.detailed.is_empty() { flight_state } else { &message.detailed };
+                let fields = if message.state_detail.is_empty() { signal_detail } else { &message.state_detail };
+                (
+                    Some(message.phase),
+                    raw,
+                    fields,
+                    message.aborted || raw == "Aborted",
+                    message.comms_loss_landed,
+                )
+            }
+            None => (
+                Phase::of_detailed(flight_state, None),
+                flight_state,
+                signal_detail,
+                flight_state == "Aborted",
+                false,
+            ),
         };
-        StateView {
-            phase,
-            detailed: flight_state.to_string(),
-            detail,
-            aborted: flight_state == "Aborted",
-            comms_loss_landed: false,
-        }
+        let (detailed, detail) = match network_state(raw) {
+            Some((network, retired)) => {
+                let sent = match network {
+                    "Fill" => detail_fields.fill_label(),
+                    "InFlight" => detail_fields.fc_label(),
+                    // Recovery is the FC's detail of Landed.
+                    "Landed" => detail_fields.fc_label().filter(|label| label != "Landed"),
+                    _ => None,
+                };
+                let composed = message
+                    .and_then(|message| message.detail.as_deref())
+                    .and_then(|detail| detail.split_once(" · "))
+                    .map(|(_, detail)| detail.to_string());
+                let detail = match network {
+                    "Fill" | "InFlight" | "Landed" => {
+                        sent.or(retired.map(detailed_label)).or(composed)
+                    }
+                    _ => None,
+                };
+                (network.to_string(), detail)
+            }
+            None => (raw.to_string(), None),
+        };
+        StateView { phase, detailed, detail, aborted, comms_loss_landed }
     }
 
-    /// The current flight state ("Nitrous fill", "Aborted") or "Unknown".
-    /// This is what the operator sees as State; the phase only groups layouts.
-    pub(crate) fn text(&self) -> String {
+    /// The network state as the operator reads it ("In flight") or "Unknown".
+    pub(crate) fn label(&self) -> String {
         match self.detailed.as_str() {
             "" | "Unknown" => "Unknown".into(),
             detailed => detailed_label(detailed),
         }
     }
+
+    /// The state with its detail: "In flight · Descent", "Aborted".
+    pub(crate) fn text(&self) -> String {
+        match &self.detail {
+            Some(detail) => format!("{} · {detail}", self.label()),
+            None => self.label(),
+        }
+    }
 }
 
-/// The current operator state from the global phase message and the detailed
-/// state signal.
+/// The current operator state from the global phase message, the state
+/// signal and the `FlightState` message's detail.
 pub(crate) fn current_state(flight_state: &str) -> StateView {
-    StateView::resolve(MISSION_PHASE.read().as_ref(), flight_state)
+    StateView::resolve(MISSION_PHASE.read().as_ref(), flight_state, &FLIGHT_STATE_DETAIL.read())
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -159,11 +305,13 @@ pub(crate) struct MissionPhaseView {
     pub phase: Phase,
     #[serde(default)]
     pub label: String,
-    /// Secondary detail ("Nitrous fill"); absent from older stations.
+    /// Composed operator string ("Fill · Nitrous fill"); absent from older stations.
     #[serde(default)]
     pub detail: Option<String>,
     #[serde(default)]
     pub detailed: String,
+    #[serde(default, flatten)]
+    pub state_detail: StateDetail,
     #[serde(default)]
     pub mode: String,
     #[serde(default)]
@@ -424,58 +572,148 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
+    fn none() -> StateDetail {
+        StateDetail::default()
+    }
+
     #[test]
     fn state_is_the_current_flight_state() {
         let fill = message(serde_json::json!({
             "phase":"fill","label":"Fill","detail":"Nitrous fill","detailed":"NitrousFill"
         }));
         // The phase message's detailed state wins over the separate signal.
-        let view = StateView::resolve(Some(&fill), "Idle");
-        assert_eq!(view.text(), "Nitrous fill");
+        let view = StateView::resolve(Some(&fill), "Idle", &none());
+        assert_eq!(view.text(), "Fill · Nitrous fill");
         let overlay = message(serde_json::json!({
             "phase":"fill","label":"Fill","detail":"GSE fill active","detailed":"Idle"
         }));
-        assert_eq!(StateView::resolve(Some(&overlay), "Idle").text(), "Idle");
+        assert_eq!(StateView::resolve(Some(&overlay), "Idle", &none()).text(), "Idle");
         let idle = message(serde_json::json!({"phase":"idle","detail":null,"detailed":"Idle"}));
-        assert_eq!(StateView::resolve(Some(&idle), "Idle").text(), "Idle");
+        assert_eq!(StateView::resolve(Some(&idle), "Idle", &none()).text(), "Idle");
         let aborted = message(serde_json::json!({
             "phase":"in_flight","detail":"Aborted","detailed":"Aborted","aborted":true
         }));
-        let view = StateView::resolve(Some(&aborted), "Aborted");
+        let view = StateView::resolve(Some(&aborted), "Aborted", &none());
         assert!(view.aborted);
         assert_eq!(view.text(), "Aborted");
+    }
+
+    #[test]
+    fn contract_states_show_the_state_with_the_fc_phase_or_fill_step_beside_it() {
+        let in_flight = message(serde_json::json!({
+            "phase":"in_flight","label":"In flight","detail":"In flight · Descent","detailed":"InFlight",
+            "fill_phase":null,
+            "fc_phase":{"value":11,"label":"Descent","source":"fc_state_report","age_ms":1200}
+        }));
+        let view = StateView::resolve(Some(&in_flight), "InFlight", &none());
+        assert_eq!(view.phase, Some(Phase::InFlight));
+        assert_eq!(view.label(), "In flight");
+        assert_eq!(view.detail.as_deref(), Some("Descent"));
+        assert_eq!(view.text(), "In flight · Descent");
+
+        let fill = message(serde_json::json!({
+            "phase":"fill","detail":"Fill · Nitrous fill","detailed":"Fill",
+            "fill_phase":"NitrousFill","fill_phase_label":"Nitrous fill","fc_phase":null
+        }));
+        assert_eq!(StateView::resolve(Some(&fill), "Fill", &none()).text(), "Fill · Nitrous fill");
+        // Without the label the sub-phase name is labelled here.
+        let fill = message(serde_json::json!({"phase":"fill","detailed":"Fill","fill_phase":"FillTest"}));
+        assert_eq!(StateView::resolve(Some(&fill), "Fill", &none()).text(), "Fill · Fill test");
+
+        let landed = message(serde_json::json!({
+            "phase":"landed","detailed":"Landed",
+            "fc_phase":{"value":14,"label":"Recovery","source":"fc_state_report","age_ms":10}
+        }));
+        assert_eq!(StateView::resolve(Some(&landed), "Landed", &none()).text(), "Landed · Recovery");
+        let landed = message(serde_json::json!({
+            "phase":"landed","detailed":"Landed",
+            "fc_phase":{"value":13,"label":"Landed","source":"fc_flight_state","age_ms":10}
+        }));
+        assert_eq!(StateView::resolve(Some(&landed), "Landed", &none()).text(), "Landed");
+
+        // A FC phase never decorates a state it does not belong to.
+        let idle = message(serde_json::json!({
+            "phase":"idle","detailed":"Idle","fc_phase":{"value":0,"label":"Startup"}
+        }));
+        assert_eq!(StateView::resolve(Some(&idle), "Idle", &none()).text(), "Idle");
+        let aborted = message(serde_json::json!({
+            "phase":"in_flight","detailed":"Aborted","aborted":true,"fc_phase":{"label":"Coast"}
+        }));
+        assert_eq!(StateView::resolve(Some(&aborted), "Aborted", &none()).text(), "Aborted");
+    }
+
+    #[test]
+    fn without_a_phase_message_the_flight_state_message_supplies_the_detail() {
+        let detail: StateDetail = serde_json::from_value(serde_json::json!({
+            "state":"InFlight","fill_phase":null,
+            "fc_phase":{"value":9,"label":"Coast","source":"fc_state_report","age_ms":300}
+        }))
+        .unwrap();
+        let view = StateView::resolve(None, "InFlight", &detail);
+        assert_eq!(view.phase, Some(Phase::InFlight));
+        assert_eq!(view.text(), "In flight · Coast");
+        assert_eq!(StateView::resolve(None, "InFlight", &none()).text(), "In flight");
+        let fill: StateDetail = serde_json::from_value(serde_json::json!({
+            "state":"Fill","fill_phase":"NitrogenFill","fill_phase_label":"Nitrogen fill","fc_phase":null
+        }))
+        .unwrap();
+        assert_eq!(StateView::resolve(None, "Fill", &fill).text(), "Fill · Nitrogen fill");
+        assert_eq!(StateView::resolve(None, "Fill", &none()).text(), "Fill");
+        // A stale fill step from the previous message does not label Launch.
+        assert_eq!(StateView::resolve(None, "Launch", &fill).text(), "Launch");
     }
 
     #[test]
     fn older_stations_still_show_the_flight_state() {
         // Phase message without `detail`.
         let old = message(serde_json::json!({"phase":"in_flight","detailed":"Coast"}));
-        assert_eq!(StateView::resolve(Some(&old), "Coast").text(), "Coast");
+        assert_eq!(StateView::resolve(Some(&old), "Coast", &none()).text(), "In flight · Coast");
         let old = message(serde_json::json!({"phase":"launch","detailed":"Launch"}));
-        assert_eq!(StateView::resolve(Some(&old), "Launch").text(), "Launch");
-        // No phase message at all: derived from the detailed state alone.
-        for (detailed, shown) in [
-            ("Startup", "Startup"),
-            ("Idle", "Idle"),
-            ("PreFill", "Pre-fill"),
-            ("FillTest", "Fill test"),
-            ("NitrogenFill", "Nitrogen fill"),
-            ("NitrousFill", "Nitrous fill"),
-            ("Armed", "Armed"),
-            ("Launch", "Launch"),
-            ("Ascent", "Ascent"),
-            ("Coast", "Coast"),
-            ("Apogee", "Apogee"),
-            ("Descent", "Descent"),
-            ("Reefing", "Reefing"),
-            ("Landed", "Landed"),
-            ("Recovery", "Recovery"),
-            ("Aborted", "Aborted"),
+        assert_eq!(StateView::resolve(Some(&old), "Launch", &none()).text(), "Launch");
+        // No phase message at all: retired values map to their network state.
+        for (detailed, shown, phase) in [
+            ("Startup", "Startup", Phase::Startup),
+            ("Idle", "Idle", Phase::Idle),
+            ("Fill", "Fill", Phase::Fill),
+            ("PreFill", "Fill · Pre-fill", Phase::Fill),
+            ("FillTest", "Fill · Fill test", Phase::Fill),
+            ("NitrogenFill", "Fill · Nitrogen fill", Phase::Fill),
+            ("NitrousFill", "Fill · Nitrous fill", Phase::Fill),
+            ("Armed", "Armed", Phase::Fill),
+            ("Launch", "Launch", Phase::Launch),
+            ("InFlight", "In flight", Phase::InFlight),
+            ("Ascent", "In flight · Ascent", Phase::InFlight),
+            ("Coast", "In flight · Coast", Phase::InFlight),
+            ("Apogee", "In flight · Apogee", Phase::InFlight),
+            ("Descent", "In flight · Descent", Phase::InFlight),
+            ("ParachuteDeploy", "In flight · Descent", Phase::InFlight),
+            ("Reefing", "In flight · Reefing", Phase::InFlight),
+            ("Landed", "Landed", Phase::Landed),
+            ("Recovery", "Landed · Recovery", Phase::Landed),
+            ("Aborted", "Aborted", Phase::Idle),
         ] {
-            assert_eq!(StateView::resolve(None, detailed).text(), shown, "{detailed}");
+            let view = StateView::resolve(None, detailed, &none());
+            assert_eq!(view.text(), shown, "{detailed}");
+            assert_eq!(view.phase, Some(phase), "{detailed}");
         }
-        assert_eq!(StateView::resolve(None, "Unknown").text(), "Unknown");
-        assert_eq!(StateView::resolve(None, "").text(), "Unknown");
+        assert_eq!(StateView::resolve(None, "Unknown", &none()).text(), "Unknown");
+        assert_eq!(StateView::resolve(None, "", &none()).text(), "Unknown");
+    }
+
+    #[test]
+    fn network_state_numbers_follow_the_contract() {
+        for (value, name) in [
+            (0, "Startup"), (1, "Idle"), (2, "Fill"), (6, "Armed"), (7, "Launch"),
+            (13, "Landed"), (15, "Aborted"), (16, "InFlight"),
+            // Retired values map to the nearest network value.
+            (3, "Fill"), (4, "Fill"), (5, "Fill"),
+            (8, "InFlight"), (9, "InFlight"), (10, "InFlight"), (11, "InFlight"), (12, "InFlight"),
+            (14, "Landed"),
+        ] {
+            assert_eq!(network_state_value(value), Some(name), "{value}");
+        }
+        assert_eq!(network_state_value(17), None);
+        assert_eq!(network_state_value(255), None);
     }
 
     #[test]

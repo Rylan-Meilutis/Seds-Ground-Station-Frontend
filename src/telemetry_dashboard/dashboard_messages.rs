@@ -50,6 +50,9 @@ enum WsTelemetryIngressMsg {
 #[derive(Deserialize, Debug, Clone)]
 struct FlightStateMsg {
     state: FlightState,
+    /// Fill sub-phase and FC phase beside the network state.
+    #[serde(default, flatten)]
+    detail: mission_phase::StateDetail,
 }
 
 #[derive(Deserialize, Debug, Clone)]

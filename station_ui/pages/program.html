@@ -48,8 +48,8 @@ function graphicDisplay(videoReady,tile=null){
  const holder=document.querySelector('#graphic-stage'),inset=document.querySelector('#rocket-inset');
  const fresh=programmeFresh();
  const telemetry=fresh?state.telemetry:null;
- const phase=telemetry?.phase||'Unknown';
- const onGround=telemetry?.test_fire_mode===true||['Startup','Idle','PreFill','FillTest','NitrogenFill','NitrousFill','Armed'].includes(phase);
+ const {phase,vehicle,shown}=programPhase(telemetry);
+ const onGround=telemetry?.test_fire_mode===true||['Startup','Idle','Fill','Armed'].includes(phase);
  const svg=inset.querySelector('svg');
  const artwork=window.gsProgramArt.artwork(telemetry);
  svg.dataset.artwork=artwork.kind;svg.setAttribute('aria-label',artwork.description);
@@ -75,9 +75,9 @@ function graphicDisplay(videoReady,tile=null){
  holder.style.right='auto';holder.style.bottom='auto';
  holder.style.display=flat?'flex':'none';
  holder.querySelector('gs-vehicle-viewer')?.remove();
- document.querySelector('#rocket-phase').textContent=artwork.label+' · '+phase;
- document.querySelector('#flame').style.display=phase==='Ascent'?'':'none';
- document.querySelector('#chute').style.display=['Descent','Reefing','ParachuteDeploy','Landed','Recovery'].includes(phase)?'':'none';
+ document.querySelector('#rocket-phase').textContent=artwork.label+' · '+shown;
+ document.querySelector('#flame').style.display=vehicle==='Ascent'?'':'none';
+ document.querySelector('#chute').style.display=['Descent','Reefing','ParachuteDeploy','Landed','Recovery'].includes(vehicle)?'':'none';
 }
 let transitionFrame=null,transitionStarted=0;
 function captureTransition(){
@@ -101,13 +101,24 @@ function create(feed){
  }else{video.src=feed.url;video.addEventListener('error',()=>{p.failed=true;p.failedAt=performance.now();lastVideoError='Video unavailable — reconnecting';});}
  if(video.requestVideoFrameCallback){const frame=()=>{p.lastFrame=performance.now();if(!stopped&&players.get(feed.id)===p)video.requestVideoFrameCallback(frame);};video.requestVideoFrameCallback(frame);}
 }
+// Network flight state plus the FC's own phase ("In flight · Descent").
+// Retired detailed names from older stations map to their network state.
+const RETIRED_PHASE={PreFill:['Fill','Pre-fill'],FillTest:['Fill','Fill test'],NitrogenFill:['Fill','Nitrogen fill'],NitrousFill:['Fill','Nitrous fill'],
+ Ascent:['InFlight','Ascent'],Coast:['InFlight','Coast'],Apogee:['InFlight','Apogee'],Descent:['InFlight','Descent'],ParachuteDeploy:['InFlight','Descent'],Reefing:['InFlight','Reefing'],Recovery:['Landed','Recovery']};
+function programPhase(telemetry){
+ const raw=telemetry?.phase||'Unknown',[phase,retired]=RETIRED_PHASE[raw]||[raw,''];
+ const fc=typeof telemetry?.fc_phase?.label==='string'?telemetry.fc_phase.label:'';
+ const detail=phase==='InFlight'?(fc||retired):phase==='Landed'?((fc&&fc!=='Landed'?fc:'')||retired):phase==='Fill'?(telemetry?.fill_phase_label||retired):'';
+ const label=phase==='InFlight'?'In flight':phase;
+ return {phase,vehicle:detail&&phase!=='Fill'?detail:phase,shown:detail?label+' · '+detail:label};
+}
 function card(name,value,note=''){const card=document.createElement('div'),a=document.createElement('div'),b=document.createElement('div');a.className='name';b.className='value';a.textContent=name;b.textContent=value;card.append(a,b);if(note){const c=document.createElement('div');c.className='stat-note';c.textContent=note;card.append(c);}banner.append(card);}
 let cycleKey='',cycleStart=0;
 function drawBanner(){
  banner.replaceChildren();card('Mission',state?.broadcast.label||'Program');if(state?.broadcast.replay)card('Replay',state.broadcast.replay.duration_seconds+' s · '+state.broadcast.replay.speed+'×');
  const fresh=programmeFresh(),telemetry=fresh?state.telemetry:null;banner.dataset.programmeFresh=String(fresh);banner.dataset.telemetryFresh=String(!!telemetry);card('T clock',telemetry?.t_clock||(telemetry||!fresh?'Unavailable':state?.broadcast?.replay?'No saved clock':'Buffering…'));
  if(!telemetry){card('Telemetry',state?.broadcast.replay?'Replay telemetry unavailable':'Telemetry unavailable');return;}
- card('Flight phase',telemetry.phase);
+ card('Flight phase',programPhase(telemetry).shown);
  const seconds=Math.max(1,Math.min(30,Number(telemetry.cycle_seconds)||5)),count=Math.max(1,Math.min(6,Number(telemetry.stats_per_page)||3)),key=[telemetry.profile,seconds,count,...telemetry.stats.map(s=>s.label)].join('|');
  if(key!==cycleKey){cycleKey=key;cycleStart=serverNow();}
  const page=Math.floor(Math.max(0,serverNow()-cycleStart)/(seconds*1000))%Math.max(1,Math.ceil(telemetry.stats.length/count));
