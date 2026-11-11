@@ -885,9 +885,6 @@ pub fn ActionsTab(
                     p {role:"status", "{message}"}
                 }
             }
-            if auth::current_status().station_role.as_deref() == Some("rrls") {
-                PrimaryCommandRequest {abort_only_mode}
-            }
             if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {
                 div {role:"alert",style:"padding:10px 12px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};font-size:0.95rem;line-height:1.45;min-width:0;max-width:100%;overflow-wrap:anywhere;box-sizing:border-box;","{error}"}
             }
@@ -1753,61 +1750,6 @@ fn primary_utc_proxy_response(value: serde_json::Value) -> String {
     }
     // The host-scoped poll publishes live status; this response only describes admission.
     "Network UTC request queued at RRLS; waiting for primary acceptance.".into()
-}
-
-#[component]
-fn PrimaryCommandRequest(abort_only_mode: bool) -> Element {
-    let mut selected = use_signal(String::new);
-    let status = super::COMMAND_PROXY_STATUS.read().clone();
-    let choices = status
-        .as_ref()
-        .filter(|status| status.available)
-        .map(|status| {
-            status
-                .supported_commands
-                .iter()
-                .filter(|command| {
-                    auth::can_send_command(command)
-                        && (!abort_only_mode || command.as_str() == "Abort")
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let no_choices = choices.is_empty();
-    let allowed = choices
-        .iter()
-        .any(|command| command == selected.read().as_str());
-    let pending = status
-        .as_ref()
-        .is_some_and(|status| status.pending.is_some());
-    rsx! {
-        fieldset {
-            legend {"Request execution at primary"}
-            p {class:"gs-notice gs-notice--warn","Can actuate hardware if the primary permits it."}
-            super::gse_panel::InfoNote {summary:"How the primary decides",paragraphs:vec!["The primary checks current permissions, mode and interlocks. Stale display state does not grant permission or confirm an output.".into()]}
-            label {"Command "
-                select {"aria-label":"Primary execution command",value:"{selected}",disabled:no_choices||pending,onchange:move |event|selected.set(event.value()),
-                    option {value:"","Choose a command"}
-                    for command in choices {option {value:"{command}","{command}"}}
-                }
-            }
-            button {disabled:!allowed||pending,
-                onpointerdown:move |event|{if allowed&&!pending {super::command_pointer_down_event("primary:execution",&selected(),&event,true);}},
-                onpointerup:move |event|{super::command_pointer_up_event("primary:execution",&event);},
-                onpointercancel:move |event|{super::command_pointer_cancel_event("primary:execution",&event);},
-                ontouchstart:move |event|{if allowed&&!pending {super::command_touch_start_event("primary:execution",&selected(),&event,true);}},
-                ontouchend:move |event|{super::command_touch_end_event("primary:execution",&event);},
-                ontouchcancel:move |event|{super::command_touch_cancel_event("primary:execution",&event);},
-                onmousedown:move |event|{if allowed&&!pending {super::command_mouse_down_event("primary:execution",&selected(),&event,true);}},
-                onmouseup:move |event|{super::command_mouse_up_event("primary:execution",&event);},
-                onkeydown:move |event|{if allowed&&!pending {super::command_key_down_event("primary:execution",&selected(),&event,true);}},
-                onkeyup:move |event|{super::command_key_up_event("primary:execution",&event);},
-                onclick:move |event|{if allowed&&!pending {super::command_click("primary:execution",&selected(),&event,true);}},
-                "Request execution if primary permits"
-            }
-        }
-    }
 }
 
 #[cfg(test)]

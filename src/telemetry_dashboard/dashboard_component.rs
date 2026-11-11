@@ -4412,12 +4412,16 @@ fn record_command_press(
     if companion { return; }
     let owner = CommandOwner::capture(cmd).ok();
     if !primary && !owner.as_ref().is_some_and(CommandOwner::is_emergency) { return; }
+    // On the RRLS every ordinary button follows the primary's mirrored action
+    // policy and is sent through the primary, which checks it again.
+    let via_primary = auth::command_uses_primary_proxy(&auth::current_status(), cmd);
     let allowed = auth::can_send_command(cmd)
         && if proxy {
-            auth::command_uses_primary_proxy(&auth::current_status(), cmd)
+            via_primary
         } else {
             action_policy_control_enabled(&ACTION_POLICY_SIGNAL.read(), cmd)
         };
+    let proxy = proxy || via_primary;
     let Ok(mut pending) = PENDING_COMMAND_PRESS.lock() else { return; };
     *pending = Some(command_owner::PendingCommandPress {
         source: source.into(), command: cmd.into(), started_ms: monotonic_now_ms(),
