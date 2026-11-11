@@ -189,9 +189,15 @@ fn SdHealth(
     on_retry: EventHandler<()>,
 ) -> Element {
     let (label, state) = sd_state(&report, connected, elapsed);
+    // Same verdict as the board card: samples refused before the card count
+    // as dropped even while the card itself is writing.
+    let rejected = report.sd_rejected_records.unwrap_or(0);
+    let dropping = rejected.saturating_add(report.sd_write_errors.unwrap_or(0)) > 0 && state != "unknown";
+    let label = if dropping && state != "error" { format!("{label} · dropping samples") } else { label.to_string() };
     let color = match state {
-        "good" => "#146c43",
         "error" => "#9f1239",
+        _ if dropping => "#9f1239",
+        "good" => "#146c43",
         "pending" => "#815b12",
         _ => "#475569",
     };
@@ -233,6 +239,7 @@ fn SdHealth(
                     if let Some(flushed) = report.sd_flushed_records {
                         dt { "Samples flushed" } dd { style:"margin:0;", "{flushed}" }
                     }
+                    dt { "Dropped before the card" } dd { style:"margin:0;", "{rejected}" }
                     dt { "Write errors" } dd { style:"margin:0;", "{report.sd_write_errors.unwrap_or(0)}" }
                 }
             }
@@ -327,10 +334,11 @@ pub fn NetworkHealthSection(
                                     onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape=>{event.prevent_default();more_info.set(None);},Key::Tab=>{if let Some(focus) = on_recovery_focus {event.prevent_default();focus.call(("gs26-board-more-info".into(),event.modifiers().contains(Modifiers::SHIFT)));}},_=>{}}},
                                     div{id:"gs26-board-more-info",role:"dialog","aria-modal":"true","aria-label":"Board details",style:"background:{theme.panel_background};color:{theme.text_primary};font:inherit;padding:20px;border-radius:14px;width:min(100%,1060px);height:min(88dvh,900px);max-height:100%;overflow:hidden;display:flex;flex-direction:column;gap:14px;box-sizing:border-box;overflow-wrap:anywhere;",
                                         div{style:"display:flex;flex:0 0 auto;justify-content:space-between;align-items:center;gap:12px;",h3{style:"margin:0;","{board_id} · More info"}button{r#type:"button",onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move |_|more_info.set(None),"Close details"}}
-                                        div{class:"gs26-modal-scroll-body gs26-board-info-columns",style:"columns:3 260px;column-gap:14px;flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
-                                            // Masonry-style columns: each section stacks directly under the
-                                            // one above it instead of waiting for the tallest card in a row.
-                                            style{".gs26-board-info-columns>section{{break-inside:avoid;display:block;width:100%;box-sizing:border-box;margin:0 0 14px;}}"}
+                                        div{class:"gs26-modal-scroll-body gs26-board-info-columns",style:"columns:2 340px;column-gap:14px;flex:1;min-height:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;padding:2px;",
+                                            // Two masonry columns: each block stacks under the one above it and
+                                            // is never split across columns (the recovery block is not a direct
+                                            // section, and three columns cut it in two at the top of the third).
+                                            style{".gs26-board-info-columns>*{{break-inside:avoid;display:block;width:100%;box-sizing:border-box;margin:0 0 14px;}} .gs26-board-info-columns>style{{display:none;}}"}
                                             section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Network history"}
                             dl { style: "display:grid; grid-template-columns:1fr auto; gap:8px; font-size:0.9rem; margin:12px 0 0;",
                                 dt { "Temperature" } dd { style: "margin:0;", "{temperature(row, ws_connected, elapsed)}" }
@@ -362,7 +370,7 @@ pub fn NetworkHealthSection(
                             }
                                                 if row.sender_id!="DAQ"{p{"No storage actions are advertised for this node."}}
                                             }
-                                            if let Some(render) = recovery_renderer { {render.call((RecoverySlot::Details, board_id.clone(), ws_connected, theme.clone()))} }
+                                            if let Some(render) = recovery_renderer { div{class:"gs26-board-info-recovery",{render.call((RecoverySlot::Details, board_id.clone(), ws_connected, theme.clone()))}} }
                                             section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Internal diagnostics"}
                                 p { "Observed for {duration(row.observed_ms)} · Offline {duration(row.offline_ms)} · Receive observations {row.rx_observations}" }
                                 if let Some(report) = board_health(row) {
