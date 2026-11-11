@@ -1313,9 +1313,11 @@ fn note_ws_connected_and_restore_data_flow(
 
 fn refresh_flight_state_after_ws_reconnect(mut flight_state: Signal<FlightState>, epoch: u64) {
     spawn(async move {
-        match http_get_json::<FlightState>("/flightstate").await {
-            Ok(state) => {
+        match http_get_json::<mission_phase::FlightStateReply>("/flightstate").await {
+            Ok(reply) => {
                 if *WS_EPOCH.read() == epoch {
+                    let (state, detail) = reply.into_parts();
+                    mission_phase::apply_state_detail(detail);
                     set_signal_if_changed(&mut flight_state, state);
                 }
             }

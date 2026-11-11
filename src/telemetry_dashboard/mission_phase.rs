@@ -208,6 +208,40 @@ impl StateDetail {
 /// The detail from the WS `FlightState` message, beside the state signal.
 pub(crate) static FLIGHT_STATE_DETAIL: GlobalSignal<StateDetail> = Signal::global(StateDetail::default);
 
+#[derive(Deserialize)]
+pub(crate) struct FlightStateWire {
+    state: String,
+    #[serde(default, flatten)]
+    detail: StateDetail,
+}
+
+/// `GET /flightstate`: `{state, label, fill_phase, fill_phase_label, fc_phase}`,
+/// or a bare state name from an older station.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub(crate) enum FlightStateReply {
+    Wire(FlightStateWire),
+    Bare(String),
+}
+
+impl FlightStateReply {
+    /// The state name and, from a current station, its detail.
+    pub(crate) fn into_parts(self) -> (String, Option<StateDetail>) {
+        match self {
+            FlightStateReply::Wire(wire) => (wire.state, Some(wire.detail)),
+            FlightStateReply::Bare(state) => (state, None),
+        }
+    }
+}
+
+/// Keep the detail signal in step with a `/flightstate` reply.
+pub(crate) fn apply_state_detail(detail: Option<StateDetail>) {
+    let detail = detail.unwrap_or_default();
+    if *FLIGHT_STATE_DETAIL.peek() != detail {
+        *FLIGHT_STATE_DETAIL.write() = detail;
+    }
+}
+
 /// The one operator-visible state: the network state plus optional secondary
 /// detail ("In flight · Descent", "Fill · Nitrous fill", "Landed · Recovery").
 #[derive(Clone, Debug, PartialEq)]
@@ -698,6 +732,26 @@ mod tests {
         }
         assert_eq!(StateView::resolve(None, "Unknown", &none()).text(), "Unknown");
         assert_eq!(StateView::resolve(None, "", &none()).text(), "Unknown");
+    }
+
+    #[test]
+    fn flightstate_endpoint_decodes_the_station_object_or_an_older_bare_name() {
+        let reply: FlightStateReply = serde_json::from_str(
+            r#"{"fc_phase":null,"fill_phase":"NitrousFill","fill_phase_label":"Nitrous fill","label":"Fill","state":"Fill"}"#,
+        )
+        .unwrap();
+        let (state, detail) = reply.into_parts();
+        assert_eq!(state, "Fill");
+        let detail = detail.unwrap();
+        assert_eq!(StateView::resolve(None, &state, &detail).text(), "Fill · Nitrous fill");
+        let reply: FlightStateReply = serde_json::from_str(
+            r#"{"fc_phase":{"age_ms":0,"label":"Descent","source":"fc_state_report","value":11},"fill_phase":null,"fill_phase_label":null,"label":"In flight","state":"InFlight"}"#,
+        )
+        .unwrap();
+        let (state, detail) = reply.into_parts();
+        assert_eq!(StateView::resolve(None, &state, &detail.unwrap()).text(), "In flight · Descent");
+        let (state, detail) = serde_json::from_str::<FlightStateReply>(r#""Coast""#).unwrap().into_parts();
+        assert_eq!((state.as_str(), detail), ("Coast", None));
     }
 
     #[test]

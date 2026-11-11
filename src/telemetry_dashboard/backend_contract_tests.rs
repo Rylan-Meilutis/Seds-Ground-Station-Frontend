@@ -122,6 +122,48 @@ fn operating_mode_status_names_the_mode() {
 }
 
 #[test]
+fn flight_state_frames_show_the_network_state_with_its_detail() {
+    let message: WsInMsg = decode("websocket/flight-state-in-flight");
+    let WsInMsg::FlightState(frame) = message else {
+        panic!("not FlightState: {message:?}");
+    };
+    let view = mission_phase::StateView::resolve(None, &frame.state, &frame.detail);
+    assert_eq!(view.phase, Some(mission_phase::Phase::InFlight));
+    assert_eq!(view.text(), "In flight · Descent");
+    let (state, detail) = decode::<mission_phase::FlightStateReply>("flight-state/get-fill").into_parts();
+    let view = mission_phase::StateView::resolve(None, &state, &detail.expect("station object"));
+    assert_eq!(view.text(), "Fill · Nitrous fill");
+}
+
+#[test]
+fn board_recovery_rows_carry_the_fc_reset_and_station_reasons() {
+    for name in ["board-recovery/status-viewer", "board-recovery/status-operator"] {
+        let status: board_recovery_model::Status = decode(name);
+        let raw = fixture(name);
+        for row in raw["boards"].as_array().unwrap() {
+            for key in ["blocked_reasons", "reset_startup_any_state_blocked_reason", "reset_fc_startup_warning", "fc_phase"] {
+                assert!(row.get(key).is_some(), "{name} {} lacks {key}", row["id"]);
+            }
+            assert!(row["capabilities"].get("reset_startup_any_state").is_some());
+        }
+        let fc = status.board("FC").expect("FC row");
+        // Only the FC offers the reset; here it is refused with the station's reason.
+        assert!(status.fc_reset_advertised(fc));
+        let reason = status.fc_reset_reason(fc).expect("refused in the fixture");
+        assert_eq!(Some(reason.as_str()), raw["boards"].as_array().unwrap().iter()
+            .find(|row| row["id"] == "FC").unwrap()["reset_startup_any_state_blocked_reason"].as_str());
+        for board in status.boards.iter().filter(|board| board.id != "FC") {
+            assert!(!status.fc_reset_advertised(board), "{} must not offer the FC reset", board.id);
+        }
+        // A query refusal is shown in the station's words.
+        let ab = status.board("AB").unwrap();
+        if let Some(reason) = status.query_reason(ab) {
+            assert_eq!(Some(reason.as_str()), ab.blocked_reasons.query.as_deref().or(Some(reason.as_str())));
+        }
+    }
+}
+
+#[test]
 fn board_recovery_status_decodes_and_validates() {
     for (name, user) in [
         ("board-recovery/status-viewer", "viewer"),

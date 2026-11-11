@@ -2105,10 +2105,12 @@ fn TelemetryDashboardInner() -> Element {
                     return;
                 }
 
-                if let Ok(state) = http_get_json::<FlightState>("/flightstate").await
+                if let Ok(reply) = http_get_json::<mission_phase::FlightStateReply>("/flightstate").await
                     && alive.load(Ordering::Relaxed)
                     && *WS_EPOCH.read() == epoch
                 {
+                    let (state, detail) = reply.into_parts();
+                    mission_phase::apply_state_detail(detail);
                     flight_state.set(state);
                 }
             });

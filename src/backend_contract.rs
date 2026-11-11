@@ -50,6 +50,7 @@ pub(crate) const COVERED: &[&str] = &[
     "board-abort/status-hitl",
     "board-recovery/status-operator",
     "board-recovery/status-viewer",
+    "flight-state/get-fill",
     "network-diagnostics/radio-tx-budget",
     "radio/modem",
     "requests/gse-self-test-confirmation",
@@ -63,6 +64,7 @@ pub(crate) const COVERED: &[&str] = &[
     "station-modes/snapshot-after-switch",
     "websocket/action-policy",
     "websocket/alert-ack-state",
+    "websocket/flight-state-in-flight",
     "websocket/station-mode-changed",
 ];
 
