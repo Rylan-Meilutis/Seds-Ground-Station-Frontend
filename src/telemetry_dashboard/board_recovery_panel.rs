@@ -545,6 +545,7 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
     let recover_reason = status.prepare_board_reason(&board, "recover_abort", current.elapsed());
     let resync_reason = status.prepare_board_reason(&board, "resync", current.elapsed());
     let fc_reset = status.fc_reset_advertised(&board);
+    let abort_recovery = status.abort_recovery_shown(&board);
     let fc_reset_reason = status.fc_reset_reason(&board);
     // What the operator reads under each disabled button, most basic cause first.
     let ui_reason = |needs_permission: bool| first_reason(&[
@@ -580,14 +581,16 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
                                     button{class:"gs-btn gs-btn--danger","data-recovery-action":FC_RESET_ACTION,disabled:fc_reset_shown_reason.is_some(),
                                         onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare(FC_RESET_ACTION.into(),Some(id.clone()),None,current.clone(),busy,pending,message)},
                                         "Reset FC to Startup…"}
-                                    } else {
+                                    }
+                                    if abort_recovery {
                                     button{disabled:recover_shown_reason.is_some(),
                                         onclick:{let current=current.clone();let id=board_id.clone();move |_|begin_prepare("recover_abort".into(),Some(id.clone()),None,current.clone(),busy,pending,message)},{if board.recovery_notice().is_some() {"Review recovery…"} else {super::board_recovery_model::targeted_recovery_label(&board_id).map_or("Recovery unavailable", |(label, _)| label)}}}
                                     }
                                     DisabledReason{subject:"Query".to_string(),reason:query_reason.clone(),control:"query".to_string()}
                                     if fc_reset {
                                         DisabledReason{subject:"Reset".to_string(),reason:fc_reset_shown_reason.clone(),control:FC_RESET_ACTION.to_string()}
-                                    } else {
+                                    }
+                                    if abort_recovery {
                                         DisabledReason{subject:"Recovery".to_string(),reason:recover_shown_reason.clone(),control:"recover_abort".to_string()}
                                     }
                                     // Only shown when the station advertises Resync for this board;

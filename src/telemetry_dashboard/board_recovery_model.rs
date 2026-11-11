@@ -371,6 +371,14 @@ impl Status {
     pub fn fc_reset_advertised(&self, board: &Board) -> bool {
         board.id == "FC" && board.capabilities.reset_startup_any_state.is_some()
     }
+    /// The FC reset replaces FC abort recovery, except while the reset is
+    /// unavailable and abort recovery is offered (older FC firmware, or the
+    /// reset briefly blocked): then both show, the reset with its reason.
+    pub fn abort_recovery_shown(&self, board: &Board) -> bool {
+        !self.fc_reset_advertised(board)
+            || (board.capabilities.reset_startup_any_state != Some(true)
+                && board.capabilities.prepare_recover == Some(true))
+    }
     /// Why the FC reset to Startup cannot be prepared now. No flight-state
     /// gate here: the station decides, and the FC refuses during a pyro pulse.
     pub fn fc_reset_reason(&self, board: &Board) -> Option<String> {
@@ -1761,6 +1769,23 @@ mod tests {
         fc.blocked_reasons.reset_startup_any_state = Some("FC firmware lacks the reset.".into());
         let fc = s.board("FC").unwrap().clone();
         assert_eq!(s.fc_reset_reason(&fc).as_deref(), Some("FC firmware lacks the reset."));
+        // FC firmware without the reset keeps abort recovery while that is offered;
+        // with neither, the reset is shown with the station's reason.
+        let mut legacy = fc_status();
+        let fc = legacy.boards.iter_mut().find(|b| b.id == "FC").unwrap();
+        fc.capabilities.reset_startup_any_state = Some(false);
+        fc.capabilities.prepare_recover = Some(true);
+        assert!(legacy.abort_recovery_shown(legacy.board("FC").unwrap()));
+        legacy.boards.iter_mut().find(|b| b.id == "FC").unwrap().capabilities.prepare_recover = Some(false);
+        assert!(!legacy.abort_recovery_shown(legacy.board("FC").unwrap()));
+        let mut current = fc_status();
+        current.boards.iter_mut().find(|b| b.id == "FC").unwrap().capabilities.prepare_recover = Some(true);
+        assert!(!current.abort_recovery_shown(current.board("FC").unwrap()), "one FC button while the reset is available");
+        // Every row carries the field, but only the FC has the reset.
+        let mut ab_row = fc_status();
+        ab_row.boards.iter_mut().find(|b| b.id == "AB").unwrap().capabilities.reset_startup_any_state = Some(false);
+        assert!(!ab_row.fc_reset_advertised(ab_row.board("AB").unwrap()));
+        assert!(ab_row.abort_recovery_shown(ab_row.board("AB").unwrap()));
         // A station without the reset never shows it.
         let mut old = fc_status();
         old.boards.iter_mut().find(|b| b.id == "FC").unwrap().capabilities.reset_startup_any_state = None;

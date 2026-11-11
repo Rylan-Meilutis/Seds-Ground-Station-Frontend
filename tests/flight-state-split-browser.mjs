@@ -23,7 +23,8 @@ fixture=fixture.replace('let lists={',`const captureDir=${JSON.stringify(process
 const observed=['FC','AB','GB'];
 const topology=()=>({generated_ms:Date.now(),simulated:false,nodes:[],links:[],health:observed.map(id=>({sender_id:id,healthy:true,age_ms:0,last_seen_ms:Date.now(),disconnects:0,reconnects:0,rx_observations:1,observed_ms:30000,offline_ms:0,longest_outage_ms:0,current_outage_ms:0}))});
 let lists={`);
-fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(pathname==='/api/network_topology'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(topology()));return;}
+fixture=fixture.replace("  if(pathname==='/api/checklists'||",`  if(pathname==='/flightstate'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({state:'InFlight',label:'In flight',fill_phase:null,fill_phase_label:null,fc_phase:{value:10,label:'Apogee',source:'fc_state_report',age_ms:50}}));return;}
+  if(pathname==='/api/network_topology'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(topology()));return;}
   if(pathname==='/api/board-recovery/status'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(boardRecovery));return;}
   if(pathname.startsWith('/api/board-recovery/')){
    assert.equal(req.headers.authorization,'Bearer ui-token');let text='';for await(const data of req)text+=data;const body=JSON.parse(text);
@@ -45,8 +46,8 @@ fixture+=`try {
  const context=await browser.newContext({viewport:{width:1280,height:900}});
  await context.addInitScript(({session,origin})=>{if(!URL.parse)URL.parse=(input,base)=>{try{return new URL(input,base)}catch{return null}};localStorage.setItem('auth_session_v1',JSON.stringify({entries:[{host_scope:origin,updated_at_ms:Date.now(),session:{token:'ui-token',session,remember_me:true}}]}));},{session,origin});
  const sockets=new Set();await context.routeWebSocket(url=>url.pathname==='/_dioxus',()=>{});
- let flight={state:'InFlight',fill_phase:null,fc_phase:{value:11,label:'Descent',source:'fc_state_report',age_ms:1200}};
- await context.routeWebSocket(url=>url.pathname==='/ws',s=>{sockets.add(s);const heartbeat=setInterval(()=>{s.send(JSON.stringify({ty:'NetworkTime',data:{timestamp_ms:Date.now()}}));s.send(JSON.stringify({ty:'FlightState',data:flight}));},400);s.onClose(()=>{clearInterval(heartbeat);sockets.delete(s);});s.send(JSON.stringify({ty:'NetworkTopology',data:topology()}));});
+ let flight=null;
+ await context.routeWebSocket(url=>url.pathname==='/ws',s=>{sockets.add(s);const heartbeat=setInterval(()=>{s.send(JSON.stringify({ty:'NetworkTime',data:{timestamp_ms:Date.now()}}));if(flight)s.send(JSON.stringify({ty:'FlightState',data:flight}));},400);s.onClose(()=>{clearInterval(heartbeat);sockets.delete(s);});s.send(JSON.stringify({ty:'NetworkTopology',data:topology()}));});
  const page=await context.newPage(),errors=[],dialogs=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',async d=>{dialogs.push(d.type());await d.dismiss();});
  const shot=async name=>{if(captureDir){fs.mkdirSync(captureDir,{recursive:true});await page.screenshot({path:path.join(captureDir,name)});}};
  await page.goto(origin+'/dashboard');await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
@@ -55,6 +56,9 @@ fixture+=`try {
   await page.waitForFunction(([label,detail])=>{const l=document.querySelector('.gs26-status-phase-label')?.textContent,d=document.querySelector('.gs26-status-phase-detail')?.textContent||null;return l===label&&d===detail;},[label,detail],{timeout:8000})
    .catch(async()=>{throw Error('header shows '+JSON.stringify(await header.innerText())+', wanted '+label+' '+detail);});
  };
+ // The station's /flightstate object alone gives the state and its detail.
+ await state('In flight','· Apogee');
+ flight={state:'InFlight',fill_phase:null,fc_phase:{value:11,label:'Descent',source:'fc_state_report',age_ms:1200}};
  await state('In flight','· Descent');assert.equal(await header.getAttribute('data-phase'),'in_flight');await shot('header-in-flight.png');
  flight={state:'Fill',fill_phase:'NitrousFill',fill_phase_label:'Nitrous fill',fc_phase:null};await state('Fill','· Nitrous fill');assert.equal(await header.getAttribute('data-phase'),'fill');await shot('header-fill.png');
  flight={state:'Landed',fill_phase:null,fc_phase:{value:14,label:'Recovery',source:'fc_state_report',age_ms:10}};await state('Landed','· Recovery');
@@ -75,10 +79,12 @@ fixture+=`try {
  await gbCard.locator('.gs-disabled-reason[data-control="query"]').getByText('Query unavailable: Gateway Board firmware has no recovery endpoint.').waitFor();
  assert(await gbCard.locator('.gs-disabled-reason[data-control="query"]').isVisible());
  const fcRow=boardRecovery.boards.find(b=>b.id==='FC');fcRow.capabilities.reset_startup_any_state=false;fcRow.reset_startup_any_state_blocked_reason='The FC reports a recovery charge firing.';
- await fcCard.getByText('Reset unavailable: The FC reports a recovery charge firing.',{exact:true}).waitFor();assert(await reset.isDisabled());await shot('fc-reset-blocked.png');
+ await fcCard.getByText('Reset unavailable: The FC reports a recovery charge firing.',{exact:true}).waitFor();assert(await reset.isDisabled());
+ // While the reset is blocked, the station's abort recovery stays offered beside it.
+ await fcCard.getByRole('button',{name:'Recover to Startup…'}).waitFor();await shot('fc-reset-blocked.png');
  fcRow.capabilities.reset_startup_any_state=true;fcRow.reset_startup_any_state_blocked_reason=null;
  await page.waitForFunction(()=>!document.querySelector('[data-board="FC"] [data-recovery-action="reset_fc_startup"]')?.disabled);
- assert.equal(await fcCard.locator('.gs-disabled-reason[data-control="reset_fc_startup"]').count(),0,'no reason while available');
+ assert.equal(await fcCard.locator('.gs-disabled-reason[data-control="reset_fc_startup"]').count(),0,'no reason while available');await fcCard.getByRole('button',{name:'Recover to Startup…'}).waitFor({state:'detached'});
  await shot('fc-reset-available.png');
  // One click opens the one station confirmation; no intermediate dialog.
  await reset.click();
