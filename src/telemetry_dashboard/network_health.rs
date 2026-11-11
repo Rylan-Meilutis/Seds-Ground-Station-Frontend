@@ -638,8 +638,11 @@ pub fn GeneralNetworkHealthSummary(
     }
 }
 
-/// Beyond radio transit delay; recovery commands need the board within 15 s.
-const CLOCK_DESYNC_MS: i64 = 2_000;
+/// The offset is the least-delayed frame in 10 s, so it is clock error plus
+/// the best transit seen. A healthy radio carries a frame well inside 500 ms;
+/// more means the clock or the link needs attention (2 s let a board read
+/// "in sync" at 1.9 s behind).
+const CLOCK_DESYNC_MS: i64 = 500;
 fn clock_desynced(offset_ms: i64) -> bool {
     offset_ms.unsigned_abs() > CLOCK_DESYNC_MS as u64
 }
@@ -663,7 +666,9 @@ mod clock_tests {
     #[test]
     fn small_offsets_are_in_sync_and_uptime_clocks_are_flagged() {
         assert!(!clock_desynced(-40));
-        assert!(!clock_desynced(1_500));
+        assert!(!clock_desynced(400));
+        assert!(clock_desynced(-1_000));
+        assert!(clock_desynced(1_500));
         assert!(clock_desynced(-1_794_183_000_000));
         assert_eq!(clock_offset_text(-25), "25 ms behind the station");
         assert!(clock_offset_text(-1_794_183_000_000).ends_with("days behind the station"));
