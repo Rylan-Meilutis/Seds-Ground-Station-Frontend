@@ -28,6 +28,16 @@ fn phase_names(version: u8) -> [&'static str; 16] {
     }
     names
 }
+/// Phase keys offered for a profile assignment. The station looks up the
+/// FC's own phase while In flight or Landed, then its state, then the
+/// default, so `InFlight` covers the whole flight and the detailed names
+/// still refine it.
+fn phase_options(version: u8) -> Vec<&'static str> {
+    let mut names = phase_names(version).to_vec();
+    let launch = names.iter().position(|name| *name == "Launch").map_or(names.len(), |i| i + 1);
+    names.insert(launch, "InFlight");
+    names
+}
 impl Default for Rundown {
     fn default() -> Self {
         Self {
@@ -55,6 +65,20 @@ mod phase_version_tests {
         assert_eq!(value["phase_profiles"]["Descent"], "flight");
         assert_eq!(phase_names(0)[11..13], ["ParachuteDeploy", "Descent"]);
         assert_eq!(phase_names(1)[11..13], ["Descent", "Reefing"]);
+    }
+
+    #[test]
+    fn whole_flight_in_flight_key_is_offered_beside_the_detailed_names() {
+        for version in [0, 1] {
+            let names = phase_options(version);
+            let launch = names.iter().position(|name| *name == "Launch").unwrap();
+            assert_eq!(names[launch + 1], "InFlight", "version {version}");
+            assert_eq!(names.iter().filter(|name| **name == "InFlight").count(), 1);
+            for detailed in ["PreFill", "NitrousFill", "Ascent", "Coast", "Apogee", "Descent", "Landed", "Recovery", "Aborted"] {
+                assert!(names.contains(&detailed), "{detailed} stays valid in version {version}");
+            }
+            assert_eq!(names.contains(&"Reefing"), version == 1);
+        }
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -147,7 +171,7 @@ pub(super) fn RundownEditor(broadcast: BroadcastState) -> Element {
                     {let remove_name=name.clone();rsx!{div {class:"gs26-studio-actions",span {"{name} → {target}"}button {onclick:move|_|{if let Some(r)=draft.write().as_mut(){r.phase_profiles.remove(&remove_name);}},"Remove assignment"}}}}
                 }
                 div {class:"gs26-studio-fields",label {"Flight phase" select {value:phase(),onchange:move|e|phase.set(e.value()),
-                    for name in phase_names(rundown.flight_phase_version) {option {value:name,"{name}"}}
+                    for name in phase_options(rundown.flight_phase_version) {option {value:name,"{name}"}}
                 }}button {onclick:move|_|{if let Some(r)=draft.write().as_mut(){r.phase_profiles.insert(phase(),selected());}},"Use selected profile for phase"}}
             }
         } else {p {"Reload broadcast settings to edit this station’s audience rundown."}}
