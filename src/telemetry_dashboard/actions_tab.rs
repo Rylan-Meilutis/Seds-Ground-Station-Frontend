@@ -1002,8 +1002,11 @@ pub fn ActionsTab(
                                                 ;
                                                 // Every disabled action shows why (Launch included), not only
                                                 // the GSE sequence group.
+                                                let proxy_reason = auth::primary_proxy_unavailable_reason(&dispatch_cmd);
                                                 let disabled_reason = if enabled {
                                                     None
+                                                } else if let Some(reason) = proxy_reason.as_deref() {
+                                                    Some(reason)
                                                 } else if !auth::can_send_command(&dispatch_cmd) {
                                                     Some("Not permitted by your account")
                                                 } else if abort_only_mode {

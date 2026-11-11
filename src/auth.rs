@@ -314,6 +314,24 @@ pub fn can_send_command(cmd: &str) -> bool {
     can_send_command_for_status(&current_status(), cmd)
 }
 
+/// On the RRLS, why the primary command link refuses `cmd` (None when it
+/// would carry it), so a link problem is not reported as an account refusal.
+pub fn primary_proxy_unavailable_reason(cmd: &str) -> Option<String> {
+    let status = current_status();
+    if !command_uses_primary_proxy(&status, cmd) {
+        return None;
+    }
+    match status.command_proxy.as_ref() {
+        Some(proxy) if proxy.supported && proxy.paired && proxy.connected && proxy.available
+            && proxy.supported_commands.iter().any(|name| name == cmd) => None,
+        Some(proxy) if proxy.supported && proxy.paired && proxy.connected && proxy.available =>
+            Some("The primary ground station does not offer this command".into()),
+        Some(proxy) if !proxy.reason.trim().is_empty() =>
+            Some(format!("Primary GS link not ready: {}", proxy.reason)),
+        _ => Some("Primary GS link not ready".into()),
+    }
+}
+
 fn can_send_command_for_status(status: &SessionStatus, cmd: &str) -> bool {
     if command_uses_primary_proxy(status, cmd) && !status.command_proxy.as_ref().is_some_and(|proxy|
         proxy.supported && proxy.paired && proxy.connected && proxy.available
