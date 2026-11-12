@@ -365,6 +365,7 @@ pub(super) fn AdminConsole(on_exit: EventHandler<()>, on_navigate: EventHandler<
             }
             super::station_positions_admin::StationPositionsAdmin {}
             super::station_pairing_admin::StationPairingAdmin {}
+            super::sequence_access_admin::SequenceAccessAdmin {}
             if *failed.read() {
                 p {class:"admin-message admin-error",role:"alert","{message}"}
             } else {
