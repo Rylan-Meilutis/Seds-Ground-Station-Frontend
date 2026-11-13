@@ -93,6 +93,7 @@ impl Server{
                         ("POST","/api/admin/users")|("POST","/api/admin/users/create")=>{let mut v=body.clone();v.as_object_mut().unwrap().remove("password");v},
                         ("POST","/api/admin/users/delete")=>serde_json::json!({"deleted":body["username"]}),
                         ("GET","/api/station_positions")=>serde_json::json!({"revision":0,"ground_station":null,"rrls":null}),
+                        ("GET","/api/admin/physical-panel")=>serde_json::json!({"panel_mode":null,"effective_mode":"sequences","station_default":"sequences","buttons":[],"fixed":[],"launch_only_note":null,"change_blocked_reason":null,"can_change":true,"updated_by":null,"updated_at_ms":null}),
                         ("GET","/api/admin/sequence-access")=>serde_json::json!({"launch_sequence_only":false,"enable_blocked_reason":null,"disabled_sequences":["Turbocharge","Auto Cold Flow"],"kept_sequences":[],"always_kept":["Abort and every abort path"],"can_change":true,"preset_env":"GS_LAUNCH_SEQUENCE_ONLY"}),
                         ("GET","/api/station/pairing")=>serde_json::json!({"role":"primary","paired":false,"source":null,"error":null,"peers":[],"fingerprint":null,"restart_required":false,"can_manage":true,"radio_available":true,"unpair_available":false,"exchange":null,"primary_link":null}),
                         ("GET","/api/recordings")=>serde_json::json!([{"id":"record-r","bytes":1,"active":false}]),

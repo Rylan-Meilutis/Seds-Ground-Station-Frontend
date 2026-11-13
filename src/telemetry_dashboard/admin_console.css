@@ -39,3 +39,5 @@
 .admin-confirm{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10;width:min(560px,calc(100vw - 32px));max-height:85vh;overflow:auto;box-sizing:border-box;padding:20px;border:2px solid #dd7180;border-radius:12px;background:var(--gs26-panel-background,#17212b);color:var(--gs26-app-text,#edf3fa);box-shadow:0 0 0 100vmax #0009}
 .admin-confirm h2{margin-top:0}
 @media(max-width:600px){.admin-user{padding:12px}.admin-actions{display:grid;grid-template-columns:minmax(0,1fr)}.gs26-admin .admin-actions button{justify-self:stretch;width:100%}.admin-filters{display:grid;grid-template-columns:minmax(0,1fr)}}
+.admin-panel-table{width:100%;border-collapse:collapse;margin:8px 0;display:block;overflow-x:auto}
+.admin-panel-table th,.admin-panel-table td{padding:6px 10px;border-bottom:1px solid var(--gs26-border,#314156);text-align:left;vertical-align:top}
