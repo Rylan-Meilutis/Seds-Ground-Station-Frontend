@@ -62,8 +62,8 @@ pub(super) fn view(
         "Recorded or unavailable · no fresh live source"
     } else if matches!(code, Some(1 | 7)) && transit.is_none() {
         "Source clock unavailable · last signal retained"
-    } else if live_elapsed_ms.is_some_and(|age| age > 1000)
-        || (matches!(code, Some(1 | 7)) && age.is_none_or(|age| age > 1000))
+    } else if live_elapsed_ms.is_some_and(|age| age > super::FILL_DATA_STALE_MS)
+        || (matches!(code, Some(1 | 7)) && age.is_none_or(|age| age > super::FILL_DATA_STALE_MS))
     {
         "Stale · last signal retained"
     } else if matches!(code, Some(1 | 7))
@@ -162,7 +162,7 @@ mod tests {
                 .starts_with("Recorded")
         );
         assert!(
-            view(&report, &[], Some(1001), Some(NOW))
+            view(&report, &[], Some(super::super::FILL_DATA_STALE_MS + 1), Some(NOW))
                 .label
                 .starts_with("Stale")
         );
@@ -195,7 +195,7 @@ mod tests {
                 .label
                 .contains("Recorded")
         );
-        let a = view(&status(1.0, 100.0), &[], Some(901), Some(NOW));
+        let a = view(&status(1.0, 100.0), &[], Some(super::super::FILL_DATA_STALE_MS - 99), Some(NOW));
         assert!(a.label.starts_with("Stale"));
         assert_eq!(a.counts, "—");
         assert_eq!(a.volts, "—");
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn delayed_or_clock_skewed_network_delivery_is_not_fresh_on_arrival() {
         assert!(
-            view(&status(1.0, 0.0), &signal(), Some(0), Some(NOW + 5000))
+            view(&status(1.0, 0.0), &signal(), Some(0), Some(NOW + super::super::FILL_DATA_STALE_MS + 1))
                 .label
                 .starts_with("Stale")
         );

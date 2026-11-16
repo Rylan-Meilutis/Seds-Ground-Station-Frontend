@@ -691,8 +691,9 @@ mod actions_refresh_tests {
     fn unchanged_clock_ticks_do_not_change_render_projection_but_expiry_does() {
         let status=serde_json::json!({"phase":"filling","primary_observation":{"fresh":true,"age_ms":400}});
         let initial=sequence_indicators(&status,0,false);
-        for age in [0,250,500,750,1000,1250,1500,1750,2000] {assert_eq!(sequence_indicators(&status,age,false),initial);}
-        assert_ne!(sequence_indicators(&status,2001,false),initial);
+        let window=super::super::FILL_DATA_STALE_MS;
+        for age in (0..=window).step_by(250) {assert_eq!(sequence_indicators(&status,age,false),initial);}
+        assert_ne!(sequence_indicators(&status,window+1,false),initial);
         let remote=sequence_indicators(&status,1600,true);
         assert_eq!(remote,initial);
         assert_ne!(sequence_indicators(&status,1601,true),remote);

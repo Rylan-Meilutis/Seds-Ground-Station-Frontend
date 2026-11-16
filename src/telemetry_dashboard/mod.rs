@@ -272,6 +272,12 @@ const WALL_CLOCK_TICK_MS: u32 = 250;
 const TELEMETRY_RENDER_MIN_INTERVAL_MS: i64 = 50;
 const CHART_RENDER_MIN_INTERVAL_MS: i64 = 33;
 const WS_STALE_RECONNECT_MS: i64 = 8_000;
+/// Fill-side (valve/actuator/DAQ boards behind the gateway) data stays shown as
+/// current for this long before the UI calls it stale or unconfirmed. The
+/// gateway drops frames under load while board transmit rates stay unchanged,
+/// so this matches the backend's 5 s valve-confirmation and board-offline window.
+/// RF / AV-bay radio thresholds are separate and unchanged.
+const FILL_DATA_STALE_MS: u64 = 5_000;
 const LIVE_TELEMETRY_MAX_AGE_MS: i64 = 20 * 60 * 1000;
 const LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS: i64 = 60_000;
 

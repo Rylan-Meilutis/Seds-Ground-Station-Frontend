@@ -39,11 +39,11 @@ try {
  assert((await panel.innerText()).includes('Current not calibrated'));
  assert((await panel.innerText()).includes('no supported current conversion'));
  await page.screenshot({path:process.env.GS_IGNITER_SCREENSHOT?.replace('.png','-live.png')||'/tmp/igniter-sense-live.png',fullPage:true});
- await panel.getByText('Stale · last signal retained',{exact:true}).waitFor({timeout:4000});
+ await panel.getByText('Stale · last signal retained',{exact:true}).waitFor({timeout:9000});
  push([rows(2)[1]]);await panel.getByText('Waiting for matching ADC sample · last signal retained',{exact:true}).waitFor();
  push(rows(2,Date.now(),1111,0.8953));await panel.getByText('Live measured signal',{exact:true}).waitFor();
  assert((await panel.innerText()).includes('1111 counts'));
- push(rows(3,Date.now()-5000));await panel.getByText('Stale · last signal retained',{exact:true}).waitFor();
+ push(rows(3,Date.now()-8000));await panel.getByText('Stale · last signal retained',{exact:true}).waitFor();
  push(rows(4,Date.now()+5000));await panel.getByText('Source clock unavailable · last signal retained',{exact:true}).waitFor();
  senseHistory=rows(5,Date.now()-5000);await page.reload();await open();
  await panel.getByText('ADC: 2048 counts',{exact:true}).waitFor({timeout:15000});

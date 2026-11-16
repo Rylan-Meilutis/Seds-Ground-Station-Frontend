@@ -38,7 +38,7 @@ pub(super) fn progress(
         return None;
     }
     let primary = &status["primary_observation"];
-    let fresh = local_age_ms <= 2_000
+    let fresh = local_age_ms <= super::FILL_DATA_STALE_MS
         && status["unavailable"].as_bool() != Some(true)
         && (!rrls
             || (primary["fresh"].as_bool() == Some(true)
@@ -134,7 +134,7 @@ mod tests {
             Some(Progress::Running)
         );
         assert_eq!(
-            progress("StartFill", &status, 2_001, false),
+            progress("StartFill", &status, super::super::FILL_DATA_STALE_MS + 1, false),
             Some(Progress::Unknown)
         );
         status["primary_observation"]["fresh"] = json!(false);

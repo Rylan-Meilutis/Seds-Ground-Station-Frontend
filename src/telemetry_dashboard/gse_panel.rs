@@ -320,6 +320,12 @@ struct Status {
     #[serde(default)]
     overpressure: Option<serde_json::Value>,
 }
+/// True while a status accepted at `accepted_ms` may still be shown after a
+/// failed read at `now_ms` (both monotonic).
+fn fill_status_hold(accepted_ms: f64, now_ms: f64) -> bool {
+    let age = now_ms - accepted_ms;
+    age.is_finite() && (0.0..=super::FILL_DATA_STALE_MS as f64).contains(&age)
+}
 pub(super) async fn delay() {
     #[cfg(target_arch = "wasm32")]
     gloo_timers::future::TimeoutFuture::new(500).await;
@@ -374,6 +380,9 @@ pub(super) fn GsePanel(
     let alive = super::recording_download::use_export_lifetime();
     let polling_alive = alive.clone();
     use_future(move || { let alive = polling_alive.clone(); async move {
+        // Monotonic time of the last accepted status. A failed read inside the
+        // fill-data window keeps showing it; only a longer outage blanks it.
+        let mut last_ok_ms: Option<f64> = None;
         loop {
             if !alive.load(Ordering::Acquire) { return; }
             if command_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
@@ -385,6 +394,7 @@ pub(super) fn GsePanel(
             // context, independently of any pending response or its contents.
             if observation_owner.peek().as_ref().is_some_and(|owner| !owner.is_current()) {
                 observation_owner.set(None);
+                last_ok_ms = None;
                 online.set(false);
                 status.set(Status {phase: "unknown".into(), ..Status::default()});
             }
@@ -417,8 +427,17 @@ pub(super) fn GsePanel(
                     observation_owner.set(owner.as_ref().ok().cloned());
                     status.set(next);
                     online.set(true);
+                    last_ok_ms = Some(super::monotonic_now_ms());
+                    if message.peek().starts_with("GSE status unavailable") {
+                        message.set(String::new());
+                    }
+                }
+                Err(_) if last_ok_ms.is_some_and(|at| fill_status_hold(at, super::monotonic_now_ms())) => {
+                    // Transient failure (loaded station, dropped poll): keep the
+                    // last accepted status; the next read normally recovers it.
                 }
                 Err(err) => {
+                    last_ok_ms = None;
                     online.set(false);
                     // Never keep stale confirmed valves or an active model animation
                     // after the primary observation expires or becomes unavailable.
@@ -445,7 +464,7 @@ pub(super) fn GsePanel(
     let valve_pressure_label = snapshot
         .valve_pressure
         .as_ref()
-        .and_then(|p| (p["age_ms"].as_u64()? <= 2000).then_some(p["psi"].as_f64()?))
+        .and_then(|p| (p["age_ms"].as_u64()? <= super::FILL_DATA_STALE_MS).then_some(p["psi"].as_f64()?))
         .map(|p| format!("{p:.1} psi"))
         .unwrap_or_else(|| "Unknown / stale".into());
     let turbo_enabled = *online.read()
@@ -1364,5 +1383,18 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
                 }
             if !message.read().is_empty() { p { role: "status", "{message}" } }
         }
+    }
+}
+
+#[cfg(test)]
+mod fill_status_hold_tests {
+    #[test]
+    fn failed_reads_keep_the_last_status_only_inside_the_fill_window() {
+        let window = super::super::FILL_DATA_STALE_MS as f64;
+        assert!(super::fill_status_hold(1_000.0, 1_000.0));
+        assert!(super::fill_status_hold(1_000.0, 1_000.0 + window));
+        assert!(!super::fill_status_hold(1_000.0, 1_001.0 + window));
+        assert!(!super::fill_status_hold(1_000.0, 999.0), "monotonic time never runs backwards");
+        assert!(!super::fill_status_hold(f64::NAN, 1_000.0));
     }
 }
