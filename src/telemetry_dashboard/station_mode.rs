@@ -3,15 +3,46 @@ use dioxus::prelude::*;
 use serde_json::Value;
 
 pub(super) static OPERATING_MODE: GlobalSignal<Value> = Signal::global(|| Value::Null);
-type SourceContext = (String, Option<crate::auth::RequestIdentity>);
-static OPERATING_MODE_SOURCE: GlobalSignal<Option<SourceContext>> = Signal::global(|| None);
+/// The station (base URL) the displayed mode was read from. The mode belongs to
+/// the station, not the account, so a login/session refresh on the same station
+/// keeps showing it while the next poll confirms it.
+static OPERATING_MODE_SOURCE: GlobalSignal<Option<String>> = Signal::global(|| None);
+/// How long the last successful mode read stays "synchronized" while polls fail.
+/// A loaded station can miss or delay an individual poll (and a websocket
+/// reconnect cancels the one in flight); one miss must not flip the notice.
+const MODE_SYNC_GRACE_MS: f64 = 5_000.0;
+const MODE_POLL_MS: u32 = 2_000;
+/// Retry delay after a failed poll, so a single miss is retried well inside the grace.
+const MODE_RETRY_MS: u32 = 500;
 pub(super) fn current_snapshot() -> Value {
-    let current = (super::UrlConfig::base_http(), crate::auth::request_identity());
-    if OPERATING_MODE_SOURCE.read().as_ref() == Some(&current) {
+    if OPERATING_MODE_SOURCE.read().as_deref() == Some(super::UrlConfig::base_http().as_str()) {
         OPERATING_MODE.read().clone()
     } else {
         Value::Null
     }
+}
+/// The mode to display after a failed poll: unchanged inside the grace window,
+/// otherwise marked last-known (never cleared, never guessed).
+fn after_failed_poll(mut value: Value, last_ok_ms: Option<f64>, now_ms: f64) -> Value {
+    let age = last_ok_ms.map(|at| now_ms - at);
+    if age.is_some_and(|age| age.is_finite() && (0.0..=MODE_SYNC_GRACE_MS).contains(&age)) {
+        return value;
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("synchronized".into(), Value::Bool(false));
+        if let Some(configuration) = object.get_mut("retained_configuration").and_then(Value::as_object_mut)
+            && configuration.get("status").and_then(Value::as_str) != Some("unknown")
+        {
+            configuration.insert("status".into(), Value::String("disconnected".into()));
+        }
+    }
+    value
+}
+async fn sleep_ms(ms: u32) {
+    #[cfg(target_arch = "wasm32")]
+    gloo_timers::future::TimeoutFuture::new(ms).await;
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(std::time::Duration::from_millis(u64::from(ms))).await;
 }
 
 fn is_simulated_primary(mode: &Value) -> bool {
@@ -101,50 +132,48 @@ pub(super) fn OperatingModeNotice(#[props(default = true)] visible: bool) -> Ele
     let observer = crate::auth::current_status().station_role.as_deref() == Some("rrls");
     use_future(move || async move {
         // Auth handover already returns this snapshot; do not briefly guess Normal.
-        *OPERATING_MODE_SOURCE.write() = Some((super::UrlConfig::base_http(), crate::auth::request_identity()));
-        *OPERATING_MODE.write() = crate::auth::current_status()
-            .operating_mode
-            .unwrap_or(Value::Null);
-        let mut context = (super::UrlConfig::base_http(), crate::auth::request_identity());
+        let mut base = super::UrlConfig::base_http();
+        if OPERATING_MODE_SOURCE.peek().as_deref() != Some(base.as_str()) || OPERATING_MODE.peek().is_null() {
+            *OPERATING_MODE_SOURCE.write() = Some(base.clone());
+            *OPERATING_MODE.write() = crate::auth::current_status()
+                .operating_mode
+                .unwrap_or(Value::Null);
+        }
+        // The handover snapshot counts as a fresh read for the grace window.
+        let mut last_ok_ms = (!OPERATING_MODE.peek().is_null()).then(super::monotonic_now_ms);
         loop {
-            let source = (super::UrlConfig::base_http(), crate::auth::request_identity());
-            if context != source {
+            let source = super::UrlConfig::base_http();
+            if source != base {
+                // Another station: its mode is unknown until read from it.
                 *OPERATING_MODE.write() = Value::Null;
-                *OPERATING_MODE_SOURCE.write() = None;
-                context = source.clone();
+                *OPERATING_MODE_SOURCE.write() = Some(source.clone());
+                base = source.clone();
+                last_ok_ms = None;
             }
             let response = super::http_get_json::<Value>("/api/station_mode").await;
-            if source != (super::UrlConfig::base_http(), crate::auth::request_identity()) {
-                // The next loop observes the current authority independently.
-                // A retired completion must not clear replacement metadata.
-                #[cfg(target_arch = "wasm32")]
-                gloo_timers::future::TimeoutFuture::new(2000).await;
-                #[cfg(not(target_arch = "wasm32"))]
-                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+            if source != super::UrlConfig::base_http() {
+                // A retired completion must not write another station's notice.
                 continue;
             }
-            match response {
-                Ok(value) => {
+            let now = super::monotonic_now_ms();
+            let delay = match response {
+                Ok(value) if value.is_object() => {
+                    last_ok_ms = Some(now);
                     *OPERATING_MODE_SOURCE.write() = Some(source);
-                    *OPERATING_MODE.write() = value;
-                },
-                Err(_) => {
-                    let mut value = OPERATING_MODE.read().clone();
-                    if let Some(object) = value.as_object_mut() {
-                        object.insert("synchronized".into(), Value::Bool(false));
-                        if let Some(configuration) = object.get_mut("retained_configuration").and_then(Value::as_object_mut)
-                            && configuration.get("status").and_then(Value::as_str) != Some("unknown")
-                        {
-                            configuration.insert("status".into(), Value::String("disconnected".into()));
-                        }
+                    if *OPERATING_MODE.peek() != value {
+                        *OPERATING_MODE.write() = value;
                     }
-                    *OPERATING_MODE.write() = value;
+                    MODE_POLL_MS
                 }
-            }
-            #[cfg(target_arch = "wasm32")]
-            gloo_timers::future::TimeoutFuture::new(2000).await;
-            #[cfg(not(target_arch = "wasm32"))]
-            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                _ => {
+                    let value = after_failed_poll(OPERATING_MODE.peek().clone(), last_ok_ms, now);
+                    if *OPERATING_MODE.peek() != value {
+                        *OPERATING_MODE.write() = value;
+                    }
+                    MODE_RETRY_MS
+                }
+            };
+            sleep_ms(delay).await;
         }
     });
     let mode = current_snapshot();
@@ -159,6 +188,21 @@ pub(super) fn OperatingModeNotice(#[props(default = true)] visible: bool) -> Ele
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn one_failed_poll_keeps_the_synchronized_mode_until_the_grace_expires() {
+        let mode = serde_json::json!({"effective_mode":"test_fire","synchronized":true,
+            "retained_configuration":{"mode":"test_fire","status":"current"}});
+        let held = after_failed_poll(mode.clone(), Some(10_000.0), 10_000.0 + MODE_SYNC_GRACE_MS);
+        assert_eq!(held, mode);
+        assert_eq!(description(&held, false), "Operating mode: Test fire");
+        let expired = after_failed_poll(mode.clone(), Some(10_000.0), 10_001.0 + MODE_SYNC_GRACE_MS);
+        assert_eq!(expired["effective_mode"], "test_fire", "never cleared or guessed");
+        assert!(description(&expired, false).contains("last known; not synchronized"));
+        assert_eq!(expired["retained_configuration"]["status"], "disconnected");
+        let never = after_failed_poll(mode.clone(), None, 0.0);
+        assert_eq!(never["synchronized"], false, "no successful poll yet is not synchronized");
+        assert_eq!(after_failed_poll(Value::Null, None, 0.0), Value::Null);
+    }
     #[test]
     fn retained_settings_are_labeled_and_never_inherited_by_another_mode() {
         let mut mode=serde_json::json!({"effective_mode":"hitl","retained_configuration":{"mode":"hitl","status":"current","settings":[false,true,null,false],"source_revision":9,"record_generation":2}});
