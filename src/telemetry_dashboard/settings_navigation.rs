@@ -148,6 +148,22 @@ impl InputSelectionStatus {
     pub(super) fn pending(&self) -> bool {
         matches!(self, Self::Pending(_))
     }
+    /// An unconfirmed write (for example one the station refused with 409
+    /// while a board reset closed admission) does not block the operator:
+    /// any explicit choice, the same input or the other one, is sent as a new
+    /// write whose response settles it. Only a write still in flight waits.
+    pub(super) fn accepts_request(&self) -> bool {
+        !self.pending()
+    }
+    /// A station readback that settles an unconfirmed write: the station
+    /// reports its own saved selection and the DAQ's reports agree with it
+    /// ("synced"). Calibration then follows the input both actually use.
+    pub(super) fn resolved_by_readback(&self, status: &Kg50BoardStatus) -> Option<Self> {
+        (matches!(self, Self::Unconfirmed { .. })
+            && status.state == "synced"
+            && known_input(&status.selected))
+            .then(|| Self::Confirmed(status.selected.clone()))
+    }
 }
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct CalibrationContext {
@@ -175,6 +191,18 @@ impl CalibrationContext {
     }
     pub(super) fn captures_blocked(self) -> bool {
         self.selection.read().captures_blocked() || !self.owner_current()
+    }
+    /// Settle an unconfirmed write from a station readback taken while the
+    /// selection epoch stayed `epoch`. Returns the confirmed input.
+    pub(super) fn settle_from_readback(mut self, epoch: u64, status: &Kg50BoardStatus) -> Option<String> {
+        if *self.input_epoch.peek() != epoch || !self.owner_current() {
+            return None;
+        }
+        let next = self.selection.peek().resolved_by_readback(status)?;
+        let InputSelectionStatus::Confirmed(input) = &next else { return None; };
+        let input = input.clone();
+        self.selection.set(next);
+        Some(input)
     }
     /// A fresh read can replace a KNOWN prior selection, never acknowledge an
     /// uncertain or pending write. Called only by explicit page Reload.
@@ -369,13 +397,8 @@ pub(super) fn use_calibration_context(abort_only: Signal<bool>) -> CalibrationCo
                 "The previous input operation belongs to a retired station or account. Confirm this station's current input with a new explicit action.".into()));
             return;
         }
-        match &*selection.peek() {
-            InputSelectionStatus::Pending(_) => return,
-            InputSelectionStatus::Unconfirmed {
-                requested: previous,
-                ..
-            } if previous != &requested => return,
-            _ => {}
+        if !selection.peek().accepts_request() {
+            return;
         }
         let request_alive = alive.clone();
         let owner = match super::recording_download::ExportOwner::capture_ordinary_selected(move || {

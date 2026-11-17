@@ -2216,12 +2216,19 @@ pub(super) fn Kg50InputSelector(
     use_future(move || async move {
         loop {
             // The board's own report, read even while a selection is in flight.
-            board.set(
-                settings_owner
-                    .get::<super::settings_navigation::Kg50BoardStatus>("/api/calibration/kg50_input")
-                    .await
-                    .ok(),
-            );
+            let readback_epoch = *selection.input_epoch.peek();
+            let status = settings_owner
+                .get::<super::settings_navigation::Kg50BoardStatus>("/api/calibration/kg50_input")
+                .await
+                .ok();
+            // A refused or unconfirmed write is settled by the station's own
+            // saved selection once the DAQ reports the same input.
+            if let Some(status) = &status
+                && let Some(confirmed) = selection.settle_from_readback(readback_epoch, status)
+            {
+                input.set(Some(confirmed));
+            }
+            board.set(status);
             let original_epoch = *selection.input_epoch.peek();
             if !selection.selection.peek().pending()
                 && let Ok(cfg) = settings_owner
@@ -2258,7 +2265,6 @@ pub(super) fn Kg50InputSelector(
     });
     let status = selection.selection.read().clone();
     let busy = status.pending();
-    let unknown = matches!(status, InputSelectionStatus::Unconfirmed { .. });
     let selected = input.read().clone().unwrap_or_default();
     let board_status = board.read().clone();
     let board_confirmed = board_status.as_ref().is_some_and(|status| status.state == "synced");
@@ -2275,11 +2281,11 @@ pub(super) fn Kg50InputSelector(
             select {
                 key: "{view}",
                 id: "kg50-input",value:"{selected}",
-                disabled:disabled||busy||unknown||input.read().is_none(),
+                disabled:disabled||busy||input.read().is_none(),
                 style:"padding:8px;border-radius:6px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;max-width:100%;",
                 onchange:move |event|{
                     let requested=event.value();
-                    if !settings_owner.current()||disabled||busy||unknown||input.peek().is_none(){return;}
+                    if !settings_owner.current()||disabled||busy||input.peek().is_none(){return;}
                     selection.request.call(requested);
                 },
                 if selected.is_empty() {option {value:"",disabled:true,"Input selection unavailable"}}

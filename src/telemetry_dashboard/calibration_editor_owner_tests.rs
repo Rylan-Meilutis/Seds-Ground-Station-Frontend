@@ -89,3 +89,66 @@ fn explicit_read_retry_never_acknowledges_pending_or_uncertain_input_writes() {
         );
     });
 }
+
+fn readback(selected: &str, state: &str) -> Kg50BoardStatus {
+    Kg50BoardStatus {
+        selected: selected.into(),
+        board_input: Some(selected.into()),
+        board_age_ms: Some(100),
+        state: state.into(),
+    }
+}
+
+#[test]
+fn refused_input_write_stays_retryable_for_either_input() {
+    let refused = InputSelectionStatus::Unconfirmed {
+        requested: "amp2".into(),
+        detail: "HTTP 409: Recovery admission is closed or request is stale".into(),
+    };
+    assert!(refused.accepts_request(), "the same or the other input can be sent again");
+    assert!(!InputSelectionStatus::Pending("amp2".into()).accepts_request());
+    assert!(InputSelectionStatus::Confirmed("amp2".into()).accepts_request());
+}
+
+#[test]
+fn synced_station_readback_settles_an_unconfirmed_write() {
+    let refused = InputSelectionStatus::Unconfirmed {
+        requested: "amp2".into(),
+        detail: "HTTP 409".into(),
+    };
+    assert_eq!(
+        refused.resolved_by_readback(&readback("p6_differential", "synced")),
+        Some(InputSelectionStatus::Confirmed("p6_differential".into()))
+    );
+    assert!(!refused
+        .resolved_by_readback(&readback("p6_differential", "synced"))
+        .unwrap()
+        .captures_blocked());
+    assert_eq!(refused.resolved_by_readback(&readback("amp2", "syncing")), None);
+    assert_eq!(refused.resolved_by_readback(&readback("amp2", "mismatch")), None);
+    assert_eq!(refused.resolved_by_readback(&readback("bogus", "synced")), None);
+    // Only an unconfirmed write is settled this way; nothing replaces a
+    // write in flight or a retired owner's state.
+    assert_eq!(InputSelectionStatus::Pending("amp2".into()).resolved_by_readback(&readback("amp2", "synced")), None);
+    assert_eq!(InputSelectionStatus::Retired("x".into()).resolved_by_readback(&readback("amp2", "synced")), None);
+}
+
+#[test]
+fn readback_settles_only_in_the_epoch_it_was_taken() {
+    let mut dom = VirtualDom::new(|| rsx! { div {} });
+    dom.rebuild_in_place();
+    dom.in_scope(ScopeId::ROOT, || {
+        let context = CalibrationContext {
+            input_epoch: Signal::new(4),
+            selection: Signal::new(InputSelectionStatus::Unconfirmed { requested: "amp2".into(), detail: "HTTP 409".into() }),
+            locked: Signal::new(false),
+            request: EventHandler::new(|_: String| {}),
+            retained_owner: Signal::new(None),
+            abort_only: Signal::new(false),
+        };
+        assert_eq!(context.settle_from_readback(3, &readback("amp2", "synced")), None, "older epoch");
+        assert!(context.captures_blocked());
+        assert_eq!(context.settle_from_readback(4, &readback("amp2", "synced")), Some("amp2".into()));
+        assert!(!context.captures_blocked());
+    });
+}
