@@ -43,6 +43,11 @@ fn same_retirement(a: &RetiredDialog, b: &RetiredDialog) -> bool {
     std::sync::Arc::ptr_eq(&a.identity, &b.identity)
 }
 
+/// The command awaiting the operator's confirmation, if any.
+pub(super) fn pending_command() -> Option<String> {
+    PENDING.read().as_ref().map(|pending| pending.command.clone())
+}
+
 pub(super) fn request(command: &str, owner: super::CommandOwner, dispatch: fn(&str, super::CommandOwner)) {
     let message = match command {
         "ResetFlightState" => {

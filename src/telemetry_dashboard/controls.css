@@ -94,6 +94,10 @@
    shared one-line control height; neighbouring action rows must never overlap. */
 .gs26-dashboard-shell button.gs26-action-control {height:auto !important;min-height:44px !important;row-gap:6px;align-content:center}
 .gs26-action-copy {min-width:0;overflow-wrap:anywhere}
+/* Actions section headers: full-width toggles that grow to fit their label,
+   count and badge when they wrap on narrow screens. */
+.gs26-dashboard-shell button.gs26-action-section-toggle {height:auto !important;min-height:44px !important;padding:8px 12px !important;line-height:1.3 !important;white-space:normal}
+.gs26-action-section-toggle:focus-visible {outline:2px solid #6ec9ed;outline-offset:2px}
 .gs26-action-badge {max-width:100%;box-sizing:border-box;white-space:normal;overflow-wrap:anywhere}
 
 /* Actions page: status lines read as quiet notes, sections as cards. The

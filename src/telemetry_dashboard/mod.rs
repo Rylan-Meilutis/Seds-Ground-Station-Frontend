@@ -4,6 +4,7 @@
 
 mod neutral_request_owner;
 mod accel_display_filter;
+mod action_sections;
 mod actions_tab;
 mod self_test_confirmation;
 mod alert_conditions;

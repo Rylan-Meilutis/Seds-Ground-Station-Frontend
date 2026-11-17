@@ -550,6 +550,28 @@ pub struct ActionSpec {
     pub spacer_row_before: bool,
     #[serde(default)]
     pub spacer_row_after: bool,
+    /// Actions-tab section the backend assigns this command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<ActionSection>,
+}
+
+/// Actions-tab section (GroundStation `sequences::ControlSection`); see
+/// `action_sections` for per-mode order and collapsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionSection {
+    Safety,
+    FillSystem,
+    Sequences,
+    FlightComputer,
+    AvBay,
+    Recovery,
+    DaqRecording,
+    Testing,
+    /// An action the layout gave no known section (a custom or older layout,
+    /// or a section this client does not know). Never dropped: shown open.
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -2,9 +2,11 @@
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::auth;
 
+use super::action_sections::{self as sections, ActionSection, ControlActivity, SectionSummary};
 use super::blink::{ACTION_BLINK_CSS, action_animation_style};
 use super::layout::{ActionSpec, ActionsTabLayout, ThemeConfig};
 use super::{
@@ -24,7 +26,7 @@ fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
         ("Turbocharge", "Turbocharge"),
     ] {
         if !actions.iter().any(|action| action.cmd == cmd) {
-            actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
+            actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","section":"sequences","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
         }
     }
 }
@@ -794,6 +796,81 @@ pub(super) fn isolation_confirmation_request(
 }
 pub(super) const ISOLATION_CONFIRMATION_PATH: &str = "/api/gse/self-test-confirmation";
 
+const GSE_SEQUENCE_GROUP: &str = "GSE sequence actions";
+
+/// Whether an action button can be pressed: unchanged gating, shared by the
+/// button and its section header count.
+fn action_enabled(action_cmd: &str, dispatch_cmd: &str, policy: &ActionPolicyMsg, self_test_confirmed: bool, abort_only_mode: bool) -> bool {
+    action_policy_control_enabled(policy, dispatch_cmd)
+        && auth::can_send_command(dispatch_cmd)
+        && (action_cmd != "ValveSelfTest" || self_test_confirmed)
+        && (!abort_only_mode || action_cmd == "Abort")
+}
+
+fn action_blink(cmd: &str, control: Option<&super::ActionControl>, sequence: Option<super::sequence_indicator::Progress>) -> BlinkMode {
+    if cosmetic_output_action(cmd) || sequence == Some(super::sequence_indicator::Progress::Unknown) {
+        BlinkMode::None
+    } else {
+        control.map(|c| c.blink).unwrap_or(BlinkMode::None)
+    }
+}
+
+/// What one control contributes to its section header. `pending` covers a
+/// press awaiting confirmation, a sent press, a request queued at the primary
+/// or a held supply gesture; `rejected`, a request the primary refused.
+fn control_activity(
+    enabled: bool,
+    blink: BlinkMode,
+    sequence: Option<super::sequence_indicator::Progress>,
+    progress: Option<&super::control_progress::ProgressView>,
+    pending: bool,
+    rejected: bool,
+) -> ControlActivity {
+    use super::sequence_indicator::Progress;
+    ControlActivity {
+        enabled,
+        busy: pending
+            || progress.is_some_and(|p| p.busy)
+            || matches!(sequence, Some(Progress::Running | Progress::Paused)),
+        prompt: enabled && blink != BlinkMode::None,
+        attention: rejected || progress.is_some_and(|p| matches!(p.state, "failed" | "unconfirmed")),
+    }
+}
+
+/// Alerts shown inside a section that its header must still signal when
+/// collapsed (overpressure, tank sensor fault, a GSE abort).
+fn section_alert(section: ActionSection, status: &serde_json::Value) -> bool {
+    let overpressure = status["overpressure_latched"].as_bool().unwrap_or(false);
+    match section {
+        ActionSection::FillSystem => overpressure,
+        ActionSection::Sequences => overpressure
+            || super::gse_panel::tank_sensor_fault(&status["overpressure"]).is_some()
+            || status["request_gate"]["flight_state"].as_str() == Some("Aborted")
+            || status["automatic_abort_claimed"].as_bool().unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn proxy_request_state(cmd: &str, dispatch_cmd: &str) -> (bool, bool) {
+    let proxy = super::COMMAND_PROXY_STATUS.read();
+    let Some(status) = proxy.as_ref() else { return (false, false) };
+    let ours = |operation: &str| operation == cmd || operation == dispatch_cmd;
+    let pending = status.pending.as_ref().is_some_and(|request| ours(&request.operation));
+    let rejected = status.pending.is_none() && status.last.as_ref().is_some_and(|request| {
+        ours(&request.operation) && matches!(request.phase.as_str(), "rejected_by_primary" | "denied")
+    });
+    (pending, rejected)
+}
+
+fn section_header_style(theme: &ThemeConfig) -> String {
+    format!(
+        "width:100%; min-height:44px; box-sizing:border-box; display:flex; flex-wrap:wrap; align-items:center; gap:var(--gs-space-2); \
+         padding:0.5rem 0.75rem; border:1px solid {}; border-radius:var(--gs-radius); background:{}; color:{}; \
+         font:inherit; font-weight:800; text-align:left; cursor:pointer; touch-action:manipulation;",
+        theme.border_soft, theme.panel_background, theme.text_primary
+    )
+}
+
 #[component]
 pub fn ActionsTab(
     layout: ActionsTabLayout,
@@ -803,6 +880,12 @@ pub fn ActionsTab(
     theme: ThemeConfig,
 ) -> Element {
     let mut supply_gesture = use_signal(|| None::<SupplyGesture>);
+    // Operator open/closed choices per storage key (operator + mode), read
+    // from storage once; `section_revision` re-renders after a toggle.
+    let section_choices = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(HashMap::<String, sections::Choices>::new())));
+    let mut section_revision = use_signal(|| 0u64);
+    // Sections opened because a control was active: kept open for the session.
+    let section_latched = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::<(String, ActionSection)>::new())));
     let mut self_test_confirmation = use_signal(|| super::self_test_confirmation::Model::new(*super::WS_EPOCH.peek()));
     let mut self_test_owner = use_signal(|| None::<std::rc::Rc<super::recording_download::ExportOwner>>);
     let self_test_alive = super::recording_download::use_export_lifetime();
@@ -872,10 +955,52 @@ pub fn ActionsTab(
     } else {
         Vec::new()
     };
-    let action_rows = build_action_rows(&visible_actions);
     let mut action_policy_snapshot = action_policy.read().clone();
     super::BOARD_ABORT_SIGNAL.read().constrain_launch_policy(&mut action_policy_snapshot);
     let software_buttons_enabled = action_policy_snapshot.software_buttons_enabled;
+    let operating_mode = sections::OperatingMode::from_effective(
+        super::station_mode::current_snapshot()["effective_mode"].as_str(), false);
+    let operator = auth::current_status().username;
+    let choices_key = sections::storage_key(operator.as_deref(), operating_mode);
+    let _ = section_revision();
+    let choices = section_choices.borrow_mut().entry(choices_key.clone())
+        .or_insert_with(|| sections::load(operator.as_deref(), operating_mode)).clone();
+    let pending_confirmation = super::command_confirmation::pending_command();
+    let held_supply = match supply_gesture.read().as_ref() { Some(SupplyGesture::Armed { base, .. }) => Some(base.clone()), _ => None };
+    let mut by_section: BTreeMap<ActionSection, Vec<&ActionSpec>> = BTreeMap::new();
+    let mut summaries: BTreeMap<ActionSection, SectionSummary> = BTreeMap::new();
+    for &action in &visible_actions {
+        let section = ActionSection::of(action.section);
+        by_section.entry(section).or_default().push(action);
+        let control = action_policy_snapshot.controls.iter().find(|c| c.cmd == action.cmd);
+        let dispatch_cmd = supply_dispatch_command(&action.cmd, control.and_then(|c| c.actuated));
+        let enabled = action_enabled(&action.cmd, dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode);
+        let sequence = SEQUENCE_INDICATOR_COMMANDS.iter().position(|command| *command == action.cmd)
+            .and_then(|index| displayed_sequence.read()[index]);
+        let progress = super::control_progress::view(control.and_then(|c| c.progress.as_ref()));
+        let (proxy_pending, proxy_rejected) = proxy_request_state(&action.cmd, dispatch_cmd);
+        let pending = proxy_pending
+            || super::command_feedback_active(dispatch_cmd)
+            || pending_confirmation.as_deref().is_some_and(|cmd| cmd == action.cmd || cmd == dispatch_cmd)
+            || held_supply.as_deref() == Some(action.cmd.as_str())
+            || (action.cmd == "ValveSelfTest" && self_test_confirmation.read().busy());
+        summaries.entry(section).or_default().add(control_activity(
+            enabled, action_blink(&action.cmd, control, sequence), sequence, progress.as_ref(), pending, proxy_rejected));
+    }
+    let present: BTreeSet<ActionSection> = by_section.keys().copied().collect();
+    let section_views: Vec<(ActionSection, bool, SectionSummary, Vec<ActionLayoutRow>)> = sections::arrange(operating_mode, &present)
+        .into_iter()
+        .map(|(section, default_open)| {
+            let mut summary = summaries.get(&section).copied().unwrap_or_default();
+            summary.attention |= section_alert(section, &operational_status.read());
+            let latch = (choices_key.clone(), section);
+            if summary.active() { section_latched.borrow_mut().insert(latch.clone()); }
+            let active = summary.active() || section_latched.borrow().contains(&latch);
+            let open = sections::is_open(section, default_open, sections::explicit(&choices, section), active);
+            let rows = by_section.get(&section).map(|actions| build_action_rows(actions)).unwrap_or_default();
+            (section, open, summary, rows)
+        })
+        .collect();
     rsx! {
         div {
             class: "gs26-actions-body",
@@ -891,302 +1016,341 @@ pub fn ActionsTab(
             ",
             style { "{ACTION_BLINK_CSS}" }
             h2 { style: "margin:0; color:{theme.text_primary}; font-size:var(--gs-text-lg);", "{translate_text(\"Actions\")}" }
-            super::board_abort_readiness::BoardAbortReadiness {show_hitl_interlocks:true}
-            section {"aria-label":"Recovery actions",class:"gs26-actions-stack",
-                super::recovery_status::RecoveryStatus {}
-                super::recovery_marker::RecoveryMarker {}
-            }
-            if auth::current_status().station_role.as_deref() == Some("rrls") {
-                p {role:"status",
-                    {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), true)}
-                }
-            }
-            if auth::current_status().station_role.as_deref() == Some("rrls") {
-                p { role:"status",
-                    {primary_proxy_message(super::COMMAND_PROXY_STATUS.read().as_ref())}
-                }
-                if let Some(status) = super::COMMAND_PROXY_STATUS.read().as_ref().filter(|status| !status.available) {
-                    p {role:"status", "Primary command control unavailable: {status.reason}"}
-                    if super::settings_navigation::proxy_needs_pairing(status.paired, &status.reason) {
-                        super::settings_navigation::StationPairingShortcut {}
+            for (section, open, summary, rows) in section_views.iter() {
+                section {
+                    key: "{section.id()}",
+                    class: "gs26-action-section",
+                    "data-section": section.id(),
+                    "aria-labelledby": "gs26-actions-section-{section.id()}-heading",
+                    style: "display:flex; flex-direction:column; gap:var(--gs-space-3); width:100%; min-width:0; box-sizing:border-box;",
+                    if section.collapsible() {
+                        h3 { style: "margin:0; min-width:0;",
+                            button {
+                                r#type: "button",
+                                id: "gs26-actions-section-{section.id()}-heading",
+                                class: "gs26-action-section-toggle",
+                                "aria-expanded": if *open { "true" } else { "false" },
+                                "aria-controls": "gs26-actions-section-{section.id()}",
+                                "data-badge": summary.badge().unwrap_or(""),
+                                style: "{section_header_style(&theme)}",
+                                onclick: {
+                                    let section = *section;
+                                    let open = *open;
+                                    let key = choices_key.clone();
+                                    let store = section_choices.clone();
+                                    let operator = operator.clone();
+                                    move |_| {
+                                        let mut cache = store.borrow_mut();
+                                        let choices = cache.entry(key.clone()).or_default();
+                                        sections::toggle(choices, section, open);
+                                        sections::save(operator.as_deref(), operating_mode, choices);
+                                        drop(cache);
+                                        section_revision += 1;
+                                    }
+                                },
+                                span { "aria-hidden": "true", style: "flex:0 0 auto; width:1em;", if *open { "▾" } else { "▸" } }
+                                span { style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere;", "{translate_text(section.label())}" }
+                                span { class: "gs26-action-section-count", style: "flex:0 0 auto; font-size:var(--gs-text-xs); font-weight:600; color:{theme.text_muted};", "{summary.count_label()}" }
+                                if let Some(badge) = summary.badge() {
+                                    span {
+                                        class: "gs26-action-section-badge",
+                                        style: "flex:0 0 auto; padding:0.14rem 0.5rem; border-radius:999px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:0.68rem; font-weight:800; line-height:1.2; text-transform:uppercase; letter-spacing:0.04em;",
+                                        "{translate_text(badge)}"
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        h3 { id: "gs26-actions-section-{section.id()}-heading", class: "gs-section-label", style: "margin:0;", "{translate_text(section.label())}" }
                     }
-                }
-                if let Some(message) = super::COMMAND_PROXY_MESSAGE.read().clone() {
-                    p {role:"status", "{message}"}
-                }
-            }
-            if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {
-                div {role:"alert",style:"padding:10px 12px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};font-size:0.95rem;line-height:1.45;min-width:0;max-width:100%;overflow-wrap:anywhere;box-sizing:border-box;","{error}"}
-            }
-            if abort_only_mode {
-                p {class:"gs-notice gs-notice--danger",
-                    "{translate_text(\"Disable Actions is enabled. All action and flight-state buttons except Abort are disabled.\")}"
-                }
-            }
-            if !software_buttons_enabled {
-                p {class:"gs-notice gs-notice--warn",
-                    "{action_buttons_disabled_message(&action_policy.read())}"
-                }
-            }
-            div {class:"gs26-actions-row",style:"display:flex;flex-wrap:wrap;gap:var(--gs-space-2);align-items:center;",
-                super::board_recovery_panel::ResetAllBoards {}
-                UnavailableControls {policy:action_policy_snapshot.clone(),actions:visible_actions.iter().map(|action|(action.cmd.clone(),action.label.clone())).collect(),theme:theme.clone()}
-            }
-            if visible_actions.is_empty() {
-                div {
-                    style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background}; color:{theme.text_muted}; font-size:13px;",
-                    "{translate_text(\"No actions are available for this user.\")}"
-                }
-            } else {
-                div {
-                    style: "
-                        display:flex;
-                        flex-direction:column;
-                        gap:var(--gs-space-3);
-                        width:100%;
-                        max-width:none;
-                        box-sizing:border-box;
-                        align-self:stretch;
-                    ",
-                    for row in action_rows.iter() {
-                        match row {
-                            ActionLayoutRow::Heading(label) => rsx! {
-                                h3 {class:"gs-section-label","{label}"}
-                                if *label=="GSE sequence actions" {
-                                    if auth::current_status().station_role.as_deref()==Some("rrls") {
-                                        p {"Pressure limits, dry self-test confirmation and qualification changes must be made at the primary ground station."}
-                                    }
-                                    if operational_status.read()["overpressure_latched"].as_bool().unwrap_or(false) {
-                                        super::gse_panel::OverpressureAcknowledge {
-                                            latched: true,
-                                            peak_psi: operational_status.read()["overpressure"]["peak_psi"].as_f64(),
-                                            detail: operational_status.read()["overpressure"]["message"].as_str().unwrap_or_default().to_string(),
-                                        }
-                                    }
-                                    super::gse_panel::TankSensorFault { detail: super::gse_panel::tank_sensor_fault(&operational_status.read()["overpressure"]).unwrap_or_default() }
-                                    if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
-                                    super::gse_panel::InfoNote {summary:"Before the valve test",paragraphs:vec!["Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test.".into()]}
-                                    label {for confirm_key in [format!("self-test-confirm-{}-{}", self_test_confirmation.read().serial(), self_test_confirmation.read().busy())] {input {key:"{confirm_key}",r#type:"checkbox",checked:self_test_confirmation.read().confirmed(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||self_test_confirmation.read().busy()||self_test_confirmation.read().exhausted()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:{let self_test_alive=self_test_alive.clone();move |event| {
-                                        if abort_only_mode||auth::current_status().station_role.as_deref()==Some("rrls")||!auth::can_send_command("ValveSelfTest") {return;}
-                                        let mut next=self_test_confirmation.peek().clone();
-                                        let ticket=next.begin(event.checked(),*super::WS_EPOCH.peek(),super::monotonic_now_ms());
-                                        self_test_confirmation.set(next);
-                                        let Some(ticket)=ticket else{return;};
-                                        let alive=self_test_alive.clone();
-                                        let selected=self_test_confirmation;
-                                        let captured=isolation_confirmation_request(ticket.desired,move || alive.load(std::sync::atomic::Ordering::Acquire)&&selected.try_peek().is_ok_and(|model|model.owns(ticket)));
-                                        let (owner,request)=match captured {Ok(captured)=>captured,Err(error)=>{let mut next=self_test_confirmation.peek().clone();next.finish(ticket,Err(error),super::monotonic_now_ms());self_test_confirmation.set(next);return;}};
-                                        self_test_owner.set(Some(owner.clone()));
-                                        spawn(async move {
-                                            let result=request.await;
-                                            if !owner.is_current(){return;}
-                                            let mut next=self_test_confirmation.peek().clone();
-                                            if next.finish(ticket,result.map(|_|()),super::monotonic_now_ms()){self_test_confirmation.set(next);}
-                                        });
-                                    }}}} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
-                                    p {role:"status","{self_test_confirmation.read().notice.text()}"}
-                                    super::gse_panel::QualificationStatus {status:operational_status,disabled:abort_only_mode}
-                                    super::gse_panel::HitlNitrogenOverride {status:operational_status,disabled:abort_only_mode}
-                                    details {summary {"Sequence diagnostics"} p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}}
+                    if *open {
+                        div {
+                            id: "gs26-actions-section-{section.id()}",
+                            style: "display:flex; flex-direction:column; gap:var(--gs-space-3); width:100%; max-width:none; min-width:0; box-sizing:border-box; align-self:stretch;",
+                            if *section == ActionSection::Safety {
+                            super::board_abort_readiness::BoardAbortReadiness {show_hitl_interlocks:true}
+                            section {"aria-label":"Recovery actions",class:"gs26-actions-stack",
+                                super::recovery_status::RecoveryStatus {}
+                                super::recovery_marker::RecoveryMarker {}
+                            }
+                            if auth::current_status().station_role.as_deref() == Some("rrls") {
+                                p {role:"status",
+                                    {super::station_mode::description(&super::station_mode::OPERATING_MODE.read(), true)}
                                 }
-                            },
-                            ActionLayoutRow::ColdFlow => rsx! {
-                                super::cold_flow::AutoColdFlow {status:shared_sequence_status,disabled:abort_only_mode,theme:theme.clone()}
-                            },
-                            ActionLayoutRow::Spacer => rsx! {
-                                div {
-                                    style: "height:var(--gs-space-1);"
+                            }
+                            if auth::current_status().station_role.as_deref() == Some("rrls") {
+                                p { role:"status",
+                                    {primary_proxy_message(super::COMMAND_PROXY_STATUS.read().as_ref())}
                                 }
-                            },
-                            ActionLayoutRow::Items(items) => rsx! {
-                                div {
-                                    style: "
-                                        display:grid;
-                                        grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-                                        gap:var(--gs-space-3);
-                                        align-items:stretch;
-                                        width:100%;
-                                        max-width:none;
-                                        box-sizing:border-box;
-                                    ",
-                                    for item in items.iter() {
-                                        match item {
-                                            ActionRowItem::Spacer => rsx! {
-                                                div {
-                                                    style: "min-width:32px;"
+                                if let Some(status) = super::COMMAND_PROXY_STATUS.read().as_ref().filter(|status| !status.available) {
+                                    p {role:"status", "Primary command control unavailable: {status.reason}"}
+                                    if super::settings_navigation::proxy_needs_pairing(status.paired, &status.reason) {
+                                        super::settings_navigation::StationPairingShortcut {}
+                                    }
+                                }
+                                if let Some(message) = super::COMMAND_PROXY_MESSAGE.read().clone() {
+                                    p {role:"status", "{message}"}
+                                }
+                            }
+                            if let Some(error) = super::COMMAND_SEND_ERROR.read().clone() {
+                                div {role:"alert",style:"padding:10px 12px;border-radius:8px;color:{theme.error_text};background:{theme.error_background};border:1px solid {theme.error_border};font-size:0.95rem;line-height:1.45;min-width:0;max-width:100%;overflow-wrap:anywhere;box-sizing:border-box;","{error}"}
+                            }
+                            if abort_only_mode {
+                                p {class:"gs-notice gs-notice--danger",
+                                    "{translate_text(\"Disable Actions is enabled. All action and flight-state buttons except Abort are disabled.\")}"
+                                }
+                            }
+                            if !software_buttons_enabled {
+                                p {class:"gs-notice gs-notice--warn",
+                                    "{action_buttons_disabled_message(&action_policy.read())}"
+                                }
+                            }
+                            div {class:"gs26-actions-row",style:"display:flex;flex-wrap:wrap;gap:var(--gs-space-2);align-items:center;",
+                                super::board_recovery_panel::ResetAllBoards {}
+                                UnavailableControls {policy:action_policy_snapshot.clone(),actions:visible_actions.iter().map(|action|(action.cmd.clone(),action.label.clone())).collect(),theme:theme.clone()}
+                            }
+                                if visible_actions.is_empty() {
+                                    div {
+                                        style: "padding:12px; border:1px solid {theme.border}; border-radius:12px; background:{theme.panel_background}; color:{theme.text_muted}; font-size:13px;",
+                                        "{translate_text(\"No actions are available for this user.\")}"
+                                    }
+                                }
+                            }
+                            for row in rows.iter() {
+                                match row {
+                                    ActionLayoutRow::Heading(label) => rsx! {
+                                        if *label==GSE_SEQUENCE_GROUP {
+                                            h4 {class:"gs-section-label",style:"margin:0;","{label}"}
+                                            if auth::current_status().station_role.as_deref()==Some("rrls") {
+                                                p {"Pressure limits, dry self-test confirmation and qualification changes must be made at the primary ground station."}
+                                            }
+                                            if operational_status.read()["overpressure_latched"].as_bool().unwrap_or(false) {
+                                                super::gse_panel::OverpressureAcknowledge {
+                                                    latched: true,
+                                                    peak_psi: operational_status.read()["overpressure"]["peak_psi"].as_f64(),
+                                                    detail: operational_status.read()["overpressure"]["message"].as_str().unwrap_or_default().to_string(),
                                                 }
-                                            },
-                                            ActionRowItem::Action(action) => {
-                                                let control = action_policy_snapshot
-                                                    .controls
-                                                    .iter()
-                                                    .find(|c| c.cmd == action.cmd)
-                                                    .cloned();
-                                                let is_supply = matches!(action.cmd.as_str(), "Nitrogen" | "Nitrous");
-                                                let dispatch_cmd = supply_dispatch_command(&action.cmd, control.as_ref().and_then(|c| c.actuated)).to_owned();
-                                                let dispatch_control = action_policy_snapshot.controls.iter().find(|c| c.cmd == dispatch_cmd);
-                                                let enabled = action_policy_control_enabled(&action_policy_snapshot, &dispatch_cmd)
-                                                    && auth::can_send_command(&dispatch_cmd)
-                                                    && (action.cmd!="ValveSelfTest" || self_test_confirmation.read().confirmed())
-                                                    && (!abort_only_mode || action.cmd == "Abort")
-                                                ;
-                                                // Every disabled action shows why (Launch included), not only
-                                                // the GSE sequence group.
-                                                let proxy_reason = auth::primary_proxy_unavailable_reason(&dispatch_cmd);
-                                                let disabled_reason = if enabled {
-                                                    None
-                                                } else if let Some(reason) = proxy_reason.as_deref() {
-                                                    Some(reason)
-                                                } else if !auth::can_send_command(&dispatch_cmd) {
-                                                    Some("Not permitted by your account")
-                                                } else if abort_only_mode {
-                                                    Some("Actions Disabled is on (header toggle)")
-                                                } else if let Some(reason) = dispatch_control.and_then(backend_disabled_reason) {
-                                                    Some(reason)
-                                                } else if !action_policy_snapshot.software_buttons_enabled {
-                                                    Some("Software controls disabled by backend")
-                                                } else if dispatch_control.is_none() {
-                                                    Some("Command missing from backend policy")
-                                                } else if !dispatch_control.unwrap().enabled {
-                                                    Some("Disabled by GroundStation")
-                                                } else if action.cmd=="ValveSelfTest" {
-                                                    Some("Confirm dry valve self-test first")
-                                                } else {
-                                                    None
-                                                };
-                                                let reason_text = disabled_reason.unwrap_or("");
+                                            }
+                                            super::gse_panel::TankSensorFault { detail: super::gse_panel::tank_sensor_fault(&operational_status.read()["overpressure"]).unwrap_or_default() }
+                                            if operational_status.read()["request_gate"]["flight_state"].as_str() == Some("Aborted") || operational_status.read()["automatic_abort_claimed"].as_bool().unwrap_or(false) {super::gse_panel::ClearGseAbort {}}
+                                            super::gse_panel::InfoNote {summary:"Before the valve test",paragraphs:vec!["Set the empty-tank PT acceptance limit in Settings → Ground Station → GSE limits and plumbing before starting the valve test.".into()]}
+                                            label {for confirm_key in [format!("self-test-confirm-{}-{}", self_test_confirmation.read().serial(), self_test_confirmation.read().busy())] {input {key:"{confirm_key}",r#type:"checkbox",checked:self_test_confirmation.read().confirmed(),disabled:auth::current_status().station_role.as_deref()==Some("rrls")||self_test_confirmation.read().busy()||self_test_confirmation.read().exhausted()||abort_only_mode||!auth::can_send_command("ValveSelfTest"),onchange:{let self_test_alive=self_test_alive.clone();move |event| {
+                                                if abort_only_mode||auth::current_status().station_role.as_deref()==Some("rrls")||!auth::can_send_command("ValveSelfTest") {return;}
+                                                let mut next=self_test_confirmation.peek().clone();
+                                                let ticket=next.begin(event.checked(),*super::WS_EPOCH.peek(),super::monotonic_now_ms());
+                                                self_test_confirmation.set(next);
+                                                let Some(ticket)=ticket else{return;};
+                                                let alive=self_test_alive.clone();
+                                                let selected=self_test_confirmation;
+                                                let captured=isolation_confirmation_request(ticket.desired,move || alive.load(std::sync::atomic::Ordering::Acquire)&&selected.try_peek().is_ok_and(|model|model.owns(ticket)));
+                                                let (owner,request)=match captured {Ok(captured)=>captured,Err(error)=>{let mut next=self_test_confirmation.peek().clone();next.finish(ticket,Err(error),super::monotonic_now_ms());self_test_confirmation.set(next);return;}};
+                                                self_test_owner.set(Some(owner.clone()));
+                                                spawn(async move {
+                                                    let result=request.await;
+                                                    if !owner.is_current(){return;}
+                                                    let mut next=self_test_confirmation.peek().clone();
+                                                    if next.finish(ticket,result.map(|_|()),super::monotonic_now_ms()){self_test_confirmation.set(next);}
+                                                });
+                                            }}}} " Unlock dry valve self-test: I confirm gas supplies are isolated and the area is clear" }
+                                            p {role:"status","{self_test_confirmation.read().notice.text()}"}
+                                            super::gse_panel::QualificationStatus {status:operational_status,disabled:abort_only_mode}
+                                            super::gse_panel::HitlNitrogenOverride {status:operational_status,disabled:abort_only_mode}
+                                            details {summary {"Sequence diagnostics"} p {role:"status",style:"font-size:12px;user-select:text;", "{gse_request_gate}"}}
+                                        }
+                                    },
+                                    ActionLayoutRow::ColdFlow => rsx! {
+                                        super::cold_flow::AutoColdFlow {status:shared_sequence_status,disabled:abort_only_mode,theme:theme.clone()}
+                                    },
+                                    ActionLayoutRow::Spacer => rsx! {
+                                        div {
+                                            style: "height:var(--gs-space-1);"
+                                        }
+                                    },
+                                    ActionLayoutRow::Items(items) => rsx! {
+                                        div {
+                                            style: "
+                                                display:grid;
+                                                grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+                                                gap:var(--gs-space-3);
+                                                align-items:stretch;
+                                                width:100%;
+                                                max-width:none;
+                                                box-sizing:border-box;
+                                            ",
+                                            for item in items.iter() {
+                                                match item {
+                                                    ActionRowItem::Spacer => rsx! {
+                                                        div {
+                                                            style: "min-width:32px;"
+                                                        }
+                                                    },
+                                                    ActionRowItem::Action(action) => {
+                                                        let control = action_policy_snapshot
+                                                            .controls
+                                                            .iter()
+                                                            .find(|c| c.cmd == action.cmd)
+                                                            .cloned();
+                                                        let is_supply = matches!(action.cmd.as_str(), "Nitrogen" | "Nitrous");
+                                                        let dispatch_cmd = supply_dispatch_command(&action.cmd, control.as_ref().and_then(|c| c.actuated)).to_owned();
+                                                        let dispatch_control = action_policy_snapshot.controls.iter().find(|c| c.cmd == dispatch_cmd);
+                                                        let enabled = action_enabled(&action.cmd, &dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode);
+                                                        // Every disabled action shows why (Launch included), not only
+                                                        // the GSE sequence group.
+                                                        let proxy_reason = auth::primary_proxy_unavailable_reason(&dispatch_cmd);
+                                                        let disabled_reason = if enabled {
+                                                            None
+                                                        } else if let Some(reason) = proxy_reason.as_deref() {
+                                                            Some(reason)
+                                                        } else if !auth::can_send_command(&dispatch_cmd) {
+                                                            Some("Not permitted by your account")
+                                                        } else if abort_only_mode {
+                                                            Some("Actions Disabled is on (header toggle)")
+                                                        } else if let Some(reason) = dispatch_control.and_then(backend_disabled_reason) {
+                                                            Some(reason)
+                                                        } else if !action_policy_snapshot.software_buttons_enabled {
+                                                            Some("Software controls disabled by backend")
+                                                        } else if dispatch_control.is_none() {
+                                                            Some("Command missing from backend policy")
+                                                        } else if !dispatch_control.unwrap().enabled {
+                                                            Some("Disabled by GroundStation")
+                                                        } else if action.cmd=="ValveSelfTest" {
+                                                            Some("Confirm dry valve self-test first")
+                                                        } else {
+                                                            None
+                                                        };
+                                                        let reason_text = disabled_reason.unwrap_or("");
 
-                                                let sequence = SEQUENCE_INDICATOR_COMMANDS.iter().position(|command| *command==action.cmd)
-                                                    .and_then(|index| displayed_sequence.read()[index]);
-                                                let blink = if cosmetic_output_action(&action.cmd) || sequence == Some(super::sequence_indicator::Progress::Unknown) {
-                                                    BlinkMode::None
-                                                } else { control.as_ref().map(|c| c.blink).unwrap_or(BlinkMode::None) };
-                                                let actuated = sequence.map(|state| state.illuminated()).or_else(|| merged_actuated(
-                                                    action.cmd.as_str(),
-                                                    control.as_ref().and_then(|c| c.actuated),
-                                                    &recording_status.read(),
-                                                )).or_else(|| cosmetic_confirmed(
-                                                    action.cmd.as_str(),
-                                                    control.as_ref().and_then(|c| c.requested),
-                                                    control.as_ref().and_then(|c| c.actuated),
-                                                ));
-                                                // A timed operation the backend reports (the QD retraction):
-                                                // pulse and count down while it runs, then its outcome.
-                                                let progress = super::control_progress::view(control.as_ref().and_then(|c| c.progress.as_ref()));
-                                                let actuated = progress.as_ref().and_then(|p| p.illuminated).or(actuated);
-                                                let unconfirmed = (physical_output_action(&action.cmd) || cosmetic_output_action(&action.cmd)) && actuated.is_none() && progress.is_none();
-                                                let requested = cosmetic_requested(&action.cmd, control.as_ref().and_then(|c| c.requested), control.as_ref().and_then(|c| c.actuated));
-                                                let requested_label = match requested { Some(true) => "Requested: On", Some(false) => "Requested: Off", None => "Requested: unknown" };
-                                                let network_note = control.as_ref().filter(|_| cosmetic_output_action(&action.cmd)).and_then(|c| c.network_note.as_deref());
-                                                let (network_label, unconfirmed_badge) = cosmetic_network_labels(actuated.is_some(), network_note);
-                                                let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
-                                                let sequence_label = progress.as_ref().map(|p| p.badge).filter(|_| sequence_label.is_empty()).unwrap_or(sequence_label);
-                                                let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
-                                                let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { unconfirmed_badge } else { "Disabled" };
-                                                let progress_animation = progress.as_ref().map(|p| p.animation).unwrap_or("");
-                                                let progress_state = progress.as_ref().map(|p| p.state).unwrap_or("");
-                                                let progress_detail = progress.as_ref().map(|p| p.detail.clone()).unwrap_or_default();
-                                                let progress_busy = progress.as_ref().is_some_and(|p| p.busy);
-                                                let command_source = format!("action:{}", action.cmd);
-                                                rsx! {
-                                                    button {
-                                                        class: "gs26-action-control",
-                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\" && !physical_output_action(&action.cmd))} {progress_animation}",
-                                                        disabled: !enabled,
-                                                        aria_busy: sequence == Some(super::sequence_indicator::Progress::Running) || progress_busy,
-                                                        "data-progress": progress_state,
-                                                        "data-sequence-state": sequence_label,
-                                                        "data-dispatch-command": "{dispatch_cmd}",
-                                                        onpointerdown: {
-                                                            let cmd = dispatch_cmd.clone();
-                                                            let base = action.cmd.clone();
-                                                            let source = command_source.clone();
-                                                            move |event| {
-                                                                if enabled {
-                                                                    if is_supply && event.is_primary() && (event.pointer_type()=="touch" || event.trigger_button()==Some(dioxus::html::input_data::MouseButton::Primary)) {
-                                                                        arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Pointer { id:event.pointer_id(), touch_companion_pending:event.pointer_type()=="touch" });
+                                                        let sequence = SEQUENCE_INDICATOR_COMMANDS.iter().position(|command| *command==action.cmd)
+                                                            .and_then(|index| displayed_sequence.read()[index]);
+                                                        let blink = action_blink(&action.cmd, control.as_ref(), sequence);
+                                                        let actuated = sequence.map(|state| state.illuminated()).or_else(|| merged_actuated(
+                                                            action.cmd.as_str(),
+                                                            control.as_ref().and_then(|c| c.actuated),
+                                                            &recording_status.read(),
+                                                        )).or_else(|| cosmetic_confirmed(
+                                                            action.cmd.as_str(),
+                                                            control.as_ref().and_then(|c| c.requested),
+                                                            control.as_ref().and_then(|c| c.actuated),
+                                                        ));
+                                                        // A timed operation the backend reports (the QD retraction):
+                                                        // pulse and count down while it runs, then its outcome.
+                                                        let progress = super::control_progress::view(control.as_ref().and_then(|c| c.progress.as_ref()));
+                                                        let actuated = progress.as_ref().and_then(|p| p.illuminated).or(actuated);
+                                                        let unconfirmed = (physical_output_action(&action.cmd) || cosmetic_output_action(&action.cmd)) && actuated.is_none() && progress.is_none();
+                                                        let requested = cosmetic_requested(&action.cmd, control.as_ref().and_then(|c| c.requested), control.as_ref().and_then(|c| c.actuated));
+                                                        let requested_label = match requested { Some(true) => "Requested: On", Some(false) => "Requested: Off", None => "Requested: unknown" };
+                                                        let network_note = control.as_ref().filter(|_| cosmetic_output_action(&action.cmd)).and_then(|c| c.network_note.as_deref());
+                                                        let (network_label, unconfirmed_badge) = cosmetic_network_labels(actuated.is_some(), network_note);
+                                                        let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
+                                                        let sequence_label = progress.as_ref().map(|p| p.badge).filter(|_| sequence_label.is_empty()).unwrap_or(sequence_label);
+                                                        let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
+                                                        let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { unconfirmed_badge } else { "Disabled" };
+                                                        let progress_animation = progress.as_ref().map(|p| p.animation).unwrap_or("");
+                                                        let progress_state = progress.as_ref().map(|p| p.state).unwrap_or("");
+                                                        let progress_detail = progress.as_ref().map(|p| p.detail.clone()).unwrap_or_default();
+                                                        let progress_busy = progress.as_ref().is_some_and(|p| p.busy);
+                                                        let command_source = format!("action:{}", action.cmd);
+                                                        rsx! {
+                                                            button {
+                                                                class: "gs26-action-control",
+                                                                style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\" && !physical_output_action(&action.cmd))} {progress_animation}",
+                                                                disabled: !enabled,
+                                                                aria_busy: sequence == Some(super::sequence_indicator::Progress::Running) || progress_busy,
+                                                                "data-progress": progress_state,
+                                                                "data-sequence-state": sequence_label,
+                                                                "data-dispatch-command": "{dispatch_cmd}",
+                                                                onpointerdown: {
+                                                                    let cmd = dispatch_cmd.clone();
+                                                                    let base = action.cmd.clone();
+                                                                    let source = command_source.clone();
+                                                                    move |event| {
+                                                                        if enabled {
+                                                                            if is_supply && event.is_primary() && (event.pointer_type()=="touch" || event.trigger_button()==Some(dioxus::html::input_data::MouseButton::Primary)) {
+                                                                                arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Pointer { id:event.pointer_id(), touch_companion_pending:event.pointer_type()=="touch" });
+                                                                            }
+                                                                            super::command_pointer_down_event(&source, &cmd, &event, false);
+                                                                        }
                                                                     }
-                                                                    super::command_pointer_down_event(&source, &cmd, &event, false);
+                                                                },
+                                                                onpointerup: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_pointer_up_event(&source,&event); if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), false); } } },
+                                                                onpointercancel: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_pointer_cancel_event(&source,&event); if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), true); } } },
+                                                                onmousedown: {
+                                                                    let cmd = dispatch_cmd.clone();
+                                                                    let source = command_source.clone();
+                                                                    move |event| { if enabled { super::command_mouse_down_event(&source, &cmd, &event, false); } }
+                                                                },
+                                                                onmouseup: {let source=command_source.clone();move |event|{super::command_mouse_up_event(&source,&event);}},
+                                                                ontouchstart: {
+                                                                    let cmd = dispatch_cmd.clone();
+                                                                    let base = action.cmd.clone();
+                                                                    let source = command_source.clone();
+                                                                    move |event| {
+                                                                        if enabled {
+                                                                            let single = event.touches().len()==1;
+                                                                            if is_supply && single { arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Touch); }
+                                                                            super::command_touch_start_event(&source, &cmd, &event, false);
+                                                                        }
+                                                                    }
+                                                                },
+                                                                ontouchend: {let source=command_source.clone();move |event|{super::command_touch_end_event(&source,&event);}},
+                                                                ontouchcancel: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_touch_cancel_event(&source,&event); if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
+                                                                onmouseleave: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
+                                                                onblur: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
+                                                                onkeydown: {
+                                                                    let cmd = dispatch_cmd.clone();
+                                                                    let base = action.cmd.clone();
+                                                                    let source = command_source.clone();
+                                                                    move |event| {
+                                                                        let key = event.key();
+                                                                        if matches!(key, Key::Escape | Key::Tab) {
+                                                                            if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); }
+                                                                        } else if !event.is_auto_repeating() && (key==Key::Enter || key.to_string()==" ") && enabled {
+                                                                            if is_supply { arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Keyboard); }
+                                                                            super::command_key_down_event(&source, &cmd, &event, false);
+                                                                        }
+                                                                    }
+                                                                },
+                                                                onkeyup: {let source=command_source.clone();move |event|{super::command_key_up_event(&source,&event);}},
+                                                                onclick: {
+                                                                    let cmd = dispatch_cmd.clone();
+                                                                    let base = action.cmd.clone();
+                                                                    let source = command_source.clone();
+                                                                    move |event| {
+                                                                        let chosen = if is_supply {
+                                                                            let original = supply_gesture.write().take();
+                                                                            let Some(gesture) = original else { super::clear_command_feedback_latches(); return; };
+                                                                            let chosen = match &gesture { SupplyGesture::Armed {command,..}=>command.clone(), SupplyGesture::Cancelled=>{super::clear_command_feedback_latches();return;} };
+                                                                            // Companions cannot choose another command. Changed
+                                                                            // feedback cancels this supply press; neither the old
+                                                                            // Close nor a newly inferred Open is dispatched.
+                                                                            if chosen != cmd || !gesture.current(&base, &chosen, super::monotonic_now_ms()) { super::clear_command_feedback_latches(); return; }
+                                                                            chosen
+                                                                        } else { cmd.clone() };
+                                                                        if enabled { super::command_click(&source, &chosen, &event, false); }
+                                                                    }
+                                                                },
+                                                                span { class:"gs26-action-copy",style: "min-width:0; flex:1 1 auto;",
+                                                                    span {title:"{action.label}",style:if cosmetic_output_action(&action.cmd) {"display:block;white-space:nowrap;line-height:1.25;"} else {"display:block;overflow-wrap:break-word;white-space:normal;line-height:1.25;"}, "{action.label}"}
+                                                                    if cosmetic_output_action(&action.cmd) {
+                                                                        span {title:"{requested_label}; {network_label}",style:"display:block;font-size:11px;font-weight:400;line-height:1.3;white-space:normal;overflow-wrap:anywhere;", "{requested_label}; {network_label}"}
+                                                                    }
+                                                                    if !progress_detail.is_empty() {
+                                                                        span {role:"status",title:"{progress_detail}",style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:700;white-space:normal;overflow-wrap:anywhere;", "{progress_detail}"}
+                                                                    }
+                                                                    if action.group == "GSE sequence actions" {
+                                                                        span {title:disabled_reason.unwrap_or(""),style:"display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;min-height:1.3em;overflow:hidden;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}
+                                                                    } else if disabled_reason.is_some() {
+                                                                        span {title:disabled_reason.unwrap_or(""),style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}
+                                                                    }
                                                                 }
-                                                            }
-                                                        },
-                                                        onpointerup: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_pointer_up_event(&source,&event); if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), false); } } },
-                                                        onpointercancel: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_pointer_cancel_event(&source,&event); if is_supply && event.is_primary() { finish_supply_pointer(&mut supply_gesture, &base, event.pointer_id(), true); } } },
-                                                        onmousedown: {
-                                                            let cmd = dispatch_cmd.clone();
-                                                            let source = command_source.clone();
-                                                            move |event| { if enabled { super::command_mouse_down_event(&source, &cmd, &event, false); } }
-                                                        },
-                                                        onmouseup: {let source=command_source.clone();move |event|{super::command_mouse_up_event(&source,&event);}},
-                                                        ontouchstart: {
-                                                            let cmd = dispatch_cmd.clone();
-                                                            let base = action.cmd.clone();
-                                                            let source = command_source.clone();
-                                                            move |event| {
-                                                                if enabled {
-                                                                    let single = event.touches().len()==1;
-                                                                    if is_supply && single { arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Touch); }
-                                                                    super::command_touch_start_event(&source, &cmd, &event, false);
-                                                                }
-                                                            }
-                                                        },
-                                                        ontouchend: {let source=command_source.clone();move |event|{super::command_touch_end_event(&source,&event);}},
-                                                        ontouchcancel: { let base = action.cmd.clone(); let source=command_source.clone(); move |event| { super::command_touch_cancel_event(&source,&event); if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
-                                                        onmouseleave: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
-                                                        onblur: { let base = action.cmd.clone(); move |_| { if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); } } },
-                                                        onkeydown: {
-                                                            let cmd = dispatch_cmd.clone();
-                                                            let base = action.cmd.clone();
-                                                            let source = command_source.clone();
-                                                            move |event| {
-                                                                let key = event.key();
-                                                                if matches!(key, Key::Escape | Key::Tab) {
-                                                                    if is_supply { cancel_supply_gesture(&mut supply_gesture, &base); }
-                                                                } else if !event.is_auto_repeating() && (key==Key::Enter || key.to_string()==" ") && enabled {
-                                                                    if is_supply { arm_supply_gesture(&mut supply_gesture, &base, &cmd, SupplyGestureOrigin::Keyboard); }
-                                                                    super::command_key_down_event(&source, &cmd, &event, false);
-                                                                }
-                                                            }
-                                                        },
-                                                        onkeyup: {let source=command_source.clone();move |event|{super::command_key_up_event(&source,&event);}},
-                                                        onclick: {
-                                                            let cmd = dispatch_cmd.clone();
-                                                            let base = action.cmd.clone();
-                                                            let source = command_source.clone();
-                                                            move |event| {
-                                                                let chosen = if is_supply {
-                                                                    let original = supply_gesture.write().take();
-                                                                    let Some(gesture) = original else { super::clear_command_feedback_latches(); return; };
-                                                                    let chosen = match &gesture { SupplyGesture::Armed {command,..}=>command.clone(), SupplyGesture::Cancelled=>{super::clear_command_feedback_latches();return;} };
-                                                                    // Companions cannot choose another command. Changed
-                                                                    // feedback cancels this supply press; neither the old
-                                                                    // Close nor a newly inferred Open is dispatched.
-                                                                    if chosen != cmd || !gesture.current(&base, &chosen, super::monotonic_now_ms()) { super::clear_command_feedback_latches(); return; }
-                                                                    chosen
-                                                                } else { cmd.clone() };
-                                                                if enabled { super::command_click(&source, &chosen, &event, false); }
-                                                            }
-                                                        },
-                                                        span { class:"gs26-action-copy",style: "min-width:0; flex:1 1 auto;",
-                                                            span {title:"{action.label}",style:if cosmetic_output_action(&action.cmd) {"display:block;white-space:nowrap;line-height:1.25;"} else {"display:block;overflow-wrap:break-word;white-space:normal;line-height:1.25;"}, "{action.label}"}
-                                                            if cosmetic_output_action(&action.cmd) {
-                                                                span {title:"{requested_label}; {network_label}",style:"display:block;font-size:11px;font-weight:400;line-height:1.3;white-space:normal;overflow-wrap:anywhere;", "{requested_label}; {network_label}"}
-                                                            }
-                                                            if !progress_detail.is_empty() {
-                                                                span {role:"status",title:"{progress_detail}",style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:700;white-space:normal;overflow-wrap:anywhere;", "{progress_detail}"}
-                                                            }
-                                                            if action.group == "GSE sequence actions" {
-                                                                span {title:disabled_reason.unwrap_or(""),style:"display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;min-height:1.3em;overflow:hidden;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}
-                                                            } else if disabled_reason.is_some() {
-                                                                span {title:disabled_reason.unwrap_or(""),style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}
+                                                                    span {
+                                                                        class:"gs26-action-badge",
+                                                                        "aria-hidden": enabled && !unconfirmed && sequence_label.is_empty(),
+                                                                        style: "visibility:{badge_visibility};flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
+                                                                        "{translate_text(badge_label)}"
+                                                                    }
                                                             }
                                                         }
-                                                            span {
-                                                                class:"gs26-action-badge",
-                                                                "aria-hidden": enabled && !unconfirmed && sequence_label.is_empty(),
-                                                                style: "visibility:{badge_visibility};flex:0 0 auto; padding:0.14rem 0.42rem; border-radius:999px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.18); color:rgba(255,255,255,0.82); font-size:0.68rem; font-weight:800; line-height:1; text-transform:uppercase; letter-spacing:0.04em;",
-                                                                "{translate_text(badge_label)}"
-                                                            }
                                                     }
                                                 }
                                             }
@@ -1885,3 +2049,7 @@ mod network_note_tests {
         assert!(legacy.network_note.is_none());
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "action_sections_render_tests.rs"]
+mod section_render_tests;
