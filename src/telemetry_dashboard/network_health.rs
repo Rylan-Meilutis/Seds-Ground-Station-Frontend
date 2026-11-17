@@ -646,8 +646,9 @@ pub fn GeneralNetworkHealthSummary(
     }
 }
 
-/// The offset is the least-delayed frame in 10 s, so it is clock error plus
-/// the best transit seen. A healthy radio carries a frame well inside 500 ms;
+/// The offset is against the station's network time in the frame's own time
+/// base (a network clock step is not a board offset), from the least-delayed
+/// frame in 10 s, so it is clock error plus the best transit seen. A healthy radio carries a frame well inside 500 ms;
 /// more means the clock or the link needs attention (2 s let a board read
 /// "in sync" at 1.9 s behind).
 const CLOCK_DESYNC_MS: i64 = 500;
@@ -666,7 +667,7 @@ fn clock_offset_text(offset_ms: i64) -> String {
     } else {
         format!("{:.0} days", ms as f64 / 86_400_000.0)
     };
-    format!("{amount} {side} the station")
+    format!("{amount} {side} network time")
 }
 #[cfg(test)]
 mod clock_tests {
@@ -678,7 +679,7 @@ mod clock_tests {
         assert!(clock_desynced(-1_000));
         assert!(clock_desynced(1_500));
         assert!(clock_desynced(-1_794_183_000_000));
-        assert_eq!(clock_offset_text(-25), "25 ms behind the station");
-        assert!(clock_offset_text(-1_794_183_000_000).ends_with("days behind the station"));
+        assert_eq!(clock_offset_text(-25), "25 ms behind network time");
+        assert!(clock_offset_text(-1_794_183_000_000).ends_with("days behind network time"));
     }
 }
