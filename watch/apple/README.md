@@ -61,9 +61,15 @@ documented example snapshot and unknown page kinds. In Xcode, open
   both are signed by the same team and that the phone app was reinstalled
   after the watch app (`WCSession.isWatchAppInstalled` is evaluated by the
   phone).
-* **Distribution:** the watch app must be embedded in the iOS app bundle as
-  `GS26.app/Watch/GS26Watch.app` and signed (inner app first) before the iOS
-  app is signed and uploaded. `build.py` does not automate this yet.
+* **Builds with the phone app:** `python3 build.py --target watchos`
+  (device, `arm64_32` + `arm64`), `--target watchos_sim` (Apple silicon
+  simulator) or `--target watchos_sim_intel` build the iOS app, generate this
+  project with XcodeGen, build the watch app and embed it as
+  `GS26.app/Watch/GS26Watch.app`. `--dry-run` prints the commands.
+* **Distribution:** a signed `watchos` build signs the embedded watch app
+  first, with the profile in `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION` (bundle
+  id `com.UBSEDS.GS26.watchkitapp`, same team), then the iOS app.
+  `--no-sign` leaves both unsigned. `--final` does not cover the watch yet.
 * The phone side (`assets/WatchBridge.m`) needs `WatchConnectivity.framework`
   linked; `build.rs` already does that for iOS builds.
 

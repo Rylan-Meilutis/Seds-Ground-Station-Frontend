@@ -28,6 +28,14 @@ app/    Wear OS app (Compose for Wear OS, minSdk 30)
 the Rust and Swift tests use) plus protocol, settings, compass and link-loss
 cases. The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
+From the frontend root, `python3 build.py --target wearos` (or `wearos_sim`,
+optionally `--debug` or `--docker`) runs the same Gradle tasks with the phone's
+application id from `Dioxus.toml` and copies the APK to `dist/GS26-WearOS.apk`.
+The app has no native code, so one APK covers watches (`arm64-v8a`,
+`armeabi-v7a`) and the `x86_64` emulator. Release builds are signed with the
+phone app's key (`ANDROID_KEYSTORE_PATH`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEYSTORE_PASSWORD`).
+
 ## Install on a watch
 
 1. Enable developer options and ADB debugging (Wi-Fi debugging on most

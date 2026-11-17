@@ -71,6 +71,17 @@ frontend-build:
       - debug
       - release
       UI_RUNNER: gs-ui-linux-x64
+    # macOS-only: iOS app with the embedded Apple Watch app.
+    - CI_FRONTEND_TARGET: watchos
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-macos-arm64
+    - CI_FRONTEND_TARGET: wearos
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-linux-x64
     - CI_FRONTEND_TARGET: ios_sim
       CI_FRONTEND_PROFILE:
       - debug
@@ -82,6 +93,22 @@ frontend-build:
       - release
       UI_RUNNER: gs-ui-macos-x64
     - CI_FRONTEND_TARGET: android_sim
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-linux-x64
+    # macOS-only: watchOS simulator builds.
+    - CI_FRONTEND_TARGET: watchos_sim
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-macos-arm64
+    - CI_FRONTEND_TARGET: watchos_sim_intel
+      CI_FRONTEND_PROFILE:
+      - debug
+      - release
+      UI_RUNNER: gs-ui-macos-x64
+    - CI_FRONTEND_TARGET: wearos_sim
       CI_FRONTEND_PROFILE:
       - debug
       - release

@@ -40,9 +40,14 @@ jobs:
         - ios
         - android
         - android-armv7
+        - watchos
+        - wearos
         - ios_sim
         - ios_sim_intel
         - android_sim
+        - watchos_sim
+        - watchos_sim_intel
+        - wearos_sim
         profile:
         - debug
         - release
@@ -65,11 +70,21 @@ jobs:
           runner: ubuntu-24.04
         - target: android-armv7
           runner: ubuntu-24.04
+        - target: watchos
+          runner: macos-15
+        - target: wearos
+          runner: ubuntu-24.04
         - target: ios_sim
           runner: macos-15
         - target: ios_sim_intel
           runner: macos-15-intel
         - target: android_sim
+          runner: ubuntu-24.04
+        - target: watchos_sim
+          runner: macos-15
+        - target: watchos_sim_intel
+          runner: macos-15-intel
+        - target: wearos_sim
           runner: ubuntu-24.04
     env:
       CI_FRONTEND_TARGET: ${{ matrix.target }}
@@ -99,19 +114,26 @@ jobs:
         xcrun --sdk iphoneos --show-sdk-version
 
         xcrun --sdk iphonesimulator --show-sdk-version'
+    - name: watchOS SDK and XcodeGen
+      if: startsWith(matrix.target, 'watchos')
+      run: 'xcrun --sdk watchos --show-sdk-version
+
+        xcrun --sdk watchsimulator --show-sdk-version
+
+        brew install xcodegen'
     - uses: actions/setup-java@v4
-      if: startsWith(matrix.target, 'android')
+      if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')
       with:
         distribution: temurin
         java-version: '17'
     - uses: android-actions/setup-android@v3
       with:
         packages: platform-tools
-      if: startsWith(matrix.target, 'android')
+      if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')
     - name: Android SDK and NDK
-      if: startsWith(matrix.target, 'android')
+      if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')
       shell: bash
-      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
 
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"'
     - name: Pinned frontend tools, warnings fatal

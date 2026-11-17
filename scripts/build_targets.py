@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shlex
 import shutil
 import subprocess
@@ -12,10 +13,18 @@ import sys
 @dataclass(frozen=True)
 class Target:
     platform: str
-    triple: str
+    # Rust triple of the phone/desktop app, or None for a target without Rust
+    # (the Wear OS companion is Kotlin only).
+    triple: str | None
     simulator: bool = False
     docker: str | None = None
     container_arch: str = "amd64"
+    # Watch companion built by this target: "watchos" (Swift app from
+    # watch/apple, embedded in the iOS app) or "wearos" (watch/wear APK).
+    watch: str | None = None
+    # Apple ARCHS for the watchOS app, or the Wear OS ABIs the target is for.
+    # The Wear app has no native code, so its APK runs on every listed ABI.
+    watch_archs: tuple[str, ...] = ()
 
 TARGETS = {
     "web": Target("web", "wasm32-unknown-unknown", docker="base"),
@@ -27,10 +36,175 @@ TARGETS = {
     "ios": Target("ios", "aarch64-apple-ios"),
     "android": Target("android", "aarch64-linux-android", docker="android"),
     "android-armv7": Target("android", "armv7-linux-androideabi", docker="android"),
+    # iOS app (aarch64-apple-ios) with the Apple Watch app embedded at
+    # GS26.app/Watch/GS26Watch.app; arm64_32 (Series 4-8, SE, Ultra 1) and
+    # arm64 (Series 9+, Ultra 2+) watch slices.
+    "watchos": Target("ios", "aarch64-apple-ios", watch="watchos", watch_archs=("arm64_32", "arm64")),
+    "wearos": Target("wearos", None, docker="android", watch="wearos", watch_archs=("arm64-v8a", "armeabi-v7a")),
     "ios_sim": Target("ios", "aarch64-apple-ios-sim", simulator=True),
     "ios_sim_intel": Target("ios", "x86_64-apple-ios", simulator=True),
     "android_sim": Target("android", "x86_64-linux-android", simulator=True, docker="android"),
+    "watchos_sim": Target("ios", "aarch64-apple-ios-sim", simulator=True, watch="watchos", watch_archs=("arm64",)),
+    "watchos_sim_intel": Target("ios", "x86_64-apple-ios", simulator=True, watch="watchos", watch_archs=("x86_64",)),
+    "wearos_sim": Target("wearos", None, simulator=True, docker="android", watch="wearos", watch_archs=("x86_64",)),
 }
+
+WATCH_APPLE = Path("watch") / "apple"
+WATCH_WEAR = Path("watch") / "wear"
+WATCH_APP_NAME = "GS26Watch.app"
+WEAR_APK_NAME = "GS26-WearOS.apk"
+
+
+def watchos_build_commands(root, name, debug):
+    """Generate the Xcode project and build the watch app unsigned.
+
+    Device builds are signed later together with the iOS app (inner app
+    first, see scripts/ios_package_sign.sh); simulator builds need no
+    identity."""
+    target = TARGETS[name]
+    apple = root / WATCH_APPLE
+    sdk = "watchsimulator" if target.simulator else "watchos"
+    destination = "generic/platform=watchOS Simulator" if target.simulator else "generic/platform=watchOS"
+    return [
+        ["xcodegen", "generate", "--spec", str(apple / "project.yml"), "--project", str(apple)],
+        ["xcodebuild", "-project", str(apple / "GS26Watch.xcodeproj"), "-scheme", "GS26Watch",
+         "-configuration", "Debug" if debug else "Release", "-sdk", sdk, "-destination", destination,
+         "-derivedDataPath", str(root / "target" / "watch" / name),
+         "ARCHS=" + " ".join(target.watch_archs), "ONLY_ACTIVE_ARCH=NO",
+         "CODE_SIGNING_ALLOWED=NO", "build"],
+    ]
+
+
+def watchos_product(root, name, debug):
+    target = TARGETS[name]
+    sdk = "watchsimulator" if target.simulator else "watchos"
+    config = "Debug" if debug else "Release"
+    return root / "target" / "watch" / name / "Build" / "Products" / f"{config}-{sdk}" / WATCH_APP_NAME
+
+
+def staged_ios_app(root):
+    apps = sorted((root / "dist").glob("*.app"))
+    if len(apps) != 1:
+        raise RuntimeError(f"Expected exactly one staged iOS app in dist/, found {len(apps)}")
+    return apps[0]
+
+
+def embed_watch_app(watch_app, ios_app):
+    """Copy the watch app into the iOS app as Watch/<name>.app after checking
+    that it names this iOS app as its companion."""
+    watch_app, ios_app = Path(watch_app), Path(ios_app)
+    with (watch_app / "Info.plist").open("rb") as f: watch_info = plistlib.load(f)
+    with (ios_app / "Info.plist").open("rb") as f: ios_info = plistlib.load(f)
+    phone_id = ios_info.get("CFBundleIdentifier")
+    if watch_info.get("WKCompanionAppBundleIdentifier") != phone_id:
+        raise RuntimeError(f"Watch app companion id {watch_info.get('WKCompanionAppBundleIdentifier')!r} does not match iOS app {phone_id!r}")
+    if not str(watch_info.get("CFBundleIdentifier", "")).startswith(f"{phone_id}."):
+        raise RuntimeError(f"Watch app bundle id must be prefixed by {phone_id!r}")
+    destination = ios_app / "Watch" / watch_app.name
+    if destination.exists(): shutil.rmtree(destination)
+    destination.parent.mkdir(exist_ok=True)
+    shutil.copytree(watch_app, destination, symlinks=True)
+    return destination
+
+
+def simulator_adhoc_sign_commands(ios_app, embedded):
+    # Embedding changed the iOS app's contents; re-seal both ad hoc.
+    return [["codesign", "--force", "--sign", "-", "--timestamp=none", str(path)] for path in (embedded, ios_app)]
+
+
+def wear_application_id(root):
+    import tomllib
+    try: bundle = tomllib.loads((root / "Dioxus.toml").read_text(encoding="utf-8")).get("bundle", {})
+    except (OSError, ValueError): bundle = {}
+    return bundle.get("identifier") or "com.UBSEDS.GS26"
+
+
+def wearos_signing_properties(environ):
+    """Release signing for the Wear APK. The Data Layer pairs only apps with
+    the phone's signing key: CI uses its job-local development key, local
+    builds the same ANDROID_* upload key settings as the phone app."""
+    store = environ.get("SEDS_GS_CI_ANDROID_KEYSTORE", "")
+    if store:
+        password_file = environ.get("SEDS_GS_CI_ANDROID_KEYSTORE_PASSWORD_FILE", "")
+        password = Path(password_file).read_text(encoding="utf-8").strip() if password_file else ""
+        alias = "androiddebugkey"
+        key_password = password
+    else:
+        store = environ.get("ANDROID_KEYSTORE_PATH", "")
+        alias = environ.get("ANDROID_KEY_ALIAS", "")
+        password = environ.get("ANDROID_KEYSTORE_PASSWORD", "")
+        key_password = environ.get("ANDROID_KEY_PASSWORD", "") or password
+    if not (store and alias and password):
+        return {}
+    # Passed as ORG_GRADLE_PROJECT_* environment, so no password is on argv.
+    return {"ORG_GRADLE_PROJECT_android.injected.signing.store.file": str(Path(store).expanduser()),
+            "ORG_GRADLE_PROJECT_android.injected.signing.store.password": password,
+            "ORG_GRADLE_PROJECT_android.injected.signing.key.alias": alias,
+            "ORG_GRADLE_PROJECT_android.injected.signing.key.password": key_password}
+
+
+def wearos_build_command(root, name, debug):
+    """Gradle build of the Wear OS companion: core unit tests, then the APK.
+    Release signing comes from wearos_signing_properties (environment)."""
+    wear = root / WATCH_WEAR
+    gradlew = wear / ("gradlew.bat" if platform.system() == "Windows" else "gradlew")
+    task = ":app:assembleDebug" if debug else ":app:assembleRelease"
+    return [str(gradlew), "-p", str(wear), "--no-daemon", "--console=plain",
+            f"-Pgs26.applicationId={wear_application_id(root)}", ":core:test", task]
+
+
+def wearos_product(root, debug):
+    outputs = root / WATCH_WEAR / "app" / "build" / "outputs" / "apk"
+    if debug: return outputs / "debug" / "app-debug.apk"
+    signed = outputs / "release" / "app-release.apk"
+    return signed if signed.exists() else outputs / "release" / "app-release-unsigned.apk"
+
+
+def build_watch(root, name, args, *, package_ios=None):
+    """Build the watch companion for a watch target after its phone app (if
+    any) was built into dist/. Returns the watch artifact path."""
+    target = TARGETS[name]
+    run = subprocess.run
+    if target.watch == "wearos":
+        command = wearos_build_command(root, name, args.debug)
+        # Like the phone APK: the CI development key always signs; --no-sign
+        # only skips the local upload key.
+        environ = {k: v for k, v in os.environ.items() if k.startswith("SEDS_GS_CI_ANDROID_") or not args.no_sign}
+        signing = {} if args.debug else wearos_signing_properties(environ)
+        print(shlex.join(command) + (" (release signing from ANDROID_* / CI key)" if signing else ""), flush=True)
+        if args.dry_run: return None
+        if signing: run(command, cwd=root, check=True, env={**os.environ, **signing})
+        else: run(command, cwd=root, check=True)
+        apk = wearos_product(root, args.debug)
+        if not apk.is_file(): raise RuntimeError(f"Wear OS build produced no APK: {apk}")
+        output = root / "dist" / WEAR_APK_NAME
+        output.parent.mkdir(exist_ok=True)
+        shutil.copy2(apk, output)
+        if apk.name.endswith("-unsigned.apk"):
+            print("Wear OS release APK is unsigned: set ANDROID_KEYSTORE_PATH/ANDROID_KEY_ALIAS/ANDROID_KEYSTORE_PASSWORD (the phone app's key) to sign it.", file=sys.stderr)
+        print(f"Wear OS APK: {output}")
+        return output
+    for command in watchos_build_commands(root, name, args.debug):
+        print(shlex.join(command), flush=True)
+        if not args.dry_run: run(command, cwd=root, check=True)
+    if args.dry_run:
+        print(f"embed {WATCH_APP_NAME} into dist/<app>.app/Watch/")
+        return None
+    product = watchos_product(root, name, args.debug)
+    if not product.is_dir(): raise RuntimeError(f"watchOS build produced no app: {product}")
+    if target.simulator:
+        embedded = embed_watch_app(product, staged_ios_app(root))
+        for command in simulator_adhoc_sign_commands(staged_ios_app(root), embedded):
+            run(command, cwd=root, check=True)
+    elif args.no_sign:
+        embedded = embed_watch_app(product, staged_ios_app(root))
+    else:
+        # The signer re-stages the iOS app, embeds the watch app and signs
+        # the inner app with its own profile before the outer one.
+        package_ios(root, sign_kind="distribution", debug_mode=args.debug, watch_app=product)
+        return product
+    print(f"Embedded watch app: {embedded}")
+    return embedded
 
 def expand_targets(value):
     names = [name.strip() for name in value.split(",") if name.strip()]
@@ -87,6 +261,8 @@ def native_requirement(target):
     system = platform.system()
     if target.platform in {"macos", "ios"} and system != "Darwin": return "requires a macOS worker with Xcode"
     if target.platform == "windows" and system != "Windows": return "requires a Windows worker with MSVC and WebView2 tooling"
+    if target.platform == "wearos" and not (os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")):
+        return "requires the Android SDK (set ANDROID_HOME) and JDK 17/21; or add --docker"
     if target.platform == "linux" and system != "Linux": return "requires Linux; add --docker"
     if target.platform == "linux":
         host = "aarch64" if platform.machine().lower() in {"aarch64", "arm64"} else "x86_64"
@@ -103,7 +279,9 @@ def handle_target_args(argv, root, build_frontend, package_ios, finalize_release
         print("Target             Rust target                      Builder")
         for name, target in TARGETS.items():
             runner = "Docker/native" if target.docker else "macOS/Xcode" if target.platform in {"macos", "ios"} else "Windows/MSVC"
-            print(f"{name:18} {target.triple:32} {runner}" + (" (simulator)" if target.simulator else ""))
+            rust = target.triple or "(none: Kotlin only)"
+            watch = f" + {target.watch} app [{' '.join(target.watch_archs)}]" if target.watch else ""
+            print(f"{name:18} {rust:32} {runner}" + (" (simulator)" if target.simulator else "") + watch)
         return True
     try: names = expand_targets(args.target)
     except ValueError as error: raise SystemExit(str(error)) from error
@@ -115,7 +293,7 @@ def handle_target_args(argv, root, build_frontend, package_ios, finalize_release
         target = TARGETS[name]
         container = args.docker and target.docker is not None
         problem = None if container else native_requirement(target)
-        print(f"\nTarget {name}: {'Docker' if container else 'native'} · {target.triple}", flush=True)
+        print(f"\nTarget {name}: {'Docker' if container else 'native'} · {target.triple or target.watch}", flush=True)
         if problem:
             if name in explicit:
                 print(f"Unavailable: {problem}", file=sys.stderr)
@@ -126,6 +304,8 @@ def handle_target_args(argv, root, build_frontend, package_ios, finalize_release
             continue
         try:
             final = args.final and not target.simulator and target.platform in {"macos", "ios", "android"}
+            if args.final and target.watch:
+                raise RuntimeError("--final is not supported for watch targets yet; build ios/android with --final and the watch target separately")
             if final and not args.dry_run:
                 if finalize_release is None: raise RuntimeError("Release finalizer is unavailable")
                 finalize_release(root, target.platform, args.package_type, prepare=True)
@@ -134,13 +314,18 @@ def handle_target_args(argv, root, build_frontend, package_ios, finalize_release
                     print(shlex.join(command), flush=True)
                     if not args.dry_run: subprocess.run(command, cwd=root, check=True)
             elif args.dry_run:
-                print(f"build_frontend(platform={target.platform}, target={target.triple}, release={not args.debug}, sign={not args.no_sign})")
+                if target.triple:
+                    print(f"build_frontend(platform={target.platform}, target={target.triple}, release={not args.debug}, sign={not args.no_sign})")
+                if target.watch: build_watch(root, name, args)
             else:
-                subprocess.run(["rustup", "target", "add", target.triple], cwd=root, check=True)
-                build_frontend(root, platform_name=target.platform, rust_target=target.triple,
-                    debug_mode=args.debug, max_size=args.max_size, android_package_type=args.package_type,
-                    sign_macos=not args.no_sign)
-                if target.platform == "ios" and not target.simulator and not args.no_sign:
+                if target.triple:
+                    subprocess.run(["rustup", "target", "add", target.triple], cwd=root, check=True)
+                    build_frontend(root, platform_name=target.platform, rust_target=target.triple,
+                        debug_mode=args.debug, max_size=args.max_size, android_package_type=args.package_type,
+                        sign_macos=not args.no_sign)
+                if target.watch:
+                    build_watch(root, name, args, package_ios=package_ios)
+                elif target.platform == "ios" and not target.simulator and not args.no_sign:
                     package_ios(root, sign_kind="distribution", debug_mode=args.debug)
             if final:
                 if args.dry_run: print(f"Finalize {target.platform}: distribution signing/verification" + (" + notarization/stapling/Gatekeeper" if target.platform == "macos" else ""))

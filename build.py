@@ -4577,7 +4577,26 @@ def _ios_ipa_output_path(frontend_dir: Path, sign_kind: SignKind) -> Path:
     return ipas_dir / filename
 
 
-def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debug_mode: bool = False) -> Path:
+def ios_watch_mobileprovision_path(sign_kind: SignKind) -> Path:
+    """Provisioning profile for the embedded Apple Watch app (bundle id
+    <phone id>.watchkitapp), required to sign an iOS app that embeds it."""
+    key = "IOS_WATCH_DEVELOPMENT_MOBILEPROVISION" if sign_kind == "development" else "IOS_WATCH_DISTRIBUTION_MOBILEPROVISION"
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        raise RuntimeError(f"Signing an iOS app with the embedded watch app needs {key} (a profile for the watch app's bundle id)")
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"Watch provisioning profile not found: {path}")
+    return path
+
+
+def package_ios_ipa_with_script(
+        frontend_dir: Path,
+        *,
+        sign_kind: SignKind,
+        debug_mode: bool = False,
+        watch_app: Optional[Path] = None,
+) -> Path:
     if platform.system() != "Darwin":
         print("Error: iOS packaging/signing requires macOS.", file=sys.stderr)
         sys.exit(1)
@@ -4596,6 +4615,16 @@ def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debu
     patch_plist(frontend_dir, app, ios_target="aarch64-apple-ios")
 
     bundle_id = _bundle_id_from_app(app)
+    watch_profile: Optional[Path] = None
+    if watch_app is not None:
+        # Embedded after the iOS-only validation above; its own watchOS slices
+        # are checked by Xcode. The signer signs it with its own profile first.
+        from scripts.build_targets import embed_watch_app
+        embedded = embed_watch_app(watch_app, app)
+        watch_profile = ios_watch_mobileprovision_path(sign_kind)
+        watch_info = _decode_mobileprovision(watch_profile, frontend_dir)
+        if not _profile_matches_bundle(watch_info, _bundle_id_from_app(embedded)):
+            raise RuntimeError(f"Watch provisioning profile does not match {_bundle_id_from_app(embedded)}: {watch_profile}")
     profile_arg = "-"
     if sign_kind == "development":
         profile = ios_development_mobileprovision_path(frontend_dir, bundle_id=bundle_id)
@@ -4636,6 +4665,8 @@ def package_ios_ipa_with_script(frontend_dir: Path, *, sign_kind: SignKind, debu
         "CERT_PICK": cert_pick,
         "GET_TASK_ALLOW": "true" if sign_kind == "development" else "none",
     }
+    if watch_profile is not None:
+        env["WATCH_PROVISION"] = str(watch_profile.resolve())
 
     run(
         ["bash", str(signer), str(app.resolve()), profile_arg, str(ipa_out.resolve())],
@@ -5685,6 +5716,7 @@ def print_usage(exit_code: int = 1) -> None:
     print(f"  {build_script}                         # default: clean Android build")
     print(f"  {build_script} frontend_web|web [debug] [max_size] [existing] [log=<path>]")
     print(f"  {build_script} --target list|<name>|all|all,sims [--docker] [--release|--debug] [--final|--no-sign] [--dry-run]")
+    print(f"  {build_script} --target watchos|watchos_sim|watchos_sim_intel|wearos|wearos_sim [--debug] [--no-sign] [--dry-run]")
     print(f"  {build_script} ios|ios_sim|macos|windows|android|candroid|linux [debug] [existing] [no_sign] [log=<path>]")
     print(f"  {build_script} android [apk|aab] [debug] [existing] [no_sign] [log=<path>]")
     print("")
@@ -5737,6 +5769,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("  CERT_PICK=newest|first            # override cert selection for signer script")
     print("  IOS_DEVELOPMENT_MOBILEPROVISION=...   # physical-device deploy provisioning profile")
     print("  IOS_DISTRIBUTION_MOBILEPROVISION=...  # distribution IPA provisioning profile")
+    print("  IOS_WATCH_DISTRIBUTION_MOBILEPROVISION=...  # profile for the embedded Apple Watch app (signed watchos)")
     print("  MACOS_ENTITLEMENTS=...            # optional entitlements file for macOS codesign")
     print("  NOTARY_PROFILE=...                # optional if exactly one stored profile exists")
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")

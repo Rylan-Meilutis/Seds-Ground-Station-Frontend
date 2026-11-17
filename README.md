@@ -497,6 +497,38 @@ python3 build.py --target web,linux --docker --dry-run
 
 `all` selects every listed device/desktop/web target; `all,sims` adds iOS and Android simulator builds. Builds run sequentially, retain per-target output in `artifacts/<target>`, and report failures together. These are builds, not simulator launches or device installs.
 
+### Watch companion targets
+
+```sh
+python3 build.py --target watchos --no-sign          # iOS app + embedded Apple Watch app (macOS)
+python3 build.py --target watchos_sim,watchos_sim_intel --debug
+python3 build.py --target wearos,wearos_sim           # Wear OS APK (Linux/macOS, or --docker)
+python3 build.py --target watchos,wearos --dry-run    # print the Xcode/Gradle commands only
+```
+
+| Target | Builds | Watch architectures | Runner |
+| --- | --- | --- | --- |
+| `watchos` | `ios` app with `GS26Watch.app` embedded at `GS26.app/Watch/` | `arm64_32`, `arm64` | macOS + Xcode + XcodeGen |
+| `watchos_sim` | `ios_sim` app with the watchOS Simulator app embedded | `arm64` | macOS (Apple silicon) |
+| `watchos_sim_intel` | `ios_sim_intel` app with the watchOS Simulator app embedded | `x86_64` | macOS (Intel) |
+| `wearos` | Wear OS APK (`dist/GS26-WearOS.apk`) | `arm64-v8a`, `armeabi-v7a` | JDK 17/21 + Android SDK 36, or `--docker` |
+| `wearos_sim` | the same APK for the Wear OS emulator | `x86_64` | as `wearos` |
+
+The watch apps contain no Rust, so no extra `rustup` targets are needed: the
+watchOS targets add the phone app's iOS triple and build the Swift app from
+`watch/apple` with `xcodegen` and `xcodebuild` (unsigned, `CODE_SIGNING_ALLOWED=NO`).
+Simulator builds are ad-hoc sealed after embedding. A signed `watchos` build
+embeds the watch app and signs it first with its own profile, set in
+`IOS_WATCH_DISTRIBUTION_MOBILEPROVISION` (bundle id `com.UBSEDS.GS26.watchkitapp`).
+The Wear app is Kotlin only, so one ABI-neutral APK serves every watch and
+emulator ABI; `wearos*` run `watch/wear/gradlew :core:test :app:assemble<Debug|Release>`
+with the phone's application id from `Dioxus.toml`. Release APKs are signed
+with the phone app's key (`ANDROID_KEYSTORE_PATH`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEYSTORE_PASSWORD`, or the CI development key), because the Wear Data
+Layer only pairs apps signed with the same key. `--final` is not supported for
+watch targets yet. `all` includes `watchos` and `wearos`; `sims` includes the
+three watch simulator targets. See `docs/watch-companion.md`.
+
 Docker provides reproducible web, Linux x86-64/ARM64 and Android builders using `Dockerfile.builder`. Web builds use the host architecture because their Wasm output is architecture independent. Docker Buildx and cross-architecture emulation are required when the builder architecture differs from the host. Native macOS/iOS targets require macOS and Xcode; Windows requires a Windows worker with MSVC/WebView2 tooling. Those targets use the native worker even with `--docker`; unsupported host targets fail explicitly, so `all` across every OS requires the corresponding workers. `--no-sign` leaves iOS as an unsigned app bundle. `--docker-image` selects an existing compatible Linux/Android builder. Signing credentials are not copied into images.
 
 ### Final signed releases

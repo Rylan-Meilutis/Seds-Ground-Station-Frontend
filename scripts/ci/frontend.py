@@ -97,6 +97,15 @@ def target_spec(name):
     return next(row for row in PLATFORMS if row["target"] == name)
 
 
+def is_wear(name):
+    """Wear OS companion targets: a Kotlin/Gradle build with no Rust."""
+    return name.startswith("wearos")
+
+
+def android_signed(name):
+    return name.startswith("android") or is_wear(name)
+
+
 def validate_host(name):
     spec = target_spec(name)
     actual = platform.system(), normalized_arch(platform.machine())
@@ -393,6 +402,18 @@ def resolved_tool_versions():
 def bootstrap(name):
     host = validate_host(name)
     env = ci_env()
+    if is_wear(name):
+        # Gradle wrapper (pinned in watch/wear/gradle/wrapper) plus the runner's
+        # JDK and Android SDK; no Rust or web tooling is involved.
+        if not shutil.which("java", path=env["PATH"]):
+            raise RuntimeError("Missing Wear OS prerequisite: Java 17 or 21; see CI-RUNNERS.md")
+        if not (env.get("ANDROID_HOME") or env.get("ANDROID_SDK_ROOT")):
+            raise RuntimeError("Missing Wear OS prerequisite: Android SDK (ANDROID_HOME); see CI-RUNNERS.md")
+        (ROOT / "ci-results").mkdir(exist_ok=True)
+        (ROOT / ".ci-tools").mkdir(exist_ok=True)
+        return
+    if name.startswith("watchos") and not shutil.which("xcodegen", path=env["PATH"]):
+        raise RuntimeError("Missing watchOS prerequisite: xcodegen (brew install xcodegen); see CI-RUNNERS.md")
     for tool in ["rustup", "cargo", "npm", "node"]:
         if not shutil.which(tool):
             raise RuntimeError(f"Missing runner prerequisite: {tool}; see CI-RUNNERS.md")
@@ -464,12 +485,12 @@ def run(name, profile):
     env["CARGO_NET_OFFLINE"] = "true"
     if name.startswith("android"):
         verify_bundletool(env)
-    for tool in ["dx", "wasm-bindgen", "wasm-opt", "esbuild"]:
+    for tool in [] if is_wear(name) else ["dx", "wasm-bindgen", "wasm-opt", "esbuild"]:
         if not shutil.which(tool, path=env["PATH"]):
             raise RuntimeError(f"Missing prepared tool: {tool}")
     if (ROOT / "artifacts" / name).exists():
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh CI checkout")
-    if name.startswith("android"):
+    if android_signed(name):
         prepare_android_development_signing(env)
     checked(build_command(name, profile), env, "build-" + name + "-" + profile, dioxus_progress=True,
             android_upstream_r8=name.startswith("android") and profile == "release")
@@ -477,7 +498,7 @@ def run(name, profile):
     files = sorted(p for p in output.rglob("*") if p.is_file())
     if not files:
         raise RuntimeError("Build produced no staged artifacts; not a successful platform build")
-    if name.startswith("android"):
+    if android_signed(name):
         (output / "CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt").write_text(
             "APK signed with a fresh CI-only development certificate.\n"
             "Not a production release or an identity for updating installed releases.\n"

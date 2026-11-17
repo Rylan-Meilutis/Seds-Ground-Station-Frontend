@@ -8,7 +8,12 @@
   {"target":"ios","github":"macos-15","gitlab":"gs-ui-macos-arm64","host":"Darwin","arch":"aarch64"},
   {"target":"android","github":"ubuntu-24.04","gitlab":"gs-ui-linux-x64","host":"Linux","arch":"x86_64"},
   {"target":"android-armv7","github":"ubuntu-24.04","gitlab":"gs-ui-linux-x64","host":"Linux","arch":"x86_64"},
+  {"target":"watchos","github":"macos-15","gitlab":"gs-ui-macos-arm64","host":"Darwin","arch":"aarch64"},
+  {"target":"wearos","github":"ubuntu-24.04","gitlab":"gs-ui-linux-x64","host":"Linux","arch":"x86_64"},
   {"target":"ios_sim","github":"macos-15","gitlab":"gs-ui-macos-arm64","host":"Darwin","arch":"aarch64"},
   {"target":"ios_sim_intel","github":"macos-15-intel","gitlab":"gs-ui-macos-x64","host":"Darwin","arch":"x86_64"},
-  {"target":"android_sim","github":"ubuntu-24.04","gitlab":"gs-ui-linux-x64","host":"Linux","arch":"x86_64"}
+  {"target":"android_sim","github":"ubuntu-24.04","gitlab":"gs-ui-linux-x64","host":"Linux","arch":"x86_64"},
+  {"target":"watchos_sim","github":"macos-15","gitlab":"gs-ui-macos-arm64","host":"Darwin","arch":"aarch64"},
+  {"target":"watchos_sim_intel","github":"macos-15-intel","gitlab":"gs-ui-macos-x64","host":"Darwin","arch":"x86_64"},
+  {"target":"wearos_sim","github":"ubuntu-24.04","gitlab":"gs-ui-linux-x64","host":"Linux","arch":"x86_64"}
 ]

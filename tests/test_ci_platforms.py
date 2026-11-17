@@ -33,14 +33,14 @@ class PlatformCI(unittest.TestCase):
 
     def test_inventory_exactly_covers_actual_public_build_targets(self):
         self.assertEqual([p["target"] for p in ci.PLATFORMS], list(targets.TARGETS))
-        self.assertEqual(len(ci.PLATFORMS), 12)
+        self.assertEqual(len(ci.PLATFORMS), 17)
 
     def test_github_both_profiles_and_no_fail_fast_hiding_platforms(self):
         strategy = self.github["jobs"]["build"]["strategy"]
         self.assertEqual(strategy["matrix"]["target"], list(targets.TARGETS))
         self.assertEqual(strategy["matrix"]["profile"], ["debug", "release"])
         self.assertIs(strategy["fail-fast"], False)
-        self.assertEqual(len(strategy["matrix"]["target"]) * 2, 24)
+        self.assertEqual(len(strategy["matrix"]["target"]) * 2, 34)
 
     def test_github_native_runner_bindings(self):
         matrix = self.github["jobs"]["build"]["strategy"]["matrix"]
@@ -57,7 +57,7 @@ class PlatformCI(unittest.TestCase):
         self.assertEqual([r["UI_RUNNER"] for r in rows], [p["gitlab"] for p in ci.PLATFORMS])
 
     def test_apple_windows_linux_wrong_host_is_error_not_skip(self):
-        for name in ["ios", "ios_sim", "ios_sim_intel", "macos", "macos-intel", "windows", "linux-arm64"]:
+        for name in ["ios", "ios_sim", "ios_sim_intel", "watchos", "watchos_sim", "watchos_sim_intel", "macos", "macos-intel", "windows", "linux-arm64"]:
             with self.subTest(target=name), patch.object(ci.platform, "system", return_value="Linux"), patch.object(ci.platform, "machine", return_value="x86_64"):
                 with self.assertRaises(RuntimeError):
                     ci.validate_host(name)
@@ -66,6 +66,23 @@ class PlatformCI(unittest.TestCase):
         for p in ci.PLATFORMS:
             with self.subTest(target=p["target"]), patch.object(ci.platform, "system", return_value=p["host"]), patch.object(ci.platform, "machine", return_value=p["arch"]):
                 self.assertEqual(ci.validate_host(p["target"]), (p["host"], p["arch"]))
+
+    def test_watch_targets_bind_to_macos_or_linux_runners(self):
+        rows = {p["target"]: p for p in ci.PLATFORMS}
+        for name, arch in [("watchos", "aarch64"), ("watchos_sim", "aarch64"), ("watchos_sim_intel", "x86_64")]:
+            self.assertEqual((rows[name]["host"], rows[name]["arch"]), ("Darwin", arch))
+            self.assertTrue(rows[name]["gitlab"].startswith("gs-ui-macos-"))
+            self.assertTrue(rows[name]["github"].startswith("macos-"))
+        for name in ["wearos", "wearos_sim"]:
+            self.assertEqual(rows[name]["host"], "Linux")
+            self.assertTrue(ci.is_wear(name) and ci.android_signed(name))
+        self.assertFalse(ci.is_wear("android") or ci.is_wear("watchos"))
+        steps = self.github["jobs"]["build"]["steps"]
+        sdk = next(s for s in steps if s.get("name") == "Android SDK and NDK")
+        self.assertIn("wearos", sdk["if"])
+        self.assertIn("platforms;android-36", sdk["run"])
+        watch = next(s for s in steps if s.get("name") == "watchOS SDK and XcodeGen")
+        self.assertIn("xcodegen", watch["run"])
 
     def test_arm_and_windows_machine_aliases(self):
         self.assertEqual(ci.normalized_arch("ARM64"), "aarch64")

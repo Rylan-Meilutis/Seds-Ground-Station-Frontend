@@ -13,6 +13,7 @@ set -euo pipefail
 #   CERT_REGEX='Apple Distribution:'   (default)
 #   CERT_PICK='newest'|'first'         (default: newest)
 #   GET_TASK_ALLOW='false'|'true'|'profile'|'none' (default: false)
+#   WATCH_PROVISION=<path>             (required when the app embeds Watch/*.app)
 # -----------------------------------------------------------------------------
 
 APP="${1:?Missing .app path}"
@@ -290,6 +291,45 @@ find "$APP" -maxdepth 2 -name "*.appex" -print0 2>/dev/null \
   | while IFS= read -r -d '' appex; do
       sign_path "$appex"
     done
+
+# -----------------------------------------------------------------------------
+# 4b) Sign an embedded Apple Watch app with its own profile and entitlements
+# -----------------------------------------------------------------------------
+for watch_app in "$APP"/Watch/*.app; do
+  [[ -d "$watch_app" ]] || continue
+  [[ -n "${WATCH_PROVISION:-}" && -f "$WATCH_PROVISION" ]] \
+    || die "Embedded watch app $(basename "$watch_app") needs WATCH_PROVISION (a profile for its bundle id)."
+  if ! $SECURITY cms -D -i "$WATCH_PROVISION" > "$TMP/watch-profile.plist" 2>/dev/null; then
+    $OPENSSL smime -inform der -verify -noverify -in "$WATCH_PROVISION" -out "$TMP/watch-profile.plist" >/dev/null 2>&1 \
+      || die "Failed to decode watch provisioning profile: $WATCH_PROVISION"
+  fi
+  $PB -x -c "Print :Entitlements" "$TMP/watch-profile.plist" > "$TMP/watch-entitlements.plist"
+  case "$GET_TASK_ALLOW" in
+    false|true)
+      if $PB -c "Print :get-task-allow" "$TMP/watch-entitlements.plist" >/dev/null 2>&1; then
+        $PB -c "Set :get-task-allow $GET_TASK_ALLOW" "$TMP/watch-entitlements.plist" >/dev/null
+      else
+        $PB -c "Add :get-task-allow bool $GET_TASK_ALLOW" "$TMP/watch-entitlements.plist" >/dev/null
+      fi
+      ;;
+  esac
+  $PLUTIL -convert xml1 "$TMP/watch-entitlements.plist" >/dev/null 2>&1 || true
+  cp -f "$WATCH_PROVISION" "$watch_app/embedded.mobileprovision"
+  rm -rf "$watch_app/_CodeSignature" 2>/dev/null || true
+  if [[ -d "$watch_app/Frameworks" ]]; then
+    find "$watch_app/Frameworks" -maxdepth 2 \( -name "*.framework" -o -name "*.dylib" \) -print0 \
+      | while IFS= read -r -d '' item; do
+          sign_path "$item"
+        done
+  fi
+  log "Signing embedded watch app: $(basename "$watch_app")"
+  signer="${IDENTITY_HASH:-$IDENTITY}"
+  if ! $CODESIGN --force --sign "$signer" --entitlements "$TMP/watch-entitlements.plist" \
+    --options runtime --timestamp "$watch_app" 2>/dev/null; then
+    $CODESIGN --force --sign "$signer" --entitlements "$TMP/watch-entitlements.plist" \
+      --options runtime "$watch_app"
+  fi
+done
 
 # -----------------------------------------------------------------------------
 # 5) Sign the main app with entitlements
