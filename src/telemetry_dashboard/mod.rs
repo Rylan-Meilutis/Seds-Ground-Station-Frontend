@@ -71,6 +71,7 @@ pub(crate) mod prelude;
 mod recorded_replay_controls;
 mod recording_download;
 mod recovery_marker;
+mod auto_vent_notice;
 mod launch_zero_notice;
 mod recovery_status;
 mod report_studio;
