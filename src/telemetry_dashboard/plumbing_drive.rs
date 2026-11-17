@@ -15,6 +15,33 @@ fn selection_context(value: &Value) -> Value {
     ])
 }
 
+/// How the station's latest drive change stands: the station re-sends a
+/// change the actuator has not confirmed ("applying… (retry n)"), calls it
+/// applied only on the actuator's readback, and says why when it gives up.
+/// `None` when the station has sent no change. The flag marks a failure.
+fn apply_status(value: &Value) -> Option<(bool, String)> {
+    let apply = &value["apply"];
+    let mode = apply["mode"].as_str().unwrap_or("selected").replace('_', "-");
+    match apply["state"].as_str()? {
+        "applying" => Some((
+            false,
+            match apply["retry"].as_u64().unwrap_or(0) {
+                0 => format!("Applying {mode} drive…"),
+                retry => format!("Applying {mode} drive… (retry {retry})"),
+            },
+        )),
+        "applied" => Some((false, format!("Applied: the actuator's readback confirms the {mode} drive."))),
+        "failed" => Some((
+            true,
+            format!(
+                "Drive change not applied: {}",
+                apply["reason"].as_str().unwrap_or("the actuator did not confirm it.")
+            ),
+        )),
+        _ => None,
+    }
+}
+
 fn settings_request(snapshot: &Value, mode: &str, release: bool) -> Result<Value, &'static str> {
     if !matches!(mode, "stepper" | "h_bridge" | "auxiliary") {
         return Err("Choose a supported drive.");
@@ -267,6 +294,8 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
         .unwrap_or("Unknown")
         .to_string();
     let running = current["board"]["fresh"] == true && current["board"]["busy"] == true;
+    let apply = apply_status(&current);
+    let change_open = current["apply"]["state"] == "applying" || current["apply"]["state"] == "failed";
     let remaining = current["board"]["remaining_ms"].as_u64().unwrap_or(0) as f64 / 1000.0;
     rsx! {
         section { aria_label: "Fill-line drive", style: "display:grid;gap:10px;min-width:0;padding:12px;border:1px solid {theme.border_soft};border-radius:10px;background:{theme.panel_background};color:{theme.text_primary};font:inherit;",
@@ -280,7 +309,14 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
                 option { value: "auxiliary", disabled: current["board"]["capabilities"]["auxiliary"] != true, "Auxiliary output · retract only, 45 seconds" }
             }
             p { style: "margin:0;color:{theme.text_muted};", "Actuator selection: {board_mode}. Timed motion does not verify physical fill-line position." }
-            if current["pending"] == true {
+            if let Some((failed, text)) = apply {
+                if failed {
+                    p { role: "alert", style: "margin:0;padding:6px 8px;border:1px solid {theme.error_border};border-radius:6px;background:{theme.error_background};color:{theme.error_text};overflow-wrap:anywhere;", "{text}" }
+                } else {
+                    p { role: "status", style: "margin:0;overflow-wrap:anywhere;", "{text}" }
+                }
+            }
+            if current["pending"] == true && !change_open {
                 p { role: "status", style: "margin:0;", if current["desired"]["durable"] == true { "Desired setting saved; waiting for matching actuator readback." } else { "Waiting for actual actuator drive readback." } }
             }
             if running {
@@ -395,6 +431,27 @@ mod tests {
             changed["board"][field] = Value::Null;
             assert_ne!(selection_context(&changed), authority, "{field}");
         }
+    }
+    #[test]
+    fn a_drive_change_shows_its_resends_applied_only_on_readback_and_why_it_failed() {
+        let mut value = snapshot();
+        assert_eq!(apply_status(&value), None);
+        value["apply"] = json!({"state":"applying","mode":"auxiliary","retry":0});
+        assert_eq!(apply_status(&value), Some((false, "Applying auxiliary drive…".into())));
+        value["apply"]["retry"] = json!(2);
+        assert_eq!(apply_status(&value), Some((false, "Applying auxiliary drive… (retry 2)".into())));
+        value["apply"]["state"] = json!("applied");
+        let (failed, text) = apply_status(&value).unwrap();
+        assert!(!failed && text.starts_with("Applied") && text.contains("readback"), "{text}");
+        value["apply"] = json!({"state":"failed","mode":"auxiliary","reason":"drive settings change only in Startup or Idle (station is in Armed)."});
+        assert_eq!(
+            apply_status(&value),
+            Some((true, "Drive change not applied: drive settings change only in Startup or Idle (station is in Armed).".into()))
+        );
+        // A re-send keeps the saved revision, so it does not discard a draft.
+        let mut resent = snapshot();
+        resent["apply"] = json!({"state":"applying","retry":1});
+        assert_eq!(selection_context(&resent), selection_context(&snapshot()));
     }
     #[test]
     fn unavailable_bridge_stays_blocked_even_when_a_capability_bit_is_wrong() {
