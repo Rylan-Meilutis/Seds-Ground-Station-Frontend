@@ -195,6 +195,14 @@ fn action_policy_carries_network_notes_for_network_outputs() {
     let WsInMsg::ActionPolicy(frame) = decode::<WsInMsg>("websocket/action-policy") else {
         panic!("websocket/action-policy is not an ActionPolicy frame");
     };
+    // The websocket fixture carries a QD retraction the station sent and the
+    // actuator has not yet reported.
+    let qd = frame.controls.iter().find(|c| c.cmd == "RetractPlumbing").expect("QD control");
+    let progress = qd.progress.as_ref().expect("QD retraction progress");
+    assert_eq!(progress.state, super::ControlProgressState::Running);
+    assert!(!progress.confirmed);
+    assert_eq!(progress.remaining_ms, Some(31_000));
+    assert!(frame.controls.iter().filter(|c| c.cmd != "RetractPlumbing").all(|c| c.progress.is_none()));
     for (name, policy) in [("action-policy/get", policy), ("websocket/action-policy", frame)] {
         assert!(!policy.controls.is_empty(), "{name}");
         let underglow = policy

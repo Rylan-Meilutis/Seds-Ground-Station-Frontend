@@ -16,6 +16,11 @@ pub(crate) const ACTION_BLINK_CSS: &str = r#"
   50% { opacity: 1.0; }
   100% { opacity: 0.15; }
 }
+@keyframes gs26-progress-pulse {
+  0% { opacity: 1.0; filter: none; }
+  50% { opacity: 0.45; filter: brightness(1.35); }
+  100% { opacity: 1.0; filter: none; }
+}
 @keyframes gs26-blink-fast-invert {
   0% { opacity: 1.0; }
   50% { opacity: 0.2; }

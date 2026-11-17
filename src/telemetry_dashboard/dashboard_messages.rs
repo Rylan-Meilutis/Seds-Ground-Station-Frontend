@@ -108,6 +108,34 @@ pub struct ActionControl {
     /// confirmation" while the GS has seen no network value at all.
     #[serde(default)]
     pub network_note: Option<String>,
+    /// A timed physical operation behind this control (the QD retraction).
+    #[serde(default)]
+    pub progress: Option<ControlProgress>,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlProgressState {
+    Starting,
+    Running,
+    Completed,
+    Failed,
+    Unconfirmed,
+    /// A state this UI does not know yet.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ControlProgress {
+    pub state: ControlProgressState,
+    /// The owning board reported this state; false for the station's estimate.
+    #[serde(default)]
+    pub confirmed: bool,
+    #[serde(default)]
+    pub remaining_ms: Option<u32>,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]

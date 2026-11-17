@@ -1070,21 +1070,31 @@ pub fn ActionsTab(
                                                     control.as_ref().and_then(|c| c.requested),
                                                     control.as_ref().and_then(|c| c.actuated),
                                                 ));
-                                                let unconfirmed = (physical_output_action(&action.cmd) || cosmetic_output_action(&action.cmd)) && actuated.is_none();
+                                                // A timed operation the backend reports (the QD retraction):
+                                                // pulse and count down while it runs, then its outcome.
+                                                let progress = super::control_progress::view(control.as_ref().and_then(|c| c.progress.as_ref()));
+                                                let actuated = progress.as_ref().and_then(|p| p.illuminated).or(actuated);
+                                                let unconfirmed = (physical_output_action(&action.cmd) || cosmetic_output_action(&action.cmd)) && actuated.is_none() && progress.is_none();
                                                 let requested = cosmetic_requested(&action.cmd, control.as_ref().and_then(|c| c.requested), control.as_ref().and_then(|c| c.actuated));
                                                 let requested_label = match requested { Some(true) => "Requested: On", Some(false) => "Requested: Off", None => "Requested: unknown" };
                                                 let network_note = control.as_ref().filter(|_| cosmetic_output_action(&action.cmd)).and_then(|c| c.network_note.as_deref());
                                                 let (network_label, unconfirmed_badge) = cosmetic_network_labels(actuated.is_some(), network_note);
                                                 let sequence_label = sequence.map(|state| state.label()).unwrap_or("");
+                                                let sequence_label = progress.as_ref().map(|p| p.badge).filter(|_| sequence_label.is_empty()).unwrap_or(sequence_label);
                                                 let badge_visibility = if !sequence_label.is_empty() || !enabled || unconfirmed { "visible" } else { "hidden" };
                                                 let badge_label = if !sequence_label.is_empty() { sequence_label } else if unconfirmed { unconfirmed_badge } else { "Disabled" };
+                                                let progress_animation = progress.as_ref().map(|p| p.animation).unwrap_or("");
+                                                let progress_state = progress.as_ref().map(|p| p.state).unwrap_or("");
+                                                let progress_detail = progress.as_ref().map(|p| p.detail.clone()).unwrap_or_default();
+                                                let progress_busy = progress.as_ref().is_some_and(|p| p.busy);
                                                 let command_source = format!("action:{}", action.cmd);
                                                 rsx! {
                                                     button {
                                                         class: "gs26-action-control",
-                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\" && !physical_output_action(&action.cmd))}",
+                                                        style: "{btn_style(&action.border, &action.bg, &action.fg, enabled, blink, actuated, action.group == \"GSE sequence actions\" && !physical_output_action(&action.cmd))} {progress_animation}",
                                                         disabled: !enabled,
-                                                        aria_busy: sequence == Some(super::sequence_indicator::Progress::Running),
+                                                        aria_busy: sequence == Some(super::sequence_indicator::Progress::Running) || progress_busy,
+                                                        "data-progress": progress_state,
                                                         "data-sequence-state": sequence_label,
                                                         "data-dispatch-command": "{dispatch_cmd}",
                                                         onpointerdown: {
@@ -1161,6 +1171,9 @@ pub fn ActionsTab(
                                                             span {title:"{action.label}",style:if cosmetic_output_action(&action.cmd) {"display:block;white-space:nowrap;line-height:1.25;"} else {"display:block;overflow-wrap:break-word;white-space:normal;line-height:1.25;"}, "{action.label}"}
                                                             if cosmetic_output_action(&action.cmd) {
                                                                 span {title:"{requested_label}; {network_label}",style:"display:block;font-size:11px;font-weight:400;line-height:1.3;white-space:normal;overflow-wrap:anywhere;", "{requested_label}; {network_label}"}
+                                                            }
+                                                            if !progress_detail.is_empty() {
+                                                                span {role:"status",title:"{progress_detail}",style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:700;white-space:normal;overflow-wrap:anywhere;", "{progress_detail}"}
                                                             }
                                                             if action.group == "GSE sequence actions" {
                                                                 span {title:disabled_reason.unwrap_or(""),style:"display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;min-height:1.3em;overflow:hidden;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}

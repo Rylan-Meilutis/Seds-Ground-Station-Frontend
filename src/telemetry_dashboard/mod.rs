@@ -74,6 +74,7 @@ mod reseed_buffer;
 mod sd_board_download;
 mod sd_recording_import;
 mod sequence_indicator;
+mod control_progress;
 mod station_mode;
 mod station_positions_admin;
 mod station_pairing_admin;
