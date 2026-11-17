@@ -286,3 +286,23 @@ fn radio_tx_budget_shape_is_known() {
     }
     assert!(budget["refusals"].as_object().unwrap().values().all(Value::is_u64));
 }
+
+/// The FC's Kalman filter status: the `FcEstimator` frame after it started at
+/// T+0.3 s shows "running" with that start, and the route decodes too.
+#[test]
+fn fc_estimator_frame_and_route_decode_into_the_launch_notice() {
+    let WsInMsg::FcEstimator(view) = decode::<WsInMsg>("websocket/fc-estimator") else {
+        panic!("not an FcEstimator frame");
+    };
+    assert_eq!(view.state, "running");
+    assert_eq!(view.phase.as_deref(), Some("converged"));
+    assert_eq!(view.started_t_plus_ms, Some(300));
+    assert_eq!(view.running_for_ms, Some(2_250));
+    assert!(view.launch_seen && view.expected);
+    let n = fc_estimator_notice::notice(&view).expect("shown after Launch");
+    assert_eq!(n.title, "FC estimator: running (converged)");
+    assert_eq!(n.body, "Kalman filter started at T+0.3 s · running for 0:02");
+    let idle: fc_estimator_notice::FcEstimatorView = decode("fc-estimator/get");
+    assert_eq!(idle.state, "unknown");
+    assert_eq!(fc_estimator_notice::notice(&idle), None, "nothing on the pad");
+}

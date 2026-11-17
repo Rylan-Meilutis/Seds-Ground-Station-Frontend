@@ -8,6 +8,7 @@ enum WsInMsg {
     FlightState(FlightStateMsg),
     MissionPhase(mission_phase::MissionPhaseView),
     FlightMaxima(mission_phase::FlightMaximaView),
+    FcEstimator(fc_estimator_notice::FcEstimatorView),
     LaunchClock(LaunchClockMsg),
     Warning(AlertMsg),
     Error(AlertMsg),

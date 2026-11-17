@@ -2100,6 +2100,12 @@ fn handle_ws_message(
             }
         }
 
+        WsInMsg::FcEstimator(status) => {
+            if fc_estimator_notice::FC_ESTIMATOR.peek().as_ref() != Some(&status) {
+                *fc_estimator_notice::FC_ESTIMATOR.write() = Some(status);
+            }
+        }
+
         WsInMsg::LaunchClock(clock) => {
             set_signal_if_changed(&mut launch_clock, Some(clock));
         }
