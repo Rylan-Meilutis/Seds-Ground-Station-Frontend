@@ -130,6 +130,15 @@ pub fn SettingsPage(
     let mut maintenance_status = use_signal(String::new);
     let mut confirm_reset = use_signal(|| false);
     let mut active_settings_tab = use_signal(|| "general".to_string());
+    // Watch settings: signed-in users of the native phone apps whose watch
+    // has the companion app only. Leave the tab if eligibility goes away.
+    let watch_settings_available = super::watch_companion::use_watch_settings_available();
+    use_effect(move || {
+        if !*watch_settings_available.read() && active_settings_tab.peek().as_str() == "watch" {
+            active_settings_tab.set("general".to_string());
+        }
+    });
+    let show_watch_settings = *watch_settings_available.read();
     let telemetry_retention_custom_input = use_signal(String::new);
     let telemetry_view_window_custom_input = use_signal(String::new);
     let language = language_code.read().clone();
@@ -998,13 +1007,15 @@ pub fn SettingsPage(
                     onclick: move |_| active_settings_tab.set("maintenance".to_string()),
                     "{settings_tab_maintenance}"
                 }
-                button {
-                    style: if active_settings_tab.read().as_str() == "watch" { chip_selected.clone() } else { chip_idle.clone() },
-                    onclick: move |_| active_settings_tab.set("watch".to_string()),
-                    "Watch"
+                if show_watch_settings {
+                    button {
+                        style: if active_settings_tab.read().as_str() == "watch" { chip_selected.clone() } else { chip_idle.clone() },
+                        onclick: move |_| active_settings_tab.set("watch".to_string()),
+                        "Watch"
+                    }
                 }
             }
-            if active_settings_tab.read().as_str() == "watch" {
+            if show_watch_settings && active_settings_tab.read().as_str() == "watch" {
                 super::watch_companion::WatchSettingsSection { theme: theme.clone() }
             }
 

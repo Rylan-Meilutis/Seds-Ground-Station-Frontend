@@ -54,19 +54,38 @@ phone only refreshes the latest-state context every 10/30/60 s and does not
 poll antenna status faster than 10 s. The watch ticks the T-clock and fix ages
 locally between snapshots.
 
+### Who gets watch settings
+
+Settings → Watch, account sync of the watch document and applying watch-side
+edits are only for a **signed-in user of the native iOS or Android app whose
+watch has the companion app** (`watch_companion::settings_eligible`):
+
+* signed in: a named, non-anonymous session;
+* native phone build: iOS or Android (`COMPANION_PLATFORM`); never the
+  web/wasm frontend or desktop builds;
+* companion present: the bridge reports a paired watch with the GS app
+  installed (iOS `WCSession.isPaired` and `isWatchAppInstalled`; Android a
+  known node advertising `gs26_watch`, reachable or not).
+
+Everyone else sees no Watch tab. The persisted local copy is kept but not
+sent or applied: snapshots carry the default `WatchSettings`, settings
+messages from the watch are answered with that default, and nothing is read
+from or pushed to the account. The offline preview (no sign-in) behaves the
+same. Becoming eligible triggers an immediate account sync.
+
 ### Settings sync
 
 One local copy on the phone (`watch_settings_v1`) plus the account revision it
 was last synced with. Edits come from Settings → Watch on the phone or from the
 watch's settings screen and are stamped `updated_ms` (monotonic per document).
 
-* Signed in: the account document is the source of truth. On sign-in and
+* Eligible (above): the account document is the source of truth. On sign-in and
   every 60 s the phone reads `GET /api/account/client-settings/watch`. If the
   local copy has an unsynced edit based on the current account revision it is
   pushed; otherwise the account copy is adopted. A push that loses a race
   (HTTP 409) re-reads and keeps whichever copy has the newer `updated_ms`.
-* Not signed in, demo, or station without the endpoint: local only
-  (`account.sync = "local_only"`).
+* Station without the endpoint: local only (`account.sync = "local_only"`).
+  Not eligible: defaults only, as described above.
 * Phone → watch: settings travel in every snapshot. Watch → phone: a
   `settings` message; the phone applies it if newer and echoes the result.
 
@@ -159,5 +178,8 @@ Watch → phone:
 
 ## Building
 
-See `watch/apple/README.md` (macOS + Xcode) and `watch/wear/README.md`
-(Gradle). Phone-side Rust is covered by the normal test commands.
+`build.py` targets `watchos`, `watchos_sim`, `watchos_sim_intel` (iOS app
+with the watch app embedded; macOS) and `wearos`, `wearos_sim` (Wear OS APK);
+see the README's "Watch companion targets". Manual builds: `watch/apple/README.md`
+(macOS + Xcode) and `watch/wear/README.md` (Gradle). Phone-side Rust is covered
+by the normal test commands.

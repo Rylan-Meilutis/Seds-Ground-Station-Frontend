@@ -33,8 +33,13 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     private var appContext: Context? = null
     private var available = false
 
+    /** Reachable nodes running the watch app. */
     @Volatile
     private var watchNodes = 0
+
+    /** Known nodes (reachable or not) that have the watch app installed. */
+    @Volatile
+    private var installedNodes = 0
 
     @Volatile
     private var seq = 0L
@@ -60,6 +65,7 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
         Wearable.getCapabilityClient(ctx)
             .getCapability(WATCH_CAPABILITY, CapabilityClient.FILTER_REACHABLE)
             .addOnSuccessListener { onCapabilityChanged(it) }
+        refreshInstalled(ctx)
         // Settings edited while the phone app was closed arrive as a data item.
         Wearable.getDataClient(ctx).getDataItems(Uri.parse("wear://*$WATCH_SETTINGS_PATH"))
             .addOnSuccessListener { items ->
@@ -88,7 +94,18 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     @JvmStatic
     fun state(): Int {
         if (!available) return 0
-        return if (watchNodes > 0) 1 or 2 or 4 or 8 else 1
+        var bits = 1
+        if (installedNodes > 0 || watchNodes > 0) bits = bits or 2 or 4
+        if (watchNodes > 0) bits = bits or 8
+        return bits
+    }
+
+    /** The phone app's Settings only offer watch settings once a watch with the
+     *  companion app is known, so count it even while it is out of range. */
+    private fun refreshInstalled(ctx: Context) {
+        Wearable.getCapabilityClient(ctx)
+            .getCapability(WATCH_CAPABILITY, CapabilityClient.FILTER_ALL)
+            .addOnSuccessListener { installedNodes = it.nodes.size }
     }
 
     private fun enqueue(json: String) {
@@ -114,5 +131,6 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
 
     override fun onCapabilityChanged(info: CapabilityInfo) {
         watchNodes = info.nodes.size
+        appContext?.let(::refreshInstalled)
     }
 }

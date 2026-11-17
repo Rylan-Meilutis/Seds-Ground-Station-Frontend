@@ -39,8 +39,10 @@ struct Rate {
 }
 
 impl Rate {
-    /// Handles queued watch messages; only settings edits change state.
-    fn handle_incoming(&mut self, now: f64) {
+    /// Handles queued watch messages; only settings edits change state, and
+    /// only for a user eligible for watch settings (others are echoed the
+    /// defaults without anything being stored).
+    fn handle_incoming(&mut self, now: f64, eligible: bool) {
         for raw in bridge::take_incoming(16) {
             match WatchMessage::parse(&raw) {
                 Some(WatchMessage::Hello) => {
@@ -56,7 +58,7 @@ impl Rate {
                     self.force = true;
                 }
                 Some(WatchMessage::Settings { settings }) => {
-                    if let Some(mut edit) = WatchSettings::from_value(settings) {
+                    if eligible && let Some(mut edit) = WatchSettings::from_value(settings) {
                         edit.updated_by = Editor::Watch;
                         super::apply_edit(edit, Editor::Watch);
                     }
@@ -170,7 +172,7 @@ fn station(ws_connected: bool) -> Station {
 /// Snapshot sent when the publisher unmounts: the phone left the station
 /// (sign-out, switching stations, connection page). Keeps last targets.
 fn publish_no_station() {
-    let settings = super::current_settings();
+    let settings = super::effective_settings(super::watch_settings_available());
     let none = |_: &str, _: Option<&str>, _: usize| None;
     let antenna = LAST_ANTENNA.lock().ok().and_then(|g| g.clone());
     let now = monotonic_now_ms();
@@ -216,17 +218,31 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
         let mut seq = 0u64;
         let mut last_sync = f64::NEG_INFINITY;
         let mut last_antenna_poll = f64::NEG_INFINITY;
+        let mut was_eligible = false;
         loop {
             let now = monotonic_now_ms();
-            rate.handle_incoming(now);
+            let link = bridge::link_state();
+            let eligible = super::COMPANION_PLATFORM
+                && super::settings_eligible(
+                    super::COMPANION_PLATFORM,
+                    super::account_key().is_some(),
+                    link,
+                );
+            if eligible != was_eligible {
+                // Became eligible (signed in, watch app installed): sync now.
+                // Lost eligibility: resend so the watch drops the settings.
+                was_eligible = eligible;
+                SYNC_REQUESTED.store(true, Ordering::Release);
+                PUBLISH_REQUESTED.store(true, Ordering::Release);
+            }
+            rate.handle_incoming(now, eligible);
             if SYNC_REQUESTED.swap(false, Ordering::AcqRel) || now - last_sync >= ACCOUNT_REFRESH_MS
             {
                 last_sync = now;
                 super::sync_once().await;
             }
-            let link = bridge::link_state();
             if link.supported && link.paired {
-                let settings = super::current_settings();
+                let settings = super::effective_settings(eligible);
                 let active = rate.active(now, link);
                 let antenna_interval = match (settings.compass_enabled(), active) {
                     (true, true) => settings.power.active_interval_ms().max(1_000) as f64,
@@ -300,12 +316,12 @@ pub(in crate::telemetry_dashboard) fn use_demo_publisher() {
         let mut seq = 0u64;
         loop {
             let now = monotonic_now_ms();
-            // Watch edits still apply locally; account sync waits for a
-            // real station session.
-            rate.handle_incoming(now);
+            // The offline preview has no signed-in user, so the watch gets
+            // the default settings and its edits are not stored.
+            rate.handle_incoming(now, false);
             let link = bridge::link_state();
             if link.supported && link.paired {
-                let settings = super::current_settings();
+                let settings = super::effective_settings(false);
                 let active = rate.active(now, link);
                 if rate.due(now, active, &settings) {
                     seq += 1;
