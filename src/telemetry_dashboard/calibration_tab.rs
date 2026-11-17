@@ -50,8 +50,18 @@ struct GenericCalibrationChannel {
     fit: Option<FitMeta>,
 }
 
+/// Calibration file format: version 2 stores load-cell zeros, points and fits
+/// against ADC-pin volts (kg = f(V)). The station migrates older files on load
+/// and refuses a save that is not echoed back at this version.
+const CALIBRATION_VERSION: u32 = 2;
+
+fn legacy_calibration_version() -> u32 { 1 }
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct CalibrationFile {
+    /// Missing means a legacy (raw-scale) payload; never upgrade it silently.
+    #[serde(default = "legacy_calibration_version")]
+    version: u32,
     #[serde(default = "default_kg50_input")]
     kg50_input: String,
     #[serde(default)]
@@ -89,6 +99,7 @@ fn default_kg50_input() -> String { "amp2".into() }
 impl Default for CalibrationFile {
     fn default() -> Self {
         Self {
+            version: CALIBRATION_VERSION,
             kg50_input: default_kg50_input(),
             noise: BTreeMap::new(),
             thermal: BTreeMap::new(),
@@ -135,9 +146,11 @@ fn default_capture_target_samples() -> usize {
 const CALIBRATION_SELECTED_SENSOR_STORAGE_KEY: &str = "gs_calibration_selected_sensor";
 const CALIBRATION_PRESERVE_REGRESSION_STORAGE_KEY: &str =
     "gs_calibration_preserve_regression_on_zero_change";
-const CALIBRATION_DRAFT_STORAGE_KEY_PREFIX: &str = "gs_calibration_draft_v1_";
-const CALIBRATION_LAYOUT_CACHE_STORAGE_KEY_PREFIX: &str = "gs_calibration_layout_v1_";
-const CALIBRATION_FILE_CACHE_STORAGE_KEY_PREFIX: &str = "gs_calibration_file_v1_";
+// v2: load cells are stored in volts. Older caches/drafts hold the legacy raw
+// scale and must never be shown as volts or saved back.
+const CALIBRATION_DRAFT_STORAGE_KEY_PREFIX: &str = "gs_calibration_draft_v2_";
+const CALIBRATION_LAYOUT_CACHE_STORAGE_KEY_PREFIX: &str = "gs_calibration_layout_v2_";
+const CALIBRATION_FILE_CACHE_STORAGE_KEY_PREFIX: &str = "gs_calibration_file_v2_";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
@@ -406,13 +419,32 @@ fn sensor_raw_precision(sensor: Option<&CalibrationSensorSpec>, default_precisio
         .unwrap_or(default_precision)
 }
 
-fn format_sensor_raw_value(
+fn manual_entry_help(unit: calibration_capture::ReadingUnit) -> String {
+    use calibration_capture::ReadingUnit;
+    match unit {
+        ReadingUnit::Volts => "Enter the known mass (kg) and the ADC-pin reading in volts (V), or capture a live reading. Add the point, then Save the selected sensor. The fit is kg vs V.".into(),
+        ReadingUnit::Millivolts => "Enter the known mass (kg) and the P6 differential reading in millivolts (mV), or capture a live reading. Add the point, then Save the selected sensor. The fit is kg vs V; mV entries are converted to volts.".into(),
+        ReadingUnit::Raw => "Enter the known value and raw reading directly, or capture a live reading. Add the point, then Save the selected sensor.".into(),
+    }
+}
+
+fn manual_reading_placeholder(unit: calibration_capture::ReadingUnit) -> &'static str {
+    use calibration_capture::ReadingUnit;
+    match unit {
+        ReadingUnit::Volts => "Measured reading (V)",
+        ReadingUnit::Millivolts => "Measured reading (mV)",
+        ReadingUnit::Raw => "Measured raw sensor value",
+    }
+}
+
+/// A sensor reading with its unit: volts/millivolts for load cells, the
+/// sensor's configured precision for unitless raw sensors.
+fn format_reading(
+    unit: calibration_capture::ReadingUnit,
     value: f32,
     sensor: Option<&CalibrationSensorSpec>,
-    default_precision: usize,
 ) -> String {
-    let precision = sensor_raw_precision(sensor, default_precision);
-    format_raw_with_precision(value, precision)
+    unit.format(value, sensor_raw_precision(sensor, 6))
 }
 
 fn format_raw_with_precision(value: f32, precision: usize) -> String {
@@ -1205,6 +1237,54 @@ fn fit_details_text_parts((linear, fit): (&ChannelLinear, Option<&FitMeta>)) -> 
     }
 }
 
+/// Fit error at a calibration point: fitted kg minus the known kg.
+fn point_residual_kg(cfg: &CalibrationFile, channel: &str, reading: f32, expected: f32) -> Option<f32> {
+    eval_fit_key(cfg, channel, reading)
+        .map(|fitted| fitted - expected)
+        .filter(|value| value.is_finite())
+}
+
+/// Average sensitivity of the fit over the captured span (kg per stored
+/// unit, i.e. kg/V for load cells): the secant between the lowest and highest
+/// reading. Exact for linear fits; a summary for polynomial ones.
+fn fit_span_slope(cfg: &CalibrationFile, channel: &str, readings: &[f32]) -> Option<f32> {
+    let low = readings.iter().copied().filter(|v| v.is_finite()).min_by(f32::total_cmp)?;
+    let high = readings.iter().copied().filter(|v| v.is_finite()).max_by(f32::total_cmp)?;
+    if (high - low).abs() <= f32::EPSILON * high.abs().max(1.0) {
+        return None;
+    }
+    let slope = (eval_fit_key(cfg, channel, high)? - eval_fit_key(cfg, channel, low)?) / (high - low);
+    slope.is_finite().then_some(slope)
+}
+
+/// Load-cell fit summary in physical units: kg = f(V).
+fn fit_details_text_voltage(
+    cfg: &CalibrationFile,
+    channel: &str,
+    unit: calibration_capture::ReadingUnit,
+) -> Option<String> {
+    let (linear, fit) = linear_for_channel_key(cfg, channel);
+    let fit_type = fit.and_then(|f| f.fit_type.as_deref()).unwrap_or("linear");
+    let mut readings: Vec<f32> = channel_points_by_key(cfg, channel).iter().map(|(v, _)| *v).collect();
+    readings.extend(zero_raw_for_channel_key(cfg, channel));
+    let zero = zero_raw_for_channel_key(cfg, channel)
+        .or_else(|| fit.and_then(|f| f.x0))
+        .map(|v| format!(", zero {}", unit.format(v, 6)))
+        .unwrap_or_default();
+    if matches!(fit_type, "poly2" | "poly3" | "poly4") {
+        let coefficients = fit_details_text_parts((linear, fit))?;
+        let slope = fit_span_slope(cfg, channel, &readings)
+            .map(|m| format!("; mean slope {m:.4} kg/V over the points"))
+            .unwrap_or_default();
+        return Some(format!("kg = {fit_type}(V): {coefficients} (x in V){slope}{zero}"));
+    }
+    let m = linear.m?;
+    Some(format!(
+        "kg = m·V + b: slope {m:.4} kg/V, intercept {:+.4} kg{zero}",
+        linear.b.unwrap_or(0.0)
+    ))
+}
+
 #[cfg(test)]
 #[path = "calibration_sequence_tests.rs"]
 mod calibration_sequence_tests;
@@ -1641,6 +1721,18 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .cloned()
         .or_else(|| sensors.first().cloned());
     let raw_precision = sensor_raw_precision(selected_sensor.as_ref(), 6);
+    // Load cells are stored in volts; this only chooses V or mV for display/entry.
+    let reading_unit = selected_sensor
+        .as_ref()
+        .map(|sensor| {
+            let kg50_input = cfg
+                .read()
+                .as_ref()
+                .map(|c| c.kg50_input.clone())
+                .unwrap_or_else(default_kg50_input);
+            calibration_capture::reading_unit(&sensor.data_type, &kg50_input)
+        })
+        .unwrap_or(calibration_capture::ReadingUnit::Raw);
     let channel_key = selected_sensor
         .as_ref()
         .map(|s| s.channel.clone())
@@ -1767,10 +1859,13 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         .and_then(|c| fit_for_channel_key(c, &channel_key))
         .and_then(|f| f.fit_type.clone())
         .unwrap_or_else(|| "linear".to_string());
-    let fit_meta_text = cfg
-        .read()
-        .as_ref()
-        .and_then(|c| fit_details_text_key(c, &channel_key));
+    let fit_meta_text = cfg.read().as_ref().and_then(|c| {
+        if reading_unit.is_voltage() {
+            fit_details_text_voltage(c, &channel_key, reading_unit)
+        } else {
+            fit_details_text_key(c, &channel_key)
+        }
+    });
     let fit_equation_text = fit_meta_text
         .clone()
         .unwrap_or_else(|| format!("{}={}", translate_text("type"), translate_text(&fit_type_s)));
@@ -1923,7 +2018,15 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     } else {
         display_points
             .iter()
-            .map(|(raw, expected, _)| format!("{expected:.3} kg -> {raw:.raw_precision$}"))
+            .map(|(raw, expected, _)| {
+                let residual = cfg
+                    .read()
+                    .as_ref()
+                    .and_then(|c| point_residual_kg(c, &channel_key, *raw, *expected))
+                    .map(|r| format!("  residual {r:+.3} kg"))
+                    .unwrap_or_default();
+                format!("{expected:.3} kg <- {}{residual}", reading_unit.format(*raw, raw_precision))
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -1963,7 +2066,17 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
             } else {
                 format!("{expected:.4} kg")
             };
-            let raw_label = format!("raw {}", format_raw_with_precision(*raw, raw_precision));
+            let residual = cfg
+                .read()
+                .as_ref()
+                .and_then(|c| point_residual_kg(c, &channel_key, *raw, *expected))
+                .map(|r| format!(" · residual {r:+.3} kg"))
+                .unwrap_or_default();
+            let raw_label = if reading_unit.is_voltage() {
+                format!("{}{residual}", reading_unit.format(*raw, raw_precision))
+            } else {
+                format!("raw {}{residual}", format_raw_with_precision(*raw, raw_precision))
+            };
             (*raw, *expected, *selection, label, raw_label)
         })
         .collect();
@@ -2392,7 +2505,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
 
             if can_edit {
             h3 { style: "margin:8px 0 0; font-size:15px;", "Manual calibration point" }
-            p { style: "margin:0; font-size:12px; color:{theme.text_muted};", "Enter the known weight and raw reading directly, or capture a live reading. Add the point, then Save the selected sensor. P6 raw readings are differential volts." }
+            p { style: "margin:0; font-size:12px; color:{theme.text_muted};", {manual_entry_help(reading_unit)} }
             div { style: "{toolbar_style}",
                 input {
                     style: "{input_style}",
@@ -2410,9 +2523,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                 input {
                     style: "{input_style}",
                     r#type: "number",
-                    step: "0.000001",
-                    placeholder: "Measured raw sensor value",
-                    aria_label: "Manual raw ADC reading",
+                    step: "any",
+                    placeholder: "{manual_reading_placeholder(reading_unit)}",
+                    aria_label: "Manual sensor reading ({reading_unit.label()})",
                     value: "{manual_raw.read()}",
                     disabled: !can_edit,
                     oninput: {
@@ -2438,12 +2551,13 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 status.set("Invalid manual kg".to_string());
                                 return;
                             };
-                            let Ok(raw) = manual_raw.read().parse::<f32>() else {
-                                status.set("Invalid manual raw".to_string());
+                            // Entered in display units (V or mV); stored in volts.
+                            let Some(raw) = reading_unit.parse_entry(&manual_raw.read()) else {
+                                status.set(format!("Invalid manual reading ({})", reading_unit.label()));
                                 return;
                             };
                             if !kg.is_finite() || !raw.is_finite() {
-                                status.set("Weight and raw reading must be finite numbers".into());
+                                status.set("Weight and reading must be finite numbers".into());
                                 return;
                             }
                             let Some(sensor) = selected_sensor.clone() else {
@@ -2532,15 +2646,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     Ok((summary, temperature)) => {
                                         let raw = summary.mean;
                                         manual_temperature.set(temperature);
-                                        manual_raw.set(format_sensor_raw_value(
-                                            raw,
-                                            Some(&sensor),
-                                            6,
-                                        ));
+                                        manual_raw.set(reading_unit.entry_text(raw, sensor_raw_precision(Some(&sensor), 6)));
                                         let done = format!(
-                                            "Captured averaged raw sample {} from {} samples on {} ({}).",
-                                            format_sensor_raw_value(raw, Some(&sensor), 6),
-                                            summary.used, sensor.label, summary.stats_text()
+                                            "Captured averaged reading {} from {} samples on {} ({}).",
+                                            format_reading(reading_unit, raw, Some(&sensor)),
+                                            summary.used, sensor.label, summary.stats_text(reading_unit)
                                         );
                                         manual_capture_progress.set(done.clone());
                                         status.set(done);
@@ -2680,7 +2790,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             move |_| {
                                 selected_point.set(Some(selection));
                                 manual_kg.set(format!("{expected}"));
-                                manual_raw.set(format_raw_with_precision(raw, raw_precision));
+                                manual_raw.set(reading_unit.entry_text(raw, raw_precision));
                             }
                         },
                         div { style: "font-weight:700;", "{point_label}" }
@@ -2772,8 +2882,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     }
                     text { x:"6", y:"14", fill:"{theme.text_muted}", "font-size":"11", {format!("y max {:.3}", y_max)} }
                     text { x:"6", y:"{plot_h - pad_b + 4.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("y min {:.3}", y_min)} }
-                    text { x:"{pad_l}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x min {:.raw_precision$}", x_min)} }
-                    text { x:"{plot_w - 130.0}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x max {:.raw_precision$}", x_max)} }
+                    text { x:"{pad_l}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x min {}", reading_unit.format(x_min, raw_precision))} }
+                    text { x:"{plot_w - 130.0}", y:"{plot_h - 6.0}", fill:"{theme.text_muted}", "font-size":"11", {format!("x max {}", reading_unit.format(x_max, raw_precision))} }
                 }
                 if let (Some((raw, expected)), Some(panel_horizontal_style), Some(panel_top)) = (active_plot_point, point_overlay_horizontal_style.clone(), point_overlay_top.clone()) {
                     div {
@@ -2786,8 +2896,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 span { "{expected:.4} kg" }
                             }
                             div { style: "display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;",
-                                span { "Raw" }
-                                span { "{format_raw_with_precision(raw, raw_precision)}" }
+                                span { if reading_unit.is_voltage() { "Reading" } else { "Raw" } }
+                                span { "{reading_unit.format(raw, raw_precision)}" }
                             }
                         }
                     }
@@ -2806,14 +2916,14 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     span { "{expected:.4} kg" }
                                 }
                                 div { style: "display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;",
-                                    span { "Raw" }
-                                    span { "{format_raw_with_precision(raw, raw_precision)}" }
+                                    span { if reading_unit.is_voltage() { "Reading" } else { "Raw" } }
+                                    span { "{reading_unit.format(raw, raw_precision)}" }
                                 }
                             }
                         }
                     } else {
                         div { style: "font-size:11px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;", "Selected Point" }
-                        div { style: "padding:10px 12px; border-radius:14px; border:1px dashed {theme.border}; background:{theme.panel_background}; color:{theme.text_muted}; font-size:12px;", "Tap a point to inspect its value and raw reading." }
+                        div { style: "padding:10px 12px; border-radius:14px; border:1px dashed {theme.border}; background:{theme.panel_background}; color:{theme.text_muted}; font-size:12px;", "Tap a point to inspect its value and reading." }
                     }
                 }
             }
@@ -2896,7 +3006,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         }
                         div { style:"font-size:13px;color:{theme.text_secondary};",
                             if *sequence_direction.read() == CaptureDirection::Decreasing { "High to low" } else { "Low to high" }
-                            " · Known mass (kg). Prefilled non-zero masses are editable in both sequences; zero captures remain 0 kg."
+                            " · Capture the reading at each known mass (kg); the fit is kg vs reading. Prefilled non-zero masses are editable in both sequences; zero captures remain 0 kg."
                         }
                         div { style: "{toolbar_style}",
                             input {
@@ -2915,7 +3025,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 style: "{input_style}",
                                 r#type: "text",
                                 readonly: true,
-                                placeholder: "Captured raw sample appears here",
+                                placeholder: "Captured reading appears here",
                                 value: "{sequence_dialog_captured_raw.read()}",
                             }
                             button {
@@ -2990,7 +3100,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                 Ok(_) if !settings_owner.current() || *selected_sensor_id.peek() != capture_selection => return,
                                                 Ok((summary, temperature)) => {
                                                     let (raw, captured) = (summary.mean, summary.used);
-                                                    let stats = summary.stats_text();
+                                                    let stats = summary.stats_text(reading_unit);
                                                     let mut next = cfg.read().clone().unwrap_or_default();
                                                     if let Err(error) = apply_sequence_capture(
                                                         &mut next, &sensor.channel, mode, weight, raw, replace_existing,
@@ -3009,11 +3119,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                     cfg.set(Some(next));
                                                     dirty.set(true);
                                                     sequence_dialog_captured_raw.set(
-                                                        format_sensor_raw_value(
-                                                            raw,
-                                                            Some(&sensor),
-                                                            6,
-                                                        ),
+                                                        format_reading(reading_unit, raw, Some(&sensor)),
                                                     );
                                                     if mode == CaptureMode::SequenceZero {
                                                         if let Some(err) = refit_err.as_ref() {
@@ -3030,7 +3136,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         if *sequence_direction.read() == CaptureDirection::Decreasing && !replace_existing {
                                                             sequence_dialog_status.set(format!(
                                                                 "Final zero captured as {} from {} samples on {} ({}). Review the fit, then save the calibration.",
-                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label, stats
+                                                                format_reading(reading_unit, raw, Some(&sensor)), captured, sensor.label, stats
                                                             ));
                                                             sequence_dialog_open.set(false);
                                                         } else {
@@ -3040,7 +3146,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                             sequence_dialog_confirm_reset.set(false);
                                                             sequence_dialog_status.set(format!(
                                                                 "Zero captured as {} from {} samples on {} ({}). Add the next known mass and capture again.",
-                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label, stats
+                                                                format_reading(reading_unit, raw, Some(&sensor)), captured, sensor.label, stats
                                                             ));
                                                         }
                                                     } else {
@@ -3061,7 +3167,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         sequence_dialog_confirm_reset.set(false);
                                                         sequence_dialog_status.set(format!(
                                                             "Added/updated {weight} kg as {} from {} samples on {} ({stats}). Enter the next mass and capture again.",
-                                                            format_sensor_raw_value(raw, Some(&sensor), 6),
+                                                            format_reading(reading_unit, raw, Some(&sensor)),
                                                             captured,
                                                             sensor.label
                                                         ));
@@ -3144,12 +3250,26 @@ fn CalibrationLiveMetrics(
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
     let raw = selected_sensor.as_ref().and_then(|sensor| latest_raw(&sensor.data_type));
+    let unit = selected_sensor
+        .as_ref()
+        .map(|sensor| {
+            let kg50_input = calibration.as_ref().map(|c| c.kg50_input.clone()).unwrap_or_else(default_kg50_input);
+            calibration_capture::reading_unit(&sensor.data_type, &kg50_input)
+        })
+        .unwrap_or(calibration_capture::ReadingUnit::Raw);
+    let raw_precision = sensor_raw_precision(selected_sensor.as_ref(), 6);
+    let live_label = if unit.is_voltage() { format!("Live reading ({})", unit.label()) } else { "Live Raw".to_string() };
+    let live_value = if unit.is_voltage() {
+        raw.map(|v| unit.entry_text(v, raw_precision)).unwrap_or_else(|| "-".into())
+    } else {
+        fmt_fixed(raw, 12, raw_precision)
+    };
     let value = calibration.as_ref().and_then(|cfg| {
         raw.and_then(|raw| thermal_raw(cfg, &channel_key, raw, fresh_temperature()))
             .and_then(|raw| eval_fit_key(cfg, &channel_key, raw))
     });
     rsx! {
-        {metric_card(&theme, "Live Raw", fmt_fixed(raw, 12, sensor_raw_precision(selected_sensor.as_ref(), 6)))}
+        {metric_card(&theme, &live_label, live_value)}
         {metric_card(&theme, "Calibrated Value", fmt_fixed(value, 12, 4))}
     }
 }
@@ -3189,13 +3309,13 @@ fn ThermalCompensationMetrics(
                         span { style: "padding:5px 10px; border-radius:999px; background:{theme.info_background}; color:{theme.info_text}; font-size:12px; font-weight:700;", "{state}" }
                         span { style: "font-size:12px; color:{theme.text_muted};", if dirty { "Unsaved preview · Save to apply" } else { "Saved settings · before smoothing" } }
                     }
-                    p { style: "font-size:12px; color:{theme.text_muted}; margin:8px 0 0;", "ADC die temperature is a proxy, not the loadcell temperature. Corrected raw = raw − slope × (temperature − reference)." }
+                    p { style: "font-size:12px; color:{theme.text_muted}; margin:8px 0 0;", "ADC die temperature is a proxy, not the loadcell temperature. Corrected V = V − slope × (temperature − reference)." }
                 }
                 {metric_card(&theme, "ADC die temperature (°C)", fmt_fixed(temperature, 0, 2))}
                 {metric_card(&theme, "Reference temperature (°C)", fmt_fixed(thermal.map(|t| t.reference_c), 0, 2))}
-                {metric_card(&theme, "Thermal slope (raw/°C)", thermal.map(|t| format!("{:+.6e}", t.raw_per_c)).unwrap_or_else(|| "—".into()))}
-                {metric_card(&theme, "Applied raw change", raw_change.map(|v| format!("{:+.6e}", v)).unwrap_or_else(|| "—".into()))}
-                {metric_card(&theme, "Temperature-corrected raw", fmt_fixed(corrected_raw, 0, 9))}
+                {metric_card(&theme, "Thermal slope (V/°C)", thermal.map(|t| format!("{:+.6e}", t.raw_per_c)).unwrap_or_else(|| "—".into()))}
+                {metric_card(&theme, "Applied change (V)", raw_change.map(|v| format!("{:+.6e}", v)).unwrap_or_else(|| "—".into()))}
+                {metric_card(&theme, "Temperature-corrected reading (V)", fmt_fixed(corrected_raw, 0, 9))}
                 {metric_card(&theme, "Without temperature correction (kg)", fmt_fixed(before_thermal, 0, 4))}
                 {metric_card(&theme, "With temperature correction (kg)", fmt_fixed(calibrated_live, 0, 4))}
                 {metric_card(&theme, "Temperature effect (kg)", weight_change.map(|v| format!("{:+.4}", v)).unwrap_or_else(|| "—".into()))}
@@ -3362,7 +3482,7 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
         details { style:"padding:16px; border:1px solid {theme.border_soft}; border-radius:12px;",
             summary { style:"font-weight:700; cursor:pointer;", "Long zero capture & noise filter" }
             div { style:"display:grid; gap:14px; margin-top:14px;",
-                p { style:"margin:0; color:{theme.text_secondary}; font-size:13px;", "Keep physically unloaded throughout. Raw data is retained during warming and cooling; thermal fitting uses only settled two-minute periods. Hold at each temperature until the loadcell has settled." }
+                p { style:"margin:0; color:{theme.text_secondary}; font-size:13px;", "Keep physically unloaded throughout. Readings (V) are retained during warming and cooling; thermal fitting uses only settled two-minute periods. Hold at each temperature until the loadcell has settled." }
                 label { style:"display:flex; align-items:center; gap:8px; font-size:13px;",
                     input { r#type:"checkbox", checked:*known_zero.read(), onchange:move|e|known_zero.set(e.checked()) }
                     "I confirm the loadcell will remain physically unloaded"
@@ -3375,7 +3495,7 @@ fn LongZeroPanel(theme: ThemeConfig, sensor: String, dirty: bool, on_applied: Ev
                         onclick:move |_| {
                             let body=serde_json::json!({"sensor_id":sensor,"duration_s":duration.read().parse::<u64>().unwrap_or(0),"known_zero":*known_zero.read()});
                             spawn(async move {match settings_owner.post::<serde_json::Value,serde_json::Value>("/api/calibration/long_zero",&body).await {
-                                Ok(v)=>{status.set(v);message.set("Recording raw data. Keep unloaded and hold each temperature until settled.".into());},Err(_) if !settings_owner.current() => (),
+                                Ok(v)=>{status.set(v);message.set("Recording readings. Keep unloaded and hold each temperature until settled.".into());},Err(_) if !settings_owner.current() => (),
 Err(e) =>message.set(e),
                             }});
                         }, "Start capture"
@@ -3396,9 +3516,9 @@ Err(e) =>message.set(e),
                     {metric_card(&theme,"Accepted samples",samples)}
                     {metric_card(&theme,"ADC temperature range",temperature)}
                     {metric_card(&theme,"Settled periods",settled_count.to_string())}
-                    {metric_card(&theme,"Fitted slope (raw/°C)",slope)}
+                    {metric_card(&theme,"Fitted slope (V/°C)",slope)}
                     {metric_card(&theme,"Settled temperature span",quality["span_c"].as_f64().map(|v|format!("{v:.3} °C")).unwrap_or_else(||"—".into()))}
-                    {metric_card(&theme,"Slope repeatability margin",quality["slope_margin"].as_f64().map(|v|format!("±{v:.3e} raw/°C")).unwrap_or_else(||"—".into()))}
+                    {metric_card(&theme,"Slope repeatability margin",quality["slope_margin"].as_f64().map(|v|format!("±{v:.3e} V/°C")).unwrap_or_else(||"—".into()))}
                 }
                 p { role:"status", style:"margin:0; font-size:13px; color:{theme.text_secondary};", {report["settling_message"].as_str().unwrap_or("No settling analysis yet").to_string()} }
                 p { role:"status", style:"margin:0; font-size:13px; color:{theme.text_secondary};", {quality["message"].as_str().unwrap_or("Collect six settled periods across at least 0.25 °C, including intermediate temperatures.").to_string()} }
@@ -3411,8 +3531,8 @@ Err(e) =>message.set(e),
                     p { style:"font-size:12px;", {format!("Rejected: {} · Dropped: {}",snapshot["rejected_samples"],snapshot["dropped_samples"])} }
                     p { style:"font-size:12px; overflow-wrap:anywhere;", "CSV: " {snapshot["csv_path"].as_str().unwrap_or("—").to_string()} }
                     p { style:"font-size:12px;", "Error: " {snapshot["error"].as_str().unwrap_or("none").to_string()} }
-                    p { style:"font-size:12px;", "Residual noise σ: " {report["residual_sigma_raw"].as_f64().map(|v|format!("{v:.6e} raw")).unwrap_or_else(||"—".into())} }
-                    p { style:"font-size:12px;", "Adjacent noise σ: " {report["adjacent_noise_sigma_raw"].as_f64().map(|v|format!("{v:.6e} raw")).unwrap_or_else(||"—".into())} }
+                    p { style:"font-size:12px;", "Residual noise σ: " {report["residual_sigma_raw"].as_f64().map(|v|format!("{:.5} mV", v * 1000.0)).unwrap_or_else(||"—".into())} }
+                    p { style:"font-size:12px;", "Adjacent noise σ: " {report["adjacent_noise_sigma_raw"].as_f64().map(|v|format!("{:.5} mV", v * 1000.0)).unwrap_or_else(||"—".into())} }
                 }
                 div { style:"border-top:1px solid {theme.border_soft}; padding-top:14px; display:grid; gap:10px;",
                     label { style:"display:flex; gap:8px; align-items:center; font-size:13px;",
@@ -3522,13 +3642,21 @@ fn ManualLinearCalibration(
 ) -> Element {
     let mut slope = use_signal(String::new);
     let mut offset = use_signal(|| "0".to_string());
+    // Load-cell channels are fitted as kg = slope × volts + offset.
+    let load_cell = matches!(channel.as_str(), "ch1" | "kg50");
+    let help = if load_cell {
+        "kg = slope (kg/V) × temperature-corrected reading (V) + offset (kg). Applying replaces this sensor's fit and clears its separate tare; captured points are retained. Save to publish."
+    } else {
+        "Output = slope × temperature-corrected raw + offset. Applying replaces this sensor's fit and clears its separate tare; captured points are retained. Save to publish."
+    };
+    let (slope_placeholder, offset_placeholder) = if load_cell { ("Slope (kg/V)", "Offset (kg)") } else { ("Slope", "Offset") };
     rsx! {
         details { style: "padding:12px; border:1px solid {theme.border_soft}; border-radius:10px;",
             summary { style: "font-weight:700; cursor:pointer;", "Manual slope and offset" }
-            p { style: "font-size:12px; color:{theme.text_muted};", "Output = slope × temperature-corrected raw + offset. Applying replaces this sensor's fit and clears its separate tare; captured points are retained. Save to publish." }
+            p { style: "font-size:12px; color:{theme.text_muted};", "{help}" }
             div { style: "display:flex; gap:8px; flex-wrap:wrap;",
-                input { r#type: "number", step: "any", aria_label: "Calibration slope", placeholder: "Slope", value: "{slope}", oninput: move |e| slope.set(e.value()) }
-                input { r#type: "number", step: "any", aria_label: "Calibration offset", placeholder: "Offset", value: "{offset}", oninput: move |e| offset.set(e.value()) }
+                input { r#type: "number", step: "any", aria_label: "Calibration slope", placeholder: "{slope_placeholder}", value: "{slope}", oninput: move |e| slope.set(e.value()) }
+                input { r#type: "number", step: "any", aria_label: "Calibration offset", placeholder: "{offset_placeholder}", value: "{offset}", oninput: move |e| offset.set(e.value()) }
                 button { r#type: "button", disabled: cfg.read().is_none(),
                     onclick: move |_| {
                         let (Ok(m), Ok(b)) = (slope.read().parse::<f32>(), offset.read().parse::<f32>()) else {
