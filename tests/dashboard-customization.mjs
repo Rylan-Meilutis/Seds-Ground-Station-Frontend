@@ -113,7 +113,7 @@ try{
   const openAdmin=async()=>{
     await openStationSettings();
     await page.getByRole('navigation',{name:'Ground Station settings sections'}).getByRole('button',{name:'Administration',exact:true}).click();
-    await page.getByRole('button',{name:'Manage users & access',exact:true}).click();
+    await page.getByRole('button',{name:'Open administration console',exact:true}).click();
   };
   assert.equal(await page.getByRole('navigation',{name:'Mission navigation'}).count(),0,'tab preference excludes sidebar');
   assert.equal(await page.getByRole('button',{name:'Admin',exact:true}).count(),0,'stream manager is not a user administrator');

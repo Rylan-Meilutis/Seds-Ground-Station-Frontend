@@ -28,7 +28,7 @@ try{
   await page.getByRole('navigation',{name:'Ground Station settings sections'}).getByRole('button',{name:'Administration',exact:true}).click();
   await page.evaluate(()=>{window.__neutralTimeoutRequests=[];});
   const started=Date.now();
-  await page.getByRole('button',{name:'Manage users & access',exact:true}).click();
+  await page.getByRole('button',{name:'Open administration console',exact:true}).click();
   await page.getByRole('heading',{name:'Administration',exact:true}).waitFor();
   await page.getByText('HTTP GET /api/admin/users timed out',{exact:false}).waitFor({timeout:22000});
   const elapsed=Date.now()-started;
