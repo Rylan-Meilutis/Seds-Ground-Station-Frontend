@@ -177,6 +177,7 @@ pub fn ConnectionStatusTab(
                     }
                     if *show_board.read() {
                         {render_board_table(&merged_boards, board_age_now_ms, ws_connected, &theme)}
+                        super::board_config_sync::BoardConfigSyncPanel { theme: theme.clone() }
                     }
                 }
             },

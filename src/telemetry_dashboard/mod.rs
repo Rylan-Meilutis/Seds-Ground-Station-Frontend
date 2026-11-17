@@ -64,6 +64,7 @@ mod notifications_tab;
 pub(crate) mod offline_preview;
 mod paired_settings;
 mod plumbing_drive;
+mod board_config_sync;
 pub(crate) mod prelude;
 mod recorded_replay_controls;
 mod recording_download;
