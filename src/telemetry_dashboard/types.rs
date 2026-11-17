@@ -334,6 +334,47 @@ pub struct BoardDiagnostics {
     pub sd_init_failures: Option<u32>,
     pub adc_overruns: Option<u32>,
     pub diagnostic_send_failures: u32,
+    /// DAQ live input faults. Absent on older backends, older DAQ firmware and other boards.
+    #[serde(default)]
+    pub daq_input: Option<DaqInputHealthStatus>,
+}
+
+/// DAQ input-health block (backend daq_input_health.rs). Millivolts; `None`
+/// means no reading in the DAQ's last report interval.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct DaqInputHealthStatus {
+    pub received_age_ms: u64,
+    #[serde(default)]
+    pub faults: Vec<DaqInputFaultStatus>,
+    #[serde(default)]
+    pub kg50_p6: bool,
+    #[serde(default)]
+    pub vmain_mv: Option<u16>,
+    #[serde(default)]
+    pub vmain_min_mv: Option<u16>,
+    #[serde(default)]
+    pub chamber_mv: Option<u16>,
+    #[serde(default)]
+    pub chamber_min_mv: Option<u16>,
+    #[serde(default)]
+    pub p6_imbalance_max_mv: Option<u16>,
+    #[serde(default)]
+    pub p6_common_mv: Option<u16>,
+    #[serde(default)]
+    pub supply_low_mv: u16,
+    #[serde(default)]
+    pub chamber_floor_mv: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct DaqInputFaultStatus {
+    pub key: String,
+    pub label: String,
+    pub active: bool,
+    pub latched: bool,
+    pub episodes: u16,
+    #[serde(default)]
+    pub advice: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]

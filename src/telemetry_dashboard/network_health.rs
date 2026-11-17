@@ -9,7 +9,7 @@ pub type RecoveryRenderer = Callback<(RecoverySlot, String, bool, ThemeConfig), 
 
 use super::{
     layout::ThemeConfig,
-    types::{BoardDiagnostics, LaunchLogStatus, NetworkBoardHealthEntry},
+    types::{BoardDiagnostics, DaqInputHealthStatus, LaunchLogStatus, NetworkBoardHealthEntry},
 };
 use dioxus::prelude::*;
 fn healthy(row: &NetworkBoardHealthEntry, connected: bool, _elapsed: u64) -> bool {
@@ -112,6 +112,78 @@ fn sd_health(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> Op
         "good" | "idle" => (Health::Healthy, label.to_string()),
         _ => (Health::Stale, label.to_string()),
     })
+}
+/// The DAQ input-health report is fresh: reports arrive every second.
+fn daq_input_fresh(status: &DaqInputHealthStatus, connected: bool, elapsed: u64) -> bool {
+    connected && status.received_age_ms.saturating_add(elapsed) <= 5_000
+}
+/// The card's Inputs line, for a DAQ reporting input health. Any active fault
+/// is unhealthy; a fault seen only briefly in the last second is named but
+/// does not turn the line red. These are warnings: no action is blocked.
+fn daq_input_health(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64) -> Option<(board_display::Health, String)> {
+    use board_display::Health;
+    let status = row.diagnostics.as_ref()?.daq_input.as_ref()?;
+    if !daq_input_fresh(status, connected, elapsed) {
+        return Some((Health::Stale, "Input report stale".into()));
+    }
+    let active: Vec<&str> = status.faults.iter().filter(|f| f.active).map(|f| f.label.as_str()).collect();
+    if let Some(first) = active.first() {
+        let more = if active.len() > 1 { format!(" (+{} more)", active.len() - 1) } else { String::new() };
+        return Some((Health::Unhealthy, format!("{first}{more}")));
+    }
+    match status.faults.iter().find(|f| f.latched) {
+        Some(brief) => Some((Health::Healthy, format!("OK · brief: {}", brief.label))),
+        None => Some((Health::Healthy, "OK".into())),
+    }
+}
+fn millivolts(mv: Option<u16>) -> String {
+    match mv {
+        Some(mv) if mv < 100 => format!("{:.3} V", f32::from(mv) / 1000.0),
+        Some(mv) => format!("{:.2} V", f32::from(mv) / 1000.0),
+        None => "No reading".into(),
+    }
+}
+#[component]
+fn DaqInputHealth(status: DaqInputHealthStatus, connected: bool, elapsed: u64, theme: ThemeConfig) -> Element {
+    let fresh = daq_input_fresh(&status, connected, elapsed);
+    rsx! {
+        section { "data-daq-input": if fresh { "fresh" } else { "stale" }, style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",
+            h4 { style:"margin:0;", "DAQ input health" }
+            if !fresh { p { role:"status", "Input report stale · {duration(status.received_age_ms.saturating_add(elapsed))} ago" } }
+            ul { style:"list-style:none;padding:0;margin:12px 0 0;display:grid;gap:8px;",
+                for fault in status.faults.iter() {
+                    li { key:"{fault.key}", "data-fault":"{fault.key}", "data-active": if fault.active { "true" } else { "false" }, style:"min-width:0;",
+                        div { style:"display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;",
+                            span { "{fault.label}" }
+                            if fault.active {
+                                span { role:"status", style:"border-radius:999px;padding:3px 9px;background:#9f1239;color:white;font-size:0.8rem;", "Active" }
+                            } else if fault.latched {
+                                span { role:"status", style:"border-radius:999px;padding:3px 9px;background:#815b12;color:white;font-size:0.8rem;", "Brief" }
+                            } else {
+                                span { style:"border-radius:999px;padding:3px 9px;background:#146c43;color:white;font-size:0.8rem;", "OK" }
+                            }
+                        }
+                        if fault.active || fault.latched { p { style:"margin:4px 0 0;font-size:0.85rem;color:{theme.text_secondary};", "{fault.advice}" } }
+                        if fault.episodes > 0 { p { style:"margin:4px 0 0;font-size:0.8rem;color:{theme.text_secondary};", "Episodes since DAQ boot: {fault.episodes}" } }
+                    }
+                }
+            }
+            dl { style:"display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;font-size:0.85rem;margin:12px 0 0;",
+                dt { "Supply (VMAIN)" } dd { style:"margin:0;", "{millivolts(status.vmain_mv)}" }
+                dt { "Lowest in last second" } dd { style:"margin:0;", "{millivolts(status.vmain_min_mv)}" }
+                dt { "Undervoltage level" } dd { style:"margin:0;", "{millivolts(Some(status.supply_low_mv))}" }
+                if status.chamber_mv.is_some() || status.chamber_min_mv.is_some() {
+                    dt { "Chamber transducer" } dd { style:"margin:0;", "{millivolts(status.chamber_mv)}" }
+                    dt { "No-signal level" } dd { style:"margin:0;", "{millivolts(Some(status.chamber_floor_mv))}" }
+                }
+                if status.kg50_p6 {
+                    dt { "P6 leg difference (max)" } dd { style:"margin:0;", "{millivolts(status.p6_imbalance_max_mv)}" }
+                    dt { "P6 leg mean" } dd { style:"margin:0;", "{millivolts(status.p6_common_mv)}" }
+                }
+            }
+            p { style:"font-size:0.8rem;margin:8px 0 0;color:{theme.text_secondary};", "Warnings only: these checks never block a command." }
+        }
+    }
 }
 // Status is based on successful device I/O, never just enqueue acceptance.
 fn sd_state(
@@ -319,6 +391,9 @@ pub fn NetworkHealthSection(
                                 if let Some((health, value)) = sd_health(row, ws_connected, elapsed) {
                                     {board_display::health_line("sd", "SD", health, &value)}
                                 }
+                                if let Some((health, value)) = daq_input_health(row, ws_connected, elapsed) {
+                                    {board_display::health_line("inputs", "Inputs", health, &value)}
+                                }
                             }
                             if let Some(offset) = row.clock_offset_ms {
                                 if clock_desynced(offset) {
@@ -369,6 +444,9 @@ pub fn NetworkHealthSection(
                                 }
                             }
                                                 if row.sender_id!="DAQ"{p{"No storage actions are advertised for this node."}}
+                                            }
+                                            if let Some(status) = row.diagnostics.as_ref().and_then(|report| report.daq_input.clone()) {
+                                                DaqInputHealth { status, connected:ws_connected, elapsed, theme:theme.clone() }
                                             }
                                             if let Some(render) = recovery_renderer { div{class:"gs26-board-info-recovery",{render.call((RecoverySlot::Details, board_id.clone(), ws_connected, theme.clone()))}} }
                                             section{style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",h4{style:"margin:0;","Internal diagnostics"}
@@ -526,6 +604,37 @@ mod tests {
         )
         .unwrap();
         assert!(old.service_faults.is_empty(), "older backends omit the field");
+    }
+
+    #[test]
+    fn daq_input_line_names_active_faults_and_never_hides_staleness() {
+        use super::board_display::Health;
+        use crate::telemetry_dashboard::types::{DaqInputFaultStatus, DaqInputHealthStatus};
+        let fault = |key: &str, label: &str, active, latched| DaqInputFaultStatus {
+            key: key.into(), label: label.into(), active, latched, episodes: 1, advice: String::new(),
+        };
+        let mut row = NetworkBoardHealthEntry { sender_id: "DAQ".into(), ..Default::default() };
+        assert!(daq_input_health(&row, true, 0).is_none(), "no block without a report");
+        let mut status = DaqInputHealthStatus {
+            faults: vec![fault("supply_low", "DAQ supply (VMAIN) low", false, false),
+                         fault("chamber_no_signal", "Chamber pressure transducer no signal", true, true)],
+            ..Default::default()
+        };
+        row.diagnostics = Some(BoardDiagnostics { daq_input: Some(status.clone()), ..Default::default() });
+        assert_eq!(daq_input_health(&row, true, 0), Some((Health::Unhealthy, "Chamber pressure transducer no signal".into())));
+        assert_eq!(daq_input_health(&row, true, 6_000).unwrap().0, Health::Stale);
+        assert_eq!(daq_input_health(&row, false, 0).unwrap().0, Health::Stale);
+        status.faults[1].active = false;
+        status.faults[1].latched = false;
+        status.faults[0].latched = true;
+        row.diagnostics = Some(BoardDiagnostics { daq_input: Some(status), ..Default::default() });
+        assert_eq!(daq_input_health(&row, true, 0), Some((Health::Healthy, "OK · brief: DAQ supply (VMAIN) low".into())));
+        assert_eq!(millivolts(Some(12)), "0.012 V");
+        assert_eq!(millivolts(Some(11_060)), "11.06 V");
+        // The backend's JSON for the block.
+        let decoded: BoardDiagnostics = serde_json::from_str(r#"{"version":1,"received_age_ms":0,"uptime_ticks":0,"uptime_frequency_hz":1000,"reset_flags":0,"watchdog_missing_mask":0,"heap_live_bytes":null,"heap_peak_bytes":null,"heap_region_bytes":null,"allocation_failures":null,"admission_refusals":0,"can_rx_drops":null,"can_tx_rejected":null,"uart_rx_drops":null,"tx_queue_high_water":null,"sd_accepted_records":null,"sd_processed_records":null,"sd_rejected_records":null,"sd_flushed_records":null,"sd_write_errors":null,"sd_max_write_ms":null,"adc_overruns":null,"diagnostic_send_failures":0,"daq_input":{"received_age_ms":250,"faults":[{"key":"supply_low","label":"DAQ supply (VMAIN) low","active":true,"latched":true,"episodes":14,"advice":"Check the DAQ power/ground connector."}],"kg50_p6":true,"vmain_mv":11100,"vmain_min_mv":11030,"chamber_mv":null,"chamber_min_mv":null,"p6_imbalance_max_mv":4,"p6_common_mv":1137,"supply_low_mv":12500,"chamber_floor_mv":50}}"#).unwrap();
+        let input = decoded.daq_input.unwrap();
+        assert_eq!((input.faults[0].episodes, input.vmain_min_mv, input.supply_low_mv), (14, Some(11_030), 12_500));
     }
 
     #[test]
