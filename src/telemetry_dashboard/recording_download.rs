@@ -430,6 +430,62 @@ struct ClockStatus {
     set_system_time_permission: bool,
     #[serde(default)]
     system_time_unavailable_reason: Option<String>,
+    /// SEDSnet 6 time base; missing from older backends.
+    #[serde(default)]
+    network_time_base: Option<NetworkTimeBase>,
+}
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+struct NetworkTimeBase {
+    epoch: u16,
+    newest_seen_epoch: u16,
+    holding: bool,
+    steps_allowed: bool,
+    steps: u32,
+    last_step: Option<NetworkTimeStep>,
+}
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+struct NetworkTimeStep {
+    delta_ms: i64,
+    reason: String,
+    age_ms: u64,
+}
+fn span_text(ms: u64) -> String {
+    match ms {
+        0..10_000 => format!("{ms} ms"),
+        10_000..120_000 => format!("{} s", ms / 1000),
+        120_000..7_200_000 => format!("{} min", ms / 60_000),
+        _ => format!("{:.1} h", ms as f64 / 3_600_000.0),
+    }
+}
+/// Status lines for the network time base: epoch, step policy, last step.
+fn time_base_lines(base: &NetworkTimeBase) -> Vec<String> {
+    let mut epoch = format!("Time base: epoch {}", base.epoch);
+    if base.newest_seen_epoch > base.epoch {
+        epoch += &format!(" (re-anchoring to epoch {})", base.newest_seen_epoch);
+    }
+    if base.holding {
+        epoch += ", holding until its source adopts this epoch";
+    }
+    let policy = if base.steps_allowed {
+        "Steps allowed: corrections over 1 s step at once; smaller ones slew at 20 ppm."
+    } else {
+        "Steps inhibited (Armed through Recovery): every correction slews at 20 ppm."
+    };
+    let mut lines = vec![epoch, policy.to_string()];
+    lines.push(match &base.last_step {
+        Some(step) => format!(
+            "Last step: {}{} ({}), {} ago; {} steps since start",
+            if step.delta_ms < 0 { "-" } else { "+" },
+            span_text(step.delta_ms.unsigned_abs()),
+            step.reason.replace('_', " "),
+            span_text(step.age_ms),
+            base.steps
+        ),
+        None => "No network clock step since start".to_string(),
+    });
+    lines
 }
 fn utc_label(ms: i128) -> String {
     time::OffsetDateTime::from_unix_timestamp_nanos(ms * 1_000_000)
@@ -523,6 +579,9 @@ pub fn SystemClockSettings() -> Element {
                if let Some(c) = clock.read().as_ref() {
                    p { "OS: {utc_label(c.utc_ms as i128)}" }
                    if let Some(network) = c.network_utc_ms { p { "Network: {utc_label(network as i128)}" } }
+                   if let Some(base) = &c.network_time_base {
+                       for line in time_base_lines(base) { p { "{line}" } }
+                   }
                }
                button { disabled:busy(), onclick:move |_| refresh += 1, "Refresh time and permission" }
                if can_set {
@@ -795,6 +854,45 @@ mod tests {
                 .unwrap()
                 .contains("CAP_SYS_TIME")
         );
+        assert_eq!(clock.network_time_base, None);
+    }
+    #[test]
+    fn clock_status_decodes_and_describes_the_network_time_base() {
+        let clock: ClockStatus = serde_json::from_value(serde_json::json!({
+            "utc_ms":1_800_000_000_000u64,"network_utc_ms":1_800_000_000_000i64,
+            "can_set_system_time":true,"set_system_time_permission":true,
+            "system_time_unavailable_reason":null,
+            "network_time_base":{"epoch":3,"newest_seen_epoch":4,"holding":true,
+                "steps_allowed":false,"steps":2,
+                "last_step":{"delta_ms":-13_680_000i64,"reason":"utc_anchor",
+                    "from_epoch":2,"to_epoch":3,"age_ms":150_000u64}}
+        }))
+        .unwrap();
+        let lines = time_base_lines(clock.network_time_base.as_ref().unwrap());
+        assert_eq!(
+            lines[0],
+            "Time base: epoch 3 (re-anchoring to epoch 4), holding until its source adopts this epoch"
+        );
+        assert!(lines[1].starts_with("Steps inhibited"));
+        assert_eq!(
+            lines[2],
+            "Last step: -3.8 h (utc anchor), 2 min ago; 2 steps since start"
+        );
+        let idle: NetworkTimeBase = serde_json::from_value(serde_json::json!({
+            "epoch":0,"newest_seen_epoch":0,"holding":false,"steps_allowed":true,
+            "steps":0,"last_step":null
+        }))
+        .unwrap();
+        let lines = time_base_lines(&idle);
+        assert_eq!(lines[0], "Time base: epoch 0");
+        assert!(lines[1].starts_with("Steps allowed: corrections over 1 s step at once"));
+        assert_eq!(lines[2], "No network clock step since start");
+        let unconfigured: ClockStatus = serde_json::from_value(serde_json::json!({
+            "utc_ms":1u64,"network_utc_ms":null,"can_set_system_time":false,
+            "network_time_base":null
+        }))
+        .unwrap();
+        assert_eq!(unconfigured.network_time_base, None);
     }
 }
 
