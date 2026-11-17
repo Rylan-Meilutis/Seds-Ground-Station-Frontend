@@ -565,7 +565,7 @@ pub fn SystemClockSettings() -> Element {
                 Ok(c) => {
                     clock.set(Some(c));
                     confirmed.set(false);
-                    message.set("OS clock updated immediately. Network UTC source accepted; network time synchronizes gradually.".into());
+                    message.set("OS clock updated immediately. Network UTC source accepted; network time steps to it if over 1 s off while steps are allowed, otherwise slews.".into());
                 }
                 Err(_) if !settings_owner.current() => return,
                 Err(e) => message.set(format!("Clock update failed: {e}")),
@@ -585,10 +585,10 @@ pub fn SystemClockSettings() -> Element {
                }
                button { disabled:busy(), onclick:move |_| refresh += 1, "Refresh time and permission" }
                if can_set {
-                   p { "OS updates immediately. Network UTC synchronizes gradually." }
+                   p { "OS updates immediately. Network time steps to a correction over 1 s while steps are allowed (Startup/Idle); otherwise it slews." }
                    details {
                        summary { "About clock synchronization" }
-                       p { "Network corrections normally use a 5% slew rate and preserve monotonic timers. NTP settings remain unchanged. A large OS clock change may require signing in again." }
+                       p { "A network correction over 1 s steps the network clock at once and starts a new time-base epoch while steps are allowed (Startup/Idle); smaller corrections, and every correction from Armed through Recovery, slew at 20 ppm. Monotonic timers are preserved. NTP settings remain unchanged. A large OS clock change may require signing in again." }
                    }
                    label { input { r#type:"checkbox", checked:confirmed(), onchange:move |e| confirmed.set(e.checked()) } "Change this station’s system clock" }
                    button { disabled:busy() || !confirmed(), onclick:move |_| sync(serde_json::json!({"source":"client","utc_ms":client_now_ms()})), "Set OS + network from this device" }

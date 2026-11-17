@@ -626,7 +626,7 @@ pub(super) fn NetworkUtcControls() -> Element {
                     reason: network_utc_reason(recovery, super::COMMAND_PROXY_STATUS.read().as_ref()),
                     control: "network-utc".to_string(),
                 }
-                super::gse_panel::InfoNote {summary:"About network UTC",paragraphs:vec!["Sets the station's network UTC source. Clock corrections apply gradually; the server system clock is unchanged.".into()]}
+                super::gse_panel::InfoNote {summary:"About network UTC",paragraphs:vec!["Sets the station's network UTC source. A correction over 1 s steps the network clock at once while steps are allowed (Startup/Idle); smaller ones, and any from Armed through Recovery, slew at 20 ppm. The server system clock is unchanged.".into()]}
             }
             p { role: "status", "{message}" }
         }
