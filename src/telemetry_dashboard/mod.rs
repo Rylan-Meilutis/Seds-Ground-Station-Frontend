@@ -82,6 +82,7 @@ mod sd_recording_import;
 mod sequence_indicator;
 mod control_progress;
 mod station_mode;
+mod station_recover;
 mod station_positions_admin;
 mod station_pairing_admin;
 mod sequence_access_admin;

@@ -153,6 +153,10 @@ pub struct ActionPolicyMsg {
     /// A Launch press held behind the opt-in loadcell zero.
     #[serde(default)]
     pub launch_zero: Option<LaunchZeroStatus>,
+    /// Recover station, present only while the station's own Abort latch is
+    /// set (GroundStation `StationRecoveryView`).
+    #[serde(default)]
+    pub station_recovery: Option<station_recover::StationRecoveryPolicy>,
     pub controls: Vec<ActionControl>,
 }
 
@@ -177,6 +181,7 @@ impl ActionPolicyMsg {
             hitl_launch_interlock_satisfied: true,
             local_phase_controls: false,
             launch_zero: None,
+            station_recovery: None,
             controls: Vec::new(),
         }
     }

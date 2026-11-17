@@ -126,3 +126,58 @@ fn actions_tab_groups_every_control_into_mode_ordered_collapsible_sections() {
     assert!(block("safety").contains("data-dispatch-command=\"Abort\""));
     assert_eq!(expanded(&block("flight_computer")), Some(true));
 }
+
+fn recover_layout() -> ActionsTabLayout {
+    serde_json::from_value(serde_json::json!({"actions":[
+        spec("Abort", Some("safety")),
+        spec("RecoverStation", Some("recovery")),
+    ]})).unwrap()
+}
+
+#[component]
+fn RecoverHarness(policy: ActionPolicyMsg) -> Element {
+    use_context_provider(|| Signal::new(super::super::sequence_progress_host::StatusObservation::default()));
+    use_hook(|| *super::super::WS_CONNECTED_SIGNAL.write() = true);
+    let action_policy = use_signal(|| policy.clone());
+    let recording_status = use_signal(|| serde_json::from_value::<RecordingStatusMsg>(serde_json::json!({"mode":"idle","db_path":null})).unwrap());
+    rsx! { ActionsTab { layout: recover_layout(), action_policy, recording_status, abort_only_mode: false, theme: ThemeConfig::default() } }
+}
+
+fn render_recover(station_recovery: Option<serde_json::Value>) -> String {
+    let mut value = serde_json::json!({"key_enabled":true,"software_buttons_enabled":true,
+        "controls":[{"cmd":"Abort","enabled":true,"blink":"none","actuated":null}]});
+    if let Some(view) = station_recovery { value["station_recovery"] = view; }
+    let policy: ActionPolicyMsg = serde_json::from_value(value).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let _runtime = runtime.enter();
+    let mut dom = VirtualDom::new_with_props(RecoverHarness, RecoverHarnessProps { policy });
+    dom.rebuild_in_place();
+    dom.render_immediate_to_vec();
+    dioxus::ssr::render(&dom)
+}
+
+#[test]
+fn recover_station_is_listed_under_recovery_only_while_the_station_latch_is_set() {
+    if !super::super::command_owner::isolated_test_child(module_path!(), "recover_station_is_listed_under_recovery_only_while_the_station_latch_is_set") { return; }
+    auth::set_current_session(auth::StoredAuthSession{token:"recover-test-token".into(),remember_me:false,
+        session:auth::SessionStatus{authenticated:true,permissions:auth::Permissions{view_data:true,send_commands:true,..Default::default()},..Default::default()}});
+    // Not latched: no Recovery section, no button.
+    let html = render_recover(None);
+    assert!(!html.contains("data-dispatch-command=\"RecoverStation\""), "{html}");
+    assert!(!sections_in(&html).iter().any(|(id, _)| id == "recovery"), "{html}");
+    // Latched but a board still aborted: listed under Recovery, disabled, with the station's reason.
+    let html = render_recover(Some(serde_json::json!({"disabled_reason":"VB still reports Abort.","target_state_label":"Startup"})));
+    let shown = sections_in(&html);
+    let recovery = &shown.iter().find(|(id, _)| id == "recovery").expect("Recovery section").1;
+    assert!(recovery.contains("data-dispatch-command=\"RecoverStation\""), "{recovery}");
+    assert!(recovery.contains("VB still reports Abort."), "{recovery}");
+    assert!(recovery.contains("No board is reset."), "{recovery}");
+    assert!(recovery.contains("0 of 1 enabled"), "{recovery}");
+    assert!(recovery.contains("disabled"), "{recovery}");
+    // Ready: the header counts it enabled.
+    let html = render_recover(Some(serde_json::json!({"target_state_label":"Startup"})));
+    let shown = sections_in(&html);
+    let recovery = &shown.iter().find(|(id, _)| id == "recovery").unwrap().1;
+    assert!(recovery.contains("1 of 1 enabled"), "{recovery}");
+    assert!(!recovery.contains("Unavailable:"), "{recovery}");
+}

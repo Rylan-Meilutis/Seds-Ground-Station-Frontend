@@ -846,6 +846,9 @@ fn reset_section(current: &Snapshot, connected: bool, ui: (Signal<bool>, Signal<
                 }
             }
         }
+        if let Some(view)=status.station_recovery.as_ref().and_then(|station|station.view()){
+            super::station_recover::RecoverStationControl{view}
+        }
         {match status.finish_without_absent(crate::auth::is_admin()){
             FinishWithoutAbsent::None=>rsx!{},
             offer=>rsx!{FinishWithoutAbsentControl{offer,connected,controls_busy}},
@@ -861,7 +864,7 @@ struct FinishWithoutAbsentBody<'a> {
 }
 /// The station's own refusal text from `HTTP 409: {"message":...}`, or the
 /// error as given when it carries no JSON message.
-fn server_refusal(error: &str) -> String {
+pub(super) fn server_refusal(error: &str) -> String {
     let body = error.split_once(": ").map_or(error, |(_, body)| body);
     serde_json::from_str::<serde_json::Value>(body)
         .ok()

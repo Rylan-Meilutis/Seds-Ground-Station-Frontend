@@ -294,6 +294,25 @@ pub(super) struct ConfirmationIdentity {
 }
 #[derive(Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
+pub(super) struct StationRecoveryStatus {
+    pub latched: bool,
+    pub available: bool,
+    pub blocked_reason: Option<String>,
+    pub target_state_label: String,
+}
+impl StationRecoveryStatus {
+    /// The control's view while the latch is set; None hides it.
+    pub fn view(&self) -> Option<super::station_recover::StationRecoveryPolicy> {
+        self.latched.then(|| super::station_recover::StationRecoveryPolicy {
+            disabled_reason: if self.available { None } else {
+                Some(self.blocked_reason.clone().unwrap_or_else(|| "Recover station is not available right now.".into()))
+            },
+            target_state_label: self.target_state_label.clone(),
+        })
+    }
+}
+#[derive(Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
 pub(super) struct HostRecovery {
     pub pending: bool,
     pub verified: bool,
@@ -333,6 +352,9 @@ pub(super) struct Status {
     pub operation: Option<Operation>,
     pub confirmation: Option<ConfirmationIdentity>,
     pub host_recovery: Option<HostRecovery>,
+    /// Recover station: the station's own Abort latch and whether it may be
+    /// cleared without resetting boards (server-computed).
+    pub station_recovery: Option<StationRecoveryStatus>,
     /// Server's plain-language reason Reset ALL is not permitted right now.
     #[serde(default)]
     pub reset_startup_blocked_reason: Option<String>,

@@ -940,6 +940,9 @@ pub fn ActionsTab(
     let mut all_actions = layout.actions.clone();
     ensure_sequence_actions(&mut all_actions, &theme);
     all_actions.retain(|action| !redundant_supply_close(&action.cmd) && action.cmd != "AutoColdFlow");
+    // Recover station is listed only while the station reports its own Abort latch.
+    let station_recovery = action_policy.read().station_recovery.clone();
+    all_actions.retain(|action| action.cmd != super::station_recover::COMMAND || station_recovery.is_some());
     for action in &mut all_actions {
         if matches!(action.cmd.as_str(), "Igniter" | "IgniterSequence") {
             action.group = "Manual GSE valves".into();
@@ -974,7 +977,11 @@ pub fn ActionsTab(
         by_section.entry(section).or_default().push(action);
         let control = action_policy_snapshot.controls.iter().find(|c| c.cmd == action.cmd);
         let dispatch_cmd = supply_dispatch_command(&action.cmd, control.and_then(|c| c.actuated));
-        let enabled = action_enabled(&action.cmd, dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode);
+        let enabled = if action.cmd == super::station_recover::COMMAND {
+            station_recovery.as_ref().is_some_and(|view| view.disabled_reason.is_none())
+        } else {
+            action_enabled(&action.cmd, dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode)
+        };
         let sequence = SEQUENCE_INDICATOR_COMMANDS.iter().position(|command| *command == action.cmd)
             .and_then(|index| displayed_sequence.read()[index]);
         let progress = super::control_progress::view(control.and_then(|c| c.progress.as_ref()));
@@ -1183,6 +1190,9 @@ pub fn ActionsTab(
                                                         div {
                                                             style: "min-width:32px;"
                                                         }
+                                                    },
+                                                    ActionRowItem::Action(action) if action.cmd == super::station_recover::COMMAND => rsx! {
+                                                        super::station_recover::RecoverStationControl { view: station_recovery.clone().unwrap_or_default() }
                                                     },
                                                     ActionRowItem::Action(action) => {
                                                         let control = action_policy_snapshot

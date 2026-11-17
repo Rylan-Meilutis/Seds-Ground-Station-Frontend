@@ -146,6 +146,11 @@ fn board_recovery_rows_carry_the_fc_reset_and_station_reasons() {
             }
             assert!(row["capabilities"].get("reset_startup_any_state").is_some());
         }
+        // Recover station: the station's latch state, decoded; hidden while not latched.
+        let station = status.station_recovery.as_ref().expect("station_recovery");
+        assert!(!station.latched && !station.available, "{name}");
+        assert!(station.view().is_none(), "{name}");
+        assert_eq!(station.target_state_label, "Startup");
         let fc = status.board("FC").expect("FC row");
         // Only the FC offers the reset; here it is refused with the station's reason.
         assert!(status.fc_reset_advertised(fc));
