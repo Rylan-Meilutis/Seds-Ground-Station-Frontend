@@ -21,10 +21,12 @@ static LAT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static LON_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static GPS_ALT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static HEADING_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
-/// Counts delivered locations so a one-shot request can wait for a new one.
+/// Counts delivered locations; zero means CoreLocation has delivered none yet.
 static FIX_SEQ: AtomicU64 = AtomicU64::new(0);
 /// A delivered location older than this is a cached reading, not a fresh fix.
-const ONE_SHOT_MAX_AGE_S: f64 = 10.0;
+/// The dashboard's own CoreLocation session usually has one already; a station
+/// position does not move, so a reading this recent is reused immediately.
+const ONE_SHOT_MAX_AGE_S: f64 = 60.0;
 
 extern "C" fn on_loc(lat: f64, lon: f64, alt_m: f64) {
     if lat.is_finite() && lon.is_finite() {
@@ -101,8 +103,10 @@ pub fn latest_heading_deg() -> Option<f64> {
 }
 
 /// One explicit reading from CoreLocation. Starts (or re-kicks) the shared
-/// location manager, which also triggers the permission prompt, then waits for
-/// a newly delivered, recent location. CoreLocation keeps feeding the map
+/// location manager, which also triggers the permission prompt, then returns
+/// the latest recent location. A stationary device whose session is already
+/// running may never deliver a *new* location, so the request does not wait
+/// for one when the last reading is recent. CoreLocation keeps feeding the map
 /// afterwards exactly as the dashboard's GPS driver already does.
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 pub async fn one_shot(
@@ -110,13 +114,12 @@ pub async fn one_shot(
 ) -> Result<crate::telemetry_dashboard::gps::DeviceFix, String> {
     const RESTRICTED: i32 = 1;
     const DENIED: i32 = 2;
-    let start = FIX_SEQ.load(Ordering::Acquire);
     unsafe { gs26_location_start(on_loc) };
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         match unsafe { gs26_location_auth_status() } {
             DENIED => {
-                return Err("Location permission is denied for this app. Allow it in Settings > Privacy > Location Services, or enter coordinates.".into());
+                return Err("Location permission for this device is denied. Allow it in Settings > Privacy > Location Services, use “Use live station GPS”, or enter coordinates.".into());
             }
             RESTRICTED => {
                 return Err(
@@ -126,7 +129,7 @@ pub async fn one_shot(
             }
             _ => {}
         }
-        if FIX_SEQ.load(Ordering::Acquire) != start {
+        if FIX_SEQ.load(Ordering::Acquire) != 0 {
             let fixed_at = unsafe { gs26_last_location_unix_s() };
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -148,10 +151,9 @@ pub async fn one_shot(
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(
-                "The device did not find its location in time. Try again or enter coordinates."
-                    .into(),
-            );
+            return Err(crate::telemetry_dashboard::gps::LocationFailure::Timeout
+                .message()
+                .into());
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }

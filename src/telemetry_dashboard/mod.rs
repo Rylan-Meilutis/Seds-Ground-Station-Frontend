@@ -120,6 +120,7 @@ mod gps_apple;
 mod antenna_aiming;
 mod antenna_math;
 mod map_stations;
+mod station_fix;
 pub mod map_tab;
 pub mod warnings_tab;
 mod watch_companion;

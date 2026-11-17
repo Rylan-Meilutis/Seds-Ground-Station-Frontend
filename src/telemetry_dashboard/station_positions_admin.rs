@@ -1,12 +1,23 @@
-//! Shared administrator-saved locations; requesting device GPS is an explicit action.
-//! A device location only fills the draft. Nothing is stored until Save.
+//! Shared administrator-saved locations. Two explicit ways to fill a row:
+//! the station's own live GPS (the same `/api/antenna/status` fix the map
+//! shows) or the location of the device running this page. Either only fills
+//! the draft. Nothing is stored until Save.
+use super::gps::LocationFailure;
 use super::http_get_json;
+use super::station_fix::{STATUS_PATH, Snapshot as StationSnapshot, StationFix, format_age as fix_age};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Upper bound on one device-location request, including any permission prompt.
-/// The browser's own timeout does not count time spent waiting on the prompt.
-const LOCATION_DEADLINE_MS: u64 = 30_000;
+/// The browser's own timeouts (15 s precise, then 10 s coarse) do not count
+/// time spent waiting on the prompt.
+const LOCATION_DEADLINE_MS: u64 = 45_000;
+/// Matches the map's station marker refresh.
+const STATION_POLL_MS: u64 = 3_000;
+/// The dashboard's own location listener counts as this device's location
+/// while its latest reading is at most this old.
+#[cfg(target_os = "android")]
+const RECENT_DEVICE_FIX_MS: u64 = 120_000;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 const NATIVE_LOCATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const STATIONS: [&str; 2] = ["GroundStation", "RRLS"];
@@ -43,13 +54,46 @@ struct Update {
 #[derive(Default, Deserialize)]
 struct LocationResult {
     coordinate: Option<Coordinate>,
+    /// How old the reading was when it was returned, where known.
+    #[serde(default)]
+    age_ms: Option<u64>,
+    /// Browser/WebView failures arrive as a code; the wording lives here.
+    #[serde(default)]
+    failure: Option<LocationFailure>,
+    /// Native location services report their own wording.
+    #[serde(default)]
     error: Option<String>,
 }
 impl LocationResult {
     fn failed(message: impl Into<String>) -> Self {
         Self {
-            coordinate: None,
             error: Some(message.into()),
+            ..Self::default()
+        }
+    }
+    #[cfg_attr(not(any(target_arch = "wasm32", target_os = "android", test)), allow(dead_code))]
+    fn failure(failure: LocationFailure) -> Self {
+        Self {
+            failure: Some(failure),
+            ..Self::default()
+        }
+    }
+    fn error_message(&self) -> String {
+        self.error
+            .clone()
+            .or_else(|| self.failure.map(|f| f.message().to_string()))
+            .unwrap_or_else(|| "This device did not provide valid coordinates.".into())
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl From<super::gps::DeviceFix> for Coordinate {
+    fn from(fix: super::gps::DeviceFix) -> Self {
+        Self {
+            latitude: fix.latitude,
+            longitude: fix.longitude,
+            altitude_m: fix.altitude_m,
+            accuracy_m: fix.accuracy_m,
+            source: "device_location".into(),
         }
     }
 }
@@ -133,27 +177,30 @@ impl Form {
                     })?,
             )
         };
-        let device = self.source == "device_location";
+        let measured = matches!(self.source.as_str(), "device_location" | "station_gps");
         Ok(Some(Coordinate {
             latitude,
             longitude,
             altitude_m,
-            accuracy_m: if device {
+            accuracy_m: if measured {
                 self.accuracy.filter(|v| v.is_finite() && *v >= 0.0)
             } else {
                 None
             },
-            source: if device { "device_location" } else { "manual" }.into(),
+            source: if measured { self.source.as_str() } else { "manual" }.into(),
         }))
     }
     fn describe(&self) -> String {
+        let measured = |what: &str| match self.accuracy {
+            Some(a) => format!("From {what}, ±{}", format_accuracy(a)),
+            None => format!("From {what}, accuracy not reported"),
+        };
         let mut text = if self.is_empty() {
             "Not set".to_string()
         } else if self.source == "device_location" {
-            match self.accuracy {
-                Some(a) => format!("From device location, ±{}", format_accuracy(a)),
-                None => "From device location, accuracy not reported".into(),
-            }
+            measured("device location")
+        } else if self.source == "station_gps" {
+            measured("station GPS")
         } else {
             "Entered manually".into()
         };
@@ -200,30 +247,32 @@ async fn sleep_ms(ms: u64) {
 }
 
 /// Web and Android use the WebView's geolocation (secure context and a
-/// permission prompt exist there). Desktop WebViews and iOS do not grant page
-/// geolocation, so those builds ask the operating system once instead.
+/// permission prompt exist there); the script first reuses a recent fix from
+/// the dashboard's own location watch. Android first reuses the app's native
+/// location listener (the one feeding the map), since the WebView has its own,
+/// separate provider that may not have a fix yet. Desktop WebViews and iOS do
+/// not grant page geolocation, so those builds ask the operating system once.
 async fn device_location() -> LocationResult {
+    #[cfg(target_os = "android")]
+    if let Some(fix) = super::gps_android::recent_fix(RECENT_DEVICE_FIX_MS) {
+        return LocationResult {
+            coordinate: Some(fix.into()),
+            ..LocationResult::default()
+        };
+    }
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     {
         document::eval(include_str!("../../assets/browser/station_location.js"))
             .recv::<LocationResult>()
             .await
-            .unwrap_or_else(|_| {
-                LocationResult::failed("Location is unavailable. Enter coordinates manually.")
-            })
+            .unwrap_or_else(|_| LocationResult::failure(LocationFailure::Unavailable))
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
         match super::gps::one_shot_location(NATIVE_LOCATION_TIMEOUT).await {
             Ok(fix) => LocationResult {
-                coordinate: Some(Coordinate {
-                    latitude: fix.latitude,
-                    longitude: fix.longitude,
-                    altitude_m: fix.altitude_m,
-                    accuracy_m: fix.accuracy_m,
-                    source: "device_location".into(),
-                }),
-                error: None,
+                coordinate: Some(fix.into()),
+                ..LocationResult::default()
             },
             Err(message) => LocationResult::failed(message),
         }
@@ -236,34 +285,100 @@ async fn device_location_bounded() -> LocationResult {
     match select(request, deadline).await {
         Either::Left((result, _)) => result,
         Either::Right(_) => LocationResult::failed(
-            "No location arrived in time. Answer the location prompt or enter coordinates.",
+            "No location arrived from this device in time. Answer the location prompt, use “Use live station GPS”, or enter coordinates.",
         ),
     }
 }
-/// Applies a device fix to the draft. Invalid coordinates never reach the form.
-fn apply_location(form: &mut Form, result: LocationResult) -> Result<(), String> {
-    let coordinate = result
-        .coordinate
-        .filter(|c| {
-            c.latitude.is_finite()
-                && c.longitude.is_finite()
-                && (-90.0..=90.0).contains(&c.latitude)
-                && (-180.0..=180.0).contains(&c.longitude)
-        })
-        .ok_or_else(|| {
-            result
-                .error
-                .unwrap_or_else(|| "The device did not provide valid coordinates.".into())
-        })?;
+fn valid_position(latitude: f64, longitude: f64) -> bool {
+    latitude.is_finite()
+        && longitude.is_finite()
+        && (-90.0..=90.0).contains(&latitude)
+        && (-180.0..=180.0).contains(&longitude)
+}
+/// Fills the draft from a measured position, marking it unsaved.
+fn fill_measured(form: &mut Form, coordinate: Coordinate, source: &str) {
     let mut next = Form::from_coordinate(Some(Coordinate {
         altitude_m: coordinate.altitude_m.filter(|v| v.is_finite()),
         accuracy_m: coordinate.accuracy_m.filter(|v| v.is_finite() && *v >= 0.0),
-        source: "device_location".into(),
+        source: source.into(),
         ..coordinate
     }));
     next.dirty = true;
     *form = next;
-    Ok(())
+}
+/// Applies this device's fix to the draft. Invalid coordinates never reach the
+/// form. Returns the fix age (if reported) for the confirmation message.
+fn apply_location(form: &mut Form, result: LocationResult) -> Result<Option<u64>, String> {
+    let message = result.error_message();
+    let coordinate = result
+        .coordinate
+        .filter(|c| valid_position(c.latitude, c.longitude))
+        .ok_or(message)?;
+    fill_measured(form, coordinate, "device_location");
+    Ok(result.age_ms)
+}
+
+/// The station's fresh GPS fix as the map shows it, or why there is none.
+/// Saved fallbacks and stale fixes are never offered as live GPS.
+fn live_station_fix(fix: Option<&StationFix>, station: &str) -> Result<StationFix, String> {
+    match fix {
+        None => Err(format!("{station} is not reporting a GPS position.")),
+        Some(f) if f.manual => Err(format!(
+            "{station} has no fresh GPS fix; the map is showing its saved position."
+        )),
+        Some(f) if f.stale => Err(format!(
+            "{station}'s last GPS fix is {} old (stale).",
+            fix_age(f.age_ms)
+        )),
+        Some(f) if !f.usable() => Err(format!("{station} reported an invalid GPS position.")),
+        Some(f) => Ok(f.clone()),
+    }
+}
+/// Age and quality of a live station fix, e.g. "±3 m · 3-D, sea-level altitude · 2 s old".
+fn station_fix_summary(fix: &StationFix) -> String {
+    let accuracy = fix
+        .accuracy_m
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .map(format_accuracy)
+        .map(|a| format!("±{a}"))
+        .unwrap_or_else(|| "accuracy not reported".into());
+    let dimension = match (fix.altitude_m.filter(|v| v.is_finite()), fix.altitude_reference.as_deref()) {
+        (None, _) => "2-D, no altitude".to_string(),
+        (Some(_), Some("mean_sea_level")) => "3-D, sea-level altitude".into(),
+        (Some(_), Some("ellipsoid")) => "3-D, ellipsoid height".into(),
+        (Some(_), _) => "3-D, altitude datum unknown".into(),
+    };
+    format!(
+        "{accuracy} · {dimension} · {} old",
+        fix_age(fix.age_ms)
+    )
+}
+fn apply_station_fix(form: &mut Form, fix: &StationFix) {
+    fill_measured(
+        form,
+        Coordinate {
+            latitude: fix.latitude,
+            longitude: fix.longitude,
+            altitude_m: fix.altitude_m,
+            accuracy_m: fix.accuracy_m,
+            source: String::new(),
+        },
+        "station_gps",
+    );
+}
+fn station_row(snapshot: &StationSnapshot, index: usize) -> Option<&StationFix> {
+    if index == 0 {
+        snapshot.ground_station.as_ref()
+    } else {
+        snapshot.rrls.as_ref()
+    }
+}
+fn device_copied_message(station: &str, age_ms: Option<u64>) -> String {
+    let age = age_ms
+        .filter(|age| *age >= 1_000)
+        .map(|age| format!(" (fix {} old)", fix_age(age)))
+        .unwrap_or_default();
+    format!("{station} location copied from this device{age}. Save positions to share it.")
 }
 /// After a 409, rows the operator did not touch take the newly saved value and
 /// edited rows keep their draft. Returns the edited stations whose saved value
@@ -300,6 +415,19 @@ fn StationPositionsEditor() -> Element {
     let mut busy = use_signal(|| false);
     let mut locating = use_signal(|| None::<usize>);
     let mut message = use_signal(String::new);
+    // The same station positions the map polls, so the two always agree.
+    let mut stations = use_signal(StationSnapshot::default);
+    use_future(move || async move {
+        loop {
+            if super::dashboard_page_visible()
+                && let Ok(next) = http_get_json::<StationSnapshot>(STATUS_PATH).await
+                && *stations.peek() != next
+            {
+                stations.set(next);
+            }
+            sleep_ms(STATION_POLL_MS).await;
+        }
+    });
     let mut apply_document = move |d: Document| {
         forms.set([
             Form::from_coordinate(d.ground_station.clone()),
@@ -331,7 +459,7 @@ fn StationPositionsEditor() -> Element {
         style {{include_str!("station_positions_admin.css")}}
         section {class:"station-positions-admin","aria-label":"Station locations",
             h2 {"Station locations"}
-            p {class:"station-location-hint","Saved fallbacks for maps and antenna alignment. Fresh station GPS takes precedence."}
+            p {class:"station-location-hint","Saved fallbacks for maps and antenna alignment. Fresh station GPS takes precedence. “Use live station GPS” copies the station’s own fix (the one on the map); “Use this device’s location” asks the phone or computer showing this page."}
             if let Some(text) = saved_text { p {class:"station-location-hint","{text}"} }
             div {class:"station-location-grid",
                 for index in 0..2usize {
@@ -341,7 +469,28 @@ fn StationPositionsEditor() -> Element {
                         label {"Longitude (°)" input {r#type:"text",inputmode:"decimal",autocomplete:"off",value:forms.read()[index].longitude.clone(),oninput:move|e|{let mut f=forms.write();f[index].longitude=e.value();f[index].edited();}}}
                         label {"Altitude (m, optional)" input {r#type:"text",inputmode:"decimal",autocomplete:"off",value:forms.read()[index].altitude.clone(),oninput:move|e|{let mut f=forms.write();f[index].altitude=e.value();f[index].edited();}}}
                         p {class:"station-location-source","data-station":"{STATIONS[index]}",{forms.read()[index].describe()}}
+                        {
+                            let live=live_station_fix(station_row(&stations.read(),index),STATIONS[index]);
+                            let status=match &live {Ok(fix)=>format!("Live station GPS: {}",station_fix_summary(fix)),Err(reason)=>format!("Live station GPS unavailable: {reason}")};
+                            rsx!{p {class:"station-location-live","data-station":"{STATIONS[index]}","{status}"}}
+                        }
                         div {class:"station-location-actions",
+                            button {disabled:live_station_fix(station_row(&stations.read(),index),STATIONS[index]).is_err(),onclick:move |_|{
+                                busy.set(true);
+                                spawn(async move {
+                                    // Re-read so the copied fix is the current one, not the last poll.
+                                    if let Ok(next)=http_get_json::<StationSnapshot>(STATUS_PATH).await { stations.set(next); }
+                                    let live=live_station_fix(station_row(&stations.read(),index),STATIONS[index]);
+                                    message.set(match live {
+                                        Ok(fix)=>{
+                                            apply_station_fix(&mut forms.write()[index],&fix);
+                                            format!("{} location copied from its live GPS ({}). Save positions to share it.",STATIONS[index],station_fix_summary(&fix))
+                                        }
+                                        Err(reason)=>reason,
+                                    });
+                                    busy.set(false);
+                                });
+                            },"Use live station GPS"}
                             button {onclick:move |_|{
                                 busy.set(true);locating.set(Some(index));
                                 message.set(format!("Requesting this device’s location for {}…",STATIONS[index]));
@@ -350,13 +499,13 @@ fn StationPositionsEditor() -> Element {
                                     let result=device_location_bounded().await;
                                     let applied={let mut f=forms.write();apply_location(&mut f[index],result)};
                                     message.set(match applied {
-                                        Ok(())=>format!("{} location copied from this device. Save positions to share it.",STATIONS[index]),
+                                        Ok(age)=>device_copied_message(STATIONS[index],age),
                                         Err(e)=>e,
                                     });
                                     locating.set(None);busy.set(false);
                                 });
                             },
-                                if *locating.read()==Some(index) {"Locating…"} else {"Use this device’s location"}
+                                if *locating.read()==Some(index) {"Locating this device…"} else {"Use this device’s location"}
                             }
                             button {onclick:move |_|{let mut f=forms.write();f[index]=Form{dirty:true,..Form::default()};message.set(format!("{} position cleared in draft. Save to apply.",STATIONS[index]));},"Clear"}
                         }
@@ -458,7 +607,7 @@ mod tests {
             source: "device_location".into(),
             ..coordinate(43.02, -78.82)
         };
-        apply_location(&mut form, LocationResult { coordinate: Some(fix), error: None }).unwrap();
+        apply_location(&mut form, LocationResult { coordinate: Some(fix), ..Default::default() }).unwrap();
         assert!(form.dirty);
         assert_eq!(form.describe(), "From device location, ±12 m · not saved yet");
         let saved = form.coordinate("GS").unwrap().unwrap();
@@ -473,7 +622,7 @@ mod tests {
         let before = form.clone();
         let err = apply_location(&mut form, LocationResult::failed("Location permission was denied."));
         assert_eq!(err.unwrap_err(), "Location permission was denied.");
-        let bogus = LocationResult { coordinate: Some(coordinate(95.0, 0.0)), error: None };
+        let bogus = LocationResult { coordinate: Some(coordinate(95.0, 0.0)), ..Default::default() };
         assert!(apply_location(&mut form, bogus).is_err());
         assert!(form == before);
     }
@@ -494,6 +643,102 @@ mod tests {
         forms[1].edited();
         assert_eq!(merge_after_conflict(&mut forms, &latest, &changed), vec!["RRLS"]);
         assert_eq!(forms[1].longitude, "-78.5");
+    }
+    fn live(age_ms: u64) -> StationFix {
+        StationFix {
+            latitude: 43.0012,
+            longitude: -78.7891,
+            altitude_m: Some(181.5),
+            altitude_reference: Some("mean_sea_level".into()),
+            accuracy_m: Some(2.6),
+            age_ms,
+            source: "GroundStation GPS".into(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn live_station_gps_is_offered_only_for_a_fresh_fix() {
+        assert!(live_station_fix(Some(&live(800)), "GroundStation").is_ok());
+        assert_eq!(
+            live_station_fix(None, "RRLS").unwrap_err(),
+            "RRLS is not reporting a GPS position."
+        );
+        let saved = StationFix { manual: true, ..live(0) };
+        assert!(live_station_fix(Some(&saved), "RRLS").unwrap_err().contains("saved position"));
+        let stale = StationFix { stale: true, ..live(600_000) };
+        assert_eq!(
+            live_station_fix(Some(&stale), "GroundStation").unwrap_err(),
+            "GroundStation's last GPS fix is 10 min old (stale)."
+        );
+        let bogus = StationFix { latitude: f64::NAN, ..live(0) };
+        assert!(live_station_fix(Some(&bogus), "GroundStation").unwrap_err().contains("invalid"));
+        // Each row reads its own station from the same snapshot the map uses.
+        let snapshot: StationSnapshot = serde_json::from_str(
+            r#"{"rocket":null,"ground_station":{"latitude":43.0,"longitude":-78.8,"altitude_m":180.0,"altitude_reference":"mean_sea_level","accuracy_m":3.0,"geoid_separation_m":-34.0,"age_ms":1200,"stale":false,"source":"GroundStation GPS","manual":false},"rrls":null,"rssi":null,"gpsd_configured":true}"#,
+        )
+        .unwrap();
+        assert!(live_station_fix(station_row(&snapshot, 0), STATIONS[0]).is_ok());
+        assert!(live_station_fix(station_row(&snapshot, 1), STATIONS[1]).is_err());
+        assert_eq!(
+            station_fix_summary(station_row(&snapshot, 0).unwrap()),
+            "±3 m · 3-D, sea-level altitude · 1 s old"
+        );
+    }
+    #[test]
+    fn station_gps_fills_the_draft_with_its_accuracy_and_altitude() {
+        let mut form = Form::from_coordinate(Some(coordinate(1.0, 2.0)));
+        apply_station_fix(&mut form, &live(1_500));
+        assert!(form.dirty);
+        assert_eq!((form.latitude.as_str(), form.longitude.as_str()), ("43.0012", "-78.7891"));
+        assert_eq!(form.altitude, "181.5");
+        assert_eq!(form.describe(), "From station GPS, ±3 m · not saved yet");
+        let saved = form.coordinate("GroundStation").unwrap().unwrap();
+        assert_eq!(saved.source, "station_gps");
+        assert_eq!((saved.accuracy_m, saved.altitude_m), (Some(2.6), Some(181.5)));
+        let flat = StationFix { altitude_m: None, accuracy_m: None, ..live(130_000) };
+        assert_eq!(station_fix_summary(&flat), "accuracy not reported · 2-D, no altitude · 2 min old");
+        apply_station_fix(&mut form, &flat);
+        assert_eq!(form.altitude, "");
+        // Typing over it makes it a manual entry again.
+        form.edited();
+        assert_eq!(form.coordinate("GS").unwrap().unwrap().source, "manual");
+    }
+    #[test]
+    fn device_location_failures_explain_permission_timeout_and_unavailable_separately() {
+        let decode = |json: &str| serde_json::from_str::<LocationResult>(json).unwrap().error_message();
+        let denied = decode(r#"{"failure":"denied"}"#);
+        let timeout = decode(r#"{"failure":"timeout"}"#);
+        let unavailable = decode(r#"{"failure":"unavailable"}"#);
+        assert!(denied.contains("permission"));
+        assert!(timeout.contains("no location fix of its own") && timeout.contains("Use live station GPS"));
+        assert!(unavailable.contains("location service is off"));
+        assert!(decode(r#"{"failure":"insecure"}"#).contains("https://"));
+        assert!(decode(r#"{"failure":"unsupported"}"#).contains("cannot share"));
+        assert_ne!(denied, timeout);
+        assert_ne!(timeout, unavailable);
+        // Native services keep their own wording; nothing at all is still explained.
+        assert_eq!(decode(r#"{"error":"GeoClue refused"}"#), "GeoClue refused");
+        assert_eq!(decode("{}"), "This device did not provide valid coordinates.");
+        let mut form = Form::default();
+        assert_eq!(
+            apply_location(&mut form, LocationResult::failure(LocationFailure::Timeout)).unwrap_err(),
+            LocationFailure::Timeout.message()
+        );
+        assert!(form == Form::default());
+        // A reused recent fix reports its age.
+        let reused: LocationResult = serde_json::from_str(
+            r#"{"coordinate":{"latitude":43.0,"longitude":-78.8,"altitude_m":null,"accuracy_m":15.0,"source":"device_location"},"age_ms":42000}"#,
+        )
+        .unwrap();
+        let age = apply_location(&mut form, reused).unwrap();
+        assert_eq!(
+            device_copied_message("RRLS", age),
+            "RRLS location copied from this device (fix 42 s old). Save positions to share it."
+        );
+        assert_eq!(
+            device_copied_message("RRLS", Some(200)),
+            "RRLS location copied from this device. Save positions to share it."
+        );
     }
     #[test]
     fn saved_age_and_accuracy_labels_are_readable() {

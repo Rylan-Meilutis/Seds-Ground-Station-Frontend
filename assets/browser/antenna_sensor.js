@@ -23,6 +23,7 @@
     watch=navigator.geolocation.watchPosition(p=>{
       if(!s.active)return;
       s.position={latitude:p.coords.latitude,longitude:p.coords.longitude,altitude_m:p.coords.altitude,altitude_reference:'ellipsoid',age_ms:Math.floor(Math.max(0,Date.now()-p.timestamp)),stale:false,source:'This device',at:performance.now()};
+      const c=p.coords;window.__gs26_device_fix={latitude:c.latitude,longitude:c.longitude,altitude_m:Number.isFinite(c.altitude)?c.altitude:null,accuracy_m:Number.isFinite(c.accuracy)&&c.accuracy>=0?c.accuracy:null,at:Number.isFinite(p.timestamp)?p.timestamp:Date.now()};
     },()=>{if(s.active)s.error='Device GPS unavailable or permission denied';},{enableHighAccuracy:true,maximumAge:0,timeout:10000});
   }else{s.error='Device GPS requires HTTPS and location support';}
 })();

@@ -147,7 +147,9 @@ pub async fn one_shot(
     stop_client(&connection, &client_path).await;
     result.map_err(|e| {
         if e.is_empty() {
-            "The device did not find its location in time. Try again or enter coordinates.".into()
+            crate::telemetry_dashboard::gps::LocationFailure::Timeout
+                .message()
+                .into()
         } else {
             e
         }

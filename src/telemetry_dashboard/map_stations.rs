@@ -1,74 +1,12 @@
 //! GroundStation and RRLS markers for the map. Positions come from the
 //! backend's antenna snapshot: fresh station GPS first, then the administrator's
 //! saved fallback, then the last stale fix, each labelled with where it came from.
+use super::station_fix::{STATUS_PATH, Snapshot, StationFix};
 use super::{http_get_json, js_eval, layout::ThemeConfig};
 use dioxus::prelude::*;
-use serde::Deserialize;
 
 const POLL_MS: u64 = 3_000;
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(super) struct StationFix {
-    pub latitude: f64,
-    pub longitude: f64,
-    #[serde(default)]
-    pub accuracy_m: Option<f64>,
-    #[serde(default)]
-    pub age_ms: u64,
-    #[serde(default)]
-    pub stale: bool,
-    #[serde(default)]
-    pub source: String,
-    /// Administrator-saved fallback rather than a live GPS solution.
-    #[serde(default)]
-    pub manual: bool,
-}
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-struct Snapshot {
-    ground_station: Option<StationFix>,
-    rrls: Option<StationFix>,
-}
-
-impl StationFix {
-    fn usable(&self) -> bool {
-        self.latitude.is_finite()
-            && self.longitude.is_finite()
-            && (-90.0..=90.0).contains(&self.latitude)
-            && (-180.0..=180.0).contains(&self.longitude)
-    }
-    fn live(&self) -> bool {
-        !self.manual && !self.stale
-    }
-    /// Short provenance label: saved (manual or device location) vs live GPS,
-    /// with accuracy and age where known.
-    pub(super) fn provenance(&self) -> String {
-        let accuracy = self
-            .accuracy_m
-            .filter(|v| v.is_finite() && *v >= 0.0)
-            .map(|v| format!(" ±{v:.0} m"))
-            .unwrap_or_default();
-        if self.manual {
-            let kind = if self.source.contains("device location") {
-                "device location"
-            } else {
-                "manual entry"
-            };
-            format!("saved, {kind}{accuracy}")
-        } else if self.stale {
-            format!("last GPS {} old (stale)", format_age(self.age_ms))
-        } else {
-            format!("live GPS{accuracy}, {} old", format_age(self.age_ms))
-        }
-    }
-}
-fn format_age(age_ms: u64) -> String {
-    let seconds = age_ms / 1000;
-    match seconds {
-        0..=119 => format!("{seconds} s"),
-        120..=7199 => format!("{} min", seconds / 60),
-        _ => format!("{} h", seconds / 3600),
-    }
-}
 fn stations_payload(snapshot: &Snapshot) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = [("gs", &snapshot.ground_station), ("rrls", &snapshot.rrls)]
         .into_iter()
@@ -100,7 +38,7 @@ pub(super) fn MapStations(theme: ThemeConfig) -> Element {
     use_future(move || async move {
         loop {
             if super::dashboard_page_visible()
-                && let Ok(next) = http_get_json::<Snapshot>("/api/antenna/status").await
+                && let Ok(next) = http_get_json::<Snapshot>(STATUS_PATH).await
             {
                 js_eval(&stations_js(&next));
                 if *snapshot.peek() != next {
@@ -155,6 +93,13 @@ mod tests {
             ..fix()
         };
         assert_eq!(device.provenance(), "saved, device location ±12 m");
+        let copied = StationFix {
+            manual: true,
+            accuracy_m: Some(2.6),
+            source: "Saved RRLS (station GPS)".into(),
+            ..fix()
+        };
+        assert_eq!(copied.provenance(), "saved, station GPS ±3 m");
         let live = StationFix {
             accuracy_m: Some(3.0),
             age_ms: 1_500,

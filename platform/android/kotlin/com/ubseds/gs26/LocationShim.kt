@@ -44,7 +44,13 @@ object LocationShim : LocationListener, SensorEventListener {
     private val rotationMatrix = FloatArray(9)
 
     @JvmStatic
-    external fun nativeOnLocationUpdate(lat: Double, lon: Double, altitudeM: Double)
+    external fun nativeOnLocationUpdate(
+        lat: Double,
+        lon: Double,
+        altitudeM: Double,
+        accuracyM: Double,
+        fixTimeMs: Long
+    )
 
     @JvmStatic
     external fun nativeOnHeadingUpdate(headingDeg: Float)
@@ -157,7 +163,7 @@ object LocationShim : LocationListener, SensorEventListener {
     private fun tryEmitLastKnownLocation(locationManager: LocationManager) {
         try {
             locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let {
-                nativeOnLocationUpdate(it.latitude, it.longitude, altitudeOrNaN(it))
+                emitLocation(it)
                 return
             }
         } catch (_: SecurityException) {
@@ -165,7 +171,7 @@ object LocationShim : LocationListener, SensorEventListener {
 
         try {
             locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let {
-                nativeOnLocationUpdate(it.latitude, it.longitude, altitudeOrNaN(it))
+                emitLocation(it)
             }
         } catch (_: SecurityException) {
         }
@@ -197,7 +203,7 @@ object LocationShim : LocationListener, SensorEventListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        nativeOnLocationUpdate(location.latitude, location.longitude, altitudeOrNaN(location))
+        emitLocation(location)
     }
 
     override fun onProviderEnabled(provider: String) {}
@@ -303,6 +309,17 @@ object LocationShim : LocationListener, SensorEventListener {
         val next = normalizeHeading(previous + (delta * alpha))
         smoothedHeadingDeg = next
         return next
+    }
+
+    /// Passes the fix time so a cached last-known location is never mistaken for a fresh one.
+    private fun emitLocation(location: Location) {
+        nativeOnLocationUpdate(
+            location.latitude,
+            location.longitude,
+            altitudeOrNaN(location),
+            if (location.hasAccuracy()) location.accuracy.toDouble() else Double.NaN,
+            location.time
+        )
     }
 
     private fun altitudeOrNaN(location: Location): Double {

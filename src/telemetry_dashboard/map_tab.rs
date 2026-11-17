@@ -1246,6 +1246,15 @@ fn _js_setup_js_geolocation_watch() {
                 const c = pos.coords;
                 window.__gs26_user_lat = c.latitude;
                 window.__gs26_user_lon = c.longitude;
+                // Timestamped copy for the station location form's
+                // "Use this device's location" (assets/browser/station_location.js).
+                window.__gs26_device_fix = {
+                  latitude: c.latitude,
+                  longitude: c.longitude,
+                  altitude_m: Number.isFinite(c.altitude) ? c.altitude : null,
+                  accuracy_m: Number.isFinite(c.accuracy) && c.accuracy >= 0 ? c.accuracy : null,
+                  at: Number.isFinite(pos.timestamp) ? pos.timestamp : Date.now()
+                };
               },
               (err) => {
                 try {

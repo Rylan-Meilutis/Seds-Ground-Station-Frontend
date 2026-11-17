@@ -6,6 +6,10 @@ use dioxus_signals::Signal;
 
 const NATIVE_ALTITUDE_SYNC_MS: u64 = 250;
 
+#[path = "location_failure.rs"]
+mod location_failure;
+pub use location_failure::LocationFailure;
+
 /// One operating-system location reading for an explicit operator request.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeviceFix {
@@ -60,7 +64,7 @@ pub async fn one_shot_location(timeout: std::time::Duration) -> Result<DeviceFix
     )))]
     {
         let _ = timeout;
-        Err("This device has no location service. Enter coordinates manually.".into())
+        Err(LocationFailure::Unsupported.message().into())
     }
 }
 

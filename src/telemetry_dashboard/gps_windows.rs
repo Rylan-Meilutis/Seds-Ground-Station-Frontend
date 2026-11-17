@@ -102,9 +102,9 @@ pub async fn one_shot(
     match tokio::time::timeout(timeout, tokio::task::spawn_blocking(read_fix_blocking)).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err("The location request failed. Enter coordinates manually.".into()),
-        Err(_) => Err(
-            "The device did not find its location in time. Try again or enter coordinates.".into(),
-        ),
+        Err(_) => Err(crate::telemetry_dashboard::gps::LocationFailure::Timeout
+            .message()
+            .into()),
     }
 }
 

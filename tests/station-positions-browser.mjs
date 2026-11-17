@@ -5,7 +5,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 const bundle=path.resolve(process.env.GS_STATION_POSITIONS_BUNDLE||'target/station-positions-web');
 let saved={version:1,revision:0,ground_station:null,rrls:null},posts=0;
+// The station GPS the map shows (GET /api/antenna/status); tests swap it.
+let antenna={rocket:null,ground_station:null,rrls:null,rssi:null,gpsd_configured:true};
 const server=http.createServer((req,res)=>{
+ if(req.url==='/api/antenna/status'){res.setHeader('content-type','application/json');res.end(JSON.stringify(antenna));return;}
  if(req.url==='/api/station_positions'){
   res.setHeader('content-type','application/json');
   if(req.method==='GET'){res.end(JSON.stringify(saved));return;}
@@ -50,9 +53,9 @@ async function oneShot(mode,expected,{insecure=false,clock=false}={}){
  const postsBefore=posts;
  await rr.getByRole('button',button('Use this device’s location')).click();
  if(clock){
-  await rr.getByRole('button',button('Locating…')).waitFor();
+  await rr.getByRole('button',button('Locating this device…')).waitFor();
   assert(await rr.locator('input').first().isDisabled(),'inputs locked while the request is pending');
-  await page.clock.fastForward(31_000);await page.clock.runFor(1_000);
+  await page.clock.fastForward(46_000);await page.clock.runFor(1_000);
  }
  await page.getByRole('status').filter({hasText:expected}).waitFor();
  // The busy state always clears; a failed request leaves the typed draft untouched.
@@ -63,7 +66,11 @@ async function oneShot(mode,expected,{insecure=false,clock=false}={}){
  const calls=await page.evaluate(()=>({geo:window.__geoCalls,watch:window.__watchCalls}));
  assert.equal(calls.watch,0,'never starts a watch');
  if(insecure)assert.equal(calls.geo.length,0,'no request outside a secure context');
- else assert.deepEqual(calls.geo,[{enableHighAccuracy:true,timeout:20000,maximumAge:0}],'exactly one fresh high-accuracy request');
+ else{
+  const precise={enableHighAccuracy:true,timeout:15000,maximumAge:120000},coarse={enableHighAccuracy:false,timeout:10000,maximumAge:300000};
+  // Timeout and unavailable get one coarse retry; denial and answers do not.
+  assert.deepEqual(calls.geo,['timeout','unavailable'].includes(mode)?[precise,coarse]:[precise],'bounded requests that accept a recent cached fix');
+ }
  assert.equal(posts,postsBefore,'a location request never saves');
  assert.deepEqual(errors,[]);
  return {context,page,rr};
@@ -123,11 +130,33 @@ try{
  assert.equal(await slow.rr.getByLabel('Latitude (°)').inputValue(),'42.25');await slow.context.close();
  // The remaining cases must leave the typed draft alone, so oneShot checks it.
  const fix=async (...args)=>{const r=await oneShot(...args);await r.context.close();};
- await fix('denied','Location permission was denied. Allow location for this page or enter coordinates.');
- await fix('timeout','The device did not find its location in time. Try again outdoors or enter coordinates.');
- await fix('unavailable','The device location is unavailable. Check location services or enter coordinates.');
- await fix('silent','No location arrived in time. Answer the location prompt or enter coordinates.',{clock:true});
- await fix('success','Device location needs a secure page. Open this station over https:// or enter coordinates.',{insecure:true});
+ await fix('denied','Location permission for this device was denied.');
+ await fix('timeout','This device has no location fix of its own (common on desktops and indoors).');
+ await fix('unavailable','This device\'s location service is off or has no location source.');
+ await fix('silent','No location arrived from this device in time.',{clock:true});
+ await fix('success','This device\'s location needs a secure page.',{insecure:true});
+ // Live station GPS: the same fix the map shows, offered only while fresh.
+ {
+  antenna={...antenna,ground_station:{latitude:43.0012,longitude:-78.7891,altitude_m:181.5,altitude_reference:'mean_sea_level',accuracy_m:2.6,geoid_separation_m:null,age_ms:1200,stale:false,source:'GroundStation GPS',manual:false},
+   rrls:{latitude:43.1,longitude:-78.6,altitude_m:null,altitude_reference:'unknown',accuracy_m:null,geoid_separation_m:null,age_ms:0,stale:false,source:'Saved RRLS (manual)',manual:true}};
+  const context=await browser.newContext();await context.addInitScript(mockGeolocation,'silent');
+  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(origin);
+  const gs=page.getByRole('group',{name:'GroundStation',exact:true}),rr=page.getByRole('group',{name:'RRLS',exact:true});
+  await gs.getByText('Live station GPS: ±3 m · 3-D, sea-level altitude · 1 s old',{exact:true}).waitFor();
+  await rr.getByText('Live station GPS unavailable: RRLS has no fresh GPS fix; the map is showing its saved position.',{exact:true}).waitFor();
+  assert(await rr.getByRole('button',button('Use live station GPS')).isDisabled(),'no fresh RRLS fix');
+  const postsBefore=posts;
+  await gs.getByRole('button',button('Use live station GPS')).click();
+  await page.getByRole('status').filter({hasText:'GroundStation location copied from its live GPS'}).waitFor();
+  assert.equal(await gs.getByLabel('Latitude (°)').inputValue(),'43.0012');assert.equal(await gs.getByLabel('Altitude (m, optional)').inputValue(),'181.5');
+  assert.equal(await gs.locator('.station-location-source').textContent(),'From station GPS, ±3 m · not saved yet');
+  assert.equal(posts,postsBefore,'station GPS stays a draft until Save');
+  assert.deepEqual(await page.evaluate(()=>window.__geoCalls),[],'station GPS never asks this device');
+  antenna={...antenna,ground_station:{...antenna.ground_station,stale:true,age_ms:60000}};
+  await gs.getByText('Live station GPS unavailable: GroundStation\'s last GPS fix is 60 s old (stale).',{exact:true}).waitFor();
+  assert(await gs.getByRole('button',button('Use live station GPS')).isDisabled(),'stale fix disables the button');
+  assert.deepEqual(errors,[]);await context.close();
+ }
  assert.equal(saved.rrls,null);
- console.log('PASS: bounds and partial pairs, decimal commas, one-shot device location (success, slow answer after GC, denied, timeout, unavailable, unanswered prompt, insecure page), draft-only until Save, source/accuracy/age labels, persistence, per-row conflict merge, explicit clear and four responsive widths');
+ console.log('PASS: bounds and partial pairs, decimal commas, one-shot device location (success, slow answer after GC, denied, timeout, unavailable, unanswered prompt, insecure page), live station GPS (fresh, saved-only, stale), draft-only until Save, source/accuracy/age labels, persistence, per-row conflict merge, explicit clear and four responsive widths');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

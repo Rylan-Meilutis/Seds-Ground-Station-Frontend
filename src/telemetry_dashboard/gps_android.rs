@@ -4,7 +4,7 @@
 use ::jni::objects::{JClass, JObject, JString, JValue};
 use ::jni::signature::RuntimeMethodSignature;
 use ::jni::strings::JNIString;
-use ::jni::sys::{jdouble, jfloat};
+use ::jni::sys::{jdouble, jfloat, jlong};
 use ::jni::{Env, EnvUnowned, JavaVM};
 use ndk_context::android_context;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +14,9 @@ static LON_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static GPS_ALT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static BARO_ALT_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
 static HEADING_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
+static ACCURACY_BITS: AtomicU64 = AtomicU64::new(f64::NAN.to_bits());
+/// Wall-clock time the latest location was measured (Android `Location.time`).
+static FIX_TIME_MS: AtomicU64 = AtomicU64::new(0);
 
 const LOCATION_SHIM_CLASS_DOT: &str = "com.ubseds.gs26.LocationShim";
 
@@ -122,6 +125,30 @@ pub fn latest_location() -> Option<(f64, f64)> {
     }
 }
 
+/// The latest location from the app's own location listener, if it was
+/// measured within `max_age_ms`. A cached last-known location keeps its
+/// original time, so an old one is never reported as recent.
+pub fn recent_fix(max_age_ms: u64) -> Option<crate::telemetry_dashboard::gps::DeviceFix> {
+    let fixed_at = FIX_TIME_MS.load(Ordering::Acquire);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    if fixed_at == 0 || now.abs_diff(fixed_at) > max_age_ms {
+        return None;
+    }
+    let (latitude, longitude) = latest_location()?;
+    let gps_altitude = f64::from_bits(GPS_ALT_BITS.load(Ordering::Relaxed));
+    let accuracy = f64::from_bits(ACCURACY_BITS.load(Ordering::Relaxed));
+    crate::telemetry_dashboard::gps::DeviceFix {
+        latitude,
+        longitude,
+        altitude_m: gps_altitude.is_finite().then_some(gps_altitude),
+        accuracy_m: accuracy.is_finite().then_some(accuracy),
+    }
+    .checked()
+}
+
 pub fn latest_altitude_m() -> Option<f64> {
     let baro = f64::from_bits(BARO_ALT_BITS.load(Ordering::Relaxed));
     if baro.is_finite() {
@@ -138,10 +165,14 @@ pub extern "system" fn Java_com_ubseds_gs26_LocationShim_nativeOnLocationUpdate(
     lat: jdouble,
     lon: jdouble,
     altitude_m: jdouble,
+    accuracy_m: jdouble,
+    fix_time_ms: jlong,
 ) {
     if lat.is_finite() && lon.is_finite() {
         LAT_BITS.store(lat.to_bits(), Ordering::Relaxed);
         LON_BITS.store(lon.to_bits(), Ordering::Relaxed);
+        ACCURACY_BITS.store(accuracy_m.to_bits(), Ordering::Relaxed);
+        FIX_TIME_MS.store(fix_time_ms.max(0) as u64, Ordering::Release);
     }
     if altitude_m.is_finite() {
         GPS_ALT_BITS.store(altitude_m.to_bits(), Ordering::Relaxed);
