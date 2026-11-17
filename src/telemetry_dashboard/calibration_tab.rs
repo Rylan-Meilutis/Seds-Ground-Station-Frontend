@@ -283,8 +283,18 @@ fn save_cached_calibration_file(cfg: &CalibrationFile) {
     }
 }
 
+fn is_load_cell(data_type: &str) -> bool {
+    matches!(data_type, "KG1000" | "KG50")
+}
+
+/// Live Raw must show only a current reading from the board being calibrated.
+/// Load cells accept only DAQ rows received within the last 2 s.
 fn latest_raw(data_type: &str) -> Option<f32> {
-    latest_telemetry_value(data_type, None, 0)
+    if is_load_cell(data_type) {
+        super::fresh_daq_calibration_value(data_type, now_ms() as i64)
+    } else {
+        latest_telemetry_value(data_type, None, 0)
+    }
 }
 
 async fn sleep_ms(millis: u64) {
@@ -294,19 +304,25 @@ async fn sleep_ms(millis: u64) {
     tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
 }
 
+/// Result of a live capture: the robust average plus the spread the operator
+/// should see, and the mean ADC temperature for load cells.
+type CaptureResult = (calibration_capture::CaptureSummary, Option<f32>);
+
 async fn capture_average_raw_sample<F>(
     data_type: String,
     samples: usize,
     calibration: CalibrationFile,
     mut on_progress: F,
-) -> Result<(f32, usize, Option<f32>), String>
+) -> Result<CaptureResult, String>
 where
     F: FnMut(usize, usize),
 {
     let target = samples.clamp(1, 5_000);
+    let mut raw_samples = Vec::with_capacity(target);
     let mut captured_samples = Vec::with_capacity(target);
     let mut temperatures = Vec::with_capacity(target);
-    let load_cell = matches!(data_type.as_str(), "KG1000" | "KG50");
+    let load_cell = is_load_cell(&data_type);
+    let guard = calibration_capture::load_cell_capture_guard(&data_type, &calibration.kg50_input);
     let mut observations = calibration_capture::CaptureObservations::new(super::monotonic_now_ms() as u64);
     while captured_samples.len() < target {
         let now_mono_ms = super::monotonic_now_ms() as u64;
@@ -342,6 +358,7 @@ where
         } else {
             captured_samples.push(raw);
         }
+        raw_samples.push(raw);
         let completed = captured_samples.len();
         if completed == 1 || completed == target || completed % 5 == 0 {
             on_progress(completed, target);
@@ -350,49 +367,29 @@ where
             sleep_ms(20).await;
         }
     }
-    if captured_samples.is_empty() {
-        Err("No live raw samples were available during capture.".to_string())
-    } else {
-        captured_samples.sort_by(f32::total_cmp);
-        const OUTLIER_FLOOR: f32 = 0.000001;
-        const OUTLIER_SCALE: f32 = 3.5;
-        const TRIM_RATIO: f32 = 0.12;
-        let len = captured_samples.len();
-        let median = if len % 2 == 0 {
-            (captured_samples[len / 2 - 1] + captured_samples[len / 2]) * 0.5
-        } else {
-            captured_samples[len / 2]
-        };
-        let mut deviations: Vec<f32> = captured_samples
-            .iter()
-            .map(|value| (value - median).abs())
-            .collect();
-        deviations.sort_by(f32::total_cmp);
-        let mad = if len % 2 == 0 {
-            (deviations[len / 2 - 1] + deviations[len / 2]) * 0.5
-        } else {
-            deviations[len / 2]
-        };
-        let outlier_limit = (mad * OUTLIER_SCALE).max(OUTLIER_FLOOR);
-        let mut filtered: Vec<f32> = captured_samples
-            .iter()
-            .copied()
-            .filter(|value| (value - median).abs() <= outlier_limit)
-            .collect();
-        if filtered.is_empty() {
-            filtered = captured_samples.clone();
-        }
-        filtered.sort_by(f32::total_cmp);
-        let trim = ((filtered.len() as f32) * TRIM_RATIO).floor() as usize;
-        let usable = if filtered.len() > trim * 2 + 2 {
-            &filtered[trim..(filtered.len() - trim)]
-        } else {
-            filtered.as_slice()
-        };
-        let total: f32 = usable.iter().copied().sum();
-        let temperature = (!temperatures.is_empty()).then(|| temperatures.iter().sum::<f32>() / temperatures.len() as f32);
-        Ok((total / usable.len() as f32, usable.len(), temperature))
-    }
+    let summary = calibration_capture::summarize_capture(&raw_samples, &captured_samples, guard.as_ref())?;
+    let temperature = (!temperatures.is_empty()).then(|| temperatures.iter().sum::<f32>() / temperatures.len() as f32);
+    Ok((summary, temperature))
+}
+
+/// Manual point fields belong to the sensor they were entered or captured on.
+#[derive(Clone, Copy)]
+struct ManualEntrySignals {
+    raw: Signal<String>,
+    kg: Signal<String>,
+    temperature: Signal<Option<f32>>,
+    progress: Signal<String>,
+    progress_epoch: Signal<u64>,
+}
+
+/// Clear them on a sensor switch so Add/Update Point cannot save one sensor's
+/// raw reading (or its ADC temperature) on another sensor's channel.
+fn clear_manual_entry(mut entry: ManualEntrySignals) {
+    entry.raw.set(String::new());
+    entry.kg.set(String::new());
+    entry.temperature.set(None);
+    entry.progress_epoch += 1;
+    entry.progress.set(String::new());
 }
 
 fn fmt_fixed(v: Option<f32>, width: usize, prec: usize) -> String {
@@ -461,14 +458,24 @@ fn channel_points_by_key(cfg: &CalibrationFile, channel: &str) -> Vec<(f32, f32)
 }
 
 fn remove_point_by_key(cfg: &mut CalibrationFile, channel: &str, index: usize) -> bool {
-    cfg.channels.get_mut(channel).is_some_and(|c| {
-        if index < c.points.len() {
-            c.points.remove(index);
-            true
-        } else {
-            false
+    let removed = cfg.channels.get_mut(channel).and_then(|c| {
+        (index < c.points.len()).then(|| c.points.remove(index))
+    });
+    if let Some(point) = removed.as_ref() {
+        drop_temperature_capture(cfg, channel, point.expected);
+    }
+    removed.is_some()
+}
+
+/// A temperature capture is kept per calibration point; drop it with the point.
+fn drop_temperature_capture(cfg: &mut CalibrationFile, channel: &str, expected: f32) {
+    let sensor = thermal_sensor(channel);
+    if let Some(captures) = cfg.temperature_captures.get_mut(sensor) {
+        captures.retain(|capture| (capture.expected - expected).abs() >= 1e-6);
+        if captures.is_empty() {
+            cfg.temperature_captures.remove(sensor);
         }
-    })
+    }
 }
 
 fn set_zero_raw_by_key(
@@ -523,11 +530,15 @@ fn zero_raw_for_channel_key(cfg: &CalibrationFile, channel: &str) -> Option<f32>
 }
 
 fn remove_zero_by_key(cfg: &mut CalibrationFile, channel: &str) -> bool {
-    cfg.channels.get_mut(channel).is_some_and(|c| {
+    let had_zero = cfg.channels.get_mut(channel).is_some_and(|c| {
         let had_zero = c.zero_raw.is_some();
         c.zero_raw = None;
         had_zero
-    })
+    });
+    if had_zero {
+        drop_temperature_capture(cfg, channel, 0.0);
+    }
+    had_zero
 }
 
 fn clear_fit_preview_by_key(cfg: &mut CalibrationFile, channel: &str) {
@@ -566,6 +577,7 @@ fn now_ms() -> u64 {
 
 fn reset_channel_by_key(cfg: &mut CalibrationFile, channel: &str) {
     cfg.channels.remove(channel);
+    cfg.temperature_captures.remove(thermal_sensor(channel));
 }
 
 fn points_for_channel_key(cfg: &CalibrationFile, channel: &str) -> Vec<(f64, f64)> {
@@ -2110,6 +2122,15 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             let mut selected_point = selected_point;
                             let sensor_id = sensor.id.clone();
                             move |_| {
+                                if *selected_sensor_id.peek() != sensor_id {
+                                    clear_manual_entry(ManualEntrySignals {
+                                        raw: manual_raw,
+                                        kg: manual_kg,
+                                        temperature: manual_temperature,
+                                        progress: manual_capture_progress,
+                                        progress_epoch: manual_capture_progress_epoch,
+                                    });
+                                }
                                 selected_sensor_id.set(sensor_id.clone());
                                 selected_point.set(None);
                             }
@@ -2491,6 +2512,11 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                     effective_capture_sample_count,
                                     capture_calibration,
                                     |completed, target| {
+                                        // A sensor switch clears this capture's progress;
+                                        // never write it back for the old sensor.
+                                        if *selected_sensor_id.peek() != capture_selection {
+                                            return;
+                                        }
                                         let progress = format!(
                                             "Capturing samples for {}: {}/{}",
                                             sensor_label, completed, target
@@ -2501,8 +2527,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 )
                                 .await
                                 {
-                                    Ok(_) if !settings_owner.current() || *selected_sensor_id.peek() != capture_selection => return,
-                                    Ok((raw, captured, temperature)) => {
+                                    _ if !settings_owner.current() => return,
+                                    _ if *selected_sensor_id.peek() != capture_selection => {}
+                                    Ok((summary, temperature)) => {
+                                        let raw = summary.mean;
                                         manual_temperature.set(temperature);
                                         manual_raw.set(format_sensor_raw_value(
                                             raw,
@@ -2510,14 +2538,13 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             6,
                                         ));
                                         let done = format!(
-                                            "Captured averaged raw sample {} from {} samples on {}.",
+                                            "Captured averaged raw sample {} from {} samples on {} ({}).",
                                             format_sensor_raw_value(raw, Some(&sensor), 6),
-                                            captured, sensor.label
+                                            summary.used, sensor.label, summary.stats_text()
                                         );
                                         manual_capture_progress.set(done.clone());
                                         status.set(done);
                                     }
-                                    Err(_) if !settings_owner.current() => return,
                                     Err(err) => {
                                         manual_capture_progress.set(err.clone());
                                         status.set(err);
@@ -2961,7 +2988,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             .await
                                             {
                                                 Ok(_) if !settings_owner.current() || *selected_sensor_id.peek() != capture_selection => return,
-                                                Ok((raw, captured, temperature)) => {
+                                                Ok((summary, temperature)) => {
+                                                    let (raw, captured) = (summary.mean, summary.used);
+                                                    let stats = summary.stats_text();
                                                     let mut next = cfg.read().clone().unwrap_or_default();
                                                     if let Err(error) = apply_sequence_capture(
                                                         &mut next, &sensor.channel, mode, weight, raw, replace_existing,
@@ -3000,8 +3029,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         }
                                                         if *sequence_direction.read() == CaptureDirection::Decreasing && !replace_existing {
                                                             sequence_dialog_status.set(format!(
-                                                                "Final zero captured as {} from {} samples on {}. Review the fit, then save the calibration.",
-                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label
+                                                                "Final zero captured as {} from {} samples on {} ({}). Review the fit, then save the calibration.",
+                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label, stats
                                                             ));
                                                             sequence_dialog_open.set(false);
                                                         } else {
@@ -3010,8 +3039,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                             sequence_dialog_replace_existing.set(false);
                                                             sequence_dialog_confirm_reset.set(false);
                                                             sequence_dialog_status.set(format!(
-                                                                "Zero captured as {} from {} samples on {}. Add the next known mass and capture again.",
-                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label
+                                                                "Zero captured as {} from {} samples on {} ({}). Add the next known mass and capture again.",
+                                                                format_sensor_raw_value(raw, Some(&sensor), 6), captured, sensor.label, stats
                                                             ));
                                                         }
                                                     } else {
@@ -3031,7 +3060,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                         sequence_dialog_replace_existing.set(false);
                                                         sequence_dialog_confirm_reset.set(false);
                                                         sequence_dialog_status.set(format!(
-                                                            "Added/updated {weight} kg as {} from {} samples on {}. Enter the next mass and capture again.",
+                                                            "Added/updated {weight} kg as {} from {} samples on {} ({stats}). Enter the next mass and capture again.",
                                                             format_sensor_raw_value(raw, Some(&sensor), 6),
                                                             captured,
                                                             sensor.label
@@ -3534,5 +3563,98 @@ mod manual_linear_tests {
         let before = cfg.clone();
         assert!(apply_manual_linear(&mut cfg, "kg50", f32::NAN, 0.0).is_err());
         assert_eq!(cfg, before);
+    }
+}
+
+#[cfg(test)]
+mod capture_safeguard_tests {
+    use super::*;
+
+    fn with_kg1000_captures() -> CalibrationFile {
+        let mut cfg = CalibrationFile::default();
+        upsert_point_by_key(&mut cfg, "ch1", 0.0, 0.012, false);
+        upsert_point_by_key(&mut cfg, "ch1", 10.0, 0.013, false);
+        upsert_point_by_key(&mut cfg, "ch1", 20.0, 0.014, false);
+        for (expected, raw) in [(0.0, 0.012), (10.0, 0.013), (20.0, 0.014)] {
+            record_temperature_capture(&mut cfg, "KG1000", expected, raw, Some(21.0));
+        }
+        upsert_point_by_key(&mut cfg, "kg50", 5.0, 0.0043, false);
+        record_temperature_capture(&mut cfg, "KG50", 5.0, 0.0043, Some(21.0));
+        cfg
+    }
+
+    #[test]
+    fn removing_a_point_drops_only_its_temperature_capture() {
+        let mut cfg = with_kg1000_captures();
+        let idx = cfg.channels["ch1"].points.iter().position(|p| p.expected == 10.0).unwrap();
+        assert!(remove_point_by_key(&mut cfg, "ch1", idx));
+        let left: Vec<f32> = cfg.temperature_captures["KG1000"].iter().map(|c| c.expected).collect();
+        assert_eq!(left, vec![0.0, 20.0]);
+        assert_eq!(cfg.temperature_captures["KG50"].len(), 1);
+        assert!(!remove_point_by_key(&mut cfg, "ch1", 99));
+        assert_eq!(cfg.temperature_captures["KG1000"].len(), 2);
+        assert!(remove_zero_by_key(&mut cfg, "ch1"));
+        let left: Vec<f32> = cfg.temperature_captures["KG1000"].iter().map(|c| c.expected).collect();
+        assert_eq!(left, vec![20.0]);
+    }
+
+    #[test]
+    fn resetting_a_channel_clears_that_sensors_temperature_captures() {
+        let mut cfg = with_kg1000_captures();
+        reset_channel_by_key(&mut cfg, "ch1");
+        assert!(!cfg.channels.contains_key("ch1"));
+        assert!(!cfg.temperature_captures.contains_key("KG1000"));
+        assert_eq!(cfg.temperature_captures["KG50"].len(), 1);
+        // A replacing sequence capture starts without the old captures.
+        let mut cfg = with_kg1000_captures();
+        apply_sequence_capture(&mut cfg, "ch1", CaptureMode::SequencePoint, 30.0, 0.015, true).unwrap();
+        assert!(!cfg.temperature_captures.contains_key("KG1000"));
+    }
+
+    #[test]
+    fn switching_sensors_clears_manual_entry_and_capture_progress() {
+        let mut dom = VirtualDom::new(|| rsx! { div {} });
+        dom.rebuild_in_place();
+        dom.in_scope(ScopeId::ROOT, || {
+            let entry = ManualEntrySignals {
+                raw: Signal::new("0.0120500".to_string()),
+                kg: Signal::new("10".to_string()),
+                temperature: Signal::new(Some(22.5)),
+                progress: Signal::new("Capturing samples for 1000kg: 40/200".to_string()),
+                progress_epoch: Signal::new(3),
+            };
+            clear_manual_entry(entry);
+            assert_eq!(*entry.raw.read(), "");
+            assert_eq!(*entry.kg.read(), "");
+            assert_eq!(*entry.temperature.read(), None);
+            assert_eq!(*entry.progress.read(), "");
+            assert_eq!(*entry.progress_epoch.read(), 4);
+        });
+    }
+
+    fn live_row(sender: &str, received_ms: i64, value: f32) -> super::super::TelemetryRow {
+        let mut row = super::super::TelemetryRow {
+            source_timestamp_ms: Some(received_ms), timestamp_ms: received_ms,
+            received_timestamp_ms: received_ms, data_type: "KG1000".into(),
+            sender_id: sender.into(), data_type_id: Default::default(),
+            sender_id_id: Default::default(), values: vec![Some(value)],
+        };
+        row.refresh_interned_ids();
+        row
+    }
+
+    #[test]
+    fn live_raw_uses_only_fresh_daq_rows_for_load_cells() {
+        let now = now_ms() as i64;
+        super::super::update_latest_telemetry_batch(&[
+            live_row("DAQ", now - 5_000, 7.25),
+            live_row("GW", now, 5.5),
+        ]);
+        let shown = latest_raw("KG1000");
+        assert_ne!(shown, Some(5.5), "another sender's KG1000 row must not be shown");
+        assert_ne!(shown, Some(7.25), "a DAQ row older than 2 s must not be shown");
+        let now = now_ms() as i64;
+        super::super::update_latest_telemetry_batch(&[live_row("DAQ", now, 0.0123457)]);
+        assert_eq!(latest_raw("KG1000"), Some(0.0123457));
     }
 }
