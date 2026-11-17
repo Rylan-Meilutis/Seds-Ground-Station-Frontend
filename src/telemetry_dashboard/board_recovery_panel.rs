@@ -839,9 +839,104 @@ fn reset_section(current: &Snapshot, connected: bool, ui: (Signal<bool>, Signal<
                 }else{
                     p{role:"status",class:"gs-notice gs-notice--warn","Previous recovery is incomplete for {status.unfinished_boards().join(\", \")}. Recover those boards or reset all boards."}
                 }
+                if !recovery.unsatisfied.is_empty(){
+                    p{role:"status",style:"margin:0;","Still needs recovery: {recovery.unsatisfied.join(\", \")}."
+                        if !recovery.absent.is_empty(){" Not on the network: {recovery.absent.join(\", \")}."}
+                    }
+                }
             }
         }
+        {match status.finish_without_absent(crate::auth::is_admin()){
+            FinishWithoutAbsent::None=>rsx!{},
+            offer=>rsx!{FinishWithoutAbsentControl{offer,connected,controls_busy}},
+        }}
         if let Some(operation)=status.operation.as_ref(){{operation_view(operation)}}
+    }
+}
+const FINISH_WITHOUT_ABSENT: &str = "/api/board-recovery/finish-without-absent";
+#[derive(Serialize)]
+struct FinishWithoutAbsentBody<'a> {
+    boards: &'a [String],
+    confirm: bool,
+}
+/// The station's own refusal text from `HTTP 409: {"message":...}`, or the
+/// error as given when it carries no JSON message.
+fn server_refusal(error: &str) -> String {
+    let body = error.split_once(": ").map_or(error, |(_, body)| body);
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("message").and_then(|m| m.as_str()).map(str::to_owned))
+        .unwrap_or_else(|| error.to_owned())
+}
+/// Administrator waiver of absent boards in an unfinished recovery. The
+/// dialog names the boards; the request names exactly those boards, and the
+/// server refuses unless they are still exactly the absent ones.
+#[component]
+fn FinishWithoutAbsentControl(offer: FinishWithoutAbsent, connected: bool, controls_busy: bool) -> Element {
+    let mut confirming = use_signal(|| None::<Vec<String>>);
+    let mut sending = use_signal(|| false);
+    let mut result = use_signal(String::new);
+    let (absent, blocked) = match &offer {
+        FinishWithoutAbsent::Ready { absent } => (absent.clone(), None),
+        FinishWithoutAbsent::Blocked { absent, reason } => (absent.clone(), Some(reason.clone())),
+        FinishWithoutAbsent::None => (Vec::new(), Some(String::new())),
+    };
+    let names = absent.join(", ");
+    let verb = if absent.len() == 1 { "is" } else { "are" };
+    let disabled = !connected || controls_busy || sending() || blocked.is_some();
+    let dialog = confirming.read().clone().map(|boards| {
+        let one = boards.len() == 1;
+        let joined = boards.join(", ");
+        (boards, joined, if one { "has" } else { "have" }, if one { "it returns" } else { "they return" })
+    });
+    rsx! {
+        div{class:"gs26-finish-without-absent",style:"display:grid;gap:var(--gs-space-2);justify-items:start;",
+            button{r#type:"button",class:"gs-btn gs-btn--danger",disabled,title:blocked.clone().unwrap_or_default(),
+                onclick:{let absent=absent.clone();move |_|{result.set(String::new());confirming.set(Some(absent.clone()));}},
+                "Finish without absent boards…"
+            }
+            p{style:"margin:0;","Ends the unfinished recovery without {names}, which {verb} not on the network. Administrators only."}
+            if let Some(reason)=blocked.clone().filter(|reason|!reason.is_empty()){p{role:"status",class:"gs-notice gs-notice--warn","Unavailable: {reason}"}}
+            if !result.read().is_empty(){p{role:"status",class:"gs-notice","{result}"}}
+        }
+        if let Some((boards,joined,have,returns))=dialog{
+            div{style:"position:fixed;inset:0;z-index:200000;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
+                onkeydown:move|event|{event.stop_propagation();match event.key(){Key::Escape if !*sending.peek()=>{event.prevent_default();confirming.set(None);},Key::Tab=>{event.prevent_default();cycle_modal_focus("gs26-finish-without-absent-confirm",event.modifiers().contains(Modifiers::SHIFT));},_=>{}}},
+                div{id:"gs26-finish-without-absent-confirm",role:"alertdialog","aria-modal":"true","aria-labelledby":"finish-without-absent-title",style:"background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);font:inherit;padding:var(--gs-space-5);border-radius:var(--gs-radius-lg);width:min(100%,640px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:var(--gs-space-3);overflow-y:auto;box-sizing:border-box;overflow-wrap:anywhere;",
+                    h2{id:"finish-without-absent-title",style:"margin:0;font-size:var(--gs-text-lg);","Finish recovery without {joined}?"}
+                    p{style:"margin:0;","{joined} {have} not been on the network for the board-seen timeout and cannot be recovered now. Every other board of the recovery reads back healthy."}
+                    p{style:"margin:0;","This reopens station commands. Nothing is sent to any board. The decision is recorded in the launch journal under your name."}
+                    p{style:"margin:0;font-weight:700;","Recover {joined} when {returns}. A board left out that comes back aborted still blocks Launch."}
+                    div{style:"display:flex;gap:var(--gs-space-2);flex-wrap:wrap;justify-content:flex-end;",
+                        button{r#type:"button",class:"gs-btn",disabled:sending(),onclick:move |_|confirming.set(None),"Cancel"}
+                        button{r#type:"button",class:"gs-btn gs-btn--danger",autofocus:true,disabled:sending(),
+                            onclick:{let boards=boards.clone();move |_|{
+                                if *sending.peek(){return;}
+                                if !crate::auth::is_admin(){result.set("Only an administrator can finish a recovery without absent boards.".into());confirming.set(None);return;}
+                                let owner=match super::recording_download::ExportOwner::capture_ordinary_selected(||true){
+                                    Ok(owner)=>owner,
+                                    Err(_)=>{result.set("No current station or sign-in. Reconnect and try again.".into());confirming.set(None);return;}
+                                };
+                                let body=match serde_json::to_value(FinishWithoutAbsentBody{boards:&boards,confirm:true}){Ok(body)=>body,Err(error)=>{result.set(error.to_string());return;}};
+                                let names=boards.join(", ");
+                                sending.set(true);
+                                spawn(async move{
+                                    let outcome=super::station_settings_request::post_captured::<_,serde_json::Value>(FINISH_WITHOUT_ABSENT,&body,Ok(owner.clone())).await;
+                                    if !owner.is_current(){return;}
+                                    result.set(match outcome{
+                                        Ok(_)=>format!("Recovery finished without {names}. Station commands are available again. Recover {names} when it returns to the network."),
+                                        Err(error)=>format!("Not finished: {}",server_refusal(&error)),
+                                    });
+                                    sending.set(false);
+                                    confirming.set(None);
+                                });
+                            }},
+                            if sending() {"Finishing…"} else {"Finish without {joined}"}
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 /// Reset all boards from anywhere (Actions, abort bar): the button opens the
@@ -1004,6 +1099,17 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finish_without_absent_shows_the_station_refusal_text() {
+        assert_eq!(
+            server_refusal(r#"HTTP 409: {"error":"finish_without_absent_refused","message":"The absent boards are now FC, RF. Review and confirm again."}"#),
+            "The absent boards are now FC, RF. Review and confirm again."
+        );
+        assert_eq!(server_refusal("HTTP 403: Forbidden"), "HTTP 403: Forbidden");
+        assert_eq!(server_refusal("connection refused"), "connection refused");
+        let body = serde_json::to_value(FinishWithoutAbsentBody { boards: &["FC".to_string()], confirm: true }).unwrap();
+        assert_eq!(body, serde_json::json!({"boards":["FC"],"confirm":true}));
+    }
     fn reviewed_challenge() -> Challenge {
         serde_json::from_value(serde_json::json!({"ticket":"a","backend_instance":"b","principal_context":"p","reset_epoch":"e",
             "expires_in_ms":5000,"action":"reset_startup","targets":["AB","VB"],"summary":"s","confirmation":"RESET ALL STARTUP; VERIFY AB VB"})).unwrap()
@@ -1125,6 +1231,21 @@ mod tests {
         let mut dom = VirtualDom::new(component);
         dom.rebuild_in_place();
         dioxus::ssr::render(&dom)
+    }
+    fn finish_ready() -> Element {
+        rsx!{FinishWithoutAbsentControl{offer:FinishWithoutAbsent::Ready{absent:vec!["FC".into(),"RF".into()]},connected:true,controls_busy:false}}
+    }
+    fn finish_blocked() -> Element {
+        rsx!{FinishWithoutAbsentControl{offer:FinishWithoutAbsent::Blocked{absent:vec!["FC".into()],reason:"DAQ on the network still needs recovery. Recover it first.".into()},connected:true,controls_busy:false}}
+    }
+    #[test]
+    fn finish_without_absent_control_names_the_boards_and_explains_when_unavailable() {
+        let ready = render(finish_ready);
+        assert!(ready.contains("Finish without absent boards") && ready.contains("without FC, RF, which are not on the network"), "{ready}");
+        assert!(!ready.contains("disabled"), "{ready}");
+        let blocked = render(finish_blocked);
+        assert!(blocked.contains("disabled") && blocked.contains("Unavailable: DAQ on the network still needs recovery"), "{blocked}");
+        assert!(blocked.contains("without FC, which is not on the network"), "{blocked}");
     }
     #[test]
     fn state_line_never_calls_an_aborted_stale_or_paused_board_healthy() {

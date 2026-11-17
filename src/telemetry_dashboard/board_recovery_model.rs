@@ -299,6 +299,23 @@ pub(super) struct HostRecovery {
     pub verified: bool,
     pub publication_acknowledged: bool,
     pub targets: Vec<String>,
+    /// Pending targets the current mode expects that have not read back
+    /// healthy yet (server-computed).
+    pub unsatisfied: Vec<String>,
+    /// The subset of `unsatisfied` not seen on the network within the
+    /// board-seen timeout.
+    pub absent: Vec<String>,
+}
+/// Whether an administrator may finish the unfinished recovery without its
+/// absent boards, and which boards that leaves out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum FinishWithoutAbsent {
+    /// Nothing to offer: no unfinished recovery held by an absent board.
+    None,
+    /// Offered, but not available now, with the reason shown to the operator.
+    Blocked { absent: Vec<String>, reason: String },
+    /// Available: the exact boards the request must name.
+    Ready { absent: Vec<String> },
 }
 #[derive(Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
@@ -522,6 +539,35 @@ impl Status {
     }
     /// Boards of an unfinished recovery that still need it. The server drops a
     /// board from this list once a fresh verified readback shows it healthy.
+    /// The server re-checks everything; this only decides what to show.
+    pub fn finish_without_absent(&self, admin: bool) -> FinishWithoutAbsent {
+        let Some(recovery) = self.host_recovery.as_ref().filter(|r| r.pending && !r.publication_acknowledged) else {
+            return FinishWithoutAbsent::None;
+        };
+        if recovery.absent.is_empty() {
+            return FinishWithoutAbsent::None;
+        }
+        let absent = recovery.absent.clone();
+        let present: Vec<&String> = recovery.unsatisfied.iter().filter(|board| !absent.contains(board)).collect();
+        let reason = if !admin {
+            Some("Only an administrator can finish a recovery without absent boards.".to_string())
+        } else if !present.is_empty() {
+            Some(format!(
+                "{} on the network still {} recovery. Recover {} first.",
+                present.iter().map(|b| b.as_str()).collect::<Vec<_>>().join(", "),
+                if present.len() == 1 { "needs" } else { "need" },
+                if present.len() == 1 { "it" } else { "them" }
+            ))
+        } else if self.operation.as_ref().is_some_and(|op| !op.completed) {
+            Some("A board recovery is running.".to_string())
+        } else {
+            None
+        };
+        match reason {
+            Some(reason) => FinishWithoutAbsent::Blocked { absent, reason },
+            None => FinishWithoutAbsent::Ready { absent },
+        }
+    }
     pub fn unfinished_boards(&self) -> Vec<String> {
         if !self.host_recovery.as_ref().is_some_and(|recovery| !recovery.publication_acknowledged) {
             return Vec::new();
@@ -787,6 +833,39 @@ pub(super) struct Accepted {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finish_without_absent_is_offered_only_for_absent_boards_once_the_rest_are_healthy() {
+        let mut s = status();
+        assert_eq!(s.finish_without_absent(true), FinishWithoutAbsent::None);
+        s.host_recovery = Some(HostRecovery {
+            pending: true,
+            targets: vec!["FC".into(), "AB".into(), "DAQ".into()],
+            unsatisfied: vec!["FC".into(), "DAQ".into()],
+            absent: vec!["FC".into()],
+            ..Default::default()
+        });
+        // DAQ is on the network and still unhealthy.
+        assert_eq!(
+            s.finish_without_absent(true),
+            FinishWithoutAbsent::Blocked { absent: vec!["FC".into()], reason: "DAQ on the network still needs recovery. Recover it first.".into() }
+        );
+        s.host_recovery.as_mut().unwrap().unsatisfied = vec!["FC".into()];
+        assert_eq!(s.finish_without_absent(true), FinishWithoutAbsent::Ready { absent: vec!["FC".into()] });
+        assert!(matches!(s.finish_without_absent(false), FinishWithoutAbsent::Blocked { reason, .. } if reason.contains("administrator")));
+        // Nothing absent, or the recovery already published: nothing offered.
+        s.host_recovery.as_mut().unwrap().absent.clear();
+        assert_eq!(s.finish_without_absent(true), FinishWithoutAbsent::None);
+        s.host_recovery.as_mut().unwrap().absent = vec!["FC".into()];
+        s.host_recovery.as_mut().unwrap().publication_acknowledged = true;
+        assert_eq!(s.finish_without_absent(true), FinishWithoutAbsent::None);
+    }
+    #[test]
+    fn host_recovery_reads_unsatisfied_and_absent_boards_and_tolerates_older_servers() {
+        let new: HostRecovery = serde_json::from_value(serde_json::json!({"pending":true,"verified":false,"publication_acknowledged":false,"targets":["FC","AB"],"unsatisfied":["FC"],"absent":["FC"]})).unwrap();
+        assert_eq!((new.unsatisfied, new.absent), (vec!["FC".to_string()], vec!["FC".to_string()]));
+        let old: HostRecovery = serde_json::from_value(serde_json::json!({"pending":true,"verified":false,"publication_acknowledged":false,"targets":["FC"]})).unwrap();
+        assert!(old.absent.is_empty() && old.unsatisfied.is_empty());
+    }
     fn status() -> Status {
         serde_json::from_str(include_str!(
             "../../tests/fixtures/board-recovery/status-example.json"
@@ -966,6 +1045,7 @@ mod tests {
                         verified: false,
                         publication_acknowledged: false,
                         targets: vec!["AB".into(), "VB".into()],
+                        ..Default::default()
                     });
                     s.boards.iter_mut().find(|b| b.id == "VB").unwrap().recovery_reason =
                         Some("unfinished_recovery".into());
@@ -1356,6 +1436,7 @@ mod tests {
             verified: false,
             publication_acknowledged: false,
             targets: vec!["AB".into(), "VB".into()],
+            ..Default::default()
         });
         // VB read back healthy since: the server no longer lists it, so AB
         // alone may be retried.
