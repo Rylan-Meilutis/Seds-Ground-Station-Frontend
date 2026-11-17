@@ -471,6 +471,9 @@ pub fn DataTab(
             if current == "IGNITER_SENSE_SIGNAL" {
                 super::igniter_sense_panel::IgniterSensePanel {theme:theme.clone()}
             }
+            if current == "DAQ_ANALOG" {
+                super::daq_dac_panel::DaqDacPanel {theme:theme.clone()}
+            }
             div { style: "display:flex; flex-direction:column; gap:6px; width:100%; min-width:0; align-self:stretch;",
 
                 div {
