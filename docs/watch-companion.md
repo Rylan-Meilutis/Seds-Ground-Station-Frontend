@@ -195,9 +195,20 @@ development profile for the bundle id when it is newer than the local
 `Groundstation_dev.mobileprovision` / `Groundstation_watch_dev.mobileprovision`,
 so the local copies never need to be replaced by hand.
 
-`build.py` builds, signs, installs and launches the companions for testing.
-Each action builds first; add `existing` to reuse the last build and `debug`
-for a debug build.
+`build.py` builds, signs and installs the companions for testing. Like the
+phone actions they mirror, the device actions only install: `watchos_deploy`
+behaves like `ios_deploy` (`ios-deploy --bundle`, no `--justlaunch`) and the
+Wear actions like `android_install`, so open GS26 from the watch's app list.
+`watchos_sim_deploy` launches both apps, like `ios_sim_deploy`. Each action
+builds first; add `existing` to reuse the last build and `debug` for a debug
+build.
+
+Each action (and each `--target watchos*|wearos*` build) first checks its
+tools and stops before any build work if one is missing, printing the install
+command: `xcodegen` (`brew install xcodegen`, not needed with `existing`),
+Xcode's `xcrun`/`xcodebuild` (the full Xcode must be selected, not only the
+Command Line Tools), `ios-deploy` for `watchos_deploy`
+(`brew install ios-deploy`); the Android SDK and `adb` for the Wear actions.
 
 | Command | Installs on |
 | --- | --- |
@@ -242,8 +253,8 @@ of several), check both profiles, build the iOS app and the watch app, check
 the watch bundle id (`com.UBSEDS.GS26.watchkitapp`, companion
 `com.UBSEDS.GS26`), sign the watch app and then the iOS app, install the
 phone app with `ios-deploy`, install the watch app with
-`xcrun devicectl device install app --device <watch> GS26.app/Watch/GS26Watch.app`
-and launch it. If the direct watch install fails, the script prints the
+`xcrun devicectl device install app --device <watch> GS26.app/Watch/GS26Watch.app`.
+Nothing is launched. If the direct watch install fails, the script prints the
 fallback: Watch app on the iPhone › My Watch › Available Apps › Install (or
 turn on General › Automatic App Install).
 
@@ -260,7 +271,7 @@ Prerequisites: Android SDK platform-tools (`adb`) found through
 `~/Android/Sdk`), JDK 17/21. The device is picked from `adb devices` by
 `ro.build.characteristics` containing `watch`; `serial=<serial>` chooses one
 of several. The APK is installed with the same fallbacks as `android_install`
-(streamed, no-streaming, push + `pm install`) and then launched.
+(streamed, no-streaming, push + `pm install`); it is not launched.
 
 Physical watch over Wi-Fi debugging:
 

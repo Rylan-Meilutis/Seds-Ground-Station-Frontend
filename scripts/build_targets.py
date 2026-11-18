@@ -55,6 +55,67 @@ WATCH_APP_NAME = "GS26Watch.app"
 WEAR_APK_NAME = "GS26-WearOS.apk"
 
 
+XCODE_INSTALL_HINT = ("install Xcode from the App Store, open it once, then run\n"
+                      "    sudo xcode-select -s /Applications/Xcode.app/Contents/Developer")
+ANDROID_SDK_HINT = ("install Android Studio (`brew install --cask android-studio`) or the SDK command-line\n"
+                    "    tools, then set ANDROID_HOME to the SDK (usually ~/Library/Android/sdk or ~/Android/Sdk)")
+ADB_HINT = "install the SDK platform-tools (`sdkmanager platform-tools`, or `brew install --cask android-platform-tools`)"
+
+
+def xcode_selected():
+    """True when xcodebuild runs, i.e. the full Xcode is selected and not only
+    the Command Line Tools (whose /usr/bin/xcodebuild shim exits with an error)."""
+    try:
+        subprocess.run(["xcodebuild", "-version"], capture_output=True, check=True, timeout=120)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def apple_watch_tool_problem(*, xcodegen=True, ios_deploy=False, which=shutil.which, xcode_ok=xcode_selected):
+    """Missing tools for the Apple Watch build/deploy, with the install
+    command, or None. Checked before any build work."""
+    brew = [tool for tool, needed in (("xcodegen", xcodegen), ("ios-deploy", ios_deploy))
+            if needed and not which(tool)]
+    problems = []
+    if brew:
+        problems.append(f"{' and '.join(brew)} not found: brew install {' '.join(brew)}")
+    absent = [tool for tool in ("xcrun", "xcodebuild") if not which(tool)]
+    if absent:
+        problems.append(f"{' and '.join(absent)} not found: {XCODE_INSTALL_HINT}")
+    elif not xcode_ok():
+        problems.append(f"`xcodebuild -version` failed (only the Command Line Tools are selected?): {XCODE_INSTALL_HINT}")
+    return "\n  ".join(problems) or None
+
+
+def android_sdk_root(environ):
+    for key in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        value = (environ.get(key) or "").strip()
+        if value:
+            return Path(value).expanduser()
+    return None
+
+
+def wear_tool_problem(sdk_root, *, adb=False, path=None, which=shutil.which):
+    """Missing Android SDK (and, for deploys, adb) with how to install it, or None."""
+    if sdk_root is None or not Path(sdk_root).is_dir():
+        where = f" ({sdk_root} does not exist)" if sdk_root else ""
+        return f"Android SDK not found{where}: {ANDROID_SDK_HINT}"
+    if adb and not (which("adb", path=path) or (Path(sdk_root) / "platform-tools" / "adb").is_file()):
+        return f"adb not found: {ADB_HINT}"
+    return None
+
+
+def watch_tool_problem(name, environ=None):
+    """Preflight for the watch build targets (no deploy tools)."""
+    target = TARGETS[name]
+    if target.watch == "watchos":
+        return apple_watch_tool_problem()
+    if target.watch == "wearos":
+        return wear_tool_problem(android_sdk_root(os.environ if environ is None else environ))
+    return None
+
+
 def watchos_build_commands(root, name, debug):
     """Generate the Xcode project and build the watch app unsigned.
 
@@ -293,6 +354,8 @@ def handle_target_args(argv, root, build_frontend, package_ios, finalize_release
         target = TARGETS[name]
         container = args.docker and target.docker is not None
         problem = None if container else native_requirement(target)
+        if problem is None and not container and not args.dry_run and target.watch:
+            problem = watch_tool_problem(name)
         print(f"\nTarget {name}: {'Docker' if container else 'native'} · {target.triple or target.watch}", flush=True)
         if problem:
             if name in explicit:

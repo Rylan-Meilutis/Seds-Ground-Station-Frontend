@@ -546,9 +546,14 @@ with `xcrun devicectl`. It needs Xcode 15+, `ios-deploy`, the iOS development
 profile above plus a watch development profile for `com.UBSEDS.GS26.watchkitapp`
 (`Groundstation_watch_dev.mobileprovision`, `IOS_WATCH_DEVELOPMENT_MOBILEPROVISION`,
 or an installed Xcode-managed profile) listing the watch's UDID, Developer Mode
-on the watch, and the watch unlocked and on its charger. `watchos_sim_deploy`
-finds or creates a paired iPhone + Apple Watch simulator. The Wear OS actions
-use `adb` (a watch over Wi-Fi debugging, or a running Wear OS emulator). Details
+on the watch, and the watch unlocked and on its charger. Like `ios_deploy` it only
+installs; open GS26 on the watch. `watchos_sim_deploy`
+finds or creates a paired iPhone + Apple Watch simulator and launches both apps. The Wear OS actions
+use `adb` (a watch over Wi-Fi debugging, or a running Wear OS emulator) and, like
+`android_install`, install without launching. Every watch action and watch
+`--target` checks for `xcodegen`, Xcode (`xcrun`/`xcodebuild`), `ios-deploy`
+(device deploy) or the Android SDK and `adb` before building and prints the
+install command (`brew install xcodegen ios-deploy`) if one is missing. Details
 and troubleshooting: `docs/watch-companion.md`, "Deploy to a watch for testing".
 
 Docker provides reproducible web, Linux x86-64/ARM64 and Android builders using `Dockerfile.builder`. Web builds use the host architecture because their Wasm output is architecture independent. Docker Buildx and cross-architecture emulation are required when the builder architecture differs from the host. Native macOS/iOS targets require macOS and Xcode; Windows requires a Windows worker with MSVC/WebView2 tooling. Those targets use the native worker even with `--docker`; unsupported host targets fail explicitly, so `all` across every OS requires the corresponding workers. `--no-sign` leaves iOS as an unsigned app bundle. `--docker-image` selects an existing compatible Linux/Android builder. Signing credentials are not copied into images.

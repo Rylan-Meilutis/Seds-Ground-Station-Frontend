@@ -11,7 +11,6 @@ import plistlib
 import re
 
 WATCH_BUNDLE_SUFFIX = ".watchkitapp"
-WEAR_ACTIVITY = "com.ubseds.gs26.wear.MainActivity"
 
 
 class WatchDeployError(RuntimeError):
@@ -145,10 +144,6 @@ def _watch_list_hint(watches):
 
 def devicectl_install_command(device_identifier, app):
     return ["xcrun", "devicectl", "device", "install", "app", "--device", device_identifier, str(app)]
-
-
-def devicectl_launch_command(device_identifier, bundle_id):
-    return ["xcrun", "devicectl", "device", "process", "launch", "--device", device_identifier, bundle_id]
 
 
 def watch_unreachable_note(watch):
@@ -388,7 +383,3 @@ def wear_avd_names(avd_names, avd_home):
         if "android-wear" in text or "wear" in re.findall(r"tag\.id\s*=\s*(\S+)", text):
             wear.append(name)
     return wear
-
-
-def wear_launch_command(adb, serial, application_id):
-    return [adb, "-s", serial, "shell", "am", "start", "-n", f"{application_id}/{WEAR_ACTIVITY}"]

@@ -4924,6 +4924,13 @@ def _require_macos(what: str) -> None:
         sys.exit(1)
 
 
+def _require_watch_tools(problem: Optional[str], action: str) -> None:
+    """Stop a watch deploy before any build work when a tool is missing."""
+    if problem:
+        from scripts.watch_deploy import WatchDeployError
+        raise WatchDeployError(f"{action} needs tools that are missing:\n  {problem}")
+
+
 def _devicectl_devices(frontend_dir: Path) -> list:
     from scripts import watch_deploy as wd
     with tempfile.TemporaryDirectory(prefix="gs26-devicectl-") as tmp:
@@ -4972,9 +4979,11 @@ def watchos_device_deploy(
 ) -> tuple[list[Optional[str]], Optional[str], str]:
     """Dev-sign the iOS app with the watch app embedded, install it on the
     iPhone (ios-deploy) and the watch app on the paired watch (devicectl).
+    Install only, like ios_deploy: nothing is launched.
     Returns (phone udids, watch name or None, phone bundle id)."""
     _require_macos("Apple Watch deploy")
     from scripts import build_targets as bt, watch_deploy as wd
+    _require_watch_tools(bt.apple_watch_tool_problem(xcodegen=not use_existing, ios_deploy=True), "watchos_deploy")
 
     phone_bundle_id = _bundle_identifier(frontend_dir)
     watch_bundle_id = phone_bundle_id + wd.WATCH_BUNDLE_SUFFIX
@@ -5027,10 +5036,7 @@ def watchos_device_deploy(
             print(f"  {note}", file=sys.stderr)
         print(wd.watch_manual_install_instructions(phone_bundle_id))
         return udids, None, phone_bundle_id
-    try:
-        run(wd.devicectl_launch_command(watch.identifier, watch_bundle_id), cwd=frontend_dir)
-    except subprocess.CalledProcessError:
-        print(f"Installed; open GS26 on {watch.name} (launch over devicectl failed, usually because the watch is locked).")
+    print(f"Installed; open GS26 from the app list on {watch.name}.")
     return udids, watch.name, phone_bundle_id
 
 
@@ -5066,10 +5072,12 @@ def watchos_simulator_deploy(
         max_size: bool = False,
 ) -> tuple[str, str, str]:
     """Build (or reuse) the simulator iOS app with the watch app embedded,
-    then install and launch both on a paired iPhone + Apple Watch simulator.
+    then install and launch both on a paired iPhone + Apple Watch simulator
+    (ios_sim_deploy launches too).
     Returns (phone udid, watch udid, phone bundle id)."""
     _require_macos("Apple Watch simulator deploy")
     from scripts import build_targets as bt, watch_deploy as wd
+    _require_watch_tools(bt.apple_watch_tool_problem(xcodegen=not use_existing), "watchos_sim_deploy")
 
     name = wd.simulator_target_name(platform.machine())
     target = bt.TARGETS[name]
@@ -5140,11 +5148,14 @@ def wearos_device_deploy(
 ) -> tuple[str, Path]:
     """Build (or reuse) the Wear OS APK and install it on a Wear OS watch
     (simulator=False) or emulator (simulator=True) with the same install
-    fallbacks as android_install. Returns (serial, apk)."""
+    fallbacks as android_install. Install only, like android_install.
+    Returns (serial, apk)."""
     import argparse
     from scripts import build_targets as bt, watch_deploy as wd
 
     env = _ensure_android_env(frontend_dir, None)
+    _require_watch_tools(bt.wear_tool_problem(bt.android_sdk_root(env), adb=True, path=env.get("PATH")),
+                         "wearos_sim_deploy" if simulator else "wearos_deploy")
     adb = _resolve_adb(env)
     rows = wd.parse_adb_devices(run_capture([adb, "devices"], cwd=frontend_dir, env=env))
     characteristics: dict[str, str] = {}
@@ -5181,10 +5192,7 @@ def wearos_device_deploy(
     _wait_for_android_package_manager(frontend_dir, serial, env)
     _install_android_apk_with_fallbacks(frontend_dir, serial, apk, env)
     print(f"✅ Installed Wear OS APK on {serial}: {apk}")
-    try:
-        run(wd.wear_launch_command(adb, serial, bt.wear_application_id(frontend_dir)), cwd=frontend_dir, env=env)
-    except subprocess.CalledProcessError:
-        print("Installed; open GS26 from the watch's app list.")
+    print("Open GS26 from the watch's app list.")
     print("The phone app on the paired phone must be signed with the same key (debug with debug,"
           " release with release), or the Wear Data Layer will not connect them.")
     return serial, apk

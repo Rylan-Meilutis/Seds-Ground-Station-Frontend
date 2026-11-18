@@ -8,6 +8,7 @@ import io
 import os
 from pathlib import Path
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -90,6 +91,12 @@ class Inventory(unittest.TestCase):
 
 
 class WatchOSCommands(unittest.TestCase):
+    def setUp(self):
+        # The tool preflight has its own tests (WatchToolPreflight).
+        preflight = patch.object(targets, "watch_tool_problem", return_value=None)
+        preflight.start()
+        self.addCleanup(preflight.stop)
+
     def test_xcode_commands(self):
         root = Path("/w")
         cases = {
@@ -200,6 +207,12 @@ class WatchOSCommands(unittest.TestCase):
 
 
 class WearOSCommands(unittest.TestCase):
+    def setUp(self):
+        # The tool preflight has its own tests (WatchToolPreflight).
+        preflight = patch.object(targets, "watch_tool_problem", return_value=None)
+        preflight.start()
+        self.addCleanup(preflight.stop)
+
     def test_debug_command_runs_core_tests_and_debug_apk(self):
         with patch.object(targets.platform, "system", return_value="Linux"):
             command = targets.wearos_build_command(Path("/w"), "wearos_sim", True)
@@ -271,6 +284,78 @@ class WearOSCommands(unittest.TestCase):
         commands = targets.docker_commands(Path("/tmp/ui"), "wearos", args)
         self.assertIn("seds-gs-ui-builder:android-amd64", commands[1])
         self.assertEqual(commands[1][commands[1].index("build.py") + 1:][:2], ["--target", "wearos"])
+
+
+class WatchToolPreflight(unittest.TestCase):
+    """Missing xcodegen/Xcode/ios-deploy/Android SDK/adb stop a watch target
+    before any build work, with the install command."""
+
+    @staticmethod
+    def which(present):
+        return lambda tool, path=None: f"/usr/bin/{tool}" if tool in present else None
+
+    def test_apple_tools(self):
+        everything = self.which({"xcodegen", "xcrun", "xcodebuild", "ios-deploy"})
+        self.assertIsNone(targets.apple_watch_tool_problem(ios_deploy=True, which=everything, xcode_ok=lambda: True))
+        problem = targets.apple_watch_tool_problem(ios_deploy=True, which=self.which({"xcrun", "xcodebuild"}),
+                                                   xcode_ok=lambda: True)
+        self.assertIn("brew install xcodegen ios-deploy", problem)
+        self.assertNotIn("Xcode", problem)
+        # ios-deploy is only needed to install on a real iPhone.
+        self.assertIsNone(targets.apple_watch_tool_problem(which=self.which({"xcodegen", "xcrun", "xcodebuild"}),
+                                                           xcode_ok=lambda: True))
+        # `existing` deploys skip the build and so xcodegen.
+        self.assertIsNone(targets.apple_watch_tool_problem(xcodegen=False, which=self.which({"xcrun", "xcodebuild"}),
+                                                           xcode_ok=lambda: True))
+        no_xcode = targets.apple_watch_tool_problem(which=self.which({"xcodegen"}), xcode_ok=lambda: True)
+        self.assertIn("xcrun and xcodebuild not found", no_xcode)
+        self.assertIn("xcode-select -s /Applications/Xcode.app", no_xcode)
+        clt_only = targets.apple_watch_tool_problem(which=everything, xcode_ok=lambda: False)
+        self.assertIn("Command Line Tools", clt_only)
+
+    def test_xcode_selected_runs_xcodebuild_version(self):
+        with patch.object(targets.subprocess, "run") as run:
+            self.assertTrue(targets.xcode_selected())
+        self.assertEqual(run.call_args.args[0], ["xcodebuild", "-version"])
+        with patch.object(targets.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "xcodebuild")):
+            self.assertFalse(targets.xcode_selected())
+        with patch.object(targets.subprocess, "run", side_effect=FileNotFoundError("xcodebuild")):
+            self.assertFalse(targets.xcode_selected())
+
+    def test_wear_tools(self):
+        with tempfile.TemporaryDirectory() as d:
+            sdk = Path(d)
+            self.assertIn("ANDROID_HOME", targets.wear_tool_problem(None))
+            self.assertIn("does not exist", targets.wear_tool_problem(sdk / "missing"))
+            self.assertIsNone(targets.wear_tool_problem(sdk, which=self.which(set())))
+            self.assertIn("platform-tools", targets.wear_tool_problem(sdk, adb=True, which=self.which(set())))
+            self.assertIsNone(targets.wear_tool_problem(sdk, adb=True, which=self.which({"adb"})))
+            (sdk / "platform-tools").mkdir()
+            (sdk / "platform-tools" / "adb").write_bytes(b"")
+            self.assertIsNone(targets.wear_tool_problem(sdk, adb=True, which=self.which(set())))
+            self.assertEqual(targets.android_sdk_root({"ANDROID_HOME": "", "ANDROID_SDK_ROOT": d}), sdk)
+
+    def test_missing_tools_fail_the_target_before_building(self):
+        for name, env in [("watchos", {}), ("watchos_sim", {}), ("wearos", {"ANDROID_HOME": "/no/such/sdk"})]:
+            err = io.StringIO()
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as d, quiet(), contextlib.redirect_stderr(err), \
+                 patch.object(targets.platform, "system", return_value="Darwin"), patch.dict(os.environ, env), \
+                 patch.object(targets.shutil, "which", return_value=None), \
+                 patch.object(targets.subprocess, "run") as run:
+                build_app = Mock()
+                with self.assertRaisesRegex(SystemExit, name):
+                    targets.handle_target_args(["--target", name], Path(d), build_app, Mock())
+                run.assert_not_called()
+                build_app.assert_not_called()
+                self.assertIn("brew install xcodegen" if name.startswith("watchos") else "Android SDK not found",
+                              err.getvalue())
+
+    def test_dry_run_and_docker_skip_the_preflight(self):
+        with patch.object(targets, "watch_tool_problem") as preflight, quiet(), \
+             patch.dict(os.environ, {"ANDROID_HOME": "/sdk"}), patch.object(targets.subprocess, "run"):
+            targets.handle_target_args(["--target", "wearos", "--dry-run"], Path("/tmp/x"), Mock(), Mock())
+            targets.handle_target_args(["--target", "wearos", "--docker", "--dry-run"], Path("/tmp/x"), Mock(), Mock())
+        preflight.assert_not_called()
 
 
 class WatchIcons(unittest.TestCase):

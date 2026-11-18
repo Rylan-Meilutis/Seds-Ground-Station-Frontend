@@ -169,8 +169,7 @@ class DevicectlParsing(unittest.TestCase):
                          ["xcrun", "devicectl", "list", "devices", "--json-output", "/tmp/d.json"])
         self.assertEqual(wd.devicectl_install_command("ID", Path("/a/GS26.app/Watch/GS26Watch.app")),
                          ["xcrun", "devicectl", "device", "install", "app", "--device", "ID", "/a/GS26.app/Watch/GS26Watch.app"])
-        self.assertEqual(wd.devicectl_launch_command("ID", WATCH_ID),
-                         ["xcrun", "devicectl", "device", "process", "launch", "--device", "ID", WATCH_ID])
+        self.assertFalse(hasattr(wd, "devicectl_launch_command"))  # install only, like ios_deploy
 
     def test_unreachable_note_and_manual_instructions(self):
         for state in ["connected", "disconnected", ""]:
@@ -240,6 +239,7 @@ class WatchOSDeviceDeploy(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         p = lambda *a, **k: self.stack.enter_context(patch.object(*a, **k))
         p(build.platform, "system", return_value="Darwin")
+        self.preflight = p(targets, "apple_watch_tool_problem", return_value=None)
         p(build, "_bundle_identifier", return_value=PHONE_ID)
         self.devices = p(build, "_devicectl_devices", return_value=wd.parse_devicectl_json(json.dumps(DEVICECTL_JSON)))
         p(build, "ios_development_mobileprovision_path", return_value=Path("phone.mobileprovision"))
@@ -257,7 +257,7 @@ class WatchOSDeviceDeploy(unittest.TestCase):
         fake_watch_app(self.app / "Watch" / targets.WATCH_APP_NAME)
         return root / "dist/ipas/UBSEDS GS Development.ipa"
 
-    def test_builds_signs_installs_phone_then_watch(self):
+    def test_builds_signs_installs_phone_then_watch_without_launching(self):
         udids, watch, bundle = build.watchos_device_deploy(self.root)
         self.assertEqual((udids, watch, bundle), (["00008110-000A11112222801E"], "Rylan's Apple Watch", PHONE_ID))
         self.build_frontend.assert_called_once_with(self.root, platform_name="ios", rust_target="aarch64-apple-ios",
@@ -268,7 +268,23 @@ class WatchOSDeviceDeploy(unittest.TestCase):
         self.assertIn("ARCHS=arm64_32 arm64", cmds[1])
         self.assertEqual(cmds[2], ["ios-deploy", "--id", "00008110-000A11112222801E", "--bundle", str(self.app)])
         self.assertEqual(cmds[3], wd.devicectl_install_command(WATCH_CORE_ID, self.app / "Watch" / "GS26Watch.app"))
-        self.assertEqual(cmds[4], wd.devicectl_launch_command(WATCH_CORE_ID, WATCH_ID))
+        # Like ios_deploy (ios-deploy --bundle, no --justlaunch/--debug): install only.
+        self.assertEqual(len(cmds), 4)
+        self.assertFalse(any("launch" in c for c in cmds))
+        self.preflight.assert_called_once_with(xcodegen=True, ios_deploy=True)
+        self.assertIn("open GS26 from the app list on Rylan's Apple Watch", self.out.getvalue())
+
+    def test_missing_tools_stop_before_any_device_or_build_work(self):
+        self.preflight.return_value = "xcodegen and ios-deploy not found: brew install xcodegen ios-deploy"
+        with self.assertRaisesRegex(wd.WatchDeployError, "(?s)watchos_deploy needs tools.*brew install xcodegen ios-deploy"):
+            build.watchos_device_deploy(self.root)
+        self.devices.assert_not_called()
+        self.build_frontend.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_existing_does_not_need_xcodegen(self):
+        build.watchos_device_deploy(self.root, use_existing=True)
+        self.preflight.assert_called_once_with(xcodegen=False, ios_deploy=True)
 
     def test_existing_reuses_builds_and_phone_flag_selects_the_iphone(self):
         build.watchos_device_deploy(self.root, use_existing=True, phone_wanted="PHONE-UDID", watch_wanted="Rylan's Apple Watch")
@@ -379,6 +395,7 @@ class WatchOSSimulatorDeploy(unittest.TestCase):
                 return outputs[tuple(cmd[2:4])]
             tools = Mock()
             with patch.object(build.platform, "system", return_value="Darwin"), \
+                 patch.object(targets, "apple_watch_tool_problem", return_value=None) as preflight, \
                  patch.object(build.platform, "machine", return_value=machine), \
                  patch.object(build, "build_frontend") as build_frontend, \
                  patch.object(build, "_stage_app_bundle_from_dx", return_value=app), \
@@ -387,6 +404,7 @@ class WatchOSSimulatorDeploy(unittest.TestCase):
                  patch.object(build, "run_capture", side_effect=capture) as run_capture, \
                  patch.object(build, "run") as run:
                 result = build.watchos_simulator_deploy(root, debug_mode=True)
+            preflight.assert_called_once_with(xcodegen=True)
             build_frontend.assert_called_once_with(root, platform_name="ios", rust_target=targets.TARGETS[name].triple,
                                                    debug_mode=True, max_size=False)
             tools.validate_app.assert_called_once_with(app, targets.TARGETS[name].triple)
@@ -413,6 +431,17 @@ class WatchOSSimulatorDeploy(unittest.TestCase):
             ["xcrun", "simctl", "launch", "NEW-WATCH", WATCH_ID],
         ])
         self.assertNotIn("pair_activate", [c[2] for c in cmds if c[:2] == ["xcrun", "simctl"]])
+
+    def test_missing_tools_stop_the_simulator_deploy_before_building(self):
+        with patch.object(build.platform, "system", return_value="Darwin"), \
+             patch.object(targets, "apple_watch_tool_problem", return_value="xcodegen not found: brew install xcodegen"), \
+             patch.object(build, "build_frontend") as build_frontend, patch.object(build, "run") as run, \
+             patch.object(build, "run_capture") as run_capture, quiet():
+            with self.assertRaisesRegex(wd.WatchDeployError, "(?s)watchos_sim_deploy needs tools.*brew install xcodegen"):
+                build.watchos_simulator_deploy(Path("/nonexistent"))
+        build_frontend.assert_not_called()
+        run.assert_not_called()
+        run_capture.assert_not_called()
 
     def test_existing_inactive_pair_is_activated_and_booted_phone_reused_on_intel(self):
         (phone, watch, _), cmds, _captured, _app = self._deploy("x86_64", json.dumps(SIMCTL_PAIRS))
@@ -470,10 +499,8 @@ class AdbSelection(unittest.TestCase):
             self.assertEqual(wd.wear_avd_names(["Pixel_8_API_35", "Wear_OS_Large_Round_API_34", "Gone"], d),
                              ["Wear_OS_Large_Round_API_34"])
 
-    def test_launch_command(self):
-        self.assertEqual(wd.wear_launch_command("adb", "emulator-5554", PHONE_ID),
-                         ["adb", "-s", "emulator-5554", "shell", "am", "start", "-n",
-                          f"{PHONE_ID}/com.ubseds.gs26.wear.MainActivity"])
+    def test_no_launch_helper(self):
+        self.assertFalse(hasattr(wd, "wear_launch_command"))  # install only, like android_install
 
 
 class WearOSDeploy(unittest.TestCase):
@@ -484,6 +511,7 @@ class WearOSDeploy(unittest.TestCase):
             raise AssertionError(cmd)
         env = {"PATH": "/sdk/platform-tools", "ANDROID_HOME": "/sdk"}
         with patch.object(build, "_ensure_android_env", return_value=env), \
+             patch.object(targets, "wear_tool_problem", return_value=self.tool_problem) as self.preflight, \
              patch.object(build, "_resolve_adb", return_value="adb"), \
              patch.object(build, "run_capture", side_effect=capture), \
              patch.object(build, "_wait_for_android_package_manager") as wait, \
@@ -500,14 +528,23 @@ class WearOSDeploy(unittest.TestCase):
         self.apk = self.root / "dist" / targets.WEAR_APK_NAME
         self.apk.parent.mkdir()
         self.apk.write_bytes(b"apk")
+        self.tool_problem = None
 
-    def test_physical_watch_install_and_launch(self):
+    def test_physical_watch_install_without_launch(self):
         (serial, apk), wait, install, run = self._deploy(simulator=False)
         self.assertEqual((serial, apk), ("192.168.1.42:41235", self.apk))
         env = wait.call_args.args[2]
         wait.assert_called_once_with(self.root, serial, env)
         install.assert_called_once_with(self.root, serial, self.apk, env)
-        self.assertEqual(run.call_args.args[0], wd.wear_launch_command("adb", serial, targets.wear_application_id(self.root)))
+        run.assert_not_called()  # install only, like android_install
+        self.preflight.assert_called_once_with(Path("/sdk"), adb=True, path="/sdk/platform-tools")
+
+    def test_missing_adb_stops_before_device_discovery(self):
+        self.tool_problem = "adb not found: install the SDK platform-tools"
+        with patch.object(targets, "build_watch") as build_watch:
+            with self.assertRaisesRegex(wd.WatchDeployError, "(?s)wearos_sim_deploy needs tools.*platform-tools"):
+                self._deploy(simulator=True, existing=False)
+        build_watch.assert_not_called()
 
     def test_emulator_with_serial_flag(self):
         (serial, _apk), *_ = self._deploy(simulator=True, serial_wanted="emulator-5554")

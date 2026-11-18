@@ -43,7 +43,7 @@ phone app's key (`ANDROID_KEYSTORE_PATH`, `ANDROID_KEY_ALIAS`,
    `adb connect <ip>:<port>`.
 2. `adb -s <watch> install -r app/build/outputs/apk/debug/app-debug.apk`
    (or, from the frontend root, `python3 build.py wearos_deploy debug`, which
-   builds, picks the watch from `adb devices`, installs and launches it;
+   builds, picks the watch from `adb devices` and installs it (open GS26 from the app list);
    `wearos_sim_deploy debug` for a running Wear OS emulator)
 3. Open the GS app on the paired phone. The watch shows
    "Open the GS app on your phone" until the first snapshot arrives.
