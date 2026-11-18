@@ -186,6 +186,15 @@ by the normal test commands.
 
 ## Deploy to a watch for testing
 
+**Refreshing profiles.** After adding a device or regenerating a profile in the
+developer portal, open Xcode > Settings > Accounts, select the team and click
+**Download Manual Profiles**. The build script looks in both Xcode profile
+folders (`~/Library/Developer/Xcode/UserData/Provisioning Profiles` and
+`~/Library/MobileDevice/Provisioning Profiles`) and uses an installed
+development profile for the bundle id when it is newer than the local
+`Groundstation_dev.mobileprovision` / `Groundstation_watch_dev.mobileprovision`,
+so the local copies never need to be replaced by hand.
+
 `build.py` builds, signs, installs and launches the companions for testing.
 Each action builds first; add `existing` to reuse the last build and `debug`
 for a debug build.

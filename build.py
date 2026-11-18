@@ -4446,34 +4446,72 @@ def _profile_matches_bundle(profile_info: dict, bundle_id: str) -> bool:
     return False
 
 
+def _installed_profile_dirs() -> list[Path]:
+    """Where Xcode keeps downloaded and managed provisioning profiles.
+
+    Xcode 16+ uses ~/Library/Developer/Xcode/UserData/Provisioning Profiles;
+    older releases use ~/Library/MobileDevice/Provisioning Profiles."""
+    home = Path.home()
+    return [
+        home / "Library" / "Developer" / "Xcode" / "UserData" / "Provisioning Profiles",
+        home / "Library" / "MobileDevice" / "Provisioning Profiles",
+    ]
+
+
+def _profile_created_ts(info: dict) -> float:
+    created = info.get("CreationDate")
+    return created.timestamp() if hasattr(created, "timestamp") else 0.0
+
+
 def _find_installed_ios_development_profile(frontend_dir: Path, bundle_id: str) -> Optional[Path]:
-    profiles_dir = Path.home() / "Library" / "MobileDevice" / "Provisioning Profiles"
-    if not profiles_dir.exists():
-        return None
+    """Newest installed development profile for bundle_id (latest CreationDate,
+    so a profile regenerated after adding a device wins)."""
+    matches: list[tuple[float, float, Path]] = []
+    for profiles_dir in _installed_profile_dirs():
+        if not profiles_dir.exists():
+            continue
+        for profile in profiles_dir.glob("*.mobileprovision"):
+            try:
+                info = _decode_mobileprovision(profile, frontend_dir)
+            except Exception:
+                continue
 
-    matches: list[tuple[float, Path]] = []
-    for profile in profiles_dir.glob("*.mobileprovision"):
-        try:
-            info = _decode_mobileprovision(profile, frontend_dir)
-        except Exception:
-            continue
+            entitlements = info.get("Entitlements", {})
+            if entitlements.get("get-task-allow") is not True:
+                continue
+            if not info.get("ProvisionedDevices"):
+                continue
+            if not _profile_matches_bundle(info, bundle_id):
+                continue
 
-        entitlements = info.get("Entitlements", {})
-        if entitlements.get("get-task-allow") is not True:
-            continue
-        if not info.get("ProvisionedDevices"):
-            continue
-        if not _profile_matches_bundle(info, bundle_id):
-            continue
-
-        expiration = info.get("ExpirationDate")
-        expiration_ts = expiration.timestamp() if hasattr(expiration, "timestamp") else 0.0
-        matches.append((expiration_ts, profile))
+            expiration = info.get("ExpirationDate")
+            expiration_ts = expiration.timestamp() if hasattr(expiration, "timestamp") else 0.0
+            matches.append((_profile_created_ts(info), expiration_ts, profile))
 
     if not matches:
         return None
-    matches.sort(key=lambda item: item[0], reverse=True)
-    return matches[0][1]
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return matches[0][2]
+
+
+def _prefer_newer_installed_profile(frontend_dir: Path, local: Path, bundle_id: Optional[str], label: str) -> Path:
+    """Use an installed profile instead of the local copy when Xcode has a newer
+    one for the same bundle id (e.g. after Settings > Accounts > Download Manual
+    Profiles), so a stale local file never hides a regenerated profile."""
+    if not bundle_id:
+        return local
+    installed = _find_installed_ios_development_profile(frontend_dir, bundle_id)
+    if installed is None:
+        return local
+    try:
+        local_ts = _profile_created_ts(_decode_mobileprovision(local, frontend_dir))
+        installed_ts = _profile_created_ts(_decode_mobileprovision(installed, frontend_dir))
+    except Exception:
+        return local
+    if installed_ts > local_ts:
+        print(f"Using newer installed {label} provisioning profile: {installed} (newer than {local.name})")
+        return installed
+    return local
 
 
 def ios_development_mobileprovision_path(
@@ -4490,7 +4528,7 @@ def ios_development_mobileprovision_path(
 
     local = frontend_dir / DEVELOPMENT_MOBILEPROVISION_REL
     if local.exists():
-        return local
+        return _prefer_newer_installed_profile(frontend_dir, local, bundle_id, "iOS development")
 
     if bundle_id:
         installed = _find_installed_ios_development_profile(frontend_dir, bundle_id)
@@ -4602,7 +4640,7 @@ def ios_watch_mobileprovision_path(
     if sign_kind == "development" and frontend_dir is not None:
         local = frontend_dir / WATCH_DEVELOPMENT_MOBILEPROVISION_REL
         if local.is_file():
-            return local
+            return _prefer_newer_installed_profile(frontend_dir, local, bundle_id, "watch development")
         if bundle_id:
             installed = _find_installed_ios_development_profile(frontend_dir, bundle_id)
             if installed is not None:
