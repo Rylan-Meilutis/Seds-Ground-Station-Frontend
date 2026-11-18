@@ -36,7 +36,8 @@ class AppleDevice:
 
     def label(self):
         extra = ", ".join(x for x in (self.model, self.os_version and f"OS {self.os_version}") if x)
-        return f"{self.name} ({extra}; {self.identifier})" if extra else f"{self.name} ({self.identifier})"
+        ids = self.identifier + (f"; UDID {self.udid}" if self.udid and self.udid != self.identifier else "")
+        return f"{self.name} ({extra}; {ids})" if extra else f"{self.name} ({ids})"
 
 
 def devicectl_list_command(json_path):
