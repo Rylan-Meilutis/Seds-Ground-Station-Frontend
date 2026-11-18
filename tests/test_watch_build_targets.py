@@ -273,5 +273,46 @@ class WearOSCommands(unittest.TestCase):
         self.assertEqual(commands[1][commands[1].index("build.py") + 1:][:2], ["--target", "wearos"])
 
 
+class WatchIcons(unittest.TestCase):
+    """The committed icons match scripts/generate_watch_icons.py's contract."""
+
+    def test_watchos_app_icon_catalog(self):
+        from PIL import Image
+        import json
+        apple = ROOT / "watch" / "apple"
+        catalog = apple / "GS26Watch" / "Assets.xcassets"
+        self.assertEqual(json.loads((catalog / "Contents.json").read_text())["info"]["version"], 1)
+        iconset = catalog / "AppIcon.appiconset"
+        images = json.loads((iconset / "Contents.json").read_text())["images"]
+        self.assertEqual(images, [{"filename": "AppIcon.png", "idiom": "universal",
+                                   "platform": "watchos", "size": "1024x1024"}])
+        with Image.open(iconset / "AppIcon.png") as icon:
+            self.assertEqual(icon.format, "PNG")
+            self.assertEqual(icon.size, (1024, 1024))
+            self.assertEqual(icon.mode, "RGB")  # watchOS rejects icons with alpha
+            self.assertNotIn("transparency", icon.info)
+            # Everything the circular mask removes is the flat background.
+            corners = {icon.getpixel(p) for p in [(0, 0), (1023, 0), (0, 1023), (1023, 1023), (150, 150)]}
+            self.assertEqual(corners, {(0x1E, 0x1F, 0x22)})
+        spec_text = (apple / "project.yml").read_text()
+        self.assertIn("ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon", spec_text)
+        self.assertIn('deploymentTarget: "10.0"', spec_text)  # single-size icon needs watchOS 9+
+
+    def test_wear_adaptive_launcher_icons(self):
+        from PIL import Image
+        res = ROOT / "watch" / "wear" / "app" / "src" / "main" / "res"
+        manifest = (res.parent / "AndroidManifest.xml").read_text()
+        self.assertIn('android:icon="@mipmap/ic_launcher"', manifest)
+        self.assertIn('android:roundIcon="@mipmap/ic_launcher_round"', manifest)
+        for name in ["ic_launcher", "ic_launcher_round"]:
+            text = (res / "mipmap-anydpi" / f"{name}.xml").read_text()
+            self.assertIn("@mipmap/ic_launcher_foreground", text)
+            self.assertIn("@color/ic_launcher_background", text)
+        self.assertIn("#1E1F22", (res / "values" / "colors.xml").read_text())
+        for density, factor in {"mdpi": 1, "hdpi": 1.5, "xhdpi": 2, "xxhdpi": 3, "xxxhdpi": 4}.items():
+            with Image.open(res / f"mipmap-{density}" / "ic_launcher_foreground.png") as fg:
+                self.assertEqual(fg.size, (round(108 * factor),) * 2, density)
+
+
 if __name__ == "__main__":
     unittest.main()

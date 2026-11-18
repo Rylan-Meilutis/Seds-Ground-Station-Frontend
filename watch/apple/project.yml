@@ -36,6 +36,9 @@ targets:
         PRODUCT_NAME: GS26Watch
         PRODUCT_BUNDLE_IDENTIFIER: com.UBSEDS.GS26.watchkitapp
         INFOPLIST_FILE: GS26Watch/Info.plist
+        # GS26Watch/Assets.xcassets: single-size 1024x1024 watchOS icon
+        # (scripts/generate_watch_icons.py makes it from the iOS artwork).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "4"
         SDKROOT: watchos

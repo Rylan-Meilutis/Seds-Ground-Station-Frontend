@@ -31,8 +31,10 @@ watch/apple/
    simulator) as the destination, then Run. A real watch needs Developer
    Mode enabled on both the iPhone and the watch.
 
-The project has no asset catalog; add an `AppIcon` before any TestFlight or
-App Store upload.
+The app icon is `GS26Watch/Assets.xcassets/AppIcon.appiconset`: one
+1024x1024 opaque PNG (watchOS 9+ single-size icon) made from the iOS icon by
+`python3 scripts/generate_watch_icons.py`, which also writes the Wear OS
+launcher foregrounds. Rerun it after changing `assets/icon_1024x1024.png`.
 
 ## Tests
 
