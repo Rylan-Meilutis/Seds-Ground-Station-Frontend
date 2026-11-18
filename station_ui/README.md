@@ -43,3 +43,11 @@ fixture with original or remotely encoded feeds. It checks decoded camera PCM,
 continuous frames for one/two viewers, restored clean OBS audio and saved geometry;
 encoded runs reject silent fallback to original camera URLs. Set
 `GS_MEDIA_TEST_ORIGIN` to the isolated backend fixture.
+
+Native apps show the voice (`/radio`), camera/recording (`/media`) and
+programme pages in iframes inside their WebView, not on the station's own
+origin. Capture still needs a secure context: an `https://` station address
+(a self-signed certificate works once TLS verification is skipped for that
+station in the app), or, on Windows only, a plain-HTTP station, which the app
+marks as secure. The pages explain missing WebRTC, getUserMedia or AudioWorklet
+in place. WebView set-up per platform is in `src/native_media.rs`.

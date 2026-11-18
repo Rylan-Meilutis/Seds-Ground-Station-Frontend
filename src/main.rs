@@ -1,6 +1,8 @@
 mod app;
 mod native_assets;
 #[cfg(not(target_arch = "wasm32"))]
+mod native_media;
+#[cfg(not(target_arch = "wasm32"))]
 mod native_navigation;
 mod auth;
 #[cfg(test)]
@@ -176,8 +178,14 @@ fn main() {
         });
     }
     cfg = cfg.with_in_app_navigation_handler(|url| {
-        native_navigation::station_document_allowed(url, &telemetry_dashboard::persisted_base_http_for_native_io())
+        native_navigation::station_document_allowed_for_known_stations(url, &telemetry_dashboard::persisted_base_http_for_native_io())
     });
+    #[cfg(target_os = "windows")]
+    {
+        let base = telemetry_dashboard::persisted_base_http_for_native_io();
+        let skip_tls = telemetry_dashboard::persisted_skip_tls_for_base_for_native_io(&base);
+        cfg = cfg.with_windows_browser_args(native_media::windows_browser_args(&base, skip_tls));
+    }
     cfg = cfg.with_custom_head(startup_custom_head());
     cfg = cfg.with_background_color((0x02, 0x06, 0x17, 0xff));
     let mut window = WindowBuilder::new().with_title(app::APP_DISPLAY_NAME);

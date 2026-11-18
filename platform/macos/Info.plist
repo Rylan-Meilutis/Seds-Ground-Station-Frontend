@@ -24,6 +24,18 @@
         <key>NSMicrophoneUsageDescription</key>
         <string>Use your microphone for crew voice when you choose Join voice.</string>
 
+        <!-- Voice, camera and recording pages are station documents loaded in
+             the web view, often from a LAN address over plain HTTP or a
+             .local name. App Transport Security would block them (the Rust
+             HTTP client is not subject to ATS, so the rest of the app works). -->
+        <key>NSAppTransportSecurity</key>
+        <dict>
+            <key>NSAllowsLocalNetworking</key>
+            <true/>
+            <key>NSAllowsArbitraryLoadsInWebContent</key>
+            <true/>
+        </dict>
+
         <key>NSMotionUsageDescription</key>
         <string>This app uses device orientation to point the map in the direction you are facing.</string>
 

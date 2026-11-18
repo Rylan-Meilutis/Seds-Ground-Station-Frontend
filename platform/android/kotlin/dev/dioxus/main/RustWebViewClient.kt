@@ -4,10 +4,12 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Handler
+import android.net.http.SslError
 import android.os.Looper
 import android.util.Log
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.SslErrorHandler
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -139,6 +141,35 @@ class RustWebViewClient(private val context: Context): WebViewClient() {
             "onReceivedHttpError url=${request.url} status=${errorResponse.statusCode} reason=${errorResponse.reasonPhrase}"
         )
         super.onReceivedHttpError(view, request, errorResponse)
+    }
+
+    /**
+     * Voice, camera and recording pages are station documents in iframes. When
+     * the operator chose to skip TLS verification for the saved station (a
+     * self-signed certificate), the WebView accepts that station's certificate
+     * too, matching the native HTTP client. Every other origin is refused.
+     */
+    override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+        val station = loadStoredBaseUrl()?.let { normalizeBaseUrl(it) }
+        if (station != null && sameOrigin(Uri.parse(error.url), Uri.parse(station)) && loadSkipTlsVerify(station)) {
+            Log.e(tag, "accepting station certificate for url=${error.url} (TLS verification skipped for this station)")
+            handler.proceed()
+            return
+        }
+        Log.e(tag, "refusing TLS error url=${error.url} primary=${error.primaryError}")
+        handler.cancel()
+    }
+
+    private fun sameOrigin(a: Uri, b: Uri): Boolean {
+        fun port(uri: Uri): Int = if (uri.port != -1) uri.port else when (uri.scheme?.lowercase()) {
+            "https" -> 443
+            "http" -> 80
+            else -> -1
+        }
+        return a.scheme.equals("https", ignoreCase = true) &&
+            b.scheme.equals("https", ignoreCase = true) &&
+            a.host != null && a.host.equals(b.host, ignoreCase = true) &&
+            port(a) == port(b)
     }
 
     private fun proxyTileRequest(uri: Uri): WebResourceResponse? {

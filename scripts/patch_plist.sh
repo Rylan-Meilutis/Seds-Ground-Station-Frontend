@@ -304,6 +304,12 @@ set_string "NSMotionUsageDescription" \
 
 set_bool "ITSAppUsesNonExemptEncryption" "false"
 
+# Voice, camera and recording pages load station documents (LAN HTTP or .local)
+# in WKWebView, which App Transport Security would otherwise block.
+ensure_dict "NSAppTransportSecurity"
+set_bool "NSAppTransportSecurity:NSAllowsLocalNetworking" "true"
+set_bool "NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent" "true"
+
 # -----------------------------------------------------------------------------
 # 2b) Add required/expected bundle keys for iOS uploads
 # -----------------------------------------------------------------------------

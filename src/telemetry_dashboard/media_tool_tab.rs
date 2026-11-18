@@ -30,13 +30,20 @@ pub(super) fn MediaToolTab(
         }
         send_session(id, token.read().as_deref(), visible);
     }));
-    let src = format!("{}{path}", UrlConfig::base_http().trim_end_matches('/'));
+    let base = UrlConfig::base_http();
+    let src = format!("{}{path}", base.trim_end_matches('/'));
+    // Native builds embed a document from another origin; a frame that cannot
+    // load (certificate, address) would otherwise stay blank.
+    let notice = use_native_preflight(base, path, title, *opened.read());
     rsx! {
-        div { style: if visible { "display:block;height:100%;width:100%;" } else { "display:none;height:100%;width:100%;" },
+        div { style: if visible { "display:flex;flex-direction:column;height:100%;width:100%;" } else { "display:none;height:100%;width:100%;" },
+            if let Some(message) = notice {
+                p { role: "alert", style: "margin:0;padding:10px 12px;background:#3b2a0a;color:#ffd892;border-bottom:1px solid #7a5a1c;font:14px/1.4 system-ui,sans-serif;", "{message}" }
+            }
             if *opened.read() {
                 iframe {
                     id, src, title,
-                    style: "height:100%;width:100%;border:0;",
+                    style: "flex:1 1 auto;min-height:0;height:100%;width:100%;border:0;",
                     allow: "camera; microphone; autoplay; fullscreen; screen-wake-lock",
                     "sandbox": "allow-scripts allow-same-origin allow-forms allow-downloads",
                     onload: move |_| send_session(id, token.read().as_deref(), visible),
@@ -44,6 +51,34 @@ pub(super) fn MediaToolTab(
             }
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn use_native_preflight(_base: String, _path: &'static str, _title: &'static str, _opened: bool) -> Option<String> {
+    // The web build loads these pages from its own origin.
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn use_native_preflight(base: String, path: &'static str, title: &'static str, opened: bool) -> Option<String> {
+    let mut notice = use_signal(|| None::<String>);
+    use_effect(use_reactive((&base, &opened), move |(base, opened)| {
+        if !opened {
+            return;
+        }
+        spawn(async move {
+            let skip_tls = super::persisted_skip_tls_for_base_for_native_io(&base);
+            let (tx, rx) = futures_channel::oneshot::channel();
+            let station = base.clone();
+            let _ = std::thread::Builder::new().name("gs26-media-preflight".into()).spawn(move || {
+                let _ = tx.send(crate::native_media::preflight_station_document(&station, path, skip_tls));
+            });
+            if let Ok(result) = rx.await {
+                notice.set(result.err().map(|issue| crate::native_media::preflight_message(&issue, title)));
+            }
+        });
+    }));
+    notice.read().clone()
 }
 
 fn send_session(id: &str, token: Option<&str>, visible: bool) {
@@ -90,6 +125,10 @@ fn send_session(id: &str, token: Option<&str>, visible: bool) {
 /// Camera/voice documents outlive dashboard, aiming and stream-only surfaces.
 #[component]
 pub(super) fn MediaSurface(media_visible: bool, voice_visible: bool, stream_visible:bool, children: Element) -> Element {
+    // Native WebViews need media capture, WebRTC and the live station's
+    // iframe navigation set up before these documents mount.
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::native_media::use_station_media_webview(UrlConfig::base_http());
     use_drop(|| {
         // Iframe capture messages cannot clear their parent lock after removal.
         // Release only this surface's owners; other mounted media stays awake.

@@ -12,6 +12,15 @@ function radioLink(radio){
   if(!radioAvailable){$('radio-enable').checked=false;if(session)session.radio=false;}
 }
 const notice=text=>{$('status').textContent=text;};
+// Native apps show this page inside a web view. Say why voice cannot start
+// there rather than failing after Join voice.
+function voiceUnavailableReason(){
+  if(!window.isSecureContext)return 'Voice needs the Ground Station over HTTPS (or localhost): microphones and the voice audio processor are disabled on plain-HTTP pages. Connect with the station\'s https:// address; in the app, a self-signed certificate works once TLS verification is skipped for that station.';
+  if(!navigator.mediaDevices?.getUserMedia)return 'This web view cannot open a microphone (no getUserMedia), so voice is unavailable here. Use a browser or an app version with microphone support.';
+  const Context=window.AudioContext||window.webkitAudioContext;
+  if(!Context||!('audioWorklet' in Context.prototype))return 'This web view lacks AudioWorklet, which voice audio needs. Update the system web view, or use a browser.';
+  return '';
+}
 async function bounded(promise,ms,message){
  let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(message)),ms);})]);}finally{clearTimeout(timer);}
 }
@@ -67,7 +76,8 @@ $('logout').onclick=async()=>{
 };
 $('join').onclick=async()=>{
   if(session||joining)return;
-  if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)return notice('Microphone access requires HTTPS (or localhost).');
+  const unavailable=voiceUnavailableReason();
+  if(unavailable)return notice(unavailable);
   joining=true;muted=false;held=false;updateControls();notice('Starting voice audio…');
   const s={ready:false,transmitting:false};session=s;
   try{
@@ -213,7 +223,7 @@ if (new URLSearchParams(location.search).get('embedded') === '1' && parent !== w
     if (!receivedSession || token !== event.data.token) {
       receivedSession = true;
       leave(); token = event.data.token;
-      notice(token ? 'Dashboard session connected. Choose Join voice to enable your microphone.' : 'Sign in from the dashboard to join voice chat.');
+      notice(!token ? 'Sign in from the dashboard to join voice chat.' : voiceUnavailableReason() || 'Dashboard session connected. Choose Join voice to enable your microphone.');
       updateControls();
     }
   });

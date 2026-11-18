@@ -18,6 +18,7 @@ function cleanup(){
 function restart(message){if(closed||retry)return;status.hidden=false;status.textContent=message;cleanup();retry=setTimeout(()=>{retry=null;connect();},3000);}
 async function connect(){
   if(closed)return;
+  if(typeof RTCPeerConnection!=='function'){status.hidden=false;status.textContent='Live camera video needs WebRTC, which this web view does not provide (for example a Linux WebKitGTK build without WebRTC).';return;}
   const peer=new RTCPeerConnection({iceServers:[]});pc=peer;
   const abort=new AbortController();request=abort;
   watchdog=setTimeout(()=>restart('Connection timed out. Retrying…'),20000);

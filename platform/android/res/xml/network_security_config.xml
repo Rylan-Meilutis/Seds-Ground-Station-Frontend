@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true"/>
+    <!-- Stations are often plain HTTP on the LAN. A station with a self-signed
+         HTTPS certificate can be trusted by installing that certificate as a
+         user CA; voice WebSockets and camera pages then verify normally. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </base-config>
 </network-security-config>

@@ -1,4 +1,29 @@
 //! Explicit station documents may navigate in native iframes, never arbitrary sites.
+use std::sync::Mutex;
+
+/// The station the dashboard is currently showing. A station selected for this
+/// session only (not saved) is never persisted, so the WebView navigation
+/// handler cannot learn it from storage; the media surface records it here
+/// before it mounts its iframes.
+static LIVE_STATION: Mutex<String> = Mutex::new(String::new());
+
+pub(crate) fn remember_live_station(base: &str) {
+    if let Ok(mut live) = LIVE_STATION.lock()
+        && *live != base
+    {
+        *live = base.to_string();
+    }
+}
+
+/// Allows a station document for the saved station or the live station.
+pub(crate) fn station_document_allowed_for_known_stations(target: &str, persisted: &str) -> bool {
+    if station_document_allowed(target, persisted) {
+        return true;
+    }
+    let live = LIVE_STATION.lock().map(|live| live.clone()).unwrap_or_default();
+    !live.is_empty() && station_document_allowed(target, &live)
+}
+
 pub(crate) fn station_document_allowed(target: &str, station: &str) -> bool {
     // URL parsing normalizes dot segments and backslashes. Accept canonical
     // document paths only, so a rejected API path cannot normalize into one.
@@ -32,6 +57,23 @@ pub(crate) fn station_document_allowed(target: &str, station: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsaved_live_station_media_documents_stay_in_app() {
+        // The saved address falls back to localhost when the operator connected
+        // without saving; the live station's voice and camera pages must load.
+        let persisted = "http://localhost:3000";
+        let live = "http://gs-live-session.invalid:3000";
+        let radio = format!("{live}/radio?embedded=1");
+        remember_live_station(live);
+        for path in ["/radio?embedded=1", "/media?embedded=1", "/program", "/player"] {
+            assert!(station_document_allowed_for_known_stations(&format!("{live}{path}"), persisted), "{path}");
+        }
+        assert!(station_document_allowed_for_known_stations("http://localhost:3000/media", persisted));
+        assert!(!station_document_allowed_for_known_stations("http://other.invalid:3000/radio", persisted));
+        assert!(!station_document_allowed_for_known_stations(&format!("{live}/api/auth"), persisted));
+        remember_live_station("");
+        assert!(!station_document_allowed_for_known_stations(&radio, persisted));
+    }
     #[test]
     fn media_document_routes_reject_api_subpaths_and_normalization_bypasses() {
         let base = "https://gs.local:3443";

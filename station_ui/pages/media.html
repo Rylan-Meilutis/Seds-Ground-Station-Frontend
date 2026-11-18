@@ -72,6 +72,16 @@ let token = '', generation = 0, pageActive = true;
 let recordingOffset = 0;
 const cameras = new Map();
 function notice(text) { $('message').textContent = text; }
+// Native apps show this page inside a web view; explain missing capabilities
+// in place instead of leaving cameras stuck on "Connecting…".
+const webrtcSupported = typeof RTCPeerConnection === 'function';
+function captureUnavailableReason() {
+  if (!window.isSecureContext) return 'Camera sharing needs the Ground Station over HTTPS (or localhost): cameras are disabled on plain-HTTP pages. Connect with the station\'s https:// address; in the app, a self-signed certificate works once TLS verification is skipped for that station.';
+  if (!navigator.mediaDevices?.getUserMedia) return 'This web view cannot open cameras (no getUserMedia), so camera sharing is unavailable here. Live cameras and recordings still work.';
+  if (!webrtcSupported) return 'Camera sharing needs WebRTC, which this web view does not provide.';
+  return '';
+}
+const liveVideoUnavailable = 'Live camera video needs WebRTC, which this web view does not provide (for example a Linux WebKitGTK build without WebRTC). Recordings below still play.';
 async function api(path, options = {}) {
   const headers = new Headers(options.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
@@ -168,6 +178,7 @@ function addCamera(id, name) {
 }
 async function refreshVideo() {
   if(!canManage || !pageActive)return;
+  if (!webrtcSupported) { $('video-status').textContent = liveVideoUnavailable; return; }
   const current = generation;
   try {
     const streams = await (await api('/api/video/streams')).json();
@@ -256,10 +267,12 @@ async function refreshPublishPermission() {
   $('publish-start').disabled = !canPublish || !!publisher;
   $('publish-devices').disabled = !canPublish;
   $('publish-viewfinder').disabled=!canPublish; $('publish-flip').disabled=!canPublish; $('publish-rename').disabled=!canPublish||!publisher;
-  $('publish-access').hidden = canPublish;
-  $('publish-access').textContent = token
+  const unavailable = canPublish ? captureUnavailableReason() : '';
+  if (unavailable) { for (const id of ['publish-start', 'publish-devices', 'publish-viewfinder', 'publish-flip']) $(id).disabled = true; }
+  $('publish-access').hidden = canPublish && !unavailable;
+  $('publish-access').textContent = unavailable || (token
     ? 'Your account needs camera-publishing permission.'
-    : embedded ? 'Sign in through the dashboard to share this camera.' : 'Sign in to share this camera.';
+    : embedded ? 'Sign in through the dashboard to share this camera.' : 'Sign in to share this camera.');
   if (!canPublish && (publisher||previewStream)) stopPublishing('Camera stopped: publishing permission is unavailable.');
 }
 async function listPublishDevices() {
@@ -282,6 +295,8 @@ function updateZoom(track) {
 }
 async function openViewfinder() {
   if(!canPublish)return;
+  const unavailable = captureUnavailableReason();
+  if (unavailable) return publishNotice(unavailable);
   const request=++previewRequest,old=previewStream;
   // iOS may require releasing the current lens before opening the other one.
   old?.getVideoTracks().forEach(t=>{t.onended=null;t.stop();});
@@ -317,7 +332,8 @@ $('publish-devices').onclick = listPublishDevices;
 $('publish-stop').onclick = () => stopPublishing();
 $('publish-start').onclick = async () => {
   if (publisher || !canPublish) return;
-  if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) return publishNotice('Camera sharing requires HTTPS (or localhost).');
+  const unavailable = captureUnavailableReason();
+  if (unavailable) return publishNotice(unavailable);
   const current = {token}; publisher = current;
   $('publish-start').disabled = true; $('publish-stop').disabled = false; $('publish-device').disabled = true; $('publish-audio').disabled=true; $('publish-microphone').disabled=true;
   publishNotice('Requesting camera access…');

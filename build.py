@@ -2616,7 +2616,26 @@ def _patch_generated_android_sources(project_dir: Path) -> None:
     if rust_webview.exists():
         raw = rust_webview.read_text(encoding="utf-8")
         raw = raw.replace("        settings.databaseEnabled = true\n", "")
+        raw = _allow_station_media_frames(raw)
         rust_webview.write_text(raw, encoding="utf-8")
+
+
+ANDROID_MIXED_CONTENT_LINE = "        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW\n"
+
+
+def _allow_station_media_frames(raw: str) -> str:
+    """Let the https app document embed a plain-HTTP station's media pages.
+
+    The Android app document is https://dioxus.index.html, so a LAN station on
+    http:// would be blocked as mixed content and the voice, camera and
+    recording tabs would stay blank. Navigation is limited to station documents.
+    """
+    if ANDROID_MIXED_CONTENT_LINE in raw:
+        return raw
+    marker = "        settings.domStorageEnabled = true\n"
+    if marker not in raw:
+        raise RuntimeError("RustWebView.kt no longer has the settings block to extend")
+    return raw.replace(marker, marker + ANDROID_MIXED_CONTENT_LINE, 1)
 
 
 def _configure_android_signing(frontend_dir: Path, project_dir: Path) -> bool:
@@ -3479,7 +3498,10 @@ def _pick_codesign_identity(frontend_dir: Path, regex: str, pick: str) -> str:
 def _macos_entitlements_path(frontend_dir: Path) -> Optional[Path]:
     ent = os.environ.get("MACOS_ENTITLEMENTS", "").strip()
     if not ent:
-        return None
+        # The hardened runtime denies camera and microphone access unless the
+        # signature carries the device entitlements (voice, camera sharing).
+        default = frontend_dir / "platform" / "macos" / "entitlements.plist"
+        return default if default.exists() else None
     p = Path(ent)
     if not p.is_absolute():
         p = frontend_dir / p
@@ -6134,7 +6156,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("  IOS_DISTRIBUTION_MOBILEPROVISION=...  # distribution IPA provisioning profile")
     print("  IOS_WATCH_DEVELOPMENT_MOBILEPROVISION=...   # Apple Watch app profile for watchos_deploy")
     print("  IOS_WATCH_DISTRIBUTION_MOBILEPROVISION=...  # profile for the embedded Apple Watch app (signed watchos)")
-    print("  MACOS_ENTITLEMENTS=...            # optional entitlements file for macOS codesign")
+    print("  MACOS_ENTITLEMENTS=...            # entitlements for macOS codesign (default platform/macos/entitlements.plist)")
     print("  NOTARY_PROFILE=...                # optional if exactly one stored profile exists")
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")
     print("  NOTARY_TEAM_ID=...                # notarytool team ID")

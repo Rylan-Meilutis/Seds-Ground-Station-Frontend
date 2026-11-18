@@ -86,7 +86,13 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     let ios = target.contains("apple-ios");
     let watch_src = manifest_dir.join("assets/WatchBridge.m");
     println!("cargo:rerun-if-changed={}", watch_src.display());
-    let mut sources = vec![(src, out_dir.join("LocationShim.o"))];
+    // Media pages: pinned station certificate for the WKWebView (iOS and macOS).
+    let media_src = manifest_dir.join("assets/MediaWebViewShim.m");
+    println!("cargo:rerun-if-changed={}", media_src.display());
+    let mut sources = vec![
+        (src, out_dir.join("LocationShim.o")),
+        (media_src, out_dir.join("MediaWebViewShim.o")),
+    ];
     if ios {
         sources.push((watch_src, out_dir.join("WatchBridge.o")));
     }
@@ -124,6 +130,8 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     println!("cargo:rustc-link-lib=framework=CoreMotion");
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=Network");
+    println!("cargo:rustc-link-lib=framework=Security");
+    println!("cargo:rustc-link-lib=framework=WebKit");
     println!("cargo:rustc-link-lib=objc");
     if ios {
         println!("cargo:rustc-link-lib=framework=WatchConnectivity");
