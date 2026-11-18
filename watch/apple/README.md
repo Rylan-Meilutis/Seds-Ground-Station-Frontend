@@ -62,9 +62,10 @@ documented example snapshot and unknown page kinds. In Xcode, open
   `docs/watch-companion.md`, "Deploy to a watch for testing"). Or install
   the phone app with `python3 build.py ios_deploy` and the watch app from
   Xcode directly onto the paired watch (step 5 above). If the watch keeps showing
-  "Open the GS app on your iPhone" while the phone app is open, check that
-  both are signed by the same team and that the phone app was reinstalled
-  after the watch app (`WCSession.isWatchAppInstalled` is evaluated by the
+  "Open the GS app on your phone" while the phone app is open, check that
+  both are signed by the same team, and look at Settings › Maintenance ›
+  "Watch link" on the phone: the bits must include `activated`, `paired` and
+  `app installed` (`WCSession.isWatchAppInstalled` is evaluated by the
   phone).
 * **Builds with the phone app:** `python3 build.py --target watchos`
   (device, `arm64_32` + `arm64`), `--target watchos_sim` (Apple silicon

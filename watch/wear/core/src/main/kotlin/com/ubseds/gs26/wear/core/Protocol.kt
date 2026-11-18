@@ -86,7 +86,10 @@ data class Snapshot(
 data class Station(
     val name: String = "",
     val role: String = "unknown",
+    /** `connected`, `connecting`, `reconnecting`, `sign_in` or `offline`. */
     val link: String = "offline",
+    /** Host[:port] of the phone's station; empty when none is chosen. */
+    val address: String = "",
     @SerialName("telemetry_age_ms") val telemetryAgeMs: Long? = null,
 )
 

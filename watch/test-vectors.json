@@ -304,5 +304,471 @@
    "arrow": 105,
    "bearing_magnetic": 36.75
   }
+ ],
+ "_comment_status": "connection_status: the watch's phone/station lines. snapshot null = none received; age_ms = time since it was received; timeout 15 s. tone is ok|waiting|warn|alert. open_phone_app: show the 'Open the GS app on your phone' hint (only when the phone is unreachable and there is no fresh data). auto_cycle: vertical cycle pager; ops tick (time passes), scroll (user moved to `to` with swipe or Digital Crown/rotary), tap (pause/resume). alerts: items with level alert first, then warn, each group by label.",
+ "connection_status": [
+  {
+   "name": "never_received_unreachable",
+   "snapshot": null,
+   "age_ms": 0,
+   "reachable": false,
+   "phone": {
+    "text": "Open the GS app on your phone",
+    "tone": "alert"
+   },
+   "station": null,
+   "open_phone_app": true
+  },
+  {
+   "name": "never_received_reachable",
+   "snapshot": null,
+   "age_ms": 0,
+   "reachable": true,
+   "phone": {
+    "text": "Phone app open · waiting for data",
+    "tone": "waiting"
+   },
+   "station": null,
+   "open_phone_app": false
+  },
+  {
+   "name": "connecting_with_address",
+   "snapshot": {
+    "mode": "no_station",
+    "station": {
+     "name": "",
+     "link": "connecting",
+     "address": "gs.local:3000"
+    }
+   },
+   "age_ms": 2000,
+   "reachable": true,
+   "phone": {
+    "text": "Phone connected · updated 2s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Connecting to gs.local:3000…",
+    "tone": "waiting"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "connecting_without_address",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "",
+     "link": "connecting",
+     "address": ""
+    }
+   },
+   "age_ms": 0,
+   "reachable": false,
+   "phone": {
+    "text": "Phone connected · updated 0s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Connecting to the station…",
+    "tone": "waiting"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "connected_by_name",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "connected",
+     "address": "gs.local:3000"
+    }
+   },
+   "age_ms": 1000,
+   "reachable": true,
+   "phone": {
+    "text": "Phone connected · updated 1s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Connected to GroundStation",
+    "tone": "ok"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "connected_by_address",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "",
+     "link": "connected",
+     "address": "10.0.0.5:3000"
+    }
+   },
+   "age_ms": 1000,
+   "reachable": true,
+   "phone": {
+    "text": "Phone connected · updated 1s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Connected to 10.0.0.5:3000",
+    "tone": "ok"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "reconnecting",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "reconnecting",
+     "address": "gs.local:3000"
+    }
+   },
+   "age_ms": 3000,
+   "reachable": true,
+   "phone": {
+    "text": "Phone connected · updated 3s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Reconnecting to GroundStation…",
+    "tone": "warn"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "sign_in",
+   "snapshot": {
+    "mode": "no_station",
+    "station": {
+     "name": "",
+     "link": "sign_in",
+     "address": "gs.local:3000"
+    }
+   },
+   "age_ms": 0,
+   "reachable": true,
+   "phone": {
+    "text": "Phone connected · updated 0s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Sign in on the phone (gs.local:3000)",
+    "tone": "warn"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "unreachable_station",
+   "snapshot": {
+    "mode": "no_station",
+    "station": {
+     "name": "",
+     "link": "offline",
+     "address": "gs.local:3000"
+    }
+   },
+   "age_ms": 0,
+   "reachable": true,
+   "phone": {
+    "text": "Phone connected · updated 0s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Can't reach gs.local:3000",
+    "tone": "alert"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "choosing_station",
+   "snapshot": {
+    "mode": "no_station",
+    "station": {
+     "name": "",
+     "link": "offline",
+     "address": ""
+    }
+   },
+   "age_ms": 0,
+   "reachable": true,
+   "phone": {
+    "text": "Phone connected · updated 0s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Phone not connected to a station",
+    "tone": "warn"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "demo",
+   "snapshot": {
+    "mode": "demo",
+    "station": {
+     "name": "Demo station",
+     "link": "connected",
+     "address": ""
+    }
+   },
+   "age_ms": 0,
+   "reachable": true,
+   "phone": {
+    "text": "Phone connected · updated 0s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Demo data (offline preview)",
+    "tone": "warn"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "stale_but_reachable",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "connected",
+     "address": ""
+    }
+   },
+   "age_ms": 125000,
+   "reachable": true,
+   "phone": {
+    "text": "Phone reachable · no update for 2m 05s",
+    "tone": "warn"
+   },
+   "station": {
+    "text": "Connected to GroundStation",
+    "tone": "ok"
+   },
+   "open_phone_app": false
+  },
+  {
+   "name": "stale_and_unreachable",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "connected",
+     "address": ""
+    }
+   },
+   "age_ms": 16000,
+   "reachable": false,
+   "phone": {
+    "text": "Phone not reachable · last update 16s ago",
+    "tone": "alert"
+   },
+   "station": {
+    "text": "Connected to GroundStation",
+    "tone": "ok"
+   },
+   "open_phone_app": true
+  }
+ ],
+ "auto_cycle": [
+  {
+   "name": "advance_scroll_pause_wrap",
+   "interval_s": 5,
+   "count": 3,
+   "autostart": true,
+   "steps": [
+    {
+     "at": 0,
+     "op": "tick",
+     "index": 0,
+     "footer": "1/3 · next in 5s"
+    },
+    {
+     "at": 4999,
+     "op": "tick",
+     "index": 0,
+     "footer": "1/3 · next in 1s"
+    },
+    {
+     "at": 5000,
+     "op": "tick",
+     "index": 1,
+     "footer": "2/3 · next in 5s"
+    },
+    {
+     "at": 6000,
+     "op": "scroll",
+     "to": 1,
+     "index": 1,
+     "footer": "2/3 · next in 4s"
+    },
+    {
+     "at": 7000,
+     "op": "scroll",
+     "to": 0,
+     "index": 0,
+     "footer": "1/3 · next in 5s"
+    },
+    {
+     "at": 10000,
+     "op": "tick",
+     "index": 0,
+     "footer": "1/3 · next in 2s"
+    },
+    {
+     "at": 12000,
+     "op": "tick",
+     "index": 1,
+     "footer": "2/3 · next in 5s"
+    },
+    {
+     "at": 13000,
+     "op": "tap",
+     "index": 1,
+     "footer": "2/3 · paused"
+    },
+    {
+     "at": 60000,
+     "op": "tick",
+     "index": 1,
+     "footer": "2/3 · paused"
+    },
+    {
+     "at": 61000,
+     "op": "scroll",
+     "to": 2,
+     "index": 2,
+     "footer": "3/3 · paused"
+    },
+    {
+     "at": 62000,
+     "op": "tap",
+     "index": 2,
+     "footer": "3/3 · next in 5s"
+    },
+    {
+     "at": 67000,
+     "op": "tick",
+     "index": 0,
+     "footer": "1/3 · next in 5s"
+    }
+   ]
+  },
+  {
+   "name": "autostart_off_and_long_sleep",
+   "interval_s": 2,
+   "count": 4,
+   "autostart": false,
+   "steps": [
+    {
+     "at": 0,
+     "op": "tick",
+     "index": 0,
+     "footer": "1/4 · paused"
+    },
+    {
+     "at": 9000,
+     "op": "tick",
+     "index": 0,
+     "footer": "1/4 · paused"
+    },
+    {
+     "at": 10000,
+     "op": "tap",
+     "index": 0,
+     "footer": "1/4 · next in 2s"
+    },
+    {
+     "at": 100000,
+     "op": "tick",
+     "index": 1,
+     "footer": "2/4 · next in 2s"
+    }
+   ]
+  },
+  {
+   "name": "empty",
+   "interval_s": 5,
+   "count": 0,
+   "autostart": true,
+   "steps": [
+    {
+     "at": 0,
+     "op": "tick",
+     "index": 0,
+     "footer": ""
+    },
+    {
+     "at": 10000,
+     "op": "tick",
+     "index": 0,
+     "footer": ""
+    }
+   ]
+  }
+ ],
+ "alerts": [
+  {
+   "name": "alert_then_warn_by_label",
+   "items": {
+    "a": {
+     "label": "Tank pressure",
+     "text": "62 bar",
+     "level": "alert"
+    },
+    "b": {
+     "label": "Battery",
+     "text": "13.1 V",
+     "level": "warn"
+    },
+    "c": {
+     "label": "Altitude",
+     "text": "1200 m",
+     "level": "normal"
+    },
+    "d": {
+     "label": "Boards",
+     "text": "5/6",
+     "level": "alert"
+    },
+    "e": {
+     "label": "GPS",
+     "text": "--",
+     "level": "unknown"
+    }
+   },
+   "expect": [
+    [
+     "Boards",
+     "5/6",
+     "alert"
+    ],
+    [
+     "Tank pressure",
+     "62 bar",
+     "alert"
+    ],
+    [
+     "Battery",
+     "13.1 V",
+     "warn"
+    ]
+   ]
+  },
+  {
+   "name": "none",
+   "items": {
+    "c": {
+     "label": "Altitude",
+     "text": "1200 m",
+     "level": "normal"
+    }
+   },
+   "expect": []
+  }
  ]
 }

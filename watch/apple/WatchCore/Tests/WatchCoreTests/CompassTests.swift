@@ -113,15 +113,6 @@ final class CompassTests: XCTestCase {
         XCTAssertTrue(Compass.displays(targets: [rocket, gs], settings: s, reading: CompassReading(), receivedAtMs: 0, nowMs: 0).isEmpty)
     }
 
-    func testLinkLoss() {
-        XCTAssertEqual(LinkState(receivedAtMs: nil, nowMs: 0, timeoutS: 15), .waiting)
-        XCTAssertEqual(LinkState(receivedAtMs: 0, nowMs: 15_000, timeoutS: 15), .live)
-        let lost = LinkState(receivedAtMs: 0, nowMs: 125_000, timeoutS: 15)
-        XCTAssertEqual(lost, .lost(lastDataMs: 125_000))
-        XCTAssertEqual(lost.lostText, "Phone link lost · last data 2m 05s")
-        XCTAssertNil(LinkState.live.lostText)
-    }
-
     func testClockText() {
         XCTAssertEqual(clockText(LaunchClock(kind: "tminus", ms: 5_000), elapsedMs: 1_500), "T- 00:03")
         XCTAssertEqual(clockText(LaunchClock(kind: "tminus", ms: 5_000), elapsedMs: 9_000), "T- 00:00")
@@ -129,21 +120,5 @@ final class CompassTests: XCTestCase {
         XCTAssertEqual(clockText(LaunchClock(kind: "tplus", ms: 6_000_000), elapsedMs: 0), "T+ 100:00")
         XCTAssertEqual(clockText(LaunchClock(kind: "tplus", ms: 1_000), elapsedMs: -5_000), "T+ 00:01")
         XCTAssertNil(clockText(LaunchClock(kind: "idle", ms: 0), elapsedMs: 0))
-    }
-
-    func testCycleScheduler() {
-        var c = CycleScheduler()
-        XCTAssertEqual(c.index(at: 100_000, intervalS: 5, count: 3), 0, "not started")
-        c.start(at: 0)
-        XCTAssertEqual(c.index(at: 4_999, intervalS: 5, count: 3), 0)
-        XCTAssertEqual(c.index(at: 5_000, intervalS: 5, count: 3), 1)
-        XCTAssertEqual(c.index(at: 15_000, intervalS: 5, count: 3), 0)
-        c.pause(at: 7_000)
-        XCTAssertFalse(c.isRunning)
-        XCTAssertEqual(c.index(at: 60_000, intervalS: 5, count: 3), 1, "paused holds")
-        c.toggle(at: 60_000)
-        XCTAssertTrue(c.isRunning)
-        XCTAssertEqual(c.index(at: 63_000, intervalS: 5, count: 3), 2)
-        XCTAssertEqual(c.index(at: 63_000, intervalS: 5, count: 0), 0)
     }
 }

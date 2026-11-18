@@ -20,7 +20,7 @@ struct SettingsView: View {
                     Section("Cycle") {
                         NavigationLink("Items (\(s.cycle.items.count))") { CycleItemsEditor() }
                         Stepper(value: binding(\.cycle.intervalS, set: { $0.setIntervalS($1) }), in: minIntervalS...maxIntervalS) {
-                            Text("Every \(s.cycle.intervalS) s")
+                            StepperLabel(title: "Cycle every", value: "\(s.cycle.intervalS) s")
                         }
                         Toggle("Autostart", isOn: binding(\.cycle.autostart, set: { $0.cycle.autostart = $1 }))
                     }
@@ -30,7 +30,7 @@ struct SettingsView: View {
                             Text("Magnetic").tag(North.magnetic)
                         }
                         Stepper(value: binding(\.compass.staleAfterS, set: { $0.setStaleAfterS($1) }), in: minStaleS...maxStaleS, step: 5) {
-                            Text("Stale after \(s.compass.staleAfterS) s")
+                            StepperLabel(title: "Stale after", value: "\(s.compass.staleAfterS) s")
                         }
                         NavigationLink("Targets (\(s.compass.targets.count))") { TargetsEditor() }
                     }
@@ -47,6 +47,7 @@ struct SettingsView: View {
                     }
                 } else {
                     Text("Settings arrive with the first update from the phone")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -65,6 +66,22 @@ struct SettingsView: View {
 
     private func binding<T>(_ path: KeyPath<WatchSettings, T>, set: @escaping (inout WatchSettings, T) -> Void) -> Binding<T> {
         settingsBinding(link, path, set: set)
+    }
+}
+
+/// Stepper labels default to a large font on watchOS; keep them small so
+/// the value fits between the -/+ buttons on a 40/41 mm watch.
+struct StepperLabel: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.footnote.monospacedDigit())
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
     }
 }
 

@@ -9,6 +9,9 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     @Published private(set) var receivedAtMs: Int64? = nil
     /// Local settings edit not yet echoed back by the phone.
     @Published private(set) var pendingSettings: WatchSettings? = nil
+    /// WCSession.isReachable: the iPhone is in range and its GS app can be
+    /// messaged (iOS wakes it in the background if needed).
+    @Published private(set) var phoneReachable = false
 
     private enum Keys {
         static let snapshot = "gs26.snapshot.json"
@@ -49,8 +52,8 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
         return snap.pages
     }
 
-    func linkState(nowMs: Int64) -> LinkState {
-        LinkState(receivedAtMs: receivedAtMs, nowMs: nowMs, timeoutS: snapshot?.linkTimeoutS ?? 15)
+    func connectionStatus(nowMs: Int64) -> ConnectionStatus {
+        ConnectionStatus(snapshot: snapshot, ageMs: elapsedMs(nowMs: nowMs), phoneReachable: phoneReachable)
     }
 
     func elapsedMs(nowMs: Int64) -> Int64 {
@@ -67,6 +70,9 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
 
     func setForeground(_ isForeground: Bool) {
         foreground = isForeground
+        if isForeground, WCSession.isSupported(), WCSession.default.activationState == .activated {
+            phoneReachable = WCSession.default.isReachable
+        }
         sendActivity()
         activityTimer?.invalidate()
         activityTimer = nil
@@ -153,7 +159,9 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         guard activationState == .activated else { return }
         let context = session.receivedApplicationContext[phoneToWatchKey] as? String
+        let reachable = session.isReachable
         DispatchQueue.main.async {
+            self.phoneReachable = reachable
             if let context { self.receive(context, replayedContext: true) }
             self.send(.hello)
             if self.foreground { self.sendActivity() }
@@ -171,7 +179,9 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     func sessionReachabilityDidChange(_ session: WCSession) {
-        guard session.isReachable else { return }
+        let reachable = session.isReachable
+        DispatchQueue.main.async { self.phoneReachable = reachable }
+        guard reachable else { return }
         DispatchQueue.main.async {
             self.send(.hello)
             if self.foreground { self.sendActivity() }

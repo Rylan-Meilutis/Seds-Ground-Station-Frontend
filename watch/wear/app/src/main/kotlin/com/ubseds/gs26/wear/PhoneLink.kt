@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.google.android.gms.wearable.CapabilityClient
+import com.google.android.gms.wearable.CapabilityInfo
 import com.google.android.gms.wearable.DataClient
 import com.google.android.gms.wearable.DataEvent
 import com.google.android.gms.wearable.DataEventBuffer
@@ -30,7 +31,8 @@ import kotlinx.coroutines.tasks.await
  * phone over the Data Layer, and hello/activity/settings out to it. Nothing
  * here can address a station.
  */
-class PhoneLink private constructor(context: Context) : DataClient.OnDataChangedListener {
+class PhoneLink private constructor(context: Context) :
+    DataClient.OnDataChangedListener, CapabilityClient.OnCapabilityChangedListener {
     private val app = context.applicationContext
     private val prefs = app.getSharedPreferences("gs26_watch", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -41,17 +43,36 @@ class PhoneLink private constructor(context: Context) : DataClient.OnDataChanged
     private val _state = MutableStateFlow(loadPersisted())
     val state: StateFlow<WatchState> = _state.asStateFlow()
 
+    private val _phoneReachable = MutableStateFlow(false)
+
+    /** A connected phone node advertises the GS phone app (`gs26_phone`). */
+    val phoneReachable: StateFlow<Boolean> = _phoneReachable.asStateFlow()
+
     /** Page id currently on screen, reported in `activity` messages. */
     @Volatile var currentPage: String? = null
 
     fun start() {
         dataClient.addListener(this)
+        capabilityClient.addListener(this, Protocol.PHONE_CAPABILITY)
         scope.launch { readCurrentSnapshot() }
+        scope.launch { refreshReachable() }
         send(Protocol.helloMessage())
     }
 
     fun stop() {
         dataClient.removeListener(this)
+        capabilityClient.removeListener(this, Protocol.PHONE_CAPABILITY)
+    }
+
+    override fun onCapabilityChanged(info: CapabilityInfo) {
+        scope.launch { refreshReachable() }
+    }
+
+    private suspend fun refreshReachable() {
+        runCatching {
+            capabilityClient.getCapability(Protocol.PHONE_CAPABILITY, CapabilityClient.FILTER_REACHABLE).await().nodes
+        }.onSuccess { _phoneReachable.value = it.isNotEmpty() }
+            .onFailure { Log.w(TAG, "phone reachability query failed", it) }
     }
 
     fun sendActivity(foreground: Boolean) = send(Protocol.activityMessage(foreground, currentPage))

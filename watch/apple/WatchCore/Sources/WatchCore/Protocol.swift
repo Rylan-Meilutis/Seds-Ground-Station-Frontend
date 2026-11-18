@@ -46,16 +46,20 @@ public enum Level: String, Codable {
 public struct Station: Decodable, Equatable {
     public var name: String
     public var role: String
+    /// `connected`, `connecting`, `reconnecting`, `sign_in` or `offline`.
     public var link: String
+    /// Host[:port] of the phone's station; empty when none is chosen.
+    public var address: String
     public var telemetryAgeMs: Int64?
 
-    enum CodingKeys: String, CodingKey { case name, role, link, telemetryAgeMs = "telemetry_age_ms" }
+    enum CodingKeys: String, CodingKey { case name, role, link, address, telemetryAgeMs = "telemetry_age_ms" }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = c.soft(.name, "")
         role = c.soft(.role, "unknown")
         link = c.soft(.link, "offline")
+        address = c.soft(.address, "")
         telemetryAgeMs = c.softOptional(.telemetryAgeMs)
     }
 }

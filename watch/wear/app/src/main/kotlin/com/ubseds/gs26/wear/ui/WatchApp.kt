@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -32,12 +33,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.currentStateAsState
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.ChipDefaults
 import androidx.wear.compose.material.MaterialTheme
@@ -45,11 +49,15 @@ import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import com.ubseds.gs26.wear.PhoneLink
-import com.ubseds.gs26.wear.core.LinkState
+import com.ubseds.gs26.wear.core.ConnectionStatus
+import com.ubseds.gs26.wear.core.ItemDisplay
 import com.ubseds.gs26.wear.core.Mode
 import com.ubseds.gs26.wear.core.Page
 import com.ubseds.gs26.wear.core.PageKind
+import com.ubseds.gs26.wear.core.StatusLine
+import com.ubseds.gs26.wear.core.StatusTone
 import com.ubseds.gs26.wear.core.WatchState
+import com.ubseds.gs26.wear.core.alertRows
 import kotlinx.coroutines.delay
 
 val Amber = Color(0xFFFFB300)
@@ -59,6 +67,7 @@ val Dim = Color(0xFF9E9E9E)
 @Composable
 fun WatchApp(link: PhoneLink) {
     val state by link.state.collectAsStateWithLifecycle()
+    val phoneReachable by link.phoneReachable.collectAsStateWithLifecycle()
     // One shared tick drives T-clocks, ages and link-loss detection.
     val now by produceState(System.currentTimeMillis()) {
         while (true) {
@@ -68,57 +77,71 @@ fun WatchApp(link: PhoneLink) {
     }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     val watchFix = remember { mutableStateOf<Location?>(null) }
+    val status = ConnectionStatus.of(state.snapshot, state.elapsedMs(now), phoneReachable)
 
     MaterialTheme {
         Scaffold(timeText = { TimeText() }) {
             when {
-                state.snapshot == null -> Message("Open the GS app on your phone")
-                showSettings -> {
+                showSettings && state.snapshot != null -> {
                     BackHandler { showSettings = false }
                     SettingsScreen(state, link, onDone = { showSettings = false })
                 }
-                else -> MainPager(state, now, link, watchFix, onOpenSettings = { showSettings = true })
+                else -> MainPager(state, status, now, link, watchFix, onOpenSettings = { showSettings = true })
             }
         }
     }
 }
 
+/**
+ * Horizontal pages: Status (the landing page), Alerts, the pages chosen in
+ * the watch settings (the cycle page pages vertically), Settings last.
+ */
 @Composable
 private fun MainPager(
     state: WatchState,
+    status: ConnectionStatus,
     now: Long,
     link: PhoneLink,
     watchFix: MutableState<Location?>,
     onOpenSettings: () -> Unit,
 ) {
     val pages = state.pages()
-    val count = pages.size + 1 // final page opens settings
+    val count = FIXED_PAGES + pages.size + 1 // final page opens settings
     val pager = rememberPagerState { count }
     val resumed by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
-    val current: Page? = pages.getOrNull(pager.currentPage)
+    val current: Page? = pages.getOrNull(pager.currentPage - FIXED_PAGES)
+    val currentName = when (pager.currentPage) {
+        0 -> "status"
+        1 -> "alerts"
+        count - 1 -> "settings"
+        else -> current?.id
+    }
 
-    LaunchedEffect(current?.id) {
-        link.currentPage = current?.id ?: "settings"
+    LaunchedEffect(currentName) {
+        link.currentPage = currentName
         link.sendActivity(foreground = true)
     }
 
     Box(Modifier.fillMaxSize()) {
         HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { index ->
-            val page = pages.getOrNull(index)
+            val page = pages.getOrNull(index - FIXED_PAGES)
+            val visible = index == pager.currentPage && resumed.isAtLeast(Lifecycle.State.RESUMED)
             Column(
                 Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onOpenSettings() }) },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Banners(state, now)
+                if (index >= FIXED_PAGES) Banners(state, status)
                 Box(Modifier.fillMaxWidth().weight(1f)) {
-                    when (page?.kind) {
-                        null -> SettingsEntry(onOpenSettings)
-                        PageKind.ITEMS -> ItemsPage(page, state, now)
-                        PageKind.CYCLE -> CyclePage(state, now, onLongPress = onOpenSettings)
-                        PageKind.COMPASS -> CompassPage(
+                    when {
+                        index == 0 -> StatusPage(state, status, now)
+                        index == 1 -> AlertsPage(state, status)
+                        page == null -> SettingsEntry(onOpenSettings, enabled = state.snapshot != null)
+                        page.kind == PageKind.ITEMS -> ItemsPage(page, state, now)
+                        page.kind == PageKind.CYCLE -> CyclePage(state, now, visible, onLongPress = onOpenSettings)
+                        page.kind == PageKind.COMPASS -> CompassPage(
                             state = state,
                             now = now,
-                            visible = index == pager.currentPage && resumed.isAtLeast(Lifecycle.State.RESUMED),
+                            visible = visible,
                             watchFix = watchFix,
                             onLongPress = onOpenSettings,
                         )
@@ -131,17 +154,28 @@ private fun MainPager(
     }
 }
 
-/** DEMO / no-station / link-lost banners shown on every page. */
+/** Status and Alerts come before the configured pages. */
+private const val FIXED_PAGES = 2
+
+fun toneColor(tone: StatusTone): Color = when (tone) {
+    StatusTone.OK -> Color(0xFF66BB6A)
+    StatusTone.WAITING -> Dim
+    StatusTone.WARN -> Amber
+    StatusTone.ALERT -> AlertRed
+}
+
+/** DEMO / station / phone-link banners on the configured pages. */
 @Composable
-private fun Banners(state: WatchState, now: Long) {
-    val snap = state.snapshot ?: return
+private fun Banners(state: WatchState, status: ConnectionStatus) {
     val lines = buildList {
-        when (snap.mode) {
-            Mode.DEMO -> add("DEMO" to Amber)
-            Mode.NO_STATION -> add("Phone not connected to a station" to Amber)
+        val station = status.station
+        if (state.snapshot?.mode == Mode.DEMO) add("DEMO" to Amber)
+        else if (station != null && station.tone != StatusTone.OK) add(station.text to toneColor(station.tone))
+        if (status.phone.tone == StatusTone.WARN || status.phone.tone == StatusTone.ALERT) {
+            add(status.phone.text to toneColor(status.phone.tone))
         }
-        (state.link(now) as? LinkState.Lost)?.let { add(it.text to AlertRed) }
     }
+    if (lines.isEmpty()) return
     Column(
         Modifier.fillMaxWidth().padding(top = 26.dp, start = 28.dp, end = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -154,6 +188,7 @@ private fun Banners(state: WatchState, now: Long) {
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
                 maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(bottom = 2.dp).background(color, RoundedCornerShape(6.dp))
                     .padding(horizontal = 6.dp, vertical = 1.dp),
             )
@@ -161,8 +196,73 @@ private fun Banners(state: WatchState, now: Long) {
     }
 }
 
+/** Landing page: flight state, T-clock, phone link and the phone's station. */
 @Composable
-private fun SettingsEntry(onOpen: () -> Unit) {
+private fun StatusPage(state: WatchState, status: ConnectionStatus, now: Long) {
+    val listState = rememberScalingLazyListState()
+    ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        if (state.snapshot?.mode == Mode.DEMO) item { Text("DEMO", fontSize = 11.sp, color = Amber) }
+        for (id in listOf("flight_state", "t_clock")) {
+            if (state.snapshot?.items?.containsKey(id) == true) item { StatusItem(state.item(id, now)) }
+        }
+        item { StatusText(status.phone) }
+        status.station?.let { item { StatusText(it) } }
+        if (status.openPhoneApp && status.phone.text != ConnectionStatus.OPEN_PHONE_APP) {
+            item { Text(ConnectionStatus.OPEN_PHONE_APP, fontSize = 11.sp, color = Dim, textAlign = TextAlign.Center) }
+        }
+    }
+}
+
+@Composable
+private fun StatusItem(item: ItemDisplay) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(item.label, fontSize = 11.sp, color = Dim, maxLines = 1)
+        Text(
+            item.text,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = levelColor(item.level),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun StatusText(line: StatusLine) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Spacer(Modifier.size(6.dp).background(toneColor(line.tone), CircleShape))
+        Spacer(Modifier.width(6.dp))
+        Text(line.text, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Items the phone flags at warn or alert level, plus link problems. */
+@Composable
+private fun AlertsPage(state: WatchState, status: ConnectionStatus) {
+    val rows = alertRows(state.snapshot)
+    val listState = rememberScalingLazyListState()
+    ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        item { Text("Alerts", style = MaterialTheme.typography.caption1, color = Dim) }
+        if (status.phone.tone == StatusTone.WARN || status.phone.tone == StatusTone.ALERT) item { StatusText(status.phone) }
+        status.station?.takeIf { it.tone == StatusTone.WARN || it.tone == StatusTone.ALERT }?.let { item { StatusText(it) } }
+        items(rows.size) { i ->
+            val row = rows[i]
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(row.label, fontSize = 11.sp, color = Dim, maxLines = 1)
+                Text(row.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = levelColor(row.level), maxLines = 1)
+            }
+        }
+        if (rows.isEmpty()) {
+            item {
+                Text(if (state.snapshot == null) "No data from the phone yet" else "No alerts", fontSize = 12.sp, color = Dim)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsEntry(onOpen: () -> Unit, enabled: Boolean) {
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp),
         verticalArrangement = Arrangement.Center,
@@ -170,6 +270,7 @@ private fun SettingsEntry(onOpen: () -> Unit) {
     ) {
         Chip(
             onClick = onOpen,
+            enabled = enabled,
             label = { Text("Settings") },
             colors = ChipDefaults.secondaryChipColors(),
             modifier = Modifier.fillMaxWidth(),
@@ -180,7 +281,7 @@ private fun SettingsEntry(onOpen: () -> Unit) {
 @Composable
 fun Message(text: String) {
     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-        Text(text, textAlign = TextAlign.Center, style = MaterialTheme.typography.title3)
+        Text(text, textAlign = TextAlign.Center, style = MaterialTheme.typography.body2)
     }
 }
 
