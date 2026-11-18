@@ -316,11 +316,13 @@ The build helper owns iOS packaging after `dx bundle`:
 - `python3 build.py ios` creates a distribution-signed IPA
 - `python3 build.py ios_dist_sign [existing]` signs an existing app bundle as a distribution IPA
 - `python3 build.py ios_deploy [debug] [existing]` uses development signing for connected-device install
+- `python3 build.py watchos_deploy [debug] [existing]` does the same with the Apple Watch app embedded and installs it on the paired watch (see "Deploy to a watch for testing")
 - `python3 build.py ios_sign [debug] [existing]` signs an existing app bundle with development signing
 
 Provisioning profile defaults are intentionally separate:
 
 - development/device deploy: `Groundstation_dev.mobileprovision`, or `IOS_DEVELOPMENT_MOBILEPROVISION=/path/to/profile.mobileprovision`
+- Apple Watch app development (`watchos_deploy`): `Groundstation_watch_dev.mobileprovision`, or `IOS_WATCH_DEVELOPMENT_MOBILEPROVISION=/path/to/profile.mobileprovision`
 - distribution/TestFlight/App Store style package: `UBSEDS_GroundStation.mobileprovision`, or `IOS_DISTRIBUTION_MOBILEPROVISION=/path/to/profile.mobileprovision`
 
 Distribution signing requires an `Apple Distribution:` identity that matches the distribution profile. Development signing requires an `Apple Development:` identity and a provisioning profile with provisioned devices.
@@ -528,6 +530,26 @@ with the phone app's key (`ANDROID_KEYSTORE_PATH`, `ANDROID_KEY_ALIAS`,
 Layer only pairs apps signed with the same key. `--final` is not supported for
 watch targets yet. `all` includes `watchos` and `wearos`; `sims` includes the
 three watch simulator targets. See `docs/watch-companion.md`.
+
+#### Deploy to a watch for testing
+
+```sh
+python3 build.py watchos_deploy [debug] [existing] [watch=<name|udid|skip>] [phone=<udid>]
+python3 build.py watchos_sim_deploy [debug] [existing]
+python3 build.py wearos_deploy [debug] [existing] [serial=<ip:port>]
+python3 build.py wearos_sim_deploy [debug] [existing] [serial=emulator-5554]
+```
+
+`watchos_deploy` builds the iOS app with the watch app embedded, dev-signs both,
+installs the phone app with `ios-deploy` and the watch app on the paired watch
+with `xcrun devicectl`. It needs Xcode 15+, `ios-deploy`, the iOS development
+profile above plus a watch development profile for `com.UBSEDS.GS26.watchkitapp`
+(`Groundstation_watch_dev.mobileprovision`, `IOS_WATCH_DEVELOPMENT_MOBILEPROVISION`,
+or an installed Xcode-managed profile) listing the watch's UDID, Developer Mode
+on the watch, and the watch unlocked and on its charger. `watchos_sim_deploy`
+finds or creates a paired iPhone + Apple Watch simulator. The Wear OS actions
+use `adb` (a watch over Wi-Fi debugging, or a running Wear OS emulator). Details
+and troubleshooting: `docs/watch-companion.md`, "Deploy to a watch for testing".
 
 Docker provides reproducible web, Linux x86-64/ARM64 and Android builders using `Dockerfile.builder`. Web builds use the host architecture because their Wasm output is architecture independent. Docker Buildx and cross-architecture emulation are required when the builder architecture differs from the host. Native macOS/iOS targets require macOS and Xcode; Windows requires a Windows worker with MSVC/WebView2 tooling. Those targets use the native worker even with `--docker`; unsupported host targets fail explicitly, so `all` across every OS requires the corresponding workers. `--no-sign` leaves iOS as an unsigned app bundle. `--docker-image` selects an existing compatible Linux/Android builder. Signing credentials are not copied into images.
 

@@ -54,9 +54,12 @@ documented example snapshot and unknown page kinds. In Xcode, open
   `Info.plist` sets `WKCompanionAppBundleIdentifier` to exactly that, and its
   own bundle id is `com.UBSEDS.GS26.watchkitapp`. Both apps must be signed by
   the same team or WatchConnectivity will not pair them.
-* **Development:** install the phone app with the repo's usual
-  `python3 build.py ios`, then install the watch app from Xcode directly
-  onto the paired watch (step 5 above). If the watch keeps showing
+* **Development:** `python3 build.py watchos_deploy` dev-signs the phone
+  app with the watch app embedded, installs it on the iPhone and the watch
+  app on the paired watch (`watchos_sim_deploy` for simulators; see
+  `docs/watch-companion.md`, "Deploy to a watch for testing"). Or install
+  the phone app with `python3 build.py ios_deploy` and the watch app from
+  Xcode directly onto the paired watch (step 5 above). If the watch keeps showing
   "Open the GS app on your iPhone" while the phone app is open, check that
   both are signed by the same team and that the phone app was reinstalled
   after the watch app (`WCSession.isWatchAppInstalled` is evaluated by the

@@ -183,3 +183,94 @@ with the watch app embedded; macOS) and `wearos`, `wearos_sim` (Wear OS APK);
 see the README's "Watch companion targets". Manual builds: `watch/apple/README.md`
 (macOS + Xcode) and `watch/wear/README.md` (Gradle). Phone-side Rust is covered
 by the normal test commands.
+
+## Deploy to a watch for testing
+
+`build.py` builds, signs, installs and launches the companions for testing.
+Each action builds first; add `existing` to reuse the last build and `debug`
+for a debug build.
+
+| Command | Installs on |
+| --- | --- |
+| `python3 build.py watchos_deploy` | connected iPhone (phone app) + its paired Apple Watch |
+| `python3 build.py watchos_sim_deploy` | an iPhone + Apple Watch simulator pair |
+| `python3 build.py wearos_deploy` | a Wear OS watch connected over adb |
+| `python3 build.py wearos_sim_deploy` | a running Wear OS emulator |
+
+### Apple Watch
+
+Prerequisites (macOS):
+
+* Xcode 15 or newer with the watchOS platform installed, selected with
+  `sudo xcode-select -s /Applications/Xcode.app`; `brew install xcodegen ios-deploy`.
+* Two **development** profiles from the same team with the same
+  `Apple Development:` certificate in the login keychain:
+  * iOS app `com.UBSEDS.GS26`: `Groundstation_dev.mobileprovision` in the
+    frontend directory, `IOS_DEVELOPMENT_MOBILEPROVISION=...`, or an installed
+    Xcode-managed profile;
+  * watch app `com.UBSEDS.GS26.watchkitapp`:
+    `Groundstation_watch_dev.mobileprovision`,
+    `IOS_WATCH_DEVELOPMENT_MOBILEPROVISION=...`, or an installed Xcode-managed
+    profile.
+
+  Both must list the device UDIDs (iPhone and watch). Distribution profiles are
+  refused.
+* Developer Mode on the iPhone and on the watch (watch: Settings › Privacy &
+  Security › Developer Mode; the switch appears after Xcode has seen the
+  watch once in Window › Devices and Simulators).
+* iPhone connected to the Mac (USB or the same Wi-Fi) and trusted; the watch
+  paired with it, **unlocked and on its charger** next to it.
+
+```sh
+python3 build.py watchos_deploy                       # one watch visible to Xcode
+python3 build.py watchos_deploy watch="Rylan's Apple Watch" phone=<iPhone UDID>
+python3 build.py watchos_deploy watch=skip            # phone install only, then Watch app › Install
+```
+
+Steps: list the watch with `xcrun devicectl list devices` (fails early if none
+is visible or Developer Mode is off; `watch=<name|UDID|identifier>` picks one
+of several), check both profiles, build the iOS app and the watch app, check
+the watch bundle id (`com.UBSEDS.GS26.watchkitapp`, companion
+`com.UBSEDS.GS26`), sign the watch app and then the iOS app, install the
+phone app with `ios-deploy`, install the watch app with
+`xcrun devicectl device install app --device <watch> GS26.app/Watch/GS26Watch.app`
+and launch it. If the direct watch install fails, the script prints the
+fallback: Watch app on the iPhone › My Watch › Available Apps › Install (or
+turn on General › Automatic App Install).
+
+`watchos_sim_deploy` builds `watchos_sim` on Apple silicon or
+`watchos_sim_intel` on Intel, picks a pair from `xcrun simctl list pairs`
+(already booted first) or creates "GS26 iPhone" + "GS26 Apple Watch" with the
+newest iOS and watchOS runtimes and pairs them, boots both, installs the phone
+app and the watch app with `simctl install` and launches both.
+
+### Wear OS
+
+Prerequisites: Android SDK platform-tools (`adb`) found through
+`ANDROID_HOME`/`ANDROID_SDK_ROOT` (or `~/Library/Android/sdk`,
+`~/Android/Sdk`), JDK 17/21. The device is picked from `adb devices` by
+`ro.build.characteristics` containing `watch`; `serial=<serial>` chooses one
+of several. The APK is installed with the same fallbacks as `android_install`
+(streamed, no-streaming, push + `pm install`) and then launched.
+
+Physical watch over Wi-Fi debugging:
+
+1. Watch: Settings › System › About › Versions, tap Build number 7 times.
+2. Settings › Developer options: ADB debugging and Wireless debugging on (watch
+   and computer on the same Wi-Fi).
+3. Wireless debugging › Pair new device: `adb pair <ip>:<pairing-port>` and
+   enter the code.
+4. `adb connect <ip>:<port>` (the address on the Wireless debugging screen).
+5. `python3 build.py wearos_deploy debug` (add `serial=<ip>:<port>` if several
+   devices are connected).
+
+Emulator: start a Wear OS AVD (Android Studio › Device Manager, or
+`emulator -avd <name>`), then `python3 build.py wearos_sim_deploy debug`. If no
+Wear emulator is running the script lists the Wear AVDs it found. To see live
+data, pair the emulator with a phone (emulator or device) running the phone app
+with Android Studio's Wear OS pairing assistant.
+
+The Data Layer only connects apps signed with the same key: deploy the phone app
+and the watch app both as debug or both as release. A release Wear APK needs
+the phone's `ANDROID_KEYSTORE_PATH`/`ANDROID_KEY_ALIAS`/`ANDROID_KEYSTORE_PASSWORD`;
+without them the deploy stops and asks for `debug`.
