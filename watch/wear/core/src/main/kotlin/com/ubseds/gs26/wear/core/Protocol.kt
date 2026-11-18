@@ -79,8 +79,41 @@ data class Snapshot(
     val targets: List<Target> = emptyList(),
     val settings: WatchSettings = WatchSettings(),
     val catalog: Catalog = Catalog(),
+    /** Enable state of the page actions. */
+    val actions: Map<String, ActionState> = emptyMap(),
+    /** `phone` (relayed by the phone app) or `direct` (read from the station). */
+    val source: String = "phone",
     @SerialName("link_timeout_s") val linkTimeoutS: Long = 15,
-)
+) {
+    /**
+     * A status read from the station itself (`GET /api/watch/status`), shown
+     * with the pages, settings and catalog of the phone's last snapshot.
+     * [address] is the host the watch used.
+     */
+    fun mergedDirect(base: Snapshot?, address: String): Snapshot = copy(
+        source = "direct",
+        pages = base?.pages.orEmpty(),
+        settings = base?.settings ?: WatchSettings(),
+        catalog = base?.catalog ?: Catalog(),
+        account = base?.account,
+        station = station?.let { if (it.address.isEmpty()) it.copy(address = address) else it },
+    )
+}
+
+/** An opt-in action button on a page (at most two per page). */
+@Serializable
+data class PageAction(
+    val cmd: String,
+    val label: String = "",
+    /** Abort: one tap plus confirm, never disabled on the watch. */
+    val abort: Boolean = false,
+) {
+    val title: String get() = label.ifBlank { cmd }
+}
+
+/** The station's enable state for one page action. */
+@Serializable
+data class ActionState(val enabled: Boolean = false, val reason: String? = null)
 
 @Serializable
 data class Station(
@@ -147,6 +180,7 @@ data class Page(
     val kind: String = "",
     val title: String = "",
     val items: List<String> = emptyList(),
+    val actions: List<PageAction> = emptyList(),
 )
 
 @Serializable

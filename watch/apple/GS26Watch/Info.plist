@@ -20,6 +20,13 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- Direct link: stations are reached at whatever address the phone uses,
+		     often plain HTTP on a LAN or a self-signed HTTPS certificate. -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>The recovery compass uses your watch's position to show the distance and direction to the rocket and stations.</string>
 	<key>WKApplication</key>

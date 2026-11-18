@@ -55,6 +55,10 @@ pub struct Inputs<'a> {
     /// when antenna status is unavailable: `(lat, lon, alt, received_ms)`.
     pub rocket_from_telemetry: Option<(f64, f64, Option<f64>, i64)>,
     pub settings: &'a WatchSettings,
+    /// The GS's watch action list for this account; empty shows no actions.
+    pub catalog: &'a [super::actions::CatalogAction],
+    /// Live action policy for the page actions' enable state.
+    pub policy: Option<&'a crate::telemetry_dashboard::ActionPolicyMsg>,
 }
 
 pub const LINK_TIMEOUT_S: u64 = 15;
@@ -285,6 +289,8 @@ pub fn targets(input: &Inputs<'_>) -> Vec<Target> {
 
 pub fn build(input: &Inputs<'_>) -> Snapshot {
     let targets = targets(input);
+    let pages = resolved_pages(input.settings, input.catalog);
+    let actions = super::actions::states(&pages, input.policy);
     let rocket = targets.iter().find(|t| t.id == "rocket");
     let items: BTreeMap<_, _> = registry::ITEMS
         .iter()
@@ -297,10 +303,11 @@ pub fn build(input: &Inputs<'_>) -> Snapshot {
         station: input.station.clone(),
         account: input.account.clone(),
         items,
-        pages: resolved_pages(input.settings),
+        pages: pages.clone(),
         targets,
         settings: input.settings.clone(),
         catalog: catalog(),
+        actions,
         link_timeout_s: LINK_TIMEOUT_S,
     }
 }
@@ -347,6 +354,8 @@ pub fn demo(seq: u64, now_ms: i64, settings: &WatchSettings, account: Account) -
         antenna: None,
         rocket_from_telemetry: None,
         settings,
+        catalog: &[],
+        policy: None,
     };
     let mut snapshot = build(&input);
     let offsets = [
@@ -414,6 +423,78 @@ mod tests {
             antenna,
             rocket_from_telemetry: None,
             settings,
+            catalog: &[],
+            policy: None,
+        }
+    }
+
+    /// GroundStation26 `watch.rs` builds `/api/watch/status` from a mirror
+    /// of this registry; its `status_matches_phone_snapshot_content` test
+    /// uses these same inputs and expects these same values.
+    #[test]
+    fn direct_status_matches_gs_builder() {
+        let telemetry = |dt: &str, _: Option<&str>, i: usize| match (dt, i) {
+            ("DESCENT_STATE", 2) => Some((1234.4, 99_800)),
+            ("DESCENT_STATE", 3) => Some((-6.15, 99_800)),
+            ("FUEL_TANK_PRESSURE", 0) => Some((812.0, 50_000)),
+            _ => None,
+        };
+        let settings = WatchSettings::default();
+        let s = build(&input(&settings, &telemetry, None));
+        let text = |id: &str| s.items[id].text.clone();
+        assert_eq!(text("altitude"), "1234");
+        assert_eq!(text("velocity"), "-6.2");
+        assert_eq!(text("tank_pressure"), "812");
+        assert!(s.items["tank_pressure"].stale && s.items["tank_pressure"].level == Level::Warn);
+        assert_eq!(text("t_clock"), "T+ 01:23");
+        assert_eq!(text("flight_state"), "In flight · Descent");
+        assert_eq!(text("boards"), "5/6");
+        assert_eq!(text("station_link"), "OK · 0s");
+        assert_eq!(text("gps_sats"), "--");
+        // Same ids, in the same order, as the GS mirror and the vectors.
+        let raw = include_str!("../../../watch/test-vectors.json");
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let ids: Vec<&str> = v["direct_status"]["item_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i.as_str().unwrap())
+            .collect();
+        assert_eq!(ids, registry::ITEMS.iter().map(|i| i.id).collect::<Vec<_>>());
+    }
+
+    /// `page_layout` vectors: the pages the watch renders from settings are
+    /// the pages the phone publishes for the same settings and permitted
+    /// actions.
+    #[test]
+    fn page_layout_vectors_match_published_pages() {
+        let raw = include_str!("../../../watch/test-vectors.json");
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+        for case in v["page_layout"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let settings = WatchSettings::from_value(case["settings"].clone()).unwrap();
+            let catalog: Vec<super::super::actions::CatalogAction> = case["published"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|p| p["actions"].as_array().cloned().unwrap_or_default())
+                .map(|a| super::super::actions::CatalogAction {
+                    cmd: a["cmd"].as_str().unwrap().into(),
+                    label: a["label"].as_str().unwrap().into(),
+                    ..Default::default()
+                })
+                .collect();
+            let pages = resolved_pages(&settings, &catalog);
+            let got: Vec<serde_json::Value> = pages
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "id": p.id, "kind": p.kind, "items": p.items,
+                        "actions": p.actions.iter().map(|a| a.cmd.clone()).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            assert_eq!(serde_json::Value::Array(got), case["expect"], "{name}");
         }
     }
 

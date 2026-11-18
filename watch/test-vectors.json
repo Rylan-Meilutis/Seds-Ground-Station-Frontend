@@ -317,7 +317,8 @@
     "tone": "alert"
    },
    "station": null,
-   "open_phone_app": true
+   "open_phone_app": true,
+   "direct": null
   },
   {
    "name": "never_received_reachable",
@@ -329,7 +330,8 @@
     "tone": "waiting"
    },
    "station": null,
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "connecting_with_address",
@@ -344,14 +346,15 @@
    "age_ms": 2000,
    "reachable": true,
    "phone": {
-    "text": "Phone connected · updated 2s ago",
+    "text": "Via phone · updated 2s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Connecting to gs.local:3000…",
     "tone": "waiting"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "connecting_without_address",
@@ -366,14 +369,15 @@
    "age_ms": 0,
    "reachable": false,
    "phone": {
-    "text": "Phone connected · updated 0s ago",
+    "text": "Via phone · updated 0s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Connecting to the station…",
     "tone": "waiting"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "connected_by_name",
@@ -388,14 +392,15 @@
    "age_ms": 1000,
    "reachable": true,
    "phone": {
-    "text": "Phone connected · updated 1s ago",
+    "text": "Via phone · updated 1s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Connected to GroundStation",
     "tone": "ok"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "connected_by_address",
@@ -410,14 +415,15 @@
    "age_ms": 1000,
    "reachable": true,
    "phone": {
-    "text": "Phone connected · updated 1s ago",
+    "text": "Via phone · updated 1s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Connected to 10.0.0.5:3000",
     "tone": "ok"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "reconnecting",
@@ -432,14 +438,15 @@
    "age_ms": 3000,
    "reachable": true,
    "phone": {
-    "text": "Phone connected · updated 3s ago",
+    "text": "Via phone · updated 3s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Reconnecting to GroundStation…",
     "tone": "warn"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "sign_in",
@@ -454,14 +461,15 @@
    "age_ms": 0,
    "reachable": true,
    "phone": {
-    "text": "Phone connected · updated 0s ago",
+    "text": "Via phone · updated 0s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Sign in on the phone (gs.local:3000)",
     "tone": "warn"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "unreachable_station",
@@ -476,14 +484,15 @@
    "age_ms": 0,
    "reachable": true,
    "phone": {
-    "text": "Phone connected · updated 0s ago",
+    "text": "Via phone · updated 0s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Can't reach gs.local:3000",
     "tone": "alert"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "choosing_station",
@@ -498,14 +507,15 @@
    "age_ms": 0,
    "reachable": true,
    "phone": {
-    "text": "Phone connected · updated 0s ago",
+    "text": "Via phone · updated 0s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Phone not connected to a station",
     "tone": "warn"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "demo",
@@ -520,14 +530,15 @@
    "age_ms": 0,
    "reachable": true,
    "phone": {
-    "text": "Phone connected · updated 0s ago",
+    "text": "Via phone · updated 0s ago",
     "tone": "ok"
    },
    "station": {
     "text": "Demo data (offline preview)",
     "tone": "warn"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "stale_but_reachable",
@@ -549,7 +560,8 @@
     "text": "Connected to GroundStation",
     "tone": "ok"
    },
-   "open_phone_app": false
+   "open_phone_app": false,
+   "direct": null
   },
   {
    "name": "stale_and_unreachable",
@@ -571,7 +583,169 @@
     "text": "Connected to GroundStation",
     "tone": "ok"
    },
+   "open_phone_app": true,
+   "direct": null
+  },
+  {
+   "name": "direct_fresh",
+   "route": "direct",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "connected",
+     "address": ""
+    }
+   },
+   "age_ms": 2000,
+   "reachable": false,
+   "direct_configured": true,
+   "direct_polling": true,
+   "direct_error": null,
+   "phone": {
+    "text": "Direct to GS · updated 2s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Connected to GroundStation",
+    "tone": "ok"
+   },
+   "direct": null,
+   "open_phone_app": false
+  },
+  {
+   "name": "direct_lost_with_error",
+   "route": "direct",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "connected",
+     "address": ""
+    }
+   },
+   "age_ms": 20000,
+   "reachable": false,
+   "direct_configured": true,
+   "direct_polling": true,
+   "direct_error": "timed out",
+   "phone": {
+    "text": "Direct to GS · last update 20s ago",
+    "tone": "alert"
+   },
+   "station": {
+    "text": "Connected to GroundStation",
+    "tone": "ok"
+   },
+   "direct": {
+    "text": "Can't reach GS directly: timed out",
+    "tone": "alert"
+   },
    "open_phone_app": true
+  },
+  {
+   "name": "phone_lost_contacting_gs",
+   "route": "phone",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "connected",
+     "address": ""
+    }
+   },
+   "age_ms": 16000,
+   "reachable": false,
+   "direct_configured": true,
+   "direct_polling": true,
+   "direct_error": null,
+   "phone": {
+    "text": "Phone not reachable · last update 16s ago",
+    "tone": "alert"
+   },
+   "station": {
+    "text": "Connected to GroundStation",
+    "tone": "ok"
+   },
+   "direct": {
+    "text": "Contacting GS directly…",
+    "tone": "waiting"
+   },
+   "open_phone_app": true
+  },
+  {
+   "name": "phone_fresh_direct_idle",
+   "route": "phone",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "connected",
+     "address": ""
+    }
+   },
+   "age_ms": 1000,
+   "reachable": true,
+   "direct_configured": true,
+   "direct_polling": false,
+   "direct_error": null,
+   "phone": {
+    "text": "Via phone · updated 1s ago",
+    "tone": "ok"
+   },
+   "station": {
+    "text": "Connected to GroundStation",
+    "tone": "ok"
+   },
+   "direct": null,
+   "open_phone_app": false
+  },
+  {
+   "name": "nothing_yet_direct_failing",
+   "route": "none",
+   "snapshot": null,
+   "age_ms": 0,
+   "reachable": false,
+   "direct_configured": true,
+   "direct_polling": true,
+   "direct_error": "HTTP 401",
+   "phone": {
+    "text": "Open the GS app on your phone",
+    "tone": "alert"
+   },
+   "station": null,
+   "direct": {
+    "text": "Can't reach GS directly: HTTP 401",
+    "tone": "alert"
+   },
+   "open_phone_app": true
+  },
+  {
+   "name": "phone_lost_direct_not_set_up",
+   "route": "phone",
+   "snapshot": {
+    "mode": "live",
+    "station": {
+     "name": "GroundStation",
+     "link": "connected",
+     "address": ""
+    }
+   },
+   "age_ms": 16000,
+   "reachable": true,
+   "direct_configured": false,
+   "direct_polling": false,
+   "direct_error": null,
+   "phone": {
+    "text": "Phone reachable · no update for 16s",
+    "tone": "warn"
+   },
+   "station": {
+    "text": "Connected to GroundStation",
+    "tone": "ok"
+   },
+   "direct": null,
+   "open_phone_app": false
   }
  ],
  "auto_cycle": [
@@ -770,5 +944,1222 @@
    },
    "expect": []
   }
- ]
+ ],
+ "_comment_direct": "Direct link. connection_status: optional route (phone|direct|none, default phone), direct_configured, direct_polling, direct_error; the snapshot is the route's (direct: merged with the phone's pages), direct = the direct-link line or null. link_route: phone fresh = phone snapshot age <= fresh_ms and mode != no_station; route phone when fresh, else direct when its age <= fresh_ms, else the newer of the two, else none; poll = foreground && configured && !phone fresh. action_outcome: HTTP status/body/network error of POST /api/command -> accepted|refused|unknown and the text shown. action_button: what a page action button shows. page_layout: pages the watch renders from settings (items, at most 2 actions per page truncated first, then only actions the phone published on any page). provision: phone -> watch direct-link message. direct_status.item_ids: GS /api/watch/status items (GS watch.rs mirrors the phone registry).",
+ "link_route": [
+  {
+   "name": "phone_fresh",
+   "phone": {
+    "mode": "live",
+    "age_ms": 1000
+   },
+   "direct_age_ms": null,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "phone",
+   "poll": false
+  },
+  {
+   "name": "phone_fresh_beats_fresher_direct",
+   "phone": {
+    "mode": "live",
+    "age_ms": 5000
+   },
+   "direct_age_ms": 100,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "phone",
+   "poll": false
+  },
+  {
+   "name": "phone_suspended_direct_fresh",
+   "phone": {
+    "mode": "live",
+    "age_ms": 40000
+   },
+   "direct_age_ms": 2000,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "direct",
+   "poll": true
+  },
+  {
+   "name": "phone_without_station_direct_fresh",
+   "phone": {
+    "mode": "no_station",
+    "age_ms": 500
+   },
+   "direct_age_ms": 1000,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "direct",
+   "poll": true
+  },
+  {
+   "name": "phone_without_station_no_direct",
+   "phone": {
+    "mode": "no_station",
+    "age_ms": 500
+   },
+   "direct_age_ms": null,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "phone",
+   "poll": true
+  },
+  {
+   "name": "both_stale_direct_newer",
+   "phone": {
+    "mode": "live",
+    "age_ms": 60000
+   },
+   "direct_age_ms": 30000,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "direct",
+   "poll": true
+  },
+  {
+   "name": "both_stale_phone_newer",
+   "phone": {
+    "mode": "live",
+    "age_ms": 20000
+   },
+   "direct_age_ms": 30000,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "phone",
+   "poll": true
+  },
+  {
+   "name": "only_direct",
+   "phone": null,
+   "direct_age_ms": 3000,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "direct",
+   "poll": true
+  },
+  {
+   "name": "nothing",
+   "phone": null,
+   "direct_age_ms": null,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "none",
+   "poll": true
+  },
+  {
+   "name": "not_configured_never_polls",
+   "phone": {
+    "mode": "live",
+    "age_ms": 60000
+   },
+   "direct_age_ms": null,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": false,
+   "route": "phone",
+   "poll": false
+  },
+  {
+   "name": "background_never_polls",
+   "phone": {
+    "mode": "live",
+    "age_ms": 60000
+   },
+   "direct_age_ms": 5000,
+   "fresh_ms": 6000,
+   "foreground": false,
+   "configured": true,
+   "route": "direct",
+   "poll": false
+  },
+  {
+   "name": "fresh_boundary_inclusive",
+   "phone": {
+    "mode": "demo",
+    "age_ms": 6000
+   },
+   "direct_age_ms": 1,
+   "fresh_ms": 6000,
+   "foreground": true,
+   "configured": true,
+   "route": "phone",
+   "poll": false
+  }
+ ],
+ "action_outcome": [
+  {
+   "name": "accepted_with_message",
+   "status": 202,
+   "body": "manual Abort intent retained; board readback required",
+   "error": null,
+   "kind": "accepted",
+   "text": "Accepted: manual Abort intent retained; board readback required"
+  },
+  {
+   "name": "accepted_plain",
+   "status": 200,
+   "body": "  ",
+   "error": null,
+   "kind": "accepted",
+   "text": "Accepted"
+  },
+  {
+   "name": "refused_by_policy",
+   "status": 409,
+   "body": "Dump: Fill in progress.",
+   "error": null,
+   "kind": "refused",
+   "text": "Refused: Dump: Fill in progress."
+  },
+  {
+   "name": "refused_not_in_token",
+   "status": 403,
+   "body": "command not allowed",
+   "error": null,
+   "kind": "refused",
+   "text": "Refused: command not allowed"
+  },
+  {
+   "name": "refused_empty_body",
+   "status": 400,
+   "body": "",
+   "error": null,
+   "kind": "refused",
+   "text": "Refused (HTTP 400)"
+  },
+  {
+   "name": "token_rejected",
+   "status": 401,
+   "body": "invalid or revoked watch token",
+   "error": null,
+   "kind": "refused",
+   "text": "Refused: the watch token was not accepted. Open the GS app on the phone."
+  },
+  {
+   "name": "server_error_unknown",
+   "status": 503,
+   "body": "Control ingress is closed",
+   "error": null,
+   "kind": "unknown",
+   "text": "Outcome unknown (HTTP 503). Check the station."
+  },
+  {
+   "name": "timeout_unknown",
+   "status": null,
+   "body": "",
+   "error": "timed out",
+   "kind": "unknown",
+   "text": "Outcome unknown: timed out. Check the station."
+  },
+  {
+   "name": "too_many_requests_unknown",
+   "status": 429,
+   "body": "",
+   "error": null,
+   "kind": "unknown",
+   "text": "Outcome unknown (HTTP 429). Check the station."
+  },
+  {
+   "name": "long_body_truncated",
+   "status": 409,
+   "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "error": null,
+   "kind": "refused",
+   "text": "Refused: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+ ],
+ "action_button": [
+  {
+   "name": "enabled",
+   "abort": false,
+   "enabled": true,
+   "reason": null,
+   "fresh": true,
+   "token": true,
+   "expect": {
+    "enabled": true,
+    "note": null,
+    "confirm": "hold"
+   }
+  },
+  {
+   "name": "policy_disabled_shows_reason",
+   "abort": false,
+   "enabled": false,
+   "reason": "Fill in progress.",
+   "fresh": true,
+   "token": true,
+   "expect": {
+    "enabled": false,
+    "note": "Fill in progress.",
+    "confirm": "hold"
+   }
+  },
+  {
+   "name": "policy_disabled_without_reason",
+   "abort": false,
+   "enabled": false,
+   "reason": null,
+   "fresh": true,
+   "token": true,
+   "expect": {
+    "enabled": false,
+    "note": "Disabled by the station",
+    "confirm": "hold"
+   }
+  },
+  {
+   "name": "stale_data_disables",
+   "abort": false,
+   "enabled": true,
+   "reason": null,
+   "fresh": false,
+   "token": true,
+   "expect": {
+    "enabled": false,
+    "note": "No fresh station data",
+    "confirm": "hold"
+   }
+  },
+  {
+   "name": "abort_always_pressable",
+   "abort": true,
+   "enabled": false,
+   "reason": "Software controls are disabled by GroundStation.",
+   "fresh": false,
+   "token": true,
+   "expect": {
+    "enabled": true,
+    "note": "Software controls are disabled by GroundStation.",
+    "confirm": "tap"
+   }
+  },
+  {
+   "name": "no_token",
+   "abort": true,
+   "enabled": true,
+   "reason": null,
+   "fresh": true,
+   "token": false,
+   "expect": {
+    "enabled": false,
+    "note": "Direct link not set up on the phone",
+    "confirm": "tap"
+   }
+  }
+ ],
+ "page_layout": [
+  {
+   "name": "v1_document_keeps_current_layout",
+   "settings": {
+    "version": 1,
+    "pages": [
+     {
+      "id": "flight",
+      "enabled": true
+     },
+     {
+      "id": "propulsion",
+      "enabled": true
+     },
+     {
+      "id": "trajectory",
+      "enabled": true
+     },
+     {
+      "id": "health",
+      "enabled": true
+     },
+     {
+      "id": "cycle",
+      "enabled": true
+     },
+     {
+      "id": "compass",
+      "enabled": true
+     }
+    ]
+   },
+   "catalog_pages": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "title": "Flight",
+     "items": [
+      "flight_state",
+      "t_clock",
+      "altitude",
+      "velocity"
+     ]
+    },
+    {
+     "id": "propulsion",
+     "kind": "items",
+     "title": "Propulsion",
+     "items": [
+      "tank_pressure",
+      "chamber_pressure",
+      "loadcell_mass",
+      "fill_percent"
+     ]
+    },
+    {
+     "id": "trajectory",
+     "kind": "items",
+     "title": "Trajectory",
+     "items": [
+      "altitude",
+      "velocity",
+      "gps_altitude",
+      "gps_sats"
+     ]
+    },
+    {
+     "id": "health",
+     "kind": "items",
+     "title": "Health",
+     "items": [
+      "station_link",
+      "boards",
+      "av_battery",
+      "rocket_fix_age"
+     ]
+    },
+    {
+     "id": "cycle",
+     "kind": "cycle",
+     "title": "Cycle",
+     "items": []
+    },
+    {
+     "id": "compass",
+     "kind": "compass",
+     "title": "Recovery",
+     "items": []
+    }
+   ],
+   "published": [],
+   "expect": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "items": [
+      "flight_state",
+      "t_clock",
+      "altitude",
+      "velocity"
+     ],
+     "actions": []
+    },
+    {
+     "id": "propulsion",
+     "kind": "items",
+     "items": [
+      "tank_pressure",
+      "chamber_pressure",
+      "loadcell_mass",
+      "fill_percent"
+     ],
+     "actions": []
+    },
+    {
+     "id": "trajectory",
+     "kind": "items",
+     "items": [
+      "altitude",
+      "velocity",
+      "gps_altitude",
+      "gps_sats"
+     ],
+     "actions": []
+    },
+    {
+     "id": "health",
+     "kind": "items",
+     "items": [
+      "station_link",
+      "boards",
+      "av_battery",
+      "rocket_fix_age"
+     ],
+     "actions": []
+    },
+    {
+     "id": "cycle",
+     "kind": "cycle",
+     "items": [],
+     "actions": []
+    },
+    {
+     "id": "compass",
+     "kind": "compass",
+     "items": [],
+     "actions": []
+    }
+   ]
+  },
+  {
+   "name": "custom_rows_order_and_permitted_actions",
+   "settings": {
+    "version": 2,
+    "pages": [
+     {
+      "id": "compass",
+      "enabled": true
+     },
+     {
+      "id": "flight",
+      "enabled": true,
+      "items": [
+       "altitude",
+       "tank_pressure"
+      ],
+      "actions": [
+       "Abort",
+       "Dump"
+      ]
+     },
+     {
+      "id": "propulsion",
+      "enabled": false
+     },
+     {
+      "id": "trajectory",
+      "enabled": true
+     },
+     {
+      "id": "health",
+      "enabled": true,
+      "actions": [
+       "StartWritingNow"
+      ]
+     },
+     {
+      "id": "cycle",
+      "enabled": true,
+      "actions": [
+       "Dump"
+      ]
+     }
+    ]
+   },
+   "catalog_pages": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "title": "Flight",
+     "items": [
+      "flight_state",
+      "t_clock",
+      "altitude",
+      "velocity"
+     ]
+    },
+    {
+     "id": "propulsion",
+     "kind": "items",
+     "title": "Propulsion",
+     "items": [
+      "tank_pressure",
+      "chamber_pressure",
+      "loadcell_mass",
+      "fill_percent"
+     ]
+    },
+    {
+     "id": "trajectory",
+     "kind": "items",
+     "title": "Trajectory",
+     "items": [
+      "altitude",
+      "velocity",
+      "gps_altitude",
+      "gps_sats"
+     ]
+    },
+    {
+     "id": "health",
+     "kind": "items",
+     "title": "Health",
+     "items": [
+      "station_link",
+      "boards",
+      "av_battery",
+      "rocket_fix_age"
+     ]
+    },
+    {
+     "id": "cycle",
+     "kind": "cycle",
+     "title": "Cycle",
+     "items": []
+    },
+    {
+     "id": "compass",
+     "kind": "compass",
+     "title": "Recovery",
+     "items": []
+    }
+   ],
+   "published": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "title": "Flight",
+     "items": [
+      "altitude",
+      "tank_pressure"
+     ],
+     "actions": [
+      {
+       "cmd": "Abort",
+       "label": "Abort",
+       "abort": true
+      },
+      {
+       "cmd": "Dump",
+       "label": "Dump valve",
+       "abort": false
+      }
+     ]
+    }
+   ],
+   "expect": [
+    {
+     "id": "compass",
+     "kind": "compass",
+     "items": [],
+     "actions": []
+    },
+    {
+     "id": "flight",
+     "kind": "items",
+     "items": [
+      "altitude",
+      "tank_pressure"
+     ],
+     "actions": [
+      "Abort",
+      "Dump"
+     ]
+    },
+    {
+     "id": "trajectory",
+     "kind": "items",
+     "items": [
+      "altitude",
+      "velocity",
+      "gps_altitude",
+      "gps_sats"
+     ],
+     "actions": []
+    },
+    {
+     "id": "health",
+     "kind": "items",
+     "items": [
+      "station_link",
+      "boards",
+      "av_battery",
+      "rocket_fix_age"
+     ],
+     "actions": []
+    },
+    {
+     "id": "cycle",
+     "kind": "cycle",
+     "items": [],
+     "actions": [
+      "Dump"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "local_edit_shows_only_published_actions",
+   "settings": {
+    "version": 2,
+    "pages": [
+     {
+      "id": "flight",
+      "enabled": true,
+      "items": [
+       "altitude",
+       "tank_pressure"
+      ],
+      "actions": [
+       "Abort",
+       "Dump"
+      ]
+     },
+     {
+      "id": "propulsion",
+      "enabled": true
+     },
+     {
+      "id": "trajectory",
+      "enabled": true,
+      "actions": [
+       "Nitrogen",
+       "Dump"
+      ]
+     },
+     {
+      "id": "health",
+      "enabled": false
+     },
+     {
+      "id": "cycle",
+      "enabled": true
+     },
+     {
+      "id": "compass",
+      "enabled": true
+     }
+    ]
+   },
+   "catalog_pages": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "title": "Flight",
+     "items": [
+      "flight_state",
+      "t_clock",
+      "altitude",
+      "velocity"
+     ]
+    },
+    {
+     "id": "propulsion",
+     "kind": "items",
+     "title": "Propulsion",
+     "items": [
+      "tank_pressure",
+      "chamber_pressure",
+      "loadcell_mass",
+      "fill_percent"
+     ]
+    },
+    {
+     "id": "trajectory",
+     "kind": "items",
+     "title": "Trajectory",
+     "items": [
+      "altitude",
+      "velocity",
+      "gps_altitude",
+      "gps_sats"
+     ]
+    },
+    {
+     "id": "health",
+     "kind": "items",
+     "title": "Health",
+     "items": [
+      "station_link",
+      "boards",
+      "av_battery",
+      "rocket_fix_age"
+     ]
+    },
+    {
+     "id": "cycle",
+     "kind": "cycle",
+     "title": "Cycle",
+     "items": []
+    },
+    {
+     "id": "compass",
+     "kind": "compass",
+     "title": "Recovery",
+     "items": []
+    }
+   ],
+   "published": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "title": "Flight",
+     "items": [
+      "altitude",
+      "tank_pressure"
+     ],
+     "actions": [
+      {
+       "cmd": "Abort",
+       "label": "Abort",
+       "abort": true
+      },
+      {
+       "cmd": "Dump",
+       "label": "Dump valve",
+       "abort": false
+      }
+     ]
+    }
+   ],
+   "expect": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "items": [
+      "altitude",
+      "tank_pressure"
+     ],
+     "actions": [
+      "Abort",
+      "Dump"
+     ]
+    },
+    {
+     "id": "propulsion",
+     "kind": "items",
+     "items": [
+      "tank_pressure",
+      "chamber_pressure",
+      "loadcell_mass",
+      "fill_percent"
+     ],
+     "actions": []
+    },
+    {
+     "id": "trajectory",
+     "kind": "items",
+     "items": [
+      "altitude",
+      "velocity",
+      "gps_altitude",
+      "gps_sats"
+     ],
+     "actions": [
+      "Dump"
+     ]
+    },
+    {
+     "id": "cycle",
+     "kind": "cycle",
+     "items": [],
+     "actions": []
+    },
+    {
+     "id": "compass",
+     "kind": "compass",
+     "items": [],
+     "actions": []
+    }
+   ]
+  },
+  {
+   "name": "two_actions_truncated_before_filtering",
+   "settings": {
+    "version": 2,
+    "pages": [
+     {
+      "id": "flight",
+      "enabled": true,
+      "actions": [
+       "Dump",
+       "StartWritingNow",
+       "Abort"
+      ]
+     },
+     {
+      "id": "propulsion",
+      "enabled": true
+     },
+     {
+      "id": "trajectory",
+      "enabled": true
+     },
+     {
+      "id": "health",
+      "enabled": true
+     },
+     {
+      "id": "cycle",
+      "enabled": true
+     },
+     {
+      "id": "compass",
+      "enabled": true
+     }
+    ]
+   },
+   "catalog_pages": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "title": "Flight",
+     "items": [
+      "flight_state",
+      "t_clock",
+      "altitude",
+      "velocity"
+     ]
+    },
+    {
+     "id": "propulsion",
+     "kind": "items",
+     "title": "Propulsion",
+     "items": [
+      "tank_pressure",
+      "chamber_pressure",
+      "loadcell_mass",
+      "fill_percent"
+     ]
+    },
+    {
+     "id": "trajectory",
+     "kind": "items",
+     "title": "Trajectory",
+     "items": [
+      "altitude",
+      "velocity",
+      "gps_altitude",
+      "gps_sats"
+     ]
+    },
+    {
+     "id": "health",
+     "kind": "items",
+     "title": "Health",
+     "items": [
+      "station_link",
+      "boards",
+      "av_battery",
+      "rocket_fix_age"
+     ]
+    },
+    {
+     "id": "cycle",
+     "kind": "cycle",
+     "title": "Cycle",
+     "items": []
+    },
+    {
+     "id": "compass",
+     "kind": "compass",
+     "title": "Recovery",
+     "items": []
+    }
+   ],
+   "published": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "title": "Flight",
+     "items": [
+      "flight_state",
+      "t_clock",
+      "altitude",
+      "velocity"
+     ],
+     "actions": [
+      {
+       "cmd": "Abort",
+       "label": "Abort",
+       "abort": true
+      },
+      {
+       "cmd": "StartWritingNow",
+       "label": "Record",
+       "abort": false
+      }
+     ]
+    }
+   ],
+   "expect": [
+    {
+     "id": "flight",
+     "kind": "items",
+     "items": [
+      "flight_state",
+      "t_clock",
+      "altitude",
+      "velocity"
+     ],
+     "actions": [
+      "StartWritingNow"
+     ]
+    },
+    {
+     "id": "propulsion",
+     "kind": "items",
+     "items": [
+      "tank_pressure",
+      "chamber_pressure",
+      "loadcell_mass",
+      "fill_percent"
+     ],
+     "actions": []
+    },
+    {
+     "id": "trajectory",
+     "kind": "items",
+     "items": [
+      "altitude",
+      "velocity",
+      "gps_altitude",
+      "gps_sats"
+     ],
+     "actions": []
+    },
+    {
+     "id": "health",
+     "kind": "items",
+     "items": [
+      "station_link",
+      "boards",
+      "av_battery",
+      "rocket_fix_age"
+     ],
+     "actions": []
+    },
+    {
+     "id": "cycle",
+     "kind": "cycle",
+     "items": [],
+     "actions": []
+    },
+    {
+     "id": "compass",
+     "kind": "compass",
+     "items": [],
+     "actions": []
+    }
+   ]
+  }
+ ],
+ "provision": [
+  {
+   "name": "enabled",
+   "json": {
+    "v": 1,
+    "type": "direct",
+    "enabled": true,
+    "addresses": [
+     "https://gs.local:3000"
+    ],
+    "token": "gsw1.abc",
+    "expires_at_ms": 1900000000000,
+    "username": "ada",
+    "station": "GroundStation",
+    "skip_tls": false,
+    "commands": [
+     "Abort",
+     "Dump"
+    ]
+   },
+   "expect": {
+    "configured": true,
+    "base": "https://gs.local:3000",
+    "address": "gs.local:3000",
+    "token": "gsw1.abc",
+    "commands": [
+     "Abort",
+     "Dump"
+    ]
+   }
+  },
+  {
+   "name": "disabled_forgets_token",
+   "json": {
+    "v": 1,
+    "type": "direct",
+    "enabled": false,
+    "addresses": [],
+    "username": "",
+    "station": "",
+    "skip_tls": false,
+    "commands": []
+   },
+   "expect": {
+    "configured": false,
+    "base": "",
+    "address": "",
+    "token": null,
+    "commands": []
+   }
+  },
+  {
+   "name": "enabled_without_token_is_not_configured",
+   "json": {
+    "v": 1,
+    "type": "direct",
+    "enabled": true,
+    "addresses": [
+     "http://192.168.3.7:3000/"
+    ],
+    "username": "ada",
+    "station": "GroundStation",
+    "skip_tls": false,
+    "commands": []
+   },
+   "expect": {
+    "configured": false,
+    "base": "http://192.168.3.7:3000",
+    "address": "192.168.3.7:3000",
+    "token": null,
+    "commands": []
+   }
+  },
+  {
+   "name": "wrong_version_ignored",
+   "json": {
+    "v": 2,
+    "type": "direct",
+    "enabled": true,
+    "addresses": [
+     "https://x"
+    ],
+    "token": "gsw1.x",
+    "commands": []
+   },
+   "expect": null
+  }
+ ],
+ "direct_status": {
+  "item_ids": [
+   "flight_state",
+   "t_clock",
+   "altitude",
+   "velocity",
+   "gps_altitude",
+   "gps_sats",
+   "rocket_fix_age",
+   "tank_pressure",
+   "chamber_pressure",
+   "loadcell_mass",
+   "fill_percent",
+   "station_link",
+   "boards",
+   "av_battery"
+  ],
+  "merge": {
+   "base": {
+    "v": 1,
+    "seq": 42,
+    "mode": "no_station",
+    "station": {
+     "name": "",
+     "link": "offline",
+     "address": ""
+    },
+    "account": {
+     "signed_in": true,
+     "sync": "synced"
+    },
+    "items": {
+     "altitude": {
+      "label": "Altitude",
+      "text": "--",
+      "level": "unknown"
+     }
+    },
+    "pages": [
+     {
+      "id": "flight",
+      "kind": "items",
+      "title": "Flight",
+      "items": [
+       "altitude",
+       "tank_pressure"
+      ],
+      "actions": [
+       {
+        "cmd": "Abort",
+        "label": "Abort",
+        "abort": true
+       },
+       {
+        "cmd": "Dump",
+        "label": "Dump valve",
+        "abort": false
+       }
+      ]
+     }
+    ],
+    "settings": {
+     "version": 2,
+     "units": "metric"
+    },
+    "link_timeout_s": 15
+   },
+   "direct": {
+    "v": 1,
+    "seq": 1763500000000,
+    "mode": "live",
+    "source": "direct",
+    "station": {
+     "name": "GroundStation",
+     "role": "primary",
+     "link": "connected",
+     "address": "",
+     "telemetry_age_ms": 200
+    },
+    "items": {
+     "altitude": {
+      "label": "Altitude",
+      "text": "1234",
+      "value": 1234.0,
+      "unit": "m",
+      "age_ms": 200,
+      "stale": false,
+      "level": "normal"
+     }
+    },
+    "targets": [
+     {
+      "id": "rocket",
+      "label": "Rocket",
+      "lat": 32.99,
+      "lon": -106.97,
+      "alt_m": null,
+      "age_ms": 3000,
+      "stale": false,
+      "source": "Rocket GPS",
+      "fallback": false
+     }
+    ],
+    "actions": {
+     "Abort": {
+      "enabled": true
+     },
+     "Dump": {
+      "enabled": false,
+      "reason": "Fill in progress."
+     }
+    },
+    "link_timeout_s": 15
+   },
+   "address": "gs.local:3000",
+   "expect": {
+    "mode": "live",
+    "source": "direct",
+    "station_address": "gs.local:3000",
+    "station_link": "connected",
+    "page_ids": [
+     "flight"
+    ],
+    "altitude": "1234",
+    "targets": 1,
+    "dump_enabled": false,
+    "dump_reason": "Fill in progress.",
+    "units": "metric"
+   }
+  }
+ }
 }

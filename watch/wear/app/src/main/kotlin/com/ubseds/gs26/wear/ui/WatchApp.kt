@@ -50,6 +50,10 @@ import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import com.ubseds.gs26.wear.PhoneLink
 import com.ubseds.gs26.wear.core.ConnectionStatus
+import com.ubseds.gs26.wear.core.Direct
+import com.ubseds.gs26.wear.core.DirectInfo
+import com.ubseds.gs26.wear.core.LinkRoute
+import com.ubseds.gs26.wear.core.PageAction
 import com.ubseds.gs26.wear.core.ItemDisplay
 import com.ubseds.gs26.wear.core.Mode
 import com.ubseds.gs26.wear.core.Page
@@ -75,18 +79,37 @@ fun WatchApp(link: PhoneLink) {
             delay(1_000L - value % 1_000L)
         }
     }
+    val direct by link.direct.state.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var confirming by remember { mutableStateOf<PageAction?>(null) }
     val watchFix = remember { mutableStateOf<Location?>(null) }
-    val status = ConnectionStatus.of(state.snapshot, state.elapsedMs(now), phoneReachable)
+    // Phone while its data is fresh, else the station itself (core Direct).
+    val route = Direct.chooseRoute(
+        phoneMode = state.snapshot?.mode,
+        phoneAgeMs = state.snapshot?.let { state.elapsedMs(now) },
+        directAgeMs = direct.snapshot?.let { (now - direct.receivedAtMs).coerceAtLeast(0) },
+        freshMs = Direct.phoneFreshMs(state.settings.power),
+    )
+    val view = state.viewing(route, direct.snapshot, direct.receivedAtMs, direct.provision?.address.orEmpty())
+    val status = ConnectionStatus.of(
+        view.snapshot, view.elapsedMs(now), phoneReachable, route,
+        DirectInfo(direct.configured, direct.polling, direct.error),
+    )
+    val actions = PageActions(view, now, direct, onPress = { confirming = it })
 
     MaterialTheme {
         Scaffold(timeText = { TimeText() }) {
+            val pending = confirming
             when {
+                pending != null -> {
+                    BackHandler { confirming = null }
+                    ActionConfirmScreen(pending, view, link, onDone = { confirming = null })
+                }
                 showSettings && state.snapshot != null -> {
                     BackHandler { showSettings = false }
                     SettingsScreen(state, link, onDone = { showSettings = false })
                 }
-                else -> MainPager(state, status, now, link, watchFix, onOpenSettings = { showSettings = true })
+                else -> MainPager(view, status, route, now, link, watchFix, actions, onOpenSettings = { showSettings = true })
             }
         }
     }
@@ -100,9 +123,11 @@ fun WatchApp(link: PhoneLink) {
 private fun MainPager(
     state: WatchState,
     status: ConnectionStatus,
+    route: LinkRoute,
     now: Long,
     link: PhoneLink,
     watchFix: MutableState<Location?>,
+    actions: PageActions,
     onOpenSettings: () -> Unit,
 ) {
     val pages = state.pages()
@@ -133,7 +158,7 @@ private fun MainPager(
                 if (index >= FIXED_PAGES) Banners(state, status)
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     when {
-                        index == 0 -> StatusPage(state, status, now)
+                        index == 0 -> StatusPage(state, status, route, now)
                         index == 1 -> AlertsPage(state, status)
                         page == null -> SettingsEntry(onOpenSettings, enabled = state.snapshot != null)
                         page.kind == PageKind.ITEMS -> ItemsPage(page, state, now)
@@ -148,6 +173,8 @@ private fun MainPager(
                         else -> Message("Update the watch app")
                     }
                 }
+                // Opt-in page actions stay pinned below the content.
+                if (page != null && page.actions.isNotEmpty()) ActionsRow(page.actions, actions)
             }
         }
         PageDots(count, pager.currentPage, Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp))
@@ -174,6 +201,7 @@ private fun Banners(state: WatchState, status: ConnectionStatus) {
         if (status.phone.tone == StatusTone.WARN || status.phone.tone == StatusTone.ALERT) {
             add(status.phone.text to toneColor(status.phone.tone))
         }
+        status.direct?.takeIf { it.tone == StatusTone.ALERT }?.let { add(it.text to toneColor(it.tone)) }
     }
     if (lines.isEmpty()) return
     Column(
@@ -196,9 +224,9 @@ private fun Banners(state: WatchState, status: ConnectionStatus) {
     }
 }
 
-/** Landing page: flight state, T-clock, phone link and the phone's station. */
+/** Landing page: flight state, T-clock, the data path ("Via phone" / "Direct to GS") and the station. */
 @Composable
-private fun StatusPage(state: WatchState, status: ConnectionStatus, now: Long) {
+private fun StatusPage(state: WatchState, status: ConnectionStatus, route: LinkRoute, now: Long) {
     val listState = rememberScalingLazyListState()
     ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
         if (state.snapshot?.mode == Mode.DEMO) item { Text("DEMO", fontSize = 11.sp, color = Amber) }
@@ -207,6 +235,8 @@ private fun StatusPage(state: WatchState, status: ConnectionStatus, now: Long) {
         }
         item { StatusText(status.phone) }
         status.station?.let { item { StatusText(it) } }
+        status.direct?.let { item { StatusText(it) } }
+        if (route == LinkRoute.DIRECT) item { Text("Phone app not needed right now", fontSize = 10.sp, color = Dim) }
         if (status.openPhoneApp && status.phone.text != ConnectionStatus.OPEN_PHONE_APP) {
             item { Text(ConnectionStatus.OPEN_PHONE_APP, fontSize = 11.sp, color = Dim, textAlign = TextAlign.Center) }
         }
@@ -246,6 +276,7 @@ private fun AlertsPage(state: WatchState, status: ConnectionStatus) {
         item { Text("Alerts", style = MaterialTheme.typography.caption1, color = Dim) }
         if (status.phone.tone == StatusTone.WARN || status.phone.tone == StatusTone.ALERT) item { StatusText(status.phone) }
         status.station?.takeIf { it.tone == StatusTone.WARN || it.tone == StatusTone.ALERT }?.let { item { StatusText(it) } }
+        status.direct?.takeIf { it.tone == StatusTone.ALERT }?.let { item { StatusText(it) } }
         items(rows.size) { i ->
             val row = rows[i]
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {

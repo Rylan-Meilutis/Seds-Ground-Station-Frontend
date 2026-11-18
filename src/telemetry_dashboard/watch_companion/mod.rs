@@ -1,7 +1,9 @@
-//! Read-only Apple Watch / Wear OS companion: settings, account sync and the
-//! phone-side publisher. See docs/watch-companion.md.
+//! Apple Watch / Wear OS companion: settings, account sync, the phone-side
+//! publisher and the direct-link provisioning. See docs/watch-companion.md.
 pub(crate) mod account_sync;
+pub(crate) mod actions;
 pub(crate) mod bridge;
+pub(crate) mod direct;
 // Reference implementation for the watch ports; the phone only formats ages.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod geodesy;
@@ -267,6 +269,243 @@ async fn sync_once() {
         return;
     }
     *WATCH_SYNC.write() = SyncState::Error;
+}
+
+/// The GS's watch action list for the signed-in account (`account_key`).
+static ACTION_CATALOG: std::sync::Mutex<Option<(String, actions::ActionCatalog)>> =
+    std::sync::Mutex::new(None);
+
+/// Watch token held for the direct link, and when issuing last failed.
+struct DirectState {
+    held: Option<direct::Held>,
+    last_failure_ms: Option<i64>,
+    /// Last provisioning JSON sent to the watch.
+    sent: Option<String>,
+}
+
+static DIRECT: std::sync::Mutex<DirectState> = std::sync::Mutex::new(DirectState {
+    held: None,
+    last_failure_ms: None,
+    sent: None,
+});
+
+/// The cached catalog for the current account; empty for anyone else.
+pub(crate) fn catalog_actions() -> Vec<actions::CatalogAction> {
+    let key = account_key();
+    ACTION_CATALOG
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .filter(|(account, _)| Some(account) == key.as_ref())
+        .map(|(_, c)| c.actions)
+        .unwrap_or_default()
+}
+
+/// Full cached catalog (with exclusions) for the Settings section.
+pub(crate) fn action_catalog() -> Option<actions::ActionCatalog> {
+    let key = account_key()?;
+    ACTION_CATALOG
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .filter(|(account, _)| *account == key)
+        .map(|(_, c)| c)
+}
+
+/// Reads `GET /api/watch/actions` for an eligible user. A station without
+/// the endpoint offers no actions.
+async fn refresh_action_catalog() {
+    let Some(account) = account_key().filter(|_| watch_settings_available()) else {
+        if let Ok(mut slot) = ACTION_CATALOG.lock() {
+            *slot = None;
+        }
+        return;
+    };
+    let catalog = match super::http_get_json::<actions::ActionCatalog>(actions::CATALOG_ENDPOINT).await {
+        Ok(catalog) => catalog.sanitized(),
+        Err(error) if account_sync::is_unsupported(&error) => actions::ActionCatalog::default(),
+        Err(_) => return, // keep the last list through a transient failure
+    };
+    if account_key().as_deref() != Some(account.as_str()) {
+        return;
+    }
+    if let Ok(mut slot) = ACTION_CATALOG.lock() {
+        if slot.as_ref().map(|(_, c)| c) != Some(&catalog) {
+            PUBLISH_REQUESTED.store(true, Ordering::Release);
+        }
+        *slot = Some((account, catalog));
+    }
+}
+
+fn direct_device_id() -> String {
+    if let Some(id) = super::persist::get_string(direct::DEVICE_ID_KEY).filter(|id| !id.is_empty()) {
+        return id;
+    }
+    let mut random = [0u8; 16];
+    let _ = getrandom::fill(&mut random);
+    let id = direct::new_device_id(u128::from_le_bytes(random));
+    super::persist::set_string(direct::DEVICE_ID_KEY, &id);
+    id
+}
+
+/// What the direct link needs now: an eligible, signed-in user connected to
+/// a station with "Direct link" on.
+fn direct_want(eligible: bool) -> Option<direct::Want> {
+    let settings = current_settings();
+    if !eligible || !settings.direct_link {
+        return None;
+    }
+    let account = account_key()?;
+    let session = crate::auth::current_session();
+    let username = signed_in_user(session.as_ref())?.to_string();
+    Some(direct::Want {
+        account,
+        base: super::UrlConfig::base_http(),
+        username,
+        station: crate::auth::station_name(),
+        skip_tls: super::UrlConfig::_skip_tls_verify(),
+        commands: actions::token_commands(&settings, &catalog_actions()),
+    })
+}
+
+/// Sends the provisioning message when it changed.
+fn send_provision(held: Option<&direct::Held>, state: &mut DirectState) {
+    let Ok(json) = serde_json::to_string(&direct::provision(held)) else {
+        return;
+    };
+    if state.sent.as_deref() != Some(json.as_str()) {
+        bridge::provision(&json);
+        state.sent = Some(json);
+    }
+}
+
+/// Issues, refreshes or drops the watch token. Runs in the dashboard
+/// publisher, where the phone has a session with the station.
+async fn direct_tick(eligible: bool) {
+    let want = direct_want(eligible);
+    let now = super::current_wallclock_ms();
+    let (step, held) = {
+        let Ok(state) = DIRECT.lock() else { return };
+        (
+            direct::plan(state.held.as_ref(), want.as_ref(), now, state.last_failure_ms),
+            state.held.clone(),
+        )
+    };
+    match step {
+        direct::Step::Keep => {
+            if let Ok(mut state) = DIRECT.lock() {
+                let held = state.held.clone();
+                send_provision(held.as_ref(), &mut state);
+            }
+        }
+        direct::Step::Issue => {
+            let Some(want) = want else { return };
+            let device_id = direct_device_id();
+            let request = direct::IssueRequest {
+                device_id: &device_id,
+                commands: &want.commands,
+            };
+            let result = super::http_post_json::<_, direct::Grant>(direct::TOKEN_ENDPOINT, &request).await;
+            let Ok(mut state) = DIRECT.lock() else { return };
+            match result {
+                // Still the same station and account after the request.
+                Ok(grant) if direct_want(eligible).is_some_and(|w| w.account == want.account) => {
+                    state.held = Some(direct::Held { want, grant });
+                    state.last_failure_ms = None;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    state.last_failure_ms = Some(now);
+                    let line = format!("[watch] direct link token: {error}");
+                    eprintln!("{line}");
+                    crate::debug_log::append(&line);
+                    if account_sync::is_unsupported(&error) {
+                        // Station without watch tokens: the watch stays phone-only.
+                        state.held = None;
+                    }
+                }
+            }
+            let held = state.held.clone();
+            send_provision(held.as_ref(), &mut state);
+        }
+        direct::Step::Drop => {
+            if let Some(held) = held
+                && account_key().as_deref() == Some(held.want.account.as_str())
+            {
+                // Still signed in (direct link turned off, watch removed):
+                // revoke on the GS. Sign-out revokes it there by itself.
+                let request = direct::RevokeRequest {
+                    device_id: &held.grant.device_id,
+                };
+                let _ = super::http_post_json::<_, serde_json::Value>(direct::REVOKE_ENDPOINT, &request).await;
+            }
+            if let Ok(mut state) = DIRECT.lock() {
+                state.held = None;
+                send_provision(None, &mut state);
+            }
+        }
+    }
+}
+
+/// Without a dashboard: forget the token once the user signed out or the
+/// account changed, and tell the watch.
+fn direct_check_account() {
+    let key = account_key();
+    let Ok(mut state) = DIRECT.lock() else { return };
+    let stale = state
+        .held
+        .as_ref()
+        .is_some_and(|held| key.as_deref() != Some(held.want.account.as_str()));
+    if stale || (key.is_none() && state.sent.is_none()) {
+        state.held = None;
+        send_provision(None, &mut state);
+    }
+}
+
+/// Settings line: whether the watch can reach the station by itself.
+pub(crate) fn direct_status_text() -> String {
+    let Ok(state) = DIRECT.lock() else {
+        return String::new();
+    };
+    match &state.held {
+        Some(held) => {
+            let actions = if held.grant.commands.is_empty() {
+                "read-only".to_string()
+            } else {
+                format!("actions: {}", held.grant.commands.join(", "))
+            };
+            format!(
+                "Watch can reach {} directly ({actions})",
+                direct_address(&held.want.base)
+            )
+        }
+        None if state.last_failure_ms.is_some() => {
+            "Direct link unavailable: the station did not issue a watch token".into()
+        }
+        None => "Direct link not set up (needs a signed-in station connection)".into(),
+    }
+}
+
+fn direct_address(base: &str) -> String {
+    phone_status::station_address(base)
+}
+
+/// Revokes this phone's watch token now (Settings button). A new one is
+/// issued on the next round if the direct link stays on.
+pub(crate) async fn revoke_direct_link() {
+    let held = DIRECT.lock().ok().and_then(|s| s.held.clone());
+    if let Some(held) = held {
+        let request = direct::RevokeRequest {
+            device_id: &held.grant.device_id,
+        };
+        let _ = super::http_post_json::<_, serde_json::Value>(direct::REVOKE_ENDPOINT, &request).await;
+    }
+    if let Ok(mut state) = DIRECT.lock() {
+        state.held = None;
+        // Do not reissue at once.
+        state.last_failure_ms = Some(super::current_wallclock_ms());
+        send_provision(None, &mut state);
+    }
 }
 
 async fn sleep_ms(ms: u64) {

@@ -40,7 +40,10 @@ struct RootView: View {
             link.setPage(pageName(selection))
             updateLocation()
         }
-        .onChange(of: link.settings?.power) { updateLocation() }
+        .onChange(of: link.settings?.power) {
+            updateLocation()
+            link.updateDirectPolling()
+        }
     }
 
     private func pageName(_ tag: String) -> String {
@@ -63,8 +66,8 @@ struct RootView: View {
     }
 }
 
-/// Landing page: phone link, the phone's station connection, flight state
-/// and T-clock.
+/// Landing page: flight state, T-clock, the data path ("Via phone" or
+/// "Direct to GS"), the station connection and direct-link trouble.
 struct StatusPage: View {
     @EnvironmentObject private var link: PhoneLink
 
@@ -85,9 +88,12 @@ struct StatusPage: View {
                             }
                         }
                     }
-                    StatusLineView(line: status.phone, systemImage: "iphone")
+                    StatusLineView(line: status.phone, systemImage: link.route(nowMs: now) == .direct ? "wifi" : "iphone")
                     if let station = status.station {
                         StatusLineView(line: station, systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                    if let direct = status.direct {
+                        StatusLineView(line: direct, systemImage: "wifi.exclamationmark")
                     }
                     if status.openPhoneApp && status.phone.text != ConnectionStatus.openPhoneAppText {
                         Text(ConnectionStatus.openPhoneAppText)
@@ -135,6 +141,9 @@ struct AlertsPage: View {
                     if let station = status.station, station.tone == .alert || station.tone == .warn {
                         StatusLineView(line: station, systemImage: "antenna.radiowaves.left.and.right")
                     }
+                    if let direct = status.direct, direct.tone == .alert {
+                        StatusLineView(line: direct, systemImage: "wifi.exclamationmark")
+                    }
                     ForEach(rows) { row in
                         VStack(alignment: .leading, spacing: 0) {
                             Text(row.label).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
@@ -171,6 +180,10 @@ struct PageContainer: View {
             case .compass: CompassPage()
             case .unknown: UnknownPage(page: page)
             }
+            // Opt-in page actions stay pinned below the content.
+            if !page.actions.isEmpty {
+                ActionsRow(actions: page.actions)
+            }
         }
     }
 }
@@ -189,6 +202,9 @@ struct StatusBanners: View {
                 }
                 if status.phone.tone == .alert || status.phone.tone == .warn {
                     Banner(text: status.phone.text, color: status.phone.tone.color)
+                }
+                if let direct = status.direct, direct.tone == .alert {
+                    Banner(text: direct.text, color: direct.tone.color)
                 }
             }
         }

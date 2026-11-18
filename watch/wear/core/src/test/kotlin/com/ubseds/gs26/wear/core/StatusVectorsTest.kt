@@ -41,7 +41,14 @@ class StatusVectorsTest {
             val name = c["name"]!!.jsonPrimitive.content
             val snap = c["snapshot"]!!.takeIf { it != JsonNull }
                 ?.let { Protocol.json.decodeFromJsonElement(Snapshot.serializer(), it) }
-            val status = ConnectionStatus.of(snap, c["age_ms"]!!.jsonPrimitive.long, c["reachable"]!!.jsonPrimitive.boolean)
+            val route = c["route"]?.jsonPrimitive?.content?.uppercase()?.let { LinkRoute.valueOf(it) } ?: LinkRoute.PHONE
+            val direct = DirectInfo(
+                configured = c["direct_configured"]?.jsonPrimitive?.boolean ?: false,
+                polling = c["direct_polling"]?.jsonPrimitive?.boolean ?: false,
+                error = c["direct_error"]?.takeIf { it != JsonNull }?.jsonPrimitive?.content,
+            )
+            val status = ConnectionStatus.of(snap, c["age_ms"]!!.jsonPrimitive.long, c["reachable"]!!.jsonPrimitive.boolean, route, direct)
+            assertEquals(name, line(c["direct"]?.takeIf { it != JsonNull }?.jsonObject), status.direct)
             assertEquals(name, line(c["phone"]!!.jsonObject), status.phone)
             assertEquals(name, line(c["station"]!!.takeIf { it != JsonNull }?.jsonObject), status.station)
             assertEquals(name, c["open_phone_app"]!!.jsonPrimitive.boolean, status.openPhoneApp)

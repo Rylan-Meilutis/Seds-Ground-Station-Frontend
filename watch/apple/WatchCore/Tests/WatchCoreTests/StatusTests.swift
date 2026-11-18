@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import WatchCore
 
-/// connection_status, auto_cycle and alerts vectors from watch/test-vectors.json
+/// connection_status (incl. the direct-link lines), auto_cycle and alerts vectors from watch/test-vectors.json
 /// (the Wear OS core checks the same ones in StatusVectorsTest.kt).
 final class StatusTests: XCTestCase {
     struct Vectors: Decodable {
@@ -15,6 +15,12 @@ final class StatusTests: XCTestCase {
             let phone: Line
             let station: Line?
             let open_phone_app: Bool
+            // Direct link (optional in the vectors).
+            let route: String?
+            let direct_configured: Bool?
+            let direct_polling: Bool?
+            let direct_error: String?
+            let direct: Line?
         }
         struct Step: Decodable {
             let at: Int64
@@ -85,7 +91,11 @@ final class StatusTests: XCTestCase {
         XCTAssertFalse(v.connection_status.isEmpty)
         for c in v.connection_status {
             let snap = try c.snapshot.map { try XCTUnwrap(Snapshot.parse($0.json), c.name) }
-            let status = ConnectionStatus(snapshot: snap, ageMs: c.age_ms, phoneReachable: c.reachable)
+            let direct = DirectInfo(configured: c.direct_configured ?? false, polling: c.direct_polling ?? false,
+                                    error: c.direct_error)
+            let status = ConnectionStatus(snapshot: snap, ageMs: c.age_ms, phoneReachable: c.reachable,
+                                          route: LinkRoute(rawValue: c.route ?? "phone")!, direct: direct)
+            XCTAssertEqual(status.direct, c.direct.map { StatusLine($0.text, StatusTone(rawValue: $0.tone)!) }, c.name)
             XCTAssertEqual(status.phone, StatusLine(c.phone.text, StatusTone(rawValue: c.phone.tone)!), c.name)
             XCTAssertEqual(status.station, c.station.map { StatusLine($0.text, StatusTone(rawValue: $0.tone)!) }, c.name)
             XCTAssertEqual(status.openPhoneApp, c.open_phone_app, c.name)

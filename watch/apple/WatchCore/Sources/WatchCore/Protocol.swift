@@ -177,11 +177,55 @@ public enum PageKind: Equatable {
     case unknown(String)
 }
 
+/// An opt-in action button on a page (at most two per page).
+public struct PageAction: Decodable, Equatable, Identifiable {
+    public var cmd: String
+    public var label: String
+    /// Abort: one tap plus confirm, never disabled on the watch.
+    public var abort: Bool
+    public var id: String { cmd }
+
+    public init(cmd: String, label: String, abort: Bool) {
+        self.cmd = cmd
+        self.label = label
+        self.abort = abort
+    }
+
+    enum CodingKeys: String, CodingKey { case cmd, label, abort }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cmd = try c.decode(String.self, forKey: .cmd)
+        label = c.soft(.label, cmd)
+        abort = c.soft(.abort, cmd == "Abort")
+    }
+}
+
+/// The station's enable state for one page action.
+public struct ActionState: Decodable, Equatable {
+    public var enabled: Bool
+    public var reason: String?
+
+    public init(enabled: Bool, reason: String? = nil) {
+        self.enabled = enabled
+        self.reason = reason
+    }
+
+    enum CodingKeys: String, CodingKey { case enabled, reason }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = c.soft(.enabled, false)
+        reason = c.softOptional(.reason)
+    }
+}
+
 public struct Page: Decodable, Equatable, Identifiable {
     public var id: String
     public var kind: String
     public var title: String
     public var items: [String]
+    public var actions: [PageAction]
 
     public var pageKind: PageKind {
         switch kind {
@@ -192,7 +236,7 @@ public struct Page: Decodable, Equatable, Identifiable {
         }
     }
 
-    enum CodingKeys: String, CodingKey { case id, kind, title, items }
+    enum CodingKeys: String, CodingKey { case id, kind, title, items, actions }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -200,6 +244,8 @@ public struct Page: Decodable, Equatable, Identifiable {
         kind = c.soft(.kind, "")
         title = c.soft(.title, id)
         items = c.soft(.items, [])
+        let decoded: [PageAction] = c.lossyArray(.actions)
+        actions = Array(decoded.prefix(maxPageActions))
     }
 }
 
@@ -257,11 +303,16 @@ public struct Snapshot: Decodable, Equatable {
     public var targets: [Target]
     public var settings: WatchSettings?
     public var catalog: Catalog?
+    /// Enable state of the page actions.
+    public var actions: [String: ActionState]
+    /// `phone` (relayed by the phone app) or `direct` (read from the station).
+    public var source: String
     /// Seconds without a snapshot after which the phone link counts as lost.
     public var linkTimeoutS: Int
 
     enum CodingKeys: String, CodingKey {
-        case v, seq, mode, station, account, items, pages, targets, settings, catalog, linkTimeoutS = "link_timeout_s"
+        case v, seq, mode, station, account, items, pages, targets, settings, catalog, actions, source
+        case linkTimeoutS = "link_timeout_s"
     }
 
     public init(from decoder: Decoder) throws {
@@ -276,11 +327,30 @@ public struct Snapshot: Decodable, Equatable {
         targets = c.lossyArray(.targets)
         settings = c.softOptional(.settings)
         catalog = c.softOptional(.catalog)
+        actions = c.lossyMap(.actions)
+        source = c.soft(.source, "phone")
         linkTimeoutS = max(1, c.soft(.linkTimeoutS, 15))
     }
 
     public static func parse(_ json: String) -> Snapshot? {
         try? JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+    }
+
+    /// A status read from the station itself (`GET /api/watch/status`),
+    /// shown with the pages, settings and catalog of the phone's last
+    /// snapshot. `address` is the host the watch used.
+    public func mergedDirect(base: Snapshot?, address: String) -> Snapshot {
+        var s = self
+        s.source = "direct"
+        s.pages = base?.pages ?? []
+        s.settings = base?.settings
+        s.catalog = base?.catalog
+        s.account = base?.account
+        if var station = s.station, station.address.isEmpty {
+            station.address = address
+            s.station = station
+        }
+        return s
     }
 
     /// Catalog label for an item id, falling back to the item's own label.

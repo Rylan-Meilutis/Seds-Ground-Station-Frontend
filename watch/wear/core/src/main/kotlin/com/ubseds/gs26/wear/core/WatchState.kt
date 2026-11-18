@@ -63,9 +63,19 @@ data class WatchState(
         val s = snapshot ?: return emptyList()
         val pending = pendingSettings ?: return s.pages
         if (s.catalog.pages.isEmpty()) return s.pages
-        val byId = s.catalog.pages.associateBy { it.id }
-        return pending.pages.filter { it.enabled }.mapNotNull { byId[it.id] }
+        return resolvedPages(pending, s.catalog.pages, published = s.pages)
     }
+
+    /**
+     * The state to show: this (phone) state, or the station's own status
+     * merged with this state's pages when the route is DIRECT.
+     */
+    fun viewing(route: LinkRoute, direct: Snapshot?, directReceivedAtMs: Long, address: String): WatchState =
+        if (route == LinkRoute.DIRECT && direct != null) {
+            copy(snapshot = direct.mergedDirect(snapshot, address), receivedAtMs = directReceivedAtMs)
+        } else {
+            this
+        }
 
     fun item(id: String, nowMs: Long): ItemDisplay {
         val v = snapshot?.items?.get(id)

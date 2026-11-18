@@ -69,6 +69,12 @@ mod imp {
         fn gs26_watch_publish(json: *const c_char, urgent: c_int);
         fn gs26_watch_take_incoming(buf: *mut c_char, cap: c_int) -> c_int;
         fn gs26_watch_state() -> c_int;
+        fn gs26_watch_provision(json: *const c_char);
+    }
+    pub fn provision(json: &str) {
+        if let Ok(c) = CString::new(json) {
+            unsafe { gs26_watch_provision(c.as_ptr()) }
+        }
     }
     pub fn start() {
         unsafe { gs26_watch_start() }
@@ -186,6 +192,22 @@ mod imp {
             Ok(())
         });
     }
+    pub fn provision(json: &str) {
+        let ctx = android_context();
+        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
+        let json = json.to_owned();
+        let _ = vm.attach_current_thread(|env| -> ::jni::errors::Result<()> {
+            let s = env.new_string(&json)?;
+            let obj = JObject::from(s);
+            let _ = call(
+                "provision",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&obj)],
+                |_, _| Some(()),
+            );
+            Ok(())
+        });
+    }
     pub fn take_incoming() -> Option<String> {
         call("takeIncoming", "()Ljava/lang/String;", &[], |env, value| {
             let obj = value.l().ok()?;
@@ -205,6 +227,7 @@ mod imp {
 mod imp {
     pub fn start() {}
     pub fn publish(_json: &str, _urgent: bool) {}
+    pub fn provision(_json: &str) {}
     pub fn take_incoming() -> Option<String> {
         None
     }
@@ -219,6 +242,14 @@ pub fn start() {
 
 pub fn publish(json: &str, urgent: bool) {
     imp::publish(json, urgent);
+}
+
+/// Direct-link provisioning (station address and watch token). Delivered
+/// through the transport's queued channel so it reaches the watch even after
+/// the phone app is suspended; the bridge keeps the latest copy and resends
+/// it with every snapshot context.
+pub fn provision(json: &str) {
+    imp::provision(json);
 }
 
 /// Drains at most `max` queued watch messages.

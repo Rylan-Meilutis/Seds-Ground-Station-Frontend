@@ -1,6 +1,12 @@
 // Phone side of the Apple Watch companion (iOS only). Rust publishes snapshot
 // JSON and polls watch messages through the C functions below; this file only
 // moves strings between WCSession and a small queue. It never interprets them.
+//
+// Direct-link provisioning (station address + scoped watch token, key
+// "gs26_direct") goes out with transferUserInfo only: iOS delivers it even
+// after this app is suspended (or when the watch app next launches), and the
+// watch moves the token into its keychain. It is kept out of the application
+// context so no second copy of the token is stored.
 #import <Foundation/Foundation.h>
 #import <WatchConnectivity/WatchConnectivity.h>
 
@@ -10,6 +16,8 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
 @interface GS26WatchBridge : NSObject <WCSessionDelegate>
 @property(nonatomic, strong) NSMutableArray<NSString *> *incoming;
 @property(nonatomic, copy) NSString *pendingContext;
+@property(nonatomic, copy) NSString *provision;
+@property(nonatomic, assign) BOOL provisionPending;
 @end
 
 @implementation GS26WatchBridge
@@ -62,12 +70,42 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
     return;
   }
   @synchronized(self) { self.pendingContext = nil; }
+  [self flushProvision:session];
   NSError *error = nil;
   // Latest state survives the watch app being closed or out of range.
   [session updateApplicationContext:@{@"gs26" : json} error:&error];
   if (urgent && session.isReachable) {
     [session sendMessage:@{@"gs26" : json} replyHandler:nil errorHandler:nil];
   }
+}
+
+- (void)setProvisionJSON:(NSString *)json {
+  @synchronized(self) {
+    if ([self.provision isEqualToString:json]) return;
+    self.provision = json;
+    self.provisionPending = YES;
+  }
+  if (![WCSession isSupported]) return;
+  [self flushProvision:[WCSession defaultSession]];
+}
+
+// Queues the latest provisioning once the session can deliver it, replacing
+// an older one still waiting in the transfer queue.
+- (void)flushProvision:(WCSession *)session {
+  NSString *provision;
+  @synchronized(self) {
+    if (!self.provisionPending || !self.provision) return;
+    if (session.activationState != WCSessionActivationStateActivated || !session.isPaired ||
+        !session.isWatchAppInstalled) {
+      return;
+    }
+    provision = self.provision;
+    self.provisionPending = NO;
+  }
+  for (WCSessionUserInfoTransfer *transfer in session.outstandingUserInfoTransfers) {
+    if (transfer.userInfo[@"gs26_direct"] != nil) [transfer cancel];
+  }
+  [session transferUserInfo:@{@"gs26_direct" : provision}];
 }
 
 // bit0 supported, bit1 paired, bit2 watch app installed, bit3 reachable,
@@ -102,6 +140,7 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   if (pending && activationState == WCSessionActivationStateActivated) {
     [self publish:pending urgent:NO];
   }
+  if (activationState == WCSessionActivationStateActivated) [self flushProvision:session];
 }
 
 - (void)flushPending {
@@ -119,6 +158,7 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   NSLog(@"GS26 watch: watch state changed, paired %d, app installed %d",
         session.isPaired, session.isWatchAppInstalled);
   [self flushPending];
+  [self flushProvision:session];
 }
 
 - (void)sessionReachabilityDidChange:(WCSession *)session {
@@ -181,6 +221,15 @@ int gs26_watch_take_incoming(char *buf, int cap) {
     memcpy(buf, data.bytes, data.length);
     return (int)data.length;
   }
+}
+
+void gs26_watch_provision(const char *json) {
+  if (json == NULL) return;
+  NSString *text = [NSString stringWithUTF8String:json];
+  if (text == nil || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > kMaxMessageBytes) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[GS26WatchBridge shared] setProvisionJSON:text];
+  });
 }
 
 int gs26_watch_state(void) {

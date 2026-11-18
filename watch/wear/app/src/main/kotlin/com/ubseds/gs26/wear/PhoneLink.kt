@@ -13,6 +13,7 @@ import com.google.android.gms.wearable.DataEventBuffer
 import com.google.android.gms.wearable.DataMapItem
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
+import com.ubseds.gs26.wear.core.Direct
 import com.ubseds.gs26.wear.core.Protocol
 import com.ubseds.gs26.wear.core.Snapshot
 import com.ubseds.gs26.wear.core.WatchSettings
@@ -27,9 +28,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 /**
- * The watch's only connection to the outside world: snapshots in from the
- * phone over the Data Layer, and hello/activity/settings out to it. Nothing
- * here can address a station.
+ * The watch's connection to the phone: snapshots and the direct-link
+ * provisioning in over the Data Layer, hello/activity/settings out. While
+ * the phone's data is not fresh, [pollDirectIfNeeded] reads the station
+ * itself through [direct] (core `Direct.shouldPoll`).
  */
 class PhoneLink private constructor(context: Context) :
     DataClient.OnDataChangedListener, CapabilityClient.OnCapabilityChangedListener {
@@ -51,10 +53,34 @@ class PhoneLink private constructor(context: Context) :
     /** Page id currently on screen, reported in `activity` messages. */
     @Volatile var currentPage: String? = null
 
+    /** Direct link to the station, provisioned by the phone. */
+    val direct: DirectLink = DirectLink.get(app)
+
+    /**
+     * Polls the station once if the phone's data is not fresh (call from the
+     * foreground loop). Returns the delay before the next call.
+     */
+    suspend fun pollDirectIfNeeded(): Long {
+        val s = _state.value
+        val power = s.settings.power
+        val provision = direct.state.value.provision
+        val now = System.currentTimeMillis()
+        val phoneAge = s.snapshot?.let { (now - s.receivedAtMs).coerceAtLeast(0) }
+        val wanted = Direct.shouldPoll(s.snapshot?.mode, phoneAge, Direct.phoneFreshMs(power), foreground = true,
+            configured = provision?.configured == true)
+        if (wanted && provision != null) {
+            direct.poll(Direct.statusUrl(provision.base, s.settings.metric, Direct.pageActionCommands(s.pages()), s.settings.compass.staleAfterS))
+        } else {
+            direct.setPolling(false)
+        }
+        return Direct.pollMs(power)
+    }
+
     fun start() {
         dataClient.addListener(this)
         capabilityClient.addListener(this, Protocol.PHONE_CAPABILITY)
         scope.launch { readCurrentSnapshot() }
+        scope.launch { readDirectProvision() }
         scope.launch { refreshReachable() }
         send(Protocol.helloMessage())
     }
@@ -98,6 +124,11 @@ class PhoneLink private constructor(context: Context) :
 
     override fun onDataChanged(events: DataEventBuffer) {
         // Extract before the buffer is released when this callback returns.
+        events
+            .filter { it.type == DataEvent.TYPE_CHANGED && it.dataItem.uri.path == Direct.PATH }
+            .mapNotNull { DataMapItem.fromDataItem(it.dataItem).dataMap.getString(Protocol.KEY_JSON) }
+            .lastOrNull()
+            ?.let { json -> scope.launch { direct.apply(json) } }
         val json = events
             .filter { it.type == DataEvent.TYPE_CHANGED && it.dataItem.uri.path == Protocol.SNAPSHOT_PATH }
             .mapNotNull { DataMapItem.fromDataItem(it.dataItem).dataMap.getString(Protocol.KEY_JSON) }
@@ -115,6 +146,19 @@ class PhoneLink private constructor(context: Context) :
             }
             if (json != null) accept(json, fromCurrentItem = true)
         }.onFailure { Log.w(TAG, "reading current snapshot failed", it) }
+    }
+
+    /** Provisioning the phone stored while this app was not running. */
+    private suspend fun readDirectProvision() {
+        runCatching {
+            val buffer = dataClient.getDataItems(("wear://*" + Direct.PATH).toUri()).await()
+            val json = try {
+                buffer.firstOrNull()?.let { DataMapItem.fromDataItem(it).dataMap.getString(Protocol.KEY_JSON) }
+            } finally {
+                buffer.release()
+            }
+            if (json != null) direct.apply(json)
+        }.onFailure { Log.w(TAG, "reading direct-link provisioning failed", it) }
     }
 
     private fun accept(json: String, fromCurrentItem: Boolean) {

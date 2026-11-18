@@ -1,15 +1,19 @@
 # GS26 Apple Watch companion
 
-Read-only watchOS 10+ companion for the GS26 phone app. It shows the phone's
-data pages, an auto-cycle page and a recovery compass, and lets you edit the
-watch settings. Protocol and behaviour: `docs/watch-companion.md`.
+watchOS 10+ companion for the GS26 phone app. It shows the configured data
+pages, an auto-cycle page, a recovery compass and up to two opt-in action
+buttons per page, and lets you edit the watch settings. Data comes from the
+phone, or from the station directly (URLSession, scoped watch token in the
+keychain) while the phone app is suspended. Protocol and behaviour:
+`docs/watch-companion.md`.
 
 ```
 watch/apple/
 ├── project.yml          XcodeGen spec (watchOS app target + scheme)
 ├── GS26Watch/           SwiftUI app sources + Info.plist
 └── WatchCore/           Swift package: wire models, geodesy, settings,
-                         compass/link/clock logic, XCTests (Foundation only)
+                         compass/link/clock logic, direct-link route and
+                         action logic, XCTests (Foundation only)
 ```
 
 ## Build (macOS)

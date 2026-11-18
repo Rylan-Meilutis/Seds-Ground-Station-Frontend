@@ -18,39 +18,77 @@ public struct StatusLine: Equatable {
     }
 }
 
-/// What the watch knows about the phone and the phone's station.
+/// The direct link's state for the status lines.
+public struct DirectInfo: Equatable {
+    /// The phone provisioned an address and a watch token.
+    public var configured: Bool
+    /// The watch is polling the station now.
+    public var polling: Bool
+    /// The last poll failed with this error.
+    public var error: String?
+
+    public init(configured: Bool, polling: Bool, error: String?) {
+        self.configured = configured
+        self.polling = polling
+        self.error = error
+    }
+
+    public static let off = DirectInfo(configured: false, polling: false, error: nil)
+}
+
+/// What the watch knows about its data path ("via phone" or "direct to
+/// GS") and the station.
 public struct ConnectionStatus: Equatable {
-    /// Phone app link: reachable, data age.
+    /// The data path in use and the data age.
     public var phone: StatusLine
-    /// The phone's station connection; nil before the first snapshot.
+    /// The station connection; nil before the first snapshot.
     public var station: StatusLine?
+    /// Direct-link trouble or progress while the shown data is not fresh;
+    /// nil otherwise or when the link is not set up.
+    public var direct: StatusLine?
     /// Show "Open the GS app on your phone": only when the phone is not
-    /// reachable and there is no fresh data from it.
+    /// reachable and there is no fresh data.
     public var openPhoneApp: Bool
 
     public static let openPhoneAppText = "Open the GS app on your phone"
 
-    public init(snapshot: Snapshot?, ageMs: Int64, phoneReachable: Bool) {
+    /// `snapshot` and `ageMs` belong to `route` (for `.direct`, the merged
+    /// direct status).
+    public init(snapshot: Snapshot?, ageMs: Int64, phoneReachable: Bool, route: LinkRoute = .phone, direct: DirectInfo = .off) {
         guard let snap = snapshot else {
             phone = phoneReachable
                 ? StatusLine("Phone app open · waiting for data", .waiting)
                 : StatusLine(Self.openPhoneAppText, .alert)
             station = nil
             openPhoneApp = !phoneReachable
+            self.direct = Self.directLine(direct)
             return
         }
         let age = max(0, ageMs)
         let lost = age > Int64(max(1, snap.linkTimeoutS)) * 1000
-        switch (lost, phoneReachable) {
-        case (false, _):
-            phone = StatusLine("Phone connected · updated \(formatAge(age)) ago", .ok)
-        case (true, true):
-            phone = StatusLine("Phone reachable · no update for \(formatAge(age))", .warn)
-        case (true, false):
-            phone = StatusLine("Phone not reachable · last update \(formatAge(age)) ago", .alert)
+        if route == .direct {
+            phone = lost
+                ? StatusLine("Direct to GS · last update \(formatAge(age)) ago", .alert)
+                : StatusLine("Direct to GS · updated \(formatAge(age)) ago", .ok)
+        } else {
+            switch (lost, phoneReachable) {
+            case (false, _):
+                phone = StatusLine("Via phone · updated \(formatAge(age)) ago", .ok)
+            case (true, true):
+                phone = StatusLine("Phone reachable · no update for \(formatAge(age))", .warn)
+            case (true, false):
+                phone = StatusLine("Phone not reachable · last update \(formatAge(age)) ago", .alert)
+            }
         }
         station = Self.stationLine(snap)
         openPhoneApp = lost && !phoneReachable
+        self.direct = lost ? Self.directLine(direct) : nil
+    }
+
+    static func directLine(_ d: DirectInfo) -> StatusLine? {
+        guard d.configured else { return nil }
+        if let error = d.error { return StatusLine("Can't reach GS directly: \(error)", .alert) }
+        return d.polling ? StatusLine("Contacting GS directly…", .waiting) : nil
     }
 
     static func stationLine(_ snap: Snapshot) -> StatusLine {

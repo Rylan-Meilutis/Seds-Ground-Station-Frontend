@@ -98,7 +98,7 @@ final class ModelTests: XCTestCase {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
         let json = String(decoding: try enc.encode(s), as: UTF8.self)
-        for key in ["\"version\":1", "\"updated_ms\":0", "\"updated_by\":\"phone\"", "\"interval_s\":5", "\"autostart\":true",
+        for key in ["\"version\":2", "\"direct_link\":true", "\"updated_ms\":0", "\"updated_by\":\"phone\"", "\"interval_s\":5", "\"autostart\":true",
                     "\"north\":\"magnetic\"", "\"stale_after_s\":30", "\"units\":\"metric\"", "\"power\":\"balanced\"",
                     "\"enabled\":true"] {
             XCTAssertTrue(json.contains(key), "\(key) missing in \(json)")
@@ -159,6 +159,35 @@ final class ModelTests: XCTestCase {
         XCTAssertFalse(echoConfirms(pending: b, echoed: a))
         XCTAssertTrue(echoConfirms(pending: b, echoed: b))
         XCTAssertFalse(echoConfirms(pending: b, echoed: nil))
+    }
+
+    func testPageItemEditing() {
+        var s = WatchSettings()
+        let defaults = defaultPageItems["flight"]!
+        s.pages[0].items = []  // a version 1 document
+        s.togglePageItem("flight", "tank_pressure", defaults: defaults)
+        XCTAssertEqual(s.pages[0].items, defaults + ["tank_pressure"])
+        s.movePageItem("flight", "tank_pressure", up: true, defaults: defaults)
+        XCTAssertEqual(s.pages[0].items, ["flight_state", "t_clock", "altitude", "tank_pressure", "velocity"])
+        for id in s.pages[0].items { s.togglePageItem("flight", id, defaults: defaults) }
+        XCTAssertEqual(s.pages[0].items, ["velocity"], "never empties")
+        for i in 0..<20 { s.togglePageItem("flight", "item\(i)", defaults: defaults) }
+        XCTAssertEqual(s.pages[0].items.count, maxPageItems)
+        s.togglePageItem("flight", "bogus", defaults: defaults, known: ["velocity"])
+        XCTAssertFalse(s.pages[0].items.contains("bogus"))
+        s.pages[0].actions = ["Abort", "Dump"]
+        s.removePageAction("flight", "Abort")
+        XCTAssertEqual(s.pages[0].actions, ["Dump"])
+    }
+
+    func testVersion1SettingsDecodeToDefaultLayout() throws {
+        let snap = try XCTUnwrap(Snapshot.parse(Self.docSnapshot))
+        let s = try XCTUnwrap(snap.settings)
+        XCTAssertTrue(s.pages.allSatisfy { $0.items.isEmpty && $0.actions.isEmpty })
+        XCTAssertTrue(s.directLink)
+        let pages = resolvedPages(s, catalog: snap.catalog?.pages ?? [])
+        XCTAssertEqual(pages.first?.items, ["flight_state", "t_clock", "altitude", "velocity"])
+        XCTAssertTrue(pages.allSatisfy { $0.actions.isEmpty })
     }
 
     func testResolvedPages() throws {

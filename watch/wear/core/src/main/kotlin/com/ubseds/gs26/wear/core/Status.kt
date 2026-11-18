@@ -8,36 +8,63 @@ enum class StatusTone { OK, WAITING, WARN, ALERT }
 
 data class StatusLine(val text: String, val tone: StatusTone)
 
-/** What the watch knows about the phone and the phone's station. */
+/** The direct link's state for the status lines. */
+data class DirectInfo(val configured: Boolean, val polling: Boolean, val error: String?) {
+    companion object {
+        val OFF = DirectInfo(configured = false, polling = false, error = null)
+    }
+}
+
+/** What the watch knows about its data path ("via phone" or "direct to GS") and the station. */
 data class ConnectionStatus(
-    /** Phone app link: reachable, data age. */
+    /** The data path in use and the data age. */
     val phone: StatusLine,
-    /** The phone's station connection; null before the first snapshot. */
+    /** The station connection; null before the first snapshot. */
     val station: StatusLine?,
     /** Show "Open the GS app on your phone": only when the phone is not
-     *  reachable and there is no fresh data from it. */
+     *  reachable and there is no fresh data. */
     val openPhoneApp: Boolean,
+    /** Direct-link trouble or progress while the shown data is not fresh. */
+    val direct: StatusLine? = null,
 ) {
     companion object {
         const val OPEN_PHONE_APP = "Open the GS app on your phone"
 
-        fun of(snapshot: Snapshot?, ageMs: Long, phoneReachable: Boolean): ConnectionStatus {
+        /** [snapshot] and [ageMs] belong to [route] (for DIRECT, the merged direct status). */
+        fun of(
+            snapshot: Snapshot?,
+            ageMs: Long,
+            phoneReachable: Boolean,
+            route: LinkRoute = LinkRoute.PHONE,
+            direct: DirectInfo = DirectInfo.OFF,
+        ): ConnectionStatus {
             if (snapshot == null) {
                 return ConnectionStatus(
                     phone = if (phoneReachable) StatusLine("Phone app open · waiting for data", StatusTone.WAITING)
                     else StatusLine(OPEN_PHONE_APP, StatusTone.ALERT),
                     station = null,
                     openPhoneApp = !phoneReachable,
+                    direct = directLine(direct),
                 )
             }
             val age = ageMs.coerceAtLeast(0)
             val lost = age > snapshot.linkTimeoutS.coerceAtLeast(1) * 1000
             val phone = when {
-                !lost -> StatusLine("Phone connected · updated ${Format.age(age)} ago", StatusTone.OK)
+                route == LinkRoute.DIRECT && lost ->
+                    StatusLine("Direct to GS · last update ${Format.age(age)} ago", StatusTone.ALERT)
+                route == LinkRoute.DIRECT -> StatusLine("Direct to GS · updated ${Format.age(age)} ago", StatusTone.OK)
+                !lost -> StatusLine("Via phone · updated ${Format.age(age)} ago", StatusTone.OK)
                 phoneReachable -> StatusLine("Phone reachable · no update for ${Format.age(age)}", StatusTone.WARN)
                 else -> StatusLine("Phone not reachable · last update ${Format.age(age)} ago", StatusTone.ALERT)
             }
-            return ConnectionStatus(phone, stationLine(snapshot), lost && !phoneReachable)
+            return ConnectionStatus(phone, stationLine(snapshot), lost && !phoneReachable, if (lost) directLine(direct) else null)
+        }
+
+        private fun directLine(d: DirectInfo): StatusLine? = when {
+            !d.configured -> null
+            d.error != null -> StatusLine("Can't reach GS directly: ${d.error}", StatusTone.ALERT)
+            d.polling -> StatusLine("Contacting GS directly…", StatusTone.WAITING)
+            else -> null
         }
 
         private fun stationLine(snap: Snapshot): StatusLine {

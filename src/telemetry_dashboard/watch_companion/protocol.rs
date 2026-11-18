@@ -96,7 +96,28 @@ pub struct Page {
     pub id: &'static str,
     pub kind: &'static str,
     pub title: &'static str,
-    pub items: &'static [&'static str],
+    /// Rows of an `items` page, in the user's order.
+    pub items: Vec<String>,
+    /// Opt-in action buttons (at most two), already filtered to what the GS
+    /// offers this account on the watch.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<PageAction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PageAction {
+    pub cmd: String,
+    pub label: String,
+    /// Abort: one tap plus confirm, never disabled on the watch.
+    pub abort: bool,
+}
+
+/// The GS's enable state for one page action.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ActionState {
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -138,6 +159,10 @@ pub struct Snapshot {
     pub targets: Vec<Target>,
     pub settings: WatchSettings,
     pub catalog: Catalog,
+    /// Enable state of every action on `pages`, from the phone's action
+    /// policy. Absent when no page has actions.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub actions: BTreeMap<String, ActionState>,
     /// Seconds after which the watch should treat the phone link as lost.
     pub link_timeout_s: u64,
 }
@@ -165,12 +190,39 @@ pub fn page(p: &'static registry::PageDef) -> Page {
         id: p.id,
         kind: p.kind.wire(),
         title: p.title,
-        items: p.items,
+        items: p.items.iter().map(|i| (*i).to_string()).collect(),
+        actions: Vec::new(),
     }
 }
 
-pub fn resolved_pages(settings: &WatchSettings) -> Vec<Page> {
-    settings.enabled_pages().map(page).collect()
+/// Enabled pages in the user's order with their configured rows and the
+/// configured actions that `catalog` (the GS's watch action list for this
+/// account) offers. An empty catalog shows no actions at all.
+pub fn resolved_pages(
+    settings: &WatchSettings,
+    catalog: &[super::actions::CatalogAction],
+) -> Vec<Page> {
+    settings
+        .pages
+        .iter()
+        .filter(|s| s.enabled)
+        .filter_map(|s| {
+            let def = registry::page(&s.id)?;
+            let mut out = page(def);
+            if def.kind == registry::PageKind::Items && !s.items.is_empty() {
+                out.items = s.items.clone();
+            }
+            out.actions = super::actions::permitted(&s.actions, catalog)
+                .into_iter()
+                .map(|a| PageAction {
+                    cmd: a.cmd.clone(),
+                    label: a.label.clone(),
+                    abort: a.cmd == "Abort",
+                })
+                .collect();
+            Some(out)
+        })
+        .collect()
 }
 
 /// Messages the watch may send. Anything else is ignored. There is no
@@ -246,7 +298,7 @@ mod tests {
         let mut s = WatchSettings::default();
         s.move_page("compass", true);
         s.toggle_page("propulsion");
-        let pages = resolved_pages(&s);
+        let pages = resolved_pages(&s, &[]);
         assert!(pages.iter().all(|p| p.id != "propulsion"));
         let ids: Vec<_> = pages.iter().map(|p| p.id).collect();
         assert_eq!(

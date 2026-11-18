@@ -5,7 +5,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -22,6 +28,7 @@ import androidx.wear.compose.material.Switch
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.ToggleChip
 import com.ubseds.gs26.wear.PhoneLink
+import com.ubseds.gs26.wear.core.PageKind
 import com.ubseds.gs26.wear.core.WatchSettings
 import com.ubseds.gs26.wear.core.WatchSettings.Companion.NORTH_MAGNETIC
 import com.ubseds.gs26.wear.core.WatchSettings.Companion.NORTH_TRUE
@@ -38,8 +45,16 @@ import com.ubseds.gs26.wear.core.WatchState
  */
 @Composable
 fun SettingsScreen(state: WatchState, link: PhoneLink, onDone: () -> Unit) {
+    var editingPage by rememberSaveable { mutableStateOf<String?>(null) }
+    val page = editingPage
+    if (page != null) {
+        BackHandler { editingPage = null }
+        PageContentScreen(state, link, page, onDone = { editingPage = null })
+        return
+    }
     val s = state.settings
     val catalog = state.snapshot?.catalog
+    val direct by link.direct.state.collectAsStateWithLifecycle()
     val edit: ((WatchSettings) -> WatchSettings) -> Unit = link::editSettings
     val pageTitles = catalog?.pages?.associate { it.id to it.title }.orEmpty()
     val itemLabels = catalog?.items?.associate { it.id to it.label }.orEmpty()
@@ -65,6 +80,43 @@ fun SettingsScreen(state: WatchState, link: PhoneLink, onDone: () -> Unit) {
                 checked = p.enabled,
                 onToggle = { edit { it.togglePage(p.id) } },
                 onMove = { up -> edit { it.movePage(p.id, up) } },
+            )
+        }
+
+        for (p in s.pages) {
+            val def = catalog?.pages?.firstOrNull { it.id == p.id } ?: continue
+            if (def.kind != PageKind.ITEMS && p.actions.isEmpty()) continue
+            item(key = "content-${p.id}") {
+                Chip(
+                    onClick = { editingPage = p.id },
+                    label = { Text("Rows & actions: ${def.title}", fontSize = 12.sp) },
+                    colors = ChipDefaults.secondaryChipColors(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        item { ListHeader { Text("Direct link") } }
+        item {
+            val p = direct.provision
+            Text(
+                if (p != null && p.configured) {
+                    "${p.address} · " + (if (p.commands.isEmpty()) "read-only" else p.commands.joinToString(", "))
+                } else {
+                    "Not set up. Sign in on the phone app."
+                },
+                fontSize = 11.sp,
+                color = Dim,
+                textAlign = TextAlign.Center,
+            )
+        }
+        item {
+            ToggleChip(
+                checked = s.directLink,
+                onCheckedChange = { edit { it.copy(directLink = !it.directLink) } },
+                label = { Text("Use direct link", fontSize = 12.sp) },
+                toggleControl = { Switch(checked = s.directLink) },
+                modifier = Modifier.fillMaxWidth(),
             )
         }
 
@@ -191,5 +243,65 @@ private fun Stepper(label: String, onMinus: () -> Unit, onPlus: () -> Unit) {
         CompactButton(onClick = onMinus) { Text("−") }
         Text(label, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
         CompactButton(onClick = onPlus) { Text("+") }
+    }
+}
+
+/**
+ * Rows of one items page (toggle, reorder, add from the catalog) and its
+ * action buttons, which can be removed here; adding actions is done on the
+ * phone, which knows what the station lets this account run.
+ */
+@Composable
+private fun PageContentScreen(state: WatchState, link: PhoneLink, pageId: String, onDone: () -> Unit) {
+    val edit: ((WatchSettings) -> WatchSettings) -> Unit = link::editSettings
+    val catalog = state.snapshot?.catalog
+    val def = catalog?.pages?.firstOrNull { it.id == pageId }
+    val defaults = def?.items ?: WatchSettings.DEFAULT_PAGE_ITEMS[pageId].orEmpty()
+    val setting = state.settings.pages.firstOrNull { it.id == pageId }
+    val rows = setting?.items?.ifEmpty { defaults } ?: defaults
+    val labels = catalog?.items?.associate { it.id to it.label }.orEmpty()
+    val known = labels.keys
+    val listState = rememberScalingLazyListState()
+    ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        item { ListHeader { Text(def?.title ?: pageId) } }
+        if (def?.kind == PageKind.ITEMS) {
+            for (id in rows) {
+                orderedToggle(
+                    key = "row-$id",
+                    label = labels[id] ?: id,
+                    checked = true,
+                    onToggle = { edit { it.togglePageItem(pageId, id, defaults) { k -> known.isEmpty() || k in known } } },
+                    onMove = { up -> edit { it.movePageItem(pageId, id, up, defaults) } },
+                )
+            }
+            for (ci in catalog?.items.orEmpty().filter { it.id !in rows }) {
+                orderedToggle(
+                    key = "row-${ci.id}",
+                    label = ci.label,
+                    checked = false,
+                    onToggle = { edit { it.togglePageItem(pageId, ci.id, defaults) { k -> k in known } } },
+                    onMove = null,
+                )
+            }
+        }
+        item { ListHeader { Text("Actions") } }
+        for (cmd in setting?.actions.orEmpty()) {
+            orderedToggle(
+                key = "action-$cmd",
+                label = cmd,
+                checked = true,
+                onToggle = { edit { it.removePageAction(pageId, cmd) } },
+                onMove = null,
+            )
+        }
+        item { Text("Add actions in the phone app: Settings › Watch.", fontSize = 10.sp, color = Dim, textAlign = TextAlign.Center) }
+        item {
+            Chip(
+                onClick = onDone,
+                label = { Text("Done") },
+                colors = ChipDefaults.primaryChipColors(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }

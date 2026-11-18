@@ -1,17 +1,24 @@
+import Combine
 import Foundation
 import WatchConnectivity
 import WatchCore
 
-/// WatchConnectivity link to the GS26 phone app. Receives snapshots and
-/// sends only `hello`, `activity` and `settings` messages.
+/// WatchConnectivity link to the GS26 phone app plus the direct link to the
+/// station. Receives snapshots and the direct-link provisioning from the
+/// phone and sends it only `hello`, `activity` and `settings` messages. The
+/// shown data comes from the phone while its data is fresh, otherwise from
+/// the station itself (WatchCore `chooseRoute`).
 final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
-    @Published private(set) var snapshot: Snapshot? = nil
-    @Published private(set) var receivedAtMs: Int64? = nil
+    /// The phone's last snapshot (pages, settings, catalog, values).
+    @Published private(set) var phoneSnapshot: Snapshot? = nil
+    @Published private(set) var phoneReceivedAtMs: Int64? = nil
     /// Local settings edit not yet echoed back by the phone.
     @Published private(set) var pendingSettings: WatchSettings? = nil
     /// WCSession.isReachable: the iPhone is in range and its GS app can be
     /// messaged (iOS wakes it in the background if needed).
     @Published private(set) var phoneReachable = false
+
+    private let directKey = "gs26_direct"
 
     private enum Keys {
         static let snapshot = "gs26.snapshot.json"
@@ -22,45 +29,112 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     private var foreground = false
     private var currentPage: String?
     private var activityTimer: Timer?
+    /// Direct link to the station (provisioned by the phone).
+    let direct = DirectLink()
+    private var directChanges: AnyCancellable?
 
     override init() {
         super.init()
         if let json = defaults.string(forKey: Keys.snapshot), let snap = Snapshot.parse(json) {
-            snapshot = snap
-            receivedAtMs = Int64(defaults.double(forKey: Keys.receivedAt))
+            phoneSnapshot = snap
+            phoneReceivedAtMs = Int64(defaults.double(forKey: Keys.receivedAt))
         }
+        directChanges = direct.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         if WCSession.isSupported() {
             WCSession.default.delegate = self
             WCSession.default.activate()
         }
     }
 
+    // MARK: Route
+
+    private var power: Power { settings?.power ?? .balanced }
+
+    private func phoneAge(_ nowMs: Int64) -> Int64? {
+        phoneReceivedAtMs.map { max(0, nowMs - $0) }
+    }
+
+    private func directAge(_ nowMs: Int64) -> Int64? {
+        direct.receivedAtMs.map { max(0, nowMs - $0) }
+    }
+
+    /// Phone while its data is fresh, else the station itself.
+    func route(nowMs: Int64 = currentTimeMs()) -> LinkRoute {
+        chooseRoute(phoneMode: phoneSnapshot?.mode, phoneAgeMs: phoneAge(nowMs),
+                    directAgeMs: direct.snapshot == nil ? nil : directAge(nowMs), freshMs: phoneFreshMs(power))
+    }
+
     // MARK: Derived state
 
+    /// The data to show: the phone's snapshot, or the station's own status
+    /// with the phone's pages and settings.
+    var snapshot: Snapshot? {
+        if route() == .direct, let status = direct.snapshot {
+            return status.mergedDirect(base: phoneSnapshot, address: direct.provision?.address ?? "")
+        }
+        return phoneSnapshot
+    }
+
+    var receivedAtMs: Int64? {
+        route() == .direct ? direct.receivedAtMs : phoneReceivedAtMs
+    }
+
     /// Effective settings: our pending edit, else the phone's copy.
-    var settings: WatchSettings? { pendingSettings ?? snapshot?.settings }
+    var settings: WatchSettings? { pendingSettings ?? phoneSnapshot?.settings }
 
     var isSyncing: Bool { pendingSettings != nil }
 
     /// Pages in display order. A pending local edit is applied at once by
     /// resolving it against the phone's catalog.
     var pages: [Page] {
-        guard let snap = snapshot else { return [] }
+        guard let snap = phoneSnapshot else { return [] }
         if let pending = pendingSettings, let catalog = snap.catalog?.pages, !catalog.isEmpty {
-            return resolvedPages(pending, catalog: catalog)
+            return resolvedPages(pending, catalog: catalog, published: snap.pages)
         }
         return snap.pages
     }
 
     func connectionStatus(nowMs: Int64) -> ConnectionStatus {
-        ConnectionStatus(snapshot: snapshot, ageMs: elapsedMs(nowMs: nowMs), phoneReachable: phoneReachable)
+        let current = route(nowMs: nowMs)
+        let info = DirectInfo(configured: direct.configured, polling: direct.polling, error: direct.lastError)
+        return ConnectionStatus(snapshot: snapshot, ageMs: elapsedMs(nowMs: nowMs), phoneReachable: phoneReachable,
+                                route: current, direct: info)
+    }
+
+    /// The shown data is recent enough to act on.
+    func dataIsFresh(nowMs: Int64) -> Bool {
+        guard let snap = snapshot, snap.mode == .live else { return false }
+        return elapsedMs(nowMs: nowMs) <= Int64(snap.linkTimeoutS) * 1000
     }
 
     func elapsedMs(nowMs: Int64) -> Int64 {
         max(0, nowMs - (receivedAtMs ?? nowMs))
     }
 
+    /// Station enable state for a page action: the station's own status
+    /// when reading it directly, else what the phone relayed.
+    func actionState(_ cmd: String) -> ActionState? {
+        snapshot?.actions[cmd]
+    }
+
+    /// Polls the station only while in front and the phone's data is not
+    /// fresh. Call again when the power setting (poll rate) changes.
+    func updateDirectPolling() {
+        direct.setActive(foreground, intervalMs: directPollMs(power)) { [weak self] in
+            guard let self, let provision = self.direct.provision, provision.configured else { return nil }
+            let now = currentTimeMs()
+            guard shouldPollDirect(phoneMode: self.phoneSnapshot?.mode, phoneAgeMs: self.phoneAge(now),
+                                   freshMs: phoneFreshMs(self.power), foreground: self.foreground,
+                                   configured: true)
+            else { return nil }
+            let s = self.settings ?? WatchSettings()
+            return statusURL(base: provision.base, units: s.units, actions: pageActionCommands(self.pages),
+                             staleAfterS: s.compass.staleAfterS)
+        }
+    }
+
     func compassDisplays(reading: CompassReading, nowMs: Int64) -> [TargetDisplay] {
+        // Targets come from whichever source is shown.
         guard let snap = snapshot, let at = receivedAtMs else { return [] }
         return Compass.displays(targets: snap.targets, settings: settings ?? WatchSettings(),
                                 reading: reading, receivedAtMs: at, nowMs: nowMs)
@@ -70,6 +144,7 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
 
     func setForeground(_ isForeground: Bool) {
         foreground = isForeground
+        updateDirectPolling()
         if isForeground, WCSession.isSupported(), WCSession.default.activationState == .activated {
             phoneReachable = WCSession.default.isReachable
         }
@@ -138,15 +213,15 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     private func receive(_ json: String, replayedContext: Bool = false) {
         guard let snap = Snapshot.parse(json) else { return }
         let now = currentTimeMs()
-        if let current = snapshot {
+        if let current = phoneSnapshot {
             // The stored application context on launch may be the snapshot
             // we already have; do not make old data look fresh.
             if replayedContext && snap.seq == current.seq { return }
             // Context and message can arrive out of order.
-            if snap.seq < current.seq, let at = receivedAtMs, now - at < 3_000 { return }
+            if snap.seq < current.seq, let at = phoneReceivedAtMs, now - at < 3_000 { return }
         }
-        snapshot = snap
-        receivedAtMs = now
+        phoneSnapshot = snap
+        phoneReceivedAtMs = now
         if let pending = pendingSettings, echoConfirms(pending: pending, echoed: snap.settings) {
             pendingSettings = nil
         }
@@ -176,6 +251,13 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         guard let json = message[phoneToWatchKey] as? String else { return }
         DispatchQueue.main.async { self.receive(json) }
+    }
+
+    /// Direct-link provisioning (station address and watch token), queued
+    /// by the phone with transferUserInfo.
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        guard let json = userInfo[directKey] as? String else { return }
+        DispatchQueue.main.async { self.direct.apply(provisionJSON: json) }
     }
 
     func sessionReachabilityDidChange(_ session: WCSession) {

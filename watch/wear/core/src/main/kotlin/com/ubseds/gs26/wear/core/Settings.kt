@@ -10,14 +10,16 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class WatchSettings(
-    val version: Int = 1,
+    val version: Int = 2,
     @SerialName("updated_ms") val updatedMs: Long = 0,
     @SerialName("updated_by") val updatedBy: String = "phone",
-    val pages: List<PageSetting> = DEFAULT_PAGES.map { PageSetting(it, true) },
+    val pages: List<PageSetting> = DEFAULT_PAGES.map { PageSetting(it, true, DEFAULT_PAGE_ITEMS[it].orEmpty()) },
     val cycle: CycleSetting = CycleSetting(),
     val compass: CompassSetting = CompassSetting(),
     val units: String = UNITS_METRIC,
     val power: String = POWER_BALANCED,
+    /** The watch may read the station itself while the phone app is away. */
+    @SerialName("direct_link") val directLink: Boolean = true,
 ) {
     val metric: Boolean get() = units != UNITS_IMPERIAL
     val magneticNorth: Boolean get() = compass.north == NORTH_MAGNETIC
@@ -54,6 +56,32 @@ data class WatchSettings(
         return copy(compass = compass.copy(targets = next))
     }
 
+    /**
+     * Adds or removes a row on an `items` page; never empties the page, never
+     * exceeds [MAX_PAGE_ITEMS]. [defaults] are the page's rows when the
+     * document has none yet (version 1).
+     */
+    fun togglePageItem(page: String, item: String, defaults: List<String>, known: (String) -> Boolean = { true }): WatchSettings =
+        copy(pages = pages.map { p ->
+            if (p.id != page) return@map p
+            val items = p.items.ifEmpty { defaults }
+            val next = when {
+                item in items -> if (items.size > 1) items - item else items
+                items.size < MAX_PAGE_ITEMS && known(item) -> items + item
+                else -> items
+            }
+            p.copy(items = next)
+        })
+
+    fun movePageItem(page: String, item: String, up: Boolean, defaults: List<String>): WatchSettings =
+        copy(pages = pages.map { p ->
+            if (p.id != page) p else p.copy(items = moveIn(p.items.ifEmpty { defaults }, up) { it == item })
+        })
+
+    /** Removes an action button (adding is done on the phone, which knows what the station permits). */
+    fun removePageAction(page: String, cmd: String): WatchSettings =
+        copy(pages = pages.map { p -> if (p.id != page) p else p.copy(actions = p.actions - cmd) })
+
     fun withNorth(north: String) = copy(compass = compass.copy(north = north))
     fun withUnits(units: String) = copy(units = units)
     fun withPower(power: String) = copy(power = power)
@@ -70,6 +98,8 @@ data class WatchSettings(
         const val MIN_STALE_S = 5
         const val MAX_STALE_S = 600
         const val MAX_CYCLE_ITEMS = 12
+        const val MAX_PAGE_ITEMS = 8
+        const val MAX_PAGE_ACTIONS = 2
 
         const val NORTH_TRUE = "true"
         const val NORTH_MAGNETIC = "magnetic"
@@ -81,13 +111,46 @@ data class WatchSettings(
         const val EDITOR_WATCH = "watch"
 
         val DEFAULT_PAGES = listOf("flight", "propulsion", "trajectory", "health", "cycle", "compass")
+
+        /** Rows of each `items` page before page configuration existed (the phone registry's). */
+        val DEFAULT_PAGE_ITEMS = mapOf(
+            "flight" to listOf("flight_state", "t_clock", "altitude", "velocity"),
+            "propulsion" to listOf("tank_pressure", "chamber_pressure", "loadcell_mass", "fill_percent"),
+            "trajectory" to listOf("altitude", "velocity", "gps_altitude", "gps_sats"),
+            "health" to listOf("station_link", "boards", "av_battery", "rocket_fix_age"),
+        )
         val DEFAULT_TARGETS = listOf("rocket", "ground_station", "rrls")
         val DEFAULT_CYCLE = listOf("flight_state", "t_clock", "altitude", "velocity", "tank_pressure")
     }
 }
 
 @Serializable
-data class PageSetting(val id: String, val enabled: Boolean = true)
+data class PageSetting(
+    val id: String,
+    val enabled: Boolean = true,
+    /** `items` pages: rows in order; empty (version 1) means the page's default rows. */
+    val items: List<String> = emptyList(),
+    /** Opt-in action buttons (GS command names), at most two. */
+    val actions: List<String> = emptyList(),
+)
+
+/**
+ * Pages to show for [settings], resolved against the phone's catalog (used
+ * while a local edit has not been echoed yet). Rows come from the settings
+ * (the catalog's when none are set); actions are truncated to two, then
+ * limited to those the phone published on some page, i.e. the ones the
+ * station permits. Checked against the `page_layout` vectors.
+ */
+fun resolvedPages(settings: WatchSettings, catalog: List<Page>, published: List<Page> = emptyList()): List<Page> {
+    val permitted = LinkedHashMap<String, PageAction>()
+    for (page in published) for (action in page.actions) permitted.putIfAbsent(action.cmd, action)
+    return settings.pages.filter { it.enabled }.mapNotNull { s ->
+        val page = catalog.firstOrNull { it.id == s.id } ?: return@mapNotNull null
+        val items = if (page.kind == PageKind.ITEMS && s.items.isNotEmpty()) s.items.take(WatchSettings.MAX_PAGE_ITEMS) else page.items
+        val actions = s.actions.take(WatchSettings.MAX_PAGE_ACTIONS).mapNotNull { permitted[it] }.distinctBy { it.cmd }
+        page.copy(items = items, actions = actions)
+    }
+}
 
 @Serializable
 data class CycleSetting(

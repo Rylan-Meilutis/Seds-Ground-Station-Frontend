@@ -25,6 +25,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        // While foreground and the phone's data is not fresh, read the
+        // station directly (plain HTTP polls, nothing in the background).
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                try {
+                    while (true) delay(link.pollDirectIfNeeded())
+                } finally {
+                    link.direct.setPolling(false)
+                }
+            }
+        }
     }
 
     override fun onStart() {

@@ -17,7 +17,9 @@ import java.util.ArrayDeque
 /**
  * Phone side of the Wear OS companion. Rust publishes snapshot JSON and polls
  * watch messages through the static methods below; this object only moves
- * strings between the Wear Data Layer and a small queue.
+ * strings between the Wear Data Layer and a small queue. While a watch with
+ * the GS app is reachable it runs [WatchLinkService] so the publisher keeps
+ * running in the background.
  */
 object WatchBridge : MessageClient.OnMessageReceivedListener,
     DataClient.OnDataChangedListener,
@@ -25,6 +27,8 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     private const val SNAPSHOT_PATH = "/gs26/snapshot"
     private const val WATCH_MESSAGE_PATH = "/gs26/watch"
     private const val WATCH_SETTINGS_PATH = "/gs26/watch_settings"
+    /** Direct-link provisioning: station address + scoped watch token. */
+    private const val DIRECT_PATH = "/gs26/direct"
     private const val WATCH_CAPABILITY = "gs26_watch"
     private const val MAX_QUEUED = 32
     private const val MAX_MESSAGE_BYTES = 32 * 1024
@@ -91,6 +95,23 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
         Wearable.getDataClient(ctx).putDataItem(put)
     }
 
+    /**
+     * Direct-link provisioning for the watch. A DataItem syncs to the watch
+     * whenever it is connected, also after this app went to the background;
+     * the watch moves the token into its Keystore-encrypted storage. A
+     * message with `enabled: false` replaces it and makes the watch forget
+     * the token.
+     */
+    @JvmStatic
+    fun provision(json: String) {
+        val ctx = appContext ?: return
+        val request = PutDataMapRequest.create(DIRECT_PATH).apply {
+            dataMap.putString("json", json)
+            dataMap.putLong("at", System.currentTimeMillis())
+        }
+        Wearable.getDataClient(ctx).putDataItem(request.asPutDataRequest().setUrgent())
+    }
+
     @JvmStatic
     fun takeIncoming(): String? = synchronized(incoming) { incoming.pollFirst() }
 
@@ -114,7 +135,13 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
             .addOnSuccessListener {
                 installedNodes = it.nodes.size
                 queried = true
+                updateService(ctx)
             }
+    }
+
+    /** Foreground service while a watch with the GS app is connected. */
+    private fun updateService(ctx: Context) {
+        if (watchNodes > 0) WatchLinkService.start(ctx) else WatchLinkService.stop(ctx)
     }
 
     private fun enqueue(json: String) {

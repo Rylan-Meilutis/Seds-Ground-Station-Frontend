@@ -1,5 +1,6 @@
 //! Publishes snapshots to the watch and handles the watch's three message
-//! types. Mounted inside the live dashboard (follows the connected station)
+//! types (none of which reaches a station command; the watch sends its page
+//! actions to the GS itself with its watch token). Mounted inside the live dashboard (follows the connected station)
 //! and inside the offline preview (demo mode). The app-wide status publisher
 //! covers everything before that: the Connect screen, the session check,
 //! sign-in and connection failures.
@@ -21,6 +22,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 const ACTIVE_HOLD_MS: f64 = 30_000.0;
 const ACCOUNT_REFRESH_MS: f64 = 60_000.0;
 const LOOP_MS: u64 = 500;
+/// How often the dashboard publisher checks the direct-link token.
+const DIRECT_TICK_MS: f64 = 2_000.0;
 
 /// Last antenna status and the monotonic time it arrived, kept so a
 /// `no_station` snapshot can still carry the last known targets.
@@ -216,9 +219,11 @@ fn no_station_snapshot(
     phase: &super::PhonePhase,
     settings: &WatchSettings,
     account: Account,
+    catalog: &[super::actions::CatalogAction],
 ) -> super::protocol::Snapshot {
     let none = |_: &str, _: Option<&str>, _: usize| None;
     let antenna = LAST_ANTENNA.lock().ok().and_then(|g| g.clone());
+
     let now = monotonic_now_ms();
     let input = Inputs {
         mode: Mode::NoStation,
@@ -233,6 +238,8 @@ fn no_station_snapshot(
         antenna: antenna.as_ref().map(|(s, at)| (s, (now - at) as i64)),
         rocket_from_telemetry: None,
         settings,
+        catalog,
+        policy: None,
     };
     snapshot::build(&input)
 }
@@ -240,9 +247,12 @@ fn no_station_snapshot(
 /// Snapshot sent when a dashboard publisher unmounts: the phone left the
 /// station (sign-out, switching stations, connection page).
 fn publish_no_station() {
-    let settings = super::effective_settings(super::watch_settings_available());
+    let eligible = super::watch_settings_available();
+    let settings = super::effective_settings(eligible);
+    // Keep the page actions: the watch may still reach the station itself.
+    let catalog = if eligible { super::catalog_actions() } else { Vec::new() };
     publish(
-        &no_station_snapshot(&super::phone_status::phone_phase(), &settings, account_state()),
+        &no_station_snapshot(&super::phone_status::phone_phase(), &settings, account_state(), &catalog),
         false,
     );
 }
@@ -276,6 +286,7 @@ pub(crate) fn use_status_publisher() {
                 crate::debug_log::append(&line);
             }
             if SCREEN_PUBLISHERS.load(Ordering::Acquire) == 0 {
+                super::direct_check_account();
                 let phase = super::phone_status::phone_phase();
                 if last_phase.as_ref() != Some(&phase) {
                     last_phase = Some(phase.clone());
@@ -286,7 +297,8 @@ pub(crate) fn use_status_publisher() {
                     let settings = super::effective_settings(eligible);
                     let active = rate.active(now, link);
                     if rate.due(now, active, &settings) {
-                        publish(&no_station_snapshot(&phase, &settings, account_state()), active);
+                        let catalog = if eligible { super::catalog_actions() } else { Vec::new() };
+                        publish(&no_station_snapshot(&phase, &settings, account_state(), &catalog), active);
                     }
                 }
             } else {
@@ -317,6 +329,7 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
             ..Rate::default()
         };
         let mut last_sync = f64::NEG_INFINITY;
+        let mut last_direct = f64::NEG_INFINITY;
         let mut last_antenna_poll = f64::NEG_INFINITY;
         let mut was_eligible = false;
         loop {
@@ -340,6 +353,11 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
             {
                 last_sync = now;
                 super::sync_once().await;
+                super::refresh_action_catalog().await;
+            }
+            if now - last_direct >= DIRECT_TICK_MS {
+                last_direct = now;
+                super::direct_tick(eligible).await;
             }
             if link.supported && link.paired {
                 let settings = super::effective_settings(eligible);
@@ -379,6 +397,8 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                             .then(|| (list.iter().filter(|b| b.seen).count(), list.len()))
                     };
                     let telemetry = telemetry_sample;
+                    let catalog = if eligible { super::catalog_actions() } else { Vec::new() };
+                    let policy = crate::telemetry_dashboard::ACTION_POLICY_SIGNAL.peek().clone();
                     let input = Inputs {
                         mode: Mode::Live,
                         seq,
@@ -394,6 +414,8 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                             .map(|(s, at)| (s, (monotonic_now_ms() - at) as i64)),
                         rocket_from_telemetry: rocket_from_telemetry(),
                         settings: &settings,
+                        catalog: &catalog,
+                        policy: Some(&policy),
                     };
                     publish(&snapshot::build(&input), active);
                 }
@@ -471,6 +493,7 @@ mod tests {
             },
             &settings,
             signed_out(),
+            &[],
         );
         let value = serde_json::to_value(&connecting).unwrap();
         assert_eq!(value["mode"], "no_station");
@@ -484,10 +507,11 @@ mod tests {
             },
             &settings,
             signed_out(),
+            &[],
         );
         assert_eq!(serde_json::to_value(&sign_in).unwrap()["station"]["link"], "sign_in");
         assert!(sign_in.seq > connecting.seq);
-        let choosing = no_station_snapshot(&PhonePhase::ChoosingStation, &settings, signed_out());
+        let choosing = no_station_snapshot(&PhonePhase::ChoosingStation, &settings, signed_out(), &[]);
         let value = serde_json::to_value(&choosing).unwrap();
         assert_eq!(value["station"]["link"], "offline");
         assert_eq!(value["station"]["address"], "");

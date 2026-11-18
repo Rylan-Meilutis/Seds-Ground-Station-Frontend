@@ -1,30 +1,41 @@
 # Watch companion (Apple Watch and Wear OS)
 
-Read-only companion apps that show live data pages, an auto-cycle page and a
-recovery compass. Watches never talk to a station and never send commands.
+Companion apps that show configurable data pages, an auto-cycle page, a
+recovery compass and up to two opt-in action buttons per page.
 
 ```
 Apple Watch ──WatchConnectivity──┐
                                  ├─ phone app ──HTTPS/WS (existing session)── GroundStation or RRLS
-Wear OS watch ──Wear Data Layer──┘
+Wear OS watch ──Wear Data Layer──┘                                                  │
+      │                                                                             │
+      └──── direct link: HTTP polls + page actions with a scoped watch token ───────┘
+            (watch Wi-Fi/LTE or the system Bluetooth proxy; only while the phone's data is not fresh)
 ```
 
-* **Topology is fixed.** The watch only talks to the phone app. The phone uses
-  whichever station it is connected to (GroundStation or RRLS) and follows it
-  when it switches, because the publisher lives inside the dashboard that is
-  remounted on every connection change.
+* **Phone first.** The watch shows the phone's snapshots while they are
+  fresh. The phone uses whichever station it is connected to (GroundStation
+  or RRLS) and follows it when it switches, because the publisher lives
+  inside the dashboard that is remounted on every connection change.
+* **Direct link when the phone is away.** iOS suspends the phone app in the
+  background, so WatchConnectivity snapshots stop. The phone provisions the
+  watch with the station address and a scoped, revocable watch token; while
+  the watch app is in front and the phone's data is not fresh, the watch
+  polls `GET /api/watch/status` itself (see "Direct link" below).
 * **Mode follows the phone.** `live` (real station), `demo` (the phone's
   offline preview; every watch page carries a DEMO banner) or `no_station`
   (phone app open on the Connect screen, checking the session, waiting for a
   sign-in or unable to reach the station; `station.link` and
   `station.address` say which, so the watch shows "Connecting to
-  gs.local:3000…" rather than nothing). When the phone app stops sending,
-  the watch keeps the last snapshot, marks it with the age of the link loss and
+  gs.local:3000…" rather than nothing). When neither the phone nor the
+  station answers, the watch keeps the last data, marks it with its age and
   keeps the compass running from the last known target fixes.
-* **Read-only.** The watch may send three message types (`hello`,
-  `activity`, `settings`). The phone ignores anything else; there is no path
-  from a watch message to a station request other than saving the user's own
-  watch settings to their account.
+* **No command path through the phone.** The watch may send the phone three
+  message types (`hello`, `activity`, `settings`). The phone ignores
+  anything else; no watch message reaches a station request other than
+  saving the user's own watch settings to their account. A page action is
+  sent by the watch itself to the station's ordinary `POST /api/command`
+  with its watch token, so the station's authorization, action policy, mode
+  gating and admission are exactly those of a phone press.
 
 ## Phone side
 
@@ -37,9 +48,13 @@ Wear OS watch ──Wear Data Layer──┘
 | Snapshot builder + publisher | `.../watch_companion/snapshot.rs`, `publisher.rs` |
 | Phone connection phase before a dashboard | `.../watch_companion/phone_status.rs` |
 | Account sync | `.../watch_companion/account_sync.rs` |
+| Page actions (permitted filter, policy state) | `.../watch_companion/actions.rs` |
+| Direct-link token and provisioning | `.../watch_companion/direct.rs` (runtime in `mod.rs`) |
 | Settings → Watch section | `.../watch_companion/settings_section.rs` |
 | iOS bridge (WatchConnectivity) | `assets/WatchBridge.m` (compiled by `build.rs` for iOS) |
 | Android bridge (Data Layer) | `platform/android/kotlin/com/ubseds/gs26/WatchBridge.kt` |
+| Android foreground service while a Wear watch is connected | `platform/android/kotlin/com/ubseds/gs26/WatchLinkService.kt` |
+| Station side | GroundStation26 `backend/src/watch.rs`, `docs/backend/watch-direct.md` |
 
 Two publishers feed the watch. The app-wide status publisher
 (`use_status_publisher`, mounted at the app root) activates the watch session
@@ -118,6 +133,100 @@ Backend: `GET`/`POST /api/account/client-settings/{namespace}` (namespace
 document (≤ 8 KiB) with a revision. It touches no telemetry, command or radio
 state.
 
+## Page configuration
+
+Settings → Watch → Pages lists the pages in swipe order. Each page can be
+turned off, moved, and opened ("Configure …") to choose:
+
+* **Rows** (items pages): which items, in which order, at most 8. A page
+  never becomes empty.
+* **Actions**: up to two buttons, chosen from the actions the station offers
+  this account on the watch (`GET /api/watch/actions`, refreshed with the
+  account sync). Off by default. An action the station no longer offers
+  (another station, a changed account, a different mode) stays in the
+  document but is hidden on the watch and marked in Settings.
+
+The auto-cycle items are chosen in the Auto-cycle card as before. The watch's
+own settings screen can change rows and remove actions; adding actions is
+phone-only, because only the phone knows what the station permits.
+
+The configuration is part of the watch settings document (version 2):
+`pages[].items` and `pages[].actions`, plus `direct_link`. It syncs to the
+account and is gated exactly like the rest of the document (signed-in user of
+the native app with the watch app installed). A version 1 document migrates
+to the layout it always had: every items page gets its registry rows, no
+actions, direct link on. Defaults equal the previous fixed layout.
+
+## Page actions
+
+* At most two per page (enforced in the editor, in `sanitize` and on the
+  watch); the phone publishes only actions the GS lists for the account
+  (`actions::permitted`), and refuses Launch/pyro-class names
+  (`actions::LAUNCH_AND_PYRO`) unless the GS entry is explicitly
+  `watch_safe`. The GS itself never lists Launch, GroundStationLaunch,
+  ResetLaunchLatch, TogglePhysicalLaunchMode, ToggleLaunchInterlock, Igniter,
+  IgniterSequence, DeployParachute, ExpandParachute, RecoverStation or the
+  HITL bench controls (`watch::WATCH_SAFE_OVERRIDES` is empty).
+* Each button shows the station's enable state and reason (from the phone's
+  live action policy, or from the station's own status on the direct link)
+  and is disabled while the station disables it or the shown data is stale.
+  Abort is never disabled: the station admits a manual Abort under every
+  policy.
+* Every press needs a confirmation on the watch: Abort is tap, then "Confirm
+  ABORT"; every other action is a confirm screen and a 1.5 s press-and-hold.
+* The watch sends the press itself (`POST /api/command` with the watch
+  token; never retried) and shows the result: **accepted** (2xx, with the
+  station's message), **refused** with the station's reason (4xx; 401 means
+  the token was not accepted) or **outcome unknown** (timeout, network error,
+  408/429/5xx: check the station).
+
+## Direct link
+
+* The phone (dashboard publisher, every 2 s) asks the GS for a watch token
+  when an eligible user is signed in, "Direct link" is on (Settings → Watch,
+  default on) and the phone is connected to a station:
+  `POST /api/auth/watch-token {"device_id": <random id of this phone install>,
+  "commands": <every permitted action on an enabled page>}`. The token can
+  read `/api/watch/status` and send only those commands; its other
+  properties (scope, digest-only storage, expiry with the phone session,
+  revocation) are in GroundStation26 `docs/backend/watch-direct.md`. The
+  user's password is never copied. A new token is requested when the
+  station, account or action set changes or within 3 days of expiry.
+* Provisioning message (phone → watch):
+  `{"v":1,"type":"direct","enabled":true,"addresses":["https://gs.local:3000"],"token":"gsw1.…","expires_at_ms":…,"username":"ada","station":"GroundStation","skip_tls":false,"commands":["Abort"]}`;
+  `enabled:false` without a token makes the watch forget its token. iOS sends
+  it with `transferUserInfo` (key `gs26_direct`), which is delivered even
+  after the phone app is suspended and is never put in the application
+  context; Android puts it in the DataItem `/gs26/direct`. The Apple Watch
+  keeps the token in its keychain (this device only); the Wear watch keeps it
+  encrypted with an Android Keystore key. Neither stores it anywhere else.
+* Revocation: signing out on the phone (GS logout revokes the tokens that
+  session issued, and the phone tells the watch to forget it); turning off
+  "Direct link" or "Revoke watch token" in Settings → Watch; an
+  administrator disabling the account.
+* Route (`chooseRoute` in WatchCore / `Direct.chooseRoute` in the Wear core,
+  `link_route` vectors): the phone's data while it is fresh (at most
+  max(6 s, 3 × the foreground snapshot interval) old and the phone is
+  connected to a station or in demo); otherwise the station's own status
+  while that is fresh; otherwise whichever is newer.
+* Polling: only while the watch app is in front, provisioned, and the
+  phone's data is not fresh; every 3 s (saver 5 s, recovery 2 s), plain
+  URLSession / HttpURLConnection requests, no sockets. The status asks for
+  the user's units, the compass staleness and the page actions' state. The
+  reply has the phone snapshot's data keys; the watch shows it with the
+  pages, settings and catalog of the phone's last snapshot.
+* The status line shows the path: "Via phone · updated 3s ago" or "Direct
+  to GS · updated 2s ago"; with no fresh data a third line says "Contacting
+  GS directly…" or "Can't reach GS directly: <error>".
+* Plain-HTTP stations: the Apple Watch app allows arbitrary loads (ATS); the
+  Wear app allows cleartext. With the phone's "skip TLS verification" for
+  the station, the watch accepts that one host's certificate without
+  verification.
+* Wear OS: the phone app also runs a foreground service ("GS watch
+  connected") while a watch with the GS app is reachable, so the phone keeps
+  publishing in the background; Android may refuse to start it from the
+  background, in which case the direct link covers it.
+
 ## Wire format v1
 
 Transport:
@@ -136,15 +245,25 @@ Snapshot (phone → watch), abridged:
  "items":{"flight_state":{"label":"State","text":"In flight · Descent","unit":"","age_ms":0,"stale":false,"level":"normal"},
           "t_clock":{"label":"T-clock","text":"T+ 01:23","unit":"","age_ms":0,"stale":false,"level":"normal","clock":{"kind":"tplus","ms":83000}},
           "altitude":{"label":"Altitude","text":"1234","value":1234.0,"unit":"m","age_ms":200,"stale":false,"level":"normal"}},
- "pages":[{"id":"flight","kind":"items","title":"Flight","items":["flight_state","t_clock","altitude","velocity"]},
+ "pages":[{"id":"flight","kind":"items","title":"Flight","items":["flight_state","t_clock","altitude","velocity"],
+           "actions":[{"cmd":"Abort","label":"Abort","abort":true}]},
           {"id":"cycle","kind":"cycle","title":"Cycle","items":[]},
           {"id":"compass","kind":"compass","title":"Recovery","items":[]}],
  "targets":[{"id":"rocket","label":"Rocket","lat":32.99,"lon":-106.97,"alt_m":1401.0,"age_ms":3000,"stale":false,"source":"Rocket GPS","fallback":false},
             {"id":"ground_station","label":"Ground station","lat":32.98,"lon":-106.98,"alt_m":null,"age_ms":0,"stale":false,"source":"Saved GroundStation (manual)","fallback":true}],
  "settings":{ "...": "WatchSettings, below" },
  "catalog":{"items":[{"id":"altitude","label":"Altitude","group":"Trajectory"}],"pages":[...all pages...],"targets":[{"id":"rocket","label":"Rocket"}]},
+ "actions":{"Abort":{"enabled":true}},
  "link_timeout_s":15}
 ```
+
+* `pages` are the enabled pages in order with the user's rows and the
+  permitted actions (`label`, `abort`); `actions` holds the station's enable
+  state (and `reason` when disabled) of every action on them. Both are
+  absent/empty when no page has actions.
+* A direct status from the station has the same data keys plus
+  `"source":"direct"` and `seq` = server time; it has no `pages`,
+  `settings`, `catalog` or `account`.
 
 * `station.link` is `connected`, `connecting` (first connection, or the
   phone checking the session), `reconnecting`, `sign_in` (the station needs a
@@ -167,16 +286,21 @@ Snapshot (phone → watch), abridged:
 `WatchSettings`:
 
 ```json
-{"version":1,"updated_ms":1730000000000,"updated_by":"phone",
- "pages":[{"id":"flight","enabled":true},{"id":"propulsion","enabled":true},{"id":"trajectory","enabled":true},
-          {"id":"health","enabled":true},{"id":"cycle","enabled":true},{"id":"compass","enabled":true}],
+{"version":2,"updated_ms":1730000000000,"updated_by":"phone",
+ "pages":[{"id":"flight","enabled":true,"items":["flight_state","t_clock","altitude","velocity"],"actions":["Abort"]},
+          {"id":"propulsion","enabled":true,"items":["tank_pressure","chamber_pressure","loadcell_mass","fill_percent"],"actions":[]},
+          {"id":"trajectory","enabled":true,"items":["altitude","velocity","gps_altitude","gps_sats"],"actions":[]},
+          {"id":"health","enabled":true,"items":["station_link","boards","av_battery","rocket_fix_age"],"actions":[]},
+          {"id":"cycle","enabled":true,"items":[],"actions":[]},{"id":"compass","enabled":true,"items":[],"actions":[]}],
  "cycle":{"items":["flight_state","t_clock","altitude","velocity","tank_pressure"],"interval_s":5,"autostart":true},
  "compass":{"north":"true","stale_after_s":30,"targets":["rocket","ground_station","rrls"]},
- "units":"metric","power":"balanced"}
+ "units":"metric","power":"balanced","direct_link":true}
 ```
 
-Limits: `interval_s` 2–60, `stale_after_s` 5–600, ≤ 12 cycle items, document
-≤ 8 KiB. `updated_by` is `phone|watch|account`. The phone sanitizes every
+Limits: `interval_s` 2–60, `stale_after_s` 5–600, ≤ 12 cycle items, ≤ 8 rows
+per items page (only items pages have rows), ≤ 2 actions per page (command
+names), document ≤ 8 KiB. Version 1 documents (no `items`, `actions`,
+`direct_link`) migrate as described under "Page configuration". `updated_by` is `phone|watch|account`. The phone sanitizes every
 document against its registry, so a watch may send any edit and the phone's
 echo is authoritative.
 
@@ -195,11 +319,13 @@ Both watches use the same pages and the same logic, checked against the
 `watch/test-vectors.json` (`WatchCore/Status.swift`, `core/.../Status.kt`):
 
 * Horizontal pages: **Status** (always the landing page: flight state,
-  T-clock, phone link and the phone's station connection), **Alerts** (items
+  T-clock, the data path and the station connection), **Alerts** (items
   at alert, then warn level, plus link problems), the pages enabled in the
   watch settings, and **Settings** last. Settings is never selected
   automatically; a page that disappears falls back to Status.
-* Phone line: "Phone connected · updated 3s ago"; with no data for longer
+* A page's action buttons (if any) sit below its content.
+* Path line: "Via phone · updated 3s ago" or "Direct to GS · updated 2s
+  ago"; on the phone path with no data for longer
   than `link_timeout_s`, "Phone reachable · no update for 2m 05s" or "Phone
   not reachable · last update 2m 05s ago". "Open the GS app on your phone"
   appears only when the phone is not reachable and there is no fresh data

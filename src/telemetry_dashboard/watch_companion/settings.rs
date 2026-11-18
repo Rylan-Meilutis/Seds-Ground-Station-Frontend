@@ -2,15 +2,24 @@
 //! single local copy on the phone and synced to the signed-in account.
 //! Conflicts resolve last-writer-wins on `updated_ms`, arbitrated by the
 //! account revision when signed in (see `account_sync`).
+//!
+//! Version 2 adds per-page `items` (which rows an `items` page shows, in
+//! order) and `actions` (at most two opt-in action buttons per page) plus
+//! `direct_link`. A version 1 document migrates to the same layout it had:
+//! every page gets its registry rows and no actions.
 use super::registry::{self, PageKind};
 use serde::{Deserialize, Serialize};
 
-pub const SETTINGS_VERSION: u32 = 1;
+pub const SETTINGS_VERSION: u32 = 2;
 pub const MIN_INTERVAL_S: u32 = 2;
 pub const MAX_INTERVAL_S: u32 = 60;
 pub const MIN_STALE_S: u32 = 5;
 pub const MAX_STALE_S: u32 = 600;
 pub const MAX_CYCLE_ITEMS: usize = 12;
+/// Rows on one `items` page.
+pub const MAX_PAGE_ITEMS: usize = 8;
+/// Action buttons on one page. Mirrors the GS `watch::MAX_ACTIONS_PER_PAGE`.
+pub const MAX_PAGE_ACTIONS: usize = 2;
 /// Upper bound on the serialized document; the backend enforces the same.
 pub const MAX_SETTINGS_BYTES: usize = 8 * 1024;
 
@@ -18,6 +27,34 @@ pub const MAX_SETTINGS_BYTES: usize = 8 * 1024;
 pub struct PageSetting {
     pub id: String,
     pub enabled: bool,
+    /// `items` pages: the rows to show, in order (registry item ids).
+    /// Empty for other page kinds. Missing in a version 1 document, which
+    /// `sanitize` fills with the page's registry rows.
+    #[serde(default)]
+    pub items: Vec<String>,
+    /// Opt-in action buttons (GS command names), at most
+    /// [`MAX_PAGE_ACTIONS`]. Off by default. Only commands the GS lists as
+    /// watch-eligible and permitted for the account are ever shown; see
+    /// `actions::permitted`.
+    #[serde(default)]
+    pub actions: Vec<String>,
+}
+
+impl PageSetting {
+    /// The page as it was before version 2: registry rows, no actions.
+    pub fn default_for(def: &registry::PageDef) -> Self {
+        Self {
+            id: def.id.into(),
+            enabled: def.default_enabled,
+            items: def.items.iter().map(|i| (*i).to_string()).collect(),
+            actions: Vec::new(),
+        }
+    }
+}
+
+/// A GS command name as the watch may carry it: short ASCII identifier.
+pub fn command_name_valid(cmd: &str) -> bool {
+    (1..=64).contains(&cmd.len()) && cmd.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -135,6 +172,9 @@ pub struct WatchSettings {
     pub compass: CompassSetting,
     pub units: Units,
     pub power: Power,
+    /// Let the watch read the station itself (with a scoped watch token)
+    /// while the phone app is suspended or out of reach.
+    pub direct_link: bool,
 }
 
 impl Default for WatchSettings {
@@ -143,17 +183,12 @@ impl Default for WatchSettings {
             version: SETTINGS_VERSION,
             updated_ms: 0,
             updated_by: Editor::Phone,
-            pages: registry::PAGES
-                .iter()
-                .map(|p| PageSetting {
-                    id: p.id.into(),
-                    enabled: p.default_enabled,
-                })
-                .collect(),
+            pages: registry::PAGES.iter().map(PageSetting::default_for).collect(),
             cycle: CycleSetting::default(),
             compass: CompassSetting::default(),
             units: Units::Metric,
             power: Power::Balanced,
+            direct_link: true,
         }
     }
 }
@@ -176,11 +211,24 @@ impl WatchSettings {
             .retain(|p| registry::page(&p.id).is_some() && seen.insert(p.id.clone()));
         for p in registry::PAGES {
             if !self.pages.iter().any(|s| s.id == p.id) {
-                self.pages.push(PageSetting {
-                    id: p.id.into(),
-                    enabled: p.default_enabled,
-                });
+                self.pages.push(PageSetting::default_for(p));
             }
+        }
+        for page in &mut self.pages {
+            let Some(def) = registry::page(&page.id) else {
+                continue;
+            };
+            if def.kind == PageKind::Items {
+                dedupe_known(&mut page.items, |id| registry::item(id).is_some(), MAX_PAGE_ITEMS);
+                if page.items.is_empty() {
+                    // Version 1 documents (and an emptied page) get the
+                    // page's registry rows: the layout they always had.
+                    page.items = PageSetting::default_for(def).items;
+                }
+            } else {
+                page.items.clear();
+            }
+            dedupe_known(&mut page.actions, command_name_valid, MAX_PAGE_ACTIONS);
         }
         if !self.pages.iter().any(|p| p.enabled) {
             // A watch with no pages is useless; fall back to the compass.
@@ -270,6 +318,67 @@ impl WatchSettings {
         self.units == Units::Metric
     }
 
+    /// Every action configured on an enabled page, deduplicated in page
+    /// order (before filtering against the GS catalog).
+    #[cfg(test)]
+    pub fn configured_actions(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for page in self.pages.iter().filter(|p| p.enabled) {
+            for cmd in &page.actions {
+                if !out.contains(cmd) {
+                    out.push(cmd.clone());
+                }
+            }
+        }
+        out
+    }
+
+    #[cfg(test)]
+    pub fn page_setting(&self, id: &str) -> Option<&PageSetting> {
+        self.pages.iter().find(|p| p.id == id)
+    }
+
+    /// Adds or removes a row on an `items` page; never empties the page,
+    /// never exceeds [`MAX_PAGE_ITEMS`].
+    pub fn toggle_page_item(&mut self, page: &str, item: &str) {
+        let Some(p) = self.pages.iter_mut().find(|p| p.id == page) else {
+            return;
+        };
+        if registry::page(page).map(|d| d.kind) != Some(PageKind::Items) {
+            return;
+        }
+        if let Some(pos) = p.items.iter().position(|i| i == item) {
+            if p.items.len() > 1 {
+                p.items.remove(pos);
+            }
+        } else if p.items.len() < MAX_PAGE_ITEMS && registry::item(item).is_some() {
+            p.items.push(item.into());
+        }
+    }
+
+    pub fn move_page_item(&mut self, page: &str, item: &str, up: bool) {
+        if let Some(p) = self.pages.iter_mut().find(|p| p.id == page) {
+            move_in(&mut p.items, |i| i == item, up);
+        }
+    }
+
+    /// Adds or removes an action button on a page. Adding is refused once
+    /// the page has [`MAX_PAGE_ACTIONS`]; returns whether anything changed.
+    pub fn toggle_page_action(&mut self, page: &str, cmd: &str) -> bool {
+        let Some(p) = self.pages.iter_mut().find(|p| p.id == page) else {
+            return false;
+        };
+        if let Some(pos) = p.actions.iter().position(|c| c == cmd) {
+            p.actions.remove(pos);
+            true
+        } else if p.actions.len() < MAX_PAGE_ACTIONS && command_name_valid(cmd) {
+            p.actions.push(cmd.into());
+            true
+        } else {
+            false
+        }
+    }
+
     // --- Editing helpers shared by the phone settings section. ---
 
     pub fn move_page(&mut self, id: &str, up: bool) {
@@ -340,7 +449,9 @@ mod tests {
             s.pages[0],
             PageSetting {
                 id: "compass".into(),
-                enabled: true
+                enabled: true,
+                items: vec![],
+                actions: vec![],
             }
         );
         assert_eq!(s.pages.len(), registry::PAGES.len());
@@ -384,6 +495,115 @@ mod tests {
         assert!(b.newer_than(&a));
         assert!(!a.newer_than(&b));
         assert!(a.same_content(&b));
+    }
+
+    /// The settings document the phone stored before page configuration
+    /// (version 1): no `items`, `actions` or `direct_link`.
+    const V1_DEFAULT: &str = r#"{"version":1,"updated_ms":1730000000000,"updated_by":"phone",
+        "pages":[{"id":"flight","enabled":true},{"id":"propulsion","enabled":true},{"id":"trajectory","enabled":true},
+                 {"id":"health","enabled":true},{"id":"cycle","enabled":true},{"id":"compass","enabled":true}],
+        "cycle":{"items":["flight_state","t_clock","altitude","velocity","tank_pressure"],"interval_s":5,"autostart":true},
+        "compass":{"north":"true","stale_after_s":30,"targets":["rocket","ground_station","rrls"]},
+        "units":"metric","power":"balanced"}"#;
+
+    #[test]
+    fn version_1_documents_migrate_to_the_layout_they_had() {
+        let migrated = WatchSettings::parse(V1_DEFAULT).unwrap();
+        let mut expected = WatchSettings::default();
+        expected.updated_ms = 1_730_000_000_000;
+        assert_eq!(migrated, expected);
+        assert_eq!(migrated.version, 2);
+        assert!(migrated.direct_link);
+        // Items pages carry the registry rows they always showed; no actions.
+        for page in &migrated.pages {
+            let def = registry::page(&page.id).unwrap();
+            assert_eq!(page.items, def.items.iter().map(|i| i.to_string()).collect::<Vec<_>>());
+            assert!(page.actions.is_empty());
+        }
+        // The resolved pages equal the version 1 layout exactly.
+        let pages = super::super::protocol::resolved_pages(&migrated, &[]);
+        let ids: Vec<_> = pages.iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec!["flight", "propulsion", "trajectory", "health", "cycle", "compass"]);
+        assert_eq!(pages[0].items, vec!["flight_state", "t_clock", "altitude", "velocity"]);
+        // A disabled v1 page stays disabled.
+        let disabled = WatchSettings::parse(&V1_DEFAULT.replace(
+            r#"{"id":"health","enabled":true}"#,
+            r#"{"id":"health","enabled":false}"#,
+        ))
+        .unwrap();
+        assert!(!disabled.page_setting("health").unwrap().enabled);
+    }
+
+    #[test]
+    fn page_items_and_actions_are_validated() {
+        let raw = r#"{"pages":[
+            {"id":"flight","enabled":true,"items":["altitude","altitude","bogus","velocity"],"actions":["Abort","Dump","Nitrogen","Abort"]},
+            {"id":"cycle","enabled":true,"items":["altitude"],"actions":["bad name!","Dump"]},
+            {"id":"propulsion","enabled":true,"items":[]}]}"#;
+        let s = WatchSettings::parse(raw).unwrap();
+        let flight = s.page_setting("flight").unwrap();
+        assert_eq!(flight.items, vec!["altitude", "velocity"]);
+        // Two actions per page at most; duplicates and invalid names dropped.
+        assert_eq!(flight.actions, vec!["Abort", "Dump"]);
+        let cycle = s.page_setting("cycle").unwrap();
+        assert!(cycle.items.is_empty(), "only items pages carry rows");
+        assert_eq!(cycle.actions, vec!["Dump"]);
+        // An emptied items page falls back to its registry rows.
+        assert_eq!(s.page_setting("propulsion").unwrap().items.len(), 4);
+        let many: Vec<_> = registry::ITEMS.iter().map(|i| i.id).collect();
+        let s = WatchSettings::parse(&serde_json::json!({"pages":[{"id":"health","enabled":true,"items":many}]}).to_string()).unwrap();
+        assert_eq!(s.page_setting("health").unwrap().items.len(), MAX_PAGE_ITEMS);
+        assert_eq!(s.configured_actions(), Vec::<String>::new());
+        // Every page full of actions still fits the account document.
+        let mut full = WatchSettings::default();
+        for page in &mut full.pages {
+            page.actions = vec!["ToggleAvBayUnderglow".into(), "StartWritingLastTwoMinutes".into()];
+            if !page.items.is_empty() {
+                page.items = many.iter().take(MAX_PAGE_ITEMS).map(|i| i.to_string()).collect();
+            }
+        }
+        assert!(serde_json::to_vec(&full).unwrap().len() < MAX_SETTINGS_BYTES / 2);
+    }
+
+    #[test]
+    fn two_action_limit_is_enforced_by_the_editor() {
+        let mut s = WatchSettings::default();
+        assert!(s.toggle_page_action("flight", "Abort"));
+        assert!(s.toggle_page_action("flight", "Dump"));
+        assert!(!s.toggle_page_action("flight", "Nitrogen"), "third action refused");
+        assert_eq!(s.page_setting("flight").unwrap().actions, vec!["Abort", "Dump"]);
+        assert!(s.toggle_page_action("flight", "Abort"));
+        assert!(s.toggle_page_action("flight", "Nitrogen"));
+        assert_eq!(s.page_setting("flight").unwrap().actions, vec!["Dump", "Nitrogen"]);
+        assert!(!s.toggle_page_action("flight", "not valid"));
+        assert!(!s.toggle_page_action("nope", "Abort"));
+        assert!(s.toggle_page_action("compass", "Dump"));
+        // Disabled pages contribute no actions.
+        s.toggle_page("compass");
+        assert_eq!(s.configured_actions(), vec!["Dump", "Nitrogen"]);
+    }
+
+    #[test]
+    fn page_item_editing_keeps_invariants() {
+        let mut s = WatchSettings::default();
+        s.toggle_page_item("flight", "tank_pressure");
+        s.move_page_item("flight", "tank_pressure", true);
+        assert_eq!(
+            s.page_setting("flight").unwrap().items,
+            vec!["flight_state", "t_clock", "altitude", "tank_pressure", "velocity"]
+        );
+        for id in ["flight_state", "t_clock", "altitude", "tank_pressure", "velocity"] {
+            s.toggle_page_item("flight", id);
+        }
+        assert_eq!(s.page_setting("flight").unwrap().items, vec!["velocity"], "never empties");
+        s.toggle_page_item("flight", "bogus");
+        s.toggle_page_item("cycle", "altitude");
+        assert_eq!(s.page_setting("flight").unwrap().items, vec!["velocity"]);
+        assert!(s.page_setting("cycle").unwrap().items.is_empty());
+        for item in registry::ITEMS {
+            s.toggle_page_item("flight", item.id);
+        }
+        assert!(s.page_setting("flight").unwrap().items.len() <= MAX_PAGE_ITEMS);
     }
 
     #[test]
