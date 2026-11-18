@@ -160,6 +160,9 @@ pub fn App() -> Element {
             telemetry_dashboard::apply_window_theme(&theme);
         });
     }
+    // Watch companion: activate the watch session at launch and keep the
+    // watch told what the phone is doing before any dashboard is mounted.
+    telemetry_dashboard::use_watch_status_publisher();
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -688,6 +691,22 @@ pub fn Dashboard() -> Element {
             }
         }
     });
+
+    // Tell the watch what this screen is doing (the dashboard's own
+    // publisher takes over once it mounts).
+    use_effect(move || {
+        let base = UrlConfig::base_http();
+        let phase = match auth_state.read().as_ref() {
+            None => telemetry_dashboard::WatchPhonePhase::Connecting { base },
+            Some(Ok(status)) if status.permissions.view_data => {
+                telemetry_dashboard::WatchPhonePhase::Connecting { base }
+            }
+            Some(Ok(_)) => telemetry_dashboard::WatchPhonePhase::SignInRequired { base },
+            Some(Err(_)) => telemetry_dashboard::WatchPhonePhase::Unreachable { base },
+        };
+        telemetry_dashboard::set_watch_phone_phase(phase);
+    });
+    use_drop(|| telemetry_dashboard::set_watch_phone_phase(telemetry_dashboard::WatchPhonePhase::ChoosingStation));
 
     let access = auth::current_status();
     let access_key = serde_json::json!([access.username,access.roles,access.permissions]).to_string();

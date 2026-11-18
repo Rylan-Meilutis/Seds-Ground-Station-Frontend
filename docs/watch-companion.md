@@ -15,7 +15,10 @@ Wear OS watch ──Wear Data Layer──┘
   remounted on every connection change.
 * **Mode follows the phone.** `live` (real station), `demo` (the phone's
   offline preview; every watch page carries a DEMO banner) or `no_station`
-  (phone app open on the connection screen). When the phone app stops sending,
+  (phone app open on the Connect screen, checking the session, waiting for a
+  sign-in or unable to reach the station; `station.link` and
+  `station.address` say which, so the watch shows "Connecting to
+  gs.local:3000…" rather than nothing). When the phone app stops sending,
   the watch keeps the last snapshot, marks it with the age of the link loss and
   keeps the compass running from the last known target fixes.
 * **Read-only.** The watch may send three message types (`hello`,
@@ -32,12 +35,24 @@ Wear OS watch ──Wear Data Layer──┘
 | Wire format | `.../watch_companion/protocol.rs` |
 | Geodesy (shared test vectors) | `.../watch_companion/geodesy.rs`, `watch/test-vectors.json` |
 | Snapshot builder + publisher | `.../watch_companion/snapshot.rs`, `publisher.rs` |
+| Phone connection phase before a dashboard | `.../watch_companion/phone_status.rs` |
 | Account sync | `.../watch_companion/account_sync.rs` |
 | Settings → Watch section | `.../watch_companion/settings_section.rs` |
 | iOS bridge (WatchConnectivity) | `assets/WatchBridge.m` (compiled by `build.rs` for iOS) |
 | Android bridge (Data Layer) | `platform/android/kotlin/com/ubseds/gs26/WatchBridge.kt` |
 
-The publisher samples the dashboard's existing state (flight state, launch
+Two publishers feed the watch. The app-wide status publisher
+(`use_status_publisher`, mounted at the app root) activates the watch session
+at launch, logs every change of the bridge bits (`[watch] link ...` in the
+console and the frontend log) and, while no dashboard is mounted, sends
+`no_station` snapshots carrying the phone's connection phase: Connect screen
+(`offline`, no address), checking the session (`connecting`), login needed
+(`sign_in`) or station unreachable (`offline` with the address). It answers
+the watch's `hello`/`activity` at once. The dashboard publisher takes over
+when the dashboard mounts (`connecting` until the first WebSocket
+connection, then `connected`/`reconnecting`). Both share one sequence counter.
+
+The dashboard publisher samples the dashboard's existing state (flight state, launch
 clock, latest telemetry rows, board status, WebSocket state) and polls
 `GET /api/antenna/status` (already used by antenna aiming) for the rocket,
 GroundStation and RRLS fixes. That endpoint labels saved positions with
@@ -66,6 +81,15 @@ watch has the companion app** (`watch_companion::settings_eligible`):
 * companion present: the bridge reports a paired watch with the GS app
   installed (iOS `WCSession.isPaired` and `isWatchAppInstalled`; Android a
   known node advertising `gs26_watch`, reachable or not).
+
+Bridge state bits: 1 bridge present, 2 paired, 4 watch app installed,
+8 reachable, 16 session activated (iOS `WCSession` activation complete;
+Android first Data Layer answer). iOS only knows `isPaired` and
+`isWatchAppInstalled` after activation, so until bit 16 arrives the tab stays
+hidden; the session is activated at app launch and again from Settings, and
+the tab is polled every 2 s, so it appears as soon as activation completes.
+Settings → Maintenance shows a "Watch link" line with the raw bits, whether
+the user is signed in and why the Watch tab is shown or hidden.
 
 Everyone else sees no Watch tab. The persisted local copy is kept but not
 sent or applied: snapshots carry the default `WatchSettings`, settings
@@ -107,7 +131,7 @@ Snapshot (phone → watch), abridged:
 
 ```json
 {"v":1,"seq":42,"mode":"live",
- "station":{"name":"GroundStation","role":"primary","link":"connected","telemetry_age_ms":350},
+ "station":{"name":"GroundStation","role":"primary","link":"connected","address":"gs.local:3000","telemetry_age_ms":350},
  "account":{"signed_in":true,"sync":"synced"},
  "items":{"flight_state":{"label":"State","text":"In flight · Descent","unit":"","age_ms":0,"stale":false,"level":"normal"},
           "t_clock":{"label":"T-clock","text":"T+ 01:23","unit":"","age_ms":0,"stale":false,"level":"normal","clock":{"kind":"tplus","ms":83000}},
@@ -122,6 +146,11 @@ Snapshot (phone → watch), abridged:
  "link_timeout_s":15}
 ```
 
+* `station.link` is `connected`, `connecting` (first connection, or the
+  phone checking the session), `reconnecting`, `sign_in` (the station needs a
+  login on the phone) or `offline`; `station.address` is the station's
+  host[:port] or empty when none is chosen. `seq` only grows, across both
+  publishers.
 * `items` holds every registry item; a missing value has `text:"--"`,
   `level:"unknown"`. `level` is `normal|warn|alert|unknown`.
 * `clock.kind` is `idle|tminus|tplus`. The watch shows `T- mm:ss` counting
@@ -158,6 +187,33 @@ Watch → phone:
 {"v":1,"type":"activity","foreground":true,"page":"compass"}
 {"v":1,"type":"settings","settings":{ ...WatchSettings with updated_by "watch"... }}
 ```
+
+## Watch layout
+
+Both watches use the same pages and the same logic, checked against the
+`connection_status`, `auto_cycle` and `alerts` vectors in
+`watch/test-vectors.json` (`WatchCore/Status.swift`, `core/.../Status.kt`):
+
+* Horizontal pages: **Status** (always the landing page: flight state,
+  T-clock, phone link and the phone's station connection), **Alerts** (items
+  at alert, then warn level, plus link problems), the pages enabled in the
+  watch settings, and **Settings** last. Settings is never selected
+  automatically; a page that disappears falls back to Status.
+* Phone line: "Phone connected · updated 3s ago"; with no data for longer
+  than `link_timeout_s`, "Phone reachable · no update for 2m 05s" or "Phone
+  not reachable · last update 2m 05s ago". "Open the GS app on your phone"
+  appears only when the phone is not reachable and there is no fresh data
+  (Apple: `WCSession.isReachable`; Wear: a reachable node with `gs26_phone`).
+  With the phone reachable but no snapshot yet: "Phone app open · waiting
+  for data".
+* Station line: "Connecting to gs.local:3000…", "Connected to GroundStation",
+  "Reconnecting to …", "Sign in on the phone (…)", "Can't reach …", "Phone
+  not connected to a station", "Demo data (offline preview)".
+* The cycle page is a vertical pager (watchOS `.verticalPage`, Wear
+  `VerticalPager`) that advances every `interval_s`. The Digital Crown (Wear:
+  rotary input) is the primary control, swipe works too; a manual move
+  restarts the wait so the item stays for a full interval. Tap pauses or
+  resumes. A small footer shows "2/5 · next in 3s" or "2/5 · paused".
 
 ## Compass
 

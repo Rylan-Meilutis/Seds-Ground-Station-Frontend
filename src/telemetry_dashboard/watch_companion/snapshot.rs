@@ -333,6 +333,7 @@ pub fn demo(seq: u64, now_ms: i64, settings: &WatchSettings, account: Account) -
             name: "Demo station".into(),
             role: "primary".into(),
             link: "connected",
+            address: String::new(),
             telemetry_age_ms: Some(400),
         },
         account,
@@ -396,6 +397,7 @@ mod tests {
                 name: "RRLS".into(),
                 role: "rrls".into(),
                 link: "connected",
+                address: "rrls.local:3000".into(),
                 telemetry_age_ms: Some(500),
             },
             account: Account {

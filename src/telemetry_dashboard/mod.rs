@@ -124,6 +124,10 @@ mod station_fix;
 pub mod map_tab;
 pub mod warnings_tab;
 mod watch_companion;
+pub(crate) use watch_companion::{
+    PhonePhase as WatchPhonePhase, set_phone_phase as set_watch_phone_phase,
+    use_status_publisher as use_watch_status_publisher,
+};
 
 use crate::app::Route;
 use crate::auth;

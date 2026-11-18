@@ -203,3 +203,29 @@ pub(in crate::telemetry_dashboard) fn WatchSettingsSection(theme: ThemeConfig) -
         }
     }
 }
+
+/// Settings → Maintenance diagnostics on the phone apps: the raw watch link
+/// bits and why the Watch tab is shown or hidden. Shown even when the tab
+/// is hidden, which is when it is needed.
+#[component]
+pub(in crate::telemetry_dashboard) fn WatchLinkDiagnostics(theme: ThemeConfig) -> Element {
+    let mut line = use_signal(super::watch_link_diagnostics);
+    use_future(move || async move {
+        loop {
+            sleep_ms(2_000).await;
+            let next = super::watch_link_diagnostics();
+            if *line.peek() != next {
+                line.set(next);
+            }
+        }
+    });
+    if !super::COMPANION_PLATFORM {
+        return rsx! {};
+    }
+    rsx! {
+        div { style: "font-size:12px; color:{theme.text_soft}; font-family:var(--gs-font-mono); overflow-wrap:anywhere;",
+            "data-testid": "watch-link-diagnostics",
+            "Watch link: {line}"
+        }
+    }
+}

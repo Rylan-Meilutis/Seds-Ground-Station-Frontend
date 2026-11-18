@@ -1,6 +1,8 @@
 //! Publishes snapshots to the watch and handles the watch's three message
 //! types. Mounted inside the live dashboard (follows the connected station)
-//! and inside the offline preview (demo mode).
+//! and inside the offline preview (demo mode). The app-wide status publisher
+//! covers everything before that: the Connect screen, the session check,
+//! sign-in and connection failures.
 use super::protocol::{Account, Clock, Mode, Station, WatchMessage};
 use super::settings::{Editor, WatchSettings};
 use super::snapshot::{self, AntennaStatus, Inputs};
@@ -13,7 +15,7 @@ use crate::telemetry_dashboard::{
 };
 use dioxus::prelude::*;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Foreground pings from the watch keep the fast rate for this long.
 const ACTIVE_HOLD_MS: f64 = 30_000.0;
@@ -23,6 +25,36 @@ const LOOP_MS: u64 = 500;
 /// Last antenna status and the monotonic time it arrived, kept so a
 /// `no_station` snapshot can still carry the last known targets.
 static LAST_ANTENNA: Mutex<Option<(AntennaStatus, f64)>> = Mutex::new(None);
+
+/// Snapshot sequence shared by every publisher, so the watch never sees it
+/// go backwards when the phone moves between the Connect screen and a
+/// dashboard (it drops an older seq that arrives right after a newer one).
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn next_seq() -> u64 {
+    SEQ.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+/// Mounted dashboard/demo publishers; while one runs, the status publisher
+/// stays quiet.
+static SCREEN_PUBLISHERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts a dashboard/demo publisher for its lifetime.
+struct ScreenPublisher;
+
+impl ScreenPublisher {
+    fn mount() -> Self {
+        SCREEN_PUBLISHERS.fetch_add(1, Ordering::AcqRel);
+        ScreenPublisher
+    }
+}
+
+impl Drop for ScreenPublisher {
+    fn drop(&mut self) {
+        SCREEN_PUBLISHERS.fetch_sub(1, Ordering::AcqRel);
+        PUBLISH_REQUESTED.store(true, Ordering::Release);
+    }
+}
 
 fn account_state() -> Account {
     Account {
@@ -158,44 +190,112 @@ fn station(ws_connected: bool) -> Station {
     Station {
         name: crate::auth::station_name(),
         role: status.station_role.unwrap_or_else(|| "primary".into()),
-        link: if ws_connected {
-            "connected"
-        } else if crate::telemetry_dashboard::DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed) {
-            "reconnecting"
-        } else {
-            "offline"
-        },
+        link: station_link(
+            ws_connected,
+            crate::telemetry_dashboard::DASHBOARD_HAS_CONNECTED.load(Ordering::Relaxed),
+        ),
+        address: super::phone_status::station_address(&crate::telemetry_dashboard::UrlConfig::base_http()),
         telemetry_age_ms,
     }
 }
 
-/// Snapshot sent when the publisher unmounts: the phone left the station
-/// (sign-out, switching stations, connection page). Keeps last targets.
-fn publish_no_station() {
-    let settings = super::effective_settings(super::watch_settings_available());
+/// Dashboard link: the first connection is `connecting`, later outages
+/// `reconnecting`.
+fn station_link(ws_connected: bool, has_connected: bool) -> &'static str {
+    match (ws_connected, has_connected) {
+        (true, _) => "connected",
+        (false, true) => "reconnecting",
+        (false, false) => "connecting",
+    }
+}
+
+/// Snapshot for the watch while no dashboard is mounted: the phone's
+/// connection phase (Connect screen, connecting, sign-in, unreachable) plus
+/// the last known targets.
+fn no_station_snapshot(
+    phase: &super::PhonePhase,
+    settings: &WatchSettings,
+    account: Account,
+) -> super::protocol::Snapshot {
     let none = |_: &str, _: Option<&str>, _: usize| None;
     let antenna = LAST_ANTENNA.lock().ok().and_then(|g| g.clone());
     let now = monotonic_now_ms();
     let input = Inputs {
         mode: Mode::NoStation,
-        seq: 0,
+        seq: next_seq(),
         now_ms: current_wallclock_ms(),
-        station: Station {
-            name: String::new(),
-            role: "unknown".into(),
-            link: "offline",
-            telemetry_age_ms: None,
-        },
-        account: account_state(),
+        station: super::phone_status::station_for_phase(phase),
+        account,
         flight_state: "",
         clock: None,
         boards: None,
         telemetry: &none,
         antenna: antenna.as_ref().map(|(s, at)| (s, (now - at) as i64)),
         rocket_from_telemetry: None,
-        settings: &settings,
+        settings,
     };
-    publish(&snapshot::build(&input), false);
+    snapshot::build(&input)
+}
+
+/// Snapshot sent when a dashboard publisher unmounts: the phone left the
+/// station (sign-out, switching stations, connection page).
+fn publish_no_station() {
+    let settings = super::effective_settings(super::watch_settings_available());
+    publish(
+        &no_station_snapshot(&super::phone_status::phone_phase(), &settings, account_state()),
+        false,
+    );
+}
+
+/// App-wide hook (mounted once at the root on the phone apps): starts the
+/// watch session at launch, logs every watch link change, and while no
+/// dashboard or demo publisher is mounted keeps the watch told what the
+/// phone is doing (choosing a station, connecting to <address>, sign-in
+/// needed, unreachable), answering the watch's hello/activity at once.
+pub(crate) fn use_status_publisher() {
+    use_future(move || async move {
+        if !super::COMPANION_PLATFORM {
+            return;
+        }
+        bridge::start();
+        let mut rate = Rate {
+            force: true,
+            ..Rate::default()
+        };
+        let mut last_bits = None;
+        let mut last_phase = None;
+        loop {
+            let now = monotonic_now_ms();
+            let link = bridge::link_state();
+            let signed_in = super::account_key().is_some();
+            let eligible = super::settings_eligible(super::COMPANION_PLATFORM, signed_in, link);
+            if last_bits != Some((link.bits, signed_in)) {
+                last_bits = Some((link.bits, signed_in));
+                let line = format!("[watch] link {} · {}", link.summary(), super::watch_link_diagnostics());
+                eprintln!("{line}");
+                crate::debug_log::append(&line);
+            }
+            if SCREEN_PUBLISHERS.load(Ordering::Acquire) == 0 {
+                let phase = super::phone_status::phone_phase();
+                if last_phase.as_ref() != Some(&phase) {
+                    last_phase = Some(phase.clone());
+                    rate.force = true;
+                }
+                rate.handle_incoming(now, eligible);
+                if link.supported && link.paired {
+                    let settings = super::effective_settings(eligible);
+                    let active = rate.active(now, link);
+                    if rate.due(now, active, &settings) {
+                        publish(&no_station_snapshot(&phase, &settings, account_state()), active);
+                    }
+                }
+            } else {
+                // A dashboard publisher owns the watch; resend on return.
+                last_phase = None;
+            }
+            sleep_ms(LOOP_MS).await;
+        }
+    });
 }
 
 /// Hook for the live dashboard: runs for the dashboard's lifetime, so it
@@ -208,6 +308,7 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
     network_time: Signal<Option<NetworkTimeSync>>,
 ) {
     use_drop(publish_no_station);
+    let _mounted = use_hook(|| std::rc::Rc::new(ScreenPublisher::mount()));
     use_future(move || async move {
         bridge::start();
         SYNC_REQUESTED.store(true, Ordering::Release);
@@ -215,7 +316,6 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
             force: true,
             ..Rate::default()
         };
-        let mut seq = 0u64;
         let mut last_sync = f64::NEG_INFINITY;
         let mut last_antenna_poll = f64::NEG_INFINITY;
         let mut was_eligible = false;
@@ -261,7 +361,7 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                     }
                 }
                 if rate.due(monotonic_now_ms(), active, &settings) {
-                    seq += 1;
+                    let seq = next_seq();
                     let antenna = LAST_ANTENNA.lock().ok().and_then(|g| g.clone());
                     let view = crate::telemetry_dashboard::mission_phase::StateView::resolve(
                         crate::telemetry_dashboard::mission_phase::MISSION_PHASE.peek().as_ref(),
@@ -307,13 +407,13 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::telemetry_dashboard) fn use_demo_publisher() {
     use_drop(publish_no_station);
+    let _mounted = use_hook(|| std::rc::Rc::new(ScreenPublisher::mount()));
     use_future(move || async move {
         bridge::start();
         let mut rate = Rate {
             force: true,
             ..Rate::default()
         };
-        let mut seq = 0u64;
         loop {
             let now = monotonic_now_ms();
             // The offline preview has no signed-in user, so the watch gets
@@ -324,7 +424,7 @@ pub(in crate::telemetry_dashboard) fn use_demo_publisher() {
                 let settings = super::effective_settings(false);
                 let active = rate.active(now, link);
                 if rate.due(now, active, &settings) {
-                    seq += 1;
+                    let seq = next_seq();
                     let account = Account {
                         signed_in: false,
                         sync: super::SyncState::LocalOnly.wire(),
@@ -338,4 +438,71 @@ pub(in crate::telemetry_dashboard) fn use_demo_publisher() {
             sleep_ms(LOOP_MS).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telemetry_dashboard::watch_companion::PhonePhase;
+
+    fn signed_out() -> Account {
+        Account {
+            signed_in: false,
+            sync: "local_only",
+        }
+    }
+
+    #[test]
+    fn dashboard_link_distinguishes_first_connection_from_reconnects() {
+        assert_eq!(station_link(true, false), "connected");
+        assert_eq!(station_link(true, true), "connected");
+        assert_eq!(station_link(false, false), "connecting");
+        assert_eq!(station_link(false, true), "reconnecting");
+    }
+
+    /// The watch must learn what the phone is doing before any station
+    /// connection completes, with a sequence that never goes backwards.
+    #[test]
+    fn connection_state_snapshots_before_the_dashboard() {
+        let settings = WatchSettings::default();
+        let connecting = no_station_snapshot(
+            &PhonePhase::Connecting {
+                base: "https://gs.local:3000/".into(),
+            },
+            &settings,
+            signed_out(),
+        );
+        let value = serde_json::to_value(&connecting).unwrap();
+        assert_eq!(value["mode"], "no_station");
+        assert_eq!(value["station"]["link"], "connecting");
+        assert_eq!(value["station"]["address"], "gs.local:3000");
+        // Pages and settings travel too, so the watch can lay out its pages.
+        assert!(!value["pages"].as_array().unwrap().is_empty());
+        let sign_in = no_station_snapshot(
+            &PhonePhase::SignInRequired {
+                base: "https://gs.local:3000".into(),
+            },
+            &settings,
+            signed_out(),
+        );
+        assert_eq!(serde_json::to_value(&sign_in).unwrap()["station"]["link"], "sign_in");
+        assert!(sign_in.seq > connecting.seq);
+        let choosing = no_station_snapshot(&PhonePhase::ChoosingStation, &settings, signed_out());
+        let value = serde_json::to_value(&choosing).unwrap();
+        assert_eq!(value["station"]["link"], "offline");
+        assert_eq!(value["station"]["address"], "");
+        assert!(choosing.seq > sign_in.seq);
+    }
+
+    #[test]
+    fn screen_publishers_are_counted_for_their_lifetime() {
+        let before = SCREEN_PUBLISHERS.load(Ordering::Acquire);
+        let mounted = ScreenPublisher::mount();
+        assert_eq!(SCREEN_PUBLISHERS.load(Ordering::Acquire), before + 1);
+        PUBLISH_REQUESTED.store(false, Ordering::Release);
+        drop(mounted);
+        assert_eq!(SCREEN_PUBLISHERS.load(Ordering::Acquire), before);
+        // The status publisher takes over at once.
+        assert!(PUBLISH_REQUESTED.load(Ordering::Acquire));
+    }
 }

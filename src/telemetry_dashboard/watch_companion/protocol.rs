@@ -36,8 +36,13 @@ pub struct Station {
     pub name: String,
     /// `primary` (GroundStation), `rrls`, or `unknown`.
     pub role: String,
-    /// `connected`, `reconnecting`, or `offline`.
+    /// `connected`, `connecting` (first connection in progress),
+    /// `reconnecting`, `sign_in` (the station needs a login on the phone) or
+    /// `offline`.
     pub link: &'static str,
+    /// Host (and port) of the station the phone uses; empty when none is
+    /// chosen.
+    pub address: String,
     pub telemetry_age_ms: Option<i64>,
 }
 

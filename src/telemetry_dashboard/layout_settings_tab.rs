@@ -1839,6 +1839,11 @@ pub fn SettingsPage(
             }
 
             if active_settings_tab.read().as_str() == "maintenance" {
+            if super::watch_companion::COMPANION_PLATFORM {
+                div { style: "margin-top:12px; {card_style}",
+                    super::watch_companion::WatchLinkDiagnostics { theme: theme.clone() }
+                }
+            }
             div { style: "margin-top:12px; {card_style}",
                 div { style: "font-size:15px; color:{theme.text_primary}; font-weight:700;", "{section_storage}" }
                 div { style: "display:flex; flex-direction:column; gap:12px;",

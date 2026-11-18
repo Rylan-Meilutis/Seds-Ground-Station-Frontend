@@ -15,6 +15,12 @@ pub struct LinkState {
     pub installed: bool,
     /// Messages can be delivered right now.
     pub reachable: bool,
+    /// The native session finished activating (iOS WCSession; Android sets
+    /// it once the Data Layer answered). Until then `paired` and
+    /// `installed` are unknown and read as false.
+    pub activated: bool,
+    /// The raw bits, for diagnostics.
+    pub bits: i32,
 }
 
 impl LinkState {
@@ -24,17 +30,34 @@ impl LinkState {
             paired: bits & 2 != 0,
             installed: bits & 4 != 0,
             reachable: bits & 8 != 0,
+            activated: bits & 16 != 0,
+            bits,
         }
     }
 
     pub fn summary(self) -> &'static str {
         match (self.supported, self.paired, self.installed, self.reachable) {
             (false, ..) => "Watch apps pair with the iOS and Android apps",
+            (true, false, ..) if !self.activated => "Connecting to the watch service…",
             (true, false, ..) => "No paired watch",
             (true, true, false, _) => "Watch app not installed",
             (true, true, true, false) => "Watch app installed, not open",
             (true, true, true, true) => "Watch connected",
         }
+    }
+
+    /// One diagnostic line: the raw bits and what each means.
+    pub fn debug_text(self) -> String {
+        let flag = |on: bool, yes: &str, no: &str| if on { yes.to_owned() } else { no.to_owned() };
+        format!(
+            "bits 0x{:02x}: {}, {}, {}, {}, {}",
+            self.bits,
+            flag(self.supported, "bridge", "no bridge"),
+            flag(self.activated, "activated", "not activated"),
+            flag(self.paired, "paired", "not paired"),
+            flag(self.installed, "app installed", "app not installed"),
+            flag(self.reachable, "reachable", "not reachable"),
+        )
     }
 }
 
@@ -214,14 +237,30 @@ mod tests {
     #[test]
     fn link_state_bits_and_summaries() {
         assert_eq!(LinkState::from_bits(0), LinkState::default());
-        let all = LinkState::from_bits(15);
-        assert!(all.supported && all.paired && all.installed && all.reachable);
+        let all = LinkState::from_bits(31);
+        assert!(all.supported && all.activated && all.paired && all.installed && all.reachable);
         assert_eq!(all.summary(), "Watch connected");
-        assert_eq!(LinkState::from_bits(1).summary(), "No paired watch");
-        assert_eq!(LinkState::from_bits(3).summary(), "Watch app not installed");
+        // Before WCSession activation completes only the bridge bit is set.
         assert_eq!(
-            LinkState::from_bits(7).summary(),
+            LinkState::from_bits(1).summary(),
+            "Connecting to the watch service…"
+        );
+        assert_eq!(LinkState::from_bits(17).summary(), "No paired watch");
+        assert_eq!(
+            LinkState::from_bits(19).summary(),
+            "Watch app not installed"
+        );
+        assert_eq!(
+            LinkState::from_bits(23).summary(),
             "Watch app installed, not open"
+        );
+        assert_eq!(
+            LinkState::from_bits(23).debug_text(),
+            "bits 0x17: bridge, activated, paired, app installed, not reachable"
+        );
+        assert_eq!(
+            LinkState::from_bits(1).debug_text(),
+            "bits 0x01: bridge, not activated, not paired, app not installed, not reachable"
         );
         // Desktop/web builds have no bridge.
         #[cfg(not(any(target_os = "ios", target_os = "android")))]

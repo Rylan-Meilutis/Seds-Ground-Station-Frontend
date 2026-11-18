@@ -5,6 +5,7 @@ pub(crate) mod bridge;
 // Reference implementation for the watch ports; the phone only formats ages.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod geodesy;
+pub(crate) mod phone_status;
 pub(crate) mod protocol;
 mod publisher;
 pub(crate) mod registry;
@@ -15,7 +16,9 @@ pub(crate) mod snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use publisher::use_demo_publisher;
 pub(super) use publisher::use_live_publisher;
-pub(super) use settings_section::WatchSettingsSection;
+pub(crate) use phone_status::{PhonePhase, set_phone_phase};
+pub(crate) use publisher::use_status_publisher;
+pub(super) use settings_section::{WatchLinkDiagnostics, WatchSettingsSection};
 
 use account_sync::LocalRecord;
 use dioxus::prelude::*;
@@ -148,6 +151,19 @@ pub(crate) fn effective_settings(eligible: bool) -> WatchSettings {
     }
 }
 
+/// One diagnostics line for Settings: the bridge bits and why the Watch
+/// tab is shown or hidden.
+pub(crate) fn watch_link_diagnostics() -> String {
+    let link = bridge::link_state();
+    let signed_in = account_key().is_some();
+    format!(
+        "{} · signed in: {} · Watch settings {}",
+        link.debug_text(),
+        if signed_in { "yes" } else { "no" },
+        phone_status::eligibility_reason(COMPANION_PLATFORM, signed_in, link)
+    )
+}
+
 /// Live eligibility for the Settings screen. Polls the bridge and session on
 /// companion platforms only; elsewhere it is constantly false.
 pub(super) fn use_watch_settings_available() -> Signal<bool> {
@@ -156,6 +172,9 @@ pub(super) fn use_watch_settings_available() -> Signal<bool> {
         if !COMPANION_PLATFORM {
             return;
         }
+        // Settings can be opened before any publisher has started the
+        // session (e.g. from the Connect screen); activation is idempotent.
+        bridge::start();
         loop {
             sleep_ms(2_000).await;
             let next = watch_settings_available();

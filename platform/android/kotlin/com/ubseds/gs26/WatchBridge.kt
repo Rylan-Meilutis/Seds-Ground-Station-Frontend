@@ -41,6 +41,10 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     @Volatile
     private var installedNodes = 0
 
+    /** The Data Layer answered the first capability query. */
+    @Volatile
+    private var queried = false
+
     @Volatile
     private var seq = 0L
 
@@ -90,11 +94,13 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     @JvmStatic
     fun takeIncoming(): String? = synchronized(incoming) { incoming.pollFirst() }
 
-    /** bit0 supported, bit1 paired/connected node, bit2 app installed, bit3 reachable. */
+    /** bit0 supported, bit1 paired/connected node, bit2 app installed, bit3 reachable,
+     *  bit4 the Data Layer has answered (same bits as the iOS bridge). */
     @JvmStatic
     fun state(): Int {
         if (!available) return 0
         var bits = 1
+        if (queried) bits = bits or 16
         if (installedNodes > 0 || watchNodes > 0) bits = bits or 2 or 4
         if (watchNodes > 0) bits = bits or 8
         return bits
@@ -105,7 +111,10 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     private fun refreshInstalled(ctx: Context) {
         Wearable.getCapabilityClient(ctx)
             .getCapability(WATCH_CAPABILITY, CapabilityClient.FILTER_ALL)
-            .addOnSuccessListener { installedNodes = it.nodes.size }
+            .addOnSuccessListener {
+                installedNodes = it.nodes.size
+                queried = true
+            }
     }
 
     private fun enqueue(json: String) {

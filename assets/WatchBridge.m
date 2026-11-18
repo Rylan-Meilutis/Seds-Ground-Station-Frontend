@@ -29,6 +29,9 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   WCSession *session = [WCSession defaultSession];
   if (session.delegate != self) {
     session.delegate = self;
+  }
+  // Safe to repeat; also recovers a session left inactive or not activated.
+  if (session.activationState != WCSessionActivationStateActivated) {
     [session activateSession];
   }
 }
@@ -48,9 +51,17 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   WCSession *session = [WCSession defaultSession];
   if (session.activationState != WCSessionActivationStateActivated) {
     @synchronized(self) { self.pendingContext = json; }
+    if (session.activationState == WCSessionActivationStateNotActivated) {
+      dispatch_async(dispatch_get_main_queue(), ^{ [self start]; });
+    }
     return;
   }
-  if (!session.isPaired || !session.isWatchAppInstalled) return;
+  if (!session.isPaired || !session.isWatchAppInstalled) {
+    // Delivered from sessionWatchStateDidChange once the app is installed.
+    @synchronized(self) { self.pendingContext = json; }
+    return;
+  }
+  @synchronized(self) { self.pendingContext = nil; }
   NSError *error = nil;
   // Latest state survives the watch app being closed or out of range.
   [session updateApplicationContext:@{@"gs26" : json} error:&error];
@@ -59,11 +70,15 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   }
 }
 
+// bit0 supported, bit1 paired, bit2 watch app installed, bit3 reachable,
+// bit4 session activated. isPaired/isWatchAppInstalled are only valid once
+// activation has completed, so before that only bit0 is set.
 - (int)state {
   if (![WCSession isSupported]) return 0;
   WCSession *session = [WCSession defaultSession];
   int bits = 1;
   if (session.activationState == WCSessionActivationStateActivated) {
+    bits |= 16;
     if (session.isPaired) bits |= 2;
     if (session.isWatchAppInstalled) bits |= 4;
     if (session.isReachable) bits |= 8;
@@ -81,9 +96,33 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
     pending = self.pendingContext;
     self.pendingContext = nil;
   }
+  if (error) NSLog(@"GS26 watch: WCSession activation failed: %@", error);
+  NSLog(@"GS26 watch: WCSession activation state %ld, paired %d, app installed %d, reachable %d",
+        (long)activationState, session.isPaired, session.isWatchAppInstalled, session.isReachable);
   if (pending && activationState == WCSessionActivationStateActivated) {
     [self publish:pending urgent:NO];
   }
+}
+
+- (void)flushPending {
+  NSString *pending;
+  @synchronized(self) {
+    pending = self.pendingContext;
+    self.pendingContext = nil;
+  }
+  if (pending) [self publish:pending urgent:YES];
+}
+
+// Pairing or the watch app's install state changed (e.g. the watch app was
+// just installed): resend the latest snapshot.
+- (void)sessionWatchStateDidChange:(WCSession *)session {
+  NSLog(@"GS26 watch: watch state changed, paired %d, app installed %d",
+        session.isPaired, session.isWatchAppInstalled);
+  [self flushPending];
+}
+
+- (void)sessionReachabilityDidChange:(WCSession *)session {
+  if (session.isReachable) [self flushPending];
 }
 
 - (void)sessionDidBecomeInactive:(WCSession *)session {
