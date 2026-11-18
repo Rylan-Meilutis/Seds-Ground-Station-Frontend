@@ -41,6 +41,7 @@ pub fn launch_virtual_dom_blocking(virtual_dom: VirtualDom, mut desktop_config: 
                 UserWindowEvent::NewWindow => app.handle_new_window(),
                 UserWindowEvent::CloseWindow(id) => app.handle_close_requested(id),
                 UserWindowEvent::Shutdown => app.control_flow = tao::event_loop::ControlFlow::Exit,
+                UserWindowEvent::RecoverWebview { id, reason } => app.recover_webviews(id, &reason),
 
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 UserWindowEvent::GlobalHotKeyEvent(evnt) => app.handle_global_hotkey(evnt),
@@ -140,11 +141,18 @@ pub fn launch(
     contexts: Vec<Box<dyn Fn() -> Box<dyn Any> + Send + Sync>>,
     platform_config: Vec<Box<dyn Any>>,
 ) -> ! {
-    let mut virtual_dom = VirtualDom::new(root);
-
-    for context in contexts {
-        virtual_dom.insert_any_root_context(context());
-    }
+    // Keep the recipe so a window whose web content died can start over with a
+    // fresh virtual dom (see `recovery`).
+    let contexts = std::rc::Rc::new(contexts);
+    let build = move || {
+        let mut virtual_dom = VirtualDom::new(root);
+        for context in contexts.iter() {
+            virtual_dom.insert_any_root_context(context());
+        }
+        virtual_dom
+    };
+    let virtual_dom = build();
+    crate::recovery::set_dom_factory(std::rc::Rc::new(build));
 
     let platform_config = *platform_config
         .into_iter()

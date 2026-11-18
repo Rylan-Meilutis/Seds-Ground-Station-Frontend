@@ -14,6 +14,8 @@ mod log_redaction;
 mod native_storage;
 #[cfg(target_os = "ios")]
 mod startup_diagnostics;
+#[cfg(not(target_arch = "wasm32"))]
+mod webview_recovery;
 mod telemetry_dashboard;
 
 use dioxus::prelude::*;
@@ -188,6 +190,8 @@ fn main() {
     }
     cfg = cfg.with_custom_head(startup_custom_head());
     cfg = cfg.with_background_color((0x02, 0x06, 0x17, 0xff));
+    // A dead or blank web content process is reloaded (see webview_recovery).
+    cfg = cfg.with_webview_recovery_logger(debug_log::append);
     let mut window = WindowBuilder::new().with_title(app::APP_DISPLAY_NAME);
     if launch_fullscreen_requested() {
         debug_log::append("[startup] fullscreen launch requested");

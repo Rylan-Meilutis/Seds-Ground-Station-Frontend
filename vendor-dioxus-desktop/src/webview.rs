@@ -19,12 +19,13 @@ use std::sync::{atomic::AtomicBool, Arc};
 use std::cell::OnceCell;
 #[cfg(all(feature = "devtools", debug_assertions))]
 use std::time::Duration;
-use std::{rc::Rc, task::Waker};
+use std::{cell::RefCell, rc::Rc, task::Waker};
 use wry::{DragDropEvent, RequestAsyncResponder, WebContext, WebViewBuilder, WebViewId};
 
 #[derive(Clone)]
 pub(crate) struct WebviewEdits {
-    runtime: Rc<Runtime>,
+    // Shared with the request handler; replaced when a reload remounts the dom.
+    runtime: Rc<RefCell<Rc<Runtime>>>,
     pub wry_queue: WryQueue,
     desktop_context: Rc<OnceCell<WeakDesktopContext>>,
 }
@@ -32,10 +33,14 @@ pub(crate) struct WebviewEdits {
 impl WebviewEdits {
     fn new(runtime: Rc<Runtime>, wry_queue: WryQueue) -> Self {
         Self {
-            runtime,
+            runtime: Rc::new(RefCell::new(runtime)),
             wry_queue,
             desktop_context: Default::default(),
         }
+    }
+
+    fn set_runtime(&self, runtime: Rc<Runtime>) {
+        *self.runtime.borrow_mut() = runtime;
     }
 
     fn set_desktop_context(&self, context: WeakDesktopContext) {
@@ -190,7 +195,8 @@ impl WebviewEdits {
         };
 
         let event = dioxus_core::Event::new(as_any, bubbles);
-        self.runtime.handle_event(&name, event.clone(), element);
+        let runtime = self.runtime.borrow().clone();
+        runtime.handle_event(&name, event.clone(), element);
 
         // Get the response from the event
         SynchronousEventResponse::new(!event.default_action_enabled())
@@ -203,6 +209,14 @@ pub(crate) struct WebviewInstance {
     pub desktop_context: DesktopContext,
     pub external_browser_enabled: bool,
     pub waker: Waker,
+
+    // Rebuilds the app's virtual dom after the webview reloads its document.
+    pub(crate) dom_factory: Option<crate::recovery::DomFactory>,
+    // The history the current dom routes with; its route survives a reload.
+    history: Rc<dyn History>,
+    // Lets exactly one reload of the app document past the navigation policy.
+    app_reload_armed: Arc<AtomicBool>,
+    recovery_logger: Option<Rc<dyn Fn(&str)>>,
 
     // Wry assumes the webcontext is alive for the lifetime of the webview.
     // We need to keep the webcontext alive, otherwise the webview will crash
@@ -360,6 +374,9 @@ impl WebviewInstance {
         let navigation_handler = cfg.navigation_handler.take();
         let in_app_navigation_handler = cfg.in_app_navigation_handler.take();
         let page_loaded = AtomicBool::new(false);
+        let app_reload_armed = Arc::new(AtomicBool::new(false));
+        let reload_armed = app_reload_armed.clone();
+        let recovery_logger = cfg.webview_recovery_logger.take();
 
         let mut webview = WebViewBuilder::new_with_web_context(&mut web_context)
             .with_bounds(wry::Rect {
@@ -378,9 +395,13 @@ impl WebviewInstance {
                     || var.starts_with("http://dioxus.")
                     || var.starts_with("https://dioxus.")
                 {
-                    // After the page has loaded once, don't allow any more navigation
+                    // After the page has loaded once, don't allow any more navigation,
+                    // except one armed reload that recovers a dead or blank page.
                     let page_loaded = page_loaded.swap(true, std::sync::atomic::Ordering::SeqCst);
-                    return !page_loaded;
+                    return crate::recovery::allow_app_document_navigation(
+                        page_loaded,
+                        &reload_armed,
+                    );
                 }
 
                 // External links always open somewhere else. Prevents the webview from navigating
@@ -412,6 +433,20 @@ impl WebviewInstance {
 
             webview = webview.with_https_scheme(true);
         };
+
+        // WebKit ends the web content process under memory pressure, usually while
+        // the app is in the background. Reload the app document when it does.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            use wry::WebViewBuilderExtDarwin as _;
+            let (proxy, window_id) = (shared.proxy.clone(), window.id());
+            webview = webview.with_on_web_content_process_terminate_handler(move || {
+                _ = proxy.send_event(UserWindowEvent::RecoverWebview {
+                    id: Some(window_id),
+                    reason: "web content process terminated".to_string(),
+                });
+            });
+        }
 
         // Disable the webview default shortcuts to disable the reload shortcut
         #[cfg(target_os = "windows")]
@@ -530,7 +565,7 @@ impl WebviewInstance {
         dom.in_scope(ScopeId::ROOT, || {
             provide_context(desktop_context.clone());
             provide_context(provider);
-            provide_context(history_provider);
+            provide_context(history_provider.clone());
         });
 
         // Request an initial redraw
@@ -542,17 +577,83 @@ impl WebviewInstance {
             waker: tao_waker(shared.proxy.clone(), desktop_context.window.id()),
             desktop_context,
             external_browser_enabled,
+            dom_factory: None,
+            history: history_provider,
+            app_reload_armed,
+            recovery_logger,
             _menu: menu,
             _web_context: web_context,
         }
     }
 
+    /// Load the app document again because the web content died or is blank.
+    pub(crate) fn reload_document(&self, reason: &str) {
+        let line = crate::recovery::recovery_log_line(reason);
+        tracing::warn!("{line}");
+        if let Some(log) = self.recovery_logger.as_ref() {
+            log(&line);
+        }
+        self.app_reload_armed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let webview = &self.desktop_context.webview;
+        let current = webview.url().unwrap_or_default();
+        let result = if crate::recovery::needs_root_load(&current) {
+            webview.load_url(protocol::BASE_URI)
+        } else {
+            webview.reload()
+        };
+        if let Err(err) = result {
+            self.app_reload_armed
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            tracing::error!("[webview] reload failed: {err}");
+            if let Some(log) = self.recovery_logger.as_ref() {
+                log(&format!("[webview] reload failed: {err}"));
+            }
+        }
+    }
+
+    /// The webview loaded the app document again (after its content process
+    /// died, or a blank page was reloaded). The new document is empty, so start
+    /// a fresh virtual dom on the route the old one showed. App state the old dom
+    /// kept in memory is dropped with it; state the app persists (session, tab,
+    /// settings) is read again on mount.
+    pub(crate) fn remount_fresh_dom(&mut self) {
+        let Some(factory) = self.dom_factory.clone() else {
+            // No recipe (a secondary window): rebuild the live dom into the new
+            // document. The edit queue has already reset its template cache.
+            return;
+        };
+        let dom = factory();
+        let provider: Rc<dyn Document> =
+            Rc::new(DesktopDocument::new(self.desktop_context.clone()));
+        let history = crate::recovery::carry_route(&*self.history);
+        let desktop_context = self.desktop_context.clone();
+        dom.in_scope(ScopeId::ROOT, || {
+            provide_context(desktop_context);
+            provide_context(provider);
+            provide_context(history.clone());
+        });
+        self.edits.set_runtime(dom.runtime());
+        self.history = history;
+
+        #[cfg(target_os = "android")]
+        let _lock = crate::android_sync_lock::android_runtime_lock();
+        let old = std::mem::replace(&mut self.dom, dom);
+        drop(old);
+    }
+
     pub fn poll_vdom(&mut self) {
+        // A reloaded document is loading. Rendering resumes once it initializes.
+        if self.edits.wry_queue.awaiting_document() {
+            return;
+        }
+
         let mut cx = std::task::Context::from_waker(&self.waker);
 
         // Continuously poll the virtualdom until it's pending
         // Wait for work will return Ready when it has edits to be sent to the webview
         // It will return Pending when it needs to be polled again - nothing is ready
+
         loop {
             // Check if there is a new edit channel we need to send. On IOS,
             // the websocket will be killed when the device is put into sleep. If we

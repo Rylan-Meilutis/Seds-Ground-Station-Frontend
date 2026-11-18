@@ -43,6 +43,19 @@ static SENDER_SPLIT_DATA_TYPES: OnceLock<Mutex<HashSet<TelemetryTextId>>> = Once
 static CHART_DRAW_QUEUE: OnceLock<Mutex<Vec<(String, String)>>> = OnceLock::new();
 static CHART_DRAW_FLUSH_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
+/// The page was replaced (the webview reloaded its document): the canvas
+/// renderer must be installed into the new page, and draws queued for the old
+/// page's canvases, with their flush task, went with the old virtual dom.
+pub(crate) fn reset_for_new_document() {
+    CHART_CANVAS_RENDERER_INSTALLED.store(false, Ordering::SeqCst);
+    if let Some(queue) = CHART_DRAW_QUEUE.get()
+        && let Ok(mut pending) = queue.lock()
+    {
+        pending.clear();
+    }
+    CHART_DRAW_FLUSH_SCHEDULED.store(false, Ordering::Release);
+}
+
 pub fn configure_sender_split_data_types(data_types: &[String]) {
     let configured = SENDER_SPLIT_DATA_TYPES.get_or_init(|| Mutex::new(HashSet::new()));
     if let Ok(mut configured) = configured.lock() {

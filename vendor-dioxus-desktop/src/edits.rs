@@ -91,6 +91,44 @@ impl WryQueue {
         poll
     }
 
+    /// Called each time the app document is served. A second document means the
+    /// webview reloaded (for example after its content process was killed), so the
+    /// edit stream starts over: a fresh connection id (stale unacknowledged edits
+    /// for the old document are never replayed into the new one), an empty template
+    /// cache, and no edit waiting for an acknowledgement that cannot come.
+    pub(crate) fn begin_document(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.documents_served = inner.documents_served.saturating_add(1);
+        if inner.documents_served < 2 {
+            return;
+        }
+        let old_id = inner.location.webview_id;
+        let new_id = inner
+            .websocket
+            .max_webview_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        inner.location.webview_id = new_id;
+        inner.websocket.connections.write().unwrap().remove(&old_id);
+        inner.mutation_state = MutationState::default();
+        inner.edits_in_progress = None;
+        inner.awaiting_document = true;
+    }
+
+    /// True between a reload being served and that document reporting it is ready.
+    /// Nothing is rendered meanwhile: the old virtual dom must not write into the
+    /// new document.
+    pub(crate) fn awaiting_document(&self) -> bool {
+        self.inner.borrow().awaiting_document
+    }
+
+    /// The served document has initialized. Returns true if it replaced an earlier one.
+    pub(crate) fn document_initialized(&self) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        let reloaded = inner.awaiting_document;
+        inner.awaiting_document = false;
+        reloaded
+    }
+
     /// Get the websocket path that the webview should connect to in order to receive edits
     pub(crate) fn edits_path(&self) -> String {
         let WebviewWebsocketLocation {
@@ -120,6 +158,10 @@ pub(crate) struct WryQueueInner {
     server_location_changed: Arc<Notify>,
     server_location_changed_future: Pin<Box<dyn Future<Output = ()>>>,
     mutation_state: MutationState,
+    // How many times the app document has been served into this webview.
+    documents_served: u32,
+    // A reloaded document has been served but has not initialized yet.
+    awaiting_document: bool,
 }
 
 /// The location of a webview websocket connection. This is used to identify the webview and the port it is connected to.
@@ -213,8 +255,10 @@ impl EditWebsocket {
             // The client may try to reconnect to the old port that is now being used by an attacker who steals the client
             // key and uses it to read the edits from the new port.
             let (location, new_server) = start_server();
-            notify.notify_waiters();
+            // Publish the new location before waking the webviews, or they could
+            // be told to reconnect to the dead port.
             *current_location.lock().unwrap() = location;
+            notify.notify_waiters();
             server = new_server;
         }
     }
@@ -389,6 +433,8 @@ impl EditWebsocket {
                 websocket: self.clone(),
                 edits_in_progress: None,
                 mutation_state: MutationState::default(),
+                documents_served: 0,
+                awaiting_document: false,
             })),
         }
     }
@@ -471,6 +517,29 @@ fn create_secure_key() -> EncodedKey {
     let mut expected_key: EncodedKey = [0u8; KEY_SIZE];
     secure_rng.fill_bytes(&mut expected_key);
     expected_key
+}
+
+#[test]
+fn a_reloaded_document_gets_a_fresh_edit_stream() {
+    let websocket = EditWebsocket::start();
+    let queue = websocket.create_queue();
+    queue.begin_document();
+    assert!(!queue.awaiting_document(), "the first document is not a reload");
+    let first_path = queue.edits_path();
+    let stale = websocket.clone().send_edits(queue.inner.borrow().location.webview_id, vec![1]);
+    queue.inner.borrow_mut().edits_in_progress = Some(stale);
+
+    queue.begin_document();
+    assert!(queue.awaiting_document());
+    assert_ne!(queue.edits_path(), first_path, "new connection id for the new page");
+    assert!(queue.inner.borrow().edits_in_progress.is_none());
+    assert!(
+        websocket.connections.read().unwrap().is_empty(),
+        "edits queued for the old page are dropped"
+    );
+    assert!(queue.document_initialized());
+    assert!(!queue.awaiting_document());
+    assert!(!queue.document_initialized());
 }
 
 #[test]

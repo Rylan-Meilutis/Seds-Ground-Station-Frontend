@@ -89,6 +89,8 @@ impl App {
             }),
         };
 
+        crate::recovery::set_proxy(app.shared.proxy.clone());
+
         // Set the event converter
         dioxus_html::set_event_converter(Box::new(crate::events::SerializedHtmlEventConverter));
 
@@ -268,7 +270,8 @@ impl App {
         let explicit_window_size = cfg.window.window.inner_size;
         let explicit_window_position = cfg.window.window.position;
 
-        let webview = WebviewInstance::new(cfg, virtual_dom, self.shared.clone());
+        let mut webview = WebviewInstance::new(cfg, virtual_dom, self.shared.clone());
+        webview.dom_factory = crate::recovery::dom_factory();
 
         // And then attempt to resume from state
         self.resume_from_state(&webview, explicit_window_size, explicit_window_position);
@@ -299,6 +302,12 @@ impl App {
     pub fn handle_initialize_msg(&mut self, id: WindowId) {
         let view = self.webviews.get_mut(&id).unwrap();
 
+        // A reloaded document starts empty. Give it a fresh virtual dom on the
+        // same route rather than rebuilding the live one into it.
+        if view.edits.wry_queue.document_initialized() {
+            view.remount_fresh_dom();
+        }
+
         view.edits
             .wry_queue
             .with_mutation_state_mut(|f| view.dom.rebuild(f));
@@ -313,6 +322,15 @@ impl App {
         }
 
         _ = self.shared.proxy.send_event(UserWindowEvent::Poll(id));
+    }
+
+    /// Reload the app document of `id`, or of every window.
+    pub fn recover_webviews(&mut self, id: Option<WindowId>, reason: &str) {
+        for (window_id, view) in self.webviews.iter() {
+            if id.is_none_or(|id| id == *window_id) {
+                view.reload_document(reason);
+            }
+        }
     }
 
     pub fn handle_query_msg(&mut self, msg: IpcMessage, id: WindowId) {

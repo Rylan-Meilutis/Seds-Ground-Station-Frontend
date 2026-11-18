@@ -22,6 +22,7 @@ mod ipc;
 mod menubar;
 mod mobile;
 mod protocol;
+mod recovery;
 mod query;
 mod shortcut;
 mod waker;
@@ -56,6 +57,7 @@ pub use desktop_context::{
     window, DesktopContext, DesktopService, PendingDesktopContext, WeakDesktopContext,
 };
 pub use event_handlers::WryEventHandler;
+pub use recovery::request_webview_reload;
 pub use hooks::*;
 pub use shortcut::{HotKeyState, ShortcutHandle, ShortcutRegistryError};
 pub use wry::RequestAsyncResponder;

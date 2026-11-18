@@ -205,6 +205,23 @@ static PAGE_VISIBILITY_LAST_POLL_MS: AtomicI64 = AtomicI64::new(0);
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 static PAGE_VISIBILITY_CACHED: AtomicBool = AtomicBool::new(true);
 
+/// Start over after the webview reloaded its document (see `webview_recovery`):
+/// helpers installed into the old page are gone, and a latch whose task died
+/// with the old virtual dom must not block the new one.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn reset_document_scoped_state() {
+    data_chart::reset_for_new_document();
+    #[cfg(target_os = "ios")]
+    {
+        PAGE_VISIBILITY_BRIDGE_INSTALLED.store(false, Ordering::SeqCst);
+        PAGE_VISIBILITY_LAST_POLL_MS.store(0, Ordering::Relaxed);
+        PAGE_VISIBILITY_CACHED.store(true, Ordering::Relaxed);
+    }
+    TRANSLATION_REQUEST_ACTIVE.store(false, Ordering::Release);
+    DASHBOARD_RUNTIME_PUMP_SCHEDULED.store(false, Ordering::Release);
+    DASHBOARD_RUNTIME_DELAYED_PUMP_SCHEDULED.store(false, Ordering::Release);
+}
+
 const COMMAND_ACTIVATION_DEDUP_MS: f64 = 450.0;
 const COMMAND_MAX_PRESS_RELEASE_MS: f64 = 650.0;
 const COMMAND_VISUAL_FEEDBACK_MS: f64 = 700.0;

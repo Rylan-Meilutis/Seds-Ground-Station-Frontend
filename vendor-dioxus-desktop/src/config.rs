@@ -78,6 +78,7 @@ pub struct Config {
     pub(crate) navigation_handler: Option<NavigationHandler>,
     pub(crate) in_app_navigation_handler: Option<NavigationHandler>,
     pub(crate) external_browser_enabled: bool,
+    pub(crate) webview_recovery_logger: Option<std::rc::Rc<dyn Fn(&str) + 'static>>,
 
     #[allow(clippy::type_complexity)]
     pub(crate) on_window: Option<Box<dyn FnMut(Arc<Window>, &mut VirtualDom) + 'static>>,
@@ -130,6 +131,7 @@ impl Config {
             disable_file_drop_handler: false,
             disable_dma_buf_on_wayland: true,
             on_window: None,
+            webview_recovery_logger: None,
             additional_windows_args: None,
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             tray_icon_show_window_on_click: true,
@@ -375,6 +377,14 @@ impl Config {
     /// The caller must restrict this to trusted application documents.
     pub fn with_in_app_navigation_handler(mut self, f: impl Fn(&str) -> bool + 'static) -> Self {
         self.in_app_navigation_handler = Some(Box::new(f));
+        self
+    }
+
+    /// Receive a line each time a webview reloads the app document to recover
+    /// from a dead or blank web content process. Without it the line goes to
+    /// `tracing` only.
+    pub fn with_webview_recovery_logger(mut self, f: impl Fn(&str) + 'static) -> Self {
+        self.webview_recovery_logger = Some(std::rc::Rc::new(f));
         self
     }
 

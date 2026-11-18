@@ -1,4 +1,5 @@
-// Media-page support for the app's WKWebView on iOS and macOS.
+// Media-page support and blank-page recovery for the app's WKWebView on iOS
+// and macOS. The recovery part is at the end of this file.
 //
 // The voice, camera and recording pages are station documents shown in
 // iframes. When the operator has chosen to skip TLS verification for the
@@ -17,6 +18,12 @@
 #import <Security/Security.h>
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+#else
+#import <AppKit/AppKit.h>
+#endif
 
 static NSMutableDictionary<NSString *, NSData *> *GS26PinnedCertificates(void) {
     static NSMutableDictionary<NSString *, NSData *> *pinned;
@@ -128,5 +135,120 @@ void gs26_webview_trust_certificate(const char *host, const uint8_t *der, size_t
     NSMutableDictionary<NSString *, NSData *> *pinned = GS26PinnedCertificates();
     @synchronized (pinned) {
         pinned[key] = certificate;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Blank page after returning to the foreground.
+//
+// WebKit may end the web content process while the app is in the background.
+// wry's navigation delegate already implements
+// webViewWebContentProcessDidTerminate: and dioxus-desktop reloads the app
+// document from it (vendor-dioxus-desktop/src/recovery.rs). This check covers a
+// page that died without that callback, or came back empty: each time the app
+// becomes active the page is asked whether its root has content. A page that
+// errors (no content process) or stays empty past a short grace period is
+// reloaded through Rust, which lets the reload past the navigation policy and
+// remounts the app on the same route.
+
+void gs26_webview_request_reload(const char *reason);
+
+static NSString *const GS26RecoveryProbe =
+    @"(function(){var m=document.getElementById('main');"
+     "return !!(m&&m.childElementCount>0);})()";
+static const NSTimeInterval GS26RecoveryGraceSeconds = 2.0;
+static const NSTimeInterval GS26RecoveryMinIntervalSeconds = 15.0;
+
+static __weak WKWebView *GS26RecoveryWebView;
+static NSDate *GS26LastRecoveryReload;
+static BOOL GS26RecoveryCheckRunning;
+static dispatch_once_t GS26RecoveryObserverOnce;
+
+// Calls back with YES when the page answered and its root has content.
+static void GS26ProbePage(WKWebView *webView, void (^done)(BOOL healthy, NSString *detail)) {
+    if (webView.URL == nil) {
+        done(NO, @"no document");
+        return;
+    }
+    [webView evaluateJavaScript:GS26RecoveryProbe
+              completionHandler:^(id result, NSError *error) {
+        if (error != nil) {
+            done(NO, @"page did not answer");
+        } else if (![result respondsToSelector:@selector(boolValue)] || ![result boolValue]) {
+            done(NO, @"page root is empty");
+        } else {
+            done(YES, nil);
+        }
+    }];
+}
+
+static void GS26RequestRecoveryReload(NSString *detail) {
+    NSDate *now = [NSDate date];
+    if (GS26LastRecoveryReload != nil
+        && [now timeIntervalSinceDate:GS26LastRecoveryReload] < GS26RecoveryMinIntervalSeconds) {
+        return;
+    }
+    GS26LastRecoveryReload = now;
+    NSString *reason = [NSString stringWithFormat:@"blank after becoming active: %@", detail];
+    NSLog(@"[webview] content process terminated, reloading (%@)", reason);
+    gs26_webview_request_reload(reason.UTF8String);
+}
+
+static void GS26CheckPageAfterActivation(void) {
+    WKWebView *webView = GS26RecoveryWebView;
+    if (webView == nil || GS26RecoveryCheckRunning) {
+        return;
+    }
+    GS26RecoveryCheckRunning = YES;
+    GS26ProbePage(webView, ^(BOOL healthy, NSString *firstDetail) {
+        if (healthy) {
+            GS26RecoveryCheckRunning = NO;
+            return;
+        }
+        // The page may still be rendering (or the edit socket reconnecting).
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(GS26RecoveryGraceSeconds * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            WKWebView *again = GS26RecoveryWebView;
+            if (again == nil) {
+                GS26RecoveryCheckRunning = NO;
+                return;
+            }
+            GS26ProbePage(again, ^(BOOL healthyNow, NSString *detail) {
+                GS26RecoveryCheckRunning = NO;
+                if (!healthyNow) {
+                    GS26RequestRecoveryReload(detail ?: firstDetail);
+                }
+            });
+        });
+    });
+}
+
+void gs26_webview_install_recovery(void *webview_ptr) {
+    if (webview_ptr == NULL) {
+        return;
+    }
+    void (^install)(void) = ^{
+        GS26RecoveryWebView = (__bridge WKWebView *)webview_ptr;
+        dispatch_once(&GS26RecoveryObserverOnce, ^{
+#if TARGET_OS_IPHONE
+            NSNotificationName name = UIApplicationDidBecomeActiveNotification;
+#else
+            NSNotificationName name = NSApplicationDidBecomeActiveNotification;
+#endif
+            [[NSNotificationCenter defaultCenter]
+                addObserverForName:name
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification *note) {
+                (void)note;
+                GS26CheckPageAfterActivation();
+            }];
+        });
+    };
+    if ([NSThread isMainThread]) {
+        install();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), install);
     }
 }

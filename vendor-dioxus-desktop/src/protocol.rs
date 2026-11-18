@@ -13,13 +13,13 @@ use wry::{
 };
 
 #[cfg(target_os = "android")]
-const BASE_URI: &str = "https://dioxus.index.html/";
+pub(crate) const BASE_URI: &str = "https://dioxus.index.html/";
 
 #[cfg(target_os = "windows")]
-const BASE_URI: &str = "http://dioxus.index.html/";
+pub(crate) const BASE_URI: &str = "http://dioxus.index.html/";
 
 #[cfg(not(any(target_os = "android", target_os = "windows")))]
-const BASE_URI: &str = "dioxus://index.html/";
+pub(crate) const BASE_URI: &str = "dioxus://index.html/";
 
 #[cfg(debug_assertions)]
 static DEFAULT_INDEX: &str = include_str!("./assets/dev.index.html");
@@ -111,6 +111,16 @@ fn index_request(
     // If the request is for the root, we'll serve the index.html file.
     if request.uri().path() != "/" {
         return None;
+    }
+
+    // Each serve of the root is a new document (a reload after the content
+    // process died, for one); the edit stream starts over for it. Android
+    // serves requests off the main thread, so hold the runtime lock the
+    // renderer holds while it writes edits.
+    {
+        #[cfg(target_os = "android")]
+        let _lock = crate::android_sync_lock::android_runtime_lock();
+        edit_state.wry_queue.begin_document();
     }
 
     // Load a custom index file if provided

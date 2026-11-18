@@ -1,23 +1,34 @@
 package dev.dioxus.main
 
+import android.annotation.TargetApi
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Handler
 import android.net.http.SslError
+import android.os.Build
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import android.view.ViewGroup
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.webkit.WebViewAssetLoader
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
+import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
@@ -113,7 +124,162 @@ class RustWebViewClient(private val context: Context): WebViewClient() {
 
     override fun onPageFinished(view: WebView, url: String) {
         Log.e(tag, "onPageFinished url=$url")
+        watchForResume(view)
         onPageLoaded(url)
+    }
+
+    // ---------------------------------------------------------------------
+    // Blank-page recovery.
+    //
+    // Android may kill the WebView renderer, typically while the app is in the
+    // background. Without onRenderProcessGone the app process is killed with it;
+    // with it, a dead WebView cannot be used again. wry created this WebView and
+    // its Rust side keeps using it, so a new WebView cannot simply be swapped in:
+    // the app restarts instead, once it is in the foreground. The session,
+    // station and dashboard tab are persisted and come back on launch.
+    //
+    // On every resume the page is also asked whether its root has content. A
+    // page that does not answer or stays empty past a grace period is reloaded;
+    // the Rust side remounts the app on the same route.
+
+    private val recoveryHandler = Handler(Looper.getMainLooper())
+    private var watchedView: WeakReference<WebView>? = null
+    private var resumeObserverInstalled = false
+    private var restartWhenResumed = false
+    private var recoveryCheckRunning = false
+    private var lastRecoveryReloadMs = 0L
+
+    private fun watchForResume(view: WebView) {
+        watchedView = WeakReference(view)
+        installResumeObserver()
+    }
+
+    private fun installResumeObserver() {
+        if (resumeObserverInstalled) {
+            return
+        }
+        val owner = context as? LifecycleOwner ?: return
+        resumeObserverInstalled = true
+        owner.lifecycle.addObserver(LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                onHostResumed()
+            }
+        })
+    }
+
+    private fun hostIsResumed(): Boolean {
+        val owner = context as? LifecycleOwner ?: return true
+        return owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+    }
+
+    private fun onHostResumed() {
+        if (restartWhenResumed) {
+            restartApp()
+            return
+        }
+        val view = watchedView?.get() ?: return
+        // Nothing in the app pauses the WebView, but the platform or a library
+        // may have; a paused WebView keeps its timers stopped and looks frozen.
+        view.onResume()
+        view.resumeTimers()
+        checkPageAfterResume()
+    }
+
+    private fun checkPageAfterResume() {
+        val view = watchedView?.get() ?: return
+        if (recoveryCheckRunning) {
+            return
+        }
+        recoveryCheckRunning = true
+        probePage(view) { healthy ->
+            if (healthy) {
+                recoveryCheckRunning = false
+                return@probePage
+            }
+            // The page may still be rendering or reconnecting its edit socket.
+            recoveryHandler.postDelayed({
+                val again = watchedView?.get()
+                if (again == null) {
+                    recoveryCheckRunning = false
+                    return@postDelayed
+                }
+                probePage(again) { healthyNow ->
+                    recoveryCheckRunning = false
+                    if (!healthyNow) {
+                        reloadBlankPage(again, "blank after resume")
+                    }
+                }
+            }, RECOVERY_GRACE_MS)
+        }
+    }
+
+    /** Calls back with true when the page answered and its root has content. */
+    private fun probePage(view: WebView, done: (Boolean) -> Unit) {
+        var answered = false
+        val timeout = Runnable {
+            if (!answered) {
+                answered = true
+                done(false)
+            }
+        }
+        recoveryHandler.postDelayed(timeout, RECOVERY_PROBE_TIMEOUT_MS)
+        try {
+            view.evaluateJavascript(RECOVERY_PROBE) { result ->
+                if (!answered) {
+                    answered = true
+                    recoveryHandler.removeCallbacks(timeout)
+                    done(result == "true")
+                }
+            }
+        } catch (exc: Exception) {
+            Log.e(tag, "recovery probe failed: ${exc.message}")
+        }
+    }
+
+    private fun reloadBlankPage(view: WebView, reason: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (lastRecoveryReloadMs != 0L && now - lastRecoveryReloadMs < RECOVERY_MIN_INTERVAL_MS) {
+            return
+        }
+        lastRecoveryReloadMs = now
+        Log.e(tag, "[webview] content process terminated, reloading ($reason)")
+        view.reload()
+    }
+
+    @TargetApi(Build.VERSION_CODES.O)
+    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+        val crashed = detail.didCrash()
+        Log.e(tag, "[webview] content process terminated, reloading (renderer gone, crashed=$crashed)")
+        try {
+            (view.parent as? ViewGroup)?.removeView(view)
+            view.destroy()
+        } catch (exc: Exception) {
+            Log.e(tag, "could not release the dead WebView: ${exc.message}")
+        }
+        if (hostIsResumed()) {
+            restartApp()
+        } else {
+            restartWhenResumed = true
+            installResumeObserver()
+        }
+        // Handled: the app process is not killed along with the renderer.
+        return true
+    }
+
+    private fun restartApp() {
+        restartWhenResumed = false
+        val activity = context as? Activity
+        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        if (launch == null) {
+            Log.e(tag, "[webview] no launch intent; the app must be reopened")
+            return
+        }
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        Log.e(tag, "[webview] restarting the app to replace the dead WebView")
+        context.startActivity(launch)
+        activity?.finishAffinity()
+        // The Rust runtime is tied to the dead WebView; start a fresh process.
+        Runtime.getRuntime().exit(0)
     }
 
     override fun onReceivedError(
@@ -383,6 +549,12 @@ class RustWebViewClient(private val context: Context): WebViewClient() {
     }
 
     companion object {
+        private const val RECOVERY_PROBE =
+            "(function(){var m=document.getElementById('main');return !!(m&&m.childElementCount>0);})()"
+        private const val RECOVERY_GRACE_MS = 2000L
+        private const val RECOVERY_PROBE_TIMEOUT_MS = 1500L
+        private const val RECOVERY_MIN_INTERVAL_MS = 15000L
+
         init {
             System.loadLibrary("main")
         }

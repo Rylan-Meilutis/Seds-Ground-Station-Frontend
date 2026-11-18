@@ -43,6 +43,13 @@ pub enum UserWindowEvent {
 
     /// Gracefully shutdown the entire app
     Shutdown,
+
+    /// Reload the app document of one window (or all windows) because its web
+    /// content process died or the page came back blank.
+    RecoverWebview {
+        id: Option<WindowId>,
+        reason: String,
+    },
 }
 
 /// A message struct that manages the communication between the webview and the eventloop code

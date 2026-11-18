@@ -143,6 +143,10 @@ pub fn App() -> Element {
     crate::startup_diagnostics::mark(crate::startup_diagnostics::Stage::AppRendered);
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // App mounts once per document: after a recovery reload, helpers from
+        // the old page and latches from the old virtual dom start over.
+        use_hook(crate::webview_recovery::reset_document_scoped_state);
+        crate::webview_recovery::use_webview_recovery();
         crate::native_assets::use_station_assets();
         keep_awake::set_enabled(true);
     }

@@ -132,6 +132,12 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     println!("cargo:rustc-link-lib=framework=Network");
     println!("cargo:rustc-link-lib=framework=Security");
     println!("cargo:rustc-link-lib=framework=WebKit");
+    // MediaWebViewShim.m observes the app becoming active (webview recovery).
+    if ios {
+        println!("cargo:rustc-link-lib=framework=UIKit");
+    } else {
+        println!("cargo:rustc-link-lib=framework=AppKit");
+    }
     println!("cargo:rustc-link-lib=objc");
     if ios {
         println!("cargo:rustc-link-lib=framework=WatchConnectivity");
