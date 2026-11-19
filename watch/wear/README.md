@@ -1,9 +1,10 @@
 # GS26 Wear OS companion
 
 Wear OS app for the UBSEDS GS phone app. It shows the configured data pages,
-an auto-cycle page, a recovery compass and up to two opt-in action buttons per
-page. It gets its data from the phone over the Wear Data Layer (and sends the
-phone only `hello`, `activity` and `settings`), or, while the phone's data is
+an auto-cycle page, a recovery compass over a cached station map and up to two
+opt-in action buttons per page. It gets its data from the phone over the Wear
+Data Layer (and sends the phone only `hello`, `activity`, `settings` and the
+`tiles` report), or, while the phone's data is
 not fresh, from the station directly with the scoped watch token the phone
 provisioned (stored encrypted with an Android Keystore key). Page actions go
 to the station's `POST /api/command` with that token. The protocol and
@@ -87,3 +88,7 @@ sends to nodes advertising `gs26_phone`.
 * GPS and the rotation-vector sensor run only while the compass page is on
   screen and the app is resumed. Location permission is requested the first
   time the compass page is shown.
+* Map background: manifest DataItem `/gs26/map`, one DataItem per tile
+  `/gs26/tile/{z}/{x}/{y}` (Asset `tile`). Tiles are copied to
+  `filesDir/map_tiles` (capped at the size cap) and reported back with a
+  `tiles` message; rotary input zooms the map on the compass page.

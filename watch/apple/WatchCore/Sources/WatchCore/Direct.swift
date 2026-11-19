@@ -135,6 +135,12 @@ public func commandURL(base: String) -> URL? {
     URL(string: base + "/api/command")
 }
 
+/// The station's map tile (read-only; allowed for the watch token).
+public func tileURL(base: String, key: String) -> URL? {
+    guard TileId.parse(key) != nil else { return nil }
+    return URL(string: base + "/tiles/" + key + ".jpg")
+}
+
 /// `POST /api/command` takes the command name as a JSON string.
 public func commandBody(_ cmd: String) -> Data {
     (try? JSONEncoder().encode(cmd)) ?? Data()

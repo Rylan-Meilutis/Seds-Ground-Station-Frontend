@@ -20,6 +20,8 @@ data class WatchSettings(
     val power: String = POWER_BALANCED,
     /** The watch may read the station itself while the phone app is away. */
     @SerialName("direct_link") val directLink: Boolean = true,
+    /** Map background under the compass. */
+    val map: MapSetting = MapSetting(),
 ) {
     val metric: Boolean get() = units != UNITS_IMPERIAL
     val magneticNorth: Boolean get() = compass.north == NORTH_MAGNETIC
@@ -81,6 +83,8 @@ data class WatchSettings(
     /** Removes an action button (adding is done on the phone, which knows what the station permits). */
     fun removePageAction(page: String, cmd: String): WatchSettings =
         copy(pages = pages.map { p -> if (p.id != page) p else p.copy(actions = p.actions - cmd) })
+
+    fun withMapEnabled(enabled: Boolean) = copy(map = map.copy(enabled = enabled))
 
     fun withNorth(north: String) = copy(compass = compass.copy(north = north))
     fun withUnits(units: String) = copy(units = units)
@@ -158,6 +162,15 @@ data class CycleSetting(
     @SerialName("interval_s") val intervalS: Int = 5,
     val autostart: Boolean = true,
 )
+
+/** Map background: station tiles under the compass, size cap in MB (1–5). */
+@Serializable
+data class MapSetting(
+    val enabled: Boolean = true,
+    @SerialName("cap_mb") val capMb: Int = 3,
+) {
+    val capBytes: Long get() = capMb.coerceIn(1, 5).toLong() * 1024 * 1024
+}
 
 @Serializable
 data class CompassSetting(

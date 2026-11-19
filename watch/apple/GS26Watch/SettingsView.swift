@@ -34,6 +34,7 @@ struct SettingsView: View {
                             StepperLabel(title: "Stale after", value: "\(s.compass.staleAfterS) s")
                         }
                         NavigationLink("Targets (\(s.compass.targets.count))") { TargetsEditor() }
+                        Toggle("Map background", isOn: binding(\.map.enabled, set: { $0.map.enabled = $1 }))
                     }
                     Section("Direct link") {
                         Text(directText).font(.footnote)

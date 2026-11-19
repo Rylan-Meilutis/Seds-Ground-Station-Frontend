@@ -365,8 +365,11 @@ public enum WatchMessage: Encodable, Equatable {
     case hello
     case activity(foreground: Bool, page: String?)
     case settings(WatchSettings)
+    /// The map tiles the watch holds (`z/x/y`), so the phone sends only
+    /// missing ones; `set` is the manifest it last received.
+    case tiles(set: String?, have: [String])
 
-    enum CodingKeys: String, CodingKey { case v, type, foreground, page, settings }
+    enum CodingKeys: String, CodingKey { case v, type, foreground, page, settings, set, have }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -381,6 +384,10 @@ public enum WatchMessage: Encodable, Equatable {
         case let .settings(settings):
             try c.encode("settings", forKey: .type)
             try c.encode(settings, forKey: .settings)
+        case let .tiles(set, have):
+            try c.encode("tiles", forKey: .type)
+            try c.encodeIfPresent(set, forKey: .set)
+            try c.encode(have, forKey: .have)
         }
     }
 

@@ -105,6 +105,26 @@ public struct CompassSetting: Codable, Equatable {
     }
 }
 
+/// Map background under the compass: station tiles sent by the phone and
+/// cached on the watch, capped at `capMb` (1–5 MB).
+public struct MapSetting: Codable, Equatable {
+    public var enabled = true
+    public var capMb = 3
+
+    public init() {}
+
+    enum CodingKeys: String, CodingKey { case enabled, capMb = "cap_mb" }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = MapSetting()
+        enabled = c.soft(.enabled, d.enabled)
+        capMb = c.soft(.capMb, d.capMb)
+    }
+
+    public var capBytes: Int64 { Int64(min(max(capMb, 1), 5)) * 1024 * 1024 }
+}
+
 public struct WatchSettings: Codable, Equatable {
     public var version = 2
     public var updatedMs: Int64 = 0
@@ -118,12 +138,14 @@ public struct WatchSettings: Codable, Equatable {
     public var power = Power.balanced
     /// The watch may read the station itself while the phone app is away.
     public var directLink = true
+    /// Map background under the compass.
+    public var map = MapSetting()
 
     public init() {}
 
     enum CodingKeys: String, CodingKey {
         case version, updatedMs = "updated_ms", updatedBy = "updated_by", pages, cycle, compass, units, power
-        case directLink = "direct_link"
+        case directLink = "direct_link", map
     }
 
     public init(from decoder: Decoder) throws {
@@ -138,6 +160,7 @@ public struct WatchSettings: Codable, Equatable {
         units = c.soft(.units, d.units)
         power = c.soft(.power, d.power)
         directLink = c.soft(.directLink, d.directLink)
+        map = c.soft(.map, d.map)
     }
 
     public var metric: Bool { units == .metric }

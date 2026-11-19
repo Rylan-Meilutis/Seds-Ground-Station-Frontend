@@ -4,7 +4,8 @@
 //! when signed in, to the account.
 use super::registry;
 use super::settings::{
-    MAX_CYCLE_ITEMS, MAX_PAGE_ACTIONS, MAX_PAGE_ITEMS, North, Power, Units, WatchSettings,
+    MAX_CYCLE_ITEMS, MAX_MAP_CAP_MB, MAX_PAGE_ACTIONS, MAX_PAGE_ITEMS, MIN_MAP_CAP_MB, North,
+    Power, Units, WatchSettings,
 };
 use super::{WATCH_RECORD, WATCH_SYNC, bridge, edit_settings, sleep_ms};
 use crate::telemetry_dashboard::layout::ThemeConfig;
@@ -34,6 +35,7 @@ pub(in crate::telemetry_dashboard) fn WatchSettingsSection(theme: ThemeConfig) -
     // Refreshed with the link poll: the GS action list and token state.
     let mut catalog = use_signal(super::action_catalog);
     let mut direct_text = use_signal(super::direct_status_text);
+    let mut map_text = use_signal(super::map_sync::status_text);
     use_future(move || async move {
         loop {
             sleep_ms(2_000).await;
@@ -44,6 +46,10 @@ pub(in crate::telemetry_dashboard) fn WatchSettingsSection(theme: ThemeConfig) -
             let next = super::direct_status_text();
             if *direct_text.peek() != next {
                 direct_text.set(next);
+            }
+            let next = super::map_sync::status_text();
+            if *map_text.peek() != next {
+                map_text.set(next);
             }
         }
     });
@@ -58,6 +64,7 @@ pub(in crate::telemetry_dashboard) fn WatchSettingsSection(theme: ThemeConfig) -
         .map(|c| c.excluded.iter().map(|e| e.cmd.as_str()).collect::<Vec<_>>().join(", "))
         .unwrap_or_default();
     let direct_line = direct_text.read().clone();
+    let map_line = map_text.read().clone();
 
     let card = format!(
         "padding:16px; border-radius:14px; border:1px solid {}; background:{}; display:flex; flex-direction:column; gap:10px;",
@@ -334,6 +341,32 @@ pub(in crate::telemetry_dashboard) fn WatchSettingsSection(theme: ThemeConfig) -
                             "{label}"
                         }
                     }
+                }
+            }
+
+            div { style: "{card}",
+                h3 { style: "{heading}", "Map background" }
+                p { style: "{muted} margin:0;",
+                    "Shows the station's map tiles under the watch compass. The phone takes them from the station "
+                    "(as the map tab does, so it works without internet) around the rocket's last fix, the ground "
+                    "station and the RRLS, and sends the watch only the tiles it is missing."
+                }
+                label { style: "{row}",
+                    input { r#type: "checkbox", checked: settings.map.enabled,
+                        onchange: move |_| edit_settings(|s| s.map.enabled = !s.map.enabled) }
+                    "Map background on the compass"
+                }
+                div { style: "{row}",
+                    span { "Size cap" }
+                    select { style: "{select}", disabled: !settings.map.enabled, "aria-label": "Map tile size cap",
+                        onchange: move |e| if let Ok(v) = e.value().parse::<u32>() { edit_settings(|s| s.map.cap_mb = v) },
+                        for v in MIN_MAP_CAP_MB..=MAX_MAP_CAP_MB {
+                            option { value: "{v}", selected: v == settings.map.cap_mb, "{v} MB" }
+                        }
+                    }
+                }
+                if settings.map.enabled && !map_line.is_empty() {
+                    div { style: "{row}", span { style: "{muted}", "{map_line}" } }
                 }
             }
 

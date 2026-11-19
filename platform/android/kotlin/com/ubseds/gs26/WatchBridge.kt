@@ -2,6 +2,8 @@ package com.ubseds.gs26
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
+import com.google.android.gms.wearable.Asset
 import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.CapabilityInfo
 import com.google.android.gms.wearable.DataClient
@@ -12,7 +14,10 @@ import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
+import java.io.File
 import java.util.ArrayDeque
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Phone side of the Wear OS companion. Rust publishes snapshot JSON and polls
@@ -29,6 +34,10 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     private const val WATCH_SETTINGS_PATH = "/gs26/watch_settings"
     /** Direct-link provisioning: station address + scoped watch token. */
     private const val DIRECT_PATH = "/gs26/direct"
+    /** Map background: tile-set manifest, and one DataItem per tile. */
+    private const val MAP_PATH = "/gs26/map"
+    private const val TILE_PATH_PREFIX = "/gs26/tile/"
+    private const val MAX_TILE_BYTES = 512 * 1024
     private const val WATCH_CAPABILITY = "gs26_watch"
     private const val MAX_QUEUED = 32
     private const val MAX_MESSAGE_BYTES = 32 * 1024
@@ -111,6 +120,77 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
         }
         Wearable.getDataClient(ctx).putDataItem(request.asPutDataRequest().setUrgent())
     }
+
+    /**
+     * Map background manifest (`type: map`). Synced as a DataItem like the
+     * snapshot; tile DataItems that left the set are deleted.
+     */
+    @JvmStatic
+    fun sendMap(json: String) {
+        val ctx = appContext ?: return
+        val keep = try {
+            val tiles = JSONObject(json).optJSONArray("tiles") ?: JSONArray()
+            (0 until tiles.length()).map { tiles.getString(it) }.toSet()
+        } catch (_: Throwable) {
+            return
+        }
+        val client = Wearable.getDataClient(ctx)
+        val request = PutDataMapRequest.create(MAP_PATH).apply {
+            dataMap.putString("json", json)
+            dataMap.putLong("at", System.currentTimeMillis())
+        }
+        client.putDataItem(request.asPutDataRequest().setUrgent())
+        client.getDataItems(Uri.parse("wear://*$TILE_PATH_PREFIX"), DataClient.FILTER_PREFIX)
+            .addOnSuccessListener { items ->
+                val stale = items.mapNotNull { item ->
+                    item.uri.takeIf { tileKey(it) !in keep }
+                }
+                items.release()
+                stale.forEach { client.deleteDataItems(it) }
+            }
+    }
+
+    /**
+     * One map tile: DataItem `/gs26/tile/{z}/{x}/{y}` carrying the JPEG as an
+     * Asset. The watch stores it; the phone deletes the item once the watch
+     * reports it (or when it leaves the set).
+     */
+    @JvmStatic
+    fun sendTile(key: String, path: String, set: String) {
+        val ctx = appContext ?: return
+        if (!TILE_KEY.matches(key)) return
+        val bytes = try {
+            File(path).takeIf { it.isFile && it.length() in 1..MAX_TILE_BYTES }?.readBytes()
+        } catch (t: Throwable) {
+            Log.w(TAG, "could not read tile $key", t)
+            null
+        } ?: return
+        val request = PutDataMapRequest.create(TILE_PATH_PREFIX + key).apply {
+            dataMap.putAsset("tile", Asset.createFromBytes(bytes))
+            dataMap.putString("set", set)
+            dataMap.putString("key", key)
+        }
+        Wearable.getDataClient(ctx).putDataItem(request.asPutDataRequest())
+    }
+
+    /** The watch reported these tiles (JSON array of keys): drop their DataItems. */
+    @JvmStatic
+    fun tilesDelivered(json: String) {
+        val ctx = appContext ?: return
+        val keys = try {
+            val array = JSONArray(json)
+            (0 until array.length()).map { array.getString(it) }.filter { TILE_KEY.matches(it) }
+        } catch (_: Throwable) {
+            return
+        }
+        val client = Wearable.getDataClient(ctx)
+        keys.forEach { client.deleteDataItems(Uri.parse("wear://*$TILE_PATH_PREFIX$it")) }
+    }
+
+    private val TILE_KEY = Regex("^\\d{1,2}/\\d{1,7}/\\d{1,7}$")
+    private const val TAG = "GsWatchBridge"
+
+    private fun tileKey(uri: Uri): String = uri.path.orEmpty().removePrefix(TILE_PATH_PREFIX)
 
     @JvmStatic
     fun takeIncoming(): String? = synchronized(incoming) { incoming.pollFirst() }

@@ -54,10 +54,7 @@ object Compass {
         receivedAtMs: Long,
         nowMs: Long,
     ): CompassTarget {
-        val pos: LatLon? = when {
-            target.demoOffset != null -> watch?.let { Geodesy.offset(it, target.demoOffset.northM, target.demoOffset.eastM) }
-            else -> LatLon(target.lat, target.lon).takeIf { it.valid() }
-        }
+        val pos = position(target, watch)
         val distance = if (watch != null && pos != null) Geodesy.distanceM(watch, pos) else null
         val bearing = if (watch != null && pos != null) Geodesy.initialBearingDeg(watch, pos) else null
         val near = distance != null && distance < NEAR_M
@@ -78,6 +75,12 @@ object Compass {
             fallbackLabel = if (target.fallback) FALLBACK_LABEL else null,
             nearText = if (near) "Within ${Format.distance(distance!!, settings.metric)} — look around" else null,
         )
+    }
+
+    /** Target position; demo targets sit at the watch position plus their offset. */
+    fun position(target: Target, watch: LatLon?): LatLon? = when {
+        target.demoOffset != null -> watch?.let { Geodesy.offset(it, target.demoOffset.northM, target.demoOffset.eastM) }
+        else -> LatLon(target.lat, target.lon).takeIf { it.valid() }
     }
 
     /** Age at send time plus the time since the snapshot arrived. */

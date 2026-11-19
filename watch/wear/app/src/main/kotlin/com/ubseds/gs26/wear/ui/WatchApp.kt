@@ -168,6 +168,7 @@ private fun MainPager(
                             now = now,
                             visible = visible,
                             watchFix = watchFix,
+                            link = link,
                             onLongPress = onOpenSettings,
                         )
                         else -> Message("Update the watch app")

@@ -117,6 +117,39 @@ fn write_cached_tile(base: &str, z: u32, x: u32, y: u32, bytes: &[u8]) {
     let _ = fs::write(path, bytes);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+/// One station map tile for the watch map background: the phone's tile
+/// cache first, else `GET {base}/tiles/{z}/{x}/{y}.jpg` from the station
+/// (written to the same cache the map uses). `Ok(None)` when the station has
+/// no tile there, `Err` when it could not be reached. Blocking.
+pub(crate) fn fetch_station_tile(base: &str, z: u32, x: u32, y: u32) -> Result<Option<Vec<u8>>, ()> {
+    if let Some(cached) = read_cached_tile(base, z, x, y) {
+        return Ok(Some(cached));
+    }
+    let skip_tls = telemetry_dashboard::persisted_skip_tls_for_base_for_native_io(base);
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(skip_tls)
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|_| ())?;
+    let url = format!("{}/tiles/{z}/{x}/{y}.jpg", base.trim_end_matches('/'));
+    let response = client.get(url).send().map_err(|_| ())?;
+    let status = response.status().as_u16();
+    if status == 204 || status == 404 {
+        return Ok(None);
+    }
+    if !(200..300).contains(&status) {
+        return Err(());
+    }
+    let bytes = response.bytes().map_err(|_| ())?.to_vec();
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    write_cached_tile(base, z, x, y, &bytes);
+    Ok(Some(bytes))
+}
+
 #[cfg(target_os = "android")]
 /// Initializes rustls-platform-verifier with Android JVM/context handles.
 fn init_android_platform_tls_verifier() {

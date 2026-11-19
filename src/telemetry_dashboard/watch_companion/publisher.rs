@@ -24,6 +24,8 @@ const ACCOUNT_REFRESH_MS: f64 = 60_000.0;
 const LOOP_MS: u64 = 500;
 /// How often the dashboard publisher checks the direct-link token.
 const DIRECT_TICK_MS: f64 = 2_000.0;
+/// How often the dashboard publisher checks the watch map tile set.
+const MAP_TICK_MS: f64 = 15_000.0;
 
 /// Last antenna status and the monotonic time it arrived, kept so a
 /// `no_station` snapshot can still carry the last known targets.
@@ -99,6 +101,11 @@ impl Rate {
                     }
                     // Echo the authoritative copy either way.
                     self.force = true;
+                }
+                Some(WatchMessage::Tiles { set, have }) => {
+                    if eligible {
+                        super::map_sync::on_report(set, have);
+                    }
                 }
                 None => {}
             }
@@ -330,6 +337,7 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
         };
         let mut last_sync = f64::NEG_INFINITY;
         let mut last_direct = f64::NEG_INFINITY;
+        let mut last_map = f64::NEG_INFINITY;
         let mut last_antenna_poll = f64::NEG_INFINITY;
         let mut was_eligible = false;
         loop {
@@ -417,7 +425,13 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                         catalog: &catalog,
                         policy: Some(&policy),
                     };
-                    publish(&snapshot::build(&input), active);
+                    let snapshot = snapshot::build(&input);
+                    super::map_sync::note_targets(&snapshot.targets);
+                    publish(&snapshot, active);
+                }
+                if now - last_map >= MAP_TICK_MS {
+                    last_map = now;
+                    super::map_sync::tick(eligible, link, &settings).await;
                 }
             }
             sleep_ms(LOOP_MS).await;

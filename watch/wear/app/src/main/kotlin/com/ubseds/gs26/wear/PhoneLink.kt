@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.google.android.gms.wearable.CapabilityClient
+import com.google.android.gms.wearable.Asset
 import com.google.android.gms.wearable.CapabilityInfo
 import com.google.android.gms.wearable.DataClient
 import com.google.android.gms.wearable.DataEvent
@@ -20,7 +21,9 @@ import com.ubseds.gs26.wear.core.WatchSettings
 import com.ubseds.gs26.wear.core.WatchState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -56,6 +59,10 @@ class PhoneLink private constructor(context: Context) :
     /** Direct link to the station, provisioned by the phone. */
     val direct: DirectLink = DirectLink.get(app)
 
+    /** Map background tiles (from the phone, or the station in direct mode). */
+    val tiles: TileCache = TileCache.get(app)
+    private var reportJob: Job? = null
+
     /**
      * Polls the station once if the phone's data is not fresh (call from the
      * foreground loop). Returns the delay before the next call.
@@ -76,11 +83,37 @@ class PhoneLink private constructor(context: Context) :
         return Direct.pollMs(power)
     }
 
+    private val tileMisses = HashMap<String, Long>()
+
+    /**
+     * Direct mode only (the phone's data is not fresh and the link is
+     * provisioned): fetches up to [MAX_DIRECT_TILES] missing map tiles for the
+     * current view from the station. A tile the station did not serve is not
+     * asked for again for a minute.
+     */
+    suspend fun fetchMissingTiles(keys: List<String>) {
+        val s = _state.value
+        if (!s.settings.map.enabled) return
+        val provision = direct.state.value.provision ?: return
+        val now = System.currentTimeMillis()
+        val phoneAge = s.snapshot?.let { (now - s.receivedAtMs).coerceAtLeast(0) }
+        if (!Direct.shouldPoll(s.snapshot?.mode, phoneAge, Direct.phoneFreshMs(s.settings.power), foreground = true,
+                configured = provision.configured)) return
+        val wanted = keys.filter { !tiles.has(it) && (tileMisses[it]?.let { t -> now - t > 60_000 } ?: true) }
+            .take(MAX_DIRECT_TILES)
+        for (key in wanted) {
+            val bytes = direct.fetchTile(key)
+            if (bytes == null) { tileMisses[key] = System.currentTimeMillis(); continue }
+            withIo { tiles.put(key, bytes, s.settings.map.capBytes) }
+        }
+    }
+
     fun start() {
         dataClient.addListener(this)
         capabilityClient.addListener(this, Protocol.PHONE_CAPABILITY)
         scope.launch { readCurrentSnapshot() }
         scope.launch { readDirectProvision() }
+        scope.launch { readMapItems() }
         scope.launch { refreshReachable() }
         send(Protocol.helloMessage())
     }
@@ -97,7 +130,11 @@ class PhoneLink private constructor(context: Context) :
     private suspend fun refreshReachable() {
         runCatching {
             capabilityClient.getCapability(Protocol.PHONE_CAPABILITY, CapabilityClient.FILTER_REACHABLE).await().nodes
-        }.onSuccess { _phoneReachable.value = it.isNotEmpty() }
+        }.onSuccess {
+            val reachable = it.isNotEmpty()
+            if (reachable && !_phoneReachable.value) scheduleReport(2_000)
+            _phoneReachable.value = reachable
+        }
             .onFailure { Log.w(TAG, "phone reachability query failed", it) }
     }
 
@@ -124,6 +161,22 @@ class PhoneLink private constructor(context: Context) :
 
     override fun onDataChanged(events: DataEventBuffer) {
         // Extract before the buffer is released when this callback returns.
+        val changed = events.filter { it.type == DataEvent.TYPE_CHANGED }.map { it.dataItem }
+        val manifest = changed.filter { it.uri.path == Protocol.MAP_PATH }
+            .mapNotNull { DataMapItem.fromDataItem(it).dataMap.getString(Protocol.KEY_JSON) }
+            .lastOrNull()
+        val tileAssets = changed.filter { it.uri.path.orEmpty().startsWith(Protocol.TILE_PATH_PREFIX) }
+            .mapNotNull { item ->
+                val map = DataMapItem.fromDataItem(item).dataMap
+                val key = item.uri.path.orEmpty().removePrefix(Protocol.TILE_PATH_PREFIX)
+                map.getAsset("tile")?.let { key to it }
+            }
+        if (manifest != null || tileAssets.isNotEmpty()) {
+            scope.launch {
+                manifest?.let(tiles::applyManifest)
+                importTiles(tileAssets)
+            }
+        }
         events
             .filter { it.type == DataEvent.TYPE_CHANGED && it.dataItem.uri.path == Direct.PATH }
             .mapNotNull { DataMapItem.fromDataItem(it.dataItem).dataMap.getString(Protocol.KEY_JSON) }
@@ -159,6 +212,53 @@ class PhoneLink private constructor(context: Context) :
             }
             if (json != null) direct.apply(json)
         }.onFailure { Log.w(TAG, "reading direct-link provisioning failed", it) }
+    }
+
+    /** Map manifest and tiles the phone sent while this app was closed. */
+    private suspend fun readMapItems() {
+        runCatching {
+            val buffer = dataClient.getDataItems(("wear://*" + Protocol.MAP_PATH).toUri()).await()
+            val json = try {
+                buffer.firstOrNull()?.let { DataMapItem.fromDataItem(it).dataMap.getString(Protocol.KEY_JSON) }
+            } finally {
+                buffer.release()
+            }
+            json?.let(tiles::applyManifest)
+            val items = dataClient.getDataItems(("wear://*" + Protocol.TILE_PATH_PREFIX).toUri(), DataClient.FILTER_PREFIX).await()
+            val assets = try {
+                items.mapNotNull { item ->
+                    val key = item.uri.path.orEmpty().removePrefix(Protocol.TILE_PATH_PREFIX)
+                    DataMapItem.fromDataItem(item).dataMap.getAsset("tile")?.let { key to it }
+                }
+            } finally {
+                items.release()
+            }
+            importTiles(assets)
+        }.onFailure { Log.w(TAG, "reading map tiles failed", it) }
+        scheduleReport(0)
+    }
+
+    /** Copies tile assets into the cache, then reports what the watch holds. */
+    private suspend fun importTiles(assets: List<Pair<String, Asset>>) {
+        for ((key, asset) in assets) {
+            if (tiles.has(key)) continue
+            runCatching {
+                val bytes = dataClient.getFdForAsset(asset).await().inputStream.use { it.readBytes() }
+                withIo { tiles.put(key, bytes, _state.value.settings.map.capBytes) }
+            }.onFailure { Log.w(TAG, "tile $key could not be read", it) }
+        }
+        if (assets.isNotEmpty()) scheduleReport(REPORT_DELAY_MS)
+    }
+
+    private suspend fun <T> withIo(block: () -> T): T = kotlinx.coroutines.withContext(Dispatchers.IO) { block() }
+
+    /** Tells the phone which tiles the watch holds (debounced). */
+    fun scheduleReport(delayMs: Long) {
+        reportJob?.cancel()
+        reportJob = scope.launch {
+            delay(delayMs)
+            send(tiles.report())
+        }
     }
 
     private fun accept(json: String, fromCurrentItem: Boolean) {
@@ -204,6 +304,8 @@ class PhoneLink private constructor(context: Context) :
         private const val KEY_SNAPSHOT = "snapshot_json"
         private const val KEY_RECEIVED = "received_ms"
         private const val KEY_PENDING = "pending_settings_json"
+        private const val REPORT_DELAY_MS = 5_000L
+        private const val MAX_DIRECT_TILES = 6
 
         // Holds only the application context.
         @SuppressLint("StaticFieldLeak")

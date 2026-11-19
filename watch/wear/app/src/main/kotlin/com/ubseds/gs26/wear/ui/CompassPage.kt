@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -19,11 +20,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -36,11 +41,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.ChipDefaults
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.material.Text
+import com.ubseds.gs26.wear.PhoneLink
 import com.ubseds.gs26.wear.WatchLocationEffect
 import com.ubseds.gs26.wear.core.Compass
 import com.ubseds.gs26.wear.core.Geodesy
 import com.ubseds.gs26.wear.core.LatLon
+import com.ubseds.gs26.wear.core.MapTiles
 import com.ubseds.gs26.wear.core.WatchSettings
 import com.ubseds.gs26.wear.core.WatchState
 import com.ubseds.gs26.wear.declinationAt
@@ -51,6 +59,12 @@ import kotlin.math.abs
 /**
  * Recovery compass. GPS and the rotation-vector sensor run only while this
  * page is [visible]; the arrow is target bearing minus true heading.
+ *
+ * With "Map background" on and tiles cached, the station map sits under it:
+ * heading-up while the watch has a heading (like the arrow), north-up
+ * otherwise, centred on the watch (or the target before the first fix) and
+ * zoomed to fit the watch and the target. Rotary input zooms; switching
+ * target returns to the fitted zoom.
  */
 @Composable
 fun CompassPage(
@@ -58,6 +72,7 @@ fun CompassPage(
     now: Long,
     visible: Boolean,
     watchFix: MutableState<Location?>,
+    link: PhoneLink,
     onLongPress: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -87,13 +102,34 @@ fun CompassPage(
     val fix = watchFix.value
     val declination = declinationAt(fix)
     val headingTrue = heading?.let { Geodesy.magneticToTrueDeg(it.magneticDeg, declination) }
+    val watchPos = fix?.let { LatLon(it.latitude, it.longitude) }
     val view = Compass.view(
-        targets[selected], fix?.let { LatLon(it.latitude, it.longitude) }, headingTrue, declination,
+        targets[selected], watchPos, headingTrue, declination,
         settings, state.receivedAtMs, now,
     )
 
+    // Map background: manual zoom from rotary input until the target changes.
+    val cachedKeys by link.tiles.keys.collectAsStateWithLifecycle()
+    var manualZoom by remember(selectedId) { mutableStateOf<Double?>(null) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(visible) { if (visible) runCatching { focus.requestFocus() } }
+    val selectedPos = Compass.position(targets[selected], watchPos)
+    val mapCenter = watchPos ?: selectedPos
+    val fitZoom = if (watchPos != null && view.distanceM != null) {
+        MapTiles.autoFitZoom(view.distanceM!!, watchPos.lat, 70.0, MapTiles.MIN_FIT_ZOOM, MapTiles.MAX_FIT_ZOOM)
+    } else 15.0
+    val showMap = settings.map.enabled && mapCenter != null && cachedKeys.isNotEmpty()
+
     Box(
         Modifier.fillMaxSize()
+            .onRotaryScrollEvent { event ->
+                if (!showMap) return@onRotaryScrollEvent false
+                manualZoom = ((manualZoom ?: fitZoom) + event.verticalScrollPixels / 240.0)
+                    .coerceIn(MapTiles.MIN_VIEW_ZOOM, MapTiles.MAX_VIEW_ZOOM)
+                true
+            }
+            .focusRequester(focus)
+            .focusable()
             .pointerInput(targets.size, selected) {
                 detectTapGestures(onTap = { step(1) }, onLongPress = { onLongPress() })
             }
@@ -107,6 +143,18 @@ fun CompassPage(
             },
         contentAlignment = Alignment.Center,
     ) {
+        if (showMap && mapCenter != null) {
+            val markers = targets.mapNotNull { t ->
+                Compass.position(t, watchPos)?.let { MapMarker(t.id, it, t.id == targets[selected].id, t.stale) }
+            }
+            MapLayer(
+                cache = link.tiles,
+                cachedKeys = cachedKeys,
+                view = MapView(mapCenter, manualZoom ?: fitZoom, -(headingTrue ?: 0.0), watchPos),
+                markers = markers,
+                onVisible = { keys -> if (visible) link.fetchMissingTiles(keys) },
+            )
+        }
         view.arrowDeg?.let { Arrow(it, if (view.stale) Dim else Color(0xFF4FC3F7)) }
 
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {

@@ -19,6 +19,8 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     @Published private(set) var phoneReachable = false
 
     private let directKey = "gs26_direct"
+    private let mapKey = "gs26_map"
+    private let tileKey = "gs26_tile"
 
     private enum Keys {
         static let snapshot = "gs26.snapshot.json"
@@ -32,6 +34,10 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     /// Direct link to the station (provisioned by the phone).
     let direct = DirectLink()
     private var directChanges: AnyCancellable?
+    /// Map background tiles (from the phone, or the station in direct mode).
+    let tiles = TileStore()
+    private var reportTimer: Timer?
+    private var tileMisses: [String: Int64] = [:]
 
     override init() {
         super.init()
@@ -140,6 +146,41 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
                                 reading: reading, receivedAtMs: at, nowMs: nowMs)
     }
 
+    // MARK: Map tiles
+
+    /// Tells the phone which tiles the watch holds (debounced), so it sends
+    /// only the missing ones.
+    func scheduleTileReport(after seconds: TimeInterval) {
+        reportTimer?.invalidate()
+        reportTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.send(.tiles(set: self.tiles.manifest?.set, have: self.tiles.keys.sorted()))
+        }
+    }
+
+    /// Direct mode only (the phone's data is not fresh and the link is
+    /// provisioned): fetches up to six missing map tiles for the current
+    /// view from the station. A tile the station did not serve is not asked
+    /// for again for a minute.
+    func fetchMissingTiles(_ keys: [String]) {
+        guard settings?.map.enabled ?? true, let provision = direct.provision, provision.configured else { return }
+        let now = currentTimeMs()
+        guard shouldPollDirect(phoneMode: phoneSnapshot?.mode, phoneAgeMs: phoneAge(now), freshMs: phoneFreshMs(power),
+                               foreground: foreground, configured: true)
+        else { return }
+        let wanted = keys.filter { key in
+            !tiles.has(key) && (tileMisses[key].map { now - $0 > 60_000 } ?? true)
+        }.prefix(6)
+        for key in wanted {
+            tileMisses[key] = now // retried after a minute unless it arrives
+            direct.fetchTile(key) { [weak self] data in
+                guard let self, let data else { return }
+                self.tiles.put(data, key: key, settingsCap: self.settings?.map.capBytes)
+                self.tileMisses[key] = nil
+            }
+        }
+    }
+
     // MARK: Watch -> phone
 
     func setForeground(_ isForeground: Bool) {
@@ -184,13 +225,19 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
         let session = WCSession.default
         guard session.activationState == .activated, let json = message.json() else { return }
         let payload: [String: Any] = [watchToPhoneKey: json]
-        if case .settings = message {
+        let queued: String?
+        switch message {
+        case .settings: queued = "settings"
+        case .tiles: queued = "tiles"
+        default: queued = nil
+        }
+        if let type = queued {
             if session.isReachable {
                 session.sendMessage(payload, replyHandler: nil, errorHandler: { [weak self] _ in
-                    DispatchQueue.main.async { self?.queueSettings(payload) }
+                    DispatchQueue.main.async { self?.queue(payload, type: type) }
                 })
             } else {
-                queueSettings(payload)
+                queue(payload, type: type)
             }
         } else if session.isReachable {
             // hello/activity are only useful live; never queued.
@@ -198,12 +245,15 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
         }
     }
 
-    /// Queues a settings document for delivery after a disconnect, replacing
-    /// any older queued one.
-    private func queueSettings(_ payload: [String: Any]) {
+    /// Queues a settings document or tile report for delivery after a
+    /// disconnect, replacing any older queued message of the same type.
+    private func queue(_ payload: [String: Any], type: String) {
         let session = WCSession.default
-        for transfer in session.outstandingUserInfoTransfers where transfer.userInfo[watchToPhoneKey] != nil {
-            transfer.cancel()
+        let marker = "\"type\":\"\(type)\""
+        for transfer in session.outstandingUserInfoTransfers {
+            if let queued = transfer.userInfo[watchToPhoneKey] as? String, queued.contains(marker) {
+                transfer.cancel()
+            }
         }
         session.transferUserInfo(payload)
     }
@@ -240,6 +290,7 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
             if let context { self.receive(context, replayedContext: true) }
             self.send(.hello)
             if self.foreground { self.sendActivity() }
+            self.scheduleTileReport(after: 0)
         }
     }
 
@@ -256,8 +307,26 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     /// Direct-link provisioning (station address and watch token), queued
     /// by the phone with transferUserInfo.
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        if let json = userInfo[mapKey] as? String {
+            DispatchQueue.main.async {
+                self.tiles.apply(manifestJSON: json)
+                self.scheduleTileReport(after: 5)
+            }
+        }
         guard let json = userInfo[directKey] as? String else { return }
         DispatchQueue.main.async { self.direct.apply(provisionJSON: json) }
+    }
+
+    /// One map tile from the phone (`transferFile`). The file is deleted when
+    /// this returns, so it is moved into the cache here.
+    func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        guard let key = file.metadata?[tileKey] as? String else { return }
+        let adopted = tiles.adopt(fileAt: file.fileURL, key: key)
+        guard adopted else { return }
+        DispatchQueue.main.async {
+            self.tiles.commit(settingsCap: self.settings?.map.capBytes)
+            self.scheduleTileReport(after: 5)
+        }
     }
 
     func sessionReachabilityDidChange(_ session: WCSession) {
@@ -267,6 +336,7 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
         DispatchQueue.main.async {
             self.send(.hello)
             if self.foreground { self.sendActivity() }
+            self.scheduleTileReport(after: 2)
         }
     }
 }

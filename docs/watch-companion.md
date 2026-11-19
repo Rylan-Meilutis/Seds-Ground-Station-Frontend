@@ -1,7 +1,8 @@
 # Watch companion (Apple Watch and Wear OS)
 
 Companion apps that show configurable data pages, an auto-cycle page, a
-recovery compass and up to two opt-in action buttons per page.
+recovery compass (over a station map background) and up to two opt-in
+action buttons per page.
 
 ```
 Apple Watch ──WatchConnectivity──┐
@@ -29,8 +30,8 @@ Wear OS watch ──Wear Data Layer──┘                                    
   gs.local:3000…" rather than nothing). When neither the phone nor the
   station answers, the watch keeps the last data, marks it with its age and
   keeps the compass running from the last known target fixes.
-* **No command path through the phone.** The watch may send the phone three
-  message types (`hello`, `activity`, `settings`). The phone ignores
+* **No command path through the phone.** The watch may send the phone four
+  message types (`hello`, `activity`, `settings`, `tiles`). The phone ignores
   anything else; no watch message reaches a station request other than
   saving the user's own watch settings to their account. A page action is
   sent by the watch itself to the station's ordinary `POST /api/command`
@@ -50,6 +51,8 @@ Wear OS watch ──Wear Data Layer──┘                                    
 | Account sync | `.../watch_companion/account_sync.rs` |
 | Page actions (permitted filter, policy state) | `.../watch_companion/actions.rs` |
 | Direct-link token and provisioning | `.../watch_companion/direct.rs` (runtime in `mod.rs`) |
+| Map background: tile math (shared vectors) | `.../watch_companion/map_tiles.rs`, `watch/test-vectors.json` (`map_tiles`) |
+| Map background: tile set, manifest, sending | `.../watch_companion/map_sync.rs`, `fetch_station_tile` in `src/main.rs` |
 | Settings → Watch section | `.../watch_companion/settings_section.rs` |
 | iOS bridge (WatchConnectivity) | `assets/WatchBridge.m` (compiled by `build.rs` for iOS) |
 | Android bridge (Data Layer) | `platform/android/kotlin/com/ubseds/gs26/WatchBridge.kt` |
@@ -235,6 +238,8 @@ Transport:
 | --- | --- | --- |
 | watchOS | `updateApplicationContext(["gs26": <snapshot json>])`; when reachable and the watch is foreground also `sendMessage(["gs26": json])` without reply handler | `sendMessage(["gs26_watch": json])` when reachable, else `transferUserInfo` (settings only) |
 | Wear OS | DataItem `/gs26/snapshot`, DataMap keys `json` (String) and `seq` (Long); `setUrgent()` while the watch is foreground | `MessageClient` path `/gs26/watch` (UTF-8 json bytes) to nodes with capability `gs26_phone`; settings additionally as DataItem `/gs26/watch_settings` whose `json` key holds the same full message, so they sync after a disconnect |
+| Map (watchOS) | manifest: `transferUserInfo(["gs26_map": json])`, replacing a queued one; tiles: `transferFile(url, metadata: ["gs26_tile": "z/x/y", "set": id])` | `tiles` report like `settings` (message when reachable, else queued `transferUserInfo`, replacing a queued report) |
+| Map (Wear OS) | manifest: DataItem `/gs26/map` (`json`); tiles: DataItem `/gs26/tile/{z}/{x}/{y}` with Asset `tile` (JPEG) | `tiles` report as a `/gs26/watch` message |
 
 Snapshot (phone → watch), abridged:
 
@@ -294,10 +299,12 @@ Snapshot (phone → watch), abridged:
           {"id":"cycle","enabled":true,"items":[],"actions":[]},{"id":"compass","enabled":true,"items":[],"actions":[]}],
  "cycle":{"items":["flight_state","t_clock","altitude","velocity","tank_pressure"],"interval_s":5,"autostart":true},
  "compass":{"north":"true","stale_after_s":30,"targets":["rocket","ground_station","rrls"]},
- "units":"metric","power":"balanced","direct_link":true}
+ "units":"metric","power":"balanced","direct_link":true,
+ "map":{"enabled":true,"cap_mb":3}}
 ```
 
-Limits: `interval_s` 2–60, `stale_after_s` 5–600, ≤ 12 cycle items, ≤ 8 rows
+Limits: `interval_s` 2–60, `stale_after_s` 5–600, `map.cap_mb` 1–5 (a
+document without `map` gets `{"enabled":true,"cap_mb":3}`), ≤ 12 cycle items, ≤ 8 rows
 per items page (only items pages have rows), ≤ 2 actions per page (command
 names), document ≤ 8 KiB. Version 1 documents (no `items`, `actions`,
 `direct_link`) migrate as described under "Page configuration". `updated_by` is `phone|watch|account`. The phone sanitizes every
@@ -310,6 +317,7 @@ Watch → phone:
 {"v":1,"type":"hello"}
 {"v":1,"type":"activity","foreground":true,"page":"compass"}
 {"v":1,"type":"settings","settings":{ ...WatchSettings with updated_by "watch"... }}
+{"v":1,"type":"tiles","set":"9f2c4e1ab03d7c55","have":["11/449/824","13/1797/3297"]}
 ```
 
 ## Watch layout
@@ -357,6 +365,84 @@ Both watches use the same pages and the same logic, checked against the
   Within ~30 m of a target the arrow is not reliable; the watch says "Within
   N m — look around" instead of trusting the arrow.
 * `watch/test-vectors.json` is checked by the Rust, Swift and Kotlin tests.
+
+## Map background
+
+The compass draws the station's map under its arrow, so it reads like a map.
+
+**Tile source.** The station's own tiles, `GET /tiles/{z}/{x}/{y}.jpg`:
+the same source as the phone's map tab, served by the GS from its offline
+bundle (Esri World Imagery, downloaded beforehand by GroundStation26
+`map_downloader`), so it works in the field without internet. The phone
+reads them through its existing tile cache (`fetch_station_tile`), so tiles
+the phone map already showed cost nothing. No phone or watch ever requests
+a public tile server; there is no OpenStreetMap or Esri traffic from this
+feature. Credit: "Imagery © Esri, Maxar, Earthstar Geographics", shown
+small at the bottom of the compass whenever tiles are drawn.
+
+**Phone side** (`map_sync.rs`, dashboard publisher, every 15 s). Runs only
+for an eligible user (signed in, paired watch with the app installed) with
+"Map background" on while the dashboard is connected to a station.
+
+* Centres: the snapshot's targets in priority order: rocket (last fix),
+  ground station, RRLS. Demo targets are never centres.
+* Plan (`map_tiles::coverage`, `coverage` vectors): zooms 11–15 with radii
+  10, 5, 2.5, 1.2 and 0.6 km (a watch face shows about 0.5–10 km across
+  them), each clamped to the station's `max_native_zoom` from
+  `/api/map_config`; low zoom first, centre by centre, nearest tiles first;
+  at most 200 tiles.
+* Budget: tiles are read in plan order and kept while the total stays under
+  the size cap (Settings, 1–5 MB, default 3 MB); a tile the station does not
+  have is skipped. Low zooms of every centre always fit before the detailed
+  levels of the later centres.
+* Rebuild (`replan` vectors) when a centre moves more than 500 m (the rocket
+  landed far away), a centre appears or disappears, the cap or station
+  changes, or the set is older than 7 days (then everything is resent, the
+  station's tiles may have improved).
+* Manifest (phone → watch): `{"v":1,"type":"map","set":"<16 hex>","tiles":["11/449/824",…],"attribution":"…","cap_bytes":3145728,"max_zoom":15,"centres":[{"id":"rocket","lat":…,"lon":…}],"built_ms":…}`.
+  `set` is a content hash of `tiles`.
+* Sending only what is missing: the phone keeps what the watch reported
+  (`tiles` message) plus what it has sent since; `manifest_diff` gives the
+  tiles to send. A sent tile is not resent for 10 minutes unless a later
+  report still misses it. A report naming another `set` (watch reinstalled)
+  gets the manifest again. iOS cancels queued file transfers for tiles that
+  left the set; Android deletes tile DataItems once reported or out of the
+  set. Tile files wait in the app's temporary directory until sent.
+
+**Watch side** (`TileStore.swift`, `TileCache.kt`).
+
+* Tiles live in the app container (Application Support `map_tiles/`,
+  excluded from backup; Wear `filesDir/map_tiles`), capped at the manifest's
+  `cap_bytes` (the user's cap). Eviction (`evict` vectors): tiles outside the
+  current set first, then least recently used.
+* After receiving tiles (debounced 5 s), at launch and when the phone
+  becomes reachable the watch sends the `tiles` report.
+* Rendering: north-up, or heading-up whenever the watch has a heading (like
+  the arrow, which keeps working on top). Centred on the watch (on the
+  selected target before the first GPS fix). Zoom fits the watch and the
+  selected target (`auto_fit`: the target at 70 px from the centre, zoom
+  11–16). The Digital Crown (Wear: rotary input) zooms 10–17 from the fitted
+  zoom while the compass page is in front; it does not clash with the cycle
+  page, which owns the crown only while it is on screen. Switching target
+  returns to the fitted zoom. Missing levels are cut from the nearest cached
+  ancestor (`ancestor` vectors), so zooms between and beyond the sent
+  levels still show imagery. Markers: rocket orange, ground station green,
+  RRLS blue (dimmed when stale), the watch as a blue dot, a line from the
+  watch to the selected target and a red north tick on the rim. The imagery
+  is dimmed so the compass text stays readable.
+* No tiles for the view (map off, nothing cached, far from every centre):
+  the plain compass, exactly as before.
+* Direct mode (the phone's data is not fresh and the direct link is
+  provisioned): the watch fetches missing tiles of its current view from
+  `GET /tiles/{z}/{x}/{y}.jpg` with its watch token (allowed read-only for
+  watch tokens by the GS scope, GroundStation26 `docs/backend/watch-direct.md`),
+  at most six at a time, a tile the station lacks not again for a minute.
+
+**Settings.** Phone Settings → Watch → "Map background": on/off (default
+on) and the size cap (1–5 MB), with a status line ("120 tiles (2.4 MB)
+around rocket, ground station; 118 confirmed on the watch"). The watch's
+own settings screen has the on/off toggle. Both edit `settings.map` in the
+synced watch settings document.
 
 ## Building
 

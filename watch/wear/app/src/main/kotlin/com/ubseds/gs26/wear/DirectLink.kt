@@ -122,6 +122,51 @@ class DirectLink private constructor(context: Context) {
         return actionOutcome(result.status, result.body.orEmpty(), result.error)
     }
 
+    /**
+     * One map tile from the station's tile endpoint (`GET /tiles/{z}/{x}/{y}.jpg`,
+     * read-only and allowed for the watch token), for the compass map in
+     * direct mode. Null when the station has none or cannot be reached.
+     */
+    suspend fun fetchTile(key: String): ByteArray? {
+        val p = _state.value.provision ?: return null
+        val token = p.token ?: return null
+        if (!p.configured || com.ubseds.gs26.wear.core.TileId.parse(key) == null) return null
+        val url = "${p.base}/tiles/$key.jpg"
+        return withContext(Dispatchers.IO) {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 5_000
+                    readTimeout = 8_000
+                    setRequestProperty("Authorization", "Bearer $token")
+                    setRequestProperty("Accept", "image/jpeg")
+                    if (this is HttpsURLConnection && p.skipTls && url.toHttpHost() == p.address.substringBefore(':')) {
+                        trustThisStation(this)
+                    }
+                }
+                if (conn.responseCode != 200) return@withContext null
+                conn.inputStream.use { input ->
+                    val out = java.io.ByteArrayOutputStream()
+                    val buf = ByteArray(16 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        if (out.size() > MAX_TILE_BYTES) return@withContext null
+                    }
+                    out.toByteArray().takeIf { it.isNotEmpty() }
+                }
+            } catch (e: IOException) {
+                null
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "tile request failed", e)
+                null
+            } finally {
+                conn?.disconnect()
+            }
+        }
+    }
+
     private data class Reply(val status: Int?, val body: String?, val error: String?)
 
     private fun request(method: String, url: String, token: String, body: String?, p: DirectProvision): Reply {
@@ -185,6 +230,7 @@ class DirectLink private constructor(context: Context) {
     companion object {
         private const val TAG = "GsDirectLink"
         private const val KEY_PROVISION = "provision_json"
+        private const val MAX_TILE_BYTES = 512 * 1024
 
         @SuppressLint("StaticFieldLeak")
         @Volatile private var instance: DirectLink? = null

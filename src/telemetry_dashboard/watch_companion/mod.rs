@@ -7,6 +7,13 @@ pub(crate) mod direct;
 // Reference implementation for the watch ports; the phone only formats ages.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod geodesy;
+// The web frontend has no watch bridge: only its stub runtime is used there.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) mod map_sync;
+// The phone plans and sends the tile set; the view math (visible tiles,
+// eviction, auto-fit) is the reference for the watch ports.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod map_tiles;
 pub(crate) mod phone_status;
 pub(crate) mod protocol;
 mod publisher;

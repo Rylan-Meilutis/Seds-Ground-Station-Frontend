@@ -2161,5 +2161,774 @@
     "units": "metric"
    }
   }
+ },
+ "_comment_map": "Map background (docs/watch-companion.md \"Map background\"). Web Mercator XYZ tiles, 256 px, lat clamped to +-85.05112878, span_m = 2*pi*6378137*cos(lat)/2^z. tile_xy: fractional tile coordinates (tol 1e-9) and the containing tile's bounds (tol 1e-9 deg). coverage: per level (z clamped to max_zoom, duplicates keep the larger radius, low zoom first), per centre in order, every tile whose index lies in floor(f -+ radius_m/span_m), ordered by round(squared distance of the tile centre from the point in tiles * 1e6), then y, then x; duplicates skipped; then the first max_tiles. budget: greedy in plan order, a tile (size>0) is kept when the running total stays <= cap. manifest_diff: plan tiles the watch does not have, in plan order. evict: tiles outside the current plan first, then least recently used, then by key, until total <= cap. auto_fit: zoom placing distance_m at radius_px from the centre, clamped (tol 1e-9). ancestor: nearest available ancestor (up to 6 levels) and the sub-square of it (fractions). replan: no centres -> false; no previous -> true; age > max_age -> true; different ids -> true; any centre moved > move_m (haversine) -> true. visible: integer zoom = floor(zoom+0.5), tile_px = 256*2^(zoom-z), tiles covering the view's circumscribed circle, offsets from the view centre in px (tol 1e-6). project: px offset of a point from the centre at a fractional zoom (tol 1e-6).",
+ "map_tiles": {
+  "tile_xy": [
+   {
+    "name": "buffalo z15",
+    "lat": 42.8864,
+    "lon": -78.8784,
+    "z": 15,
+    "fx": 9204.312746666666,
+    "fy": 12054.703681617782,
+    "key": "15/9204/12054",
+    "north": 42.89206418807337,
+    "west": -78.8818359375,
+    "south": 42.88401467044253,
+    "east": -78.870849609375,
+    "span_m": 896.0920212462177
+   },
+   {
+    "name": "spaceport z13",
+    "lat": 32.9903,
+    "lon": -106.975,
+    "z": 13,
+    "fx": 1661.7244444444445,
+    "fy": 3299.9982517399767,
+    "key": "13/1661/3299",
+    "north": 33.027087580028734,
+    "west": -107.0068359375,
+    "south": 32.99023555965106,
+    "east": -106.962890625,
+    "span_m": 4103.202107939455
+   },
+   {
+    "name": "origin z1",
+    "lat": 10.0,
+    "lon": 10.0,
+    "z": 1,
+    "fx": 1.0555555555555556,
+    "fy": 0.9441602241298327,
+    "key": "1/1/0",
+    "north": 85.0511287798066,
+    "west": 0.0,
+    "south": 0.0,
+    "east": 180.0,
+    "span_m": 19733093.567025647
+   },
+   {
+    "name": "south east z11",
+    "lat": -33.8688,
+    "lon": 151.2093,
+    "z": 11,
+    "fx": 1884.2129066666666,
+    "fy": 1228.9889309875737,
+    "key": "11/1884/1228",
+    "north": -33.7243396617476,
+    "west": 151.171875,
+    "south": -33.87041555094183,
+    "east": 151.34765625,
+    "span_m": 16247.520833812787
+   },
+   {
+    "name": "clamped north z3",
+    "lat": 89.9,
+    "lon": 0.5,
+    "z": 3,
+    "fx": 4.011111111111111,
+    "fy": -4.9821480274658825e-11,
+    "key": "3/4/0",
+    "north": 85.0511287798066,
+    "west": 0.0,
+    "south": 79.17133464081945,
+    "east": 45.0,
+    "span_m": 8743.007923148283
+   },
+   {
+    "name": "antimeridian west z4",
+    "lat": 45.0,
+    "lon": -180.0,
+    "z": 4,
+    "fx": 0.0,
+    "fy": 5.7556005906432794,
+    "key": "4/0/5",
+    "north": 55.7765730186677,
+    "west": -180.0,
+    "south": 40.97989806962013,
+    "east": -157.5,
+    "span_m": 1771082.253408537
+   }
+  ],
+  "coverage": [
+   {
+    "name": "one centre, two levels",
+    "centres": [
+     [
+      42.8864,
+      -78.8784
+     ]
+    ],
+    "levels": [
+     [
+      13,
+      2500
+     ],
+     [
+      15,
+      600
+     ]
+    ],
+    "max_zoom": 17,
+    "max_tiles": 200,
+    "tiles": [
+     "13/2301/3013",
+     "13/2300/3013",
+     "13/2301/3014",
+     "13/2300/3014",
+     "13/2301/3012",
+     "13/2300/3012",
+     "15/9204/12054",
+     "15/9204/12055",
+     "15/9203/12054",
+     "15/9203/12055"
+    ]
+   },
+   {
+    "name": "three centres dedupe",
+    "centres": [
+     [
+      32.9903,
+      -106.975
+     ],
+     [
+      32.9411,
+      -106.9192
+     ],
+     [
+      32.9905,
+      -106.9752
+     ]
+    ],
+    "levels": [
+     [
+      11,
+      10000
+     ],
+     [
+      12,
+      5000
+     ],
+     [
+      13,
+      2500
+     ],
+     [
+      14,
+      1200
+     ],
+     [
+      15,
+      600
+     ]
+    ],
+    "max_zoom": 17,
+    "max_tiles": 200,
+    "tiles": [
+     "11/415/824",
+     "11/415/825",
+     "11/414/824",
+     "11/414/825",
+     "11/416/824",
+     "11/416/825",
+     "12/830/1649",
+     "12/830/1650",
+     "12/831/1649",
+     "12/831/1650",
+     "12/831/1651",
+     "12/832/1650",
+     "12/830/1651",
+     "12/832/1651",
+     "13/1661/3299",
+     "13/1661/3300",
+     "13/1662/3299",
+     "13/1662/3300",
+     "13/1662/3301",
+     "13/1663/3301",
+     "13/1663/3300",
+     "14/3323/6599",
+     "14/3323/6600",
+     "14/3322/6599",
+     "14/3322/6600",
+     "14/3324/6599",
+     "14/3324/6600",
+     "14/3325/6602",
+     "14/3326/6602",
+     "14/3325/6603",
+     "14/3326/6603",
+     "15/6646/13199",
+     "15/6646/13200",
+     "15/6647/13199",
+     "15/6647/13200",
+     "15/6651/13205",
+     "15/6652/13205",
+     "15/6651/13204",
+     "15/6652/13204"
+    ]
+   },
+   {
+    "name": "clamped to max native zoom",
+    "centres": [
+     [
+      42.8864,
+      -78.8784
+     ]
+    ],
+    "levels": [
+     [
+      13,
+      2500
+     ],
+     [
+      15,
+      600
+     ],
+     [
+      16,
+      300
+     ]
+    ],
+    "max_zoom": 14,
+    "max_tiles": 200,
+    "tiles": [
+     "13/2301/3013",
+     "13/2300/3013",
+     "13/2301/3014",
+     "13/2300/3014",
+     "13/2301/3012",
+     "13/2300/3012",
+     "14/4602/6027",
+     "14/4601/6027"
+    ]
+   },
+   {
+    "name": "tile count cap",
+    "centres": [
+     [
+      32.9903,
+      -106.975
+     ],
+     [
+      32.9411,
+      -106.9192
+     ]
+    ],
+    "levels": [
+     [
+      11,
+      10000
+     ],
+     [
+      12,
+      5000
+     ],
+     [
+      13,
+      2500
+     ],
+     [
+      14,
+      1200
+     ],
+     [
+      15,
+      600
+     ]
+    ],
+    "max_zoom": 17,
+    "max_tiles": 12,
+    "tiles": [
+     "11/415/824",
+     "11/415/825",
+     "11/414/824",
+     "11/414/825",
+     "11/416/824",
+     "11/416/825",
+     "12/830/1649",
+     "12/830/1650",
+     "12/831/1649",
+     "12/831/1650",
+     "12/831/1651",
+     "12/832/1650"
+    ]
+   }
+  ],
+  "budget": [
+   {
+    "name": "all fit",
+    "sizes": [
+     100,
+     200,
+     300
+    ],
+    "cap": 600,
+    "chosen": [
+     0,
+     1,
+     2
+    ]
+   },
+   {
+    "name": "greedy skips a large tile",
+    "sizes": [
+     400,
+     300,
+     150,
+     0,
+     50
+    ],
+    "cap": 600,
+    "chosen": [
+     0,
+     2,
+     4
+    ]
+   },
+   {
+    "name": "nothing fits",
+    "sizes": [
+     700
+    ],
+    "cap": 600,
+    "chosen": []
+   }
+  ],
+  "manifest_diff": [
+   {
+    "name": "send only missing, in plan order",
+    "plan": [
+     "11/1/2",
+     "13/5/6",
+     "15/20/24"
+    ],
+    "have": [
+     "13/5/6",
+     "9/1/1"
+    ],
+    "send": [
+     "11/1/2",
+     "15/20/24"
+    ]
+   },
+   {
+    "name": "watch has everything",
+    "plan": [
+     "11/1/2"
+    ],
+    "have": [
+     "11/1/2"
+    ],
+    "send": []
+   }
+  ],
+  "evict": [
+   {
+    "name": "old area first, then least recently used",
+    "entries": [
+     {
+      "key": "15/9/9",
+      "bytes": 300,
+      "used_ms": 50
+     },
+     {
+      "key": "11/1/2",
+      "bytes": 200,
+      "used_ms": 10
+     },
+     {
+      "key": "13/5/6",
+      "bytes": 250,
+      "used_ms": 40
+     },
+     {
+      "key": "12/2/3",
+      "bytes": 100,
+      "used_ms": 5
+     }
+    ],
+    "plan": [
+     "11/1/2",
+     "13/5/6"
+    ],
+    "cap": 500,
+    "evict": [
+     "12/2/3",
+     "15/9/9"
+    ]
+   },
+   {
+    "name": "under the cap",
+    "entries": [
+     {
+      "key": "15/9/9",
+      "bytes": 300,
+      "used_ms": 50
+     },
+     {
+      "key": "11/1/2",
+      "bytes": 200,
+      "used_ms": 10
+     },
+     {
+      "key": "13/5/6",
+      "bytes": 250,
+      "used_ms": 40
+     },
+     {
+      "key": "12/2/3",
+      "bytes": 100,
+      "used_ms": 5
+     }
+    ],
+    "plan": [],
+    "cap": 1000,
+    "evict": []
+   },
+   {
+    "name": "plan tiles go last",
+    "entries": [
+     {
+      "key": "15/9/9",
+      "bytes": 300,
+      "used_ms": 50
+     },
+     {
+      "key": "11/1/2",
+      "bytes": 200,
+      "used_ms": 10
+     },
+     {
+      "key": "13/5/6",
+      "bytes": 250,
+      "used_ms": 40
+     },
+     {
+      "key": "12/2/3",
+      "bytes": 100,
+      "used_ms": 5
+     }
+    ],
+    "plan": [
+     "15/9/9",
+     "11/1/2",
+     "13/5/6",
+     "12/2/3"
+    ],
+    "cap": 400,
+    "evict": [
+     "12/2/3",
+     "11/1/2",
+     "13/5/6"
+    ]
+   }
+  ],
+  "auto_fit": [
+   {
+    "name": "1.2 km at Buffalo",
+    "distance_m": 1200.0,
+    "lat": 42.88,
+    "radius_px": 70.0,
+    "min_z": 11.0,
+    "max_z": 16.0,
+    "zoom": 12.708117071306308
+   },
+   {
+    "name": "near target clamps to max",
+    "distance_m": 5.0,
+    "lat": 42.88,
+    "radius_px": 70.0,
+    "min_z": 11.0,
+    "max_z": 16.0,
+    "zoom": 16.0
+   },
+   {
+    "name": "far target clamps to min",
+    "distance_m": 80000.0,
+    "lat": 32.99,
+    "radius_px": 70.0,
+    "min_z": 11.0,
+    "max_z": 16.0,
+    "zoom": 11.0
+   },
+   {
+    "name": "zero distance",
+    "distance_m": 0.0,
+    "lat": 32.99,
+    "radius_px": 70.0,
+    "min_z": 11.0,
+    "max_z": 16.0,
+    "zoom": 16.0
+   }
+  ],
+  "ancestor": [
+   {
+    "name": "parent one level up",
+    "key": "14/4551/6033",
+    "available": [
+     "11/568/754",
+     "13/2275/3016"
+    ],
+    "found": {
+     "key": "13/2275/3016",
+     "x": 0.5,
+     "y": 0.5,
+     "size": 0.5
+    }
+   },
+   {
+    "name": "three levels up",
+    "key": "14/4545/6035",
+    "available": [
+     "11/568/754",
+     "13/2275/3016"
+    ],
+    "found": {
+     "key": "11/568/754",
+     "x": 0.125,
+     "y": 0.375,
+     "size": 0.125
+    }
+   },
+   {
+    "name": "none available",
+    "key": "14/1/1",
+    "available": [
+     "11/568/754",
+     "13/2275/3016"
+    ],
+    "found": null
+   }
+  ],
+  "replan": [
+   {
+    "name": "first plan",
+    "previous": [],
+    "current": [
+     [
+      "rocket",
+      32.99,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "age_ms": 0,
+    "move_m": 500.0,
+    "max_age_ms": 604800000,
+    "replan": true
+   },
+   {
+    "name": "small drift",
+    "previous": [
+     [
+      "rocket",
+      32.99,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "current": [
+     [
+      "rocket",
+      32.993,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "age_ms": 1000,
+    "move_m": 500.0,
+    "max_age_ms": 604800000,
+    "replan": false
+   },
+   {
+    "name": "rocket landed far away",
+    "previous": [
+     [
+      "rocket",
+      32.99,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "current": [
+     [
+      "rocket",
+      33.02,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "age_ms": 1000,
+    "move_m": 500.0,
+    "max_age_ms": 604800000,
+    "replan": true
+   },
+   {
+    "name": "new centre appeared",
+    "previous": [
+     [
+      "rocket",
+      32.99,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "current": [
+     [
+      "rocket",
+      32.99,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ],
+     [
+      "rrls",
+      32.95,
+      -106.92
+     ]
+    ],
+    "age_ms": 1000,
+    "move_m": 500.0,
+    "max_age_ms": 604800000,
+    "replan": true
+   },
+   {
+    "name": "stale cache",
+    "previous": [
+     [
+      "rocket",
+      32.99,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "current": [
+     [
+      "rocket",
+      32.99,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "age_ms": 700000000,
+    "move_m": 500.0,
+    "max_age_ms": 604800000,
+    "replan": true
+   },
+   {
+    "name": "no centres",
+    "previous": [
+     [
+      "rocket",
+      32.99,
+      -106.97
+     ],
+     [
+      "ground_station",
+      32.94,
+      -106.91
+     ]
+    ],
+    "current": [],
+    "age_ms": 1000,
+    "move_m": 500.0,
+    "max_age_ms": 604800000,
+    "replan": false
+   }
+  ],
+  "visible": [
+   {
+    "name": "buffalo 14.3 on 200x200",
+    "lat": 42.8864,
+    "lon": -78.8784,
+    "zoom": 14.3,
+    "width": 200.0,
+    "height": 200.0,
+    "z": 14,
+    "tile_px": 315.17296981629875,
+    "tiles": [
+     {
+      "key": "14/4601/6026",
+      "left": -364.457617683013,
+      "top": -426.06368245711053
+     },
+     {
+      "key": "14/4602/6026",
+      "left": -49.28464786671421,
+      "top": -426.06368245711053
+     },
+     {
+      "key": "14/4601/6027",
+      "left": -364.457617683013,
+      "top": -110.8907126408118
+     },
+     {
+      "key": "14/4602/6027",
+      "left": -49.28464786671421,
+      "top": -110.8907126408118
+     }
+    ]
+   }
+  ],
+  "project": [
+   {
+    "name": "north east of centre",
+    "lat": 42.89,
+    "lon": -78.87,
+    "center": [
+     42.8864,
+     -78.8784
+    ],
+    "zoom": 15.0,
+    "dx": 195.73418666655198,
+    "dy": -114.4916303907521
+   },
+   {
+    "name": "same point",
+    "lat": 32.99,
+    "lon": -106.97,
+    "center": [
+     32.99,
+     -106.97
+    ],
+    "zoom": 13.5,
+    "dx": 0.0,
+    "dy": 0.0
+   }
+  ]
  }
 }

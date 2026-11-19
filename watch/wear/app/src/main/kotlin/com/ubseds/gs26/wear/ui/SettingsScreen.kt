@@ -154,6 +154,15 @@ fun SettingsScreen(state: WatchState, link: PhoneLink, onDone: () -> Unit) {
                 edit { it.withNorth(if (it.magneticNorth) NORTH_TRUE else NORTH_MAGNETIC) }
             }
         }
+        item {
+            ToggleChip(
+                checked = s.map.enabled,
+                onCheckedChange = { edit { it.withMapEnabled(!it.map.enabled) } },
+                label = { Text("Map background", fontSize = 12.sp) },
+                toggleControl = { Switch(checked = s.map.enabled) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         for (t in targets) {
             orderedToggle(
                 key = "target-${t.id}",

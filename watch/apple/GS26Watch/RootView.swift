@@ -177,7 +177,7 @@ struct PageContainer: View {
             switch page.pageKind {
             case .items: ItemsPage(page: page)
             case .cycle: CyclePage(visible: visible)
-            case .compass: CompassPage()
+            case .compass: CompassPage(visible: visible)
             case .unknown: UnknownPage(page: page)
             }
             // Opt-in page actions stay pinned below the content.

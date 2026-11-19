@@ -7,6 +7,12 @@
 // after this app is suspended (or when the watch app next launches), and the
 // watch moves the token into its keychain. It is kept out of the application
 // context so no second copy of the token is stored.
+//
+// Map background (docs/watch-companion.md "Map background"): the tile-set
+// manifest goes out with transferUserInfo (key "gs26_map", replacing an
+// older queued one) and each tile with transferFile (metadata
+// {"gs26_tile": "z/x/y", "set": id}). A new manifest cancels queued file
+// transfers for tiles that left the set.
 #import <Foundation/Foundation.h>
 #import <WatchConnectivity/WatchConnectivity.h>
 
@@ -18,6 +24,9 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
 @property(nonatomic, copy) NSString *pendingContext;
 @property(nonatomic, copy) NSString *provision;
 @property(nonatomic, assign) BOOL provisionPending;
+@property(nonatomic, copy) NSString *mapManifest;
+@property(nonatomic, assign) BOOL mapPending;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *pendingTiles;
 @end
 
 @implementation GS26WatchBridge
@@ -28,6 +37,7 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   dispatch_once(&once, ^{
     bridge = [GS26WatchBridge new];
     bridge.incoming = [NSMutableArray array];
+    bridge.pendingTiles = [NSMutableDictionary dictionary];
   });
   return bridge;
 }
@@ -108,6 +118,84 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   [session transferUserInfo:@{@"gs26_direct" : provision}];
 }
 
+#pragma mark Map background
+
+- (BOOL)canTransfer:(WCSession *)session {
+  return session.activationState == WCSessionActivationStateActivated && session.isPaired &&
+         session.isWatchAppInstalled;
+}
+
+- (void)setMapJSON:(NSString *)json {
+  @synchronized(self) {
+    if ([self.mapManifest isEqualToString:json]) return;
+    self.mapManifest = json;
+    self.mapPending = YES;
+  }
+  if (![WCSession isSupported]) return;
+  [self flushMap:[WCSession defaultSession]];
+}
+
+// Sends the latest manifest and cancels queued tiles outside it.
+- (void)flushMap:(WCSession *)session {
+  NSString *manifest;
+  @synchronized(self) {
+    if (!self.mapPending || !self.mapManifest || ![self canTransfer:session]) return;
+    manifest = self.mapManifest;
+    self.mapPending = NO;
+  }
+  NSSet *keep = nil;
+  NSData *data = [manifest dataUsingEncoding:NSUTF8StringEncoding];
+  NSDictionary *parsed = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+  if ([parsed isKindOfClass:[NSDictionary class]] && [parsed[@"tiles"] isKindOfClass:[NSArray class]]) {
+    keep = [NSSet setWithArray:parsed[@"tiles"]];
+  }
+  for (WCSessionUserInfoTransfer *transfer in session.outstandingUserInfoTransfers) {
+    if (transfer.userInfo[@"gs26_map"] != nil) [transfer cancel];
+  }
+  if (keep) {
+    for (WCSessionFileTransfer *transfer in session.outstandingFileTransfers) {
+      NSString *key = transfer.file.metadata[@"gs26_tile"];
+      if (key && ![keep containsObject:key]) [transfer cancel];
+    }
+  }
+  [session transferUserInfo:@{@"gs26_map" : manifest}];
+}
+
+- (void)sendTile:(NSString *)key path:(NSString *)path set:(NSString *)set {
+  if (![WCSession isSupported]) return;
+  WCSession *session = [WCSession defaultSession];
+  NSDictionary *metadata = @{@"gs26_tile" : key, @"set" : set};
+  if (![self canTransfer:session]) {
+    @synchronized(self) { self.pendingTiles[key] = @{@"path" : path, @"metadata" : metadata}; }
+    return;
+  }
+  for (WCSessionFileTransfer *transfer in session.outstandingFileTransfers) {
+    if ([transfer.file.metadata[@"gs26_tile"] isEqualToString:key]) return;
+  }
+  if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return;
+  [session transferFile:[NSURL fileURLWithPath:path] metadata:metadata];
+}
+
+- (void)flushTiles:(WCSession *)session {
+  if (![self canTransfer:session]) return;
+  NSDictionary *pending;
+  @synchronized(self) {
+    pending = [self.pendingTiles copy];
+    [self.pendingTiles removeAllObjects];
+  }
+  [pending enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSDictionary *entry, BOOL *stop) {
+    [self sendTile:key path:entry[@"path"] set:entry[@"metadata"][@"set"]];
+  }];
+}
+
+- (void)session:(WCSession *)session
+    didFinishFileTransfer:(WCSessionFileTransfer *)fileTransfer
+                    error:(NSError *)error {
+  if (error && error.code != WCErrorCodeTransferTimedOut) {
+    NSLog(@"GS26 watch: tile %@ transfer failed: %@", fileTransfer.file.metadata[@"gs26_tile"], error);
+  }
+}
+
 // bit0 supported, bit1 paired, bit2 watch app installed, bit3 reachable,
 // bit4 session activated. isPaired/isWatchAppInstalled are only valid once
 // activation has completed, so before that only bit0 is set.
@@ -140,7 +228,11 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   if (pending && activationState == WCSessionActivationStateActivated) {
     [self publish:pending urgent:NO];
   }
-  if (activationState == WCSessionActivationStateActivated) [self flushProvision:session];
+  if (activationState == WCSessionActivationStateActivated) {
+    [self flushProvision:session];
+    [self flushMap:session];
+    [self flushTiles:session];
+  }
 }
 
 - (void)flushPending {
@@ -159,6 +251,8 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
         session.isPaired, session.isWatchAppInstalled);
   [self flushPending];
   [self flushProvision:session];
+  [self flushMap:session];
+  [self flushTiles:session];
 }
 
 - (void)sessionReachabilityDidChange:(WCSession *)session {
@@ -229,6 +323,26 @@ void gs26_watch_provision(const char *json) {
   if (text == nil || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > kMaxMessageBytes) return;
   dispatch_async(dispatch_get_main_queue(), ^{
     [[GS26WatchBridge shared] setProvisionJSON:text];
+  });
+}
+
+void gs26_watch_send_map(const char *json) {
+  if (json == NULL) return;
+  NSString *text = [NSString stringWithUTF8String:json];
+  if (text == nil || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > kMaxMessageBytes) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[GS26WatchBridge shared] setMapJSON:text];
+  });
+}
+
+void gs26_watch_send_tile(const char *key, const char *path, const char *set) {
+  if (key == NULL || path == NULL || set == NULL) return;
+  NSString *k = [NSString stringWithUTF8String:key];
+  NSString *p = [NSString stringWithUTF8String:path];
+  NSString *s = [NSString stringWithUTF8String:set];
+  if (k == nil || p == nil || s == nil) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[GS26WatchBridge shared] sendTile:k path:p set:s];
   });
 }
 

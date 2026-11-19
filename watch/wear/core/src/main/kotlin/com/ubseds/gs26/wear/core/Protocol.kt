@@ -3,6 +3,7 @@ package com.ubseds.gs26.wear.core
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -17,6 +18,9 @@ object Protocol {
     const val WATCH_MESSAGE_PATH = "/gs26/watch"
     const val WATCH_SETTINGS_PATH = "/gs26/watch_settings"
     const val KEY_JSON = "json"
+    /** Map background: tile-set manifest DataItem and the per-tile DataItem prefix. */
+    const val MAP_PATH = "/gs26/map"
+    const val TILE_PATH_PREFIX = "/gs26/tile/"
     const val KEY_SEQ = "seq"
     const val PHONE_CAPABILITY = "gs26_phone"
 
@@ -35,7 +39,7 @@ object Protocol {
         return if (s.v == VERSION) s else null
     }
 
-    // The watch only ever sends these three messages.
+    // The watch only ever sends these four messages.
     fun helloMessage(): String = buildJsonObject {
         put("v", VERSION); put("type", "hello")
     }.toString()
@@ -52,6 +56,13 @@ object Protocol {
             "settings" to json.encodeToJsonElement(WatchSettings.serializer(), settings),
         )
     ).toString()
+
+    /** The map tiles the watch holds, so the phone sends only missing ones. */
+    fun tilesMessage(set: String?, have: Collection<String>): String = buildJsonObject {
+        put("v", VERSION); put("type", "tiles")
+        if (set != null) put("set", set)
+        put("have", JsonArray(have.sorted().map { JsonPrimitive(it) }))
+    }.toString()
 }
 
 object Mode {

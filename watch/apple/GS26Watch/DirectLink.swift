@@ -129,6 +129,29 @@ final class DirectLink: ObservableObject {
         }.resume()
     }
 
+    // MARK: Map tiles
+
+    /// One map tile from the station (`GET /tiles/{z}/{x}/{y}.jpg` with the
+    /// watch token), for the compass map in direct mode. `done` runs on the
+    /// main queue with the bytes, or nil when the station has none.
+    func fetchTile(_ key: String, done: @escaping (Data?) -> Void) {
+        guard let provision, provision.configured, let token = provision.token,
+              let url = tileURL(base: provision.base, key: key)
+        else {
+            done(nil)
+            return
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("image/jpeg", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 8
+        session.dataTask(with: request) { data, response, _ in
+            let ok = (response as? HTTPURLResponse)?.statusCode == 200
+            let bytes = ok ? data.flatMap { $0.isEmpty || $0.count > 512 * 1024 ? nil : $0 } : nil
+            DispatchQueue.main.async { done(bytes) }
+        }.resume()
+    }
+
     // MARK: Actions
 
     /// Sends one page action; `done` runs on the main queue. The caller has

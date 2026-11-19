@@ -1,8 +1,9 @@
 # GS26 Apple Watch companion
 
 watchOS 10+ companion for the GS26 phone app. It shows the configured data
-pages, an auto-cycle page, a recovery compass and up to two opt-in action
-buttons per page, and lets you edit the watch settings. Data comes from the
+pages, an auto-cycle page, a recovery compass over a cached station map
+(tiles sent by the phone with `transferFile`, the Digital Crown zooms) and up
+to two opt-in action buttons per page, and lets you edit the watch settings. Data comes from the
 phone, or from the station directly (URLSession, scoped watch token in the
 keychain) while the phone app is suspended. Protocol and behaviour:
 `docs/watch-companion.md`.
@@ -104,6 +105,10 @@ when updates stop for `link_timeout_s`.
 
 * Location and heading run only while the compass page is visible and the
   app is active; they stop when you swipe away or lower your wrist.
+* Map tiles arrive in the background as queued file transfers and stay in
+  Application Support/map_tiles (capped at the "Map background" size cap,
+  1–5 MB); the watch only fetches tiles itself in direct mode while the
+  compass is on screen.
 * `power = recovery`: `kCLLocationAccuracyBest`, 2 m distance filter.
   Otherwise `kCLLocationAccuracyNearestTenMeters`, 5 m filter.
   Heading filter 2°.

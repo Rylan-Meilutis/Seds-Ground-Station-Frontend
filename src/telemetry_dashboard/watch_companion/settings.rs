@@ -22,6 +22,10 @@ pub const MAX_PAGE_ITEMS: usize = 8;
 pub const MAX_PAGE_ACTIONS: usize = 2;
 /// Upper bound on the serialized document; the backend enforces the same.
 pub const MAX_SETTINGS_BYTES: usize = 8 * 1024;
+/// Map background tile set size cap, MB.
+pub const MIN_MAP_CAP_MB: u32 = 1;
+pub const MAX_MAP_CAP_MB: u32 = 5;
+pub const DEFAULT_MAP_CAP_MB: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PageSetting {
@@ -114,6 +118,34 @@ impl Default for CompassSetting {
     }
 }
 
+/// Map background under the compass (docs/watch-companion.md "Map
+/// background"): station map tiles around the GS, the rocket and the RRLS,
+/// sent by the phone and cached on the watch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MapSetting {
+    pub enabled: bool,
+    /// Size cap of the tile set the phone sends, and of the watch's tile
+    /// cache, in MB.
+    pub cap_mb: u32,
+}
+
+impl Default for MapSetting {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cap_mb: DEFAULT_MAP_CAP_MB,
+        }
+    }
+}
+
+impl MapSetting {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn cap_bytes(&self) -> u64 {
+        u64::from(self.cap_mb) * 1024 * 1024
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Units {
@@ -175,6 +207,8 @@ pub struct WatchSettings {
     /// Let the watch read the station itself (with a scoped watch token)
     /// while the phone app is suspended or out of reach.
     pub direct_link: bool,
+    /// Map background under the compass.
+    pub map: MapSetting,
 }
 
 impl Default for WatchSettings {
@@ -189,6 +223,7 @@ impl Default for WatchSettings {
             units: Units::Metric,
             power: Power::Balanced,
             direct_link: true,
+            map: MapSetting::default(),
         }
     }
 }
@@ -246,6 +281,7 @@ impl WatchSettings {
         }
         self.cycle.interval_s = self.cycle.interval_s.clamp(MIN_INTERVAL_S, MAX_INTERVAL_S);
         self.compass.stale_after_s = self.compass.stale_after_s.clamp(MIN_STALE_S, MAX_STALE_S);
+        self.map.cap_mb = self.map.cap_mb.clamp(MIN_MAP_CAP_MB, MAX_MAP_CAP_MB);
         dedupe_known(
             &mut self.compass.targets,
             registry::target_known,
@@ -462,6 +498,14 @@ mod tests {
         assert_eq!(s.compass.north, North::Magnetic);
         assert_eq!(s.units, Units::Imperial);
         assert_eq!(s.power, Power::Recovery);
+        // Documents without a map section get the default (on, 3 MB).
+        assert_eq!(s.map, MapSetting::default());
+        let s = WatchSettings::parse(r#"{"map":{"enabled":false,"cap_mb":99}}"#).unwrap();
+        assert!(!s.map.enabled);
+        assert_eq!(s.map.cap_mb, MAX_MAP_CAP_MB);
+        let s = WatchSettings::parse(r#"{"map":{"cap_mb":0}}"#).unwrap();
+        assert!(s.map.enabled);
+        assert_eq!(s.map.cap_bytes(), 1024 * 1024);
     }
 
     #[test]

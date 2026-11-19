@@ -241,6 +241,14 @@ pub enum WatchMessage {
     },
     /// A settings edit made on the watch.
     Settings { settings: serde_json::Value },
+    /// The map tiles the watch holds now (`z/x/y` keys), so the phone sends
+    /// only the missing ones. `set` is the manifest it last received.
+    Tiles {
+        #[serde(default)]
+        set: Option<String>,
+        #[serde(default)]
+        have: Vec<String>,
+    },
 }
 
 impl WatchMessage {
@@ -284,6 +292,13 @@ mod tests {
             None
         );
         assert_eq!(WatchMessage::parse(r#"{"type":"hello"}"#), None);
+        assert_eq!(
+            WatchMessage::parse(r#"{"v":1,"type":"tiles","set":"ab12","have":["15/1/2"]}"#),
+            Some(WatchMessage::Tiles {
+                set: Some("ab12".into()),
+                have: vec!["15/1/2".into()]
+            })
+        );
         assert_eq!(
             WatchMessage::parse(&format!(
                 r#"{{"v":1,"type":"hello","pad":"{}"}}"#,

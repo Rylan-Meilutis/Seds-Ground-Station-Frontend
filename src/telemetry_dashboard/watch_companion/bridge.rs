@@ -70,7 +70,21 @@ mod imp {
         fn gs26_watch_take_incoming(buf: *mut c_char, cap: c_int) -> c_int;
         fn gs26_watch_state() -> c_int;
         fn gs26_watch_provision(json: *const c_char);
+        fn gs26_watch_send_map(json: *const c_char);
+        fn gs26_watch_send_tile(key: *const c_char, path: *const c_char, set: *const c_char);
     }
+    pub fn send_map(json: &str) {
+        if let Ok(c) = CString::new(json) {
+            unsafe { gs26_watch_send_map(c.as_ptr()) }
+        }
+    }
+    pub fn send_tile(key: &str, path: &str, set: &str) {
+        if let (Ok(k), Ok(p), Ok(s)) = (CString::new(key), CString::new(path), CString::new(set)) {
+            unsafe { gs26_watch_send_tile(k.as_ptr(), p.as_ptr(), s.as_ptr()) }
+        }
+    }
+    /// WatchConnectivity file transfers need no clean-up.
+    pub fn tiles_delivered(_json: &str) {}
     pub fn provision(json: &str) {
         if let Ok(c) = CString::new(json) {
             unsafe { gs26_watch_provision(c.as_ptr()) }
@@ -208,6 +222,33 @@ mod imp {
             Ok(())
         });
     }
+    /// Calls a static `WatchBridge` method taking Strings (after the Context).
+    fn call_strings(method: &str, sig: &str, values: &[&str]) {
+        let ctx = android_context();
+        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
+        let _ = vm.attach_current_thread(|env| -> ::jni::errors::Result<()> {
+            let mut objects = Vec::with_capacity(values.len());
+            for v in values {
+                objects.push(JObject::from(env.new_string(v)?));
+            }
+            let args: Vec<JValue<'_>> = objects.iter().map(JValue::Object).collect();
+            let _ = call(method, sig, &args, |_, _| Some(()));
+            Ok(())
+        });
+    }
+    pub fn send_map(json: &str) {
+        call_strings("sendMap", "(Ljava/lang/String;)V", &[json]);
+    }
+    pub fn send_tile(key: &str, path: &str, set: &str) {
+        call_strings(
+            "sendTile",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+            &[key, path, set],
+        );
+    }
+    pub fn tiles_delivered(json: &str) {
+        call_strings("tilesDelivered", "(Ljava/lang/String;)V", &[json]);
+    }
     pub fn take_incoming() -> Option<String> {
         call("takeIncoming", "()Ljava/lang/String;", &[], |env, value| {
             let obj = value.l().ok()?;
@@ -228,6 +269,12 @@ mod imp {
     pub fn start() {}
     pub fn publish(_json: &str, _urgent: bool) {}
     pub fn provision(_json: &str) {}
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn send_map(_json: &str) {}
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn send_tile(_key: &str, _path: &str, _set: &str) {}
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn tiles_delivered(_json: &str) {}
     pub fn take_incoming() -> Option<String> {
         None
     }
@@ -250,6 +297,29 @@ pub fn publish(json: &str, urgent: bool) {
 /// it with every snapshot context.
 pub fn provision(json: &str) {
     imp::provision(json);
+}
+
+/// Map background: the tile-set manifest (`type: map`). iOS queues it with
+/// `transferUserInfo` (key `gs26_map`, replacing an older one), Android
+/// puts it in the DataItem `/gs26/map`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn send_map(json: &str) {
+    imp::send_map(json);
+}
+
+/// Map background: one tile file. iOS `transferFile` with metadata
+/// `{gs26_tile: key, set}`, Android a DataItem `/gs26/tile/{z}/{x}/{y}`
+/// carrying the bytes as an Asset.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn send_tile(key: &str, path: &str, set: &str) {
+    imp::send_tile(key, path, set);
+}
+
+/// Map background: the watch confirmed these tiles (JSON array of keys);
+/// Android deletes their DataItems.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn tiles_delivered(json: &str) {
+    imp::tiles_delivered(json);
 }
 
 /// Drains at most `max` queued watch messages.
