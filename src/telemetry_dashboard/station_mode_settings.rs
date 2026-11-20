@@ -376,6 +376,9 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
                     h3{style:"margin:0;","Switch to {prepared.challenge.target.label}?"}
                     p{style:"margin:0;","{prepared.challenge.summary}"}
                     p{style:"margin:0;color:var(--gs-text-muted);","Output domain: {prepared.challenge.target.output_domain}"}
+                    if super::igt::is_mode(Some(prepared.challenge.target.mode_id.as_str())) {
+                        p{role:"note",class:"gs-notice gs-notice--warn","data-igt-mode-note":"",style:"margin:0;","Integrated ground test: a real fill and motor fire on the stand while the FC replays a recorded flight. Every view shows a red SIMULATED FLIGHT DATA banner; pyros stay DRY-RUN unless an administrator arms LIVE PYRO."}
+                    }
                     div{style:"display:flex;gap:var(--gs-space-2);flex-wrap:wrap;justify-content:flex-end;",
                         button{onmounted:move|event|async move{let _=event.data().set_focus(true).await;},onclick:move|_|cancel.dialog.set(None),"Cancel review"}
                         button{class:"gs26-modal-primary",disabled:busy||!prepared.valid(super::monotonic_now_ms()),onclick:move|_|confirm.clone().confirm(inhibited),"Confirm mode change"}

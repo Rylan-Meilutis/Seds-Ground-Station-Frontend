@@ -6,6 +6,8 @@ struct PendingCommand {
     identity: std::sync::Arc<()>,
     command: String,
     message: &'static str,
+    title: &'static str,
+    confirm: &'static str,
     dispatch: fn(&str, super::CommandOwner),
     owner: super::CommandOwner,
     station: String,
@@ -22,12 +24,15 @@ static PENDING: GlobalSignal<Option<PendingCommand>> = Signal::global(|| None);
 struct RetiredDialog {
     identity: std::sync::Arc<()>,
     message: &'static str,
+    title: &'static str,
+    confirm: &'static str,
     retired_ms: f64,
 }
 static RETIRED: GlobalSignal<Option<RetiredDialog>> = Signal::global(|| None);
 fn retire_dialog(pending: &PendingCommand) {
     *RETIRED.write() = Some(RetiredDialog {
         identity: pending.identity.clone(), message: pending.message,
+        title: pending.title, confirm: pending.confirm,
         retired_ms: super::monotonic_now_ms(),
     });
 }
@@ -48,18 +53,37 @@ pub(super) fn pending_command() -> Option<String> {
     PENDING.read().as_ref().map(|pending| pending.command.clone())
 }
 
+/// (title, message, confirm button) for a command that asks first.
+fn copy(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    Some(match command {
+        "ResetFlightState" => (
+            "Confirm reset",
+            "Reset the shared flight state to Idle? This does not close valves or stop an active physical sequence. Confirm the system is safe first.",
+            "Confirm reset",
+        ),
+        "ResetTClock" => (
+            "Confirm reset",
+            "Reset the displayed T-clock? Flight state and physical board sequences will not be changed.",
+            "Confirm reset",
+        ),
+        super::igt::EXIT => (
+            "Exit the ground test?",
+            "The FC leaves ground-test mode (Off): no replay at the next Launch and pyro outputs back to normal flight behaviour. The FC refuses this while it is replaying a flight (SIM). The station stays in Integrated ground test mode.",
+            "Exit ground test",
+        ),
+        _ => return None,
+    })
+}
+
 pub(super) fn request(command: &str, owner: super::CommandOwner, dispatch: fn(&str, super::CommandOwner)) {
-    let message = match command {
-        "ResetFlightState" => {
-            "Reset the shared flight state to Idle? This does not close valves or stop an active physical sequence. Confirm the system is safe first."
-        }
-        "ResetTClock" => {
-            "Reset the displayed T-clock? Flight state and physical board sequences will not be changed."
-        }
-        _ => {
-            if owner.is_current() { dispatch(command, owner); }
-            return;
-        }
+    // Enter and LIVE PYRO go only through their own ticketed, confirmed
+    // controls (POST /api/igt/prepare + confirm); never the plain command path.
+    if super::igt::ticket_only(command) {
+        return;
+    }
+    let Some((title, message, confirm)) = copy(command) else {
+        if owner.is_current() { dispatch(command, owner); }
+        return;
     };
     if PENDING.peek().is_none() {
         *RETIRED.write() = None;
@@ -67,6 +91,8 @@ pub(super) fn request(command: &str, owner: super::CommandOwner, dispatch: fn(&s
             identity: std::sync::Arc::new(()),
             command: command.into(),
             message,
+            title,
+            confirm,
             dispatch,
             owner,
             station: super::UrlConfig::base_http(),
@@ -123,9 +149,9 @@ pub(super) fn CommandConfirmation() -> Element {
     });
     let pending = PENDING.read().clone();
     let retired = RETIRED.read().clone();
-    let message = match (&pending, &retired) {
-        (Some(pending), _) => pending.message,
-        (None, Some(retired)) => retired.message,
+    let (message, title, confirm) = match (&pending, &retired) {
+        (Some(pending), _) => (pending.message, pending.title, pending.confirm),
+        (None, Some(retired)) => (retired.message, retired.title, retired.confirm),
         (None, None) => return rsx! {},
     };
     let inert = pending.is_none();
@@ -140,7 +166,7 @@ pub(super) fn CommandConfirmation() -> Element {
                 "data-confirmation-retired": if inert { "true" } else { "false" },
                 role: "alertdialog", "aria-modal": !inert, "aria-labelledby": "gs26-command-confirm-title", "aria-describedby": "gs26-command-confirm-message",
                 style: "pointer-events:auto;width:min(100%,480px);max-height:90vh;overflow:auto;background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);border:1px solid var(--gs26-border,#526579);border-radius:14px;padding:22px;box-sizing:border-box;box-shadow:0 12px 60px #0008;",
-                h2 { id: "gs26-command-confirm-title", style: "margin:0 0 14px;font-size:20px;", "Confirm reset" }
+                h2 { id: "gs26-command-confirm-title", style: "margin:0 0 14px;font-size:20px;", "{title}" }
                 p { id: "gs26-command-confirm-message", style: "line-height:1.5;", "{message}" }
                 div { style: "display:flex;justify-content:flex-end;gap:12px;margin-top:22px;",
                     button {
@@ -166,10 +192,10 @@ pub(super) fn CommandConfirmation() -> Element {
                                 if pending.station == super::UrlConfig::base_http() && pending.session == crate::auth::current_token() && pending.owner.is_current() {
                                     (pending.dispatch)(&pending.command, pending.owner);
                                 } else {
-                                    *super::COMMAND_SEND_ERROR.write() = Some("Connection changed. Review the current station and confirm the reset again.".into());
+                                    *super::COMMAND_SEND_ERROR.write() = Some("Connection changed. Review the current station and confirm again.".into());
                                 }
                             }
-                        }, "Confirm reset"
+                        }, "{confirm}"
                     }
                 }
             }
@@ -196,10 +222,20 @@ mod retired_dialog_tests {
     }
 
     #[test]
+    fn igt_exit_asks_first_and_ticket_only_commands_never_dispatch_here() {
+        let (title, message, confirm) = copy("IgtExit").expect("IgtExit is confirmed");
+        assert!(title.contains("Exit the ground test") && confirm == "Exit ground test");
+        assert!(message.contains("refuses this while it is replaying"));
+        assert_eq!(copy("IgtDryRun"), None, "dry-run only makes things safer: no dialog");
+        assert_eq!(copy("ResetTClock").unwrap().0, "Confirm reset");
+        assert!(super::super::igt::ticket_only("IgtEnter") && super::super::igt::ticket_only("IgtLivePyro"));
+    }
+
+    #[test]
     fn retirement_identity_cannot_clear_an_equal_message_successor() {
-        let first = RetiredDialog { identity: std::sync::Arc::new(()), message: "same", retired_ms: 100.0 };
+        let first = RetiredDialog { identity: std::sync::Arc::new(()), message: "same", title: "t", confirm: "c", retired_ms: 100.0 };
         let held = first.clone();
-        let next = RetiredDialog { identity: std::sync::Arc::new(()), message: "same", retired_ms: 100.0 };
+        let next = RetiredDialog { identity: std::sync::Arc::new(()), message: "same", title: "t", confirm: "c", retired_ms: 100.0 };
         assert!(same_retirement(&first, &held));
         assert!(!same_retirement(&first, &next));
     }

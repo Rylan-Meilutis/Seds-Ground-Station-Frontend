@@ -323,6 +323,7 @@ impl UiTelemetryStore {
                 data_type: row.interned_data_type_id(),
                 sender_id: row.interned_sender_id(),
             };
+            igt::observe_row(&row);
             if let Some(position) = row_to_gps(&row) {
                 self.gps_positions.insert(key.clone(), position);
             } else {

@@ -8,8 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use super::layout::ActionSection;
 
 impl ActionSection {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Safety,
+        Self::GroundTest,
         Self::FillSystem,
         Self::Sequences,
         Self::FlightComputer,
@@ -34,6 +35,7 @@ impl ActionSection {
             Self::Recovery => "Recovery / reset",
             Self::DaqRecording => "DAQ / recording",
             Self::Testing => "Testing / HITL",
+            Self::GroundTest => "Ground test",
             Self::Other => "Other controls",
         }
     }
@@ -49,6 +51,7 @@ impl ActionSection {
             Self::Recovery => "recovery",
             Self::DaqRecording => "daq_recording",
             Self::Testing => "testing",
+            Self::GroundTest => "ground_test",
             Self::Other => "other",
         }
     }
@@ -65,6 +68,7 @@ pub enum OperatingMode {
     Hitl,
     TestFire,
     Testing,
+    IntegratedGroundTest,
 }
 
 impl OperatingMode {
@@ -75,6 +79,7 @@ impl OperatingMode {
             Some("hitl") => Self::Hitl,
             Some("test_fire") => Self::TestFire,
             Some("testing") => Self::Testing,
+            Some(super::igt::MODE) => Self::IntegratedGroundTest,
             Some("normal") => Self::Normal,
             _ if test_fire_layout => Self::TestFire,
             _ => Self::Normal,
@@ -87,6 +92,7 @@ impl OperatingMode {
             Self::Hitl => "hitl",
             Self::TestFire => "test_fire",
             Self::Testing => "testing",
+            Self::IntegratedGroundTest => super::igt::MODE,
         }
     }
 
@@ -124,6 +130,18 @@ impl OperatingMode {
                 (DaqRecording, true),
                 (Testing, true),
             ],
+            // Integrated ground test: the ground-test controls lead, then the
+            // fill/fire path as in a test fire, then the AV bay as in flight.
+            Self::IntegratedGroundTest => &[
+                (GroundTest, true),
+                (Sequences, true),
+                (FillSystem, true),
+                (FlightComputer, true),
+                (AvBay, true),
+                (Recovery, true),
+                (DaqRecording, true),
+                (Testing, false),
+            ],
             // Simulator: the simulator controls lead.
             Self::Testing => &[
                 (Testing, true),
@@ -141,7 +159,9 @@ impl OperatingMode {
 /// The sections to show, in order, with their default open state: Safety
 /// first, always; every other section only when it holds a control. A
 /// section the mode table does not list is appended open, so no control is
-/// ever hidden by the mode.
+/// ever hidden by the mode. The one exception is Ground test, which exists
+/// only in the integrated ground test (the station refuses its commands in
+/// every other mode).
 pub fn arrange(mode: OperatingMode, present: &BTreeSet<ActionSection>) -> Vec<(ActionSection, bool)> {
     let mut out = vec![(ActionSection::Safety, true)];
     for &(section, open) in mode.sections() {
@@ -150,6 +170,9 @@ pub fn arrange(mode: OperatingMode, present: &BTreeSet<ActionSection>) -> Vec<(A
         }
     }
     for &section in present {
+        if section == ActionSection::GroundTest && mode != OperatingMode::IntegratedGroundTest {
+            continue;
+        }
         if !out.iter().any(|(listed, _)| *listed == section) {
             out.push((section, true));
         }
@@ -289,13 +312,15 @@ mod tests {
 
     #[test]
     fn every_mode_table_lists_each_section_once_and_never_safety() {
-        for mode in [OperatingMode::Normal, OperatingMode::Hitl, OperatingMode::TestFire, OperatingMode::Testing] {
+        for mode in [OperatingMode::Normal, OperatingMode::Hitl, OperatingMode::TestFire, OperatingMode::Testing, OperatingMode::IntegratedGroundTest] {
             let listed: Vec<_> = mode.sections().iter().map(|(s, _)| *s).collect();
             let unique: BTreeSet<_> = listed.iter().copied().collect();
             assert_eq!(unique.len(), listed.len(), "{mode:?} lists a section twice");
             assert!(!unique.contains(&ActionSection::Safety));
             for section in ActionSection::ALL {
-                if !matches!(section, ActionSection::Safety | ActionSection::Other) {
+                if section == ActionSection::GroundTest {
+                    assert_eq!(unique.contains(&section), mode == OperatingMode::IntegratedGroundTest, "{mode:?}");
+                } else if !matches!(section, ActionSection::Safety | ActionSection::Other) {
                     assert!(unique.contains(&section), "{mode:?} omits {section:?}");
                 }
             }
@@ -321,9 +346,34 @@ mod tests {
         }
         // HITL: every section, open.
         let hitl = arrange(OperatingMode::Hitl, &all);
-        assert_eq!(hitl.len(), ActionSection::ALL.len());
+        assert_eq!(hitl.len(), ActionSection::ALL.len() - 1, "every section but Ground test");
         assert!(hitl.iter().all(|(_, open)| *open));
         assert_eq!(order(OperatingMode::Testing, &all)[..2], [Safety, Testing]);
+    }
+
+    #[test]
+    fn ground_test_leads_in_igt_and_is_absent_elsewhere() {
+        use ActionSection::*;
+        let all = every_section();
+        let igt = arrange(OperatingMode::IntegratedGroundTest, &all);
+        assert_eq!(igt[0], (Safety, true), "Abort still leads");
+        assert_eq!(igt[1], (GroundTest, true), "Ground test first after Abort, open");
+        assert_eq!(
+            order(OperatingMode::IntegratedGroundTest, &all)[..6],
+            [Safety, GroundTest, Sequences, FillSystem, FlightComputer, AvBay],
+            "fill/fire like a test fire, AV bay like flight"
+        );
+        for mode in [OperatingMode::Normal, OperatingMode::Hitl, OperatingMode::TestFire, OperatingMode::Testing] {
+            assert!(!order(mode, &all).contains(&GroundTest), "{mode:?}");
+        }
+        assert_eq!(
+            OperatingMode::from_effective(Some("integrated_ground_test"), true),
+            OperatingMode::IntegratedGroundTest
+        );
+        assert_eq!(OperatingMode::IntegratedGroundTest.id(), "integrated_ground_test");
+        assert_eq!(GroundTest.label(), "Ground test");
+        let parsed: ActionSection = serde_json::from_value(serde_json::json!("ground_test")).unwrap();
+        assert_eq!(parsed, GroundTest, "backend ControlSection::GroundTest in snake_case");
     }
 
     #[test]
@@ -337,11 +387,15 @@ mod tests {
         // A control with no known section still shows, open, at the end.
         let with_other = arrange(OperatingMode::Normal, &present(&[Other, FillSystem]));
         assert_eq!(with_other, [(Safety, true), (FillSystem, true), (Other, true)]);
-        for mode in [OperatingMode::Normal, OperatingMode::Hitl, OperatingMode::TestFire, OperatingMode::Testing] {
+        for mode in [OperatingMode::Normal, OperatingMode::Hitl, OperatingMode::TestFire, OperatingMode::Testing, OperatingMode::IntegratedGroundTest] {
             for section in ActionSection::ALL {
                 let shown = order(mode, &present(&[section]));
                 assert_eq!(shown[0], Safety);
-                assert!(shown.contains(&section), "{mode:?} drops {section:?}");
+                if section == GroundTest && mode != OperatingMode::IntegratedGroundTest {
+                    assert!(!shown.contains(&section), "{mode:?} shows Ground test");
+                } else {
+                    assert!(shown.contains(&section), "{mode:?} drops {section:?}");
+                }
             }
         }
     }

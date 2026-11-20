@@ -568,6 +568,8 @@ pub enum ActionSection {
     Recovery,
     DaqRecording,
     Testing,
+    /// Integrated ground test (IgtEnter, IgtLivePyro, IgtDryRun, IgtExit).
+    GroundTest,
     /// An action the layout gave no known section (a custom or older layout,
     /// or a section this client does not know). Never dropped: shown open.
     #[serde(other)]

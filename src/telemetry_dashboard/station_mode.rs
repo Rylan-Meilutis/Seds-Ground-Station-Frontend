@@ -63,6 +63,7 @@ pub(super) fn description(mode: &Value, observer: bool) -> String {
         Some("hitl") => "HITL",
         Some("test_fire") => "Test fire",
         Some("testing") => "Testing",
+        Some(super::igt::MODE) => super::igt::MODE_LABEL,
         _ => "unavailable",
         }
     };

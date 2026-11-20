@@ -40,7 +40,7 @@ pub(super) struct ResetStartupPolicy {
 impl ResetStartupPolicy {
     fn valid_for(&self, mode: &ModeCapability) -> bool {
         // A reset covers whichever boards are available, so none are required.
-        if !matches!(self.mode.as_str(), "normal" | "testing" | "test_fire" | "hitl") {
+        if !matches!(self.mode.as_str(), "normal" | "testing" | "test_fire" | "hitl" | super::igt::MODE) {
             return false;
         }
         self.version == 1
@@ -403,6 +403,7 @@ impl Status {
             fill_phase: self.fill_phase.clone(),
             fill_phase_label: self.fill_phase_label.clone(),
             fc_phase: self.board("FC").and_then(|fc| fc.fc_phase.clone()),
+            ..StateDetail::default()
         };
         StateView::resolve(None, network, &detail).text()
     }

@@ -13,6 +13,9 @@ pub(super) struct Modes {
     pub hitl: bool,
     #[serde(default)]
     pub test_fire: bool,
+    /// Integrated ground test (`Modes.igt`); absent from an older catalog.
+    #[serde(default)]
+    pub igt: Option<bool>,
 }
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(super) struct Rule {
@@ -50,6 +53,7 @@ fn mode_label(mode: &str) -> &'static str {
     match mode {
         "hitl" => "HITL",
         "test_fire" => "Test fire",
+        super::igt::MODE | "igt" => super::igt::MODE_LABEL,
         _ => "Flight",
     }
 }
@@ -64,7 +68,10 @@ fn modes_text(modes: &Modes) -> String {
     if modes.hitl {
         names.push("HITL");
     }
-    if names.len() == 3 {
+    if modes.igt == Some(true) {
+        names.push("Integrated ground test");
+    }
+    if modes.flight && modes.test_fire && modes.hitl && modes.igt != Some(false) {
         "All builds".into()
     } else {
         names.join(" · ")
@@ -189,5 +196,16 @@ mod tests {
         assert!(html.contains("data-applies=\"false\""));
         assert!(html.contains("Not in this build"));
         assert!(html.contains("Builds: Flight"));
+    }
+    #[test]
+    fn integrated_ground_test_is_listed_with_the_other_builds() {
+        let m = |v: serde_json::Value| serde_json::from_value::<Modes>(v).unwrap();
+        assert_eq!(modes_text(&m(serde_json::json!({"flight":true,"hitl":true,"test_fire":true,"igt":true}))), "All builds");
+        assert_eq!(
+            modes_text(&m(serde_json::json!({"flight":true,"hitl":true,"test_fire":true,"igt":false}))),
+            "Flight · Test fire · HITL"
+        );
+        assert_eq!(modes_text(&m(serde_json::json!({"flight":true,"igt":true}))), "Flight · Integrated ground test");
+        assert_eq!(mode_label("integrated_ground_test"), "Integrated ground test");
     }
 }
