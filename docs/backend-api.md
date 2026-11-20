@@ -19,7 +19,8 @@ capture manifest's `board_sd` lists the FC/DAQ SD launch files attached to it
 automatically (with an optional `lead_up_file`), downloaded from
 `GET /api/recordings/{id}/board_sd/{board}/{file}`. The ring reports
 `budget_bytes` (ceiling, default 50 GB) and `effective_budget_bytes` (limited
-by free disk above `reserve_free_mb`). The
+by free disk above `reserve_free_mb`). `board_sd_fetch` reports the background DAQ lead-up
+fetches (phase, bytes fetched, message) shown in the Recordings panel. The
 `recording_status` message adds `always_on` and `captures` (in progress).
 
 ## Live telemetry and firmware

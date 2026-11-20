@@ -120,6 +120,24 @@ pub(super) struct Settings {
     pub events: BTreeMap<String, EventPolicy>,
 }
 
+/// A background DAQ lead-up fetch for an attached launch file.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct LeadUpFetch {
+    pub launch_file: String,
+    #[serde(default)]
+    pub capture: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub fetched: u64,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub done: bool,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(super) struct StoreView {
     #[serde(default)]
@@ -138,6 +156,8 @@ pub(super) struct StoreView {
     pub settings: Settings,
     #[serde(default)]
     pub is_admin: bool,
+    #[serde(default)]
+    pub board_sd_fetch: Vec<LeadUpFetch>,
 }
 
 pub(super) fn size_label(bytes: u64) -> String {
@@ -293,6 +313,15 @@ pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<St
                     label { "Label " input { r#type: "text", maxlength: "80", value: "{label}", placeholder: "e.g. Leak check", oninput: move |e| label.set(e.value()) } }
                     label { "Minutes before now " input { r#type: "number", min: "1", max: "240", value: "{minutes}", oninput: move |e| minutes.set(e.value()) } }
                     button { disabled: busy() || !current.always_on, onclick: snapshot, "Save protected capture" }
+                }
+            }
+            if current.board_sd_fetch.iter().any(|f| !f.done) {
+                ul { "aria-label": "Board SD lead-up fetches", class: "gs26-leadup-fetch",
+                    for fetch in current.board_sd_fetch.iter().filter(|f| !f.done) {
+                        li { key: "{fetch.launch_file}", role: "status",
+                            "DAQ lead-up for {fetch.launch_file} ({fetch.phase}): {fetch.message}"
+                        }
+                    }
                 }
             }
             h4 { "Event captures ({size_label(current.captures_bytes)})" }
@@ -491,7 +520,9 @@ mod tests {
             "legacy": [{"id": "groundstation_recording_2026-11-09_06-26-25_821.db", "bytes": 195252224u64, "active": false, "kind": "legacy"}],
             "settings": {"ring_budget_mb": 51200, "segment_mb": 64, "warn_free_mb": 2048, "critical_free_mb": 512, "reserve_free_mb": 8192,
                          "events": {"fill": {"auto": true, "pre_roll_s": 120, "post_roll_s": 120, "max_duration_s": 21600}}},
-            "is_admin": true
+            "is_admin": true,
+            "board_sd_fetch": [{"capture": "recordings/events/launch/x", "launch_file": "DAQ_LAUNCH_0007.CSV", "from_ms": 1, "to_ms": 2,
+                                "source": "DAQ_1_000.CSV", "fetched": 2048, "phase": "fetching", "message": "2048 of about 6600000 bytes", "done": false}]
         }))
     }
 
@@ -505,6 +536,8 @@ mod tests {
         assert_eq!(view.legacy[0].id, "groundstation_recording_2026-11-09_06-26-25_821.db");
         assert_eq!(view.settings.events["fill"].pre_roll_s, 120);
         assert_eq!(view.settings.reserve_free_mb, 8192);
+        assert_eq!(view.board_sd_fetch[0].phase, "fetching");
+        assert_eq!(view.board_sd_fetch[0].fetched, 2048);
         assert_eq!(view.ring.effective_budget_bytes, 9000 * 1024 * 1024);
         let board = &view.groups[0].captures[0].manifest.board_sd[0];
         assert_eq!((board.board.as_str(), board.lead_up_rows), ("DAQ", 40));
