@@ -182,3 +182,61 @@ fn recover_station_is_listed_under_recovery_only_while_the_station_latch_is_set(
     assert!(recovery.contains("1 of 1 enabled"), "{recovery}");
     assert!(!recovery.contains("Unavailable:"), "{recovery}");
 }
+
+#[component]
+fn RadioTestHarness(status: Option<serde_json::Value>) -> Element {
+    use_context_provider(|| Signal::new(super::super::sequence_progress_host::StatusObservation::default()));
+    use_hook(|| {
+        *super::super::WS_CONNECTED_SIGNAL.write() = true;
+        *super::super::radio_reject_test::RADIO_TEST.write() = status.clone().map(|s| serde_json::from_value(s).unwrap());
+    });
+    let action_policy = use_signal(|| serde_json::from_value::<ActionPolicyMsg>(serde_json::json!({"key_enabled":true,"software_buttons_enabled":true,
+        "controls":[{"cmd":"Abort","enabled":true,"blink":"none","actuated":null}]})).unwrap());
+    let recording_status = use_signal(|| serde_json::from_value::<RecordingStatusMsg>(serde_json::json!({"mode":"idle","db_path":null})).unwrap());
+    let layout: ActionsTabLayout = serde_json::from_value(serde_json::json!({"actions":[
+        spec("Abort", Some("safety")), spec("RadioRejectTest", Some("testing"))]})).unwrap();
+    rsx! { ActionsTab { layout, action_policy, recording_status, abort_only_mode: false, theme: ThemeConfig::default() } }
+}
+
+fn render_radio_test(status: Option<serde_json::Value>) -> String {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let _runtime = runtime.enter();
+    let mut dom = VirtualDom::new_with_props(RadioTestHarness, RadioTestHarnessProps { status });
+    dom.rebuild_in_place();
+    dom.render_immediate_to_vec();
+    dioxus::ssr::render(&dom)
+}
+
+#[test]
+fn the_radio_test_is_listed_under_testing_with_its_variant_time_left_and_stop() {
+    if !super::super::command_owner::isolated_test_child(module_path!(), "the_radio_test_is_listed_under_testing_with_its_variant_time_left_and_stop") { return; }
+    auth::set_current_session(auth::StoredAuthSession{token:"radio-test-token".into(),remember_me:false,
+        session:auth::SessionStatus{authenticated:true,roles:vec!["admin".into()],permissions:auth::Permissions{view_data:true,send_commands:true,..Default::default()},..Default::default()}});
+    let mut choices = sections::Choices::new();
+    choices.insert("testing".into(), true);
+    sections::save(None, sections::OperatingMode::Normal, &choices);
+    // Ready to start: the variant choice and Start, counted enabled.
+    let html = render_radio_test(Some(serde_json::json!({"role":"primary","available":true,"may_start":true,"may_stop":true,
+        "default_duration_s":600,"min_duration_s":30,"max_duration_s":3600,"abort_escape_ms":4000})));
+    let shown = sections_in(&html);
+    let testing = &shown.iter().find(|(id, _)| id == "testing").expect("Testing section").1;
+    assert!(testing.contains("data-dispatch-command=\"RadioRejectTest\""), "{testing}");
+    assert!(testing.contains("Force relay") && testing.contains("Force failover (silent primary)"), "{testing}");
+    assert!(testing.contains("Start radio test"), "{testing}");
+    assert!(testing.contains("1 of 1 enabled"), "{testing}");
+    // In Armed: Start disabled with the station's reason.
+    let html = render_radio_test(Some(serde_json::json!({"role":"primary","available":true,"may_start":true,"may_stop":true,
+        "start_blocked_reason":"Only on the ground in Startup, Idle or PreFill; the station is in Armed."})));
+    let testing = sections_in(&html).into_iter().find(|(id, _)| id == "testing").unwrap().1;
+    assert!(testing.contains("Unavailable: Only on the ground in Startup, Idle or PreFill; the station is in Armed."), "{testing}");
+    assert!(testing.contains("0 of 1 enabled"), "{testing}");
+    // Running: the variant, the time left and Stop.
+    let html = render_radio_test(Some(serde_json::json!({"role":"primary","available":true,"may_start":true,"may_stop":true,
+        "banner":"RADIO TEST: direct AV-bay link rejected (Force relay)",
+        "active":{"variant":"force_relay","variant_label":"Force relay","actor":"admin","remaining_s":125,"duration_s":600}})));
+    let testing = sections_in(&html).into_iter().find(|(id, _)| id == "testing").unwrap().1;
+    assert!(testing.contains("data-radio-test-active=\"force_relay\""), "{testing}");
+    assert!(testing.contains("2:05 left"), "{testing}");
+    assert!(testing.contains("Stop radio test"), "{testing}");
+    assert!(testing.contains("1 of 1 enabled"), "{testing}");
+}

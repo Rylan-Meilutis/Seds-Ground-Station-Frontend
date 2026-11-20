@@ -982,6 +982,12 @@ pub fn ActionsTab(
             station_recovery.as_ref().is_some_and(|view| view.disabled_reason.is_none())
         } else if super::igt::ticket_only(&action.cmd) {
             !abort_only_mode && super::igt_view::ticket_disabled_reason(&action.cmd).is_none()
+        } else if action.cmd == super::radio_reject_test::COMMAND {
+            super::radio_reject_test::enabled(
+                super::radio_reject_test::RADIO_TEST.read().as_ref(),
+                auth::current_status().station_role.as_deref() == Some("rrls"),
+                *super::WS_CONNECTED_SIGNAL.read(),
+            )
         } else {
             action_enabled(&action.cmd, dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode)
                 && sd_retry_block(&action.cmd).is_none()
@@ -1209,6 +1215,9 @@ pub fn ActionsTab(
                                                     // Enter / LIVE PYRO: ticketed and confirmed, never the plain command path.
                                                     ActionRowItem::Action(action) if super::igt::ticket_only(&action.cmd) => rsx! {
                                                         super::igt_view::IgtTicketControl { cmd: action.cmd.clone(), inhibited: abort_only_mode }
+                                                    },
+                                                    ActionRowItem::Action(action) if action.cmd == super::radio_reject_test::COMMAND => rsx! {
+                                                        super::radio_reject_test::RadioTestControl {}
                                                     },
                                                     ActionRowItem::Action(action) => {
                                                         let control = action_policy_snapshot
