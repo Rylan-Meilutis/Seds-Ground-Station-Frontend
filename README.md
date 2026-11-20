@@ -316,13 +316,13 @@ The build helper owns iOS packaging after `dx bundle`:
 - `python3 build.py ios` creates a distribution-signed IPA
 - `python3 build.py ios_dist_sign [existing]` signs an existing app bundle as a distribution IPA
 - `python3 build.py ios_deploy [debug] [existing]` uses development signing for connected-device install
-- `python3 build.py watchos_deploy [debug] [existing]` does the same with the Apple Watch app embedded and installs it on the paired watch (see "Deploy to a watch for testing")
+- `python3 build.py watchos_deploy [debug] [existing]` dev-signs and installs only the Apple Watch app, directly on the watch; add `with_ios` to also install the iOS app with the watch app embedded (see "Deploy to a watch for testing")
 - `python3 build.py ios_sign [debug] [existing]` signs an existing app bundle with development signing
 
 Provisioning profile defaults are intentionally separate:
 
 - development/device deploy: `Groundstation_dev.mobileprovision`, or `IOS_DEVELOPMENT_MOBILEPROVISION=/path/to/profile.mobileprovision`
-- Apple Watch app development (`watchos_deploy`): `Groundstation_watch_dev.mobileprovision`, or `IOS_WATCH_DEVELOPMENT_MOBILEPROVISION=/path/to/profile.mobileprovision`
+- Apple Watch app development (`watchos_deploy`; the iOS profile is needed only with `with_ios`): `Groundstation_watch_dev.mobileprovision`, or `IOS_WATCH_DEVELOPMENT_MOBILEPROVISION=/path/to/profile.mobileprovision`
 - distribution/TestFlight/App Store style package: `UBSEDS_GroundStation.mobileprovision`, or `IOS_DISTRIBUTION_MOBILEPROVISION=/path/to/profile.mobileprovision`
 
 Distribution signing requires an `Apple Distribution:` identity that matches the distribution profile. Development signing requires an `Apple Development:` identity and a provisioning profile with provisioned devices.
@@ -534,25 +534,31 @@ three watch simulator targets. See `docs/watch-companion.md`.
 #### Deploy to a watch for testing
 
 ```sh
-python3 build.py watchos_deploy [debug] [existing] [watch=<name|udid|skip>] [phone=<udid>]
-python3 build.py watchos_sim_deploy [debug] [existing]
+python3 build.py watchos_deploy [debug] [existing] [watch=<name|udid>]           # watch app only
+python3 build.py watchos_deploy with_ios [debug] [existing] [watch=<name|udid|skip>] [phone=<udid>]
+python3 build.py watchos_sim_deploy [debug] [existing] [with_ios]
 python3 build.py wearos_deploy [debug] [existing] [serial=<ip:port>]
 python3 build.py wearos_sim_deploy [debug] [existing] [serial=emulator-5554]
 ```
 
-`watchos_deploy` builds the iOS app with the watch app embedded, dev-signs both,
-installs the phone app with `ios-deploy` and the watch app on the paired watch
-with `xcrun devicectl`. It needs Xcode 15+, `ios-deploy`, the iOS development
-profile above plus a watch development profile for `com.UBSEDS.GS26.watchkitapp`
+`watchos_deploy` builds only the watch app (xcodegen + xcodebuild), dev-signs it
+with the watch development profile and installs it directly on the selected watch
+with `xcrun devicectl device install app`; the iOS app is not built or touched. It
+needs Xcode 15+, a watch development profile for `com.UBSEDS.GS26.watchkitapp`
 (`Groundstation_watch_dev.mobileprovision`, `IOS_WATCH_DEVELOPMENT_MOBILEPROVISION`,
 or an installed Xcode-managed profile) listing the watch's UDID, Developer Mode
-on the watch, and the watch unlocked and on its charger. Like `ios_deploy` it only
-installs; open GS26 on the watch. `watchos_sim_deploy`
-finds or creates a paired iPhone + Apple Watch simulator and launches both apps. The Wear OS actions
+on the watch, and the watch unlocked and on its charger. `watchos_deploy with_ios`
+is the old phone + watch deploy: it also builds the iOS app with the watch app
+embedded, installs it with `ios-deploy` (needs `ios-deploy` and the iOS development
+profile above), then installs the watch app; if the direct watch install fails it
+falls back to installing through the iPhone's Watch app (`with_ios watch=skip` goes
+straight to that). Like `ios_deploy` it only installs; open GS26 on the watch.
+`watchos_sim_deploy` finds or creates a paired iPhone + Apple Watch simulator, boots
+both and installs and launches only the watch app (`with_ios`: the phone app too). The Wear OS actions
 use `adb` (a watch over Wi-Fi debugging, or a running Wear OS emulator) and, like
 `android_install`, install without launching. Every watch action and watch
 `--target` checks for `xcodegen`, Xcode (`xcrun`/`xcodebuild`), `ios-deploy`
-(device deploy) or the Android SDK and `adb` before building and prints the
+(`watchos_deploy with_ios` only) or the Android SDK and `adb` before building and prints the
 install command (`brew install xcodegen ios-deploy`) if one is missing. Details
 and troubleshooting: `docs/watch-companion.md`, "Deploy to a watch for testing".
 

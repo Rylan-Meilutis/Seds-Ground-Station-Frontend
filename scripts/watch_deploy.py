@@ -122,7 +122,8 @@ def select_apple_watch(devices, wanted=None):
             "  - Connect the iPhone to this Mac (USB or same Wi-Fi) and trust the Mac on it.\n"
             "  - Unlock the watch, put it on its charger near the iPhone, and open Xcode >\n"
             "    Window > Devices and Simulators once so Xcode prepares the watch for development.\n"
-            "  - To install through the iPhone only (Watch app > Available Apps), rerun with watch=skip.")
+            "  - To install through the iPhone instead (Watch app > Available Apps), rerun as\n"
+            "    `watchos_deploy with_ios watch=skip` (installs the phone app too).")
     elif len(watches) > 1:
         raise WatchDeployError("Several Apple Watches are visible; choose one with watch=<name|udid|identifier>.\n"
                                + _watch_list_hint(watches))
@@ -152,6 +153,22 @@ def watch_unreachable_note(watch):
         return None
     return (f"{watch.name} is unavailable to Xcode; the direct install may fail. Unlock the watch,\n"
             "  keep it on its charger next to the iPhone, and keep the Mac, iPhone and watch on the same Wi-Fi.")
+
+
+def watch_install_failure_help(watch):
+    """Why a direct (watch-only) devicectl install may have failed and what to
+    try next, including the install-through-the-iPhone fallback."""
+    note = watch_unreachable_note(watch)
+    return (
+        f"Installing the watch app directly on {watch.name} failed (xcrun devicectl device install app).\n"
+        + (f"  {note}\n" if note else "")
+        + "  - Keep the watch unlocked and on its charger, next to the iPhone, until the install finishes.\n"
+        "  - Check Developer Mode is on: on the watch, Settings > Privacy & Security > Developer Mode.\n"
+        "  - Check the watch shows up (and is not still \"preparing\") in Xcode > Window > Devices and\n"
+        "    Simulators; `xcrun devicectl list devices` should list it as available.\n"
+        "  - Keep the Mac, iPhone and watch on the same Wi-Fi, then rerun.\n"
+        "  Fallback: `watchos_deploy with_ios` also builds and installs the phone app and then installs\n"
+        "  the watch app through the iPhone's Watch app if the direct install still fails.")
 
 
 def watch_manual_install_instructions(phone_bundle_id):

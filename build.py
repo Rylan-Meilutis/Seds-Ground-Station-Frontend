@@ -4964,8 +4964,8 @@ def _devicectl_devices(frontend_dir: Path) -> list:
         except subprocess.CalledProcessError as exc:
             raise wd.WatchDeployError(
                 "`xcrun devicectl list devices` failed. It needs Xcode 15 or newer selected with\n"
-                "  `sudo xcode-select -s /Applications/Xcode.app`. To install through the iPhone only,\n"
-                "  rerun with watch=skip.") from exc
+                "  `sudo xcode-select -s /Applications/Xcode.app`. To install through the iPhone instead,\n"
+                "  rerun as `watchos_deploy with_ios watch=skip` (installs the phone app too).") from exc
         if not json_path.is_file():
             raise wd.WatchDeployError("`xcrun devicectl list devices` wrote no device list.")
         return wd.parse_devicectl_json(json_path.read_text(encoding="utf-8", errors="replace"))
@@ -4990,6 +4990,31 @@ def _checked_development_profile(frontend_dir: Path, kind: str, bundle_id: str,
     return profile
 
 
+def sign_watch_app_for_device(frontend_dir: Path, product: Path, profile: Path) -> Path:
+    """Dev-sign a copy of the built watch app on its own (no iOS app) with
+    the watch development profile, for a direct devicectl install. The
+    xcodebuild output stays unsigned so `existing` can sign it again."""
+    from scripts import build_targets as bt
+    signer = frontend_dir / "scripts" / "ios_package_sign.sh"
+    if not signer.exists():
+        raise FileNotFoundError(f"Missing signer script: {signer}")
+    staging = frontend_dir / "target" / "watch" / "watchos-signed"
+    signed = staging / bt.WATCH_APP_NAME
+    if signed.exists():
+        shutil.rmtree(signed)
+    staging.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(product, signed, symlinks=True)
+    env = {
+        "CERT_REGEX": os.environ.get("CERT_REGEX", r"^Apple Development:"),
+        "CERT_PICK": os.environ.get("CERT_PICK", "newest"),
+        "GET_TASK_ALLOW": "true",
+    }
+    # The signer also zips an .ipa; for a watch-only install it is a by-product.
+    run(["bash", str(signer), str(signed.resolve()), str(profile.resolve()),
+         str((staging / "GS26Watch Development.ipa").resolve())], cwd=frontend_dir, env=env)
+    return signed
+
+
 def watchos_device_deploy(
         frontend_dir: Path,
         *,
@@ -4998,19 +5023,30 @@ def watchos_device_deploy(
         max_size: bool = False,
         watch_wanted: Optional[str] = None,
         phone_wanted: Optional[str] = None,
+        with_ios: bool = False,
 ) -> tuple[list[Optional[str]], Optional[str], str]:
-    """Dev-sign the iOS app with the watch app embedded, install it on the
-    iPhone (ios-deploy) and the watch app on the paired watch (devicectl).
+    """Build the watch app, dev-sign it with the watch profile and install it
+    directly on the selected Apple Watch (devicectl). The iOS app is not
+    built or installed.
+
+    with_ios: also build the iOS app, embed the watch app in it, install it on
+    the iPhone (ios-deploy), then install the watch app on the watch.
     Install only, like ios_deploy: nothing is launched.
     Returns (phone udids, watch name or None, phone bundle id)."""
     _require_macos("Apple Watch deploy")
     from scripts import build_targets as bt, watch_deploy as wd
-    _require_watch_tools(bt.apple_watch_tool_problem(xcodegen=not use_existing, ios_deploy=True), "watchos_deploy")
+    skip_watch = (watch_wanted or "").strip().lower() == "skip"
+    if not with_ios and skip_watch:
+        raise wd.WatchDeployError("watch=skip installs the watch app through the iPhone; "
+                                  "add with_ios: watchos_deploy with_ios watch=skip")
+    if not with_ios and phone_wanted:
+        raise wd.WatchDeployError("phone= picks the iPhone for with_ios; add with_ios to install the phone app too.")
+    _require_watch_tools(bt.apple_watch_tool_problem(xcodegen=not use_existing, ios_deploy=with_ios), "watchos_deploy")
 
     phone_bundle_id = _bundle_identifier(frontend_dir)
     watch_bundle_id = phone_bundle_id + wd.WATCH_BUNDLE_SUFFIX
     watch = None
-    if (watch_wanted or "").strip().lower() != "skip":
+    if not skip_watch:
         watch = wd.select_apple_watch(_devicectl_devices(frontend_dir), watch_wanted)
         print(f"Using Apple Watch: {watch.label()}")
         note = wd.watch_unreachable_note(watch)
@@ -5018,18 +5054,31 @@ def watchos_device_deploy(
             print(f"Warning: {note}", file=sys.stderr)
 
     # Profiles are checked before the (long) build.
-    _checked_development_profile(frontend_dir, "phone", phone_bundle_id)
-    _checked_development_profile(frontend_dir, "watch", watch_bundle_id, watch.udid if watch else None)
+    if with_ios:
+        _checked_development_profile(frontend_dir, "phone", phone_bundle_id)
+    watch_profile = _checked_development_profile(frontend_dir, "watch", watch_bundle_id, watch.udid if watch else None)
 
     if not use_existing:
-        build_frontend(frontend_dir, platform_name="ios", rust_target="aarch64-apple-ios",
-                       debug_mode=debug_mode, max_size=max_size)
+        if with_ios:
+            build_frontend(frontend_dir, platform_name="ios", rust_target="aarch64-apple-ios",
+                           debug_mode=debug_mode, max_size=max_size)
         for command in bt.watchos_build_commands(frontend_dir, "watchos", debug_mode):
             run(command, cwd=frontend_dir)
     product = bt.watchos_product(frontend_dir, "watchos", debug_mode)
     if not product.is_dir():
         raise wd.WatchDeployError(f"No built watch app at {product}; rerun without `existing`.")
     wd.check_watch_app_bundle(product, phone_bundle_id)
+
+    if not with_ios:
+        signed = sign_watch_app_for_device(frontend_dir, product, watch_profile)
+        print(f"Dev-signed watch app: {signed}")
+        print(f"Installing watch app on {watch.name}: {watch_bundle_id}")
+        try:
+            run(wd.devicectl_install_command(watch.identifier, signed), cwd=frontend_dir)
+        except subprocess.CalledProcessError as exc:
+            raise wd.WatchDeployError(wd.watch_install_failure_help(watch)) from exc
+        print(f"Installed; open GS26 from the app list on {watch.name}.")
+        return [], watch.name, phone_bundle_id
 
     ipa = package_ios_ipa_with_script(frontend_dir, sign_kind="development", debug_mode=debug_mode, watch_app=product)
     print(f"Dev-signed IPA with the watch app: {ipa}")
@@ -5092,10 +5141,14 @@ def watchos_simulator_deploy(
         debug_mode: bool = False,
         use_existing: bool = False,
         max_size: bool = False,
+        with_ios: bool = False,
 ) -> tuple[str, str, str]:
-    """Build (or reuse) the simulator iOS app with the watch app embedded,
-    then install and launch both on a paired iPhone + Apple Watch simulator
-    (ios_sim_deploy launches too).
+    """Build (or reuse) the simulator watch app, then install and launch it on
+    the watch of a paired iPhone + Apple Watch simulator (the iPhone simulator
+    is booted for the pairing but gets no app).
+
+    with_ios: also build the simulator iOS app with the watch app embedded and
+    install and launch it on the iPhone simulator (ios_sim_deploy launches too).
     Returns (phone udid, watch udid, phone bundle id)."""
     _require_macos("Apple Watch simulator deploy")
     from scripts import build_targets as bt, watch_deploy as wd
@@ -5105,29 +5158,39 @@ def watchos_simulator_deploy(
     target = bt.TARGETS[name]
     print(f"Apple Watch simulator target: {name} ({target.triple}, watch {' '.join(target.watch_archs)})")
     if not use_existing:
-        build_frontend(frontend_dir, platform_name="ios", rust_target=target.triple,
-                       debug_mode=debug_mode, max_size=max_size)
+        if with_ios:
+            build_frontend(frontend_dir, platform_name="ios", rust_target=target.triple,
+                           debug_mode=debug_mode, max_size=max_size)
         for command in bt.watchos_build_commands(frontend_dir, name, debug_mode):
             run(command, cwd=frontend_dir)
 
-    app = _stage_app_bundle_from_dx(frontend_dir, platform_name="ios", preferred_bundle_name=APP_BUNDLE_NAME,
-                                    debug_mode=debug_mode, ios_target=target.triple)
-    if app is None or not app.exists():
-        raise wd.WatchDeployError("No simulator iOS app was built; rerun without `existing`.")
-    _ios_bundle_tools().validate_app(app, target.triple)
-    patch_plist(frontend_dir, app, ios_target=target.triple)
     product = bt.watchos_product(frontend_dir, name, debug_mode)
+    app = None
+    if with_ios:
+        app = _stage_app_bundle_from_dx(frontend_dir, platform_name="ios", preferred_bundle_name=APP_BUNDLE_NAME,
+                                        debug_mode=debug_mode, ios_target=target.triple)
+        if app is None or not app.exists():
+            raise wd.WatchDeployError("No simulator iOS app was built; rerun without `existing`.")
+        _ios_bundle_tools().validate_app(app, target.triple)
+        patch_plist(frontend_dir, app, ios_target=target.triple)
+        phone_bundle_id = _bundle_id_from_app(app)
+    else:
+        phone_bundle_id = _bundle_identifier(frontend_dir)
     if not product.is_dir():
         raise wd.WatchDeployError(f"No built watch simulator app at {product}; rerun without `existing`.")
-    phone_bundle_id = _bundle_id_from_app(app)
     watch_bundle_id = wd.check_watch_app_bundle(product, phone_bundle_id)
-    embedded = bt.embed_watch_app(product, app)
-    for command in bt.simulator_adhoc_sign_commands(app, embedded):
-        run(command, cwd=frontend_dir)
+    if app is not None:
+        watch_app = bt.embed_watch_app(product, app)
+        for command in bt.simulator_adhoc_sign_commands(app, watch_app):
+            run(command, cwd=frontend_dir)
+    else:
+        watch_app = product
+        run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(watch_app)], cwd=frontend_dir)
 
     pair = _simctl_watch_pair(frontend_dir)
     if not pair.active:
         run(["xcrun", "simctl", "pair_activate", pair.pair_id], cwd=frontend_dir)
+    # The paired iPhone simulator must be running for the watch simulator to work.
     for udid, state in ((pair.phone_udid, pair.phone_state), (pair.watch_udid, pair.watch_state)):
         if state != "Booted":
             run(["xcrun", "simctl", "boot", udid], cwd=frontend_dir)
@@ -5137,9 +5200,11 @@ def watchos_simulator_deploy(
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
 
-    run(["xcrun", "simctl", "install", pair.phone_udid, str(app)], cwd=frontend_dir)
-    run(["xcrun", "simctl", "install", pair.watch_udid, str(embedded)], cwd=frontend_dir)
-    run(["xcrun", "simctl", "launch", pair.phone_udid, phone_bundle_id], cwd=frontend_dir)
+    if app is not None:
+        run(["xcrun", "simctl", "install", pair.phone_udid, str(app)], cwd=frontend_dir)
+    run(["xcrun", "simctl", "install", pair.watch_udid, str(watch_app)], cwd=frontend_dir)
+    if app is not None:
+        run(["xcrun", "simctl", "launch", pair.phone_udid, phone_bundle_id], cwd=frontend_dir)
     run(["xcrun", "simctl", "launch", pair.watch_udid, watch_bundle_id], cwd=frontend_dir)
     return pair.phone_udid, pair.watch_udid, phone_bundle_id
 
@@ -6100,9 +6165,12 @@ def print_usage(exit_code: int = 1) -> None:
     print("Frontend packaging and deploy actions:")
     print(f"  {build_script} ios_deploy [debug] [existing]   # dev-sign/install on connected iPhone/iPad")
     print(f"  {build_script} ios_sim_deploy [debug] [existing]")
-    print(f"  {build_script} watchos_deploy [debug] [existing] [watch=<name|udid|skip>] [phone=<udid>]"
-          "   # dev-sign/install phone app + Apple Watch app")
-    print(f"  {build_script} watchos_sim_deploy [debug] [existing]   # paired iPhone + Apple Watch simulators")
+    print(f"  {build_script} watchos_deploy [debug] [existing] [watch=<name|udid>]"
+          "   # dev-sign/install ONLY the Apple Watch app, directly on the watch")
+    print(f"  {build_script} watchos_deploy with_ios [debug] [existing] [watch=<name|udid|skip>] [phone=<udid>]"
+          "   # also build/install the iPhone app (watch app falls back to the iPhone's Watch app)")
+    print(f"  {build_script} watchos_sim_deploy [debug] [existing] [with_ios]"
+          "   # watch app on the paired watch simulator (with_ios: phone app too)")
     print(f"  {build_script} wearos_deploy [debug] [existing] [no_sign] [serial=<adb serial>]   # Wear OS watch (adb)")
     print(f"  {build_script} wearos_sim_deploy [debug] [existing] [serial=<adb serial>]   # running Wear OS emulator")
     print(
@@ -6145,8 +6213,9 @@ def print_usage(exit_code: int = 1) -> None:
     print("  desktop_window=<width>x<height>   # desktop output size for publisher screenshot")
     print("  ios_window=<width>x<height>       # iPhone output size for publisher screenshot set")
     print("  android_window=<width>x<height>   # Android phone output size for publisher screenshot set")
-    print("  watch=<name|udid|identifier|skip> # Apple Watch for watchos_deploy (skip: install via the iPhone)")
-    print("  phone=<udid>                      # iPhone for watchos_deploy (default: ios-deploy selection)")
+    print("  with_ios                          # watchos_deploy/watchos_sim_deploy: also build and install the phone app")
+    print("  watch=<name|udid|identifier|skip> # Apple Watch for watchos_deploy (skip, with_ios only: install via the iPhone)")
+    print("  phone=<udid>                      # iPhone for watchos_deploy with_ios (default: ios-deploy selection)")
     print("  serial=<adb serial>               # Wear OS device/emulator for wearos_deploy/wearos_sim_deploy")
     print("")
     print("Environment:")
@@ -6207,6 +6276,7 @@ def main() -> None:
     android_window_arg: Optional[str] = None
     watch_arg: Optional[str] = None
     phone_arg: Optional[str] = None
+    with_ios_mode = False
     serial_arg: Optional[str] = None
     frontend_only_platform: Optional[str] = None
     frontend_rust_target: Optional[str] = None
@@ -6251,6 +6321,8 @@ def main() -> None:
             use_existing = True
         elif arg == "no_sign":
             no_sign_mode = True
+        elif arg == "with_ios":
+            with_ios_mode = True
         elif arg in {"apk", "aab"}:
             android_package_type = arg
         elif arg.startswith("log="):
@@ -6342,21 +6414,32 @@ def main() -> None:
         label="android_window",
     )
 
+    if with_ios_mode and action not in {"watchos_deploy", "watchos_sim_deploy"}:
+        print("Error: with_ios applies only to watchos_deploy and watchos_sim_deploy.", file=sys.stderr)
+        print_usage()
+
     if action in {"watchos_deploy", "watchos_sim_deploy", "wearos_deploy", "wearos_sim_deploy"}:
         from scripts.watch_deploy import WatchDeployError
         try:
             if action == "watchos_deploy":
                 udids, watch_name, bundle_id = watchos_device_deploy(
                     frontend_dir, debug_mode=debug_mode, use_existing=use_existing, max_size=max_size_mode,
-                    watch_wanted=watch_arg, phone_wanted=phone_arg)
-                phones = ", ".join(udid or "default device" for udid in udids)
-                print(f"Apple Watch deploy complete: phone app on {phones}; "
-                      + (f"watch app on {watch_name}" if watch_name else "watch app via the iPhone's Watch app")
-                      + f" ({bundle_id})")
+                    watch_wanted=watch_arg, phone_wanted=phone_arg, with_ios=with_ios_mode)
+                watch_part = (f"watch app on {watch_name}" if watch_name else "watch app via the iPhone's Watch app")
+                if with_ios_mode:
+                    phones = ", ".join(udid or "default device" for udid in udids)
+                    print(f"Apple Watch deploy complete: phone app on {phones}; {watch_part} ({bundle_id})")
+                else:
+                    print(f"Apple Watch deploy complete: {watch_part}; phone app not touched ({bundle_id}.watchkitapp)")
             elif action == "watchos_sim_deploy":
                 phone_udid, watch_udid, bundle_id = watchos_simulator_deploy(
-                    frontend_dir, debug_mode=debug_mode, use_existing=use_existing, max_size=max_size_mode)
-                print(f"Apple Watch simulator deploy complete (iPhone {phone_udid}, watch {watch_udid}) for {bundle_id}")
+                    frontend_dir, debug_mode=debug_mode, use_existing=use_existing, max_size=max_size_mode,
+                    with_ios=with_ios_mode)
+                if with_ios_mode:
+                    print(f"Apple Watch simulator deploy complete (iPhone {phone_udid}, watch {watch_udid}) for {bundle_id}")
+                else:
+                    print(f"Apple Watch simulator deploy complete: watch app on {watch_udid} "
+                          f"(paired iPhone simulator {phone_udid} has no app) for {bundle_id}")
             else:
                 serial, apk = wearos_device_deploy(
                     frontend_dir, simulator=action == "wearos_sim_deploy", debug_mode=debug_mode,

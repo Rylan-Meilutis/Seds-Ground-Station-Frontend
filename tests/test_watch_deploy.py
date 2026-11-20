@@ -22,6 +22,8 @@ if str(ROOT) not in sys.path:
 from scripts import build_targets as targets  # noqa: E402
 from scripts import watch_deploy as wd  # noqa: E402
 
+APPLE_WATCH_TOOL_PROBLEM = targets.apple_watch_tool_problem  # unpatched, for the preflight tests
+
 spec = importlib.util.spec_from_file_location("watch_deploy_build", ROOT / "build.py")
 build = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = build
@@ -179,6 +181,16 @@ class DevicectlParsing(unittest.TestCase):
         self.assertIn("Available Apps", text)
         self.assertIn("Automatic App Install", text)
 
+    def test_install_failure_help(self):
+        idle = wd.AppleDevice("A", "Rylan's Apple Watch", "watch", tunnel_state="disconnected")
+        text = wd.watch_install_failure_help(idle)
+        for needle in ["Rylan's Apple Watch", "unlocked", "charger", "Developer Mode", "Devices and",
+                       "watchos_deploy with_ios", "Watch app"]:
+            self.assertIn(needle, text)
+        self.assertNotIn("unavailable to Xcode", text)
+        self.assertIn("unavailable to Xcode", wd.watch_install_failure_help(
+            wd.AppleDevice("A", "W", "watch", tunnel_state="unavailable")))
+
 
 class BundleAndProfileChecks(unittest.TestCase):
     def test_watch_bundle_id_must_be_phone_id_plus_watchkitapp(self):
@@ -250,15 +262,90 @@ class WatchOSDeviceDeploy(unittest.TestCase):
         p(build, "_select_ios_device_udids", return_value=["00008110-000A11112222801E"])
         self.run = p(build, "run")
         self.out = self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-        self.stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        self.err = self.stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        self.signed = self.root / "target/watch/watchos-signed" / targets.WATCH_APP_NAME
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/ios_package_sign.sh").write_text("")  # never run: `run` is mocked
 
     def _sign(self, root, *, sign_kind, debug_mode, watch_app):
         self.assertEqual(sign_kind, "development")
         fake_watch_app(self.app / "Watch" / targets.WATCH_APP_NAME)
         return root / "dist/ipas/UBSEDS GS Development.ipa"
 
-    def test_builds_signs_installs_phone_then_watch_without_launching(self):
+    # Default: only the watch app is built, signed and installed.
+
+    def test_default_builds_signs_and_installs_only_the_watch_app(self):
         udids, watch, bundle = build.watchos_device_deploy(self.root)
+        self.assertEqual((udids, watch, bundle), ([], "Rylan's Apple Watch", PHONE_ID))
+        self.build_frontend.assert_not_called()
+        self.package.assert_not_called()
+        build._select_ios_device_udids.assert_not_called()
+        cmds = commands(self.run)
+        self.assertEqual([c[0] for c in cmds[:2]], ["xcodegen", "xcodebuild"])
+        self.assertIn("-sdk", cmds[1])
+        self.assertEqual(cmds[1][cmds[1].index("-sdk") + 1], "watchos")
+        # The watch app is signed on its own with the watch profile (dev, get-task-allow).
+        self.assertEqual(cmds[2][:4], ["bash", str(self.root / "scripts/ios_package_sign.sh"),
+                                       str(self.signed.resolve()), str(Path("watch.mobileprovision").resolve())])
+        self.assertEqual(self.run.call_args_list[2].kwargs["env"]["GET_TASK_ALLOW"], "true")
+        self.assertTrue((self.signed / "Info.plist").is_file())
+        self.assertEqual(cmds[3], wd.devicectl_install_command(WATCH_CORE_ID, self.signed))
+        self.assertEqual(len(cmds), 4)
+        joined = " ".join(" ".join(c) for c in cmds)
+        self.assertNotIn("ios-deploy", joined)
+        self.assertNotIn("dx", [c[0] for c in cmds])
+        self.assertFalse(any("launch" in c for c in cmds))
+        self.preflight.assert_called_once_with(xcodegen=True, ios_deploy=False)
+        self.assertIn("open GS26 from the app list on Rylan's Apple Watch", self.out.getvalue())
+
+    def test_default_checks_only_the_watch_profile(self):
+        build.watchos_device_deploy(self.root, use_existing=True)
+        build.ios_development_mobileprovision_path.assert_not_called()
+        build.ios_watch_mobileprovision_path.assert_called_once_with("development", self.root, bundle_id=WATCH_ID)
+        self.profiles["phone.mobileprovision"] = dev_profile(PHONE_ID, task_allow=False)  # irrelevant by default
+        build.watchos_device_deploy(self.root, use_existing=True)
+        self.run.reset_mock()
+        self.profiles["watch.mobileprovision"] = dev_profile(WATCH_ID, devices=("OTHER",))
+        with self.assertRaisesRegex(wd.WatchDeployError, f"Apple Watch .* does not list device {WATCH_UDID}"):
+            build.watchos_device_deploy(self.root)
+        self.run.assert_not_called()  # checked before building
+
+    def test_default_preflight_does_not_need_ios_deploy(self):
+        build.watchos_device_deploy(self.root, use_existing=True)
+        self.preflight.assert_called_once_with(xcodegen=False, ios_deploy=False)
+        # Without ios-deploy installed, the watch-only preflight passes; with_ios still asks for it.
+        which = {"xcodegen": "/b/xcodegen", "xcrun": "/b/xcrun", "xcodebuild": "/b/xcodebuild"}.get
+        self.assertIsNone(APPLE_WATCH_TOOL_PROBLEM(ios_deploy=False, which=which, xcode_ok=lambda: True))
+        self.assertIn("brew install ios-deploy",
+                      APPLE_WATCH_TOOL_PROBLEM(ios_deploy=True, which=which, xcode_ok=lambda: True))
+
+    def test_default_companion_id_is_still_checked(self):
+        fake_watch_app(self.product, companion="com.other.app")
+        with self.assertRaisesRegex(wd.WatchDeployError, "WKCompanionAppBundleIdentifier"):
+            build.watchos_device_deploy(self.root, use_existing=True)
+        self.run.assert_not_called()
+
+    def test_default_install_failure_explains_and_suggests_with_ios(self):
+        self.run.side_effect = lambda cmd, **_: (_ for _ in ()).throw(subprocess.CalledProcessError(1, cmd)) \
+            if cmd[:3] == ["xcrun", "devicectl", "device"] else None
+        with self.assertRaises(wd.WatchDeployError) as ctx:
+            build.watchos_device_deploy(self.root, use_existing=True)
+        text = str(ctx.exception)
+        for needle in ["unlocked", "charger", "Developer Mode", "Devices and", "watchos_deploy with_ios"]:
+            self.assertIn(needle, text)
+        self.assertNotIn("ios-deploy", " ".join(" ".join(c) for c in commands(self.run)))
+
+    def test_default_rejects_phone_only_options(self):
+        with self.assertRaisesRegex(wd.WatchDeployError, "with_ios"):
+            build.watchos_device_deploy(self.root, watch_wanted="skip")
+        with self.assertRaisesRegex(wd.WatchDeployError, "with_ios"):
+            build.watchos_device_deploy(self.root, phone_wanted="PHONE-UDID")
+        self.run.assert_not_called()
+
+    # with_ios: the old phone + watch behaviour.
+
+    def test_builds_signs_installs_phone_then_watch_without_launching(self):
+        udids, watch, bundle = build.watchos_device_deploy(self.root, with_ios=True)
         self.assertEqual((udids, watch, bundle), (["00008110-000A11112222801E"], "Rylan's Apple Watch", PHONE_ID))
         self.build_frontend.assert_called_once_with(self.root, platform_name="ios", rust_target="aarch64-apple-ios",
                                                     debug_mode=False, max_size=False)
@@ -277,17 +364,18 @@ class WatchOSDeviceDeploy(unittest.TestCase):
     def test_missing_tools_stop_before_any_device_or_build_work(self):
         self.preflight.return_value = "xcodegen and ios-deploy not found: brew install xcodegen ios-deploy"
         with self.assertRaisesRegex(wd.WatchDeployError, "(?s)watchos_deploy needs tools.*brew install xcodegen ios-deploy"):
-            build.watchos_device_deploy(self.root)
+            build.watchos_device_deploy(self.root, with_ios=True)
         self.devices.assert_not_called()
         self.build_frontend.assert_not_called()
         self.run.assert_not_called()
 
     def test_existing_does_not_need_xcodegen(self):
-        build.watchos_device_deploy(self.root, use_existing=True)
+        build.watchos_device_deploy(self.root, use_existing=True, with_ios=True)
         self.preflight.assert_called_once_with(xcodegen=False, ios_deploy=True)
 
     def test_existing_reuses_builds_and_phone_flag_selects_the_iphone(self):
-        build.watchos_device_deploy(self.root, use_existing=True, phone_wanted="PHONE-UDID", watch_wanted="Rylan's Apple Watch")
+        build.watchos_device_deploy(self.root, use_existing=True, phone_wanted="PHONE-UDID", watch_wanted="Rylan's Apple Watch",
+                                    with_ios=True)
         self.build_frontend.assert_not_called()
         cmds = commands(self.run)
         self.assertEqual(cmds[0], ["ios-deploy", "--id", "PHONE-UDID", "--bundle", str(self.app)])
@@ -296,12 +384,12 @@ class WatchOSDeviceDeploy(unittest.TestCase):
     def test_watch_install_failure_falls_back_to_instructions(self):
         self.run.side_effect = lambda cmd, **_: (_ for _ in ()).throw(subprocess.CalledProcessError(1, cmd)) \
             if cmd[:3] == ["xcrun", "devicectl", "device"] else None
-        _udids, watch, _bundle = build.watchos_device_deploy(self.root, use_existing=True)
+        _udids, watch, _bundle = build.watchos_device_deploy(self.root, use_existing=True, with_ios=True)
         self.assertIsNone(watch)
         self.assertIn("Available Apps", self.out.getvalue())
 
     def test_watch_skip_installs_through_the_iphone(self):
-        _udids, watch, _bundle = build.watchos_device_deploy(self.root, use_existing=True, watch_wanted="skip")
+        _udids, watch, _bundle = build.watchos_device_deploy(self.root, use_existing=True, watch_wanted="skip", with_ios=True)
         self.assertIsNone(watch)
         self.devices.assert_not_called()
         self.assertNotIn("devicectl", " ".join(" ".join(c) for c in commands(self.run)))
@@ -317,7 +405,7 @@ class WatchOSDeviceDeploy(unittest.TestCase):
                 saved = self.profiles[name]
                 self.profiles[name] = info
                 with self.assertRaisesRegex(wd.WatchDeployError, message):
-                    build.watchos_device_deploy(self.root)
+                    build.watchos_device_deploy(self.root, with_ios=True)
                 self.profiles[name] = saved
         self.build_frontend.assert_not_called()
         self.run.assert_not_called()
@@ -330,7 +418,7 @@ class WatchOSDeviceDeploy(unittest.TestCase):
     def test_bundle_id_mismatch_stops_before_signing(self):
         fake_watch_app(self.product, bundle="com.UBSEDS.GS26.watch")
         with self.assertRaisesRegex(wd.WatchDeployError, "expected 'com.UBSEDS.GS26.watchkitapp'"):
-            build.watchos_device_deploy(self.root, use_existing=True)
+            build.watchos_device_deploy(self.root, use_existing=True, with_ios=True)
         self.package.assert_not_called()
 
     def test_devicectl_listing_is_read_from_the_json_file(self):
@@ -379,11 +467,11 @@ class SimctlParsing(unittest.TestCase):
 
 
 class WatchOSSimulatorDeploy(unittest.TestCase):
-    def _deploy(self, machine, pairs_json):
+    def _deploy(self, machine, pairs_json, with_ios=False):
         with tempfile.TemporaryDirectory() as d, quiet() as out:
             root = Path(d)
             name = wd.simulator_target_name(machine)
-            fake_watch_app(targets.watchos_product(root, name, True))
+            product = fake_watch_app(targets.watchos_product(root, name, True))
             app = root / "dist" / build.APP_BUNDLE_NAME
             write_plist(app, {"CFBundleIdentifier": PHONE_ID})
             outputs = {("list", "pairs"): pairs_json, ("list", "runtimes"): json.dumps(SIMCTL_RUNTIMES)}
@@ -397,22 +485,42 @@ class WatchOSSimulatorDeploy(unittest.TestCase):
             with patch.object(build.platform, "system", return_value="Darwin"), \
                  patch.object(targets, "apple_watch_tool_problem", return_value=None) as preflight, \
                  patch.object(build.platform, "machine", return_value=machine), \
+                 patch.object(build, "_bundle_identifier", return_value=PHONE_ID), \
                  patch.object(build, "build_frontend") as build_frontend, \
-                 patch.object(build, "_stage_app_bundle_from_dx", return_value=app), \
+                 patch.object(build, "_stage_app_bundle_from_dx", return_value=app) as stage, \
                  patch.object(build, "_ios_bundle_tools", return_value=tools), \
                  patch.object(build, "patch_plist"), \
                  patch.object(build, "run_capture", side_effect=capture) as run_capture, \
                  patch.object(build, "run") as run:
-                result = build.watchos_simulator_deploy(root, debug_mode=True)
+                result = build.watchos_simulator_deploy(root, debug_mode=True, with_ios=with_ios)
             preflight.assert_called_once_with(xcodegen=True)
-            build_frontend.assert_called_once_with(root, platform_name="ios", rust_target=targets.TARGETS[name].triple,
-                                                   debug_mode=True, max_size=False)
-            tools.validate_app.assert_called_once_with(app, targets.TARGETS[name].triple)
-            self.assertTrue((app / "Watch/GS26Watch.app/Info.plist").is_file())
-            return result, commands(run), [c.args[0] for c in run_capture.call_args_list], app
+            if with_ios:
+                build_frontend.assert_called_once_with(root, platform_name="ios", rust_target=targets.TARGETS[name].triple,
+                                                       debug_mode=True, max_size=False)
+                tools.validate_app.assert_called_once_with(app, targets.TARGETS[name].triple)
+                self.assertTrue((app / "Watch/GS26Watch.app/Info.plist").is_file())
+            else:
+                build_frontend.assert_not_called()
+                stage.assert_not_called()
+                self.assertFalse((app / "Watch").exists())
+            return result, commands(run), [c.args[0] for c in run_capture.call_args_list], app, product
 
-    def test_creates_pair_when_none_exists_and_installs_both(self):
-        (phone, watch, bundle), cmds, captured, app = self._deploy("arm64", '{"pairs": {}}')
+    def test_default_installs_only_the_watch_app_with_the_phone_booted(self):
+        (phone, watch, bundle), cmds, captured, _app, product = self._deploy("arm64", '{"pairs": {}}')
+        self.assertEqual((phone, watch, bundle), ("NEW-PHONE", "NEW-WATCH", PHONE_ID))
+        self.assertIn(["xcrun", "simctl", "pair", "NEW-WATCH", "NEW-PHONE"], captured)
+        self.assertEqual([c[0] for c in cmds[:2]], ["xcodegen", "xcodebuild"])
+        self.assertEqual(cmds[2:], [
+            ["codesign", "--force", "--sign", "-", "--timestamp=none", str(product)],
+            ["xcrun", "simctl", "boot", "NEW-PHONE"], ["xcrun", "simctl", "bootstatus", "NEW-PHONE", "-b"],
+            ["xcrun", "simctl", "boot", "NEW-WATCH"], ["xcrun", "simctl", "bootstatus", "NEW-WATCH", "-b"],
+            ["open", "-a", "Simulator"],
+            ["xcrun", "simctl", "install", "NEW-WATCH", str(product)],
+            ["xcrun", "simctl", "launch", "NEW-WATCH", WATCH_ID],
+        ])
+
+    def test_with_ios_creates_pair_when_none_exists_and_installs_both(self):
+        (phone, watch, bundle), cmds, captured, app, _product = self._deploy("arm64", '{"pairs": {}}', with_ios=True)
         self.assertEqual((phone, watch, bundle), ("NEW-PHONE", "NEW-WATCH", PHONE_ID))
         self.assertIn(["xcrun", "simctl", "create", "GS26 iPhone", "iPhone-16-Pro", "com.apple.CoreSimulator.SimRuntime.iOS-18-1"], captured)
         self.assertIn(["xcrun", "simctl", "create", "GS26 Apple Watch", "Watch-S10-46", "com.apple.CoreSimulator.SimRuntime.watchOS-11-1"], captured)
@@ -444,12 +552,16 @@ class WatchOSSimulatorDeploy(unittest.TestCase):
         run_capture.assert_not_called()
 
     def test_existing_inactive_pair_is_activated_and_booted_phone_reused_on_intel(self):
-        (phone, watch, _), cmds, _captured, _app = self._deploy("x86_64", json.dumps(SIMCTL_PAIRS))
-        self.assertEqual((phone, watch), ("P-B", "W-B"))
-        self.assertIn("ARCHS=x86_64", cmds[1])
-        self.assertIn(["xcrun", "simctl", "pair_activate", "PAIR-B"], cmds)
-        self.assertNotIn(["xcrun", "simctl", "boot", "P-B"], cmds)
-        self.assertIn(["xcrun", "simctl", "boot", "W-B"], cmds)
+        for with_ios in (False, True):
+            with self.subTest(with_ios=with_ios):
+                (phone, watch, _), cmds, _captured, _app, _product = self._deploy(
+                    "x86_64", json.dumps(SIMCTL_PAIRS), with_ios=with_ios)
+                self.assertEqual((phone, watch), ("P-B", "W-B"))
+                self.assertIn("ARCHS=x86_64", cmds[1])
+                self.assertIn(["xcrun", "simctl", "pair_activate", "PAIR-B"], cmds)
+                self.assertNotIn(["xcrun", "simctl", "boot", "P-B"], cmds)
+                self.assertIn(["xcrun", "simctl", "boot", "W-B"], cmds)
+                self.assertEqual(any(c[:4] == ["xcrun", "simctl", "install", "P-B"] for c in cmds), with_ios)
 
 
 class AdbSelection(unittest.TestCase):
@@ -594,9 +706,25 @@ class Dispatch(unittest.TestCase):
             self._main("watchos_deploy", "watch=Rylan's Apple Watch", "phone=ABC")
         self.assertEqual(watch.call_args.kwargs["watch_wanted"], "Rylan's Apple Watch")
         self.assertEqual(watch.call_args.kwargs["phone_wanted"], "ABC")
+        self.assertFalse(watch.call_args.kwargs["with_ios"])
+        with patch.object(build, "watchos_device_deploy", return_value=(["P"], "W", PHONE_ID)) as watch:
+            self._main("watchos_deploy", "with_ios")
+        self.assertTrue(watch.call_args.kwargs["with_ios"])
         with patch.object(build, "watchos_simulator_deploy", return_value=("P", "W", PHONE_ID)) as sim:
             self._main("watchos_sim_deploy", "existing")
         self.assertTrue(sim.call_args.kwargs["use_existing"])
+        self.assertFalse(sim.call_args.kwargs["with_ios"])
+        with patch.object(build, "watchos_simulator_deploy", return_value=("P", "W", PHONE_ID)) as sim:
+            self._main("watchos_sim_deploy", "with_ios")
+        self.assertTrue(sim.call_args.kwargs["with_ios"])
+
+    def test_with_ios_is_only_for_the_watchos_actions(self):
+        err = io.StringIO()
+        with patch.object(build, "wearos_device_deploy") as wear, contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit):
+            self._main("wearos_deploy", "with_ios")
+        wear.assert_not_called()
+        self.assertIn("with_ios applies only to watchos_deploy", err.getvalue())
 
     def test_deploy_errors_exit_cleanly(self):
         err = io.StringIO()
@@ -611,7 +739,8 @@ class Dispatch(unittest.TestCase):
         with patch.object(sys, "argv", ["build.py", "--help"]), contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             build.main()
         for text in ["watchos_deploy", "watchos_sim_deploy", "wearos_deploy", "wearos_sim_deploy",
-                     "IOS_WATCH_DEVELOPMENT_MOBILEPROVISION", "serial=<adb serial>"]:
+                     "IOS_WATCH_DEVELOPMENT_MOBILEPROVISION", "serial=<adb serial>", "with_ios",
+                     "ONLY the Apple Watch app"]:
             self.assertIn(text, out.getvalue())
 
 
