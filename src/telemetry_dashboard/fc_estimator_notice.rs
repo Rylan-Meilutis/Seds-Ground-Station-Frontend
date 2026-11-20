@@ -5,6 +5,11 @@
 //! does not start, stops, diverges or stalls. From Launch on this shows
 //! "FC estimator: running / not running / faulted" with the time since the
 //! filter started on every view. A test fire has no FC and shows nothing.
+//!
+//! The FC's barometer ground reference rides along: on the pad, where the FC
+//! tracks it against weather and sensor drift while the vehicle is still,
+//! it is shown on its own ("Baro ref 1003.2 hPa · drift +1.8 hPa ·
+//! tracking"); from Launch on, frozen, it is part of the estimator notice.
 use super::layout::ThemeConfig;
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -38,6 +43,12 @@ pub(crate) struct FcEstimatorView {
     pub stalled: bool,
     #[serde(default)]
     pub warning: Option<String>,
+    /// tracking, paused or frozen.
+    #[serde(default)]
+    pub baro_mode: Option<String>,
+    /// "Baro ref 1003.2 hPa · drift +1.8 hPa · tracking".
+    #[serde(default)]
+    pub baro_label: Option<String>,
 }
 
 pub(crate) static FC_ESTIMATOR: GlobalSignal<Option<FcEstimatorView>> = Signal::global(|| None);
@@ -83,12 +94,16 @@ fn fallback_title(state: &str) -> &'static str {
     }
 }
 
-/// The notice, from Launch on (or once the filter has run or warned);
-/// nothing on the pad or without an FC.
+/// The notice, from Launch on (or once the filter has run or warned); on
+/// the pad only the barometer ground reference; nothing without an FC.
 pub(super) fn notice(view: &FcEstimatorView) -> Option<Notice> {
     let has_run = view.phase.as_deref().is_some_and(|p| !matches!(p, "idle" | "initializing"));
-    if !view.expected || view.state == "not_expected" || !(view.launch_seen || has_run || view.warning.is_some()) {
+    if !view.expected || view.state == "not_expected" {
         return None;
+    }
+    if !(view.launch_seen || has_run || view.warning.is_some()) {
+        let body = view.baro_label.clone()?;
+        return Some(Notice { title: "FC barometer reference".into(), body, tone: Tone::Running });
     }
     let tone = match view.state.as_str() {
         "running" => Tone::Running,
@@ -118,6 +133,9 @@ pub(super) fn notice(view: &FcEstimatorView) -> Option<Notice> {
     }
     if let Some(age) = view.report_age_ms.filter(|age| *age > 7_000) {
         parts.push(format!("last FC report {} s ago", age / 1000));
+    }
+    if let Some(baro) = &view.baro_label {
+        parts.push(baro.clone());
     }
     let title = if view.label.is_empty() { fallback_title(&view.state).to_string() } else { view.label.clone() };
     Some(Notice { title, body: parts.join(" · "), tone })
@@ -194,6 +212,29 @@ mod tests {
         assert_eq!(
             diverged.body,
             "FC flight estimator diverged: its Kalman filter state is not finite. · Kalman filter started at T+0.3 s · last FC report 9 s ago"
+        );
+    }
+
+    #[test]
+    fn the_barometer_reference_on_the_pad_and_after_launch() {
+        let pad = notice(&view(json!({
+            "state": "not_running", "phase": "idle", "expected": true, "baro_mode": "tracking",
+            "baro_label": "Baro ref 1003.2 hPa · drift +1.8 hPa · tracking"
+        })))
+        .unwrap();
+        assert_eq!((pad.title.as_str(), pad.body.as_str()), ("FC barometer reference", "Baro ref 1003.2 hPa · drift +1.8 hPa · tracking"));
+        assert_eq!(pad.tone, Tone::Running);
+        let flight = notice(&view(json!({
+            "state": "running", "label": "FC estimator: running", "phase": "running", "expected": true,
+            "launch_seen": true, "running_for_ms": 4_000, "baro_mode": "frozen",
+            "baro_label": "Baro ref 1003.2 hPa · drift +1.8 hPa · frozen"
+        })))
+        .unwrap();
+        assert_eq!(flight.body, "running for 0:04 · Baro ref 1003.2 hPa · drift +1.8 hPa · frozen");
+        assert_eq!(
+            notice(&view(json!({"state": "not_expected", "expected": false, "baro_label": "Baro ref"}))),
+            None,
+            "no FC in a test fire"
         );
     }
 

@@ -301,12 +301,13 @@ fn fc_estimator_frame_and_route_decode_into_the_launch_notice() {
     };
     assert_eq!(view.state, "running");
     assert_eq!(view.phase.as_deref(), Some("converged"));
-    assert_eq!(view.started_t_plus_ms, Some(300));
-    assert_eq!(view.running_for_ms, Some(2_250));
+    assert_eq!(view.started_t_plus_ms, Some(289));
+    assert_eq!(view.running_for_ms, Some(2_261));
     assert!(view.launch_seen && view.expected);
+    assert_eq!(view.baro_mode.as_deref(), Some("tracking"));
     let n = fc_estimator_notice::notice(&view).expect("shown after Launch");
     assert_eq!(n.title, "FC estimator: running (converged)");
-    assert_eq!(n.body, "Kalman filter started at T+0.3 s · running for 0:02");
+    assert_eq!(n.body, "Kalman filter started at T+0.3 s · running for 0:02 · Baro ref 1003.2 hPa · drift -0.8 hPa · tracking");
     let idle: fc_estimator_notice::FcEstimatorView = decode("fc-estimator/get");
     assert_eq!(idle.state, "unknown");
     assert_eq!(fc_estimator_notice::notice(&idle), None, "nothing on the pad");
