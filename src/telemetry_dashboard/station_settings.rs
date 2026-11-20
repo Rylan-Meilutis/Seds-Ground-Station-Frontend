@@ -96,6 +96,7 @@ fn StationSettingsBody(
         match section {
             StationSection::Mission=>rsx! {
                 super::actions_tab::MissionSettings {layout,action_policy,backend_fill_targets:fill_targets,abort_only_mode,theme:theme.clone()}
+                super::launch_site::LaunchSiteSettings {theme:theme.clone()}
             },
             StationSection::Loadcells=>rsx! {
                 section {style:"display:grid;gap:14px;min-width:0;",

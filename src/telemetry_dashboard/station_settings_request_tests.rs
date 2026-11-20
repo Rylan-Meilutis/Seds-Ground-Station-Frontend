@@ -175,6 +175,26 @@ async fn actual_settings_post_retains_original_body_and_authorization() {
     assert_eq!(requests[0].1, body);
 }
 #[tokio::test(flavor = "current_thread")]
+async fn ground_test_settings_and_launch_site_are_put_with_the_contract_bodies() {
+    let server = Server::new(200, false);
+    let dom = dom(&server.base);
+    let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true));
+    let update = dashboard::igt::Toggle::HitlReplay.update(true);
+    let mut request = Box::pin(put_captured::<_, serde_json::Value>(dashboard::igt::SETTINGS_PATH, &update, owner));
+    in_dom(&dom, request.as_mut()).await.unwrap();
+    let owner = dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true));
+    let reset = super::super::launch_site::reset_request();
+    let mut request = Box::pin(put_captured::<_, serde_json::Value>(super::super::launch_site::PATH, &reset, owner));
+    in_dom(&dom, request.as_mut()).await.unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].0.starts_with("PUT /api/igt/settings "), "{}", requests[0].0);
+    assert!(requests[0].0.to_ascii_lowercase().contains("authorization: bearer settings-original"));
+    assert_eq!(requests[0].1, r#"{"hitl_replay":true}"#);
+    assert!(requests[1].0.starts_with("PUT /api/fc/launch-site "), "{}", requests[1].0);
+    assert_eq!(requests[1].1, r#"{"reset":true}"#);
+}
+#[tokio::test(flavor = "current_thread")]
 async fn queued_settings_post_never_rebinds_after_station_or_credential_aba() {
     for change in ["station", "auth"] {
         let original = Server::new(200, false);
