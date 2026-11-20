@@ -16,6 +16,9 @@ pub(super) struct RingStatus {
     pub bytes: u64,
     #[serde(default)]
     pub budget_bytes: u64,
+    /// The budget applied now: the ceiling, limited by free disk above the reserve.
+    #[serde(default)]
+    pub effective_budget_bytes: u64,
     #[serde(default)]
     pub oldest_ms: Option<i64>,
     #[serde(default)]
@@ -47,6 +50,24 @@ pub(super) struct Manifest {
     pub pre_roll_truncated: bool,
     #[serde(default)]
     pub rows: BTreeMap<String, i64>,
+    #[serde(default)]
+    pub board_sd: Vec<BoardSdEntry>,
+}
+
+/// A board SD launch file attached automatically to a launch capture.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct BoardSdEntry {
+    pub board: String,
+    pub file: String,
+    pub bytes: u64,
+    pub data_from_ms: i64,
+    pub data_to_ms: i64,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub lead_up_file: Option<String>,
+    #[serde(default)]
+    pub lead_up_rows: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -94,6 +115,8 @@ pub(super) struct Settings {
     pub segment_mb: u64,
     pub warn_free_mb: u64,
     pub critical_free_mb: u64,
+    #[serde(default)]
+    pub reserve_free_mb: u64,
     pub events: BTreeMap<String, EventPolicy>,
 }
 
@@ -217,6 +240,8 @@ pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<St
         return rsx! { section { class: "gs26-recording-store", h3 { "Recordings" } p { role: "status", "Loading recordings…{message}" } } };
     };
     let ring = current.ring.clone();
+    // Older stations report only the ceiling.
+    let budget_now = if ring.effective_budget_bytes > 0 { ring.effective_budget_bytes } else { ring.budget_bytes };
     let span = match (ring.oldest_ms, ring.newest_ms) {
         (Some(a), Some(b)) => format!("{} ({} → now)", duration_label(b - a), utc_label(a)),
         _ => "no data yet".to_owned(),
@@ -242,7 +267,7 @@ pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<St
             h3 { "Recordings" }
             p { class: "gs26-recording-always-on", role: "status",
                 if current.always_on { "● Recording is always on. " } else { "Recording is not running on this station. " }
-                "Rolling store: {span}, {size_label(ring.bytes)} of {size_label(ring.budget_bytes)} in {ring.segments} segments"
+                "Rolling store: {span}, {size_label(ring.bytes)} of {size_label(budget_now)} in {ring.segments} segments (up to {size_label(ring.budget_bytes)}, keeping {current.settings.reserve_free_mb} MB free for captures)"
                 if let Some(free) = ring.free_bytes { ", {size_label(free)} free on disk" }
                 ". When full, the oldest rolling data is overwritten; event captures below are kept until an administrator deletes them."
             }
@@ -325,6 +350,29 @@ pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<St
                                         }
                                     }
                                 }
+                                for entry in capture.manifest.board_sd.iter() {
+                                    div { key: "{entry.board}-{entry.file}", class: "gs26-board-sd",
+                                        "{entry.board} SD launch file {entry.file} · {size_label(entry.bytes)} · {duration_label(entry.data_to_ms - entry.data_from_ms)}"
+                                        if entry.lead_up_file.is_some() { " · with {entry.lead_up_rows} lead-up rows" }
+                                        " "
+                                        for file in std::iter::once(entry.file.clone()).chain(entry.lead_up_file.clone()) {
+                                            button { key: "{file}", disabled: busy(), onclick: {
+                                                let path = format!("/api/recordings/{}/board_sd/{}/{}", capture.id, entry.board, file);
+                                                let save_as = format!("{}-{}", entry.board, file);
+                                                move |_| {
+                                                    let (path, save_as) = (path.clone(), save_as.clone());
+                                                    let owner = match super::recording_download::ExportOwner::capture() { Ok(owner) => owner, Err(error) => { message.set(error); return; } };
+                                                    busy.set(true);
+                                                    spawn(async move {
+                                                        let result = super::recording_download::download_csv_path_owned(&path, &save_as, owner.clone()).await;
+                                                        if owner.is_current() { message.set(result.unwrap_or_else(|error| format!("Download failed: {error}"))); }
+                                                        busy.set(false);
+                                                    });
+                                                }
+                                            }, if file.ends_with(".leadup.csv") { "Download lead-up" } else { "Download" } }
+                                        }
+                                    }
+                                }
                                 for attachment in capture.attachments.iter() {
                                     div { key: "{attachment.id}",
                                         "Attached board SD import · {size_label(attachment.bytes)} "
@@ -387,6 +435,7 @@ fn RecordingSettingsForm(settings: Settings, busy: bool, on_change: EventHandler
                 label { "Rolling store size (MB) " {number_input(s.ring_budget_mb, { let s = s.clone(); move |v| { let mut n = s.clone(); n.ring_budget_mb = v; on_change.call(n); } })} }
                 label { "Segment size (MB) " {number_input(s.segment_mb, { let s = s.clone(); move |v| { let mut n = s.clone(); n.segment_mb = v; on_change.call(n); } })} }
                 label { "Warn below free (MB) " {number_input(s.warn_free_mb, { let s = s.clone(); move |v| { let mut n = s.clone(); n.warn_free_mb = v; on_change.call(n); } })} }
+                label { "Keep free for captures and the OS (MB) " {number_input(s.reserve_free_mb, { let s = s.clone(); move |v| { let mut n = s.clone(); n.reserve_free_mb = v; on_change.call(n); } })} }
                 label { "Shrink ring below free (MB) " {number_input(s.critical_free_mb, { let s = s.clone(); move |v| { let mut n = s.clone(); n.critical_free_mb = v; on_change.call(n); } })} }
             }
             table { class: "gs26-capture-policies",
@@ -414,9 +463,19 @@ mod tests {
     use super::*;
 
     fn store_fixture() -> StoreView {
-        serde_json::from_value(serde_json::json!({
+        let mut value = store_fixture_base();
+        value["groups"][0]["captures"][0]["manifest"]["board_sd"] = serde_json::json!([{
+            "board": "DAQ", "file": "DAQ_LAUNCH_0007.CSV", "bytes": 4096, "sha256": "ab",
+            "data_from_ms": 1_800_000_000_000i64, "data_to_ms": 1_800_000_020_000i64, "rows": 100,
+            "matched_by": "utc_window", "source": "network_download",
+            "lead_up_file": "DAQ_LAUNCH_0007.leadup.csv", "lead_up_from_ms": 1_799_999_940_000i64, "lead_up_rows": 40}]);
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn store_fixture_base() -> serde_json::Value {
+        (serde_json::json!({
             "always_on": true,
-            "ring": {"enabled": true, "segments": 3, "bytes": 200u64 * 1024 * 1024, "budget_bytes": 4096u64 * 1024 * 1024,
+            "ring": {"enabled": true, "segments": 3, "bytes": 200u64 * 1024 * 1024, "budget_bytes": 51200u64 * 1024 * 1024, "effective_budget_bytes": 9000u64 * 1024 * 1024,
                      "segment_bytes": 64u64 * 1024 * 1024, "oldest_ms": 1_800_000_000_000i64, "newest_ms": 1_800_003_600_000i64,
                      "active_segment": "rolling.segment_x.db", "free_bytes": 1500u64 * 1024 * 1024, "disk": "low",
                      "deleted_segments": 0, "pinned_from_ms": null, "warning": "Station disk is low (1500 MB free)."},
@@ -426,15 +485,14 @@ mod tests {
                 "label": "N2 test", "bytes": 1024u64 * 1024,
                 "manifest": {"format": "seds-gs-event-capture", "label": "N2 test", "event_start_ms": 1_800_000_000_000i64, "event_end_ms": 1_800_000_600_000i64,
                     "window_start_ms": 1_799_999_880_000i64, "window_end_ms": 1_800_000_720_000i64, "station_mode": "normal",
-                    "operator": "alice", "result": "Passed: holds", "pre_roll_truncated": false, "rows": {"telemetry": 10}},
+                    "operator": "alice", "result": "Passed: holds", "pre_roll_truncated": false, "rows": {"telemetry": 10},},
                 "attachments": [{"id": "event.nitrogen_test.2027-01-15_08-00-00_000_n2.groundstation_recording_1.db", "bytes": 10}]}]}],
             "captures_bytes": 2u64 * 1024 * 1024,
             "legacy": [{"id": "groundstation_recording_2026-11-09_06-26-25_821.db", "bytes": 195252224u64, "active": false, "kind": "legacy"}],
-            "settings": {"ring_budget_mb": 4096, "segment_mb": 64, "warn_free_mb": 2048, "critical_free_mb": 512,
+            "settings": {"ring_budget_mb": 51200, "segment_mb": 64, "warn_free_mb": 2048, "critical_free_mb": 512, "reserve_free_mb": 8192,
                          "events": {"fill": {"auto": true, "pre_roll_s": 120, "post_roll_s": 120, "max_duration_s": 21600}}},
             "is_admin": true
         }))
-        .unwrap()
     }
 
     #[test]
@@ -446,6 +504,11 @@ mod tests {
         assert_eq!(view.groups[0].captures[0].attachments.len(), 1);
         assert_eq!(view.legacy[0].id, "groundstation_recording_2026-11-09_06-26-25_821.db");
         assert_eq!(view.settings.events["fill"].pre_roll_s, 120);
+        assert_eq!(view.settings.reserve_free_mb, 8192);
+        assert_eq!(view.ring.effective_budget_bytes, 9000 * 1024 * 1024);
+        let board = &view.groups[0].captures[0].manifest.board_sd[0];
+        assert_eq!((board.board.as_str(), board.lead_up_rows), ("DAQ", 40));
+        assert_eq!(board.lead_up_file.as_deref(), Some("DAQ_LAUNCH_0007.leadup.csv"));
         let round = serde_json::to_value(&view.settings).unwrap();
         assert_eq!(round["events"]["fill"]["max_duration_s"], 21600);
     }
@@ -461,6 +524,8 @@ mod tests {
         dom.rebuild_in_place();
         let html = dioxus::ssr::render(&dom);
         assert!(html.contains("Rolling store size (MB)"), "{html}");
+        assert!(html.contains("Keep free for captures and the OS (MB)"));
+        assert!(html.contains("8192"));
         assert!(html.contains("Pre-roll (s)"));
         assert!(html.contains("21600"));
     }

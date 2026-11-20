@@ -14,7 +14,12 @@ entries carry `kind` (`rolling`, `capture`, `attachment`, `legacy`),
 `event_type`, `label`, `start_ms` and `end_ms`. `GET /api/recordings/store`
 feeds the Recordings panel; `POST /api/recordings/snapshot`,
 `POST /api/recordings/settings` and `POST /api/recordings/{id}/delete` are its
-actions. `GET`/`POST /api/system/power` is the admin Station power panel. The
+actions. `GET`/`POST /api/system/power` is the admin Station power panel. A
+capture manifest's `board_sd` lists the FC/DAQ SD launch files attached to it
+automatically (with an optional `lead_up_file`), downloaded from
+`GET /api/recordings/{id}/board_sd/{board}/{file}`. The ring reports
+`budget_bytes` (ceiling, default 50 GB) and `effective_budget_bytes` (limited
+by free disk above `reserve_free_mb`). The
 `recording_status` message adds `always_on` and `captures` (in progress).
 
 ## Live telemetry and firmware
