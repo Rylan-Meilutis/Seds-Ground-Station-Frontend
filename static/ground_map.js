@@ -77,6 +77,8 @@ let overlaySourceSyncFrame = null;
 let lastOverlaySyncKey = "";
 // GroundStation/RRLS positions from /api/antenna/status: live GPS or a saved fallback.
 let stationMarkers = [];
+// Integrated ground test: the FC's replayed (SIMULATED) GPS track, [[lat, lon], ...].
+let simTrack = [];
 let lastOverlaySyncAtMs = 0;
 let mapInitPhase = "idle";
 let mapInitTrace = [];
@@ -291,6 +293,10 @@ const USER_LAYER_ID = "gs26-user-layer";
 const ROCKET_LAYER_ID = "gs26-rocket-layer";
 const USER_HEADING_LAYER_ID = "gs26-user-heading-layer";
 const STATION_LAYER_ID = "gs26-station-layer";
+const SIM_TRACK_LAYER_ID = "gs26-sim-track-layer";
+const SIM_TRACK_HEAD_LAYER_ID = "gs26-sim-track-head-layer";
+const OVERLAY_ROLE_SIM_TRACK = "sim-track";
+const SIM_TRACK_COLOR = "#e879f9";
 const OVERLAY_ROLE_GUIDE = "guide";
 const OVERLAY_ROLE_ROCKET = "rocket";
 const OVERLAY_ROLE_USER = "user";
@@ -1914,8 +1920,41 @@ function stationMarkersDataKey(stations) {
     return stations.map(station => `${station.role}:${station.live ? 1 : 0}:${pointDataKey(station.latLng)}`).join(";") || SOURCE_EMPTY_KEY;
 }
 
-function overlayFeatureCollection(rocketLatLng, userLatLng, headingDeg, stations) {
+function normalizeSimTrack(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const entry of list) {
+        if (!Array.isArray(entry)) continue;
+        const lat = Number(entry[0]);
+        const lon = Number(entry[1]);
+        if (isUsableLatLng(lat, lon)) out.push([lat, lon]);
+    }
+    return out;
+}
+
+function simTrackDataKey(track) {
+    if (!Array.isArray(track) || track.length === 0) return SOURCE_EMPTY_KEY;
+    return `${track.length}:${pointDataKey(track[0])}:${pointDataKey(track[track.length - 1])}`;
+}
+
+function overlayFeatureCollection(rocketLatLng, userLatLng, headingDeg, stations, simTrackPoints) {
     const features = [];
+    const track = Array.isArray(simTrackPoints) ? simTrackPoints : [];
+    if (track.length >= 2) {
+        features.push({
+            type: "Feature",
+            geometry: {type: "LineString", coordinates: track.map(point => [point[1], point[0]])},
+            properties: {role: OVERLAY_ROLE_SIM_TRACK},
+        });
+    }
+    if (track.length >= 1) {
+        const last = track[track.length - 1];
+        features.push({
+            type: "Feature",
+            geometry: {type: "Point", coordinates: [last[1], last[0]]},
+            properties: {role: OVERLAY_ROLE_SIM_TRACK},
+        });
+    }
     for (const station of Array.isArray(stations) ? stations : []) {
         features.push({
             type: "Feature",
@@ -3532,6 +3571,7 @@ function syncOverlaySourcesNow() {
         headingDataKey(userLatLng, displayHeadingDeg),
         guideLineDataKey(lastRocketLatLng, userLatLng),
         stationMarkersDataKey(stationMarkers),
+        simTrackDataKey(simTrack),
     ].join("|");
     if (overlaySyncKey === lastOverlaySyncKey) {
         return;
@@ -3543,6 +3583,7 @@ function syncOverlaySourcesNow() {
             userLatLng,
             hasUsableUserHeading() ? displayHeadingDeg : NaN,
             stationMarkers,
+            simTrack,
         ),
     );
 }
@@ -3554,6 +3595,13 @@ function setGroundMapStations(list) {
     if (usingRasterFallback()) {
         renderRasterFallbackMap();
     }
+    scheduleOverlaySourceSync();
+}
+
+function setGroundMapSimTrack(list) {
+    const next = normalizeSimTrack(list);
+    if (simTrackDataKey(next) === simTrackDataKey(simTrack)) return;
+    simTrack = next;
     scheduleOverlaySourceSync();
 }
 
@@ -4848,6 +4896,22 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
                 "line-color": "#ef4444", "line-width": 3, "line-opacity": 0.95,
             },
         }, {
+            id: SIM_TRACK_LAYER_ID,
+            type: "line",
+            source: OVERLAY_SOURCE_ID,
+            filter: ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "role"], OVERLAY_ROLE_SIM_TRACK]],
+            paint: {
+                "line-color": SIM_TRACK_COLOR, "line-width": 3, "line-opacity": 0.9, "line-dasharray": [2, 1.5],
+            },
+        }, {
+            id: SIM_TRACK_HEAD_LAYER_ID,
+            type: "circle",
+            source: OVERLAY_SOURCE_ID,
+            filter: ["all", ["==", ["geometry-type"], "Point"], ["==", ["get", "role"], OVERLAY_ROLE_SIM_TRACK]],
+            paint: {
+                "circle-radius": 6, "circle-color": SIM_TRACK_COLOR, "circle-stroke-color": "#111827", "circle-stroke-width": 2,
+            },
+        }, {
             id: STATION_LAYER_ID,
             type: "symbol",
             source: OVERLAY_SOURCE_ID,
@@ -6070,6 +6134,7 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     api.initGroundMap = safeMapCallback("api initGroundMap", initGroundMap);
     api.updateGroundMapMarkers = safeMapCallback("api updateGroundMapMarkers", updateGroundMapMarkers);
     api.setGroundMapStations = safeMapCallback("api setGroundMapStations", setGroundMapStations);
+    api.setGroundMapSimTrack = safeMapCallback("api setGroundMapSimTrack", setGroundMapSimTrack);
     api.centerGroundMapOn = safeMapCallback("api centerGroundMapOn", centerGroundMapOn);
     api.getLastUserLatLng = safeMapCallback("api getLastUserLatLng", getLastUserLatLng);
     api.scheduleHighResTilePrefetch = safeMapCallback("api scheduleHighResTilePrefetch", scheduleHighResTilePrefetch);
@@ -6162,6 +6227,7 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     window.initGroundMap = api.initGroundMap;
     window.updateGroundMapMarkers = api.updateGroundMapMarkers;
     window.setGroundMapStations = api.setGroundMapStations;
+    window.setGroundMapSimTrack = api.setGroundMapSimTrack;
     window.centerGroundMapOn = api.centerGroundMapOn;
     window.getLastUserLatLng = api.getLastUserLatLng;
     window.setGroundMapPrefetchContext = api.setGroundMapPrefetchContext;
@@ -6180,6 +6246,9 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
 
     if (Array.isArray(window.__gs26_pending_stations)) {
         api.setGroundMapStations(window.__gs26_pending_stations);
+    }
+    if (Array.isArray(window.__gs26_pending_sim_track)) {
+        api.setGroundMapSimTrack(window.__gs26_pending_sim_track);
     }
     window.__gs26_ground_station_loaded = true;
     try {

@@ -979,6 +979,8 @@ pub fn ActionsTab(
         let dispatch_cmd = supply_dispatch_command(&action.cmd, control.and_then(|c| c.actuated));
         let enabled = if action.cmd == super::station_recover::COMMAND {
             station_recovery.as_ref().is_some_and(|view| view.disabled_reason.is_none())
+        } else if super::igt::ticket_only(&action.cmd) {
+            !abort_only_mode && super::igt_view::ticket_disabled_reason(&action.cmd).is_none()
         } else {
             action_enabled(&action.cmd, dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode)
         };
@@ -1193,6 +1195,10 @@ pub fn ActionsTab(
                                                     },
                                                     ActionRowItem::Action(action) if action.cmd == super::station_recover::COMMAND => rsx! {
                                                         super::station_recover::RecoverStationControl { view: station_recovery.clone().unwrap_or_default() }
+                                                    },
+                                                    // Enter / LIVE PYRO: ticketed and confirmed, never the plain command path.
+                                                    ActionRowItem::Action(action) if super::igt::ticket_only(&action.cmd) => rsx! {
+                                                        super::igt_view::IgtTicketControl { cmd: action.cmd.clone(), inhibited: abort_only_mode }
                                                     },
                                                     ActionRowItem::Action(action) => {
                                                         let control = action_policy_snapshot

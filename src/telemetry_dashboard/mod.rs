@@ -74,6 +74,7 @@ mod recovery_marker;
 mod auto_vent_notice;
 mod fc_estimator_notice;
 pub(crate) mod igt;
+mod igt_view;
 mod launch_zero_notice;
 mod recovery_status;
 mod report_studio;

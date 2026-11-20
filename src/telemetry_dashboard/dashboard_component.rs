@@ -2582,6 +2582,7 @@ fn TelemetryDashboardInner() -> Element {
                         ",
                         onclick: move |evt| evt.stop_propagation(),
                         ontouchend: move |evt| evt.stop_propagation(),
+                        igt_view::IgtBanner {}
                         div {
                             style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;",
                             h1 { style: "margin:0; font-size:20px;", "{_version_title}" }
@@ -2651,6 +2652,7 @@ fn TelemetryDashboardInner() -> Element {
                         ",
                         onclick: move |evt| evt.stop_propagation(),
                         ontouchend: move |evt| evt.stop_propagation(),
+                        igt_view::IgtBanner {}
                         div {
                             style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;",
                             h1 { style: "margin:0; font-size:20px;", "{settings_title}" }
@@ -2844,7 +2846,7 @@ fn TelemetryDashboardInner() -> Element {
     let view = (|| -> Element {
         // Keep hooks stable, but unmount all normal data views while aiming.
         if *antenna_aiming.read() {
-            return rsx! { antenna_aiming::AntennaAiming {on_register_retirement: move |(alive, reset): antenna_aiming::RetirementRegistration| { mode_live_view::register_antenna(alive, move || reset.call(())); }, on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
+            return rsx! { igt_view::IgtBanner {} antenna_aiming::AntennaAiming {on_register_retirement: move |(alive, reset): antenna_aiming::RetirementRegistration| { mode_live_view::register_antenna(alive, move || reset.call(())); }, on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
         }
 
         // Dedicated media devices must not mount dashboard alerts, warnings or controls.
@@ -2867,6 +2869,7 @@ fn TelemetryDashboardInner() -> Element {
                 && *active_main_tab.read() == MainTab::StreamManager;
             return rsx! {
                 div {style:"height:var(--gs26-app-height,100dvh);font-family:system-ui,sans-serif;display:flex;flex-direction:column;background:{theme.tab_shell_background};color:{theme.text_primary};",
+                    igt_view::IgtBanner {}
                     if viewer_only {div {style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:.7;",{auth_button}}}
                     if !viewer_only {
                         button {r#type:"button",style:"align-self:end;min-height:44px;margin:8px;padding:8px 16px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_| {
@@ -2887,7 +2890,7 @@ fn TelemetryDashboardInner() -> Element {
         }
 
         if *admin_open.read() {
-            return rsx! {admin_console::AdminConsole {
+            return rsx! {igt_view::IgtBanner {} admin_console::AdminConsole {
                 on_exit:move |_|{admin_open.set(false);let mut overlay=show_settings_overlay;overlay.set(true);},
                 on_navigate:move |page:String| {
                     let mut dashboard_edit_mode = dashboard_edit_mode;
@@ -3406,6 +3409,8 @@ fn TelemetryDashboardInner() -> Element {
                             }
                         }
                         station_mode::OperatingModeNotice {visible:false}
+                        igt_view::IgtStatusPoller {}
+                        igt_view::IgtBanner {}
                         recovery_marker::RecoveryRuntime {}
                         launch_zero_notice::LaunchZeroNotice {action_policy, theme:theme.clone()}
                         auto_vent_notice::AutoVentNotice {status:sequence_status, theme:theme.clone()}
@@ -3941,6 +3946,9 @@ fn TelemetryDashboardInner() -> Element {
                                             span { class: "gs26-status-phase", "data-phase": state_view.phase.map(|p| p.key()).unwrap_or("unknown"), title: "{translate_text(&state_view.text())}", style: "display:inline-flex; align-items:baseline; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
                                                 span { style: "color:{theme.text_soft}; flex:0 0 auto;", "{localized_copy(&language_snapshot, \"State\", \"Estado\", \"État\")}: " }
                                                 strong { class: "gs26-status-phase-label", style: "color:{state_color};", "{translate_text(&state_view.label())}" }
+                                                if state_view.simulated {
+                                                    span { class: "gs26-status-simulated", "data-simulated": "true", title: "Integrated ground test: the FC is flying a replayed flight", style: "flex:0 0 auto; margin-left:6px; padding:0 6px; border-radius:6px; background:#b91c1c; color:#fff; font-size:0.72em; font-weight:800; letter-spacing:0.04em;", "SIMULATED" }
+                                                }
                                                 if let Some(detail) = state_view.detail.clone() {
                                                     span { class: "gs26-status-phase-detail", style: "color:{theme.text_soft}; margin-left:6px; overflow:hidden; text-overflow:ellipsis;", "· {translate_text(&detail)}" }
                                                 }
@@ -3951,7 +3959,7 @@ fn TelemetryDashboardInner() -> Element {
                                 div { class: "gs26-status-network",
                                     NetworkTimeBadge { network_time: network_time, language: language_snapshot.clone() }
                                 }
-                                custom_dashboard::PinnedTelemetry {test_fire_mode:layout.test_fire_mode}
+                                custom_dashboard::PinnedTelemetry {test_fire_mode:igt::shows_stand_panels(layout.test_fire_mode)}
                                 div { class: "gs26-status-launch",
                                     LaunchClockBadge { launch_clock: launch_clock, network_time: network_time }
                                 }
@@ -4005,11 +4013,11 @@ fn TelemetryDashboardInner() -> Element {
                                                 },
                                             }
                                         }
-                                        custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:layout.test_fire_mode}
+                                        custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),test_fire_mode:igt::shows_stand_panels(layout.test_fire_mode)}
                                         if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && flight_state.read().as_str() == "Aborted" {
                                             for policy_view_key in [station_mode_observer::connection_view_key()] { gse_panel::ClearGseAbort { key: "{policy_view_key}",} }
                                         }
-                                        if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && (layout.test_fire_mode || gse_panel::ground_visible(&flight_state.read())) {
+                                        if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && (igt::shows_stand_panels(layout.test_fire_mode) || gse_panel::ground_visible(&flight_state.read())) {
                                             for policy_view_key in [station_mode_observer::connection_view_key()] { gse_panel::GsePanel { key: "{policy_view_key}",action_policy,abort_only_mode:*abort_only_mode.read(),theme:theme.clone(),show_model:false} }
                                         }
                                     }
@@ -4256,7 +4264,10 @@ fn TelemetryDashboardInner() -> Element {
                                     div {
                                         class:"gs26-message-card",
                                         style: "display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid {theme.notification_border}; border-radius:10px; background:{theme.notification_background}; color:{theme.notification_text}; min-width:0; box-shadow:0 16px 40px rgba(0,0,0,0.35); pointer-events:auto; font-family:{dashboard_font_stack};",
-                                        span { class:"gs26-message-body", style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;", {translate_text(&n.message)} }
+                                        span { class:"gs26-message-body", style: "flex:1 1 auto; min-width:0; overflow-wrap:anywhere; word-break:break-word;",
+                                            if igt::is_simulated_message(&n.message) { span { class: "gs26-simulated-badge", "data-simulated": "true", style: "display:inline-block; margin-right:6px; padding:0 6px; border-radius:6px; background:#b91c1c; color:#fff; font-size:0.75em; font-weight:800; letter-spacing:0.04em;", "SIMULATED" } }
+                                            {translate_text(&n.message)}
+                                        }
                                         if let (Some(action_label), Some(action_cmd)) = (n.action_label.as_deref(), n.action_cmd.as_deref())
                                             && auth::can_send_command(action_cmd)
                                         {
