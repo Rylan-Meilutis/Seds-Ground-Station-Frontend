@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <!-- Proximity lock (docs/proximity-lock.md): report in range / out of range
+         while the app is in the background. Requested only after an in-app
+         explanation, and only while the user takes part. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
@@ -47,5 +52,15 @@
                 android:name="com.ubseds.gs26.WatchLinkService"
                 android:exported="false"
                 android:foregroundServiceType="connectedDevice"/>
+
+        <!-- Proximity lock: keeps the reporter alive in the background and
+             holds the Geofencing API fence around the rocket. -->
+        <service
+                android:name="com.ubseds.gs26.ProximityService"
+                android:exported="false"
+                android:foregroundServiceType="location"/>
+        <receiver
+                android:name="com.ubseds.gs26.ProximityGeofenceReceiver"
+                android:exported="false"/>
     </application>
 </manifest>

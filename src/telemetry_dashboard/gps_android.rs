@@ -149,6 +149,12 @@ pub fn recent_fix(max_age_ms: u64) -> Option<crate::telemetry_dashboard::gps::De
     .checked()
 }
 
+/// When the latest location was measured (wall clock, ms), if any.
+pub fn latest_fix_time_ms() -> Option<i64> {
+    let fixed_at = FIX_TIME_MS.load(Ordering::Acquire);
+    (fixed_at != 0).then_some(fixed_at as i64)
+}
+
 pub fn latest_altitude_m() -> Option<f64> {
     let baro = f64::from_bits(BARO_ALT_BITS.load(Ordering::Relaxed));
     if baro.is_finite() {

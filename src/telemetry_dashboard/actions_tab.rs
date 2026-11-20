@@ -1098,6 +1098,7 @@ pub fn ActionsTab(
                             }
                             if *section == ActionSection::Safety {
                             super::igt_view::CurrentLaunchLatch {}
+                            super::proximity_lock_view::ProximityActionsNotice {}
                             super::board_abort_readiness::BoardAbortReadiness {show_hitl_interlocks:true}
                             section {"aria-label":"Recovery actions",class:"gs26-actions-stack",
                                 super::recovery_status::RecoveryStatus {}

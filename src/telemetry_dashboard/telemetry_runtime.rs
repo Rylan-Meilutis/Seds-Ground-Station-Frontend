@@ -409,6 +409,13 @@ impl UiTelemetryStore {
         self.gps_positions.last_key_value().map(|(_, value)| *value)
     }
 
+    /// The newest rocket fix with its receive time (ms, the UI bucket start).
+    fn latest_rocket_gps_with_time(&self) -> Option<((f64, f64), i64)> {
+        self.gps_positions
+            .last_key_value()
+            .map(|(key, value)| (*value, key.bucket.saturating_mul(UI_ROW_BUCKET_MS)))
+    }
+
     /// Returns the newest rocket GPS altitude currently present in the compacted store.
     fn latest_rocket_gps_altitude_m(&self) -> Option<f64> {
         self.gps_altitudes.last_key_value().map(|(_, value)| *value)
@@ -786,6 +793,15 @@ pub(crate) fn latest_rocket_gps_from_store() -> Option<(f64, f64)> {
         .lock()
         .ok()
         .and_then(|store| store.latest_rocket_gps())
+}
+
+/// The newest rocket fix and when it was received (client wall clock, ms),
+/// for the proximity lock's freshness check.
+pub(crate) fn latest_rocket_gps_fix_from_store() -> Option<((f64, f64), i64)> {
+    UI_TELEMETRY_STORE
+        .lock()
+        .ok()
+        .and_then(|store| store.latest_rocket_gps_with_time())
 }
 
 pub(crate) fn latest_rocket_gps_altitude_m_from_store() -> Option<f64> {

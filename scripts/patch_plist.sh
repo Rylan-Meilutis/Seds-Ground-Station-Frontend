@@ -294,7 +294,11 @@ set_string "$SCENE_CONFIG:0:UISceneDelegateClassName" "TaoSceneDelegate"
 set_string "NSLocalNetworkUsageDescription" \
   "This app connects to devices on your local network to get data from the ground station."
 set_string "NSLocationWhenInUseUsageDescription" \
-  "This app requires location access to help you locate your rocket."
+  "Your location helps you locate the rocket and, if the station uses its proximity lock, lets this phone tell the station whether you are near the rocket. Your location stays on this phone."
+set_string "NSLocationAlwaysAndWhenInUseUsageDescription" \
+  "If the station uses its proximity lock, this phone keeps telling the station only whether you are near the rocket while the app is in the background, so arming and filling wait while people are at the pad. Your location stays on this phone. You can opt out in Settings > Proximity."
+set_string "NSLocationAlwaysUsageDescription" \
+  "If the station uses its proximity lock, this phone keeps telling the station only whether you are near the rocket while the app is in the background, so arming and filling wait while people are at the pad. Your location stays on this phone. You can opt out in Settings > Proximity."
 set_string "NSCameraUsageDescription" \
   "Share your camera as a Ground Station stream when you choose Start sharing."
 set_string "NSMicrophoneUsageDescription" \
@@ -303,6 +307,22 @@ set_string "NSMotionUsageDescription" \
   "Use device orientation to help aim your antenna and orient the map."
 
 set_bool "ITSAppUsesNonExemptEncryption" "false"
+
+# Proximity lock (docs/proximity-lock.md): keep reporting in range / out of
+# range while the app is in the background (CoreLocation background updates
+# and region monitoring). Idempotent: "location" is added once.
+ensure_array "UIBackgroundModes"
+bg_idx=0
+bg_has=false
+while bg_val="$("$PB" -c "Print :UIBackgroundModes:$bg_idx" "$PLIST" 2>/dev/null)"; do
+  if [[ "$(printf '%s' "$bg_val" | tr -d '\r' | xargs)" == "location" ]]; then
+    bg_has=true
+  fi
+  bg_idx=$((bg_idx + 1))
+done
+if [[ "$bg_has" != true ]]; then
+  pb "Add :UIBackgroundModes:$bg_idx string location"
+fi
 
 # Voice, camera and recording pages load station documents (LAN HTTP or .local)
 # in WKWebView, which App Transport Security would otherwise block.

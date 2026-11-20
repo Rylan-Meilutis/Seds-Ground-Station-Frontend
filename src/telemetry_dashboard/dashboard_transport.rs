@@ -2110,6 +2110,10 @@ fn handle_ws_message(
             igt::apply_status(status);
         }
 
+        WsInMsg::ProximityLock(status) => {
+            proximity_lock::apply_status(status);
+        }
+
         WsInMsg::LaunchClock(clock) => {
             set_signal_if_changed(&mut launch_clock, Some(clock));
         }

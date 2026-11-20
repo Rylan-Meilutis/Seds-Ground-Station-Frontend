@@ -1014,9 +1014,20 @@ pub fn SettingsPage(
                         "Watch"
                     }
                 }
+                if station_connected {
+                    button {
+                        style: if active_settings_tab.read().as_str() == "proximity" { chip_selected.clone() } else { chip_idle.clone() },
+                        "data-settings-tab": "proximity",
+                        onclick: move |_| active_settings_tab.set("proximity".to_string()),
+                        "Proximity"
+                    }
+                }
             }
             if show_watch_settings && active_settings_tab.read().as_str() == "watch" {
                 super::watch_companion::WatchSettingsSection { theme: theme.clone() }
+            }
+            if station_connected && active_settings_tab.read().as_str() == "proximity" {
+                super::proximity_lock_view::ProximityUserSettings { theme: theme.clone() }
             }
 
             if active_settings_tab.read().as_str() == "general" {

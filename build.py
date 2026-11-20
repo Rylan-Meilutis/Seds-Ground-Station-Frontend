@@ -2566,6 +2566,10 @@ def _configure_android_app_gradle(frontend_dir: Path, project_dir: Path) -> None
     wearable_dep = '    implementation("com.google.android.gms:play-services-wearable:19.0.0")\n'
     if "play-services-wearable" not in raw and "dependencies {\n" in raw:
         raw = raw.replace("dependencies {\n", "dependencies {\n" + wearable_dep, 1)
+    # Proximity lock (ProximityService.kt): fused location and the Geofencing API.
+    location_dep = '    implementation("com.google.android.gms:play-services-location:21.3.0")\n'
+    if "play-services-location" not in raw and "dependencies {\n" in raw:
+        raw = raw.replace("dependencies {\n", "dependencies {\n" + location_dep, 1)
 
     gradle_file.write_text(raw, encoding="utf-8")
 

@@ -124,7 +124,10 @@ fn StationSettingsBody(
                     super::recording_download::SystemClockSettings {}
                 }
             },
-            StationSection::Safety=>rsx! {super::about_safety::AboutSafety {}},
+            StationSection::Safety=>rsx! {
+                super::proximity_lock_view::ProximityAdminSettings {theme:theme.clone()}
+                super::about_safety::AboutSafety {}
+            },
             StationSection::Administration=>rsx! {section {h3 {"Administration"}button {r#type:"button",onclick:move |_|on_manage_users.call(()),"Open administration console"}
                 p {style:"color:{theme.text_muted};","The administration console holds station locations (GS and RRLS positions for the map and antenna aiming), station pairing (RRLS and primary), users and access, and sequence and panel permissions."}
                 settings_navigation::StationPairingShortcut {}}},

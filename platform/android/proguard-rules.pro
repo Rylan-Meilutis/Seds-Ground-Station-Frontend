@@ -1,5 +1,6 @@
 -keep class com.ubseds.gs26.LocationShim { *; }
 -keep class com.ubseds.gs26.WatchBridge { *; }
+-keep class com.ubseds.gs26.ProximityBridge { *; }
 -keep,includedescriptorclasses class org.rustls.platformverifier.** { *; }
 -keep public class com.google.vending.licensing.ILicensingService { void <init>(); }
 -keep public class com.android.vending.licensing.ILicensingService { void <init>(); }

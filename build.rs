@@ -89,12 +89,16 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     // Media pages: pinned station certificate for the WKWebView (iOS and macOS).
     let media_src = manifest_dir.join("assets/MediaWebViewShim.m");
     println!("cargo:rerun-if-changed={}", media_src.display());
+    // Proximity lock: background location and region monitoring (iOS only).
+    let proximity_src = manifest_dir.join("assets/ProximityShim.m");
+    println!("cargo:rerun-if-changed={}", proximity_src.display());
     let mut sources = vec![
         (src, out_dir.join("LocationShim.o")),
         (media_src, out_dir.join("MediaWebViewShim.o")),
     ];
     if ios {
         sources.push((watch_src, out_dir.join("WatchBridge.o")));
+        sources.push((proximity_src, out_dir.join("ProximityShim.o")));
     }
     for (source, obj) in &sources {
         let mut cmd = Command::new("xcrun");

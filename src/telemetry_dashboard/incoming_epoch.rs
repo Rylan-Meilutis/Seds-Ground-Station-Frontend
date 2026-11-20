@@ -123,14 +123,14 @@ pub(super) fn mode_family(ty: &str) -> bool {
         | "NetworkTopology" | "ActionPolicy" | "FillTargets" | "NetworkTime"
         | "Warning" | "Error" | "AlertAckState" | "Notifications" | "Notification"
         | "Messages" | "RecordingStatus" | "MissionPhase" | "FlightMaxima"
-        | "FcEstimator" | "IgtStatus" | "StationModeChanged")
+        | "FcEstimator" | "IgtStatus" | "ProximityLock" | "StationModeChanged")
 }
 
 #[cfg(test)]
 mod mode_family_tests {
     #[test]
     fn mission_phase_and_flight_maxima_are_current_station_messages() {
-        for ty in ["MissionPhase", "FlightMaxima", "FcEstimator", "IgtStatus", "FlightState", "StationModeChanged"] {
+        for ty in ["MissionPhase", "FlightMaxima", "FcEstimator", "IgtStatus", "ProximityLock", "FlightState", "StationModeChanged"] {
             assert!(super::mode_family(ty), "{ty}");
         }
         assert!(!super::mode_family("UnknownFamily"));

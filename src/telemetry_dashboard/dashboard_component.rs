@@ -2583,6 +2583,7 @@ fn TelemetryDashboardInner() -> Element {
                         onclick: move |evt| evt.stop_propagation(),
                         ontouchend: move |evt| evt.stop_propagation(),
                         igt_view::IgtBanner {}
+                        proximity_lock_view::ProximityBanner {}
                         div {
                             style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;",
                             h1 { style: "margin:0; font-size:20px;", "{_version_title}" }
@@ -2653,6 +2654,7 @@ fn TelemetryDashboardInner() -> Element {
                         onclick: move |evt| evt.stop_propagation(),
                         ontouchend: move |evt| evt.stop_propagation(),
                         igt_view::IgtBanner {}
+                        proximity_lock_view::ProximityBanner {}
                         div {
                             style: "display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;",
                             h1 { style: "margin:0; font-size:20px;", "{settings_title}" }
@@ -2846,7 +2848,7 @@ fn TelemetryDashboardInner() -> Element {
     let view = (|| -> Element {
         // Keep hooks stable, but unmount all normal data views while aiming.
         if *antenna_aiming.read() {
-            return rsx! { igt_view::IgtBanner {} antenna_aiming::AntennaAiming {on_register_retirement: move |(alive, reset): antenna_aiming::RetirementRegistration| { mode_live_view::register_antenna(alive, move || reset.call(())); }, on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
+            return rsx! { igt_view::IgtBanner {} proximity_lock_view::ProximityBanner {} antenna_aiming::AntennaAiming {on_register_retirement: move |(alive, reset): antenna_aiming::RetirementRegistration| { mode_live_view::register_antenna(alive, move || reset.call(())); }, on_exit: move |_| { antenna_aiming.set(false); let mut overlay = show_settings_overlay; overlay.set(true); }} };
         }
 
         // Dedicated media devices must not mount dashboard alerts, warnings or controls.
@@ -2870,6 +2872,7 @@ fn TelemetryDashboardInner() -> Element {
             return rsx! {
                 div {style:"height:var(--gs26-app-height,100dvh);font-family:system-ui,sans-serif;display:flex;flex-direction:column;background:{theme.tab_shell_background};color:{theme.text_primary};",
                     igt_view::IgtBanner {}
+                    proximity_lock_view::ProximityBanner {}
                     if viewer_only {div {style:"position:fixed;top:8px;right:8px;z-index:1000;opacity:.7;",{auth_button}}}
                     if !viewer_only {
                         button {r#type:"button",style:"align-self:end;min-height:44px;margin:8px;padding:8px 16px;border:1px solid {theme.button_border};border-radius:10px;background:{theme.button_background};color:{theme.button_text};",onclick:move |_| {
@@ -3411,6 +3414,8 @@ fn TelemetryDashboardInner() -> Element {
                         station_mode::OperatingModeNotice {visible:false}
                         igt_view::IgtStatusPoller {}
                         igt_view::IgtBanner {}
+                        proximity_lock_view::ProximityRuntime {}
+                        proximity_lock_view::ProximityBanner {}
                         recovery_marker::RecoveryRuntime {}
                         launch_zero_notice::LaunchZeroNotice {action_policy, theme:theme.clone()}
                         auto_vent_notice::AutoVentNotice {status:sequence_status, theme:theme.clone()}
