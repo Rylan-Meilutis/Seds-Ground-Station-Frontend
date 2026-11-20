@@ -107,7 +107,8 @@ pub const ITEMS: &[ItemDef] = &[
             channels: &[
                 ("ASCENT_STATE", None, 4),
                 ("DESCENT_STATE", None, 2),
-                ("BAROMETER_DATA", None, 2),
+                // BAROMETER_DATA is (alt, prs, tmp).
+                ("BAROMETER_DATA", None, 0),
             ],
             quantity: Quantity::Length,
             precision: 0,

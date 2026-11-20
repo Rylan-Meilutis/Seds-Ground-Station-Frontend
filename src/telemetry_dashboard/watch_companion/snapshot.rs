@@ -503,7 +503,7 @@ mod tests {
         let telemetry = |dt: &str, _: Option<&str>, i: usize| match (dt, i) {
             ("ASCENT_STATE", 4) => Some((900.0, 90_000)),
             ("DESCENT_STATE", 2) => Some((1000.0, 99_000)),
-            ("BAROMETER_DATA", 2) => Some((f64::NAN, 99_900)),
+            ("BAROMETER_DATA", 0) => Some((f64::NAN, 99_900)),
             ("FUEL_TANK_PRESSURE", 0) => Some((-0.2, 50_000)),
             _ => None,
         };

@@ -224,6 +224,9 @@ fn default_card_id(section: &str, label: &str, data_type: &str, index: usize) ->
     slug.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-")
 }
 
+/// BAROMETER_DATA is the FC's `baro { alt, prs, tmp }`: altitude is element 0.
+const BARO_ALTITUDE_INDEX: usize = 0;
+
 /// Flight cards: hidden in the base dashboard, shown on top by the default
 /// In flight and Landed phase profiles.
 fn flight_cards() -> Vec<Card> {
@@ -245,7 +248,7 @@ fn flight_cards() -> Vec<Card> {
         visible: false,
     };
     vec![
-        card("flight-altitude", "Altitude", "BAROMETER_DATA", 2, "m", 0.0, 5000.0, "trend"),
+        card("flight-altitude", "Altitude", "BAROMETER_DATA", BARO_ALTITUDE_INDEX, "m", 0.0, 5000.0, "trend"),
         card("flight-speed", "Vertical speed", "VEHICLE_SPEED", 0, "m/s", -500.0, 500.0, "trend"),
         card("flight-accel", "Acceleration (Z)", "ACCEL_DATA", 2, "m/s²", -200.0, 200.0, "trend"),
         card("flight-gyro-x", "Gyro roll", "GYRO_DATA", 0, "deg/s", -1000.0, 1000.0, "trend"),
@@ -309,6 +312,16 @@ fn migrate_flight_cards(cards: &mut Vec<Card>) {
     }
 }
 
+/// Dashboards saved before version 5 read the altitude card from element 2
+/// (the barometer's temperature). Point the default card back at altitude.
+fn migrate_flight_altitude_index(cards: &mut [Card]) {
+    for card in cards {
+        if card.id == "flight-altitude" && card.data_type == "BAROMETER_DATA" && card.index == 2 {
+            card.index = BARO_ALTITUDE_INDEX;
+        }
+    }
+}
+
 fn valid(cards: &[Card]) -> bool {
     cards.iter().filter(|c| c.pinned).count() <= 8
         && !cards.is_empty()
@@ -341,7 +354,7 @@ fn save(cards: &[Card]) {
     if valid(cards)
         && let Ok(json) = serde_json::to_string(cards) {
             persist::set_string(&storage_key(), &json);
-            persist::set_string(&format!("{}_defaults_version", storage_key()), "4");
+            persist::set_string(&format!("{}_defaults_version", storage_key()), "5");
         }
 }
 
@@ -382,15 +395,18 @@ pub(super) fn load_cards() -> Vec<Card> {
         .unwrap_or_else(defaults);
     let version = persist::get_string(&format!("{}_defaults_version", storage_key()));
     ensure_ids(&mut cards);
-    if version.as_deref() != Some("4") {
-        if version.as_deref() != Some("3") {
-            // Version2 already migrated the loadcell. Preserve later explicit choices.
-            if version.as_deref() != Some("2") {
-                migrate_default_loadcell_trend(&mut cards);
+    if version.as_deref() != Some("5") {
+        if version.as_deref() != Some("4") {
+            if version.as_deref() != Some("3") {
+                // Version2 already migrated the loadcell. Preserve later explicit choices.
+                if version.as_deref() != Some("2") {
+                    migrate_default_loadcell_trend(&mut cards);
+                }
+                migrate_default_pressure_cards(&mut cards);
             }
-            migrate_default_pressure_cards(&mut cards);
+            migrate_flight_cards(&mut cards);
         }
-        migrate_flight_cards(&mut cards);
+        migrate_flight_altitude_index(&mut cards);
         save(&cards);
     }
     cards
@@ -1353,6 +1369,27 @@ mod phase_tests {
         ensure_ids(&mut full);
         migrate_flight_cards(&mut full);
         assert_eq!(full.len(), 32);
+    }
+
+    /// BAROMETER_DATA arrives as (alt, prs, tmp): the altitude card reads element 0.
+    #[test]
+    fn altitude_card_reads_barometer_altitude() {
+        let frame = [123.4_f32, 98_765.0, 21.5];
+        let cards = defaults();
+        let altitude = cards.iter().find(|c| c.id == "flight-altitude").unwrap();
+        assert_eq!((altitude.data_type.as_str(), altitude.unit.as_str()), ("BAROMETER_DATA", "m"));
+        assert_eq!(frame[altitude.index], 123.4);
+        let mut saved = cards.clone();
+        saved.iter_mut().find(|c| c.id == "flight-altitude").unwrap().index = 2;
+        migrate_flight_altitude_index(&mut saved);
+        assert!(saved == cards);
+        // A user's own card on another barometer element is left alone.
+        let mut custom = cards.clone();
+        custom[0].data_type = "BAROMETER_DATA".into();
+        custom[0].index = 2;
+        let before = custom.clone();
+        migrate_flight_altitude_index(&mut custom);
+        assert!(custom == before);
     }
 
     #[test]
