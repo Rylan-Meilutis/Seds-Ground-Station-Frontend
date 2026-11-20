@@ -31,6 +31,10 @@
     {
       "id": "testing",
       "label": "Testing"
+    },
+    {
+      "id": "integrated_ground_test",
+      "label": "Integrated ground test"
     }
   ],
   "options": [
@@ -88,6 +92,17 @@
       "reason": null,
       "simulation": true,
       "transition_kind": "restart"
+    },
+    {
+      "available": true,
+      "id": "integrated_ground_test",
+      "in_process": true,
+      "label": "Integrated ground test · live outputs",
+      "mode_id": "integrated_ground_test",
+      "output_domain": "Physical station links and outputs as defined by Integrated ground test mode",
+      "reason": null,
+      "simulation": false,
+      "transition_kind": "restart"
     }
   ],
   "permissions": {
@@ -99,6 +114,6 @@
   "reason": null,
   "revision": "boot-fixture:epoch-1",
   "transition": null,
-  "valid_for_ms": 5000,
+  "valid_for_ms": 10000,
   "version": 2
 }
