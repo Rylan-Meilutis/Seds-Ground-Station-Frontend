@@ -185,6 +185,10 @@ pub(crate) struct StateDetail {
     pub fill_phase_label: Option<String>,
     #[serde(default)]
     pub fc_phase: Option<FcPhase>,
+    /// Integrated ground test: the FC's flight state comes from a replayed
+    /// flight (FC IGT mode Sim, or Done after a replay). Shown as SIMULATED.
+    #[serde(default)]
+    pub simulated: bool,
 }
 
 impl StateDetail {
@@ -253,6 +257,8 @@ pub(crate) struct StateView {
     pub detail: Option<String>,
     pub aborted: bool,
     pub comms_loss_landed: bool,
+    /// The flight state comes from an integrated ground test replay.
+    pub simulated: bool,
 }
 
 impl StateView {
@@ -265,6 +271,7 @@ impl StateView {
         flight_state: &str,
         signal_detail: &StateDetail,
     ) -> StateView {
+        let simulated = signal_detail.simulated || message.is_some_and(|m| m.state_detail.simulated);
         let (phase, raw, detail_fields, aborted, comms_loss_landed) = match message {
             Some(message) => {
                 let raw = if message.detailed.is_empty() { flight_state } else { &message.detailed };
@@ -308,7 +315,7 @@ impl StateView {
             }
             None => (raw.to_string(), None),
         };
-        StateView { phase, detailed, detail, aborted, comms_loss_landed }
+        StateView { phase, detailed, detail, aborted, comms_loss_landed, simulated }
     }
 
     /// The network state as the operator reads it ("In flight") or "Unknown".
@@ -319,12 +326,24 @@ impl StateView {
         }
     }
 
-    /// The state with its detail: "In flight · Descent", "Aborted".
+    /// The state with its detail: "In flight · Descent", "Aborted";
+    /// "SIMULATED · In flight · Descent" from a ground-test replay.
     pub(crate) fn text(&self) -> String {
-        match &self.detail {
+        let text = match &self.detail {
             Some(detail) => format!("{} · {detail}", self.label()),
             None => self.label(),
+        };
+        if self.simulated { super::igt::tag_simulated(&text) } else { text }
+    }
+
+    /// Mark a replayed flight from the station's IGT status when the phase
+    /// message carries no flag: In flight / Landed while the FC replays (Sim)
+    /// or has replayed (Done) during an integrated ground test.
+    pub(crate) fn with_igt_fallback(mut self, simulated_flight: bool) -> StateView {
+        if simulated_flight && matches!(self.phase, Some(Phase::InFlight | Phase::Landed)) {
+            self.simulated = true;
         }
+        self
     }
 }
 
@@ -332,6 +351,7 @@ impl StateView {
 /// signal and the `FlightState` message's detail.
 pub(crate) fn current_state(flight_state: &str) -> StateView {
     StateView::resolve(MISSION_PHASE.read().as_ref(), flight_state, &FLIGHT_STATE_DETAIL.read())
+        .with_igt_fallback(super::igt::current_simulated_flight())
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -608,6 +628,26 @@ mod tests {
 
     fn none() -> StateDetail {
         StateDetail::default()
+    }
+
+    #[test]
+    fn simulated_flight_state_is_labelled_from_the_flag_or_the_igt_status() {
+        let flying = message(serde_json::json!({
+            "phase":"in_flight","label":"In flight","detailed":"InFlight","simulated":true,
+            "fc_phase":{"value":11,"label":"Descent","source":"fc"}
+        }));
+        assert!(flying.state_detail.simulated, "the flag rides beside the state detail");
+        let view = StateView::resolve(Some(&flying), "InFlight", &none());
+        assert!(view.simulated);
+        assert_eq!(view.label(), "In flight");
+        assert_eq!(view.text(), "SIMULATED · In flight · Descent");
+        let frame: FlightStateWire = serde_json::from_value(serde_json::json!({"state":"Landed","simulated":true})).unwrap();
+        assert!(StateView::resolve(None, &frame.state, &frame.detail).simulated);
+        let real = StateView::resolve(None, "InFlight", &none());
+        assert!(!real.simulated && real.text() == "In flight");
+        assert!(real.clone().with_igt_fallback(true).simulated);
+        assert!(!real.with_igt_fallback(false).simulated);
+        assert!(!StateView::resolve(None, "Fill", &none()).with_igt_fallback(true).simulated, "only In flight / Landed");
     }
 
     #[test]

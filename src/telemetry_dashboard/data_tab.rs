@@ -312,13 +312,15 @@ pub fn DataTab(
             });
         }
     });
-    let layout = super::data_groups::with_grouped_views(layout_for_fill_source(
+    let mut layout = super::data_groups::with_grouped_views(layout_for_fill_source(
         super::igniter_sense_panel::with_tab(layout),
         fill_targets
             .read()
             .as_ref()
             .map(|cfg| cfg.fill_source.as_str()),
     ));
+    // Integrated ground test: replayed (SIM_SAMPLE) series say SIMULATED.
+    super::igt::label_simulated_series(&mut layout);
     let is_fullscreen = use_signal(|| false);
     let show_chart = use_signal(|| true);
     let active_subtabs = use_signal(HashMap::<String, String>::new);
@@ -605,6 +607,11 @@ pub fn DataTab(
                     }
                 }
 
+                if selected_subtab_snapshot.as_ref().and_then(|s| s.data_type.clone()).or_else(|| current_tab_snapshot.as_ref().map(|t| t.id.clone())).is_some_and(|t| super::igt::is_simulated_type(&t)) {
+                    p { class: "gs26-data-simulated", "data-simulated": "true", style: "margin:0;padding:6px 10px;border-radius:8px;border:2px dashed #e879f9;color:#f5d0fe;background:#3b0764;font-size:12px;font-weight:800;",
+                        "SIMULATED: replayed flight data from the FC's SD card (integrated ground test), not sensor measurements."
+                    }
+                }
                 if selected_subtab_snapshot.as_ref().is_some_and(|s| s.data_type.as_deref() == Some("KG50")) {
                     p { style: "font-size:12px;color:{theme.text_muted};", "50 kg input: Settings → Ground Station → DAQ inputs." }
                 }

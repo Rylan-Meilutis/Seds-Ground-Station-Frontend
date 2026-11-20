@@ -686,7 +686,8 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
             p { style:"margin:0 0 8px;color:{theme.text_muted};font-size:13px;", "Pick a recording, then the data to export." }
             details { class:"gs-info", summary {"What's included"}
                 div {
-                    p { "Available in Test Fire, HITL, and normal mode. Use the recording actions to start or stop capture, then refresh this list." }
+                    p { "Available in Test Fire, HITL, Integrated ground test and normal mode. Use the recording actions to start or stop capture, then refresh this list." }
+                    p { class:"gs26-igt-export-note", "Integrated ground test recordings: the full CSV ends with a data_provenance column. simulated marks replayed flight data (SIM_SAMPLE rows, and FC flight states while the FC replayed); real marks board data; ground_station marks station rows. Other recordings keep the usual columns." }
                     p { "Full recording CSV includes every saved row with source identity, receive/source timestamps, values and payload bytes. Select channels and a formatter below to focus the export. Active recordings include committed rows up to the request; stop recording first for a complete capture." }
                 }
             }

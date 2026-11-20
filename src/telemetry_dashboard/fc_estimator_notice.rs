@@ -10,6 +10,9 @@
 //! tracks it against weather and sensor drift while the vehicle is still,
 //! it is shown on its own ("Baro ref 1003.2 hPa · drift +1.8 hPa ·
 //! tracking"); from Launch on, frozen, it is part of the estimator notice.
+//!
+//! In an integrated ground test the filter runs on replayed input once the FC
+//! replays (Sim/Done), and the title says "SIMULATED input:".
 use super::layout::ThemeConfig;
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -143,9 +146,12 @@ pub(super) fn notice(view: &FcEstimatorView) -> Option<Notice> {
 
 #[component]
 pub(super) fn FcEstimatorNotice(theme: ThemeConfig) -> Element {
-    let Some(n) = FC_ESTIMATOR.read().as_ref().and_then(notice) else {
+    let Some(mut n) = FC_ESTIMATOR.read().as_ref().and_then(notice) else {
         return rsx! {};
     };
+    // Integrated ground test: the filter runs on replayed sensor data.
+    let simulated_input = super::igt::current_simulated_flight();
+    n.title = super::igt::estimator_title(&n.title, simulated_input);
     let (border, background, text) = match n.tone {
         Tone::Running => (theme.info_accent.clone(), theme.info_background.clone(), theme.info_text.clone()),
         Tone::Waiting => (theme.warning_border.clone(), theme.warning_background.clone(), theme.warning_text.clone()),
@@ -155,6 +161,7 @@ pub(super) fn FcEstimatorNotice(theme: ThemeConfig) -> Element {
         aside {
             role: if n.tone == Tone::Fault { "alert" } else { "status" },
             class: "gs26-connection-notice gs26-layout-notice",
+            "data-simulated-input": if simulated_input { "true" } else { "false" },
             "data-fc-estimator": match n.tone { Tone::Running => "running", Tone::Waiting => "waiting", Tone::Fault => "faulted" },
             style: "border-color:{border};background:{background};color:{text};",
             div { class: "gs26-layout-notice-body",
