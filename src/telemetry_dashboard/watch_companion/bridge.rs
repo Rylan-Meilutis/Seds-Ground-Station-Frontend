@@ -72,6 +72,22 @@ mod imp {
         fn gs26_watch_provision(json: *const c_char);
         fn gs26_watch_send_map(json: *const c_char);
         fn gs26_watch_send_tile(key: *const c_char, path: *const c_char, set: *const c_char);
+        fn gs26_watch_take_voice(buf: *mut c_char, cap: c_int) -> c_int;
+        fn gs26_watch_send_voice(json: *const c_char);
+    }
+    pub fn take_voice() -> Option<String> {
+        let mut buf = vec![0u8; super::super::protocol::MAX_MESSAGE_BYTES + 1];
+        let n = unsafe { gs26_watch_take_voice(buf.as_mut_ptr().cast(), buf.len() as c_int) };
+        if n <= 0 {
+            return None;
+        }
+        buf.truncate(n as usize);
+        String::from_utf8(buf).ok()
+    }
+    pub fn send_voice(json: &str) {
+        if let Ok(c) = CString::new(json) {
+            unsafe { gs26_watch_send_voice(c.as_ptr()) }
+        }
     }
     pub fn send_map(json: &str) {
         if let Ok(c) = CString::new(json) {
@@ -249,6 +265,19 @@ mod imp {
     pub fn tiles_delivered(json: &str) {
         call_strings("tilesDelivered", "(Ljava/lang/String;)V", &[json]);
     }
+    pub fn send_voice(json: &str) {
+        call_strings("sendVoice", "(Ljava/lang/String;)V", &[json]);
+    }
+    pub fn take_voice() -> Option<String> {
+        call("takeVoice", "()Ljava/lang/String;", &[], |env, value| {
+            let obj = value.l().ok()?;
+            if obj.is_null() {
+                return None;
+            }
+            let s = unsafe { JString::from_raw(env, obj.into_raw()) };
+            s.try_to_string(env).ok()
+        })
+    }
     pub fn take_incoming() -> Option<String> {
         call("takeIncoming", "()Ljava/lang/String;", &[], |env, value| {
             let obj = value.l().ok()?;
@@ -278,6 +307,12 @@ mod imp {
     pub fn take_incoming() -> Option<String> {
         None
     }
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn take_voice() -> Option<String> {
+        None
+    }
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn send_voice(_json: &str) {}
     pub fn state_bits() -> i32 {
         0
     }
@@ -320,6 +355,21 @@ pub fn send_tile(key: &str, path: &str, set: &str) {
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn tiles_delivered(json: &str) {
     imp::tiles_delivered(json);
+}
+
+/// Crew voice relay, watch → phone: the next queued relay message (its own
+/// queue: iOS key `gs26_watch_voice`, Android path `/gs26/watch_voice`).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn take_voice() -> Option<String> {
+    imp::take_voice()
+}
+
+/// Crew voice relay, phone → watch: delivered only while the watch is
+/// reachable, never queued (iOS `sendMessage` key `gs26_voice`, Android
+/// `MessageClient` path `/gs26/voice`).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn send_voice(json: &str) {
+    imp::send_voice(json);
 }
 
 /// Drains at most `max` queued watch messages.

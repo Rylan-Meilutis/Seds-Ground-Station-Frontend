@@ -318,7 +318,7 @@ mod tests {
         let ids: Vec<_> = pages.iter().map(|p| p.id).collect();
         assert_eq!(
             ids,
-            vec!["flight", "trajectory", "health", "compass", "cycle"]
+            vec!["flight", "trajectory", "health", "compass", "cycle", "voice"]
         );
         assert_eq!(catalog().items.len(), registry::ITEMS.len());
     }

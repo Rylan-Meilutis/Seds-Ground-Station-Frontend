@@ -485,8 +485,17 @@ mod tests {
                 })
                 .collect();
             let pages = resolved_pages(&settings, &catalog);
+            // The vectors' catalog predates later registry pages (voice);
+            // compare only the pages the case's catalog knows.
+            let known: Vec<&str> = case["catalog_pages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p["id"].as_str())
+                .collect();
             let got: Vec<serde_json::Value> = pages
                 .iter()
+                .filter(|p| known.contains(&p.id))
                 .map(|p| {
                     serde_json::json!({
                         "id": p.id, "kind": p.kind, "items": p.items,

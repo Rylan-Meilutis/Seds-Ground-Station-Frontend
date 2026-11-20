@@ -444,6 +444,158 @@ around rocket, ground station; 118 confirmed on the watch"). The watch's
 own settings screen has the on/off toggle. Both edit `settings.map` in the
 synced watch settings document.
 
+## Voice
+
+Push-to-talk crew voice on the wrist: the watch joins the same channel as
+the station's Crew voice page (`/radio`) and the phone app's voice page, so
+web, phone and watch users talk to each other.
+
+```
+watch ──WSS /api/voice/ws (Opus 16 kHz, 20 ms)──────────────┐
+  │   (watch Wi-Fi/LTE or the system Bluetooth proxy)        ├─ GS voice relay ── browsers / phone (PCM16)
+  └──phone relay: same protocol inside watch messages──phone ┘        │
+                                                                      ├─ audience program buffer, RRLS radio bridge
+```
+
+### Transport and codec
+
+* **Direct first.** The watch opens `wss://<station>/api/voice/ws` itself
+  with its scoped watch token, like the direct telemetry link, so voice
+  keeps working while the phone sleeps. Only when two direct attempts in a
+  row fail and the phone is reachable does it relay through the phone
+  (below); with no phone it keeps retrying direct (`voice.transport`
+  vectors).
+* **Opus, not WebRTC.** The station already runs a WebSocket voice relay
+  (no WebRTC, no SFU); browsers send mono 16 kHz PCM16, 640 B per 20 ms
+  (256 kbit/s). The watch says `"codec":"opus"` in its `auth` message and
+  sends one Opus packet per 20 ms frame (16 kHz mono, about 24 kbit/s, 10×
+  less radio time than PCM). The station decodes it to PCM16 for everything
+  else (browsers, the audience program buffer, the RRLS radio bridge) and
+  encodes PCM speakers once per frame for Opus listeners. A watch whose OS
+  cannot encode Opus falls back to `"codec":"pcm16"`, which needs no
+  station-side work.
+* Frames: client → station one Opus packet (1–400 B) or one 640 B PCM16
+  frame; station → client the four-byte little-endian speaker id, then the
+  payload in the listener's codec (`voice.frames` vectors). Speaker
+  `0xfffffffe` is the recovery radio.
+* Control: `{"type":"auth","token":…,"codec":"opus"}` first (within 5 s),
+  then `{"type":"transmitting","enabled":…}`, `{"type":"active","enabled":…}`
+  (watch only, see "Phone and watch together"), `{"type":"radio","enabled":…}`
+  and `{"type":"ping"}` every 10 s. The station sends `joined`
+  (`id`, `codec`, `sample_rate`, `frame_samples`, `device`), `roster`
+  (`peers[]` with `id`, `name`, `transmitting`, `device` = `web|watch`),
+  `handoff` (`held`, `by`), `error` (`message`), `radio_link`,
+  `radio_state` and `broadcast_state`. Unknown types are ignored.
+
+### Access
+
+The phone asks for crew voice in the watch token request
+(`"voice": true`) while Settings → Watch → Voice is on, the Voice page is
+enabled and Direct link is on. The station grants it only to an account
+that has the voice transmit permission (administrators inherit it) and
+rechecks it on every use; the provisioning message carries `"voice":true`
+when granted. A watch token with voice reaches only `/api/voice/ws` and
+`GET /api/voice/status` in addition to its other endpoints (GroundStation26
+`docs/backend/watch-direct.md`); it never reaches the audience commentary
+socket, the broadcast controls or any media page.
+
+### Phone and watch together (echo avoidance)
+
+The station groups a phone session with the watch whose token that session
+issued. Within the group it never relays audio, so the watch never plays
+the phone's microphone or the reverse. While the watch is *active* (it
+joined; `active:false` yields), the phone is *held*: its microphone is
+ignored, it receives no audio and it gets `{"type":"handoff","held":true}`;
+the phone's voice page shows "Your watch has voice" and switches open mic
+to listen-only. When the watch leaves or yields the phone gets
+`held:false` and listens again; its microphone comes back only when the
+user presses push-to-talk (never silently). A shared crew login on other
+people's phones is a different group and unaffected.
+
+### Watch behaviour
+
+* **Voice page** (page id `voice`, kind `voice`, enabled by default and
+  ordered like any other page in Settings → Watch → Pages): channel name,
+  connection state and path ("Direct to GS" / "Via phone"), a big
+  push-to-talk button, who is talking (roster names with
+  `transmitting`, the radio as "Recovery radio"), and Join / Leave.
+  Push-to-talk is press-and-hold or tap-to-toggle (`voice.ptt` vectors);
+  any talk stops after 60 s (`max_talk_ms`) so a stuck button cannot hold
+  the channel. Haptics: start/stop/denied when `haptics` is on, a tap when
+  someone else starts talking when `talker_haptics` is on (`voice.talkers`).
+* **Volume**: the Digital Crown (Wear: rotary input) on the voice page,
+  0–150 % in 5 % steps (`voice.volume`), saved to `voice.volume`.
+* **Playback**: a per-speaker playout buffer that waits for two frames
+  (40 ms), holds at most ten (200 ms, older audio dropped) and mixes all
+  speakers with integer clipping (`voice.mix`).
+* **Reconnect**: after a lost connection the watch retries with
+  `floor(min(1 s × 2^(n−1), 30 s) × (0.75 + 0.5 × jitter))`; a refusal
+  (permission, sign-in, no Opus) is not retried, a full channel is
+  (`voice.backoff`). Reconnecting never turns the microphone back on.
+* **Quick start**: a watchOS Smart Stack widget / complication and a Wear
+  OS tile open the app straight on the voice page and join.
+* **Microphone permission** is asked when the user first joins; a denial
+  shows how to allow it in the watch's settings.
+* **Background**: watchOS keeps voice running with the wrist down as a
+  CallKit call ("GS crew voice"), which is what lets a watch app record,
+  play and use a socket in the background; Wear OS runs a foreground
+  service of type `microphone`. Leaving voice ends both.
+* **Audio route** (`route`): `auto` (a connected Bluetooth headset, else
+  the watch), `speaker` (always the watch) or `bluetooth` (prefer the
+  headset).
+
+### Settings
+
+`voice` in the watch settings document:
+
+```json
+"voice":{"enabled":true,"channel":"crew","ptt":"hold","haptics":true,
+         "talker_haptics":false,"route":"auto","volume":100}
+```
+
+`channel` is `crew` (the station's crew channel) or `crew_radio` (the same,
+plus relaying push-to-talk over the recovery radio while the station offers
+it); `ptt` `hold|toggle`; `route` `auto|speaker|bluetooth`; `volume`
+0–150. Unknown values fall back to the defaults. A document without
+`voice` gets the defaults and the Voice page appended.
+
+### Phone relay (fallback)
+
+When the watch cannot reach the station itself it sends the same protocol
+through the phone, which opens `/api/voice/ws` with the watch's own token
+(so the station still sees the watch, with its grant and group):
+
+```json
+{"v":1,"type":"voice","op":"open","codec":"opus"}
+{"v":1,"type":"voice","op":"control","msg":{"type":"transmitting","enabled":true}}
+{"v":1,"type":"voice","op":"audio","frames":["<base64 frame>", …]}
+{"v":1,"type":"voice","op":"close"}
+```
+
+and the phone answers with batches (at most every 60 ms):
+
+```json
+{"v":1,"type":"voice","op":"server","text":["<station json>", …],"frames":["<base64 station frame>", …]}
+{"v":1,"type":"voice","op":"closed","reason":"…"}
+```
+
+`control.msg` may only be `transmitting`, `active`, `radio` or `ping`
+(the phone sends `auth` itself); at most 10 frames per message. The
+messages travel on their own channel so the phone can drain them every
+20 ms: iOS `sendMessage` with key `gs26_watch_voice` (watch → phone) and
+`gs26_voice` (phone → watch), while the phone app is reachable (watchOS
+wakes it in the background for a short time); Android `MessageClient`
+paths `/gs26/watch_voice` and `/gs26/voice`. The relay stops when the
+phone app is suspended, which is why direct is preferred.
+
+### Battery
+
+Opus at 24 kbit/s keeps the radio mostly idle; nothing is sent while not
+talking except a ping every 10 s. The microphone runs only while voice is
+joined. Leave voice when not needed: a joined session keeps the audio
+hardware and a socket alive (watchOS as a call, Wear OS as a foreground
+service).
+
 ## Building
 
 `build.py` targets `watchos`, `watchos_sim`, `watchos_sim_intel` (iOS app

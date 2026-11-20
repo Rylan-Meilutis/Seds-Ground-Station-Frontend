@@ -23,6 +23,10 @@ object Protocol {
     const val TILE_PATH_PREFIX = "/gs26/tile/"
     const val KEY_SEQ = "seq"
     const val PHONE_CAPABILITY = "gs26_phone"
+    /** Phone → watch relayed crew voice (MessageClient). */
+    const val VOICE_PATH = "/gs26/voice"
+    /** Watch → phone relayed crew voice (MessageClient, its own fast queue on the phone). */
+    const val WATCH_VOICE_PATH = "/gs26/watch_voice"
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -75,7 +79,8 @@ object PageKind {
     const val ITEMS = "items"
     const val CYCLE = "cycle"
     const val COMPASS = "compass"
-    val KNOWN = setOf(ITEMS, CYCLE, COMPASS)
+    const val VOICE = "voice"
+    val KNOWN = setOf(ITEMS, CYCLE, COMPASS, VOICE)
 }
 
 @Serializable

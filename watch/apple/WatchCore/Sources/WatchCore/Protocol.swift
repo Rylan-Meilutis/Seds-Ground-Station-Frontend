@@ -173,7 +173,7 @@ public struct Target: Decodable, Equatable {
 }
 
 public enum PageKind: Equatable {
-    case items, cycle, compass
+    case items, cycle, compass, voice
     case unknown(String)
 }
 
@@ -232,6 +232,7 @@ public struct Page: Decodable, Equatable, Identifiable {
         case "items": return .items
         case "cycle": return .cycle
         case "compass": return .compass
+        case "voice": return .voice
         default: return .unknown(kind)
         }
     }

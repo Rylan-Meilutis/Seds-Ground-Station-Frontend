@@ -116,10 +116,11 @@ final class ModelTests: XCTestCase {
         var s = WatchSettings()
         s.movePage("flight", up: true)
         XCTAssertEqual(s.pages[0].id, "flight")
-        s.movePage("compass", up: true)
-        XCTAssertEqual(s.pages[s.pages.count - 2].id, "compass")
-        s.movePage("compass", up: false)
-        XCTAssertEqual(s.pages.last?.id, "compass")
+        // The voice page is last by default (appended after compass).
+        s.movePage("voice", up: true)
+        XCTAssertEqual(s.pages[s.pages.count - 2].id, "voice")
+        s.movePage("voice", up: false)
+        XCTAssertEqual(s.pages.last?.id, "voice")
         s.togglePage("propulsion")
         XCTAssertEqual(s.pages.first { $0.id == "propulsion" }?.enabled, false)
 

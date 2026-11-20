@@ -31,6 +31,9 @@ targets:
     dependencies:
       - package: WatchCore
         product: WatchCore
+      # Push-to-talk complication / Smart Stack widget (embedded).
+      - target: GS26WatchWidgets
+        embed: true
     settings:
       base:
         PRODUCT_NAME: GS26Watch
@@ -44,6 +47,24 @@ targets:
         SDKROOT: watchos
         SKIP_INSTALL: NO
         ENABLE_PREVIEWS: YES
+
+  GS26WatchWidgets:
+    # WidgetKit extension: the "Push to talk" complication / Smart Stack
+    # widget. It opens gs26://voice in the app; no shared data, no App Group.
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: GS26WatchWidgets
+    settings:
+      base:
+        PRODUCT_NAME: GS26WatchWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.UBSEDS.GS26.watchkitapp.widgets
+        INFOPLIST_FILE: GS26WatchWidgets/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "4"
+        SDKROOT: watchos
+        SKIP_INSTALL: YES
 
 schemes:
   GS26Watch:

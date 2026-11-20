@@ -125,12 +125,82 @@ public struct MapSetting: Codable, Equatable {
     public var capBytes: Int64 { Int64(min(max(capMb, 1), 5)) * 1024 * 1024 }
 }
 
+// MARK: Voice (docs/watch-companion.md "Voice")
+
+public let maxVoiceVolume = 150
+public let defaultVoiceVolume = 100
+
+/// Decodes an unknown string to the type's default instead of failing.
+public protocol DefaultingEnum: RawRepresentable, Codable where RawValue == String {
+    static var fallback: Self { get }
+}
+
+extension DefaultingEnum {
+    public init(from decoder: Decoder) throws {
+        let raw = (try? decoder.singleValueContainer().decode(String.self)) ?? ""
+        self = Self(rawValue: raw) ?? Self.fallback
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(rawValue)
+    }
+}
+
+/// `crew`, or `crew_radio` (also relay push-to-talk over the recovery radio).
+public enum VoiceChannel: String, CaseIterable, DefaultingEnum {
+    case crew
+    case crewRadio = "crew_radio"
+    public static var fallback: VoiceChannel { .crew }
+}
+
+public enum PttMode: String, CaseIterable, DefaultingEnum {
+    case hold, toggle
+    public static var fallback: PttMode { .hold }
+}
+
+public enum AudioRoute: String, CaseIterable, DefaultingEnum {
+    case auto, speaker, bluetooth
+    public static var fallback: AudioRoute { .auto }
+}
+
+public struct VoiceSetting: Codable, Equatable {
+    public var enabled = true
+    public var channel = VoiceChannel.crew
+    public var ptt = PttMode.hold
+    /// Tap on push-to-talk start/stop.
+    public var haptics = true
+    /// Tap when someone else starts talking.
+    public var talkerHaptics = false
+    public var route = AudioRoute.auto
+    /// Playback volume, percent 0–150.
+    public var volume = defaultVoiceVolume
+
+    public init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, channel, ptt, haptics, talkerHaptics = "talker_haptics", route, volume
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = VoiceSetting()
+        enabled = c.soft(.enabled, d.enabled)
+        channel = c.soft(.channel, d.channel)
+        ptt = c.soft(.ptt, d.ptt)
+        haptics = c.soft(.haptics, d.haptics)
+        talkerHaptics = c.soft(.talkerHaptics, d.talkerHaptics)
+        route = c.soft(.route, d.route)
+        volume = min(max(c.soft(.volume, d.volume), 0), maxVoiceVolume)
+    }
+}
+
 public struct WatchSettings: Codable, Equatable {
     public var version = 2
     public var updatedMs: Int64 = 0
     public var updatedBy = Editor.phone
     /// Display order.
-    public var pages = ["flight", "propulsion", "trajectory", "health", "cycle", "compass"]
+    public var pages = ["flight", "propulsion", "trajectory", "health", "cycle", "compass", "voice"]
         .map { PageSetting(id: $0, enabled: true, items: defaultPageItems[$0] ?? []) }
     public var cycle = CycleSetting()
     public var compass = CompassSetting()
@@ -140,12 +210,14 @@ public struct WatchSettings: Codable, Equatable {
     public var directLink = true
     /// Map background under the compass.
     public var map = MapSetting()
+    /// Crew voice (push-to-talk) on the watch.
+    public var voice = VoiceSetting()
 
     public init() {}
 
     enum CodingKeys: String, CodingKey {
         case version, updatedMs = "updated_ms", updatedBy = "updated_by", pages, cycle, compass, units, power
-        case directLink = "direct_link", map
+        case directLink = "direct_link", map, voice
     }
 
     public init(from decoder: Decoder) throws {
@@ -161,6 +233,7 @@ public struct WatchSettings: Codable, Equatable {
         power = c.soft(.power, d.power)
         directLink = c.soft(.directLink, d.directLink)
         map = c.soft(.map, d.map)
+        voice = c.soft(.voice, d.voice)
     }
 
     public var metric: Bool { units == .metric }

@@ -27,14 +27,14 @@ async function bounded(promise,ms,message){
 function updateControls(){
   $('join').disabled=!token||!!session||joining;$('leave').disabled=!session;
   $('device').disabled=!!session||joining;$('mode').disabled=joining;
-  $('mute').disabled=!session?.ready||$('mode').value==='off';$('ptt').disabled=!session?.ready||muted||$('mode').value!=='ptt';
+  $('mute').disabled=!session?.ready||$('mode').value==='off'||!!session?.held;$('ptt').disabled=!session?.ready||muted||$('mode').value!=='ptt'||!!session?.held;
   $('logout').disabled=!token;$('signin').disabled=!!session||joining;
   $('radio-enable').disabled=!session?.ready||!radioAvailable;
   $('noise-suppression').disabled=!noiseSupported||joining||!!session?.reconfiguring;
 }
 function transmit(){
   const mode=$('mode').value;
-  const enabled=!!session?.ready&&!session.reconfiguring&&!muted&&(mode==='open'||(mode==='ptt'&&held));
+  const enabled=!!session?.ready&&!session.reconfiguring&&!session.held&&!muted&&(mode==='open'||(mode==='ptt'&&held));
   if(session){
     if(session.transmitting!==enabled){
       session.transmitting=enabled;
@@ -47,7 +47,7 @@ function transmit(){
   }
   $('ptt').setAttribute('aria-pressed',String(enabled&&$('mode').value==='ptt'));
   $('mute').setAttribute('aria-pressed',String(muted));$('mute').textContent=muted?'Unmute microphone':'Mute microphone';
-  $('mic-state').textContent=!session?'Microphone off':session.reconfiguring?'Updating microphone…':enabled?'Transmitting to crew':mode==='off'?'Microphone off · listening':muted?'Microphone muted':'Listening · hold to talk';
+  $('mic-state').textContent=!session?'Microphone off':session.held?'Paused · your watch has voice':session.reconfiguring?'Updating microphone…':enabled?'Transmitting to crew':mode==='off'?'Microphone off · listening':muted?'Microphone muted':'Listening · hold to talk';
   updateControls();
 }
 function leave(message='Left voice. Microphone released.'){
@@ -129,13 +129,25 @@ $('join').onclick=async()=>{
       if(m.type==='error'){leave(m.message);return;}
       if(m.type==='radio_link'){radioLink(m.radio);}
       if(m.type==='radio_state'){$('radio-enable').checked=m.enabled;session.radio=m.enabled;}
+      // The watch linked to this session joined voice: the station mutes this
+      // page (no audio in, microphone ignored) so phone and watch never echo.
+      if(m.type==='handoff'){
+        const wasHeld=!!s.held;s.held=m.held===true;held=false;
+        if(s.held){
+          if($('mode').value==='open')$('mode').value='off';
+          $('radio-enable').checked=false;
+          for(const id of s.peers||[])s.node.port.postMessage({type:'remove',id});
+          if(!wasHeld)notice('Your watch has voice. This page\'s microphone and speaker are paused until the watch leaves voice.');
+        }else if(wasHeld)notice('Your watch left voice. Listening here again; press to talk.');
+        transmit();
+      }
 
       if(m.type==='joined'){clearTimeout(s.joinTimeout);s.ready=true;s.id=m.id;joining=false;window.GS26StayAwake?.setActive('voice',true);transmit();notice('Connected to voice chat.');}
       if(m.type==='roster'){
         const next=new Set(m.peers.map(p=>p.id));
         for(const id of s.peers||[])if(!next.has(id))s.node.port.postMessage({type:'remove',id});s.peers=next;
         $('peers').replaceChildren();$('count').textContent=`${m.peers.length} / 12`;
-        for(const p of m.peers){const li=document.createElement('li');li.textContent=`${p.name}${p.id===s.id?' (you)':''} · ${p.transmitting?'Mic open':'Listening'}`;li.className=p.transmitting?'talking':'';$('peers').append(li);}
+        for(const p of m.peers){const li=document.createElement('li');li.textContent=`${p.name}${p.device==='watch'?' (watch)':''}${p.id===s.id?' (you)':''} · ${p.transmitting?'Mic open':'Listening'}`;li.className=p.transmitting?'talking':'';$('peers').append(li);}
       }
     };
     s.ws.onclose=()=>{if(session===s)leave('Voice disconnected. Your microphone is off; select Join voice to reconnect.');};

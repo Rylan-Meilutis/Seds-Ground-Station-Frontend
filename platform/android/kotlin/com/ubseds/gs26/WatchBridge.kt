@@ -38,11 +38,20 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     private const val MAP_PATH = "/gs26/map"
     private const val TILE_PATH_PREFIX = "/gs26/tile/"
     private const val MAX_TILE_BYTES = 512 * 1024
+    /** Crew voice relay (docs/watch-companion.md "Phone relay"). */
+    private const val WATCH_VOICE_PATH = "/gs26/watch_voice"
+    private const val VOICE_PATH = "/gs26/voice"
+    private const val MAX_VOICE_QUEUED = 64
     private const val WATCH_CAPABILITY = "gs26_watch"
     private const val MAX_QUEUED = 32
     private const val MAX_MESSAGE_BYTES = 32 * 1024
 
     private val incoming = ArrayDeque<String>()
+    private val voiceIncoming = ArrayDeque<String>()
+
+    /** Ids of reachable nodes running the watch app (voice relay targets). */
+    @Volatile
+    private var watchNodeIds: List<String> = emptyList()
     private var appContext: Context? = null
     private var available = false
 
@@ -195,6 +204,20 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     @JvmStatic
     fun takeIncoming(): String? = synchronized(incoming) { incoming.pollFirst() }
 
+    /** Next crew voice relay message from the watch (own queue, drained every 20 ms). */
+    @JvmStatic
+    fun takeVoice(): String? = synchronized(voiceIncoming) { voiceIncoming.pollFirst() }
+
+    /** Crew voice relay to the watch: a message to each reachable watch node, never queued. */
+    @JvmStatic
+    fun sendVoice(json: String) {
+        val ctx = appContext ?: return
+        val bytes = json.toByteArray(Charsets.UTF_8)
+        if (bytes.size > MAX_MESSAGE_BYTES) return
+        val client = Wearable.getMessageClient(ctx)
+        for (node in watchNodeIds) client.sendMessage(node, VOICE_PATH, bytes)
+    }
+
     /** bit0 supported, bit1 paired/connected node, bit2 app installed, bit3 reachable,
      *  bit4 the Data Layer has answered (same bits as the iOS bridge). */
     @JvmStatic
@@ -233,7 +256,16 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
     }
 
     override fun onMessageReceived(event: MessageEvent) {
-        if (event.path == WATCH_MESSAGE_PATH) enqueue(String(event.data, Charsets.UTF_8))
+        when (event.path) {
+            WATCH_MESSAGE_PATH -> enqueue(String(event.data, Charsets.UTF_8))
+            WATCH_VOICE_PATH -> {
+                if (event.data.size > MAX_MESSAGE_BYTES) return
+                synchronized(voiceIncoming) {
+                    if (voiceIncoming.size >= MAX_VOICE_QUEUED) voiceIncoming.pollFirst()
+                    voiceIncoming.addLast(String(event.data, Charsets.UTF_8))
+                }
+            }
+        }
     }
 
     override fun onDataChanged(events: DataEventBuffer) {
@@ -247,6 +279,7 @@ object WatchBridge : MessageClient.OnMessageReceivedListener,
 
     override fun onCapabilityChanged(info: CapabilityInfo) {
         watchNodes = info.nodes.size
+        watchNodeIds = info.nodes.map { it.id }
         appContext?.let(::refreshInstalled)
     }
 }

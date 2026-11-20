@@ -17,6 +17,25 @@ core/   pure Kotlin/JVM: wire models + parsing, geodesy, formatting,
 app/    Wear OS app (Compose for Wear OS, minSdk 30)
 ```
 
+## Crew voice
+
+The Voice page (and the "GS push to talk" tile, which opens it and joins)
+gives push-to-talk on the station's crew channel (`../../docs/watch-companion.md`
+"Voice"). The watch connects straight to `/api/voice/ws` with its watch
+token (granted voice only for accounts with the voice permission) using
+`core/VoiceSocket.kt` (a small RFC 6455 client, no extra library) and Opus
+from the platform `MediaCodec` (PCM16 when the codec is missing); after two
+failed direct attempts it relays through the phone (`/gs26/watch_voice` out,
+`/gs26/voice` in). `voice/VoiceEngine.kt` runs the session inside
+`voice/VoiceService.kt`, a foreground service of type `microphone`, so voice
+continues with the wrist down until Leave. The crown sets the volume on the
+voice page. Permissions: `RECORD_AUDIO` (asked on the first Join),
+`POST_NOTIFICATIONS` (Android 13+, for the ongoing notification),
+`FOREGROUND_SERVICE_MICROPHONE`, `MODIFY_AUDIO_SETTINGS`, `VIBRATE`,
+`BLUETOOTH_CONNECT` (headset route). The core logic (push-to-talk, reconnect,
+transport, framing, mixing, relay envelopes) is checked against the `voice`
+vectors.
+
 ## Requirements
 
 * JDK 17 or 21 (Gradle 8.14 does not run on newer JDKs)

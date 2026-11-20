@@ -4,8 +4,8 @@
 //! when signed in, to the account.
 use super::registry;
 use super::settings::{
-    MAX_CYCLE_ITEMS, MAX_MAP_CAP_MB, MAX_PAGE_ACTIONS, MAX_PAGE_ITEMS, MIN_MAP_CAP_MB, North,
-    Power, Units, WatchSettings,
+    AudioRoute, MAX_CYCLE_ITEMS, MAX_MAP_CAP_MB, MAX_PAGE_ACTIONS, MAX_PAGE_ITEMS,
+    MAX_VOICE_VOLUME, MIN_MAP_CAP_MB, North, Power, PttMode, Units, VoiceChannel, WatchSettings,
 };
 use super::{WATCH_RECORD, WATCH_SYNC, bridge, edit_settings, sleep_ms};
 use crate::telemetry_dashboard::layout::ThemeConfig;
@@ -367,6 +367,76 @@ pub(in crate::telemetry_dashboard) fn WatchSettingsSection(theme: ThemeConfig) -
                 }
                 if settings.map.enabled && !map_line.is_empty() {
                     div { style: "{row}", span { style: "{muted}", "{map_line}" } }
+                }
+            }
+
+            div { style: "{card}", "data-testid": "watch-voice-settings",
+                h3 { style: "{heading}", "Voice" }
+                p { style: "{muted} margin:0;",
+                    "Push-to-talk crew voice on the watch, in the same channel as the station's Crew voice page. "
+                    "The watch connects to the station itself (so it keeps working while this phone sleeps) and "
+                    "relays through the phone only when it cannot. Needs Direct link and an account with voice "
+                    "permission. While the watch has voice, this phone's voice page pauses so the two never echo."
+                }
+                label { style: "{row}",
+                    input { r#type: "checkbox", checked: settings.voice.enabled,
+                        onchange: move |_| edit_settings(|s| s.voice.enabled = !s.voice.enabled) }
+                    "Voice on the watch"
+                }
+                if settings.voice.enabled && !settings.direct_link {
+                    div { style: "{row}", span { style: "{muted}", "Turn on Direct link above: watch voice uses the watch token." } }
+                }
+                if settings.voice.enabled && !settings.voice_wanted() && settings.direct_link {
+                    div { style: "{row}", span { style: "{muted}", "Turn on the Voice page under Pages to use voice on the watch." } }
+                }
+                div { style: "{row}",
+                    span { "Channel" }
+                    select { style: "{select}", disabled: !settings.voice.enabled, "aria-label": "Default voice channel",
+                        onchange: move |e| { let c = if e.value() == "crew_radio" { VoiceChannel::CrewRadio } else { VoiceChannel::Crew }; edit_settings(|s| s.voice.channel = c) },
+                        option { value: "crew", selected: settings.voice.channel == VoiceChannel::Crew, "Crew voice" }
+                        option { value: "crew_radio", selected: settings.voice.channel == VoiceChannel::CrewRadio, "Crew voice + recovery radio" }
+                    }
+                    span { "Push to talk" }
+                    select { style: "{select}", disabled: !settings.voice.enabled, "aria-label": "Push-to-talk mode",
+                        onchange: move |e| { let m = if e.value() == "toggle" { PttMode::Toggle } else { PttMode::Hold }; edit_settings(|s| s.voice.ptt = m) },
+                        option { value: "hold", selected: settings.voice.ptt == PttMode::Hold, "Press and hold" }
+                        option { value: "toggle", selected: settings.voice.ptt == PttMode::Toggle, "Tap to start, tap to stop" }
+                    }
+                }
+                div { style: "{row}",
+                    span { "Audio" }
+                    select { style: "{select}", disabled: !settings.voice.enabled, "aria-label": "Watch audio route",
+                        onchange: move |e| {
+                            let r = match e.value().as_str() { "speaker" => AudioRoute::Speaker, "bluetooth" => AudioRoute::Bluetooth, _ => AudioRoute::Auto };
+                            edit_settings(|s| s.voice.route = r)
+                        },
+                        option { value: "auto", selected: settings.voice.route == AudioRoute::Auto, "Headset when connected, else watch" }
+                        option { value: "speaker", selected: settings.voice.route == AudioRoute::Speaker, "Watch speaker" }
+                        option { value: "bluetooth", selected: settings.voice.route == AudioRoute::Bluetooth, "Bluetooth headset / AirPods" }
+                    }
+                    span { "Volume" }
+                    select { style: "{select}", disabled: !settings.voice.enabled, "aria-label": "Watch voice volume",
+                        onchange: move |e| if let Ok(v) = e.value().parse::<u32>() { edit_settings(|s| s.voice.volume = v) },
+                        for v in (0..=MAX_VOICE_VOLUME).step_by(10) {
+                            option { value: "{v}", selected: v == settings.voice.volume, "{v} %" }
+                        }
+                        if settings.voice.volume % 10 != 0 {
+                            option { value: "{settings.voice.volume}", selected: true, "{settings.voice.volume} %" }
+                        }
+                    }
+                }
+                label { style: "{row}",
+                    input { r#type: "checkbox", checked: settings.voice.haptics, disabled: !settings.voice.enabled,
+                        onchange: move |_| edit_settings(|s| s.voice.haptics = !s.voice.haptics) }
+                    "Tap when push-to-talk starts and stops"
+                }
+                label { style: "{row}",
+                    input { r#type: "checkbox", checked: settings.voice.talker_haptics, disabled: !settings.voice.enabled,
+                        onchange: move |_| edit_settings(|s| s.voice.talker_haptics = !s.voice.talker_haptics) }
+                    "Tap when someone starts talking"
+                }
+                p { style: "{muted} margin:0;",
+                    "The Digital Crown (Wear OS: rotating bezel or crown) changes the volume on the watch's voice page."
                 }
             }
 

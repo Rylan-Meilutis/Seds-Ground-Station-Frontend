@@ -58,4 +58,8 @@ dependencies {
     implementation(libs.core.ktx)
     implementation(libs.play.services.wearable)
     implementation(libs.play.services.location)
+    // Push-to-talk tile.
+    implementation(libs.wear.tiles)
+    implementation(libs.wear.protolayout)
+    implementation(libs.concurrent.futures)
 }

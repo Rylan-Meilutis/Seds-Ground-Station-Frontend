@@ -1,5 +1,6 @@
 package com.ubseds.gs26.wear
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -8,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.ubseds.gs26.wear.ui.WatchApp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -15,6 +17,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        takeOpenPage(intent)
         setContent { WatchApp(link) }
         // While foreground, tell the phone every 15 s so it keeps the fast rate.
         lifecycleScope.launch {
@@ -38,6 +41,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        takeOpenPage(intent)
+    }
+
+    /** The push-to-talk tile and the voice notification open a page (`voice`: and join). */
+    private fun takeOpenPage(intent: Intent?) {
+        val page = intent?.getStringExtra(EXTRA_OPEN_PAGE) ?: return
+        intent.removeExtra(EXTRA_OPEN_PAGE)
+        openPage.value = page
+    }
+
     override fun onStart() {
         super.onStart()
         link.start()
@@ -53,7 +68,11 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    private companion object {
-        const val ACTIVITY_PERIOD_MS = 15_000L
+    companion object {
+        private const val ACTIVITY_PERIOD_MS = 15_000L
+        const val EXTRA_OPEN_PAGE = "open_page"
+
+        /** A page to select once (set by the tile / notification, consumed by the pager). */
+        val openPage = MutableStateFlow<String?>(null)
     }
 }

@@ -146,6 +146,78 @@ impl MapSetting {
     }
 }
 
+/// Crew voice on the watch (docs/watch-companion.md "Voice").
+pub const MAX_VOICE_VOLUME: u32 = 150;
+pub const DEFAULT_VOICE_VOLUME: u32 = 100;
+
+/// Which channel the watch joins. `CrewRadio` also relays its push-to-talk
+/// over the recovery radio when the station offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceChannel {
+    CrewRadio,
+    /// Also any value this build does not know (`serde(other)` must be last).
+    #[default]
+    #[serde(other)]
+    Crew,
+}
+
+/// Press-and-hold or tap-to-toggle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PttMode {
+    Toggle,
+    #[default]
+    #[serde(other)]
+    Hold,
+}
+
+/// Where the watch plays and records voice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioRoute {
+    /// The watch speaker and microphone even with a headset connected.
+    Speaker,
+    /// Prefer a Bluetooth headset (AirPods etc.).
+    Bluetooth,
+    /// A connected Bluetooth headset, else the watch.
+    #[default]
+    #[serde(other)]
+    Auto,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceSetting {
+    /// Ask the station for crew voice in the watch token and offer voice on
+    /// the watch. The station grants it only to accounts with the voice
+    /// transmit permission.
+    pub enabled: bool,
+    pub channel: VoiceChannel,
+    pub ptt: PttMode,
+    /// Tap on push-to-talk start and stop.
+    pub haptics: bool,
+    /// Tap when someone else starts talking.
+    pub talker_haptics: bool,
+    pub route: AudioRoute,
+    /// Playback volume, percent (0–150); the crown changes it on the watch.
+    pub volume: u32,
+}
+
+impl Default for VoiceSetting {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            channel: VoiceChannel::Crew,
+            ptt: PttMode::Hold,
+            haptics: true,
+            talker_haptics: false,
+            route: AudioRoute::Auto,
+            volume: DEFAULT_VOICE_VOLUME,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Units {
@@ -209,6 +281,8 @@ pub struct WatchSettings {
     pub direct_link: bool,
     /// Map background under the compass.
     pub map: MapSetting,
+    /// Crew voice (push-to-talk) on the watch.
+    pub voice: VoiceSetting,
 }
 
 impl Default for WatchSettings {
@@ -224,6 +298,7 @@ impl Default for WatchSettings {
             power: Power::Balanced,
             direct_link: true,
             map: MapSetting::default(),
+            voice: VoiceSetting::default(),
         }
     }
 }
@@ -282,6 +357,7 @@ impl WatchSettings {
         self.cycle.interval_s = self.cycle.interval_s.clamp(MIN_INTERVAL_S, MAX_INTERVAL_S);
         self.compass.stale_after_s = self.compass.stale_after_s.clamp(MIN_STALE_S, MAX_STALE_S);
         self.map.cap_mb = self.map.cap_mb.clamp(MIN_MAP_CAP_MB, MAX_MAP_CAP_MB);
+        self.voice.volume = self.voice.volume.min(MAX_VOICE_VOLUME);
         dedupe_known(
             &mut self.compass.targets,
             registry::target_known,
@@ -344,6 +420,11 @@ impl WatchSettings {
             .iter()
             .filter(|p| p.enabled)
             .filter_map(|p| registry::page(&p.id))
+    }
+
+    /// Crew voice is wanted on the watch: switched on and on an enabled page.
+    pub fn voice_wanted(&self) -> bool {
+        self.voice.enabled && self.enabled_pages().any(|p| p.kind == PageKind::Voice)
     }
 
     pub fn compass_enabled(&self) -> bool {
@@ -532,6 +613,40 @@ mod tests {
     }
 
     #[test]
+    fn voice_settings_default_parse_and_clamp() {
+        let d = WatchSettings::default();
+        assert!(d.voice.enabled && d.voice_wanted());
+        assert_eq!(d.voice.ptt, PttMode::Hold);
+        assert_eq!(d.voice.volume, DEFAULT_VOICE_VOLUME);
+        assert_eq!(d.pages.last().unwrap().id, "voice");
+        // Unknown values from a newer watch fall back instead of failing
+        // the whole document; volume is clamped.
+        let s = WatchSettings::parse(
+            r#"{"voice":{"enabled":true,"channel":"crew_radio","ptt":"toggle","haptics":false,
+                "talker_haptics":true,"route":"bluetooth","volume":999}}"#,
+        )
+        .unwrap();
+        assert_eq!(s.voice.channel, VoiceChannel::CrewRadio);
+        assert_eq!(s.voice.ptt, PttMode::Toggle);
+        assert_eq!(s.voice.route, AudioRoute::Bluetooth);
+        assert!(!s.voice.haptics && s.voice.talker_haptics);
+        assert_eq!(s.voice.volume, MAX_VOICE_VOLUME);
+        let s = WatchSettings::parse(r#"{"voice":{"channel":"moon","ptt":"shout","route":"laser"}}"#).unwrap();
+        assert_eq!(s.voice, VoiceSetting::default());
+        // A document from before voice gets the voice page (appended, on) and defaults.
+        let s = WatchSettings::parse(V1_DEFAULT).unwrap();
+        assert_eq!(s.voice, VoiceSetting::default());
+        assert!(s.page_setting("voice").unwrap().enabled);
+        // Voice is wanted only while on and on an enabled page.
+        let mut s = WatchSettings::default();
+        s.toggle_page("voice");
+        assert!(!s.voice_wanted());
+        s.toggle_page("voice");
+        s.voice.enabled = false;
+        assert!(!s.voice_wanted());
+    }
+
+    #[test]
     fn stamping_is_monotonic_and_lww_compares_time() {
         let a = WatchSettings::default().stamped(0, 1_000, Editor::Phone);
         let b = a.clone().stamped(a.updated_ms, 500, Editor::Watch); // watch clock behind
@@ -564,10 +679,11 @@ mod tests {
             assert_eq!(page.items, def.items.iter().map(|i| i.to_string()).collect::<Vec<_>>());
             assert!(page.actions.is_empty());
         }
-        // The resolved pages equal the version 1 layout exactly.
+        // The resolved pages equal the version 1 layout, plus the voice page
+        // that later builds append.
         let pages = super::super::protocol::resolved_pages(&migrated, &[]);
         let ids: Vec<_> = pages.iter().map(|p| p.id).collect();
-        assert_eq!(ids, vec!["flight", "propulsion", "trajectory", "health", "cycle", "compass"]);
+        assert_eq!(ids, vec!["flight", "propulsion", "trajectory", "health", "cycle", "compass", "voice"]);
         assert_eq!(pages[0].items, vec!["flight_state", "t_clock", "altitude", "velocity"]);
         // A disabled v1 page stays disabled.
         let disabled = WatchSettings::parse(&V1_DEFAULT.replace(
@@ -656,7 +772,7 @@ mod tests {
         s.move_page("flight", true); // already first
         assert_eq!(s.pages[0].id, "flight");
         s.move_page("compass", true);
-        assert_eq!(s.pages[s.pages.len() - 2].id, "compass");
+        assert_eq!(s.pages[s.pages.len() - 3].id, "compass");
         s.cycle.items = vec!["altitude".into()];
         s.toggle_cycle_item("altitude"); // never empties
         assert_eq!(s.cycle.items, vec!["altitude"]);

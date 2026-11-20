@@ -33,12 +33,18 @@ pub struct Grant {
     pub expires_at_ms: i64,
     #[serde(default)]
     pub commands: Vec<String>,
+    /// The station granted crew voice (only with the voice transmit
+    /// permission; older stations omit it).
+    #[serde(default)]
+    pub voice: bool,
 }
 
 #[derive(Serialize)]
 pub struct IssueRequest<'a> {
     pub device_id: &'a str,
     pub commands: &'a [String],
+    /// Ask for crew voice (watch voice page on).
+    pub voice: bool,
 }
 
 #[derive(Serialize)]
@@ -57,6 +63,8 @@ pub struct Want {
     pub station: String,
     pub skip_tls: bool,
     pub commands: Vec<String>,
+    /// Crew voice wanted on the watch.
+    pub voice: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +127,8 @@ pub struct Provision {
     pub skip_tls: bool,
     /// Commands the token may send.
     pub commands: Vec<String>,
+    /// The token may join crew voice (`/api/voice/ws`).
+    pub voice: bool,
 }
 
 pub fn provision(held: Option<&Held>) -> Provision {
@@ -134,6 +144,7 @@ pub fn provision(held: Option<&Held>) -> Provision {
             station: held.want.station.clone(),
             skip_tls: held.want.skip_tls,
             commands: held.grant.commands.clone(),
+            voice: held.grant.voice,
         },
         None => Provision {
             v: super::protocol::PROTOCOL_VERSION,
@@ -146,6 +157,7 @@ pub fn provision(held: Option<&Held>) -> Provision {
             station: String::new(),
             skip_tls: false,
             commands: Vec::new(),
+            voice: false,
         },
     }
 }
@@ -167,6 +179,7 @@ mod tests {
             station: "GroundStation".into(),
             skip_tls: false,
             commands: commands.iter().map(|c| c.to_string()).collect(),
+            voice: false,
         }
     }
 
@@ -177,6 +190,7 @@ mod tests {
                 device_id: "phone-1".into(),
                 expires_at_ms,
                 commands: w.commands.clone(),
+                voice: w.voice,
             },
             want: w,
         }
@@ -200,6 +214,10 @@ mod tests {
         let mut other = want(&["Abort"]);
         other.account = "https://rrls.local:3000|ada".into();
         assert_eq!(plan(Some(&h), Some(&other), now, None), Step::Issue);
+        // Voice switched on: the token must carry the voice grant.
+        let mut voice = want(&["Abort"]);
+        voice.voice = true;
+        assert_eq!(plan(Some(&h), Some(&voice), now, None), Step::Issue);
         // Close to expiry.
         let expiring = held(want(&["Abort"]), now + 2 * DAY);
         assert_eq!(plan(Some(&expiring), Some(&want(&["Abort"])), now, None), Step::Issue);
@@ -217,6 +235,13 @@ mod tests {
         assert_eq!(json["addresses"], serde_json::json!(["https://gs.local:3000"]));
         assert_eq!(json["token"], "gsw1.abc");
         assert_eq!(json["commands"], serde_json::json!(["Abort"]));
+        assert_eq!(json["voice"], false);
+        let mut w = want(&[]);
+        w.voice = true;
+        assert_eq!(serde_json::to_value(provision(Some(&held(w, 5)))).unwrap()["voice"], true);
+        // An older station's grant has no voice field.
+        let old: Grant = serde_json::from_str(r#"{"token":"gsw1.x","device_id":"p","expires_at_ms":1}"#).unwrap();
+        assert!(!old.voice);
         let text = json.to_string();
         assert!(!text.contains("password") && !text.contains("proof"));
         let off = serde_json::to_value(provision(None)).unwrap();

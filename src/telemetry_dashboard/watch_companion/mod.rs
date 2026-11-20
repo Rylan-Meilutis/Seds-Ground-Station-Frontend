@@ -21,6 +21,9 @@ pub(crate) mod registry;
 pub(crate) mod settings;
 mod settings_section;
 pub(crate) mod snapshot;
+// Native phone apps only: the browser build has no watch to relay for.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod voice_relay;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use publisher::use_demo_publisher;
@@ -372,7 +375,14 @@ fn direct_want(eligible: bool) -> Option<direct::Want> {
         station: crate::auth::station_name(),
         skip_tls: super::UrlConfig::_skip_tls_verify(),
         commands: actions::token_commands(&settings, &catalog_actions()),
+        voice: settings.voice_wanted(),
     })
+}
+
+/// The watch token this phone holds now (the voice relay uses it).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn direct_held() -> Option<direct::Held> {
+    DIRECT.lock().ok().and_then(|state| state.held.clone())
 }
 
 /// Sends the provisioning message when it changed.
@@ -411,6 +421,7 @@ async fn direct_tick(eligible: bool) {
             let request = direct::IssueRequest {
                 device_id: &device_id,
                 commands: &want.commands,
+                voice: want.voice,
             };
             let result = super::http_post_json::<_, direct::Grant>(direct::TOKEN_ENDPOINT, &request).await;
             let Ok(mut state) = DIRECT.lock() else { return };
@@ -476,11 +487,16 @@ pub(crate) fn direct_status_text() -> String {
     };
     match &state.held {
         Some(held) => {
-            let actions = if held.grant.commands.is_empty() {
+            let mut actions = if held.grant.commands.is_empty() {
                 "read-only".to_string()
             } else {
                 format!("actions: {}", held.grant.commands.join(", "))
             };
+            if held.grant.voice {
+                actions.push_str(", crew voice");
+            } else if held.want.voice {
+                actions.push_str(", no voice permission");
+            }
             format!(
                 "Watch can reach {} directly ({actions})",
                 direct_address(&held.want.base)

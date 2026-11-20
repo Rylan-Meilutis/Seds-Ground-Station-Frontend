@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -48,6 +49,7 @@ import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
+import com.ubseds.gs26.wear.MainActivity
 import com.ubseds.gs26.wear.PhoneLink
 import com.ubseds.gs26.wear.core.ConnectionStatus
 import com.ubseds.gs26.wear.core.Direct
@@ -96,6 +98,20 @@ fun WatchApp(link: PhoneLink) {
         DirectInfo(direct.configured, direct.polling, direct.error),
     )
     val actions = PageActions(view, now, direct, onPress = { confirming = it })
+    // The tile / notification asks for the voice page (and to join).
+    val openPage by MainActivity.openPage.collectAsStateWithLifecycle()
+    var joinRequest by remember { mutableIntStateOf(0) }
+    var voiceOverlay by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(openPage) {
+        if (openPage == "voice") {
+            joinRequest++
+            confirming = null
+            showSettings = false
+            // Without a voice page in the layout, show it on its own.
+            voiceOverlay = view.pages().none { it.kind == PageKind.VOICE }
+            if (voiceOverlay) MainActivity.openPage.value = null
+        }
+    }
 
     MaterialTheme {
         Scaffold(timeText = { TimeText() }) {
@@ -105,11 +121,15 @@ fun WatchApp(link: PhoneLink) {
                     BackHandler { confirming = null }
                     ActionConfirmScreen(pending, view, link, onDone = { confirming = null })
                 }
+                voiceOverlay -> {
+                    BackHandler { voiceOverlay = false }
+                    VoicePage(link, visible = true, joinRequest = joinRequest)
+                }
                 showSettings && state.snapshot != null -> {
                     BackHandler { showSettings = false }
                     SettingsScreen(state, link, onDone = { showSettings = false })
                 }
-                else -> MainPager(view, status, route, now, link, watchFix, actions, onOpenSettings = { showSettings = true })
+                else -> MainPager(view, status, route, now, link, watchFix, actions, joinRequest, onOpenSettings = { showSettings = true })
             }
         }
     }
@@ -128,6 +148,7 @@ private fun MainPager(
     link: PhoneLink,
     watchFix: MutableState<Location?>,
     actions: PageActions,
+    joinRequest: Int,
     onOpenSettings: () -> Unit,
 ) {
     val pages = state.pages()
@@ -140,6 +161,14 @@ private fun MainPager(
         1 -> "alerts"
         count - 1 -> "settings"
         else -> current?.id
+    }
+
+    val openPage by MainActivity.openPage.collectAsStateWithLifecycle()
+    LaunchedEffect(openPage, pages.map { it.id }) {
+        val target = openPage ?: return@LaunchedEffect
+        val index = pages.indexOfFirst { it.id == target || (target == "voice" && it.kind == PageKind.VOICE) }
+        if (index >= 0) pager.scrollToPage(FIXED_PAGES + index)
+        MainActivity.openPage.value = null
     }
 
     LaunchedEffect(currentName) {
@@ -163,6 +192,7 @@ private fun MainPager(
                         page == null -> SettingsEntry(onOpenSettings, enabled = state.snapshot != null)
                         page.kind == PageKind.ITEMS -> ItemsPage(page, state, now)
                         page.kind == PageKind.CYCLE -> CyclePage(state, now, visible, onLongPress = onOpenSettings)
+                        page.kind == PageKind.VOICE -> VoicePage(link, visible, joinRequest)
                         page.kind == PageKind.COMPASS -> CompassPage(
                             state = state,
                             now = now,

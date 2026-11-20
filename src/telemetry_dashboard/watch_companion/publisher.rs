@@ -270,6 +270,13 @@ fn publish_no_station() {
 /// phone is doing (choosing a station, connecting to <address>, sign-in
 /// needed, unreachable), answering the watch's hello/activity at once.
 pub(crate) fn use_status_publisher() {
+    // Crew voice relay for a watch that cannot reach the station itself.
+    #[cfg(not(target_arch = "wasm32"))]
+    use_future(move || async move {
+        if super::COMPANION_PLATFORM {
+            super::voice_relay::run().await;
+        }
+    });
     use_future(move || async move {
         if !super::COMPANION_PLATFORM {
             return;

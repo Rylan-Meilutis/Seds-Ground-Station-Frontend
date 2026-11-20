@@ -38,6 +38,9 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     let tiles = TileStore()
     private var reportTimer: Timer?
     private var tileMisses: [String: Int64] = [:]
+    /// Crew voice relayed by the phone (docs/watch-companion.md "Phone
+    /// relay"): station messages arrive under `gs26_voice`.
+    var voiceRelayHandler: (@MainActor (String) -> Void)?
 
     override init() {
         super.init()
@@ -216,6 +219,17 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
         send(.settings(stamped))
     }
 
+    /// One phone-relay envelope (`type: voice`). Only live: dropped when the
+    /// phone is not reachable (the voice session then retries direct).
+    @discardableResult
+    func sendVoiceRelay(_ json: String) -> Bool {
+        guard WCSession.isSupported() else { return false }
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return false }
+        session.sendMessage([voiceWatchToPhoneKey: json], replyHandler: nil, errorHandler: nil)
+        return true
+    }
+
     private func sendActivity() {
         send(.activity(foreground: foreground, page: currentPage))
     }
@@ -300,6 +314,9 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        if let voice = message[voicePhoneToWatchKey] as? String {
+            Task { @MainActor in self.voiceRelayHandler?(voice) }
+        }
         guard let json = message[phoneToWatchKey] as? String else { return }
         DispatchQueue.main.async { self.receive(json) }
     }

@@ -21,6 +21,9 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
 
 @interface GS26WatchBridge : NSObject <WCSessionDelegate>
 @property(nonatomic, strong) NSMutableArray<NSString *> *incoming;
+// Crew voice relay from the watch (key gs26_watch_voice), drained every 20 ms
+// by the phone's relay while it runs; never mixed with the settings queue.
+@property(nonatomic, strong) NSMutableArray<NSString *> *voiceIncoming;
 @property(nonatomic, copy) NSString *pendingContext;
 @property(nonatomic, copy) NSString *provision;
 @property(nonatomic, assign) BOOL provisionPending;
@@ -37,6 +40,7 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   dispatch_once(&once, ^{
     bridge = [GS26WatchBridge new];
     bridge.incoming = [NSMutableArray array];
+    bridge.voiceIncoming = [NSMutableArray array];
     bridge.pendingTiles = [NSMutableDictionary dictionary];
   });
   return bridge;
@@ -267,14 +271,35 @@ static const NSUInteger kMaxMessageBytes = 32 * 1024;
   [session activateSession];
 }
 
+- (void)enqueueVoice:(id)value {
+  if (![value isKindOfClass:[NSString class]]) return;
+  NSString *text = value;
+  if ([text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > kMaxMessageBytes) return;
+  @synchronized(self) {
+    // About a second of relayed audio at most; older audio is useless.
+    if (self.voiceIncoming.count >= 64) [self.voiceIncoming removeObjectAtIndex:0];
+    [self.voiceIncoming addObject:text];
+  }
+}
+
+// Crew voice relay to the watch: only while reachable, never queued (late
+// audio is worthless).
+- (void)sendVoice:(NSString *)json {
+  WCSession *session = [WCSession defaultSession];
+  if (session.activationState != WCSessionActivationStateActivated || !session.reachable) return;
+  [session sendMessage:@{@"gs26_voice" : json} replyHandler:nil errorHandler:nil];
+}
+
 - (void)session:(WCSession *)session didReceiveMessage:(NSDictionary<NSString *, id> *)message {
   [self enqueue:message[@"gs26_watch"]];
+  [self enqueueVoice:message[@"gs26_watch_voice"]];
 }
 
 - (void)session:(WCSession *)session
     didReceiveMessage:(NSDictionary<NSString *, id> *)message
          replyHandler:(void (^)(NSDictionary<NSString *, id> *))replyHandler {
   [self enqueue:message[@"gs26_watch"]];
+  [self enqueueVoice:message[@"gs26_watch_voice"]];
   replyHandler(@{});
 }
 
@@ -315,6 +340,33 @@ int gs26_watch_take_incoming(char *buf, int cap) {
     memcpy(buf, data.bytes, data.length);
     return (int)data.length;
   }
+}
+
+// Same contract as gs26_watch_take_incoming, for the voice relay queue.
+int gs26_watch_take_voice(char *buf, int cap) {
+  if (buf == NULL || cap <= 0) return 0;
+  GS26WatchBridge *bridge = [GS26WatchBridge shared];
+  while (YES) {
+    NSString *next;
+    @synchronized(bridge) {
+      if (bridge.voiceIncoming.count == 0) return 0;
+      next = bridge.voiceIncoming.firstObject;
+      [bridge.voiceIncoming removeObjectAtIndex:0];
+    }
+    NSData *data = [next dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length == 0 || data.length > (NSUInteger)cap) continue;
+    memcpy(buf, data.bytes, data.length);
+    return (int)data.length;
+  }
+}
+
+void gs26_watch_send_voice(const char *json) {
+  if (json == NULL) return;
+  NSString *text = [NSString stringWithUTF8String:json];
+  if (text == nil || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > kMaxMessageBytes) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[GS26WatchBridge shared] sendVoice:text];
+  });
 }
 
 void gs26_watch_provision(const char *json) {

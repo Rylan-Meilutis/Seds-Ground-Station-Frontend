@@ -86,6 +86,8 @@ data class DirectProvision(
     val station: String = "",
     @SerialName("skip_tls") val skipTls: Boolean = false,
     val commands: List<String> = emptyList(),
+    /** The token may join crew voice (`/api/voice/ws`). */
+    val voice: Boolean = false,
 ) {
     /** First address without a trailing slash. */
     val base: String get() = addresses.firstOrNull().orEmpty().trimEnd('/')

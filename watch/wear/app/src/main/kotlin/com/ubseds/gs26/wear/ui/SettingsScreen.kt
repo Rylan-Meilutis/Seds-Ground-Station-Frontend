@@ -29,6 +29,7 @@ import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.ToggleChip
 import com.ubseds.gs26.wear.PhoneLink
 import com.ubseds.gs26.wear.core.PageKind
+import com.ubseds.gs26.wear.core.VoiceSetting
 import com.ubseds.gs26.wear.core.WatchSettings
 import com.ubseds.gs26.wear.core.WatchSettings.Companion.NORTH_MAGNETIC
 import com.ubseds.gs26.wear.core.WatchSettings.Companion.NORTH_TRUE
@@ -116,6 +117,73 @@ fun SettingsScreen(state: WatchState, link: PhoneLink, onDone: () -> Unit) {
                 onCheckedChange = { edit { it.copy(directLink = !it.directLink) } },
                 label = { Text("Use direct link", fontSize = 12.sp) },
                 toggleControl = { Switch(checked = s.directLink) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        item { ListHeader { Text("Voice") } }
+        item {
+            Text(
+                when {
+                    direct.provision?.voice == true -> "Crew voice allowed for this account"
+                    direct.provision?.configured == true -> "No voice permission (or Voice off on the phone)"
+                    else -> "Needs the direct link from the phone"
+                },
+                fontSize = 11.sp, color = Dim, textAlign = TextAlign.Center,
+            )
+        }
+        item {
+            ToggleChip(
+                checked = s.voice.enabled,
+                onCheckedChange = { edit { it.withVoice(it.voice.copy(enabled = !it.voice.enabled)) } },
+                label = { Text("Voice", fontSize = 12.sp) },
+                toggleControl = { Switch(checked = s.voice.enabled) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            Chip(
+                onClick = { edit { it.withVoice(it.voice.copy(ptt = if (it.voice.toggle) VoiceSetting.PTT_HOLD else VoiceSetting.PTT_TOGGLE)) } },
+                label = { Text(if (s.voice.toggle) "Push-to-talk: tap to toggle" else "Push-to-talk: hold", fontSize = 12.sp) },
+                colors = ChipDefaults.secondaryChipColors(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            Chip(
+                onClick = { edit { it.withVoice(it.voice.copy(channel = if (it.voice.radio) VoiceSetting.CHANNEL_CREW else VoiceSetting.CHANNEL_CREW_RADIO)) } },
+                label = { Text("Channel: ${s.voice.channelLabel}", fontSize = 12.sp) },
+                colors = ChipDefaults.secondaryChipColors(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            val routes = listOf(VoiceSetting.ROUTE_AUTO, VoiceSetting.ROUTE_SPEAKER, VoiceSetting.ROUTE_BLUETOOTH)
+            val labels = mapOf(VoiceSetting.ROUTE_AUTO to "Auto", VoiceSetting.ROUTE_SPEAKER to "Watch speaker", VoiceSetting.ROUTE_BLUETOOTH to "Bluetooth headset")
+            Chip(
+                onClick = {
+                    edit { it.withVoice(it.voice.copy(route = routes[(routes.indexOf(it.voice.route) + 1).mod(routes.size)])) }
+                },
+                label = { Text("Audio: ${labels[s.voice.route] ?: "Auto"}", fontSize = 12.sp) },
+                colors = ChipDefaults.secondaryChipColors(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            ToggleChip(
+                checked = s.voice.haptics,
+                onCheckedChange = { edit { it.withVoice(it.voice.copy(haptics = !it.voice.haptics)) } },
+                label = { Text("Talk haptics", fontSize = 12.sp) },
+                toggleControl = { Switch(checked = s.voice.haptics) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            ToggleChip(
+                checked = s.voice.talkerHaptics,
+                onCheckedChange = { edit { it.withVoice(it.voice.copy(talkerHaptics = !it.voice.talkerHaptics)) } },
+                label = { Text("Tap when others talk", fontSize = 12.sp) },
+                toggleControl = { Switch(checked = s.voice.talkerHaptics) },
                 modifier = Modifier.fillMaxWidth(),
             )
         }

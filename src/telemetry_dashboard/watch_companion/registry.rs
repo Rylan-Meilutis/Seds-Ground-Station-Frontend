@@ -62,6 +62,8 @@ pub enum PageKind {
     Items,
     Cycle,
     Compass,
+    /// Crew voice: push-to-talk (docs/watch-companion.md "Voice").
+    Voice,
 }
 
 impl PageKind {
@@ -70,6 +72,7 @@ impl PageKind {
             PageKind::Items => "items",
             PageKind::Cycle => "cycle",
             PageKind::Compass => "compass",
+            PageKind::Voice => "voice",
         }
     }
 }
@@ -272,6 +275,13 @@ pub const PAGES: &[PageDef] = &[
         id: "compass",
         title: "Recovery",
         kind: PageKind::Compass,
+        items: &[],
+        default_enabled: true,
+    },
+    PageDef {
+        id: "voice",
+        title: "Voice",
+        kind: PageKind::Voice,
         items: &[],
         default_enabled: true,
     },

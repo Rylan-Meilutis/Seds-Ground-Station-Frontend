@@ -22,6 +22,8 @@ data class WatchSettings(
     @SerialName("direct_link") val directLink: Boolean = true,
     /** Map background under the compass. */
     val map: MapSetting = MapSetting(),
+    /** Crew voice (push-to-talk) on the watch. */
+    val voice: VoiceSetting = VoiceSetting(),
 ) {
     val metric: Boolean get() = units != UNITS_IMPERIAL
     val magneticNorth: Boolean get() = compass.north == NORTH_MAGNETIC
@@ -89,6 +91,7 @@ data class WatchSettings(
     fun withNorth(north: String) = copy(compass = compass.copy(north = north))
     fun withUnits(units: String) = copy(units = units)
     fun withPower(power: String) = copy(power = power)
+    fun withVoice(voice: VoiceSetting) = copy(voice = voice.copy(volume = voice.volume.coerceIn(0, VoiceSetting.MAX_VOLUME)))
 
     /** Stamps a watch edit; time never goes backwards relative to [previousMs]. */
     fun stamped(previousMs: Long, nowMs: Long): WatchSettings {
@@ -114,7 +117,7 @@ data class WatchSettings(
         const val POWER_RECOVERY = "recovery"
         const val EDITOR_WATCH = "watch"
 
-        val DEFAULT_PAGES = listOf("flight", "propulsion", "trajectory", "health", "cycle", "compass")
+        val DEFAULT_PAGES = listOf("flight", "propulsion", "trajectory", "health", "cycle", "compass", "voice")
 
         /** Rows of each `items` page before page configuration existed (the phone registry's). */
         val DEFAULT_PAGE_ITEMS = mapOf(
@@ -184,4 +187,39 @@ private fun <T> moveIn(list: List<T>, up: Boolean, pred: (T) -> Boolean): List<T
     val j = if (up) i - 1 else i + 1
     if (i < 0 || j !in list.indices) return list
     return list.toMutableList().apply { this[i] = list[j]; this[j] = list[i] }
+}
+
+/**
+ * Crew voice settings (docs/watch-companion.md "Voice"). Enum-like fields
+ * are strings so a newer phone's values survive a round trip; unknown ones
+ * act as the default.
+ */
+@Serializable
+data class VoiceSetting(
+    val enabled: Boolean = true,
+    /** `crew` or `crew_radio` (also relay push-to-talk over the recovery radio). */
+    val channel: String = CHANNEL_CREW,
+    /** `hold` or `toggle`. */
+    val ptt: String = PTT_HOLD,
+    val haptics: Boolean = true,
+    @SerialName("talker_haptics") val talkerHaptics: Boolean = false,
+    /** `auto`, `speaker` or `bluetooth`. */
+    val route: String = ROUTE_AUTO,
+    /** Playback volume, percent (0–150). */
+    val volume: Int = 100,
+) {
+    val toggle: Boolean get() = ptt == PTT_TOGGLE
+    val radio: Boolean get() = channel == CHANNEL_CREW_RADIO
+    val channelLabel: String get() = if (radio) "Crew + radio" else "Crew"
+
+    companion object {
+        const val CHANNEL_CREW = "crew"
+        const val CHANNEL_CREW_RADIO = "crew_radio"
+        const val PTT_HOLD = "hold"
+        const val PTT_TOGGLE = "toggle"
+        const val ROUTE_AUTO = "auto"
+        const val ROUTE_SPEAKER = "speaker"
+        const val ROUTE_BLUETOOTH = "bluetooth"
+        const val MAX_VOLUME = 150
+    }
 }

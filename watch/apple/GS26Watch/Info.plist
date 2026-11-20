@@ -27,6 +27,28 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Crew voice uses the microphone while you hold push-to-talk.</string>
+	<!-- Crew voice runs as a CallKit call so it keeps playing, recording and
+	     using its socket with the wrist down (watchOS 9+ VoIP). App Store
+	     review expects a real two-way voice feature for "voip". -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>voip</string>
+	</array>
+	<!-- gs26://voice: the push-to-talk complication opens the voice page. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.UBSEDS.GS26.watch</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>gs26</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>The recovery compass uses your watch's position to show the distance and direction to the rocket and stations.</string>
 	<key>WKApplication</key>

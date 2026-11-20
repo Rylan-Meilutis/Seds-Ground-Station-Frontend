@@ -72,9 +72,12 @@ public struct DirectProvision: Codable, Equatable {
     public var station: String
     public var skipTLS: Bool
     public var commands: [String]
+    /// The token may join crew voice (granted by the station only with the
+    /// voice transmit permission).
+    public var voice: Bool
 
     enum CodingKeys: String, CodingKey {
-        case enabled, addresses, token, username, station, commands
+        case enabled, addresses, token, username, station, commands, voice
         case expiresAtMs = "expires_at_ms", skipTLS = "skip_tls"
     }
 
@@ -88,6 +91,7 @@ public struct DirectProvision: Codable, Equatable {
         station = c.soft(.station, "")
         skipTLS = c.soft(.skipTLS, false)
         commands = c.soft(.commands, [])
+        voice = c.soft(.voice, false)
     }
 
     /// Parses the phone's message; nil for another version or type.

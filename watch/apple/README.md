@@ -17,6 +17,35 @@ watch/apple/
                          action logic, XCTests (Foundation only)
 ```
 
+## Crew voice
+
+The Voice page (and the "Push to talk" complication / Smart Stack widget,
+target `GS26WatchWidgets`, which opens `gs26://voice`) joins the station's
+crew voice channel; protocol in `docs/watch-companion.md` "Voice".
+
+* `GS26Watch/VoiceSession.swift`: a CallKit outgoing call ("GS crew voice")
+  keeps audio, the microphone and the socket alive with the wrist down
+  (watchOS 9+; `UIBackgroundModes` `audio` + `voip`). Transport is
+  `URLSessionWebSocketTask` to `/api/voice/ws` with the watch token, or the
+  phone relay when the station cannot be reached directly. Opus through
+  `AVAudioConverter` (16 kHz mono, 20 ms packets), PCM16 if the watch has no
+  Opus encoder. Playback mixes speakers with WatchCore `VoiceMixer`.
+* `GS26Watch/VoicePage.swift`: push-to-talk button (hold or tap-to-toggle,
+  from the phone's watch settings), talkers, Join/Leave, Digital Crown
+  volume.
+* Logic shared with Wear OS (state machine, backoff, framing, mixer) is in
+  `WatchCore/Sources/WatchCore/Voice.swift`, tested against the `voice`
+  vectors (`swift test`).
+
+Signing: the widget extension has its own bundle id
+(`com.UBSEDS.GS26.watchkitapp.widgets`) and needs a provisioning profile.
+The `voip` background mode is reviewed by App Store review; voice here is a
+real two-way call, which is what it requires. Things to check on a device:
+CallKit on the watch, whether watchOS offers the Opus encoder at 16 kHz in
+`AVAudioConverter` (otherwise it falls back to PCM16, 256 kbit/s), and which
+route (watch speaker vs. AirPods) the system picks: watchOS routes calls
+itself, so the "speaker"/"bluetooth" route setting is best effort.
+
 ## Build (macOS)
 
 1. Install Xcode 15 or newer (16 recommended) from the App Store, open it

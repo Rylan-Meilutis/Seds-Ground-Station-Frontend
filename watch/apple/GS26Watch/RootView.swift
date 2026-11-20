@@ -11,8 +11,11 @@ struct RootView: View {
 
     @EnvironmentObject private var link: PhoneLink
     @EnvironmentObject private var location: LocationService
+    @EnvironmentObject private var voice: VoiceSession
     @Environment(\.scenePhase) private var scenePhase
     @State private var selection = RootView.statusTag
+    /// Push-to-talk opened from the complication while no voice page is enabled.
+    @State private var voiceSheet = false
 
     var body: some View {
         TabView(selection: $selection) {
@@ -24,6 +27,17 @@ struct RootView: View {
             SettingsView().tag(Self.settingsTag)
         }
         .tabViewStyle(.page)
+        // Complication / Smart Stack widget: gs26://voice opens push-to-talk and joins.
+        .onOpenURL { url in
+            guard url.scheme == "gs26", url.host == "voice" else { return }
+            if let page = link.pages.first(where: { $0.pageKind == .voice }) {
+                selection = page.id
+            } else {
+                voiceSheet = true
+            }
+            voice.join()
+        }
+        .sheet(isPresented: $voiceSheet) { VoicePage() }
         .onChange(of: link.pages.map(\.id)) {
             // A page that disappeared (disabled in settings) falls back to
             // Status, never to Settings.
@@ -178,6 +192,7 @@ struct PageContainer: View {
             case .items: ItemsPage(page: page)
             case .cycle: CyclePage(visible: visible)
             case .compass: CompassPage(visible: visible)
+            case .voice: VoicePage()
             case .unknown: UnknownPage(page: page)
             }
             // Opt-in page actions stay pinned below the content.

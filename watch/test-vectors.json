@@ -2930,5 +2930,907 @@
     "dy": 0.0
    }
   ]
+ },
+ "_comment_voice": "Crew voice on the watch (docs/watch-companion.md 'Voice'). ptt: press-and-hold or tap-to-toggle state machine; send is the transmitting control to send (null: none), haptic the feedback to play (the app applies the haptics settings). backoff: reconnect delay = floor(min(base*2^(attempt-1), cap) * (0.75 + 0.5*jitter)). transport: direct to the GS, else relayed by the phone. frames: binary framing (LE u32 speaker id + payload). mix: playout buffer per speaker, integer sum*volume_pct/100 truncated toward zero, clipped to i16.",
+ "voice": {
+  "ptt": [
+   {
+    "name": "hold_talks_while_pressed",
+    "mode": "hold",
+    "steps": [
+     {
+      "event": "down",
+      "talking": false,
+      "send": null,
+      "haptic": "denied"
+     },
+     {
+      "event": "ready",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": true,
+      "haptic": "start"
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "up",
+      "talking": false,
+      "send": false,
+      "haptic": "stop"
+     },
+     {
+      "event": "up",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     }
+    ]
+   },
+   {
+    "name": "toggle_flips_on_each_press",
+    "mode": "toggle",
+    "steps": [
+     {
+      "event": "ready",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": true,
+      "haptic": "start"
+     },
+     {
+      "event": "up",
+      "talking": true,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": false,
+      "send": false,
+      "haptic": "stop"
+     },
+     {
+      "event": "up",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     }
+    ]
+   },
+   {
+    "name": "stuck_button_times_out",
+    "mode": "toggle",
+    "steps": [
+     {
+      "event": "ready",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": true,
+      "haptic": "start"
+     },
+     {
+      "event": "timeout",
+      "talking": false,
+      "send": false,
+      "haptic": "stop"
+     },
+     {
+      "event": "timeout",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     }
+    ]
+   },
+   {
+    "name": "disconnect_drops_talk_and_reconnect_never_resumes_it",
+    "mode": "hold",
+    "steps": [
+     {
+      "event": "ready",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": true,
+      "haptic": "start"
+     },
+     {
+      "event": "disconnect",
+      "talking": false,
+      "send": null,
+      "haptic": "stop"
+     },
+     {
+      "event": "ready",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "up",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": true,
+      "haptic": "start"
+     }
+    ]
+   },
+   {
+    "name": "held_by_another_device_stops_and_denies",
+    "mode": "hold",
+    "steps": [
+     {
+      "event": "ready",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": true,
+      "haptic": "start"
+     },
+     {
+      "event": "held",
+      "talking": false,
+      "send": false,
+      "haptic": "stop"
+     },
+     {
+      "event": "up",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": false,
+      "send": null,
+      "haptic": "denied"
+     },
+     {
+      "event": "unheld",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "up",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": true,
+      "haptic": "start"
+     }
+    ]
+   },
+   {
+    "name": "leave_stops_talking_cleanly",
+    "mode": "toggle",
+    "steps": [
+     {
+      "event": "ready",
+      "talking": false,
+      "send": null,
+      "haptic": null
+     },
+     {
+      "event": "down",
+      "talking": true,
+      "send": true,
+      "haptic": "start"
+     },
+     {
+      "event": "leave",
+      "talking": false,
+      "send": false,
+      "haptic": "stop"
+     },
+     {
+      "event": "down",
+      "talking": false,
+      "send": null,
+      "haptic": "denied"
+     }
+    ]
+   }
+  ],
+  "max_talk_ms": 60000,
+  "backoff": {
+   "base_ms": 1000,
+   "cap_ms": 30000,
+   "delays": [
+    {
+     "attempt": 1,
+     "jitter": 0.5,
+     "ms": 1000
+    },
+    {
+     "attempt": 2,
+     "jitter": 0.5,
+     "ms": 2000
+    },
+    {
+     "attempt": 3,
+     "jitter": 0.0,
+     "ms": 3000
+    },
+    {
+     "attempt": 4,
+     "jitter": 0.25,
+     "ms": 7000
+    },
+    {
+     "attempt": 5,
+     "jitter": 0.5,
+     "ms": 16000
+    },
+    {
+     "attempt": 6,
+     "jitter": 0.5,
+     "ms": 30000
+    },
+    {
+     "attempt": 12,
+     "jitter": 0.0,
+     "ms": 22500
+    },
+    {
+     "attempt": 40,
+     "jitter": 0.5,
+     "ms": 30000
+    }
+   ],
+   "retryable": [
+    {
+     "error": null,
+     "retry": true
+    },
+    {
+     "error": "Voice channel is full (12 participants)",
+     "retry": true
+    },
+    {
+     "error": "A signed-in account with the voice_transmit permission is required",
+     "retry": false
+    },
+    {
+     "error": "Sign in before joining voice",
+     "retry": false
+    },
+    {
+     "error": "Opus voice is unavailable on this station",
+     "retry": false
+    }
+   ]
+  },
+  "transport": [
+   {
+    "name": "direct_first",
+    "granted": true,
+    "direct_failures": 0,
+    "phone_reachable": true,
+    "transport": "direct"
+   },
+   {
+    "name": "direct_failing_phone_relays",
+    "granted": true,
+    "direct_failures": 2,
+    "phone_reachable": true,
+    "transport": "phone"
+   },
+   {
+    "name": "direct_failing_no_phone_keeps_trying_direct",
+    "granted": true,
+    "direct_failures": 5,
+    "phone_reachable": false,
+    "transport": "direct"
+   },
+   {
+    "name": "one_failure_is_not_enough_to_switch",
+    "granted": true,
+    "direct_failures": 1,
+    "phone_reachable": true,
+    "transport": "direct"
+   },
+   {
+    "name": "no_voice_grant",
+    "granted": false,
+    "direct_failures": 0,
+    "phone_reachable": true,
+    "transport": "none"
+   }
+  ],
+  "frames": {
+   "downlink": [
+    {
+     "name": "pcm_frame",
+     "codec": "pcm16",
+     "hex": "0700000000000100ffffff7f0080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+     "speaker": 7,
+     "payload_len": 640,
+     "valid": true
+    },
+    {
+     "name": "opus_frame",
+     "codec": "opus",
+     "hex": "feffffff780102",
+     "speaker": 4294967294,
+     "payload_len": 3,
+     "valid": true
+    },
+    {
+     "name": "short_pcm_rejected",
+     "codec": "pcm16",
+     "hex": "070000000000000000000000000000000000000000000000",
+     "speaker": 7,
+     "payload_len": 20,
+     "valid": false
+    },
+    {
+     "name": "header_only_rejected",
+     "codec": "opus",
+     "hex": "03000000",
+     "speaker": null,
+     "payload_len": 0,
+     "valid": false
+    },
+    {
+     "name": "oversize_opus_rejected",
+     "codec": "opus",
+     "hex": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+     "speaker": 3,
+     "payload_len": 401,
+     "valid": false
+    }
+   ],
+   "pcm16": [
+    {
+     "samples": [
+      0,
+      1,
+      -1,
+      32767,
+      -32768,
+      256
+     ],
+     "hex": "00000100ffffff7f00800001"
+    }
+   ],
+   "uplink_valid": [
+    {
+     "codec": "pcm16",
+     "len": 640,
+     "valid": true
+    },
+    {
+     "codec": "pcm16",
+     "len": 639,
+     "valid": false
+    },
+    {
+     "codec": "opus",
+     "len": 1,
+     "valid": true
+    },
+    {
+     "codec": "opus",
+     "len": 400,
+     "valid": true
+    },
+    {
+     "codec": "opus",
+     "len": 0,
+     "valid": false
+    },
+    {
+     "codec": "opus",
+     "len": 401,
+     "valid": false
+    }
+   ],
+   "auth": {
+    "token": "gsw1.abc",
+    "codec": "opus",
+    "json": {
+     "type": "auth",
+     "token": "gsw1.abc",
+     "codec": "opus"
+    }
+   },
+   "server": [
+    {
+     "json": {
+      "type": "joined",
+      "id": 5,
+      "sample_rate": 16000,
+      "codec": "opus",
+      "frame_samples": 320,
+      "device": "watch"
+     },
+     "kind": "joined",
+     "id": 5,
+     "codec": "opus"
+    },
+    {
+     "json": {
+      "type": "handoff",
+      "held": true,
+      "by": "watch"
+     },
+     "kind": "handoff",
+     "held": true
+    },
+    {
+     "json": {
+      "type": "error",
+      "message": "Voice channel is full (12 participants)"
+     },
+     "kind": "error",
+     "message": "Voice channel is full (12 participants)"
+    },
+    {
+     "json": {
+      "type": "radio_link",
+      "radio": {
+       "configured": true,
+       "available": false
+      }
+     },
+     "kind": "radio_link",
+     "radio_available": false
+    },
+    {
+     "json": {
+      "type": "future_thing",
+      "x": 1
+     },
+     "kind": "unknown"
+    }
+   ]
+  },
+  "talkers": [
+   {
+    "name": "others_talking_excluding_self",
+    "self": 2,
+    "prev": [
+     {
+      "id": 1,
+      "name": "ada",
+      "transmitting": false,
+      "device": "web"
+     },
+     {
+      "id": 2,
+      "name": "bob",
+      "transmitting": false,
+      "device": "watch"
+     }
+    ],
+    "next": [
+     {
+      "id": 1,
+      "name": "ada",
+      "transmitting": true,
+      "device": "web"
+     },
+     {
+      "id": 2,
+      "name": "bob",
+      "transmitting": true,
+      "device": "watch"
+     },
+     {
+      "id": 3,
+      "name": "cy",
+      "transmitting": true,
+      "device": "watch"
+     }
+    ],
+    "talkers": [
+     "ada",
+     "cy"
+    ],
+    "started": [
+     1,
+     3
+    ]
+   },
+   {
+    "name": "still_talking_is_not_new",
+    "self": 2,
+    "prev": [
+     {
+      "id": 1,
+      "name": "ada",
+      "transmitting": true,
+      "device": "web"
+     }
+    ],
+    "next": [
+     {
+      "id": 1,
+      "name": "ada",
+      "transmitting": true,
+      "device": "web"
+     }
+    ],
+    "talkers": [
+     "ada"
+    ],
+    "started": []
+   }
+  ],
+  "mix": {
+   "frame_samples": 2,
+   "prebuffer": 2,
+   "max_depth": 3,
+   "cases": [
+    {
+     "name": "prebuffers_two_frames_then_plays",
+     "volume_pct": 100,
+     "steps": [
+      {
+       "push": [
+        1,
+        [
+         100,
+         -100
+        ]
+       ]
+      },
+      {
+       "pull": [
+        0,
+        0
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         200,
+         -200
+        ]
+       ]
+      },
+      {
+       "pull": [
+        100,
+        -100
+       ]
+      },
+      {
+       "pull": [
+        200,
+        -200
+       ]
+      },
+      {
+       "pull": [
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "name": "underrun_rebuffers",
+     "volume_pct": 100,
+     "steps": [
+      {
+       "push": [
+        1,
+        [
+         1,
+         1
+        ]
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         2,
+         2
+        ]
+       ]
+      },
+      {
+       "pull": [
+        1,
+        1
+       ]
+      },
+      {
+       "pull": [
+        2,
+        2
+       ]
+      },
+      {
+       "pull": [
+        0,
+        0
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         3,
+         3
+        ]
+       ]
+      },
+      {
+       "pull": [
+        0,
+        0
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         4,
+         4
+        ]
+       ]
+      },
+      {
+       "pull": [
+        3,
+        3
+       ]
+      }
+     ]
+    },
+    {
+     "name": "two_speakers_sum_and_clip",
+     "volume_pct": 100,
+     "steps": [
+      {
+       "push": [
+        1,
+        [
+         30000,
+         -30000
+        ]
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         10,
+         10
+        ]
+       ]
+      },
+      {
+       "push": [
+        2,
+        [
+         30000,
+         -30000
+        ]
+       ]
+      },
+      {
+       "push": [
+        2,
+        [
+         20,
+         20
+        ]
+       ]
+      },
+      {
+       "pull": [
+        32767,
+        -32768
+       ]
+      },
+      {
+       "pull": [
+        30,
+        30
+       ]
+      }
+     ]
+    },
+    {
+     "name": "overflow_drops_oldest",
+     "volume_pct": 100,
+     "steps": [
+      {
+       "push": [
+        1,
+        [
+         1,
+         1
+        ]
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         2,
+         2
+        ]
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         3,
+         3
+        ]
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         4,
+         4
+        ]
+       ]
+      },
+      {
+       "pull": [
+        2,
+        2
+       ]
+      },
+      {
+       "pull": [
+        3,
+        3
+       ]
+      },
+      {
+       "pull": [
+        4,
+        4
+       ]
+      }
+     ]
+    },
+    {
+     "name": "volume_scales_with_truncation",
+     "volume_pct": 150,
+     "steps": [
+      {
+       "push": [
+        1,
+        [
+         101,
+         -101
+        ]
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         30000,
+         -3
+        ]
+       ]
+      },
+      {
+       "pull": [
+        151,
+        -151
+       ]
+      },
+      {
+       "pull": [
+        32767,
+        -4
+       ]
+      }
+     ]
+    },
+    {
+     "name": "removed_speaker_is_silent",
+     "volume_pct": 100,
+     "steps": [
+      {
+       "push": [
+        1,
+        [
+         5,
+         5
+        ]
+       ]
+      },
+      {
+       "push": [
+        1,
+        [
+         6,
+         6
+        ]
+       ]
+      },
+      {
+       "remove": 1
+      },
+      {
+       "pull": [
+        0,
+        0
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "volume": [
+   {
+    "pct": 100,
+    "steps": 1,
+    "result": 105
+   },
+   {
+    "pct": 100,
+    "steps": -3,
+    "result": 85
+   },
+   {
+    "pct": 145,
+    "steps": 4,
+    "result": 150
+   },
+   {
+    "pct": 5,
+    "steps": -2,
+    "result": 0
+   },
+   {
+    "pct": 0,
+    "steps": 0,
+    "result": 0
+   }
+  ]
  }
 }
