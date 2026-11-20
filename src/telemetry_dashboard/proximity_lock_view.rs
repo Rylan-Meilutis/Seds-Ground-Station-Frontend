@@ -704,8 +704,10 @@ pub(super) fn ProximityAdminSettings(theme: ThemeConfig) -> Element {
                 div { role: "group", "aria-label": "Blocked actions", style: "display:flex;flex-wrap:wrap;gap:12px;",
                     span { style: "font-weight:700;", "Block:" }
                     label { input { r#type: "checkbox", checked: next.blocks.arming, onchange: move |e| draft.with_mut(|d| d.blocks.arming = e.checked()) } " Arming (Postinit, Advance, automatic Armed, LIVE PYRO)" }
-                    label { input { r#type: "checkbox", checked: next.blocks.fill, onchange: move |e| draft.with_mut(|d| d.blocks.fill = e.checked()) } " Fill and pressurizing (supply opens, fill, nitrogen test, turbocharge, valve self-test)" }
-                    label { input { r#type: "checkbox", checked: next.blocks.launch, onchange: move |e| draft.with_mut(|d| d.blocks.launch = e.checked()) } " Launch and ignition" }
+                    label { input { r#type: "checkbox", checked: next.blocks.fill, onchange: move |e| draft.with_mut(|d| d.blocks.fill = e.checked()) } " Fill sequences (fill, nitrogen test, turbocharge)" }
+                    label { input { r#type: "checkbox", checked: next.blocks.launch, onchange: move |e| draft.with_mut(|d| d.blocks.launch = e.checked()) } " Launch sequences and ignition" }
+                    label { input { r#type: "checkbox", checked: next.blocks.manual_valves, onchange: move |e| draft.with_mut(|d| d.blocks.manual_valves = e.checked()) } " Single manual valve opens (Nitrogen, Nitrous, PILOT)" }
+                    small { style: "flex-basis:100%;opacity:0.8;", "The valve self-test and safing (Abort, vent, dump, closes) are never blocked." }
                 }
                 div { role: "radiogroup", "aria-label": "Devices that stop reporting", style: "display:grid;gap:4px;",
                     span { style: "font-weight:700;", "A participating device that stops reporting:" }
@@ -775,10 +777,11 @@ pub(crate) fn settings_confirm_lines(current: &Settings, next: &Settings) -> Vec
     if current.blocks != next.blocks {
         let on = |b: bool| if b { "blocked" } else { "allowed" };
         lines.push(format!(
-            "Arming {}, fill/pressurizing {}, launch/ignition {}.",
+            "Arming {}, fill sequences {}, launch/ignition {}, manual valve opens {}.",
             on(next.blocks.arming),
             on(next.blocks.fill),
-            on(next.blocks.launch)
+            on(next.blocks.launch),
+            on(next.blocks.manual_valves)
         ));
     }
     if current.stale_policy != next.stale_policy {

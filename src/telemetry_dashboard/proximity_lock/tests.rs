@@ -276,7 +276,7 @@ fn settings_and_override_requests() {
         Settings { radius_m: 2001, ..next },
         Settings { exit_margin_m: 4, ..next },
         Settings { heartbeat_timeout_s: 29, ..next },
-        Settings { blocks: Blocks { arming: false, fill: false, launch: false }, ..next },
+        Settings { blocks: Blocks { arming: false, fill: false, launch: false, manual_valves: false }, ..next },
     ] {
         assert!(validate_settings(&bad).is_err(), "{bad:?}");
     }

@@ -52,11 +52,14 @@ pub(crate) struct Blocks {
     pub arming: bool,
     pub fill: bool,
     pub launch: bool,
+    /// Single manual valve opens; off by default so pad crew can work valves.
+    #[serde(default)]
+    pub manual_valves: bool,
 }
 
 impl Default for Blocks {
     fn default() -> Self {
-        Self { arming: true, fill: true, launch: true }
+        Self { arming: true, fill: true, launch: true, manual_valves: false }
     }
 }
 
@@ -616,7 +619,7 @@ pub(crate) fn validate_settings(s: &Settings) -> Result<(), String> {
     if !(30..=600).contains(&s.heartbeat_timeout_s) {
         return Err("The heartbeat timeout must be 30–600 s.".into());
     }
-    if s.enabled && !(s.blocks.arming || s.blocks.fill || s.blocks.launch) {
+    if s.enabled && !(s.blocks.arming || s.blocks.fill || s.blocks.launch || s.blocks.manual_valves) {
         return Err("Choose at least one action class to block.".into());
     }
     Ok(())
