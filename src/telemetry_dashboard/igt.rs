@@ -56,6 +56,32 @@ pub(crate) struct IgtStatus {
     pub station_mode_igt: bool,
     /// Wall time of the last FC report; null before the first one.
     pub updated_ms: Option<u64>,
+    /// "ground_test" | "flight" | "unknown" (word 14 bit 7). Empty from an
+    /// older station.
+    pub fc_image: String,
+    /// Launch (and GroundStationLaunch) refused: a ground-test image was seen
+    /// in normal or test fire and no flight image has been reported since.
+    pub launch_latched: bool,
+    pub launch_latch_reason: Option<String>,
+    /// Image warning or note for every view, or null.
+    pub image_notice: Option<ImageNotice>,
+    /// Ground-test presentation applies: integrated_ground_test, or HITL with
+    /// the HITL ground-test replay on.
+    pub igt_active: bool,
+    pub mock_wet_dress: bool,
+    pub hitl_replay: bool,
+    /// FC SD card (BOARD_HEALTH word 6 bit 30, inverted); null before a report.
+    pub sd_ready: Option<bool>,
+    /// An `FcSdRetry` is waiting for the FC's SD task (word 6 bit 31).
+    pub sd_retry_pending: bool,
+}
+
+/// `image_notice`: `{level: "warning" | "info", text}`.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub(crate) struct ImageNotice {
+    pub level: String,
+    pub text: String,
 }
 
 pub(crate) static IGT_STATUS: GlobalSignal<Option<IgtStatus>> = Signal::global(|| None);
@@ -81,10 +107,15 @@ impl IgtStatus {
     pub(crate) fn reason_words(&self) -> Option<String> {
         let text = self.reason_text.trim();
         if !text.is_empty() {
-            return Some(text.chars().filter(|c| !c.is_control()).take(240).collect());
+            return Some(clean(text, 240));
         }
         reason_label(self.reason).map(str::to_owned)
     }
+}
+
+/// Station text shown in the UI: no control characters, bounded.
+fn clean(text: &str, max: usize) -> String {
+    text.chars().filter(|c| !c.is_control()).take(max).collect::<String>().trim().to_owned()
 }
 
 pub(crate) fn fc_mode_label(mode: &str) -> &'static str {
@@ -110,7 +141,7 @@ pub(crate) fn reason_label(code: u8) -> Option<&'static str> {
         6 => "CSV value out of range",
         7 => "CSV data too short",
         8 => "vehicle not stationary at Launch",
-        9 => "real motion: replay abandoned, dry-run cleared",
+        9 => "reason 9 (unused)",
         10 => "SD ring underrun (info)",
         11 => "refused in the FC's current state",
         12 => "replay data ended before landing (info)",
@@ -118,14 +149,20 @@ pub(crate) fn reason_label(code: u8) -> Option<&'static str> {
     })
 }
 
-/// IGT presentation applies when the station reports the IGT mode, or (with
-/// no mode read yet) the IGT status says the station is in it.
+/// Ground-test presentation applies in integrated_ground_test, and in HITL
+/// when the station reports the HITL ground-test replay on (`igt_active`).
+/// Any other station mode wins over a stale status; with no mode read yet the
+/// status decides.
 pub(crate) fn active(mode_snapshot: &Value, status: Option<&IgtStatus>) -> bool {
     match mode_snapshot["effective_mode"].as_str() {
-        Some(mode) => mode == MODE,
-        None => status.is_some_and(|s| s.station_mode_igt),
+        Some(MODE) => true,
+        Some(HITL_MODE) => status.is_some_and(|s| s.igt_active),
+        Some(_) => false,
+        None => status.is_some_and(|s| s.igt_active || s.station_mode_igt),
     }
 }
+
+pub(crate) const HITL_MODE: &str = "hitl";
 
 pub(crate) fn current_active() -> bool {
     active(&super::station_mode::current_snapshot(), IGT_STATUS.read().as_ref())
@@ -200,7 +237,7 @@ pub(crate) fn banner(active: bool, status: Option<&IgtStatus>) -> Option<Banner>
         });
     };
     let pyro = if s.live_pyro { Pyro::Live } else { Pyro::DryRun };
-    let fault = if !s.supported && s.updated_ms.is_some() {
+    let fault = if s.fc_image == "flight" || (!s.supported && s.updated_ms.is_some()) {
         Some("FC has no ground-test support (flight image). Enter and the IGT Launch are refused.".into())
     } else if s.fault() {
         Some(format!("FC IGT fault: {}", s.reason_words().unwrap_or_else(|| format!("reason {}", s.reason))))
@@ -231,6 +268,194 @@ pub(crate) fn banner(active: bool, status: Option<&IgtStatus>) -> Option<Banner>
         fault,
         notes,
     })
+}
+
+// ---------------------------------------------------------------------------
+// FC image notice and the Launch latch (section 7.1)
+// ---------------------------------------------------------------------------
+
+/// The station's latch text, used when a latched status carries none.
+pub(crate) const LATCH_REASON: &str =
+    "FC is running a ground-test image (dry-run capable): Launch is blocked until the FC reports a flight image";
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NoticeView {
+    /// Warning bar; otherwise an unobtrusive note.
+    pub warning: bool,
+    pub text: String,
+}
+
+/// The image notice to show on every view, in any station mode. Unknown
+/// levels show as a note; empty text shows nothing.
+pub(crate) fn image_notice(status: Option<&IgtStatus>) -> Option<NoticeView> {
+    let notice = status?.image_notice.as_ref()?;
+    let text = clean(&notice.text, 400);
+    (!text.is_empty()).then(|| NoticeView { warning: notice.level.eq_ignore_ascii_case("warning"), text })
+}
+
+/// Why Launch is latched closed, or None.
+pub(crate) fn launch_latch(status: Option<&IgtStatus>) -> Option<String> {
+    let s = status.filter(|s| s.launch_latched)?;
+    let reason = s.launch_latch_reason.as_deref().map(|r| clean(r, 400)).unwrap_or_default();
+    Some(if reason.is_empty() { LATCH_REASON.to_owned() } else { reason })
+}
+
+pub(crate) fn current_launch_latch() -> Option<String> {
+    launch_latch(IGT_STATUS.read().as_ref())
+}
+
+/// The full disabled reason for a Launch control: the latch reason wins over
+/// a shorter policy reason, so it is never lost to truncation.
+pub(crate) fn launch_reason(policy_reason: Option<&str>, latch: Option<&str>) -> Option<String> {
+    match (latch, policy_reason) {
+        (Some(latch), Some(policy)) if policy.contains(latch) => Some(policy.to_owned()),
+        (Some(latch), _) => Some(latch.to_owned()),
+        (None, policy) => policy.map(str::to_owned),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FC SD card (section 7.5)
+// ---------------------------------------------------------------------------
+
+pub(crate) const SD_RETRY: &str = "FcSdRetry";
+pub(crate) const SD_NOT_READY: &str = "FC SD card not mounted / not writable";
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SdView {
+    pub warning: bool,
+    pub text: String,
+}
+
+/// The FC SD state for the Retry SD control.
+pub(crate) fn sd_view(status: Option<&IgtStatus>) -> SdView {
+    let pending = status.is_some_and(|s| s.sd_retry_pending);
+    let (warning, base) = match status.and_then(|s| s.sd_ready) {
+        Some(true) => (false, "FC SD card ready"),
+        Some(false) => (true, SD_NOT_READY),
+        None => (false, "FC SD card: no report yet"),
+    };
+    let text = if pending { format!("{base} · Retry pending") } else { base.to_owned() };
+    SdView { warning, text }
+}
+
+/// Retry SD is refused while one is still pending on the FC.
+pub(crate) fn sd_retry_blocked(status: Option<&IgtStatus>) -> Option<&'static str> {
+    status.is_some_and(|s| s.sd_retry_pending).then_some("An SD retry is already pending on the FC.")
+}
+
+// ---------------------------------------------------------------------------
+// Ground-test settings: mock wet dress, HITL replay (sections 7.2, 7.3)
+// ---------------------------------------------------------------------------
+
+pub(crate) const SETTINGS_PATH: &str = "/api/igt/settings";
+
+/// `GET /api/igt/settings` (and the PUT reply, when it echoes them).
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) struct IgtSettings {
+    pub mock_wet_dress: bool,
+    pub hitl_replay: bool,
+}
+
+/// `PUT /api/igt/settings`: only the field being changed.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) struct SettingsUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mock_wet_dress: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hitl_replay: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Toggle {
+    MockWetDress,
+    HitlReplay,
+}
+
+impl Toggle {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::MockWetDress => "mock_wet_dress",
+            Self::HitlReplay => "hitl_replay",
+        }
+    }
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::MockWetDress => "Mock wet dress (flight fill steps)",
+            Self::HitlReplay => "HITL ground-test replay",
+        }
+    }
+    pub(crate) fn help(self) -> &'static str {
+        match self {
+            Self::MockWetDress => "The ground test runs the flight fill steps (nitrogen fill and the normally-open checks) instead of the test-fire fill sequence.",
+            Self::HitlReplay => "HITL keeps its own fill side; the FC's SD-card replay is the flight data source, with the Ground test controls and SIMULATED labels.",
+        }
+    }
+    /// The station modes that offer this toggle.
+    pub(crate) fn offered(self, effective_mode: Option<&str>) -> bool {
+        match self {
+            Self::MockWetDress => effective_mode == Some(MODE),
+            Self::HitlReplay => effective_mode == Some(HITL_MODE),
+        }
+    }
+    pub(crate) fn value(self, status: Option<&IgtStatus>) -> Option<bool> {
+        let s = status?;
+        Some(match self {
+            Self::MockWetDress => s.mock_wet_dress,
+            Self::HitlReplay => s.hitl_replay,
+        })
+    }
+    pub(crate) fn update(self, on: bool) -> SettingsUpdate {
+        match self {
+            Self::MockWetDress => SettingsUpdate { mock_wet_dress: Some(on), hitl_replay: None },
+            Self::HitlReplay => SettingsUpdate { mock_wet_dress: None, hitl_replay: Some(on) },
+        }
+    }
+    /// The confirm dialog for turning it `on` or off: (title, lines, button).
+    pub(crate) fn confirm_copy(self, on: bool) -> (&'static str, &'static [&'static str], &'static str) {
+        match (self, on) {
+            (Self::MockWetDress, true) => ("Turn on mock wet dress?", &[
+                "The integrated ground test will run the FLIGHT fill steps instead of the test-fire fill sequence: the nitrogen fill step and the normally-open checks.",
+                "It is a station setting: it stays on for every operator, and across restarts, until an administrator turns it off.",
+            ], "Turn on mock wet dress"),
+            (Self::MockWetDress, false) => ("Turn off mock wet dress?", &[
+                "The integrated ground test goes back to the test-fire fill sequence.",
+            ], "Turn off mock wet dress"),
+            (Self::HitlReplay, true) => ("Turn on the HITL ground-test replay?", &[
+                "HITL keeps its own fill rules (HITL GSE path, interlocks and the bench or simulated plant), and the FC's SD-card CSV replay becomes the flight data source.",
+                "The Ground test section, the IGT commands, the SIMULATED banner and labels appear as in Integrated ground test. Launch needs FC IGT Ready, and Advance and Rewind are refused while the FC replays.",
+                "The FC must be running the ground-test image.",
+            ], "Turn on HITL replay"),
+            (Self::HitlReplay, false) => ("Turn off the HITL ground-test replay?", &[
+                "HITL goes back to its normal flight data; the ground-test controls and SIMULATED labels go away.",
+            ], "Turn off HITL replay"),
+        }
+    }
+}
+
+/// Why a settings toggle cannot be changed now, or None.
+pub(crate) fn toggle_disabled_reason(admin: bool, connected: bool, rrls: bool, inhibited: bool) -> Option<String> {
+    if rrls {
+        Some("Ground-test settings are changed at the primary ground station.".into())
+    } else if !admin {
+        Some("Administrator required.".into())
+    } else if inhibited {
+        Some("Actions Disabled is on (header toggle).".into())
+    } else if !connected {
+        Some("Not connected to the ground station.".into())
+    } else {
+        None
+    }
+}
+
+/// Fold a settings reply into the shown status.
+pub(crate) fn apply_settings(settings: IgtSettings) {
+    let Some(mut next) = IGT_STATUS.peek().clone() else { return };
+    if (next.mock_wet_dress, next.hitl_replay) != (settings.mock_wet_dress, settings.hitl_replay) {
+        next.mock_wet_dress = settings.mock_wet_dress;
+        next.hitl_replay = settings.hitl_replay;
+        *IGT_STATUS.write() = Some(next);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -353,10 +578,12 @@ pub(crate) fn enter_disabled_reason(
         return Some("Not connected to the ground station.".into());
     }
     if !station_igt {
-        return Some("Switch the station to Integrated ground test first (Settings > Station).".into());
+        return Some("Switch the station to Integrated ground test (Settings > Station), or turn on the HITL ground-test replay in HITL, first.".into());
     }
     match status {
-        Some(s) if s.updated_ms.is_some() && !s.supported => Some("The FC has no ground-test support (flight image).".into()),
+        Some(s) if s.fc_image == "flight" || (s.updated_ms.is_some() && !s.supported) => {
+            Some("The FC has no ground-test support (flight image).".into())
+        }
         Some(s) if matches!(s.mode(), "validating" | "ready" | "sim") => {
             Some(format!("FC IGT is already {}.", s.mode_label()))
         }
@@ -373,7 +600,7 @@ pub(crate) const ENTER_LINES: [&str; 4] = [
 ];
 pub(crate) const LIVE_PYRO_TITLE: &str = "Arm LIVE PYRO on the stand?";
 pub(crate) const LIVE_PYRO_LINES: [&str; 3] = [
-    "The REAL drogue (CO2) and line-cutter / main (REEF) charges WILL FIRE on the stand when the replayed flight reaches apogee and the reefing altitude.",
+    "The REAL drogue (CO2) and main (REEF) charges WILL FIRE on the stand when the replayed flight reaches apogee and the reefing altitude.",
     "Only arm this with the charges you intend to fire installed, the stand area clear and the recovery hardware restrained.",
     "Dry-run disarms it at any time, including after Launch. Any FC reset or Abort returns the FC to Off.",
 ];
@@ -679,8 +906,8 @@ mod tests {
         let fault = status(json!({"supported": true, "fc_mode": "fault", "reason": 2,
             "reason_text": "IGT BARO0.CSV missing", "updated_ms": 3}));
         assert_eq!(banner(true, Some(&fault)).unwrap().fault.as_deref(), Some("FC IGT fault: IGT BARO0.CSV missing"));
-        let coded = status(json!({"supported": true, "fc_mode": "fault", "reason": 9, "updated_ms": 3}));
-        assert!(banner(true, Some(&coded)).unwrap().fault.unwrap().contains("real motion"));
+        let coded = status(json!({"supported": true, "fc_mode": "fault", "reason": 6, "updated_ms": 3}));
+        assert!(banner(true, Some(&coded)).unwrap().fault.unwrap().contains("value out of range"));
         let flight_image = status(json!({"supported": false, "fc_mode": "off", "updated_ms": 3}));
         assert!(banner(true, Some(&flight_image)).unwrap().fault.unwrap().contains("no ground-test support"));
 
@@ -696,6 +923,153 @@ mod tests {
 
         let unknown = banner(true, None).unwrap();
         assert_eq!((unknown.pyro, unknown.gps), (Pyro::Unknown, "GPS: unknown"));
+    }
+
+    #[test]
+    fn igt_status_decodes_the_round_two_fields() {
+        let s = status(json!({
+            "supported": true, "fc_mode": "off", "live_pyro": false, "gps_simulated": false,
+            "drogue_dry_run": false, "main_dry_run": false, "reason": 0, "reason_text": "",
+            "station_mode_igt": false, "updated_ms": 10,
+            "fc_image": "ground_test", "launch_latched": true,
+            "launch_latch_reason": LATCH_REASON,
+            "image_notice": {"level": "warning", "text": "FC is running a ground-test image"},
+            "igt_active": false, "mock_wet_dress": true, "hitl_replay": false,
+            "sd_ready": false, "sd_retry_pending": true
+        }));
+        assert_eq!(s.fc_image, "ground_test");
+        assert!(s.launch_latched && s.mock_wet_dress && !s.hitl_replay && !s.igt_active && s.sd_retry_pending);
+        assert_eq!(s.launch_latch_reason.as_deref(), Some(LATCH_REASON));
+        assert_eq!(s.image_notice, Some(ImageNotice { level: "warning".into(), text: "FC is running a ground-test image".into() }));
+        assert_eq!(s.sd_ready, Some(false));
+        // An older station: every new field defaults.
+        let old = status(json!({"supported": true, "fc_mode": "ready", "station_mode_igt": true, "updated_ms": 1}));
+        assert_eq!((old.fc_image.as_str(), old.launch_latched, old.launch_latch_reason.clone()), ("", false, None));
+        assert_eq!((old.image_notice.clone(), old.igt_active, old.mock_wet_dress, old.hitl_replay), (None, false, false, false));
+        assert_eq!((old.sd_ready, old.sd_retry_pending), (None, false));
+        // Nulls decode as absent.
+        let nulls = status(json!({"launch_latch_reason": null, "image_notice": null, "sd_ready": null}));
+        assert_eq!((nulls.launch_latch_reason, nulls.image_notice, nulls.sd_ready), (None, None, None));
+    }
+
+    #[test]
+    fn ground_test_presentation_keys_off_igt_active() {
+        let hitl = json!({"effective_mode": "hitl"});
+        let replay = status(json!({"supported": true, "igt_active": true, "hitl_replay": true, "updated_ms": 1}));
+        let plain = status(json!({"igt_active": false, "updated_ms": 1}));
+        assert!(active(&hitl, Some(&replay)), "HITL with the replay on");
+        assert!(!active(&hitl, Some(&plain)) && !active(&hitl, None));
+        assert!(banner(active(&hitl, Some(&replay)), Some(&replay)).is_some());
+        assert!(active(&json!({"effective_mode": "integrated_ground_test"}), Some(&plain)), "the IGT mode always");
+        for mode in ["normal", "test_fire", "testing"] {
+            assert!(!active(&json!({"effective_mode": mode}), Some(&replay)), "{mode}: a stale status never wins");
+        }
+        assert!(active(&Value::Null, Some(&replay)), "no mode read yet: the status decides");
+        // Enter is open in HITL with the replay (the caller passes `active`).
+        assert_eq!(enter_disabled_reason(Some(&replay), true, true, false, true), None);
+        assert!(enter_disabled_reason(Some(&plain), true, true, false, false).unwrap().contains("HITL ground-test replay"));
+    }
+
+    #[test]
+    fn image_notice_by_level() {
+        let warn = status(json!({"image_notice": {"level": "warning",
+            "text": "FC is running a flight image: integrated ground test unavailable, flash the ground-test image"}}));
+        let n = image_notice(Some(&warn)).unwrap();
+        assert!(n.warning && n.text.starts_with("FC is running a flight image"));
+        let info = status(json!({"image_notice": {"level": "info", "text": "FC is running the ground-test image"}}));
+        assert!(!image_notice(Some(&info)).unwrap().warning);
+        let odd = status(json!({"image_notice": {"level": "later", "text": "x"}}));
+        assert!(!image_notice(Some(&odd)).unwrap().warning, "an unknown level is a note");
+        let blank = status(json!({"image_notice": {"level": "warning", "text": " \u{7} "}}));
+        assert_eq!(image_notice(Some(&blank)), None);
+        assert_eq!(image_notice(Some(&status(json!({})))), None);
+        assert_eq!(image_notice(None), None);
+        // A flight image in IGT is a banner fault too, even before `supported` arrives.
+        let flight = status(json!({"supported": false, "fc_image": "flight"}));
+        assert!(banner(true, Some(&flight)).unwrap().fault.unwrap().contains("flight image"));
+    }
+
+    #[test]
+    fn launch_latch_reason_is_shown_in_full() {
+        let long = format!("{LATCH_REASON}. Flash the flight image and power-cycle the FC; the latch clears on its next BOARD_HEALTH.");
+        let latched = status(json!({"launch_latched": true, "launch_latch_reason": long}));
+        assert_eq!(launch_latch(Some(&latched)).as_deref(), Some(long.as_str()), "not truncated");
+        let bare = status(json!({"launch_latched": true}));
+        assert_eq!(launch_latch(Some(&bare)).as_deref(), Some(LATCH_REASON));
+        let clear = status(json!({"launch_latched": false, "launch_latch_reason": "stale"}));
+        assert_eq!(launch_latch(Some(&clear)), None);
+        // The Launch control's reason: the latch wins; a policy text that
+        // already carries it is kept whole.
+        assert_eq!(launch_reason(Some("Fill not complete"), Some(LATCH_REASON)).as_deref(), Some(LATCH_REASON));
+        let policy = format!("Launch blocked: {LATCH_REASON}");
+        assert_eq!(launch_reason(Some(&policy), Some(LATCH_REASON)).as_deref(), Some(policy.as_str()));
+        assert_eq!(launch_reason(Some("Fill not complete"), None).as_deref(), Some("Fill not complete"));
+        assert_eq!(launch_reason(None, None), None);
+    }
+
+    #[test]
+    fn sd_state_and_retry() {
+        assert_eq!(sd_view(Some(&status(json!({"sd_ready": false})))), SdView { warning: true, text: SD_NOT_READY.into() });
+        let pending = status(json!({"sd_ready": false, "sd_retry_pending": true}));
+        assert_eq!(sd_view(Some(&pending)).text, "FC SD card not mounted / not writable · Retry pending");
+        assert!(sd_retry_blocked(Some(&pending)).unwrap().contains("already pending"));
+        let ok = status(json!({"sd_ready": true}));
+        assert!(!sd_view(Some(&ok)).warning && sd_retry_blocked(Some(&ok)).is_none());
+        assert!(sd_view(None).text.contains("no report"));
+        assert_eq!(SD_RETRY, "FcSdRetry");
+    }
+
+    #[test]
+    fn settings_toggles_are_admin_only_and_send_one_field() {
+        assert_eq!(serde_json::to_value(Toggle::MockWetDress.update(true)).unwrap(), json!({"mock_wet_dress": true}));
+        assert_eq!(serde_json::to_value(Toggle::MockWetDress.update(false)).unwrap(), json!({"mock_wet_dress": false}));
+        assert_eq!(serde_json::to_value(Toggle::HitlReplay.update(true)).unwrap(), json!({"hitl_replay": true}));
+        let got: IgtSettings = serde_json::from_value(json!({"mock_wet_dress": true, "hitl_replay": false})).unwrap();
+        assert_eq!(got, IgtSettings { mock_wet_dress: true, hitl_replay: false });
+        assert_eq!(SETTINGS_PATH, "/api/igt/settings");
+        assert!(toggle_disabled_reason(false, true, false, false).unwrap().contains("Administrator"));
+        assert_eq!(toggle_disabled_reason(true, true, false, false), None);
+        assert!(toggle_disabled_reason(true, false, false, false).is_some());
+        assert!(toggle_disabled_reason(true, true, true, false).is_some());
+        assert!(toggle_disabled_reason(true, true, false, true).is_some());
+        assert!(Toggle::MockWetDress.offered(Some("integrated_ground_test")) && !Toggle::MockWetDress.offered(Some("hitl")));
+        assert!(Toggle::HitlReplay.offered(Some("hitl")) && !Toggle::HitlReplay.offered(Some("integrated_ground_test")));
+        assert!(!Toggle::HitlReplay.offered(Some("normal")) && !Toggle::MockWetDress.offered(None));
+        let s = status(json!({"mock_wet_dress": true, "hitl_replay": false}));
+        assert_eq!((Toggle::MockWetDress.value(Some(&s)), Toggle::HitlReplay.value(Some(&s))), (Some(true), Some(false)));
+        assert_eq!(Toggle::MockWetDress.value(None), None);
+        for toggle in [Toggle::MockWetDress, Toggle::HitlReplay] {
+            for on in [true, false] {
+                let (title, lines, button) = toggle.confirm_copy(on);
+                assert!(!title.is_empty() && !lines.is_empty() && !button.is_empty());
+            }
+        }
+        assert!(Toggle::MockWetDress.confirm_copy(true).1.iter().any(|l| l.contains("flight fill steps") || l.contains("FLIGHT fill steps")));
+    }
+
+    #[test]
+    fn the_two_pyro_channels_are_drogue_and_main_everywhere_in_the_ui() {
+        // The FC has exactly two pyro channels, drogue and main, and the UI
+        // names them only that way (no third, cutter-style name).
+        let needles = [["line", " cutter"].concat(), ["line", "-cutter"].concat(), ["line", "cutter"].concat()];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut stack = vec![root.join("src"), root.join("static"), root.join("assets"), root.join("station_ui")];
+        let mut hits = Vec::new();
+        while let Some(path) = stack.pop() {
+            let Ok(meta) = std::fs::metadata(&path) else { continue };
+            if meta.is_dir() {
+                for entry in std::fs::read_dir(&path).unwrap().flatten() {
+                    stack.push(entry.path());
+                }
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                let lower = text.to_ascii_lowercase();
+                if needles.iter().any(|n| lower.contains(n.as_str())) {
+                    hits.push(path.display().to_string());
+                }
+            }
+        }
+        assert!(hits.is_empty(), "a third pyro name in {hits:?}");
+        assert!(LIVE_PYRO_LINES[0].contains("drogue (CO2) and main (REEF)"));
     }
 
     #[test]

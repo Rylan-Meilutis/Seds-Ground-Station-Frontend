@@ -505,8 +505,8 @@ pub(super) fn GsePanel(
                     span {"Latest board observation"}
                     if show_model {span {"Animation indicates sequence activity, not measured flow"}}
                 }
-                if let Some(reason) = launch_block_reason(&action_policy.read()) {
-                    p {role:"status",style:"margin:0;padding:8px 10px;border:1px solid #b77b18;border-radius:8px;background:#3b2c11;color:#ffdc8a;", "Launch blocked: {reason}"}
+                if let Some(reason) = super::igt::launch_reason(launch_block_reason(&action_policy.read()).as_deref(), super::igt::current_launch_latch().as_deref()) {
+                    p {role:"status","data-launch-blocked":"",style:"margin:0;overflow-wrap:anywhere;padding:8px 10px;border:1px solid #b77b18;border-radius:8px;background:#3b2c11;color:#ffdc8a;", "Launch blocked: {reason}"}
                 }
                 OverpressureAcknowledge {
                     latched: snapshot.overpressure_latched,

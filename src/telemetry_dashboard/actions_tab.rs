@@ -800,6 +800,14 @@ const GSE_SEQUENCE_GROUP: &str = "GSE sequence actions";
 
 /// Whether an action button can be pressed: unchanged gating, shared by the
 /// button and its section header count.
+/// Retry SD while one is still pending on the FC.
+fn sd_retry_block(cmd: &str) -> Option<&'static str> {
+    if cmd != super::igt::SD_RETRY {
+        return None;
+    }
+    super::igt::sd_retry_blocked(super::igt::IGT_STATUS.read().as_ref())
+}
+
 fn action_enabled(action_cmd: &str, dispatch_cmd: &str, policy: &ActionPolicyMsg, self_test_confirmed: bool, abort_only_mode: bool) -> bool {
     action_policy_control_enabled(policy, dispatch_cmd)
         && auth::can_send_command(dispatch_cmd)
@@ -972,8 +980,14 @@ pub fn ActionsTab(
     let held_supply = match supply_gesture.read().as_ref() { Some(SupplyGesture::Armed { base, .. }) => Some(base.clone()), _ => None };
     let mut by_section: BTreeMap<ActionSection, Vec<&ActionSpec>> = BTreeMap::new();
     let mut summaries: BTreeMap<ActionSection, SectionSummary> = BTreeMap::new();
+    let igt_active = super::igt::current_active();
     for &action in &visible_actions {
         let section = ActionSection::of(action.section);
+        // HITL lists the ground-test commands; they apply (and show) only
+        // with the HITL ground-test replay on.
+        if section == ActionSection::GroundTest && !sections::ground_test_controls_shown(operating_mode, igt_active) {
+            continue;
+        }
         by_section.entry(section).or_default().push(action);
         let control = action_policy_snapshot.controls.iter().find(|c| c.cmd == action.cmd);
         let dispatch_cmd = supply_dispatch_command(&action.cmd, control.and_then(|c| c.actuated));
@@ -983,6 +997,7 @@ pub fn ActionsTab(
             !abort_only_mode && super::igt_view::ticket_disabled_reason(&action.cmd).is_none()
         } else {
             action_enabled(&action.cmd, dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode)
+                && sd_retry_block(&action.cmd).is_none()
         };
         let sequence = SEQUENCE_INDICATOR_COMMANDS.iter().position(|command| *command == action.cmd)
             .and_then(|index| displayed_sequence.read()[index]);
@@ -997,7 +1012,9 @@ pub fn ActionsTab(
             enabled, action_blink(&action.cmd, control, sequence), sequence, progress.as_ref(), pending, proxy_rejected));
     }
     let present: BTreeSet<ActionSection> = by_section.keys().copied().collect();
-    let section_views: Vec<(ActionSection, bool, SectionSummary, Vec<ActionLayoutRow>)> = sections::arrange(operating_mode, &present)
+    let sd_retry_in_ground_test = by_section.get(&ActionSection::GroundTest)
+        .is_some_and(|actions| actions.iter().any(|action| action.cmd == super::igt::SD_RETRY));
+    let section_views: Vec<(ActionSection, bool, SectionSummary, Vec<ActionLayoutRow>)> = sections::arrange_for(operating_mode, &present, igt_active)
         .into_iter()
         .map(|(section, default_open)| {
             let mut summary = summaries.get(&section).copied().unwrap_or_default();
@@ -1076,7 +1093,11 @@ pub fn ActionsTab(
                         div {
                             id: "gs26-actions-section-{section.id()}",
                             style: "display:flex; flex-direction:column; gap:var(--gs-space-3); width:100%; max-width:none; min-width:0; box-sizing:border-box; align-self:stretch;",
+                            if *section == ActionSection::GroundTest {
+                                super::igt_view::GroundTestPanel {inhibited:abort_only_mode,retry_in_section:sd_retry_in_ground_test}
+                            }
                             if *section == ActionSection::Safety {
+                            super::igt_view::CurrentLaunchLatch {}
                             super::board_abort_readiness::BoardAbortReadiness {show_hitl_interlocks:true}
                             section {"aria-label":"Recovery actions",class:"gs26-actions-stack",
                                 super::recovery_status::RecoveryStatus {}
@@ -1209,7 +1230,14 @@ pub fn ActionsTab(
                                                         let is_supply = matches!(action.cmd.as_str(), "Nitrogen" | "Nitrous");
                                                         let dispatch_cmd = supply_dispatch_command(&action.cmd, control.as_ref().and_then(|c| c.actuated)).to_owned();
                                                         let dispatch_control = action_policy_snapshot.controls.iter().find(|c| c.cmd == dispatch_cmd);
-                                                        let enabled = action_enabled(&action.cmd, &dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode);
+                                                        let sd_blocked = sd_retry_block(&action.cmd);
+                                                        let enabled = action_enabled(&action.cmd, &dispatch_cmd, &action_policy_snapshot, self_test_confirmation.read().confirmed(), abort_only_mode)
+                                                            && sd_blocked.is_none();
+                                                        // A Launch latched closed by a ground-test FC image says so in
+                                                        // full, never clipped to the card's two lines.
+                                                        let latch_reason = matches!(action.cmd.as_str(), "Launch" | "GroundStationLaunch")
+                                                            .then(super::igt::current_launch_latch).flatten()
+                                                            .and_then(|latch| super::igt::launch_reason(dispatch_control.and_then(backend_disabled_reason), Some(&latch)));
                                                         // Every disabled action shows why (Launch included), not only
                                                         // the GSE sequence group.
                                                         let proxy_reason = auth::primary_proxy_unavailable_reason(&dispatch_cmd);
@@ -1221,6 +1249,10 @@ pub fn ActionsTab(
                                                             Some("Not permitted by your account")
                                                         } else if abort_only_mode {
                                                             Some("Actions Disabled is on (header toggle)")
+                                                        } else if let Some(reason) = latch_reason.as_deref() {
+                                                            Some(reason)
+                                                        } else if let Some(reason) = sd_blocked {
+                                                            Some(reason)
                                                         } else if let Some(reason) = dispatch_control.and_then(backend_disabled_reason) {
                                                             Some(reason)
                                                         } else if !action_policy_snapshot.software_buttons_enabled {
@@ -1353,7 +1385,10 @@ pub fn ActionsTab(
                                                                     if !progress_detail.is_empty() {
                                                                         span {role:"status",title:"{progress_detail}",style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:700;white-space:normal;overflow-wrap:anywhere;", "{progress_detail}"}
                                                                     }
-                                                                    if action.group == "GSE sequence actions" {
+                                                                    if action.cmd == super::igt::SD_RETRY {
+                                                                        super::igt_view::SdState {view:super::igt::sd_view(super::igt::IGT_STATUS.read().as_ref())}
+                                                                    }
+                                                                    if action.group == "GSE sequence actions" && latch_reason.is_none() {
                                                                         span {title:disabled_reason.unwrap_or(""),style:"display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;min-height:1.3em;overflow:hidden;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}
                                                                     } else if disabled_reason.is_some() {
                                                                         span {title:disabled_reason.unwrap_or(""),style:"display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;", "{reason_text}"}

@@ -180,6 +180,41 @@ pub fn arrange(mode: OperatingMode, present: &BTreeSet<ActionSection>) -> Vec<(A
     out
 }
 
+/// [`arrange`] with the Ground test section where it applies. In the
+/// integrated ground test it always shows (its settings and the FC SD state
+/// hold even without a control). In HITL it shows for the HITL ground-test
+/// replay setting: leading and open while the replay is on (`igt_active`),
+/// last and closed otherwise. Every other mode never shows it.
+pub fn arrange_for(mode: OperatingMode, present: &BTreeSet<ActionSection>, igt_active: bool) -> Vec<(ActionSection, bool)> {
+    match mode {
+        OperatingMode::IntegratedGroundTest => {
+            let mut present = present.clone();
+            present.insert(ActionSection::GroundTest);
+            arrange(mode, &present)
+        }
+        OperatingMode::Hitl => {
+            let mut out = arrange(mode, present);
+            if igt_active {
+                out.insert(1, (ActionSection::GroundTest, true));
+            } else {
+                out.push((ActionSection::GroundTest, false));
+            }
+            out
+        }
+        _ => arrange(mode, present),
+    }
+}
+
+/// Whether the Ground test section lists its commands: always in the
+/// integrated ground test; in HITL only with the replay on.
+pub fn ground_test_controls_shown(mode: OperatingMode, igt_active: bool) -> bool {
+    match mode {
+        OperatingMode::IntegratedGroundTest => true,
+        OperatingMode::Hitl => igt_active,
+        _ => false,
+    }
+}
+
 /// Whether a section renders open. Safety always is. An operator's explicit
 /// choice wins; otherwise the mode default, except that a section holding a
 /// control that is running, pending or prompting (now or earlier this
@@ -374,6 +409,31 @@ mod tests {
         assert_eq!(GroundTest.label(), "Ground test");
         let parsed: ActionSection = serde_json::from_value(serde_json::json!("ground_test")).unwrap();
         assert_eq!(parsed, GroundTest, "backend ControlSection::GroundTest in snake_case");
+    }
+
+    #[test]
+    fn ground_test_section_follows_igt_active_in_hitl() {
+        use ActionSection::*;
+        let all = every_section();
+        let none = BTreeSet::new();
+        // IGT: shown even with no ground-test control in the layout.
+        assert_eq!(arrange_for(OperatingMode::IntegratedGroundTest, &none, false), [(Safety, true), (GroundTest, true)]);
+        // HITL with the replay on: leads, open.
+        let on = arrange_for(OperatingMode::Hitl, &all, true);
+        assert_eq!(on[1], (GroundTest, true));
+        assert_eq!(on.iter().filter(|(s, _)| *s == GroundTest).count(), 1);
+        // HITL with it off: last and closed, for the setting.
+        let off = arrange_for(OperatingMode::Hitl, &all, false);
+        assert_eq!(*off.last().unwrap(), (GroundTest, false));
+        assert_eq!(off.iter().filter(|(s, _)| *s == GroundTest).count(), 1);
+        assert!(ground_test_controls_shown(OperatingMode::IntegratedGroundTest, false));
+        assert!(ground_test_controls_shown(OperatingMode::Hitl, true) && !ground_test_controls_shown(OperatingMode::Hitl, false));
+        for mode in [OperatingMode::Normal, OperatingMode::TestFire, OperatingMode::Testing] {
+            assert!(!ground_test_controls_shown(mode, true));
+            for igt_active in [false, true] {
+                assert!(!arrange_for(mode, &all, igt_active).iter().any(|(s, _)| *s == GroundTest), "{mode:?}");
+            }
+        }
     }
 
     #[test]

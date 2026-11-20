@@ -69,6 +69,26 @@ pub(super) fn post_captured_independent<B: Serialize, T: DeserializeOwned + 'sta
     let body = serde_json::to_string(body).map_err(|e| e.to_string());
     async move { bounded(post_owned_class(&path, body?, owner?, false)).await }
 }
+/// A JSON `PUT` (station settings) with the caller's captured owner. An
+/// empty success reply reads as `null`.
+pub(super) fn put_captured<B: Serialize, T: DeserializeOwned + 'static>(
+    path: &str,
+    body: &B,
+    owner: Result<Rc<ExportOwner>, String>,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<B,T> {
+    let path = path.to_owned();
+    let body = serde_json::to_string(body).map_err(|e| e.to_string());
+    async move {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            bounded(send_owned_class(true, &path, body?, owner?, true)).await
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            bounded(send_owned_policy(true, &path, body?, owner?, true, true)).await
+        }
+    }
+}
 /// Critical commands reject redirects as well as retaining their gesture owner.
 pub(super) fn post_captured_no_redirect<B: Serialize, T: DeserializeOwned + 'static>(
     path: &str,
@@ -100,6 +120,12 @@ async fn post_owned<T: DeserializeOwned>(
 async fn post_owned_class<T: DeserializeOwned>(
     path: &str, body: String, owner: Rc<ExportOwner>, require_ordinary: bool,
 ) -> Result<T, String> {
+    send_owned_class(false, path, body, owner, require_ordinary).await
+}
+#[cfg(not(target_arch = "wasm32"))]
+async fn send_owned_class<T: DeserializeOwned>(
+    put: bool, path: &str, body: String, owner: Rc<ExportOwner>, require_ordinary: bool,
+) -> Result<T, String> {
     if require_ordinary { owner.check_ordinary()?; } else { owner.check()?; }
     let base = if owner.base().is_empty() {
         "http://localhost:3000"
@@ -108,8 +134,9 @@ async fn post_owned_class<T: DeserializeOwned>(
     };
     let (connect, timeout) = super::native_http_timeouts(path);
     let client = crate::auth::build_native_http_client(owner.skip_tls(), connect, timeout)?;
+    let method = if put { reqwest::Method::PUT } else { reqwest::Method::POST };
     let mut request = client
-        .post(format!("{base}{path}"))
+        .request(method, format!("{base}{path}"))
         .header("Content-Type", "application/json")
         .body(body);
     if let Some(epoch) = owner.policy_epoch() {
@@ -138,7 +165,8 @@ async fn post_owned_class<T: DeserializeOwned>(
             text.chars().take(200).collect::<String>()
         ));
     }
-    serde_json::from_str(&text).map_err(|e| e.to_string())
+    let text = if put && text.trim().is_empty() { "null" } else { text.as_str() };
+    serde_json::from_str(text).map_err(|e| e.to_string())
 }
 #[cfg(target_arch = "wasm32")]
 async fn post_owned<T: DeserializeOwned>(
@@ -162,6 +190,17 @@ async fn post_owned_policy<T: DeserializeOwned>(
     reject_redirects: bool,
     require_ordinary: bool,
 ) -> Result<T, String> {
+    send_owned_policy(false, path, body, owner, reject_redirects, require_ordinary).await
+}
+#[cfg(target_arch = "wasm32")]
+async fn send_owned_policy<T: DeserializeOwned>(
+    put: bool,
+    path: &str,
+    body: String,
+    owner: Rc<ExportOwner>,
+    reject_redirects: bool,
+    require_ordinary: bool,
+) -> Result<T, String> {
     if require_ordinary { owner.check_ordinary()?; } else { owner.check()?; }
     let base = if owner.base().is_empty() {
         web_sys::window()
@@ -176,7 +215,9 @@ async fn post_owned_policy<T: DeserializeOwned>(
         web_sys::AbortController::new().map_err(|_| "Settings cancellation unavailable")?;
     let _cancel = super::HttpAbortOnDrop(controller.clone());
     let signal = controller.signal();
-    let mut request = gloo_net::http::Request::post(&format!("{base}{path}"))
+    let url = format!("{base}{path}");
+    let request = if put { gloo_net::http::Request::put(&url) } else { gloo_net::http::Request::post(&url) };
+    let mut request = request
         .abort_signal(Some(&signal))
         .header("Content-Type", "application/json");
     if reject_redirects {
@@ -209,7 +250,8 @@ async fn post_owned_policy<T: DeserializeOwned>(
             text.chars().take(200).collect::<String>()
         ));
     }
-    serde_json::from_str(&text).map_err(|e| e.to_string())
+    let text = if put && text.trim().is_empty() { "null" } else { text.as_str() };
+    serde_json::from_str(text).map_err(|e| e.to_string())
 }
 
 async fn bounded<T>(

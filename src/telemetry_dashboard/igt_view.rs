@@ -13,22 +13,25 @@ async fn sleep_ms(ms: u32) {
     tokio::time::sleep(std::time::Duration::from_millis(u64::from(ms))).await;
 }
 
-/// Reads `/api/igt` while the station is in the integrated ground test (the
-/// websocket `IgtStatus` frame updates it between reads). Mount once.
+/// Reads `/api/igt`: every 2 s while ground-test presentation applies, and
+/// every 6 s otherwise, since the image notice, the Launch latch and the FC
+/// SD state matter in every mode (the websocket `IgtStatus` frame updates it
+/// between reads). Mount once.
 #[component]
 pub(super) fn IgtStatusPoller() -> Element {
     use_future(move || async move {
+        let mut idle_ticks = 0u32;
         loop {
-            let station_igt = igt::is_mode(super::station_mode::current_snapshot()["effective_mode"].as_str());
-            if station_igt && super::dashboard_page_visible() {
+            let snapshot = super::station_mode::current_snapshot();
+            let active = igt::active(&snapshot, IGT_STATUS.peek().as_ref());
+            if super::dashboard_page_visible() && (active || idle_ticks == 0) {
                 if let Ok(status) = super::http_get_json::<IgtStatus>(igt::STATUS_PATH).await {
                     igt::apply_status(status);
                 }
-            } else if !station_igt && IGT_STATUS.peek().is_some()
-                && super::station_mode::current_snapshot()["effective_mode"].is_string()
-            {
-                // Left IGT: drop the status and the replayed track.
-                *IGT_STATUS.write() = None;
+            }
+            idle_ticks = if active { 0 } else { (idle_ticks + 1) % 3 };
+            if !igt::active(&snapshot, IGT_STATUS.peek().as_ref()) && snapshot["effective_mode"].is_string() {
+                // Not in a ground test: no replayed track.
                 igt::sim_track::clear();
                 igt::sim_track::set_gps_simulated(None);
             }
@@ -48,18 +51,61 @@ const BANNER_CSS: &str = "
 .gs26-igt-banner[data-pyro=\"live\"]{border-color:#facc15;box-shadow:0 0 0 3px #111,0 0 0 6px #facc15;}
 .gs26-igt-banner p{margin:0;font-size:12px;}
 .gs26-igt-fault{padding:4px 8px;border-radius:6px;background:#fff;color:#991b1b;font-weight:900;}
+.gs26-igt-image-notice{flex-shrink:0;margin:0 0 8px;padding:8px 12px;border-radius:8px;box-sizing:border-box;min-width:0;overflow-wrap:anywhere;font-size:13px;line-height:1.4;}
+.gs26-igt-image-notice[data-level=\"warning\"]{border:2px solid #f59e0b;background:#451a03;color:#fde68a;font-weight:800;}
+.gs26-igt-image-notice[data-level=\"info\"]{border:1px solid var(--gs-line,#526579);background:transparent;color:inherit;opacity:.85;font-size:12px;padding:4px 10px;}
+.gs26-igt-latch{margin:0;padding:8px 10px;border:2px solid #f59e0b;border-radius:8px;background:#451a03;color:#fde68a;font-weight:800;overflow-wrap:anywhere;white-space:normal;}
 @keyframes gs26-igt-live{50%{filter:brightness(1.6);}}
 @media (prefers-reduced-motion: reduce){.gs26-igt-chip[data-pyro=\"live\"]{animation:none;}}
 ";
 
-/// The red INTEGRATED GROUND TEST bar. Renders nothing outside IGT, so it can
-/// be placed on every view.
+/// The FC image warning or note, in any station mode.
+#[component]
+pub(super) fn ImageNoticeBar(notice: Option<igt::NoticeView>) -> Element {
+    let Some(n) = notice else {
+        return rsx! {};
+    };
+    let level = if n.warning { "warning" } else { "info" };
+    rsx! {
+        p { class: "gs26-igt-image-notice", "data-igt-image-notice": level, "data-level": level,
+            role: if n.warning { "alert" } else { "status" },
+            if n.warning { strong { "FC image warning: " } }
+            "{n.text}"
+        }
+    }
+}
+
+/// The Launch latch reason, in full.
+#[component]
+pub(super) fn LaunchLatchNotice(reason: Option<String>) -> Element {
+    let Some(reason) = reason else {
+        return rsx! {};
+    };
+    rsx! {
+        style { {BANNER_CSS} }
+        p { class: "gs26-igt-latch", role: "alert", "data-launch-latch": "true", "Launch latched closed: {reason}" }
+    }
+}
+
+/// [`LaunchLatchNotice`] from the current status.
+#[component]
+pub(super) fn CurrentLaunchLatch() -> Element {
+    rsx! { LaunchLatchNotice { reason: igt::current_launch_latch() } }
+}
+
+/// The FC image notice (any mode) and the red INTEGRATED GROUND TEST bar
+/// (only while ground-test presentation applies), so it can be placed on
+/// every view.
 #[component]
 pub(super) fn IgtBanner() -> Element {
     let status = IGT_STATUS.read().clone();
     let active = igt::active(&super::station_mode::current_snapshot(), status.as_ref());
+    let notice = igt::image_notice(status.as_ref());
     let Some(b) = igt::banner(active, status.as_ref()) else {
-        return rsx! {};
+        if notice.is_none() {
+            return rsx! {};
+        }
+        return rsx! { style { {BANNER_CSS} } ImageNoticeBar { notice } };
     };
     let pyro = match b.pyro {
         Pyro::Live => "live",
@@ -68,6 +114,7 @@ pub(super) fn IgtBanner() -> Element {
     };
     rsx! {
         style { {BANNER_CSS} }
+        ImageNoticeBar { notice }
         aside {
             class: "gs26-igt-banner",
             role: "alert",
@@ -131,7 +178,8 @@ pub(super) fn ticket_disabled_reason(cmd: &str) -> Option<String> {
     let status = IGT_STATUS.read().clone();
     let rrls = crate::auth::current_status().station_role.as_deref() == Some("rrls");
     let connected = *super::WS_CONNECTED_SIGNAL.read();
-    let station_igt = igt::is_mode(super::station_mode::current_snapshot()["effective_mode"].as_str());
+    // Integrated ground test, or HITL with the HITL ground-test replay on.
+    let station_igt = igt::current_active();
     if cmd == igt::LIVE_PYRO {
         igt::live_pyro_disabled_reason(status.as_ref(), crate::auth::is_admin(), connected, rrls)
     } else {
@@ -238,6 +286,182 @@ pub(super) fn IgtTicketControl(cmd: String, #[props(default)] inhibited: bool) -
 }
 
 // ---------------------------------------------------------------------------
+// Ground test section: settings toggles, FC SD state
+// ---------------------------------------------------------------------------
+
+const DIALOG_STYLE: &str = "background:var(--gs26-panel-background,#142534);color:var(--gs26-app-text,#e5e7eb);border:2px solid #b45309;font:inherit;padding:var(--gs-space-5);border-radius:var(--gs-radius-lg);width:min(100%,600px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:var(--gs-space-3);overflow-y:auto;box-sizing:border-box;overflow-wrap:anywhere;";
+
+/// A modal confirm with the effect spelled out.
+#[component]
+pub(super) fn ConfirmDialog(
+    id: String,
+    title: String,
+    lines: Vec<String>,
+    confirm_label: String,
+    busy: bool,
+    on_cancel: EventHandler<()>,
+    on_confirm: EventHandler<()>,
+) -> Element {
+    let focus_id = id.clone();
+    rsx! {
+        div { style: "position:fixed;inset:0;z-index:200000;background:#000c;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;",
+            onkeydown: move |event| {
+                event.stop_propagation();
+                match event.key() {
+                    Key::Escape if !busy => { event.prevent_default(); on_cancel.call(()); }
+                    Key::Tab => { event.prevent_default(); super::board_recovery_panel::cycle_modal_focus(&focus_id, event.modifiers().contains(Modifiers::SHIFT)); }
+                    _ => {}
+                }
+            },
+            div { id: "{id}", role: "alertdialog", "aria-modal": "true", "aria-labelledby": "{id}-title", style: DIALOG_STYLE,
+                h2 { id: "{id}-title", style: "margin:0;font-size:var(--gs-text-lg);", "{title}" }
+                for (index, line) in lines.iter().enumerate() {
+                    p { key: "{index}", style: "margin:0;", "{line}" }
+                }
+                div { style: "display:flex;gap:var(--gs-space-2);flex-wrap:wrap;justify-content:flex-end;",
+                    button { r#type: "button", class: "gs-btn", autofocus: true, disabled: busy, onclick: move |_| on_cancel.call(()), "Cancel" }
+                    button { r#type: "button", class: "gs-btn gs-btn--primary", "data-confirm": "true", disabled: busy,
+                        onclick: move |_| on_confirm.call(()),
+                        if busy { "Saving…" } else { "{confirm_label}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What the operator reads after a settings PUT.
+pub(super) fn settings_outcome(toggle: igt::Toggle, on: bool, result: &Result<(), String>) -> String {
+    match result {
+        Ok(()) => format!("{} turned {}.", toggle.label(), if on { "on" } else { "off" }),
+        Err(e) => format!("{} not changed: {}", toggle.label(), igt::refusal(e)),
+    }
+}
+
+async fn put_settings(update: igt::SettingsUpdate, owner: std::rc::Rc<super::recording_download::ExportOwner>) -> Result<(), String> {
+    let reply: serde_json::Value = super::station_settings_request::put_captured(igt::SETTINGS_PATH, &update, Ok(owner)).await?;
+    if let Ok(settings) = serde_json::from_value::<igt::IgtSettings>(reply) {
+        igt::apply_settings(settings);
+    }
+    Ok(())
+}
+
+/// One admin-only ground-test setting, changed through a confirm dialog.
+#[component]
+pub(super) fn SettingsToggle(toggle: igt::Toggle, value: Option<bool>, disabled_reason: Option<String>) -> Element {
+    let mut confirming = use_signal(|| None::<bool>);
+    let mut sending = use_signal(|| false);
+    let mut result = use_signal(|| None::<(bool, String)>);
+    let reason = disabled_reason.or_else(|| value.is_none().then(|| "No ground-test settings from the station yet.".to_string()));
+    let checked = value.unwrap_or(false);
+    let disabled = reason.is_some() || sending();
+    let input_id = format!("gs26-igt-setting-{}", toggle.id());
+    let dialog = confirming().map(|on| {
+        let (title, lines, button) = toggle.confirm_copy(on);
+        (on, title.to_string(), lines.iter().map(|l| l.to_string()).collect::<Vec<_>>(), button.to_string())
+    });
+    rsx! {
+        div { class: "gs26-igt-setting", "data-igt-setting": toggle.id(), style: "display:grid;gap:4px;min-width:0;",
+            label { r#for: "{input_id}", style: "display:flex;gap:8px;align-items:center;font-weight:700;",
+                input { id: "{input_id}", r#type: "checkbox", checked, disabled,
+                    onchange: move |event| {
+                        if *sending.peek() { return; }
+                        result.set(None);
+                        confirming.set(Some(event.checked()));
+                    },
+                }
+                "{toggle.label()}"
+                span { style: "font-weight:400;", if checked { " (on)" } else { " (off)" } }
+            }
+            p { style: "margin:0;font-size:var(--gs-text-sm);", "{toggle.help()}" }
+            if let Some(reason) = reason.clone() {
+                p { role: "status", class: "gs-notice gs-notice--warn", "data-disabled-reason": "", "Unavailable: {reason}" }
+            }
+            if let Some((ok, text)) = result() {
+                p { role: if ok { "status" } else { "alert" }, class: if ok { "gs-notice" } else { "gs-notice gs-notice--danger" }, "data-igt-setting-result": if ok { "ok" } else { "error" }, "{text}" }
+            }
+        }
+        if let Some((on, title, lines, button)) = dialog {
+            ConfirmDialog { id: "gs26-igt-setting-confirm-{toggle.id()}", title, lines, confirm_label: button, busy: sending(),
+                on_cancel: move |_| confirming.set(None),
+                on_confirm: move |_| {
+                    if *sending.peek() { return; }
+                    let owner = match super::recording_download::ExportOwner::capture_ordinary_selected(|| true) {
+                        Ok(owner) => owner,
+                        Err(_) => { result.set(Some((false, "No current station or sign-in. Reconnect and try again.".into()))); confirming.set(None); return; }
+                    };
+                    sending.set(true);
+                    spawn(async move {
+                        let outcome = put_settings(toggle.update(on), owner.clone()).await;
+                        if !owner.is_current() { return; }
+                        result.set(Some((outcome.is_ok(), settings_outcome(toggle, on, &outcome))));
+                        sending.set(false);
+                        confirming.set(None);
+                    });
+                },
+            }
+        }
+    }
+}
+
+/// The FC SD card state shown with Retry SD.
+#[component]
+pub(super) fn SdState(view: igt::SdView) -> Element {
+    rsx! {
+        span { role: "status", "data-fc-sd-state": if view.warning { "not_ready" } else { "ok" },
+            style: if view.warning { "display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:800;color:#fbbf24;white-space:normal;overflow-wrap:anywhere;" } else { "display:block;margin-top:2px;font-size:11px;line-height:1.3;font-weight:400;white-space:normal;overflow-wrap:anywhere;" },
+            "{view.text}"
+        }
+    }
+}
+
+/// The settings and state above the Ground test section's controls.
+#[component]
+pub(super) fn GroundTestPanelView(
+    effective_mode: Option<String>,
+    status: Option<IgtStatus>,
+    toggle_reason: Option<String>,
+    retry_in_section: bool,
+) -> Element {
+    let latch = igt::launch_latch(status.as_ref());
+    let notice = igt::image_notice(status.as_ref());
+    let sd = igt::sd_view(status.as_ref());
+    let toggles: Vec<igt::Toggle> = [igt::Toggle::MockWetDress, igt::Toggle::HitlReplay]
+        .into_iter()
+        .filter(|t| t.offered(effective_mode.as_deref()))
+        .collect();
+    rsx! {
+        div { class: "gs26-igt-panel", "data-igt-panel": "", style: "display:grid;gap:var(--gs-space-3);min-width:0;",
+            LaunchLatchNotice { reason: latch }
+            ImageNoticeBar { notice }
+            if effective_mode.as_deref() == Some(igt::HITL_MODE) && !status.as_ref().is_some_and(|s| s.igt_active) {
+                p { class: "gs-notice", style: "margin:0;", "HITL: turn on the HITL ground-test replay (Admin) to use the ground-test controls below." }
+            }
+            for toggle in toggles {
+                SettingsToggle { key: "{toggle.id()}", toggle, value: igt::Toggle::value(toggle, status.as_ref()), disabled_reason: toggle_reason.clone() }
+            }
+            div { "data-igt-sd": "", style: "min-width:0;",
+                SdState { view: sd }
+                if !retry_in_section {
+                    span { style: "display:block;font-size:11px;", "Retry FC SD is in the Flight computer section." }
+                }
+            }
+        }
+    }
+}
+
+/// [`GroundTestPanelView`] from the current status, mode and account.
+#[component]
+pub(super) fn GroundTestPanel(inhibited: bool, retry_in_section: bool) -> Element {
+    let status = IGT_STATUS.read().clone();
+    let effective_mode = super::station_mode::current_snapshot()["effective_mode"].as_str().map(str::to_owned);
+    let rrls = crate::auth::current_status().station_role.as_deref() == Some("rrls");
+    let connected = *super::WS_CONNECTED_SIGNAL.read();
+    let toggle_reason = igt::toggle_disabled_reason(crate::auth::is_admin(), connected, rrls, inhibited);
+    rsx! { GroundTestPanelView { effective_mode, status, toggle_reason, retry_in_section } }
+}
+
+// ---------------------------------------------------------------------------
 // Map: the replayed GPS track
 // ---------------------------------------------------------------------------
 
@@ -328,6 +552,93 @@ mod tests {
         })));
         assert!(page.contains("data-pyro=\"dry_run\"") && page.contains("DRY-RUN"));
         assert!(page.contains("FC IGT fault: IGT IMU0.CSV:12 parse error"));
+    }
+
+    #[test]
+    fn image_notice_shows_in_every_mode_by_level() {
+        // Not in a ground test (station_mode_igt false, no mode read): no red
+        // banner, but the image warning still shows.
+        let page = banner_html(Some(serde_json::json!({"supported": true, "fc_image": "ground_test",
+            "station_mode_igt": false, "igt_active": false, "updated_ms": 1,
+            "image_notice": {"level": "warning", "text": "FC is running a ground-test image (dry-run capable)"}})));
+        assert!(!page.contains("data-igt-banner"), "{page}");
+        assert!(page.contains("data-igt-image-notice=\"warning\"") && page.contains("role=\"alert\""), "{page}");
+        assert!(page.contains("FC image warning: ") && page.contains("ground-test image (dry-run capable)"));
+        let info = banner_html(Some(serde_json::json!({"image_notice": {"level": "info", "text": "Ground-test image on the FC"}})));
+        assert!(info.contains("data-igt-image-notice=\"info\"") && info.contains("role=\"status\""), "{info}");
+        assert!(!info.contains("FC image warning"));
+        // In IGT the mismatch warning shows with the banner.
+        let both = banner_html(Some(serde_json::json!({"supported": false, "fc_image": "flight", "station_mode_igt": true,
+            "igt_active": true, "updated_ms": 2,
+            "image_notice": {"level": "warning", "text": "FC is running a flight image: integrated ground test unavailable, flash the ground-test image"}})));
+        assert!(both.contains("data-igt-banner") && both.contains("flash the ground-test image"), "{both}");
+        // HITL replay (igt_active without station_mode_igt) shows the banner.
+        let hitl = banner_html(Some(serde_json::json!({"supported": true, "fc_mode": "ready", "station_mode_igt": false,
+            "igt_active": true, "hitl_replay": true, "updated_ms": 3})));
+        assert!(hitl.contains("data-igt-banner"), "{hitl}");
+        assert!(!banner_html(Some(serde_json::json!({"supported": true}))).contains("data-igt-image-notice"));
+    }
+
+    fn render<P: Clone + 'static>(props: P, app: fn(P) -> Element) -> String {
+        let mut dom = VirtualDom::new_with_props(app, props);
+        dom.rebuild_in_place();
+        dioxus::ssr::render(&dom)
+    }
+
+    #[test]
+    fn latch_reason_renders_in_full() {
+        let long = format!("{}. This sentence is here so a two-line clamp would cut it off.", igt::LATCH_REASON);
+        let page = render(Some(long.clone()), |reason| rsx! { LaunchLatchNotice { reason } });
+        assert!(page.contains("data-launch-latch") && page.contains(&long), "{page}");
+        assert!(!page.contains("line-clamp"));
+        assert!(!render(None::<String>, |reason| rsx! { LaunchLatchNotice { reason } }).contains("data-launch-latch"));
+    }
+
+    fn panel(mode: &str, status: serde_json::Value, admin: bool) -> String {
+        let status: IgtStatus = serde_json::from_value(status).unwrap();
+        let reason = igt::toggle_disabled_reason(admin, true, false, false);
+        render((mode.to_owned(), status, reason), |(mode, status, reason)| rsx! {
+            GroundTestPanelView { effective_mode: Some(mode), status: Some(status), toggle_reason: reason, retry_in_section: true }
+        })
+    }
+
+    #[test]
+    fn ground_test_panel_gates_the_settings_to_admins() {
+        let igt_status = serde_json::json!({"supported": true, "fc_mode": "off", "igt_active": true, "mock_wet_dress": true,
+            "sd_ready": false, "sd_retry_pending": true, "updated_ms": 1});
+        let admin = panel("integrated_ground_test", igt_status.clone(), true);
+        assert!(admin.contains("data-igt-setting=\"mock_wet_dress\"") && !admin.contains("data-igt-setting=\"hitl_replay\""), "{admin}");
+        assert!(admin.contains("Mock wet dress (flight fill steps)") && admin.contains("checked"), "{admin}");
+        assert!(!admin.contains("Unavailable: Administrator required"));
+        assert!(admin.contains("data-fc-sd-state=\"not_ready\"") && admin.contains("FC SD card not mounted / not writable · Retry pending"));
+        let operator = panel("integrated_ground_test", igt_status, false);
+        assert!(operator.contains("Unavailable: Administrator required."), "{operator}");
+        assert!(operator.contains("disabled"));
+        let hitl = panel("hitl", serde_json::json!({"igt_active": false, "hitl_replay": false}), true);
+        assert!(hitl.contains("data-igt-setting=\"hitl_replay\"") && hitl.contains("HITL ground-test replay"), "{hitl}");
+        assert!(!hitl.contains("data-igt-setting=\"mock_wet_dress\""));
+        assert!(hitl.contains("turn on the HITL ground-test replay"));
+        let latched = panel("integrated_ground_test", serde_json::json!({"launch_latched": true}), true);
+        assert!(latched.contains("Launch latched closed: FC is running a ground-test image"), "{latched}");
+    }
+
+    #[test]
+    fn settings_outcome_shows_the_station_refusal() {
+        assert_eq!(settings_outcome(igt::Toggle::MockWetDress, true, &Ok(())), "Mock wet dress (flight fill steps) turned on.");
+        assert_eq!(
+            settings_outcome(igt::Toggle::HitlReplay, true, &Err(r#"HTTP 409: {"error":"refused","message":"FC is replaying (SIM)"}"#.into())),
+            "HITL ground-test replay not changed: FC is replaying (SIM)"
+        );
+        assert_eq!(
+            settings_outcome(igt::Toggle::MockWetDress, false, &Err(r#"HTTP 403: {"error":"Administrator required"}"#.into())),
+            "Mock wet dress (flight fill steps) not changed: Administrator required"
+        );
+    }
+
+    #[test]
+    fn sd_state_renders_for_retry_sd() {
+        let page = render(igt::sd_view(None), |view| rsx! { SdState { view } });
+        assert!(page.contains("data-fc-sd-state=\"ok\"") && page.contains("no report"));
     }
 
     #[test]
