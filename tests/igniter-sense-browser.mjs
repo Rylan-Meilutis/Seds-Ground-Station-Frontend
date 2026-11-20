@@ -8,7 +8,7 @@ if(boundary<0)throw Error('Operation fixture boundary changed');
 const module=process.env.PLAYWRIGHT_MODULE?pathToFileURL(path.resolve(process.env.PLAYWRIGHT_MODULE)).href:import.meta.resolve('playwright');
 let fixture=source.slice(0,boundary).replace("process.env.PLAYWRIGHT_MODULE || 'playwright'",JSON.stringify(module));
 fixture=fixture.replace("roles:['admin'],permissions:{view_data:true,send_commands:true", "roles:['viewer'],permissions:{view_data:true,send_commands:false");
-fixture=fixture.replace("const dashboardLayout=example('layout.full');", "const dashboardLayout=example('layout.full');const oldTab=JSON.parse(fs.readFileSync('src/telemetry_dashboard/igniter_sense_tab.json','utf8'));oldTab.channels.push('Current (unavailable)');oldTab.subtabs[0].channels.push('Current (unavailable)');oldTab.channel_formatters.push({suffix:' A'});dashboardLayout.data_tab.tabs.push(oldTab);let senseHistory=[];");
+fixture=fixture.replace("const dashboardLayout=example('layout.full');", "const dashboardLayout=example('layout.full');const oldTab=JSON.parse(fs.readFileSync('src/telemetry_dashboard/igniter_sense_tab.json','utf8'));oldTab.channels[2]='Current (unavailable)';oldTab.subtabs[0].channels[2]='Current (unavailable)';dashboardLayout.data_tab.tabs.push(oldTab);let senseHistory=[];");
 fixture=fixture.replace("  if(pathname.startsWith('/api/')){",`  if(pathname==='/api/recent'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(senseHistory));return;}
   if(pathname.startsWith('/api/')){`);
 fixture+=`
@@ -25,7 +25,7 @@ try {
  const limbs=(value)=>[0n,16n,32n,48n].map(shift=>Number((BigInt(value)>>shift)&65535n));
  const rows=(sequence,stamp=Date.now(),counts=2048,volts=1.6504)=>{
   const owner=[4,0,0,0,sequence,0];
-  return [{timestamp_ms:stamp,data_type:'IGNITER_SENSE_SIGNAL',sender_id:'AB',values:[counts,volts,null,...owner]},
+  return [{timestamp_ms:stamp,data_type:'IGNITER_SENSE_SIGNAL',sender_id:'AB',values:[counts,volts,(counts/4095-0.5)*5/0.0444,...owner]},
    {timestamp_ms:stamp,data_type:'IGNITER_SENSE_STATUS',sender_id:'AB',values:[1,0,0,1,...owner,...limbs(stamp)]}];
  };
  const push=data=>{assert(sockets.size>0);for(const socket of sockets)socket.send(JSON.stringify({ty:'TelemetryBatch',data}));};
@@ -37,6 +37,7 @@ try {
  assert((await panel.innerText()).includes('ADC: 2048 counts'));
  assert((await panel.innerText()).includes('Signal: 1.6504 V'));
  assert((await panel.innerText()).includes('Current not calibrated'));
+ assert((await panel.innerText()).includes('Current: 0.01 A (est.)'),'estimated amperes shown');
  assert((await panel.innerText()).includes('no supported current conversion'));
  await page.screenshot({path:process.env.GS_IGNITER_SCREENSHOT?.replace('.png','-live.png')||'/tmp/igniter-sense-live.png',fullPage:true});
  await panel.getByText('Stale · last signal retained',{exact:true}).waitFor({timeout:9000});

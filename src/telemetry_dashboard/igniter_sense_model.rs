@@ -1,5 +1,5 @@
 //! Presentation only; measured analog signal never certifies ignition/continuity.
-pub(super) const CAPABILITY: &str = "Board reports no supported current conversion.";
+pub(super) const CAPABILITY: &str = "Board reports no supported current conversion. Current shown is an uncalibrated estimate (datasheet 44.4 mV/A scaled ratiometrically to the 3V3 supply) and may be wrong.";
 pub(super) fn capability(status: &[Option<f32>]) -> &'static str {
     if status.get(3).copied().flatten() == Some(1.0) {
         CAPABILITY
@@ -11,6 +11,8 @@ pub(super) struct View {
     pub label: &'static str,
     pub counts: String,
     pub volts: String,
+    /// Uncalibrated station-side estimate.
+    pub amps: String,
 }
 fn finite(values: &[Option<f32>], at: usize) -> Option<f32> {
     values.get(at).copied().flatten().filter(|n| n.is_finite())
@@ -101,10 +103,17 @@ pub(super) fn view(
         .filter(|n| (0.0..=3.6).contains(n))
         .map(|n| format!("{n:.4} V"))
         .unwrap_or_else(|| "—".into());
+    // ACS71240-045B5 spans about +/-56 A over the ADC range; anything beyond
+    // that is not a value this conversion can produce.
+    let amps = finite(signal, 2)
+        .filter(|n| n.abs() <= 60.0)
+        .map(|n| format!("{n:.2} A (est.)"))
+        .unwrap_or_else(|| "—".into());
     View {
         label,
         counts,
         volts,
+        amps,
     }
 }
 #[cfg(test)]
@@ -184,7 +193,11 @@ mod tests {
         assert_eq!(a.label, "Live measured signal");
         assert_eq!(a.counts, "2048 counts");
         assert_eq!(a.volts, "1.6504 V");
+        assert_eq!(a.amps, "—", "no estimate in the signal row stays unknown");
+        let estimated = view(&status(1.0, 0.0), &tagged(&[Some(2084.0), Some(1.68), Some(1.004)]), Some(0), Some(NOW));
+        assert_eq!(estimated.amps, "1.00 A (est.)");
         assert!(CAPABILITY.contains("no supported current conversion"));
+        assert!(CAPABILITY.contains("uncalibrated estimate"));
         assert_eq!(capability(&status(1.0, 0.0)), CAPABILITY);
         assert!(capability(&[]).contains("not reported"));
     }

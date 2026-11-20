@@ -14,18 +14,15 @@ pub(super) fn with_tab(mut layout: super::layout::DataTabLayout) -> super::layou
             .expect("checked-in read-only igniter tab must be valid");
         layout.tabs.push(tab);
     }
-    // Older server layouts exposed a permanently empty amperes channel. Keep
-    // the measured ADC/voltage cards and show capability in the status panel;
-    // do not silently rewrite custom channels or infer a current conversion.
+    // Older server layouts named the third channel "Current (unavailable)";
+    // the station now fills it with an uncalibrated estimate, so relabel it.
+    // Custom channel lists are left alone.
     for tab in &mut layout.tabs {
         if tab.id != "IGNITER_SENSE_SIGNAL" {
             continue;
         }
         if unsupported_current_channel(&tab.channels) {
-            tab.channels.truncate(2);
-            if let Some(formatters) = &mut tab.channel_formatters {
-                formatters.truncate(2);
-            }
+            tab.channels[2] = ESTIMATED_CURRENT.into();
         }
         for subtab in tab.subtabs.iter_mut().flatten() {
             if subtab
@@ -38,15 +35,13 @@ pub(super) fn with_tab(mut layout: super::layout::DataTabLayout) -> super::layou
             if let Some(channels) = &mut subtab.channels
                 && unsupported_current_channel(channels)
             {
-                channels.truncate(2);
-                if let Some(formatters) = &mut subtab.channel_formatters {
-                    formatters.truncate(2);
-                }
+                channels[2] = ESTIMATED_CURRENT.into();
             }
         }
     }
     layout
 }
+const ESTIMATED_CURRENT: &str = "Current (estimated)";
 fn unsupported_current_channel(channels: &[String]) -> bool {
     channels == ["ADC counts", "Signal voltage", "Current (unavailable)"]
 }
@@ -129,6 +124,7 @@ pub(super) fn IgniterSensePanel(theme: ThemeConfig) -> Element {
             div {style:"display:flex;gap:20px;flex-wrap:wrap;margin-top:8px;",
                 span {"ADC: {data.counts}"}
                 span {"Signal: {data.volts}"}
+                span {"Current: {data.amps}"}
             }
             small {style:"display:block;margin-top:6px;color:{theme.text_muted};",
                 if data.counts=="—" && data.volts=="—" {"Signal unconfirmed"}else{"Last reported signal"}
@@ -155,21 +151,20 @@ mod tests {
         };
         let layout = with_tab(empty);
         assert_eq!(layout.tabs.len(), 1);
-        assert_eq!(layout.tabs[0].channels.len(), 2);
+        assert_eq!(layout.tabs[0].channels.len(), 3);
         let sub = layout.tabs[0].subtabs.as_ref().unwrap();
         assert_eq!(sub[0].sender_id.as_deref(), Some("AB"));
         assert_eq!(with_tab(layout).tabs.len(), 1);
     }
     #[test]
-    fn old_unavailable_ampere_slot_is_removed_without_changing_custom_channels() {
+    fn old_unavailable_ampere_slot_is_relabelled_without_changing_custom_channels() {
         let mut tab: super::super::layout::DataTabSpec =
             serde_json::from_str(include_str!("igniter_sense_tab.json")).unwrap();
-        tab.channels.push("Current (unavailable)".into());
+        tab.channels[2] = "Current (unavailable)".into();
         tab.subtabs.as_mut().unwrap()[0]
             .channels
             .as_mut()
-            .unwrap()
-            .push("Current (unavailable)".into());
+            .unwrap()[2] = "Current (unavailable)".into();
         let layout = super::super::layout::DataTabLayout {
             tabs: vec![tab.clone()],
             sender_split_data_types: vec![],
@@ -178,15 +173,14 @@ mod tests {
         let migrated = with_tab(layout.clone());
         assert_eq!(
             migrated.tabs[0].channels,
-            vec!["ADC counts", "Signal voltage"]
+            vec!["ADC counts", "Signal voltage", "Current (estimated)"]
         );
         assert_eq!(
             migrated.tabs[0].subtabs.as_ref().unwrap()[0]
                 .channels
                 .as_ref()
-                .unwrap()
-                .len(),
-            2
+                .unwrap()[2],
+            "Current (estimated)"
         );
         tab.channels[2] = "Custom input".into();
         let custom = with_tab(super::super::layout::DataTabLayout {
