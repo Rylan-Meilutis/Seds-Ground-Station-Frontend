@@ -14,6 +14,9 @@ set -euo pipefail
 #   CERT_PICK='newest'|'first'         (default: newest)
 #   GET_TASK_ALLOW='false'|'true'|'profile'|'none' (default: false)
 #   WATCH_PROVISION=<path>             (required when the app embeds Watch/*.app)
+#   WATCH_WIDGETS_PROVISION=<path>     (required when a watch app carries
+#                                       PlugIns/GS26WatchWidgets.appex; build.py
+#                                       removes the extension when it has none)
 # -----------------------------------------------------------------------------
 
 APP="${1:?Missing .app path}"
@@ -287,9 +290,53 @@ if [[ -d "$APP/Frameworks" ]]; then
       done
 fi
 
+# Signs one bundle with its own provisioning profile and that profile's
+# entitlements (get-task-allow per GET_TASK_ALLOW).
+sign_with_profile() {
+  local bundle="$1" provision="$2" label="$3" tag
+  tag="$(basename "$bundle" | tr -c 'A-Za-z0-9' '_')"
+  if ! $SECURITY cms -D -i "$provision" > "$TMP/$tag-profile.plist" 2>/dev/null; then
+    $OPENSSL smime -inform der -verify -noverify -in "$provision" -out "$TMP/$tag-profile.plist" >/dev/null 2>&1 \
+      || die "Failed to decode $label provisioning profile: $provision"
+  fi
+  $PB -x -c "Print :Entitlements" "$TMP/$tag-profile.plist" > "$TMP/$tag-entitlements.plist"
+  case "$GET_TASK_ALLOW" in
+    false|true)
+      if $PB -c "Print :get-task-allow" "$TMP/$tag-entitlements.plist" >/dev/null 2>&1; then
+        $PB -c "Set :get-task-allow $GET_TASK_ALLOW" "$TMP/$tag-entitlements.plist" >/dev/null
+      else
+        $PB -c "Add :get-task-allow bool $GET_TASK_ALLOW" "$TMP/$tag-entitlements.plist" >/dev/null
+      fi
+      ;;
+  esac
+  $PLUTIL -convert xml1 "$TMP/$tag-entitlements.plist" >/dev/null 2>&1 || true
+  cp -f "$provision" "$bundle/embedded.mobileprovision"
+  rm -rf "$bundle/_CodeSignature" 2>/dev/null || true
+  log "Signing $label: $(basename "$bundle")"
+  local signer="${IDENTITY_HASH:-$IDENTITY}"
+  if ! $CODESIGN --force --sign "$signer" --entitlements "$TMP/$tag-entitlements.plist" \
+    --options runtime --timestamp "$bundle" 2>/dev/null; then
+    $CODESIGN --force --sign "$signer" --entitlements "$TMP/$tag-entitlements.plist" \
+      --options runtime "$bundle"
+  fi
+}
+
+# The watch's push-to-talk widget needs its own profile; any other appex is
+# signed plainly as before.
+sign_appex() {
+  local appex="$1"
+  if [[ "$(basename "$appex")" == "GS26WatchWidgets.appex" ]]; then
+    [[ -n "${WATCH_WIDGETS_PROVISION:-}" && -f "$WATCH_WIDGETS_PROVISION" ]] \
+      || die "Watch widget $(basename "$appex") needs WATCH_WIDGETS_PROVISION (a profile for its bundle id)."
+    sign_with_profile "$appex" "$WATCH_WIDGETS_PROVISION" "watch widget"
+  else
+    sign_path "$appex"
+  fi
+}
+
 find "$APP" -maxdepth 2 -name "*.appex" -print0 2>/dev/null \
   | while IFS= read -r -d '' appex; do
-      sign_path "$appex"
+      sign_appex "$appex"
     done
 
 # -----------------------------------------------------------------------------
@@ -322,6 +369,10 @@ for watch_app in "$APP"/Watch/*.app; do
           sign_path "$item"
         done
   fi
+  for appex in "$watch_app"/PlugIns/*.appex; do
+    [[ -d "$appex" ]] || continue
+    sign_appex "$appex"
+  done
   log "Signing embedded watch app: $(basename "$watch_app")"
   signer="${IDENTITY_HASH:-$IDENTITY}"
   if ! $CODESIGN --force --sign "$signer" --entitlements "$TMP/watch-entitlements.plist" \

@@ -31,6 +31,7 @@ spec.loader.exec_module(build)
 
 PHONE_ID = "com.UBSEDS.GS26"
 WATCH_ID = "com.UBSEDS.GS26.watchkitapp"
+WIDGET_ID = "com.UBSEDS.GS26.watchkitapp.widgets"
 WATCH_CORE_ID = "8A3C1F52-6E0B-4F3D-9C2A-1B7E5D4C3B2A"
 WATCH_UDID = "00008301-0012345678901234"
 
@@ -111,6 +112,12 @@ def write_plist(path, data):
 def fake_watch_app(path, bundle=WATCH_ID, companion=PHONE_ID):
     write_plist(path, {"CFBundleIdentifier": bundle, "WKCompanionAppBundleIdentifier": companion})
     return path
+
+
+def add_widget(watch_app):
+    """A built watch app carrying the push-to-talk widget extension."""
+    write_plist(Path(watch_app) / "PlugIns" / targets.WATCH_WIDGET_APPEX, {"CFBundleIdentifier": WIDGET_ID})
+    return Path(watch_app) / "PlugIns" / targets.WATCH_WIDGET_APPEX
 
 
 def commands(run_mock):
@@ -421,6 +428,80 @@ class WatchOSDeviceDeploy(unittest.TestCase):
             build.watchos_device_deploy(self.root, use_existing=True, with_ios=True)
         self.package.assert_not_called()
 
+    # Optional push-to-talk widget extension.
+
+    def test_without_a_widget_profile_the_watch_app_is_signed_without_the_widget(self):
+        add_widget(self.product)
+        with patch.object(build, "_find_installed_ios_development_profile", return_value=None):
+            udids, watch, _bundle = build.watchos_device_deploy(self.root)
+        self.assertEqual(watch, "Rylan's Apple Watch")
+        self.assertIsNone(targets.watch_widget_appex(self.signed))
+        self.assertFalse((self.signed / "PlugIns").exists())
+        self.assertIsNotNone(targets.watch_widget_appex(self.product), "the unsigned build output keeps it")
+        env = self.run.call_args_list[2].kwargs["env"]
+        self.assertNotIn("WATCH_WIDGETS_PROVISION", env)
+        self.assertIn(f"watch widget skipped: no development profile for {WIDGET_ID}; "
+                      "create that App ID + profile to get the PTT complication", self.out.getvalue())
+        self.assertEqual(commands(self.run)[-1], wd.devicectl_install_command(WATCH_CORE_ID, self.signed))
+
+    def test_a_widget_profile_signs_and_keeps_the_widget(self):
+        add_widget(self.product)
+        local = self.root / "Groundstation_watch_widgets_dev.mobileprovision"
+        local.write_bytes(b"x")
+        self.profiles[local.name] = dev_profile(WIDGET_ID)
+        with patch.object(build, "_find_installed_ios_development_profile", return_value=None):
+            build.watchos_device_deploy(self.root)
+        self.assertIsNotNone(targets.watch_widget_appex(self.signed))
+        env = self.run.call_args_list[2].kwargs["env"]
+        self.assertEqual(env["WATCH_WIDGETS_PROVISION"], str(local.resolve()))
+        self.assertNotIn("watch widget skipped", self.out.getvalue())
+
+    def test_a_widget_profile_without_this_watch_is_skipped_not_fatal(self):
+        add_widget(self.product)
+        local = self.root / "Groundstation_watch_widgets_dev.mobileprovision"
+        local.write_bytes(b"x")
+        self.profiles[local.name] = dev_profile(WIDGET_ID, devices=("OTHER",))
+        with patch.object(build, "_find_installed_ios_development_profile", return_value=None):
+            build.watchos_device_deploy(self.root)
+        self.assertIsNone(targets.watch_widget_appex(self.signed))
+        self.assertIn(f"does not list device {WATCH_UDID}", self.out.getvalue())
+        self.assertIn("watch widget skipped", self.out.getvalue())
+
+    def test_widget_profile_lookup_is_optional_and_newest_wins(self):
+        with patch.dict(os.environ, {"IOS_WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION": ""}), \
+             patch.object(build, "_find_installed_ios_development_profile", return_value=None) as installed:
+            self.assertIsNone(build.ios_watch_widgets_mobileprovision_path("development", self.root, bundle_id=WIDGET_ID))
+            installed.assert_called_with(self.root, WIDGET_ID)
+        installed_profile = Path("installed.mobileprovision")
+        self.profiles[installed_profile.name] = dev_profile(WIDGET_ID)
+        with patch.object(build, "_find_installed_ios_development_profile", return_value=installed_profile):
+            self.assertEqual(build.ios_watch_widgets_mobileprovision_path("development", self.root, bundle_id=WIDGET_ID),
+                             installed_profile)
+        env_profile = self.root / "env.mobileprovision"
+        env_profile.write_bytes(b"x")
+        self.profiles[env_profile.name] = dev_profile(WIDGET_ID)
+        with patch.dict(os.environ, {"IOS_WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION": str(env_profile)}):
+            self.assertEqual(build.ios_watch_widgets_mobileprovision_path("development", self.root, bundle_id=WIDGET_ID),
+                             env_profile)
+        with patch.dict(os.environ, {"IOS_WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION": str(self.root / "missing")}):
+            self.assertIsNone(build.ios_watch_widgets_mobileprovision_path("development", self.root, bundle_id=WIDGET_ID))
+        self.assertIn("IOS_WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION does not exist", self.err.getvalue())
+        with patch.dict(os.environ, {"IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION": ""}):
+            self.assertIsNone(build.ios_watch_widgets_mobileprovision_path("distribution", self.root, bundle_id=WIDGET_ID))
+
+    def test_embedded_watch_app_drops_or_keeps_the_widget_for_with_ios(self):
+        embedded = add_widget(fake_watch_app(self.app / "Watch" / targets.WATCH_APP_NAME)).parent.parent
+        with patch.object(build, "ios_watch_widgets_mobileprovision_path", return_value=None):
+            self.assertIsNone(build._apply_watch_widget(self.root, embedded, "development", watch_bundle_id=WATCH_ID))
+        self.assertIsNone(targets.watch_widget_appex(embedded))
+        self.assertIn("watch widget skipped", self.out.getvalue())
+        add_widget(embedded)
+        with patch.object(build, "ios_watch_widgets_mobileprovision_path", return_value=Path("w.mobileprovision")) as lookup:
+            self.assertEqual(build._apply_watch_widget(self.root, embedded, "distribution", watch_bundle_id=WATCH_ID),
+                             Path("w.mobileprovision"))
+        lookup.assert_called_once_with("distribution", self.root, bundle_id=WIDGET_ID, device_udid=None)
+        self.assertIsNotNone(targets.watch_widget_appex(embedded))
+
     def test_devicectl_listing_is_read_from_the_json_file(self):
         self.stack.close()
         self.stack = contextlib.ExitStack()
@@ -550,6 +631,17 @@ class WatchOSSimulatorDeploy(unittest.TestCase):
         build_frontend.assert_not_called()
         run.assert_not_called()
         run_capture.assert_not_called()
+
+    def test_simulators_always_keep_the_widget_and_seal_it_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            watch_app = fake_watch_app(Path(d) / "GS26Watch.app")
+            appex = add_widget(watch_app)
+            ios_app = Path(d) / "GS26.app"
+            seal = lambda p: ["codesign", "--force", "--sign", "-", "--timestamp=none", str(p)]
+            self.assertEqual(targets.simulator_watch_adhoc_sign_commands(watch_app), [seal(appex), seal(watch_app)])
+            self.assertEqual(targets.simulator_adhoc_sign_commands(ios_app, watch_app),
+                             [seal(appex), seal(watch_app), seal(ios_app)])
+            self.assertTrue(appex.is_dir())
 
     def test_existing_inactive_pair_is_activated_and_booted_phone_reused_on_intel(self):
         for with_ios in (False, True):

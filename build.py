@@ -44,6 +44,7 @@ LEGACY_APP_BUNDLE_NAME = f"{LEGACY_APP_NAME}.app"
 DEVELOPMENT_MOBILEPROVISION_REL = Path("Groundstation_dev.mobileprovision")
 DISTRIBUTION_MOBILEPROVISION_REL = Path("UBSEDS_GroundStation.mobileprovision")
 WATCH_DEVELOPMENT_MOBILEPROVISION_REL = Path("Groundstation_watch_dev.mobileprovision")
+WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION_REL = Path("Groundstation_watch_widgets_dev.mobileprovision")
 
 LOG_FILE: Optional[Path] = None
 INTERRUPTED_EXIT_CODE = 130
@@ -4681,6 +4682,78 @@ def ios_watch_mobileprovision_path(
     raise RuntimeError(f"Signing an iOS app with the embedded watch app needs {key} (a profile for the watch app's bundle id)")
 
 
+def ios_watch_widgets_mobileprovision_path(
+        sign_kind: SignKind,
+        frontend_dir: Path,
+        *,
+        bundle_id: str,
+        device_udid: Optional[str] = None,
+) -> Optional[Path]:
+    """Optional provisioning profile for the watch's push-to-talk widget
+    extension (<watch id>.widgets). Never raises: without a usable profile
+    the watch app is signed without the widget.
+
+    Development: IOS_WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION, else
+    Groundstation_watch_widgets_dev.mobileprovision in the frontend dir or an
+    installed Xcode development profile for the bundle id, the newest of
+    those winning (as for the other profiles).
+    Distribution: IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION."""
+    key = ("IOS_WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION" if sign_kind == "development"
+           else "IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION")
+    raw = os.environ.get(key, "").strip()
+    candidate: Optional[Path] = None
+    if raw:
+        path = Path(raw).expanduser()
+        if path.is_file():
+            candidate = path
+        else:
+            print(f"Warning: {key} does not exist: {path}", file=sys.stderr)
+    elif sign_kind == "development":
+        local = frontend_dir / WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION_REL
+        if local.is_file():
+            candidate = _prefer_newer_installed_profile(frontend_dir, local, bundle_id, "watch widget development")
+        else:
+            candidate = _find_installed_ios_development_profile(frontend_dir, bundle_id)
+    if candidate is None:
+        return None
+    try:
+        info = _decode_mobileprovision(candidate, frontend_dir)
+    except Exception as exc:
+        print(f"watch widget skipped: cannot read {candidate}: {exc}")
+        return None
+    if sign_kind == "development":
+        from scripts.watch_deploy import development_profile_problem
+        problem = development_profile_problem(info, bundle_id, _profile_matches_bundle, device_udid)
+        if problem:
+            print(f"watch widget skipped: development profile {candidate} {problem}")
+            return None
+    elif not _profile_matches_bundle(info, bundle_id):
+        print(f"watch widget skipped: {candidate} does not match {bundle_id}")
+        return None
+    return candidate
+
+
+def _apply_watch_widget(frontend_dir: Path, watch_app: Path, sign_kind: SignKind, *,
+                        watch_bundle_id: str, device_udid: Optional[str] = None,
+                        profile: Optional[Path] = None, looked_up: bool = False) -> Optional[Path]:
+    """Keeps the widget extension in a watch app copy that is about to be
+    signed when a profile for it exists (returned, for WATCH_WIDGETS_PROVISION);
+    otherwise removes it and says why in one line."""
+    from scripts import build_targets as bt
+    if bt.watch_widget_appex(watch_app) is None:
+        return None
+    widget_bundle_id = watch_bundle_id + bt.WATCH_WIDGET_BUNDLE_SUFFIX
+    if not looked_up:
+        profile = ios_watch_widgets_mobileprovision_path(sign_kind, frontend_dir, bundle_id=widget_bundle_id,
+                                                         device_udid=device_udid)
+    if profile is None:
+        bt.drop_watch_widget(watch_app)
+        print(bt.watch_widget_skipped_text(widget_bundle_id, sign_kind))
+        return None
+    print(f"Watch widget profile: {profile}")
+    return profile
+
+
 def package_ios_ipa_with_script(
         frontend_dir: Path,
         *,
@@ -4707,12 +4780,14 @@ def package_ios_ipa_with_script(
 
     bundle_id = _bundle_id_from_app(app)
     watch_profile: Optional[Path] = None
+    watch_widget_profile: Optional[Path] = None
     if watch_app is not None:
         # Embedded after the iOS-only validation above; its own watchOS slices
         # are checked by Xcode. The signer signs it with its own profile first.
         from scripts.build_targets import embed_watch_app
         embedded = embed_watch_app(watch_app, app)
         watch_bundle_id = _bundle_id_from_app(embedded)
+        watch_widget_profile = _apply_watch_widget(frontend_dir, embedded, sign_kind, watch_bundle_id=watch_bundle_id)
         watch_profile = ios_watch_mobileprovision_path(sign_kind, frontend_dir, bundle_id=watch_bundle_id)
         watch_info = _decode_mobileprovision(watch_profile, frontend_dir)
         if sign_kind == "development":
@@ -4764,6 +4839,8 @@ def package_ios_ipa_with_script(
     }
     if watch_profile is not None:
         env["WATCH_PROVISION"] = str(watch_profile.resolve())
+    if watch_widget_profile is not None:
+        env["WATCH_WIDGETS_PROVISION"] = str(watch_widget_profile.resolve())
 
     run(
         ["bash", str(signer), str(app.resolve()), profile_arg, str(ipa_out.resolve())],
@@ -4994,10 +5071,14 @@ def _checked_development_profile(frontend_dir: Path, kind: str, bundle_id: str,
     return profile
 
 
-def sign_watch_app_for_device(frontend_dir: Path, product: Path, profile: Path) -> Path:
+def sign_watch_app_for_device(frontend_dir: Path, product: Path, profile: Path, *,
+                              watch_bundle_id: Optional[str] = None,
+                              widget_profile: Optional[Path] = None) -> Path:
     """Dev-sign a copy of the built watch app on its own (no iOS app) with
     the watch development profile, for a direct devicectl install. The
-    xcodebuild output stays unsigned so `existing` can sign it again."""
+    xcodebuild output stays unsigned so `existing` can sign it again. The
+    push-to-talk widget extension stays in the copy only with
+    `widget_profile`."""
     from scripts import build_targets as bt
     signer = frontend_dir / "scripts" / "ios_package_sign.sh"
     if not signer.exists():
@@ -5008,11 +5089,16 @@ def sign_watch_app_for_device(frontend_dir: Path, product: Path, profile: Path) 
         shutil.rmtree(signed)
     staging.mkdir(parents=True, exist_ok=True)
     shutil.copytree(product, signed, symlinks=True)
+    widget_profile = _apply_watch_widget(frontend_dir, signed, "development",
+                                         watch_bundle_id=watch_bundle_id or _bundle_id_from_app(signed),
+                                         profile=widget_profile, looked_up=True)
     env = {
         "CERT_REGEX": os.environ.get("CERT_REGEX", r"^Apple Development:"),
         "CERT_PICK": os.environ.get("CERT_PICK", "newest"),
         "GET_TASK_ALLOW": "true",
     }
+    if widget_profile is not None:
+        env["WATCH_WIDGETS_PROVISION"] = str(widget_profile.resolve())
     # The signer also zips an .ipa; for a watch-only install it is a by-product.
     run(["bash", str(signer), str(signed.resolve()), str(profile.resolve()),
          str((staging / "GS26Watch Development.ipa").resolve())], cwd=frontend_dir, env=env)
@@ -5061,6 +5147,10 @@ def watchos_device_deploy(
     if with_ios:
         _checked_development_profile(frontend_dir, "phone", phone_bundle_id)
     watch_profile = _checked_development_profile(frontend_dir, "watch", watch_bundle_id, watch.udid if watch else None)
+    # Optional: never stops the deploy (the watch app is signed without the widget).
+    widget_profile = ios_watch_widgets_mobileprovision_path(
+        "development", frontend_dir, bundle_id=watch_bundle_id + bt.WATCH_WIDGET_BUNDLE_SUFFIX,
+        device_udid=watch.udid if watch else None)
 
     if not use_existing:
         if with_ios:
@@ -5074,7 +5164,8 @@ def watchos_device_deploy(
     wd.check_watch_app_bundle(product, phone_bundle_id)
 
     if not with_ios:
-        signed = sign_watch_app_for_device(frontend_dir, product, watch_profile)
+        signed = sign_watch_app_for_device(frontend_dir, product, watch_profile,
+                                           watch_bundle_id=watch_bundle_id, widget_profile=widget_profile)
         print(f"Dev-signed watch app: {signed}")
         print(f"Installing watch app on {watch.name}: {watch_bundle_id}")
         try:
@@ -5189,7 +5280,8 @@ def watchos_simulator_deploy(
             run(command, cwd=frontend_dir)
     else:
         watch_app = product
-        run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(watch_app)], cwd=frontend_dir)
+        for command in bt.simulator_watch_adhoc_sign_commands(watch_app):
+            run(command, cwd=frontend_dir)
 
     pair = _simctl_watch_pair(frontend_dir)
     if not pair.active:

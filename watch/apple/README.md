@@ -38,7 +38,10 @@ crew voice channel; protocol in `docs/watch-companion.md` "Voice".
   vectors (`swift test`).
 
 Signing: the widget extension has its own bundle id
-(`com.UBSEDS.GS26.watchkitapp.widgets`) and needs a provisioning profile.
+(`com.UBSEDS.GS26.watchkitapp.widgets`). It is optional: `build.py` keeps it
+on a device only when a profile for that id exists and otherwise installs
+the watch app without it (see `docs/watch-companion.md`, "Optional: the
+push-to-talk complication"); simulators always include it.
 The `voip` background mode is reviewed by App Store review; voice here is a
 real two-way call, which is what it requires. Things to check on a device:
 CallKit on the watch, whether watchOS offers the Opus encoder at 16 kHz in

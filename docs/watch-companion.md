@@ -615,6 +615,31 @@ development profile for the bundle id when it is newer than the local
 `Groundstation_dev.mobileprovision` / `Groundstation_watch_dev.mobileprovision`,
 so the local copies never need to be replaced by hand.
 
+**Optional: the push-to-talk complication.** The watchOS "Push to talk"
+widget/complication is a separate app extension with its own bundle id,
+`com.UBSEDS.GS26.watchkitapp.widgets`. Without a profile for it,
+`watchos_deploy` (and `with_ios`, and `--final` builds) sign and install the
+watch app without the widget and print one line, `watch widget skipped: no
+development profile for com.UBSEDS.GS26.watchkitapp.widgets; create that App
+ID + profile to get the PTT complication`; nothing else changes. To get it:
+
+1. In the developer portal, Certificates, Identifiers & Profiles →
+   Identifiers → **+** → App IDs → App, bundle id (explicit)
+   `com.UBSEDS.GS26.watchkitapp.widgets`, no extra capabilities.
+2. Profiles → **+** → iOS App Development (watchOS uses iOS profiles), that
+   App ID, your Apple Development certificate and the watch's device (the
+   same devices as the watch profile).
+3. Download it as `Groundstation_watch_widgets_dev.mobileprovision` into the
+   frontend folder, or use Xcode → Settings → Accounts → **Download Manual
+   Profiles**, or point `IOS_WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION` at it.
+   The newest of the local file and an installed profile wins, as for the
+   other profiles. Distribution builds use
+   `IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION`.
+
+A profile that does not list the watch is skipped the same way, with its
+reason. `watchos_sim_deploy` always includes the widget (simulators need no
+profiles).
+
 `build.py` builds, signs and installs the companions for testing. Like the
 phone actions they mirror, the device actions only install: `watchos_deploy`
 behaves like `ios_deploy` (no launch) and the Wear actions like

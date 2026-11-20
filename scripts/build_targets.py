@@ -52,6 +52,34 @@ TARGETS = {
 WATCH_APPLE = Path("watch") / "apple"
 WATCH_WEAR = Path("watch") / "wear"
 WATCH_APP_NAME = "GS26Watch.app"
+# Optional push-to-talk widget/complication extension inside the watch app
+# (watch/apple/project.yml). Device builds keep it only when a provisioning
+# profile for <watch id>.widgets exists; simulators always keep it.
+WATCH_WIDGET_APPEX = "GS26WatchWidgets.appex"
+WATCH_WIDGET_BUNDLE_SUFFIX = ".widgets"
+
+
+def watch_widget_appex(watch_app):
+    """The widget extension inside a built watch app, or None."""
+    appex = Path(watch_app) / "PlugIns" / WATCH_WIDGET_APPEX
+    return appex if appex.is_dir() else None
+
+
+def drop_watch_widget(watch_app):
+    """Removes the widget extension from a (copied) watch app; True if it was there."""
+    appex = watch_widget_appex(watch_app)
+    if appex is None:
+        return False
+    shutil.rmtree(appex)
+    plugins = appex.parent
+    if plugins.is_dir() and not any(plugins.iterdir()):
+        plugins.rmdir()
+    return True
+
+
+def watch_widget_skipped_text(widget_bundle_id, sign_kind="development"):
+    return (f"watch widget skipped: no {sign_kind} profile for {widget_bundle_id}; "
+            "create that App ID + profile to get the PTT complication")
 WEAR_APK_NAME = "GS26-WearOS.apk"
 
 
@@ -168,9 +196,17 @@ def embed_watch_app(watch_app, ios_app):
     return destination
 
 
+def simulator_watch_adhoc_sign_commands(watch_app):
+    """Ad hoc seal of a simulator watch app, its widget extension first."""
+    appex = watch_widget_appex(watch_app)
+    return [["codesign", "--force", "--sign", "-", "--timestamp=none", str(path)]
+            for path in ([appex] if appex else []) + [watch_app]]
+
+
 def simulator_adhoc_sign_commands(ios_app, embedded):
-    # Embedding changed the iOS app's contents; re-seal both ad hoc.
-    return [["codesign", "--force", "--sign", "-", "--timestamp=none", str(path)] for path in (embedded, ios_app)]
+    # Embedding changed the iOS app's contents; re-seal both ad hoc (inner first).
+    return simulator_watch_adhoc_sign_commands(embedded) + [
+        ["codesign", "--force", "--sign", "-", "--timestamp=none", str(ios_app)]]
 
 
 def wear_application_id(root):
