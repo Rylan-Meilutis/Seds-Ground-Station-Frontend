@@ -94,11 +94,16 @@ operations and sign in again if a large correction expires the session. Old
 incorrect timestamps are not rewritten. The permission is off by default and
 cannot be granted to anonymous users.
 
-In Test Fire, HITL, or normal/main mode, start/stop recording in **Actions**, then
-open the **Data Export** tab. Refresh, choose a recording, and
-select **Download CSV**. Browsers save through their download manager; native
-clients save to Downloads (or Documents) and display the path. Active sessions
-export only rows committed when requested; stop recording for the complete capture.
+The station records all the time (a rolling store with a size budget); there
+are no start/pause/stop buttons. Launches, aborts and every station sequence
+are also saved as protected event captures. Open the **Data Export** tab: the
+Recordings panel shows the rolling store, the captures grouped by event type
+(download, select for CSV/report/replay, administrators can delete) and the
+recording settings. Choose a recording and select **Download CSV**. Browsers
+save through their download manager; native clients save to Downloads (or
+Documents) and display the path. The segment being written exports the rows
+committed when requested. Administrators can power off or reboot the connected
+station from **Administration › Station power**.
 
 The matching backend must provide authenticated GET /api/recordings and
 GET /api/recordings/{id}/csv endpoints. Exports include all recorded telemetry,

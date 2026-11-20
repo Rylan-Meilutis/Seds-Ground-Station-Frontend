@@ -9,7 +9,13 @@ The CSV fields are id, received_timestamp_ms, source_timestamp_ms, sender_id,
 data_type, values_json, and payload_json. JSON arrays are quoted CSV cells.
 The export is all recorded telemetry, not chart-downsampled values. An active
 recording is bounded at its last committed row when the request begins.
-Start/stop recording and GSE sequence command permissions are unchanged.
+Recording is always on; there are no recording commands. `GET /api/recordings`
+entries carry `kind` (`rolling`, `capture`, `attachment`, `legacy`),
+`event_type`, `label`, `start_ms` and `end_ms`. `GET /api/recordings/store`
+feeds the Recordings panel; `POST /api/recordings/snapshot`,
+`POST /api/recordings/settings` and `POST /api/recordings/{id}/delete` are its
+actions. `GET`/`POST /api/system/power` is the admin Station power panel. The
+`recording_status` message adds `always_on` and `captures` (in progress).
 
 ## Live telemetry and firmware
 

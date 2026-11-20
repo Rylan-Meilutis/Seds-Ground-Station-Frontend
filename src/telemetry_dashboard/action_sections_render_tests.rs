@@ -18,7 +18,6 @@ fn layout() -> ActionsTabLayout {
         spec("Launch", Some("sequences")),
         spec("DeployParachute", Some("flight_computer")),
         spec("ToggleAvBayUnderglow", Some("av_bay")),
-        spec("StartWritingNow", Some("daq_recording")),
         spec("ToggleButtonInterlock", Some("testing")),
         spec("CustomOperatorCommand", None),
     ]})).unwrap()
@@ -26,7 +25,7 @@ fn layout() -> ActionsTabLayout {
 
 fn policy() -> ActionPolicyMsg {
     let control = |cmd: &str| serde_json::json!({"cmd":cmd,"enabled":true,"blink":"none","actuated":null,"epoch_fence":"ordinary"});
-    let mut controls: Vec<_> = ["Abort","NitrogenClose","Nitrogen","Launch","DeployParachute","ToggleAvBayUnderglow","StartWritingNow","CustomOperatorCommand"]
+    let mut controls: Vec<_> = ["Abort","NitrogenClose","Nitrogen","Launch","DeployParachute","ToggleAvBayUnderglow","CustomOperatorCommand"]
         .into_iter().map(control).collect();
     // A running QD retraction and a prompted (blinking) HITL interlock.
     let mut qd = control("RetractPlumbing");
@@ -84,14 +83,14 @@ fn actions_tab_groups_every_control_into_mode_ordered_collapsible_sections() {
     let html = render();
     let shown = sections_in(&html);
     let order: Vec<&str> = shown.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(order, ["safety","sequences","flight_computer","fill_system","av_bay","daq_recording","testing","other"], "{html}");
+    assert_eq!(order, ["safety","sequences","flight_computer","fill_system","av_bay","testing","other"], "{html}");
     assert!(!html.contains("Recovery / reset"), "a section without controls has no header");
     let block = |id: &str| shown.iter().find(|(s, _)| s == id).unwrap().1.clone();
     // Safety: a plain heading, never a toggle, and Abort stays one click away.
     assert_eq!(expanded(&block("safety")), None);
     assert!(block("safety").contains("data-dispatch-command=\"Abort\""));
     // Every layout control renders exactly once.
-    for cmd in ["Abort","NitrogenClose","RetractPlumbing","Launch","DeployParachute","ToggleAvBayUnderglow","StartWritingNow","ToggleButtonInterlock","CustomOperatorCommand","StartFill","ValveSelfTest"] {
+    for cmd in ["Abort","NitrogenClose","RetractPlumbing","Launch","DeployParachute","ToggleAvBayUnderglow","ToggleButtonInterlock","CustomOperatorCommand","StartFill","ValveSelfTest"] {
         assert_eq!(html.matches(&format!("data-dispatch-command=\"{cmd}\"")).count(), 1, "{cmd}");
     }
     // Headers are buttons with aria-expanded, a count and a badge.

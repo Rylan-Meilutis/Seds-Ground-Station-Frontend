@@ -717,7 +717,7 @@ mod tests {
         // Every page full of actions still fits the account document.
         let mut full = WatchSettings::default();
         for page in &mut full.pages {
-            page.actions = vec!["ToggleAvBayUnderglow".into(), "StartWritingLastTwoMinutes".into()];
+            page.actions = vec!["ToggleAvBayUnderglow".into(), "ToggleFlightBuzzer".into()];
             if !page.items.is_empty() {
                 page.items = many.iter().take(MAX_PAGE_ITEMS).map(|i| i.to_string()).collect();
             }

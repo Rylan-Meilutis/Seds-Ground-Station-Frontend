@@ -191,8 +191,8 @@ mod tests {
 
     #[test]
     fn only_permitted_actions_reach_the_watch() {
-        let catalog = vec![entry("Abort"), entry("Dump"), entry("StartWritingNow")];
-        let actions: Vec<String> = ["Nitrogen", "Dump", "Abort", "StartWritingNow"]
+        let catalog = vec![entry("Abort"), entry("Dump"), entry("ToggleFlightBuzzer")];
+        let actions: Vec<String> = ["Nitrogen", "Dump", "Abort", "ToggleFlightBuzzer"]
             .map(String::from)
             .to_vec();
         // Nitrogen is not offered to this account; at most two survive.
@@ -226,9 +226,9 @@ mod tests {
         s.toggle_page_action("flight", "Dump");
         s.toggle_page_action("propulsion", "Dump");
         s.toggle_page_action("propulsion", "Nitrogen");
-        s.toggle_page_action("health", "StartWritingNow");
+        s.toggle_page_action("health", "ToggleFlightBuzzer");
         s.toggle_page("health");
-        let catalog = vec![entry("Abort"), entry("Dump"), entry("StartWritingNow")];
+        let catalog = vec![entry("Abort"), entry("Dump"), entry("ToggleFlightBuzzer")];
         let pages = resolved_pages(&s, &catalog);
         let flight = pages.iter().find(|p| p.id == "flight").unwrap();
         assert_eq!(flight.actions.len(), 2);
@@ -248,23 +248,23 @@ mod tests {
         let mut s = WatchSettings::default();
         s.toggle_page_action("flight", "Abort");
         s.toggle_page_action("flight", "Dump");
-        s.toggle_page_action("trajectory", "StartWritingNow");
-        let catalog = vec![entry("Abort"), entry("Dump"), entry("StartWritingNow")];
+        s.toggle_page_action("trajectory", "ToggleFlightBuzzer");
+        let catalog = vec![entry("Abort"), entry("Dump"), entry("ToggleFlightBuzzer")];
         let pages = resolved_pages(&s, &catalog);
         let mut policy = ActionPolicyMsg::default_locked();
         policy.controls = vec![
             control("Abort", false, None),
             control("Dump", false, Some("Fill in progress.")),
-            control("StartWritingNow", true, None),
+            control("ToggleFlightBuzzer", true, None),
         ];
         let states = states(&pages, Some(&policy));
         assert!(states["Abort"].enabled);
         assert_eq!(states["Dump"], ActionState { enabled: false, reason: Some("Fill in progress.".into()) });
-        assert!(states["StartWritingNow"].enabled);
+        assert!(states["ToggleFlightBuzzer"].enabled);
         policy.software_buttons_enabled = false;
         let states = super::states(&pages, Some(&policy));
         assert!(states["Abort"].enabled);
-        assert!(!states["StartWritingNow"].enabled);
+        assert!(!states["ToggleFlightBuzzer"].enabled);
         let unknown = super::states(&pages, None);
         assert!(unknown["Abort"].enabled && !unknown["Dump"].enabled);
     }

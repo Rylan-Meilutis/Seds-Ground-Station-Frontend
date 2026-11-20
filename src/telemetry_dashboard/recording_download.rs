@@ -18,17 +18,46 @@ struct Recording {
     id: String,
     bytes: u64,
     active: bool,
+    /// legacy, rolling, capture or attachment (older stations: absent).
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    event_type: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+impl Recording {
+    fn option_label(&self) -> String {
+        let size = super::recording_store_view::size_label(self.bytes);
+        match self.kind.as_deref() {
+            Some("capture") => format!("Capture · {} · {} · {size}", self.event_type.as_deref().unwrap_or("event"), self.label.as_deref().unwrap_or(&self.id)),
+            Some("attachment") => format!("Capture attachment · {} · {size}", self.label.as_deref().unwrap_or(&self.id)),
+            Some("rolling") => format!("Rolling segment · {} · {size}{}", self.id.trim_start_matches("rolling.").trim_end_matches(".db"), if self.active { " · being written" } else { "" }),
+            Some("legacy") => format!("Legacy · {} · {size}", self.id),
+            _ => format!("{} · {} bytes{}", self.id, self.bytes, if self.active { " · active" } else { "" }),
+        }
+    }
+}
+
+/// Legacy files, rolling segments (`rolling.<file>.db`) and event captures
+/// (`event.<type>.<folder>[.<file>].db`); never a path.
+fn valid_recording_id(id: &str) -> bool {
+    let Some(body) = id.strip_suffix(".db") else { return false };
+    if let Some(stamp) = body.strip_prefix("groundstation_recording_") {
+        return !stamp.is_empty() && stamp.bytes().all(|b| b.is_ascii_digit() || b == b'-' || b == b'_');
+    }
+    let parts: Vec<&str> = body.split('.').collect();
+    let part_ok = |p: &str| !p.is_empty() && p.len() <= 120 && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    match parts.as_slice() {
+        ["rolling", file] => file.starts_with("segment_") && part_ok(file),
+        ["event", kind, rest @ ..] => (1..=2).contains(&rest.len()) && part_ok(kind) && rest.iter().all(|p| part_ok(p)),
+        _ => false,
+    }
 }
 
 fn download_path(id: &str) -> Result<String, String> {
-    let valid = id
-        .strip_prefix("groundstation_recording_")
-        .and_then(|s| s.strip_suffix(".db"))
-        .is_some_and(|s| {
-            !s.is_empty()
-                && s.bytes()
-                    .all(|b| b.is_ascii_digit() || b == b'-' || b == b'_')
-        });
+    let valid = valid_recording_id(id);
     if !valid {
         return Err("Invalid recording selection. Refresh the list.".into());
     }
@@ -684,11 +713,15 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
         section { style:"border:1px solid {theme.border};border-radius:10px;padding:10px;color:{theme.text_primary};background:{theme.panel_background};",
             h2 { "Data Export" }
             p { style:"margin:0 0 8px;color:{theme.text_muted};font-size:13px;", "Pick a recording, then the data to export." }
+            super::recording_store_view::RecordingStorePanel { theme: theme.clone(), on_select: move |id: String| {
+                if id != selected() { downloading.set(false); selection_epoch.set(selection_epoch().saturating_add(1)); selected.set(id); }
+                refresh += 1;
+            } }
             details { class:"gs-info", summary {"What's included"}
                 div {
-                    p { "Available in Test Fire, HITL, Integrated ground test and normal mode. Use the recording actions to start or stop capture, then refresh this list." }
+                    p { "Available in Test Fire, HITL, Integrated ground test and normal mode. The station records all the time into a rolling store; launches, aborts and every station sequence are also saved as protected event captures. Pick any of them below." }
                     p { class:"gs26-igt-export-note", "Integrated ground test recordings: the full CSV ends with a data_provenance column. simulated marks replayed flight data (SIM_SAMPLE rows, and FC flight states while the FC replayed); real marks board data; ground_station marks station rows. Other recordings keep the usual columns." }
-                    p { "Full recording CSV includes every saved row with source identity, receive/source timestamps, values and payload bytes. Select channels and a formatter below to focus the export. Active recordings include committed rows up to the request; stop recording first for a complete capture." }
+                    p { "Full recording CSV includes every saved row with source identity, receive/source timestamps, values and payload bytes. Select channels and a formatter below to focus the export. A rolling segment that is still being written exports the rows committed so far; event captures are complete once listed." }
                 }
             }
             div { style:"display:flex;gap:8px;flex-wrap:wrap;",
@@ -698,12 +731,9 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
                         if next != selected() { downloading.set(false); selection_epoch.set(selection_epoch().saturating_add(1)); selected.set(next); }
                     },
                     option { value:"", "1. Select a recording…" }
-                    if recordings.read().is_empty() { option { value:"", "No recorded sessions yet" } }
+                    if recordings.read().is_empty() { option { value:"", "No recordings yet" } }
                     for recording in recordings.read().iter() {
-                        option { value:"{recording.id}",
-                            "{recording.id} · {recording.bytes} bytes"
-                            if recording.active { " · active" }
-                        }
+                        option { value:"{recording.id}", "{recording.option_label()}" }
                     }
                 }
                 button { disabled:loading() || downloading(), onclick:move |_| refresh += 1,
@@ -834,7 +864,16 @@ mod tests {
             id: id.into(),
             bytes: 1,
             active: true,
+            kind: None,
+            event_type: None,
+            label: None,
         }];
+        for id in ["rolling.segment_2026-11-20_12-00-00_000.db", "event.fill.2026-11-20_12-00-00_000_fill.db", "event.launch.f1.groundstation_recording_1.db"] {
+            assert_eq!(download_path(id).unwrap(), format!("/api/recordings/{id}/csv"));
+        }
+        for bad in ["event.fill..db", "event.fill.a/b.db", "rolling.other.db", "event.fill.a.b.c.db", "x.db"] {
+            assert!(download_path(bad).is_err(), "{bad}");
+        }
         assert_eq!(choose_recording(&records, ""), "");
         assert_eq!(choose_recording(&records, id), id);
         assert!(choose_recording(&[], id).is_empty());

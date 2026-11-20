@@ -96,6 +96,7 @@ impl Server{
                         ("GET","/api/antenna/status")=>serde_json::json!({"rocket":null,"ground_station":null,"rrls":null,"rssi":null,"gpsd_configured":false}),
                         ("GET","/api/admin/physical-panel")=>serde_json::json!({"panel_mode":null,"effective_mode":"sequences","station_default":"sequences","buttons":[],"fixed":[],"launch_only_note":null,"change_blocked_reason":null,"can_change":true,"updated_by":null,"updated_at_ms":null}),
                         ("GET","/api/admin/sequence-access")=>serde_json::json!({"launch_sequence_only":false,"enable_blocked_reason":null,"disabled_sequences":["Turbocharge","Auto Cold Flow"],"kept_sequences":[],"always_kept":["Abort and every abort path"],"can_change":true,"preset_env":"GS_LAUNCH_SEQUENCE_ONLY"}),
+                        ("GET","/api/system/power")=>serde_json::json!({"station_name":"Ground Station","supported":false,"mechanism":"unsupported","unsupported_reason":"Not supported here","blocker":null,"in_progress":false}),
                         ("GET","/api/station/pairing")=>serde_json::json!({"role":"primary","paired":false,"source":null,"error":null,"peers":[],"fingerprint":null,"restart_required":false,"can_manage":true,"radio_available":true,"unpair_available":false,"exchange":null,"primary_link":null}),
                         ("GET","/api/recordings")=>serde_json::json!([{"id":"record-r","bytes":1,"active":false}]),
                         ("GET","/api/live_streams")=>serde_json::to_value(dashboard::live_stream_tab::LiveStreamConfig::default()).unwrap(),

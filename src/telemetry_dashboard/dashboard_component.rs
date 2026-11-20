@@ -195,10 +195,7 @@ fn TelemetryDashboardInner() -> Element {
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         }
     });
-    let recording_status = use_signal(|| RecordingStatusMsg {
-        mode: "idle".to_string(),
-        db_path: None,
-    });
+    let recording_status = use_signal(RecordingStatusMsg::idle);
     let fill_targets = use_signal(|| None::<FillTargetsConfig>);
     let network_time = use_signal(|| None::<NetworkTimeSync>);
     let launch_clock = use_signal(|| None::<LaunchClockMsg>);

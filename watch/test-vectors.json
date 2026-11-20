@@ -1443,7 +1443,7 @@
       "id": "health",
       "enabled": true,
       "actions": [
-       "StartWritingNow"
+       "ToggleFlightBuzzer"
       ]
      },
      {
@@ -1772,7 +1772,7 @@
       "enabled": true,
       "actions": [
        "Dump",
-       "StartWritingNow",
+       "ToggleFlightBuzzer",
        "Abort"
       ]
      },
@@ -1874,8 +1874,8 @@
        "abort": true
       },
       {
-       "cmd": "StartWritingNow",
-       "label": "Record",
+       "cmd": "ToggleFlightBuzzer",
+       "label": "Buzzer",
        "abort": false
       }
      ]
@@ -1892,7 +1892,7 @@
       "velocity"
      ],
      "actions": [
-      "StartWritingNow"
+      "ToggleFlightBuzzer"
      ]
     },
     {

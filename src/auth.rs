@@ -114,7 +114,7 @@ pub fn update_command_proxy(status: Option<CommandProxyStatus>) {
 pub fn is_local_station_command(cmd: &str) -> bool {
     // RadioModemCheck checks this station's own radio (/api/radio/modem/check
     // runs locally on RRLS too); it is never proxied to the primary.
-    matches!(cmd, "StartWritingNow" | "StartWritingLastTwoMinutes" | "PauseWritingDb" | "StopWritingDb" | "ResetTClock" | "RadioModemCheck")
+    matches!(cmd, "ResetTClock" | "RadioModemCheck")
 }
 pub fn command_uses_primary_proxy(status: &SessionStatus, cmd: &str) -> bool {
     status.station_role.as_deref() == Some("rrls") && !is_local_station_command(cmd)
@@ -1222,7 +1222,7 @@ mod media_permission_tests {
 mod recovery_command_permissions {
     use super::*;
     #[test]
-    fn recovery_admin_retains_recording_but_cannot_run_live_outputs() {
+    fn recovery_admin_cannot_run_live_outputs() {
         let mut status = SessionStatus {
             roles: vec!["admin".into()],
             station_role: Some("rrls".into()),
@@ -1230,9 +1230,6 @@ mod recovery_command_permissions {
         };
         for cmd in ["Pilot", "Nitrogen", "NitrogenClose", "NitrousClose", "DeployChutes", "ResetFlightState", "ResetTClock", "Abort"] {
             assert!(!can_send_command_for_status(&status, cmd), "{cmd}");
-        }
-        for cmd in ["StartWritingNow", "StartWritingLastTwoMinutes", "PauseWritingDb", "StopWritingDb"] {
-            assert!(can_send_command_for_status(&status, cmd));
         }
         status.station_role = Some("primary".into());
         assert!(can_send_command_for_status(&status, "Pilot"));
@@ -1254,7 +1251,7 @@ mod primary_proxy_permissions {
         assert!(!can_send_command_for_status(&status,"Pilot"));
         status.command_proxy=None;
         assert!(!can_send_command_for_status(&status,"Pilot"));
-        assert!(can_send_command_for_status(&status,"StartWritingNow"));
+        assert!(can_send_command_for_status(&status,"RadioModemCheck"));
     }
     #[test]
     fn rrls_takeover_sends_only_listed_av_bay_commands_itself() {

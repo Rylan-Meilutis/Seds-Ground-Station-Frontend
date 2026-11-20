@@ -25,8 +25,6 @@ let proxyAvailable=true;
 const proxyRequests=[];
 const wsCommands=[];
 const physicalValveCommands=['Pilot','NormallyOpen','Dump','Nitrogen','Nitrous'];
-dashboardLayout.actions_tab.actions.push({...dashboardLayout.actions_tab.actions[0],cmd:'StartWritingNow',label:'Local recorder fixture',group:'Recording'});
-actionPolicy.controls.push({cmd:'StartWritingNow',enabled:true,actuated:null,blink:'none'});
 
 for(const cmd of physicalValveCommands) {
  dashboardLayout.actions_tab.actions=dashboardLayout.actions_tab.actions.filter(a=>a.cmd!==cmd);
@@ -201,10 +199,6 @@ try {
  assert(await pilot.isDisabled());assert(await pilot.getByText('Unconfirmed',{exact:true}).isVisible());
  proxyStatus.last={...proxyStatus.pending,phase:'unknown',error:'No primary result'};proxyStatus.pending=null;
  await page.getByText('Pilot: outcome unknown.',{exact:false}).waitFor();
- const recorder=page.getByRole('button',{name:/Local recorder fixture/});
- assert(await recorder.isEnabled(),'local recording survives expired remote physical policy');
- await recorder.click();await page.waitForTimeout(150);
- assert.equal(wsCommands.filter(packet=>packet.cmd==='StartWritingNow').length,1);
  assert.deepEqual(proxyRequests,['Pilot','Pilot']);
  // Network UTC lives in Settings › Ground Station › Network & clocks.
  await page.getByRole('link',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Ground Station',exact:true}).click();await page.getByRole('button',{name:'Network & clocks',exact:true}).click();

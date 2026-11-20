@@ -566,7 +566,6 @@ pub enum ActionSection {
     FlightComputer,
     AvBay,
     Recovery,
-    DaqRecording,
     Testing,
     /// Integrated ground test (IgtEnter, IgtLivePyro, IgtDryRun, IgtExit).
     GroundTest,

@@ -267,6 +267,29 @@ const DEFAULT_LAUNCH_COUNTDOWN_DURATION_MS: i64 = 10_000;
 pub(crate) struct RecordingStatusMsg {
     mode: String,
     db_path: Option<String>,
+    /// The station records into its rolling ring at all times.
+    #[serde(default)]
+    always_on: bool,
+    /// Event captures in progress (launch, fill, abort, ...).
+    #[serde(default)]
+    captures: Vec<CaptureBriefMsg>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CaptureBriefMsg {
+    kind: String,
+    title: String,
+    #[serde(default)]
+    label: String,
+    event_start_ms: i64,
+    #[serde(default)]
+    event_end_ms: Option<i64>,
+}
+
+impl RecordingStatusMsg {
+    pub(crate) fn idle() -> Self {
+        Self { mode: "idle".into(), db_path: None, always_on: false, captures: Vec::new() }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]

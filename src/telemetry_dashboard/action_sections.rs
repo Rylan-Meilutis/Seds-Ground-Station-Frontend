@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use super::layout::ActionSection;
 
 impl ActionSection {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::Safety,
         Self::GroundTest,
         Self::FillSystem,
@@ -16,7 +16,6 @@ impl ActionSection {
         Self::FlightComputer,
         Self::AvBay,
         Self::Recovery,
-        Self::DaqRecording,
         Self::Testing,
         Self::Other,
     ];
@@ -33,7 +32,6 @@ impl ActionSection {
             Self::FlightComputer => "Flight computer",
             Self::AvBay => "AV bay",
             Self::Recovery => "Recovery / reset",
-            Self::DaqRecording => "DAQ / recording",
             Self::Testing => "Testing / HITL",
             Self::GroundTest => "Ground test",
             Self::Other => "Other controls",
@@ -49,7 +47,6 @@ impl ActionSection {
             Self::FlightComputer => "flight_computer",
             Self::AvBay => "av_bay",
             Self::Recovery => "recovery",
-            Self::DaqRecording => "daq_recording",
             Self::Testing => "testing",
             Self::GroundTest => "ground_test",
             Self::Other => "other",
@@ -107,14 +104,12 @@ impl OperatingMode {
                 (FillSystem, true),
                 (AvBay, true),
                 (Recovery, true),
-                (DaqRecording, true),
                 (Testing, false),
             ],
             // Test fire has no flight computer: FC and AV bay go last, closed.
             Self::TestFire => &[
                 (Sequences, true),
                 (FillSystem, true),
-                (DaqRecording, true),
                 (Recovery, true),
                 (FlightComputer, false),
                 (AvBay, false),
@@ -127,7 +122,6 @@ impl OperatingMode {
                 (FlightComputer, true),
                 (AvBay, true),
                 (Recovery, true),
-                (DaqRecording, true),
                 (Testing, true),
             ],
             // Integrated ground test: the ground-test controls lead, then the
@@ -139,7 +133,6 @@ impl OperatingMode {
                 (FlightComputer, true),
                 (AvBay, true),
                 (Recovery, true),
-                (DaqRecording, true),
                 (Testing, false),
             ],
             // Simulator: the simulator controls lead.
@@ -150,7 +143,6 @@ impl OperatingMode {
                 (FillSystem, true),
                 (AvBay, true),
                 (Recovery, true),
-                (DaqRecording, true),
             ],
         }
     }
@@ -368,11 +360,11 @@ mod tests {
         let all = every_section();
         assert_eq!(
             order(OperatingMode::TestFire, &all)[..5],
-            [Safety, Sequences, FillSystem, DaqRecording, Recovery]
+            [Safety, Sequences, FillSystem, Recovery, FlightComputer]
         );
         assert_eq!(
             order(OperatingMode::Normal, &all)[..7],
-            [Safety, Sequences, FlightComputer, FillSystem, AvBay, Recovery, DaqRecording]
+            [Safety, Sequences, FlightComputer, FillSystem, AvBay, Recovery, Testing]
         );
         // Test fire: FC and AV bay start closed, after the fire-relevant groups.
         let test_fire = arrange(OperatingMode::TestFire, &all);

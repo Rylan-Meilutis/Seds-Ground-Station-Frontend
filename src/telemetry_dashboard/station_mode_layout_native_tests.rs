@@ -286,7 +286,7 @@ fn receive_frame(dom: &VirtualDom, frame: serde_json::Value) {
             Signal::new(Vec::<DismissedNotification>::new()),
             Signal::new(Vec::<u64>::new()),
             ACTION_POLICY_SIGNAL.signal(),
-            Signal::new(RecordingStatusMsg { mode: "idle".into(), db_path: None }),
+            Signal::new(RecordingStatusMsg::idle()),
             Signal::new(None),
             Signal::new(None),
             Signal::new(None),

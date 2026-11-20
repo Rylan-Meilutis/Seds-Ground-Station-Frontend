@@ -294,14 +294,6 @@ pub(super) fn btn_style(
     )
 }
 
-fn recording_command_active(cmd: &str, status: &RecordingStatusMsg) -> Option<bool> {
-    match cmd {
-        "StartWritingNow" | "StartWritingLastTwoMinutes" => Some(status.mode == "recording"),
-        "PauseWritingDb" => Some(status.mode == "paused"),
-        "StopWritingDb" => Some(status.mode == "idle"),
-        _ => None,
-    }
-}
 
 fn cosmetic_output_action(cmd: &str) -> bool {
     matches!(cmd, "ToggleAvBayUnderglow" | "ToggleFlightBuzzer")
@@ -421,14 +413,9 @@ mod physical_confirmation_tests {
     }
 }
 
-fn merged_actuated(
-    cmd: &str,
-    control_actuated: Option<bool>,
-    recording_status: &RecordingStatusMsg,
-) -> Option<bool> {
+fn merged_actuated(cmd: &str, control_actuated: Option<bool>) -> Option<bool> {
     let local_active = command_feedback_active(cmd);
-    let base = control_actuated.or_else(|| recording_command_active(cmd, recording_status));
-    merge_command_feedback(cmd, base, local_active)
+    merge_command_feedback(cmd, control_actuated, local_active)
 }
 
 #[derive(Clone, Copy)]
@@ -1097,6 +1084,7 @@ pub fn ActionsTab(
                                 super::igt_view::GroundTestPanel {inhibited:abort_only_mode,retry_in_section:sd_retry_in_ground_test}
                             }
                             if *section == ActionSection::Safety {
+                            super::recording_store_view::RecordingIndicator {status: recording_status}
                             super::igt_view::CurrentLaunchLatch {}
                             super::proximity_lock_view::ProximityActionsNotice {}
                             super::board_abort_readiness::BoardAbortReadiness {show_hitl_interlocks:true}
@@ -1275,7 +1263,6 @@ pub fn ActionsTab(
                                                         let actuated = sequence.map(|state| state.illuminated()).or_else(|| merged_actuated(
                                                             action.cmd.as_str(),
                                                             control.as_ref().and_then(|c| c.actuated),
-                                                            &recording_status.read(),
                                                         )).or_else(|| cosmetic_confirmed(
                                                             action.cmd.as_str(),
                                                             control.as_ref().and_then(|c| c.requested),

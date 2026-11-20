@@ -118,7 +118,7 @@ pub(super) fn receive_action_policy(dom:&VirtualDom, epoch:Option<&str>, data:se
         Signal::new(Vec::<AlertMsg>::new()),Signal::new(Vec::<AlertMsg>::new()),Signal::new(0),Signal::new(0),Signal::new(false),
         Signal::new(Vec::<PersistentNotification>::new()),Signal::new(Vec::<PersistentNotification>::new()),
         Signal::new(Vec::<PersistentNotification>::new()),Signal::new(Vec::<DismissedNotification>::new()),Signal::new(Vec::<u64>::new()),
-        ACTION_POLICY_SIGNAL.signal(),Signal::new(RecordingStatusMsg{mode:"idle".into(),db_path:None}),Signal::new(None),Signal::new(None),Signal::new(None),
+        ACTION_POLICY_SIGNAL.signal(),Signal::new(RecordingStatusMsg::idle()),Signal::new(None),Signal::new(None),Signal::new(None),
         Signal::new(NetworkTopologyMsg::default()),Signal::new(0),Signal::new(0),Signal::new("Unknown".into()),Signal::new(Vec::<BoardStatusEntry>::new()),
         Signal::new(None),Signal::new(None),Signal::new(None),Signal::new(None),
     ));
@@ -453,7 +453,7 @@ fn receive_reset_test_frame(dom:&VirtualDom,frame:serde_json::Value,archive:Sign
         Signal::new(Vec::<AlertMsg>::new()),Signal::new(Vec::<AlertMsg>::new()),Signal::new(0),Signal::new(0),Signal::new(false),
         Signal::new(Vec::<PersistentNotification>::new()),archive,
         Signal::new(Vec::<PersistentNotification>::new()),Signal::new(Vec::<DismissedNotification>::new()),Signal::new(Vec::<u64>::new()),
-        ACTION_POLICY_SIGNAL.signal(),Signal::new(RecordingStatusMsg{mode:"idle".into(),db_path:None}),Signal::new(None),Signal::new(None),Signal::new(None),
+        ACTION_POLICY_SIGNAL.signal(),Signal::new(RecordingStatusMsg::idle()),Signal::new(None),Signal::new(None),Signal::new(None),
         Signal::new(NetworkTopologyMsg::default()),Signal::new(0),Signal::new(0),Signal::new("Unknown".into()),Signal::new(Vec::<BoardStatusEntry>::new()),
         Signal::new(None),Signal::new(None),Signal::new(None),Signal::new(None),
     ));
@@ -517,7 +517,7 @@ fn receive_alert_ack(dom:&VirtualDom, epoch:&str, connection:u64, acks:(Signal<i
         Signal::new(Vec::<AlertMsg>::new()),Signal::new(Vec::<AlertMsg>::new()),acks.0,acks.1,Signal::new(true),
         Signal::new(Vec::<PersistentNotification>::new()),Signal::new(Vec::<PersistentNotification>::new()),
         Signal::new(Vec::<PersistentNotification>::new()),Signal::new(Vec::<DismissedNotification>::new()),Signal::new(Vec::<u64>::new()),
-        Signal::new(ActionPolicyMsg::default_locked()),Signal::new(RecordingStatusMsg{mode:"idle".into(),db_path:None}),Signal::new(None),Signal::new(None),Signal::new(None),
+        Signal::new(ActionPolicyMsg::default_locked()),Signal::new(RecordingStatusMsg::idle()),Signal::new(None),Signal::new(None),Signal::new(None),
         Signal::new(NetworkTopologyMsg::default()),Signal::new(0),Signal::new(0),Signal::new("Unknown".into()),Signal::new(Vec::<BoardStatusEntry>::new()),
         Signal::new(None),Signal::new(None),Signal::new(None),Signal::new(None),
     ));

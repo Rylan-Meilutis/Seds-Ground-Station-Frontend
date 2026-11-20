@@ -70,6 +70,8 @@ mod board_config_sync;
 pub(crate) mod prelude;
 mod recorded_replay_controls;
 mod recording_download;
+mod recording_store_view;
+mod host_power_admin;
 mod recovery_marker;
 mod auto_vent_notice;
 mod fc_estimator_notice;
