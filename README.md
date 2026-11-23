@@ -210,6 +210,8 @@ The app uses WebSocket for:
 - Launch clock badge and launch clock synchronization from both HTTP and WebSocket updates
 - Sender-aware multi-series charts and per-series scaling for state/data graphs
 - Network topology graph with configurable flow animation and layout direction
+- Live diagrams tab: P&ID-style fill system, AV bay, system overview and test stand views with valve states, flow and stale ages, also selectable as audience programme scenes ([docs/live-diagrams.md](docs/live-diagrams.md))
+- Raw streams tab: every decoded stream with live values and rates, the external read-only feed's connection details and administrator-issued stream viewer tokens
 - Built-in version page showing app/build/package runtime information
 - Localized UI support through translation catalog and on-demand translation routes
 - Ground Station / App wording in user-facing copy instead of internal `backend` / `frontend` terminology

@@ -483,6 +483,8 @@ enum MainTab {
     Data,
     DataExport,
     SequenceHistory,
+    LiveDiagrams,
+    RawStreams,
 }
 
 /// Active lifecycle errors are server-authoritative and separate from acknowledged history.

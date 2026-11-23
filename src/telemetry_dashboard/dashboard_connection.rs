@@ -25,6 +25,8 @@ fn _main_tab_to_str(tab: MainTab) -> &'static str {
         MainTab::Data => "data",
         MainTab::DataExport => "data-export",
         MainTab::SequenceHistory => "sequence-history",
+        MainTab::LiveDiagrams => "live-diagrams",
+        MainTab::RawStreams => "raw-streams",
     }
 }
 
@@ -74,6 +76,8 @@ fn _default_main_tab_label(tab: MainTab) -> String {
         MainTab::Data => localized_copy(&lang, "Data", "Datos", "Donnees"),
         MainTab::DataExport => localized_copy(&lang, "Data Export", "Exportar datos", "Export de donnees"),
         MainTab::SequenceHistory => localized_copy(&lang, "Sequence history", "Historial de secuencias", "Historique des sequences"),
+        MainTab::LiveDiagrams => localized_copy(&lang, "Live diagrams", "Diagramas en vivo", "Schemas en direct"),
+        MainTab::RawStreams => localized_copy(&lang, "Raw streams", "Flujos sin procesar", "Flux bruts"),
     }
 }
 
@@ -130,6 +134,8 @@ fn _main_tab_from_str(s: &str) -> MainTab {
         "data" => MainTab::Data,
         "data-export" => MainTab::DataExport,
         "sequence-history" => MainTab::SequenceHistory,
+        "live-diagrams" => MainTab::LiveDiagrams,
+        "raw-streams" => MainTab::RawStreams,
         _ => MainTab::State,
     }
 }
@@ -244,6 +250,14 @@ fn _available_main_tabs(
     if auth::can_view_data() && !tabs.contains(&MainTab::SequenceHistory) {
         tabs.push(MainTab::SequenceHistory);
     }
+    // Live diagrams and the raw stream list are read-only views of telemetry
+    // the session may already see (docs/live-diagrams.md).
+    for tab in [MainTab::LiveDiagrams, MainTab::RawStreams] {
+        if auth::can_view_data() && !tabs.contains(&tab) {
+            tabs.push(tab);
+        }
+    }
+    tabs.retain(|tab| !matches!(tab, MainTab::LiveDiagrams | MainTab::RawStreams) || auth::can_view_data());
     tabs.insert(0, MainTab::State);
     tabs
 }

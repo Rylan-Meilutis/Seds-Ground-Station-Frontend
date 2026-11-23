@@ -42,6 +42,11 @@
       "kind": "text"
     },
     {
+      "name": "PROGRAM_DIAGRAM_JS",
+      "path": "station_ui/scripts/program-diagram.js",
+      "kind": "text"
+    },
+    {
       "name": "PROGRAM_AUDIO_JS",
       "path": "station_ui/scripts/program-audio.js",
       "kind": "text"

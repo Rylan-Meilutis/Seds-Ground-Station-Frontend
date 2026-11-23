@@ -155,7 +155,7 @@ pub(super) fn RundownEditor(broadcast: BroadcastState) -> Element {
                     label {"Seconds per page" input {r#type:"number",min:"1",max:"30",value:page.cycle_seconds.to_string(),oninput:move|e|{if let Ok(v)=e.value().parse(){edit(draft,selected,|p|p.cycle_seconds=v);}}}}
                     label {"Metrics per page" input {r#type:"number",min:"1",max:"6",value:page.stats_per_page.to_string(),oninput:move|e|{if let Ok(v)=e.value().parse(){edit(draft,selected,|p|p.stats_per_page=v);}}}}
                     label {"Scene" select {value:page.scene.clone(),onchange:move|e|edit(draft,selected,|p|p.scene=e.value()),
-                        for (id,label) in [("inherit","Operator’s current scene"),("hero","Featured camera"),("grid","Camera grid"),("model","Rocket artwork"),("grid-model","Cameras + artwork"),("interview","Interview + picture-in-picture"),("map","Recovery map"),("recorded-replay","Recorded vehicle replay")] {option {value:id,"{label}"}}
+                        for (id,label) in [("inherit","Operator’s current scene"),("hero","Featured camera"),("grid","Camera grid"),("model","Rocket artwork"),("grid-model","Cameras + artwork"),("interview","Interview + picture-in-picture"),("map","Recovery map"),("recorded-replay","Recorded vehicle replay")].into_iter().chain(super::live_diagrams::PROGRAM_SCENES.iter().copied()) {option {value:id,"{label}"}}
                     }}
                 }
             }

@@ -45,6 +45,7 @@ fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
                 | MainTab::Notifications
                 | MainTab::Warnings
                 | MainTab::Errors
+                | MainTab::LiveDiagrams
         ),
         MainTab::State
         | MainTab::Checklists
@@ -59,7 +60,9 @@ fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
         | MainTab::Warnings
         | MainTab::Errors
         | MainTab::DataExport
-        | MainTab::SequenceHistory => true,
+        | MainTab::SequenceHistory
+        | MainTab::LiveDiagrams
+        | MainTab::RawStreams => true,
         _ => false,
     }
 }

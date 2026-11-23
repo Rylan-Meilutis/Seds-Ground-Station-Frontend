@@ -25,7 +25,7 @@ button{min-height:44px;border-radius:10px}button:focus-visible{outline:3px solid
 @media(max-width:600px){#graphic-stage[data-flat="true"] #rocket-inset[data-equipment="true"]{grid-template-columns:62px minmax(0,1fr);gap:8px;padding:10px}#graphic-stage[data-flat="true"] #rocket-inset[data-equipment="true"]>#rocket-phase{font-size:10px;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
-<div id="viewport"><div id="stage"></div><div id="graphic-stage"></div><div id="map-scene" style="display:none"></div><iframe id="recorded-scene" title="Recorded flight replay" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:0" allow="fullscreen"></iframe></div><footer id="program-bar" aria-label="Program status"><div id="rocket-inset" aria-label="Delayed rocket state"><svg viewBox="0 0 100 180" role="img" aria-label="Vehicle mode unavailable; illustration only"><g id="flight-vehicle" style="display:none"><g id="chute" style="display:none"><path d="M10 32 Q50 -8 90 32Z" fill="#e5ecf2"/><path d="M10 32L50 63L90 32" fill="none" stroke="#99afc0"/></g><path d="M40 145L28 159V130L40 120M60 145L72 159V130L60 120" fill="#8498a8"/><path d="M40 145V68L50 45L60 68V145Z" fill="#e5ecf2"/><path id="flame" d="M42 148L50 175L58 148Z" fill="#ff984a" style="display:none"/></g><g id="test-fire-stand" style="display:none"><rect x="14" y="79" width="63" height="25" rx="8" fill="#d9e3ea" stroke="#8498a8" stroke-width="2"/><path d="M77 85L90 80V103L77 98Z" fill="#8498a8"/><path d="M28 105V139M62 105V139" fill="none" stroke="#91a8ba" stroke-width="6"/><rect x="8" y="141" width="84" height="7" rx="2" fill="#8498a8"/><path d="M23 109H35M56 109H68" stroke="#91a8ba" stroke-width="3"/></g><g id="vehicle-mode-unknown"><circle cx="50" cy="97" r="25" fill="#152a3c" stroke="#8498a8" stroke-width="2"/><text x="50" y="109" text-anchor="middle" fill="#d9e3ea" font-size="34">?</text></g></svg><div id="rocket-phase">Unknown</div></div><div id="banner"></div><div id="playback-controls"><div id="status" role="status">Buffering</div><div id="stream-sound"></div></div></footer><script src="/assets/stay-awake.js"></script><script src="/assets/hls.min.js"></script><script src="/assets/stream-sequence-visuals.js"></script><script src="/assets/program-art.js"></script>
+<div id="viewport"><div id="stage"></div><div id="graphic-stage"></div><div id="map-scene" style="display:none"></div><div id="diagram-scene" style="display:none;position:absolute;inset:0" aria-label="Live diagram, delayed with the programme"></div><iframe id="recorded-scene" title="Recorded flight replay" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:0" allow="fullscreen"></iframe></div><footer id="program-bar" aria-label="Program status"><div id="rocket-inset" aria-label="Delayed rocket state"><svg viewBox="0 0 100 180" role="img" aria-label="Vehicle mode unavailable; illustration only"><g id="flight-vehicle" style="display:none"><g id="chute" style="display:none"><path d="M10 32 Q50 -8 90 32Z" fill="#e5ecf2"/><path d="M10 32L50 63L90 32" fill="none" stroke="#99afc0"/></g><path d="M40 145L28 159V130L40 120M60 145L72 159V130L60 120" fill="#8498a8"/><path d="M40 145V68L50 45L60 68V145Z" fill="#e5ecf2"/><path id="flame" d="M42 148L50 175L58 148Z" fill="#ff984a" style="display:none"/></g><g id="test-fire-stand" style="display:none"><rect x="14" y="79" width="63" height="25" rx="8" fill="#d9e3ea" stroke="#8498a8" stroke-width="2"/><path d="M77 85L90 80V103L77 98Z" fill="#8498a8"/><path d="M28 105V139M62 105V139" fill="none" stroke="#91a8ba" stroke-width="6"/><rect x="8" y="141" width="84" height="7" rx="2" fill="#8498a8"/><path d="M23 109H35M56 109H68" stroke="#91a8ba" stroke-width="3"/></g><g id="vehicle-mode-unknown"><circle cx="50" cy="97" r="25" fill="#152a3c" stroke="#8498a8" stroke-width="2"/><text x="50" y="109" text-anchor="middle" fill="#d9e3ea" font-size="34">?</text></g></svg><div id="rocket-phase">Unknown</div></div><div id="banner"></div><div id="playback-controls"><div id="status" role="status">Buffering</div><div id="stream-sound"></div></div></footer><script src="/assets/stay-awake.js"></script><script src="/assets/hls.min.js"></script><script src="/assets/stream-sequence-visuals.js"></script><script src="/assets/program-art.js"></script><script src="/assets/program-diagram.js"></script>
 <script>
 'use strict';
 window.GS26StayAwake?.setActive('programme',true);
@@ -139,7 +139,7 @@ async function poll(){
   // Decode only the featured camera in hero mode, especially on the Pi.
   let feeds=state.broadcast.replay?state.streams:scene()==='model'?[]:['grid','grid-model','tiles'].includes(scene())?state.streams:state.streams.filter(s=>s.id===(state.streams.find(s=>s.id===state.broadcast.featured_stream_id)||state.streams[0])?.id);
   if(!state.broadcast.replay&&scene()==='interview'){const i=state.broadcast.interview;feeds=state.streams.filter(s=>s.id===i?.main_stream_id||s.id===i?.pip_stream_id);}
-  if(!state.broadcast.replay&&['map','recorded-replay'].includes(scene()))feeds=[];
+  if(!state.broadcast.replay&&(['map','recorded-replay'].includes(scene())||isDiagram(scene())))feeds=[];
   const ids=new Set(feeds.map(s=>s.id));for(const id of [...players.keys()])if(!ids.has(id)){const outgoing=players.get(id);if(!outgoing.retiring){outgoing.retiring=true;outgoing.video.style.opacity=0;setTimeout(()=>{if(players.get(id)===outgoing)remove(id);},500);}}else players.get(id).retiring=false;
   for(const feed of feeds){if(players.has(feed.id)&&players.get(feed.id).url!==feed.url)remove(feed.id);if(players.get(feed.id)?.failed && performance.now()-players.get(feed.id).failedAt>5000)remove(feed.id);if(supportsVideo&&!players.has(feed.id))create(feed);}
   drawBanner();
@@ -152,6 +152,7 @@ function render(){
  const replay=state.broadcast.replay;
  const layout=replay?(state.broadcast.tiles?.length?"tiles":state.streams.length>1?"grid":"hero"):scene();
  for(const p of players.values())sound(p.video);
+ if(isDiagram(layout)){specialScene(layout);graphicDisplay(false);document.querySelector('#graphic-stage').style.display='none';const holder=document.querySelector('#diagram-scene');if(state.diagram_topology){window.gsProgramDiagram?.show(holder,state.diagram_topology,state.telemetry?.diagram);status.textContent='';}else status.textContent='Diagram unavailable';finishTransition(true);return;}
  if(layout==='map'||layout==='recorded-replay'){specialScene(layout);graphicDisplay(false);document.querySelector('#graphic-stage').style.display='none';status.textContent=layout==='map'?'Recovery map · delayed positions':'Recorded replay · saved data';finishTransition(true);return;}
  specialScene(null);
  const target=replay?Math.min(replay.source_end_ms,replay.source_end_ms-replay.duration_seconds*1000+Math.max(0,serverNow()-replay.started_at_ms)*replay.speed):serverNow()-state.broadcast.delay_seconds*1000-bufferMarginMs;
@@ -206,9 +207,10 @@ function render(){
 }
 let mapController=null,mapLoading=false,specialActive=null,lastMapInput=null,lastMapFresh=null,mapRetryAt=0;
 function updateMap(input,fresh){if(mapController&&(input!==lastMapInput||fresh!==lastMapFresh)){mapController.update(input,fresh);lastMapInput=input;lastMapFresh=fresh;}}
+function isDiagram(layout){return typeof layout==='string'&&layout.startsWith('diagram-');}
 function specialScene(next){
- const map=document.querySelector('#map-scene'),recorded=document.querySelector('#recorded-scene');
- if(next!==specialActive){if(mapController){mapController.destroy();mapController=null;}lastMapInput=null;lastMapFresh=null;map.style.display=next==='map'?'block':'none';recorded.style.display=next==='recorded-replay'?'block':'none';
+ const map=document.querySelector('#map-scene'),recorded=document.querySelector('#recorded-scene'),diagram=document.querySelector('#diagram-scene');
+ if(next!==specialActive){diagram.style.display=isDiagram(next)?'block':'none';if(!isDiagram(next))window.gsProgramDiagram?.hide(diagram);if(mapController){mapController.destroy();mapController=null;}lastMapInput=null;lastMapFresh=null;map.style.display=next==='map'?'block':'none';recorded.style.display=next==='recorded-replay'?'block':'none';
   if(next==='recorded-replay')recorded.src='/api/media-assets/recorded-vehicle?ticket='+encodeURIComponent(ticket);else recorded.removeAttribute('src');specialActive=next;
  }
  if(next==='map'){
@@ -216,7 +218,7 @@ function specialScene(next){
   updateMap(state.telemetry?.positions||{},true);
  }
 }
-function tick(){render();finishTransition([...players.values()].some(p=>p.ready)||['model','map','recorded-replay'].includes(scene()));}
+function tick(){render();finishTransition([...players.values()].some(p=>p.ready)||['model','map','recorded-replay'].includes(scene())||isDiagram(scene()));}
 let timer=setInterval(tick,100);
 if(!supportsVideo){status.textContent=unsupportedVideo;}poll();
 window.addEventListener('pagehide',()=>{stopped=true;pollEpoch++;pollAbort?.abort();clearTimeout(pollTimer);clearInterval(timer);timer=null;lastPoll=0;state=null;displayed='';window.gsProgramPlaybackMs=undefined;transitionFrame?.remove();transitionFrame=null;specialScene(null);for(const id of [...players.keys()])remove(id);window.gsProgramAudioState={enabled:false,fresh:false};window.dispatchEvent(new CustomEvent('gs-program-audio-state',{detail:window.gsProgramAudioState}));});

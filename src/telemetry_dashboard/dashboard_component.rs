@@ -4155,6 +4155,21 @@ fn TelemetryDashboardInner() -> Element {
                                         program_only: *streamer_mode.read(),
                                     }
                                 },
+                                MainTab::LiveDiagrams => rsx! {
+                                    div { key: "live-diagrams-clear-{frontend_data_clear_epoch}", style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:hidden;",
+                                        live_diagrams::LiveDiagramsTab {
+                                            theme: theme.clone(),
+                                            board_status: board_status,
+                                            network_topology: network_topology,
+                                            flight_state: flight_state,
+                                        }
+                                    }
+                                },
+                                MainTab::RawStreams => rsx! {
+                                    div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:auto;",
+                                        raw_streams_tab::RawStreamsTab { theme: theme.clone() }
+                                    }
+                                },
                                 MainTab::Vehicle => rsx! {
                                     VehicleTab {
                                         theme: theme.clone(),

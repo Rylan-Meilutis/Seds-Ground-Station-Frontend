@@ -260,7 +260,8 @@ pub(crate) fn LiveStreamTab(
                                         }
                                     });
                                 }
-                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} option {value:"model","Rocket graphic"} option {value:"grid-model","Cameras + graphic"} option {value:"interview","Interview + picture-in-picture"} option {value:"map","Recovery map"} option {value:"recorded-replay","Recorded vehicle replay"} }
+                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} option {value:"model","Rocket graphic"} option {value:"grid-model","Cameras + graphic"} option {value:"interview","Interview + picture-in-picture"} option {value:"map","Recovery map"} option {value:"recorded-replay","Recorded vehicle replay"}
+                                for (id, label) in super::live_diagrams::PROGRAM_SCENES { option {value:id,"{label}"} } }
                         }
                         label { "Featured camera "
                             select { value:cfg.broadcast.featured_stream_id.clone(), onchange:{

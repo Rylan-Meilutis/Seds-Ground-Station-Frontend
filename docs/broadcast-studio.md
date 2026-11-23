@@ -29,6 +29,10 @@ The map displays canonical rocket, GroundStation and RRLS coordinates from the d
 
 Recorded vehicle replay is a separate saved-data scene, explicitly labelled recorded. See [recorded replay](recorded-vehicle-replay.md). It cannot masquerade as live vehicle telemetry. Orbit/follow controls and playback operate on the selected immutable recording snapshot.
 
+## Live diagrams
+
+The camera layout and each rundown scene can be a live diagram: fill system, AV bay, system overview or test stand. The diagram uses the delayed programme snapshot, so it matches the delayed video. It shows confirmed valve states, pending commands, flow, pressures and stale ages exactly as the dashboard's **Live diagrams** tab does. See [live diagrams](live-diagrams.md).
+
 ## Qualification limits
 
 Browser acceptance uses generated video/audio, fake cameras and temporary HTTP/WebSocket fixtures. It exercises the actual programme, AudioWorklet, MapLibre and Wasm editor on Linux Chromium, including 320 px layouts. It does not certify real microphone acoustics, radio throughput, deployed MediaMTX codec conversion, native mobile permission dialogs or physical sequence outputs.
