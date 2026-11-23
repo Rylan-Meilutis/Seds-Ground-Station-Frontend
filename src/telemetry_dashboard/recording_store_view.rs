@@ -68,6 +68,17 @@ pub(super) struct BoardSdEntry {
     pub lead_up_file: Option<String>,
     #[serde(default)]
     pub lead_up_rows: u64,
+    /// `radio` or `wired` for network downloads.
+    #[serde(default)]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub relay: Option<RelayProvenance>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct RelayProvenance {
+    #[serde(default)]
+    pub via: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -118,6 +129,115 @@ pub(super) struct Settings {
     #[serde(default)]
     pub reserve_free_mb: u64,
     pub events: BTreeMap<String, EventPolicy>,
+    /// Collect the FC SD launch file automatically after landing.
+    #[serde(default = "default_true")]
+    pub fc_sd_auto_collect: bool,
+    /// Also fetch the FC's 60 s lead-up.
+    #[serde(default = "default_true")]
+    pub fc_sd_leadup: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// The automatic FC SD collection's active job.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct FcActive {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub bytes_done: u64,
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub bytes_per_second: u64,
+    #[serde(default)]
+    pub paused_reason: Option<String>,
+    #[serde(default)]
+    pub eta_seconds: Option<u64>,
+    #[serde(default)]
+    pub link: String,
+    #[serde(default)]
+    pub crc_errors: u64,
+    #[serde(default)]
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct FcJobBrief {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub done: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct PowerOff {
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub at: Option<String>,
+    #[serde(default)]
+    pub message: String,
+}
+
+/// `fc_sd_collect` in the store listing (older stations omit it).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct FcCollect {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub stopped: bool,
+    #[serde(default)]
+    pub stopped_by: Option<String>,
+    #[serde(default)]
+    pub link: String,
+    #[serde(default)]
+    pub rate_bytes_per_sec: u64,
+    #[serde(default)]
+    pub active: Option<FcActive>,
+    #[serde(default)]
+    pub jobs: Vec<FcJobBrief>,
+    #[serde(default)]
+    pub power_off: PowerOff,
+    /// RRLS -> GS forward: (file, bytes done, total).
+    #[serde(default)]
+    pub forward: Option<(String, u64, u64)>,
+    #[serde(default)]
+    pub forward_message: String,
+}
+
+/// One status line for the FC collection's active job.
+pub(super) fn fc_progress_text(active: &FcActive) -> String {
+    let file = active.file.clone().unwrap_or_else(|| "FC SD card".into());
+    let mut text = format!("FC SD {file}: {}", if active.state.is_empty() { "waiting" } else { active.state.as_str() });
+    if active.total_bytes > 0 {
+        let pct = (active.bytes_done as f64 * 100.0 / active.total_bytes as f64).min(100.0);
+        text.push_str(&format!(" · {} of {} ({pct:.0} %)", super::sd_board_download::human_bytes(active.bytes_done), super::sd_board_download::human_bytes(active.total_bytes)));
+    }
+    if active.bytes_per_second > 0 {
+        text.push_str(&format!(" · {}/s", super::sd_board_download::human_bytes(active.bytes_per_second)));
+    }
+    if let Some(eta) = active.eta_seconds {
+        text.push_str(&format!(" · about {} left", duration_label(eta as i64 * 1000)));
+    }
+    if !active.link.is_empty() {
+        text.push_str(&format!(" · {} link", active.link));
+    }
+    if let Some(reason) = &active.paused_reason {
+        text.push_str(&format!(" · paused: {reason}"));
+    }
+    if active.crc_errors > 0 {
+        text.push_str(&format!(" · {} blocks re-read after a CRC error", active.crc_errors));
+    }
+    text
 }
 
 /// A background DAQ lead-up fetch for an attached launch file.
@@ -158,6 +278,8 @@ pub(super) struct StoreView {
     pub is_admin: bool,
     #[serde(default)]
     pub board_sd_fetch: Vec<LeadUpFetch>,
+    #[serde(default)]
+    pub fc_sd_collect: Option<FcCollect>,
 }
 
 pub(super) fn size_label(bytes: u64) -> String {
@@ -352,6 +474,19 @@ pub(super) fn RecordingStorePanel(
                     }
                 }
             }
+            if let Some(fc) = current.fc_sd_collect.clone() {
+                FcCollectPanel { fc, busy: busy(), on_action: move |path: &'static str| {
+                    busy.set(true);
+                    authority.spawn(async move {
+                        match authority.post::<_, serde_json::Value>(path, &serde_json::json!({})).await {
+                            Ok(_) => message.set(if path.ends_with("stop") { "FC SD collection stopped; it stays stopped until resumed.".into() } else { "FC SD collection resumed.".into() }),
+                            Err(error) => message.set(format!("FC SD collection: {error}")),
+                        }
+                        busy.set(false);
+                        refresh += 1;
+                    });
+                } }
+            }
             h4 { "Event captures ({size_label(current.captures_bytes)})" }
             if current.groups.is_empty() { p { "No event captures yet. Launches, aborts and every station sequence are captured automatically." } }
             for group in current.groups.iter() {
@@ -416,6 +551,8 @@ pub(super) fn RecordingStorePanel(
                                     div { key: "{entry.board}-{entry.file}", class: "gs26-board-sd",
                                         "{entry.board} SD launch file {entry.file} · {size_label(entry.bytes)} · {duration_label(entry.data_to_ms - entry.data_from_ms)}"
                                         if entry.lead_up_file.is_some() { " · with {entry.lead_up_rows} lead-up rows" }
+                                        if let Some(link) = entry.link.clone() { " · {link} link" }
+                                        if let Some(relay) = entry.relay.clone() { " · via {relay.via}" }
                                         " "
                                         for file in std::iter::once(entry.file.clone()).chain(entry.lead_up_file.clone()) {
                                             button { key: "{file}", disabled: busy(), onclick: {
@@ -486,6 +623,45 @@ pub(super) fn RecordingStorePanel(
     }
 }
 
+/// Recordings panel: the automatic FC SD collection after landing, the
+/// "AV bay can be powered off" readiness, RRLS forward progress, Stop/Resume.
+#[component]
+fn FcCollectPanel(fc: FcCollect, busy: bool, on_action: EventHandler<&'static str>) -> Element {
+    let who = fc.stopped_by.clone().unwrap_or_else(|| "an operator".into());
+    let idle = fc.active.is_none() && !fc.stopped && !fc.power_off.ready && fc.jobs.is_empty();
+    if idle && fc.forward.is_none() {
+        return rsx! { p { class: "gs26-fc-sd", style: "margin:0;", if fc.enabled { "FC SD: collected automatically after the next landing ({fc.link} link)." } else { "FC SD: automatic collection is turned off (Recording settings)." } } };
+    }
+    rsx! {
+        div { class: "gs26-fc-sd", role: "status", style: "display:flex;flex-direction:column;gap:4px;",
+            p { style: "margin:0;font-weight:700;", "data-ready": if fc.power_off.ready { "true" } else { "false" },
+                if fc.power_off.ready { "✔ " } else { "" }
+                "{fc.power_off.message}"
+            }
+            if let Some(active) = fc.active.clone() {
+                p { style: "margin:0;", "{fc_progress_text(&active)}" }
+            } else if let Some(last) = fc.jobs.first() {
+                p { style: "margin:0;", "FC SD: {last.message}" }
+            }
+            if let Some((file, done, total)) = fc.forward.clone() {
+                p { style: "margin:0;", "RRLS → GS forward: {file} · {super::sd_board_download::human_bytes(done)} of {super::sd_board_download::human_bytes(total)}" }
+            } else if !fc.forward_message.is_empty() {
+                p { style: "margin:0;", "RRLS → GS: {fc.forward_message}" }
+            }
+            if fc.stopped {
+                p { style: "margin:0;", "Stopped by {who}; it stays stopped until resumed." }
+            }
+            div { style: "display:flex;gap:6px;flex-wrap:wrap;",
+                if fc.stopped {
+                    button { disabled: busy, onclick: move |_| on_action.call("/api/sd_download/fc/resume"), "Resume FC SD collection" }
+                } else {
+                    button { disabled: busy, onclick: move |_| on_action.call("/api/sd_download/fc/stop"), "Stop FC SD collection" }
+                }
+            }
+        }
+    }
+}
+
 fn number_input(value: u64, on: impl Fn(u64) + 'static) -> Element {
     rsx! { input { r#type: "number", min: "0", value: "{value}", style: "width:7em;", oninput: move |e| on(e.value().trim().parse().unwrap_or(0)) } }
 }
@@ -515,6 +691,10 @@ fn RecordingSettingsForm(settings: Settings, busy: bool, on_change: EventHandler
                         }
                     }
                 }
+            }
+            div { style: "display:flex;gap:10px;flex-wrap:wrap;",
+                label { input { r#type: "checkbox", checked: s.fc_sd_auto_collect, onchange: { let s = s.clone(); move |e: Event<FormData>| { let mut n = s.clone(); n.fc_sd_auto_collect = e.checked(); on_change.call(n); } } } " Collect the FC SD launch file automatically after landing" }
+                label { input { r#type: "checkbox", checked: s.fc_sd_leadup, disabled: !s.fc_sd_auto_collect, onchange: { let s = s.clone(); move |e: Event<FormData>| { let mut n = s.clone(); n.fc_sd_leadup = e.checked(); on_change.call(n); } } } " Also fetch the FC's 60 s lead-up" }
             }
             p { "Values are clamped by the station (ring at least 256 MB; pre/post-roll at most 4 h)." }
             button { disabled: busy, onclick: { let s = s.clone(); move |_| on_save.call(s.clone()) }, "Save recording settings" }
@@ -574,6 +754,8 @@ mod tests {
         assert_eq!(view.board_sd_fetch[0].phase, "fetching");
         assert_eq!(view.board_sd_fetch[0].fetched, 2048);
         assert_eq!(view.ring.effective_budget_bytes, 9000 * 1024 * 1024);
+        assert!(view.settings.fc_sd_auto_collect && view.settings.fc_sd_leadup, "older stations: on");
+        assert!(view.fc_sd_collect.is_none());
         let board = &view.groups[0].captures[0].manifest.board_sd[0];
         assert_eq!((board.board.as_str(), board.lead_up_rows), ("DAQ", 40));
         assert_eq!(board.lead_up_file.as_deref(), Some("DAQ_LAUNCH_0007.leadup.csv"));
@@ -596,6 +778,36 @@ mod tests {
         assert!(html.contains("8192"));
         assert!(html.contains("Pre-roll (s)"));
         assert!(html.contains("21600"));
+    }
+
+    #[test]
+    fn fc_collection_decodes_and_renders_progress_power_off_and_stop() {
+        let fc: FcCollect = serde_json::from_value(serde_json::json!({
+            "enabled": true, "lead_up_enabled": true, "stopped": false, "stopped_by": null, "link": "radio", "rate_bytes_per_sec": 512,
+            "active": {"id": 1, "state": "paused", "file": "irec_LAUNCH-1799999990-000.csv", "bytes_done": 1024 * 1024, "total_bytes": 2 * 1024 * 1024,
+                       "bytes_per_second": 512, "paused_reason": "commands were sent recently", "eta_seconds": 2048, "link": "radio", "crc_errors": 2, "message": ""},
+            "jobs": [{"id": 1, "phase": "paused", "message": "paused", "done": false}],
+            "power_off": {"ready": false, "at": null, "message": "FC SD not yet collected: keep the AV bay powered"},
+            "forward": ["irec_LAUNCH-1799999990-000.csv", 512, 4096], "forward_message": "", "rrls_outbox": []
+        })).unwrap();
+        let text = fc_progress_text(fc.active.as_ref().unwrap());
+        assert!(text.contains("50 %") && text.contains("paused: commands were sent recently") && text.contains("radio link"), "{text}");
+        #[component]
+        fn Harness(fc: FcCollect) -> Element {
+            rsx! { FcCollectPanel { fc, busy: false, on_action: |_| {} } }
+        }
+        let mut dom = VirtualDom::new_with_props(Harness, HarnessProps { fc: fc.clone() });
+        dom.rebuild_in_place();
+        let html = dioxus::ssr::render(&dom);
+        assert!(html.contains("keep the AV bay powered") && html.contains("Stop FC SD collection") && html.contains("RRLS → GS forward"), "{html}");
+        let ready = FcCollect { stopped: true, power_off: PowerOff { ready: true, at: Some("RRLS".into()), message: "FC SD fully received by RRLS, checksums verified: AV bay can be powered off".into() }, ..fc };
+        let mut dom = VirtualDom::new_with_props(Harness, HarnessProps { fc: ready });
+        dom.rebuild_in_place();
+        let html = dioxus::ssr::render(&dom);
+        assert!(html.contains("AV bay can be powered off") && html.contains("Resume FC SD collection"), "{html}");
+        let settings: Settings = serde_json::from_value(serde_json::json!({"ring_budget_mb": 1, "segment_mb": 1, "warn_free_mb": 1, "critical_free_mb": 1, "events": {}, "fc_sd_auto_collect": false})).unwrap();
+        assert!(!settings.fc_sd_auto_collect && settings.fc_sd_leadup);
+        assert_eq!(serde_json::to_value(&settings).unwrap()["fc_sd_auto_collect"], false, "round-trips to the station");
     }
 
     #[test]
