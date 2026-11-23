@@ -279,6 +279,9 @@ pub(super) fn StationModeObserver() -> Element {
     });
     let current = OBSERVED.read().clone();
     let now = *CLOCK.read();
+    let firmware_sim_reported = current
+        .as_ref()
+        .is_some_and(|o| o.value.current.as_ref().is_some_and(|c| c.firmware_sim));
     let simulation_reported = current
         .as_ref()
         .is_some_and(|o| o.value.current.as_ref().is_some_and(|c| c.simulation));
@@ -288,7 +291,12 @@ pub(super) fn StationModeObserver() -> Element {
             o.value.current.is_none() || !o.current(now)
         });
     rsx! {
-        if simulation_reported {
+        if firmware_sim_reported {
+            div {role:"status",class:"gs26-firmware-sim-domain",style:"padding:8px 12px;background:#5a1010;color:#ffe3e3;font:inherit;font-weight:700;",
+                "SIMULATED FIRMWARE — every board is its real firmware running on this machine with a simulated plant and flight. No physical links or outputs. "
+                "{current.as_ref().and_then(|o| o.value.current.as_ref()).map_or(\"\", |c| c.label.as_str())}"
+            }
+        } else if simulation_reported {
             if let Some(o) = current {
                 div {role:"status",class:"gs26-simulation-domain",style:"padding:8px 12px;background:#503b12;color:#fff2c6;font:inherit;",
                     if o.current(now) {"SIMULATION — backend-reported simulated telemetry and actions. "}

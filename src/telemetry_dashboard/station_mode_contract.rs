@@ -32,6 +32,9 @@ pub(super) struct Current {
     pub label: String,
     pub simulation: bool,
     pub output_domain: String,
+    /// The station runs against simulated board firmware (GS docs/firmware-sim.md). Absent on older backends.
+    #[serde(default)]
+    pub firmware_sim: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(super) struct OptionEntry {
@@ -469,6 +472,7 @@ pub(super) mod tests {
             label: c.target.label.clone(),
             simulation: true,
             output_domain: c.target.output_domain.clone(),
+            firmware_sim: false,
         });
         readback.transition = Some(Transition {
             id: c.transition_id.clone(),
@@ -511,6 +515,7 @@ pub(super) mod tests {
             label: "Third team · Simulation".into(),
             simulation: true,
             output_domain: "Isolated simulated actions and telemetry".into(),
+            firmware_sim: false,
         });
         assert!(s.reason("third-sim", 0., 1.).is_none());
         s.admissions_open = true;
@@ -598,4 +603,15 @@ pub(super) mod tests {
         value["control_origin"]="invalid\nheader-origin".into();assert!(Snapshot::decode(value).is_err());
     }
 
+
+    #[test]
+    fn current_reports_firmware_simulation_and_older_backends_default_to_hardware() {
+        let mut v = serde_json::json!({"id":"hitl-firmware-sim","mode_id":"hitl","label":"HITL · SIMULATED FIRMWARE","simulation":false,
+            "output_domain":"Real board firmware","firmware_sim":true,"banner":"SIMULATED FIRMWARE"});
+        let c: Current = serde_json::from_value(v.clone()).unwrap();
+        assert!(c.firmware_sim);
+        v.as_object_mut().unwrap().remove("firmware_sim");
+        let c: Current = serde_json::from_value(v).unwrap();
+        assert!(!c.firmware_sim);
+    }
 }
