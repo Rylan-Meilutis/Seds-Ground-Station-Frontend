@@ -1620,13 +1620,18 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
         let manual_capture_progress_epoch = manual_capture_progress_epoch;
         use_effect(move || {
             let message = manual_capture_progress.read().clone();
-            if message.trim().is_empty() {
+            // Never clear the live sample counter while a capture runs: only
+            // the final result (or error) fades, 5 s after it last changed.
+            if message.trim().is_empty() || manual_capture_busy() {
                 return;
             }
             let epoch = *manual_capture_progress_epoch.read();
             spawn(async move {
                 sleep_ms(5_000).await;
-                if *manual_capture_progress_epoch.read() == epoch {
+                if *manual_capture_progress_epoch.peek() == epoch
+                    && !*manual_capture_busy.peek()
+                    && *manual_capture_progress.peek() == message
+                {
                     manual_capture_progress.set(String::new());
                 }
             });
@@ -2666,8 +2671,10 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     },
                     if selected_point.read().is_some() { "Capture for Edit" } else { "Capture for Point" }
                 }
-                if !manual_capture_progress.read().is_empty() {
-                    div { style: "padding:6px 10px; min-height:20px; display:flex; align-items:center; font-size:12px; color:{theme.info_text}; border:1px solid {theme.info_accent}; border-radius:999px; background:{theme.info_background};",
+                // Keep the box while a capture runs so the layout never jumps.
+                if manual_capture_busy() || !manual_capture_progress.read().is_empty() {
+                    div { role: "status", "aria-live": "polite",
+                        style: "padding:6px 10px; min-height:20px; display:flex; align-items:center; font-size:12px; color:{theme.info_text}; border:1px solid {theme.info_accent}; border-radius:999px; background:{theme.info_background}; font-variant-numeric:tabular-nums;",
                         "{manual_capture_progress.read()}"
                     }
                 }
