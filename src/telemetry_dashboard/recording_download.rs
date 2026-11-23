@@ -717,6 +717,7 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
                 if id != selected() { downloading.set(false); selection_epoch.set(selection_epoch().saturating_add(1)); selected.set(id); }
                 refresh += 1;
             } }
+            super::burn_report_view::BurnReportsPanel { theme: theme.clone() }
             details { class:"gs-info", summary {"What's included"}
                 div {
                     p { "Available in Test Fire, HITL, Integrated ground test and normal mode. The station records all the time into a rolling store; launches, aborts and every station sequence are also saved as protected event captures. Pick any of them below." }

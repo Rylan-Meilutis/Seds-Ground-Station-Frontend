@@ -1661,6 +1661,7 @@ pub(super) fn MissionSettings(
                             FillTargetEditor { key: "nitrogen-{cfg.nitrogen.target_mass_kg:.2}-{cfg.nitrogen.target_pressure_psi:.1}", title: "Nitrogen", field: "nitrogen", target: cfg.nitrogen.clone(), theme: theme.clone(), fill_targets: fill_targets, fill_targets_status: fill_targets_status, enabled: fill_targets_editable }
                             FillTargetEditor { key: "nitrous-{cfg.nitrous.target_mass_kg:.2}-{cfg.nitrous.target_pressure_psi:.1}", title: "Nitrous", field: "nitrous", target: cfg.nitrous.clone(), theme: theme.clone(), fill_targets: fill_targets, fill_targets_status: fill_targets_status, enabled: fill_targets_editable }
                         }
+                        super::apogee_planner::AppliedPlanNote { theme: theme.clone(), nitrous_mass_kg: f64::from(cfg.nitrous.target_mass_kg), nitrous_psi: f64::from(cfg.nitrous.target_pressure_psi) }
                         button {
                             style: "{apply_button_style(&theme, !*fill_targets_busy.read() && fill_targets_editable)}",
                             disabled: *fill_targets_busy.read() || !fill_targets_editable,

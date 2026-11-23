@@ -97,6 +97,8 @@ fn StationSettingsBody(
             StationSection::Mission=>rsx! {
                 super::actions_tab::MissionSettings {layout,action_policy,backend_fill_targets:fill_targets,abort_only_mode,theme:theme.clone()}
                 super::launch_site::LaunchSiteSettings {theme:theme.clone()}
+                super::apogee_planner::ApogeePlannerSettings {theme:theme.clone()}
+                super::fire_archive_view::FireArchiveSettings {theme:theme.clone()}
             },
             StationSection::Loadcells=>rsx! {
                 section {style:"display:grid;gap:14px;min-width:0;",

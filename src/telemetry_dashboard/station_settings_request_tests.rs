@@ -195,6 +195,35 @@ async fn ground_test_settings_and_launch_site_are_put_with_the_contract_bodies()
     assert_eq!(requests[1].1, r#"{"reset":true}"#);
 }
 #[tokio::test(flavor = "current_thread")]
+async fn apogee_planner_and_fire_archive_requests_use_their_contract_verbs() {
+    let server = Server::new(200, false);
+    let dom = dom(&server.base);
+    let owner = || dom.in_scope(ScopeId::ROOT, || ExportOwner::capture_ordinary_selected(|| true));
+    let apply = super::super::apogee_planner::ApplyRequest { plan_id: "plan-7".into() };
+    let mut request = Box::pin(post_captured_no_redirect::<_, serde_json::Value>(super::super::apogee_planner::APPLY_PATH, &apply, owner()));
+    in_dom(&dom, request.as_mut()).await.unwrap();
+    let patch = super::super::fire_archive_view::Patch { status: Some("accepted".into()), ..Default::default() };
+    let mut request = Box::pin(patch_captured::<_, serde_json::Value>(&super::super::fire_archive_view::record_path("2026-11-16_static"), &patch, owner()));
+    in_dom(&dom, request.as_mut()).await.unwrap();
+    let mut request = Box::pin(delete_captured::<serde_json::Value>(super::super::apogee_planner::ORK_PATH, owner()));
+    in_dom(&dom, request.as_mut()).await.unwrap();
+    let mut request = Box::pin(post_bytes_captured::<serde_json::Value>(super::super::apogee_planner::ORK_PATH, b"PK\x03\x04rocket".to_vec(), owner()));
+    in_dom(&dom, request.as_mut()).await.unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[0].0.starts_with("POST /api/apogee_planner/apply "), "{}", requests[0].0);
+    assert_eq!(requests[0].1, r#"{"plan_id":"plan-7"}"#);
+    assert!(requests[1].0.starts_with("PATCH /api/fire_archive/2026-11-16_static "), "{}", requests[1].0);
+    assert_eq!(requests[1].1, r#"{"status":"accepted"}"#);
+    assert!(requests[2].0.starts_with("DELETE /api/apogee_planner/ork "), "{}", requests[2].0);
+    assert!(requests[3].0.starts_with("POST /api/apogee_planner/ork "), "{}", requests[3].0);
+    assert!(requests[3].0.to_ascii_lowercase().contains("content-type: application/octet-stream"));
+    assert_eq!(requests[3].1.as_bytes(), b"PK\x03\x04rocket");
+    for (head, _) in requests.iter() {
+        assert!(head.to_ascii_lowercase().contains("authorization: bearer settings-original"), "{head}");
+    }
+}
+#[tokio::test(flavor = "current_thread")]
 async fn queued_settings_post_never_rebinds_after_station_or_credential_aba() {
     for change in ["station", "auth"] {
         let original = Server::new(200, false);

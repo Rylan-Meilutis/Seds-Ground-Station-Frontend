@@ -5,6 +5,21 @@ use dioxus::prelude::*;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{rc::Rc, sync::atomic::Ordering};
 
+/// HTTP method of a settings write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Verb {
+    Post,
+    Put,
+    Patch,
+    Delete,
+}
+impl Verb {
+    /// PUT, PATCH and DELETE may answer with an empty body (read as `null`).
+    fn empty_ok(self) -> bool {
+        !matches!(self, Verb::Post)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Factory {
     original: Signal<Result<Rc<ExportOwner>, String>>,
@@ -78,15 +93,50 @@ pub(super) fn put_captured<B: Serialize, T: DeserializeOwned + 'static>(
 ) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<B,T> {
     let path = path.to_owned();
     let body = serde_json::to_string(body).map_err(|e| e.to_string());
-    async move {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            bounded(send_owned_class(true, &path, body?, owner?, true)).await
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            bounded(send_owned_policy(true, &path, body?, owner?, true, true)).await
-        }
+    async move { bounded(send_verb(Verb::Put, &path, JSON, body?.into_bytes(), owner?)).await }
+}
+const JSON: &str = "application/json";
+/// A JSON `PATCH` with the caller's captured owner.
+pub(super) fn patch_captured<B: Serialize, T: DeserializeOwned + 'static>(
+    path: &str,
+    body: &B,
+    owner: Result<Rc<ExportOwner>, String>,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<B,T> {
+    let path = path.to_owned();
+    let body = serde_json::to_string(body).map_err(|e| e.to_string());
+    async move { bounded(send_verb(Verb::Patch, &path, JSON, body?.into_bytes(), owner?)).await }
+}
+/// A `DELETE` (no body) with the caller's captured owner.
+pub(super) fn delete_captured<T: DeserializeOwned + 'static>(
+    path: &str,
+    owner: Result<Rc<ExportOwner>, String>,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<T> {
+    let path = path.to_owned();
+    async move { bounded(send_verb(Verb::Delete, &path, JSON, Vec::new(), owner?)).await }
+}
+/// A raw-bytes `POST` (`application/octet-stream`), e.g. an uploaded file.
+pub(super) fn post_bytes_captured<T: DeserializeOwned + 'static>(
+    path: &str,
+    bytes: Vec<u8>,
+    owner: Result<Rc<ExportOwner>, String>,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static + use<T> {
+    let path = path.to_owned();
+    async move { bounded(send_verb(Verb::Post, &path, "application/octet-stream", bytes, owner?)).await }
+}
+async fn send_verb<T: DeserializeOwned>(
+    verb: Verb,
+    path: &str,
+    content_type: &'static str,
+    body: Vec<u8>,
+    owner: Rc<ExportOwner>,
+) -> Result<T, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        send_owned_class(verb, path, content_type, body, owner, true).await
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        send_owned_policy(verb, path, content_type, body, owner, true, true).await
     }
 }
 /// Critical commands reject redirects as well as retaining their gesture owner.
@@ -120,11 +170,11 @@ async fn post_owned<T: DeserializeOwned>(
 async fn post_owned_class<T: DeserializeOwned>(
     path: &str, body: String, owner: Rc<ExportOwner>, require_ordinary: bool,
 ) -> Result<T, String> {
-    send_owned_class(false, path, body, owner, require_ordinary).await
+    send_owned_class(Verb::Post, path, JSON, body.into_bytes(), owner, require_ordinary).await
 }
 #[cfg(not(target_arch = "wasm32"))]
 async fn send_owned_class<T: DeserializeOwned>(
-    put: bool, path: &str, body: String, owner: Rc<ExportOwner>, require_ordinary: bool,
+    verb: Verb, path: &str, content_type: &str, body: Vec<u8>, owner: Rc<ExportOwner>, require_ordinary: bool,
 ) -> Result<T, String> {
     if require_ordinary { owner.check_ordinary()?; } else { owner.check()?; }
     let base = if owner.base().is_empty() {
@@ -134,10 +184,15 @@ async fn send_owned_class<T: DeserializeOwned>(
     };
     let (connect, timeout) = super::native_http_timeouts(path);
     let client = crate::auth::build_native_http_client(owner.skip_tls(), connect, timeout)?;
-    let method = if put { reqwest::Method::PUT } else { reqwest::Method::POST };
+    let method = match verb {
+        Verb::Post => reqwest::Method::POST,
+        Verb::Put => reqwest::Method::PUT,
+        Verb::Patch => reqwest::Method::PATCH,
+        Verb::Delete => reqwest::Method::DELETE,
+    };
     let mut request = client
         .request(method, format!("{base}{path}"))
-        .header("Content-Type", "application/json")
+        .header("Content-Type", content_type)
         .body(body);
     if let Some(epoch) = owner.policy_epoch() {
         request = request.header("X-Station-Policy-Epoch", epoch);
@@ -165,7 +220,7 @@ async fn send_owned_class<T: DeserializeOwned>(
             text.chars().take(200).collect::<String>()
         ));
     }
-    let text = if put && text.trim().is_empty() { "null" } else { text.as_str() };
+    let text = if verb.empty_ok() && text.trim().is_empty() { "null" } else { text.as_str() };
     serde_json::from_str(text).map_err(|e| e.to_string())
 }
 #[cfg(target_arch = "wasm32")]
@@ -190,13 +245,14 @@ async fn post_owned_policy<T: DeserializeOwned>(
     reject_redirects: bool,
     require_ordinary: bool,
 ) -> Result<T, String> {
-    send_owned_policy(false, path, body, owner, reject_redirects, require_ordinary).await
+    send_owned_policy(Verb::Post, path, JSON, body.into_bytes(), owner, reject_redirects, require_ordinary).await
 }
 #[cfg(target_arch = "wasm32")]
 async fn send_owned_policy<T: DeserializeOwned>(
-    put: bool,
+    verb: Verb,
     path: &str,
-    body: String,
+    content_type: &str,
+    body: Vec<u8>,
     owner: Rc<ExportOwner>,
     reject_redirects: bool,
     require_ordinary: bool,
@@ -216,10 +272,15 @@ async fn send_owned_policy<T: DeserializeOwned>(
     let _cancel = super::HttpAbortOnDrop(controller.clone());
     let signal = controller.signal();
     let url = format!("{base}{path}");
-    let request = if put { gloo_net::http::Request::put(&url) } else { gloo_net::http::Request::post(&url) };
+    let request = match verb {
+        Verb::Post => gloo_net::http::Request::post(&url),
+        Verb::Put => gloo_net::http::Request::put(&url),
+        Verb::Patch => gloo_net::http::Request::patch(&url),
+        Verb::Delete => gloo_net::http::Request::delete(&url),
+    };
     let mut request = request
         .abort_signal(Some(&signal))
-        .header("Content-Type", "application/json");
+        .header("Content-Type", content_type);
     if reject_redirects {
         request = request.redirect(web_sys::RequestRedirect::Error);
     }
@@ -232,7 +293,11 @@ async fn send_owned_policy<T: DeserializeOwned>(
     if let Some(token) = owner.token() {
         request = request.header("Authorization", &format!("Bearer {token}"));
     }
-    let request = request.body(body).map_err(|e| e.to_string())?;
+    let request = if verb == Verb::Delete && body.is_empty() {
+        request.build().map_err(|e| e.to_string())?
+    } else {
+        request.body(js_sys::Uint8Array::from(body.as_slice())).map_err(|e| e.to_string())?
+    };
     owner.check()?;
     let response = owner
         .wait(request.send())
@@ -250,7 +315,7 @@ async fn send_owned_policy<T: DeserializeOwned>(
             text.chars().take(200).collect::<String>()
         ));
     }
-    let text = if put && text.trim().is_empty() { "null" } else { text.as_str() };
+    let text = if verb.empty_ok() && text.trim().is_empty() { "null" } else { text.as_str() };
     serde_json::from_str(text).map_err(|e| e.to_string())
 }
 
