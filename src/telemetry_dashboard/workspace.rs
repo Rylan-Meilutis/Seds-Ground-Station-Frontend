@@ -62,7 +62,8 @@ fn secondary_allowed(tab: MainTab, primary: MainTab) -> bool {
         | MainTab::DataExport
         | MainTab::SequenceHistory
         | MainTab::LiveDiagrams
-        | MainTab::RawStreams => true,
+        | MainTab::RawStreams
+        | MainTab::FlightReview => true,
         _ => false,
     }
 }

@@ -485,6 +485,7 @@ enum MainTab {
     SequenceHistory,
     LiveDiagrams,
     RawStreams,
+    FlightReview,
 }
 
 /// Active lifecycle errors are server-authoritative and separate from acknowledged history.

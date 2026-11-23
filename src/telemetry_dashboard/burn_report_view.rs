@@ -12,7 +12,8 @@ pub(crate) const LIST_PATH: &str = "/api/burn_reports";
 #[serde(default)]
 pub(crate) struct Summary {
     pub id: String,
-    pub capture_id: String,
+    /// None for a live provisional report (no saved capture yet).
+    pub capture_id: Option<String>,
     pub capture_label: String,
     pub status: String,
     pub simulated: bool,
@@ -66,6 +67,17 @@ pub(crate) struct Report {
     pub propellant_consumed_kg: Option<f64>,
     pub isp_s: Option<f64>,
     pub fill_at_ignition_kg: Option<f64>,
+    pub fill_after_kg: Option<f64>,
+    pub ignition_ms: i64,
+    pub ignition_source: String,
+    pub tank_psi_at_ignition: Option<f64>,
+    pub tank_psi_end: Option<f64>,
+    pub burn_end_s: f64,
+    pub oxidizer_kg: Option<f64>,
+    pub fuel_kg: Option<f64>,
+    pub of_ratio: Option<f64>,
+    pub kg1000_impulse_ns: f64,
+    pub kg50_term_ns: f64,
     pub chamber: Option<Chamber>,
     pub coverage: Coverage,
     pub quality_flags: Vec<Flag>,
@@ -318,6 +330,9 @@ mod tests {
         assert!(rows.iter().any(|(k, v)| k == "Propellant consumed" && v == "not measured"));
         assert!(rows.iter().any(|(k, v)| k == "Chamber pressure" && v == "not valid"));
         let empty: Report = serde_json::from_value(json!({})).unwrap();
+        // A live provisional report has no capture yet: the list still decodes.
+        let live: List = serde_json::from_value(json!({"reports": [{"id": "live-3", "capture_id": null, "status": "provisional"}]})).unwrap();
+        assert_eq!(live.reports[0].capture_id, None);
         assert!(empty.curve.is_empty());
         let (points, t, f) = polyline(&r.curve, 100.0, 50.0);
         assert_eq!((t, f), (7.5, 3295.0));

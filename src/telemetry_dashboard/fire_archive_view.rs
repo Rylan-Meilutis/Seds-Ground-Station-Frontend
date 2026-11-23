@@ -212,6 +212,7 @@ fn FireRow(theme: super::layout::ThemeConfig, fire: Fire, can_review: bool, busy
     let mut notes = use_signal(|| fire.review.notes.clone());
     let mut problem = use_signal(|| None::<String>);
     let mut replaying = use_signal(|| false);
+    let mut reviewing = use_signal(|| false);
     let id = fire.id.clone();
     let summary_line = format!(
         "{} {} — {} , fill {}",
@@ -277,8 +278,13 @@ fn FireRow(theme: super::layout::ThemeConfig, fire: Fire, can_review: bool, busy
             }
             button { r#type: "button", class: "gs-btn", "data-fire-replay": "{fire.id}", onclick: move |_| replaying.set(!replaying()),
                 if replaying() { "Close replay" } else { "Replay this fire" } }
+            button { r#type: "button", class: "gs-btn", "data-fire-review": "{fire.id}", onclick: move |_| reviewing.set(!reviewing()),
+                if reviewing() { "Close motor data" } else { "Motor data / export" } }
             if replaying() {
                 super::saved_replay::SavedReplayView { recording: super::saved_replay::fire_id(&fire.id), theme: theme.clone(), on_close: move |_| replaying.set(false) }
+            }
+            if reviewing() {
+                super::flight_review_view::RecordingReviewPanel { recording: super::saved_replay::fire_id(&fire.id), theme: theme.clone(), on_close: move |_| reviewing.set(false) }
             }
             if can_review {
                 div { "data-review-controls": "", style: "display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;",

@@ -650,6 +650,7 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
     let mut query_epoch = use_signal(|| 1u64);
     // The recording open in the saved-data replay (never live data).
     let mut replaying = use_signal(|| None::<String>);
+    let mut reviewing = use_signal(|| None::<String>);
     use_future(move || async move {
         loop {
             #[cfg(target_arch = "wasm32")]
@@ -718,9 +719,12 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
             super::recording_store_view::RecordingStorePanel { theme: theme.clone(), on_select: move |id: String| {
                 if id != selected() { downloading.set(false); selection_epoch.set(selection_epoch().saturating_add(1)); selected.set(id); }
                 refresh += 1;
-            }, on_replay: move |id: String| replaying.set(Some(id)) }
+            }, on_replay: move |id: String| replaying.set(Some(id)), on_review: move |id: String| reviewing.set(Some(id)) }
             if let Some(id) = replaying() {
                 super::saved_replay::SavedReplayView { key: "{id}", recording: id.clone(), theme: theme.clone(), on_close: move |_| replaying.set(None) }
+            }
+            if let Some(id) = reviewing() {
+                super::flight_review_view::RecordingReviewPanel { key: "{id}", theme: theme.clone(), recording: id.clone(), on_close: move |_| reviewing.set(None) }
             }
             super::burn_report_view::BurnReportsPanel { theme: theme.clone() }
             details { class:"gs-info", summary {"What's included"}

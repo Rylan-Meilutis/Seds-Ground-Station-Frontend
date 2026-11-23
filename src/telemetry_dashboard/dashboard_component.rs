@@ -4168,6 +4168,11 @@ fn TelemetryDashboardInner() -> Element {
                                         }
                                     }
                                 },
+                                MainTab::FlightReview => rsx! {
+                                    div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:auto;",
+                                        flight_review_view::FlightReviewTab { theme: theme.clone() }
+                                    }
+                                },
                                 MainTab::RawStreams => rsx! {
                                     div { style: "height:100%; width:100%; max-width:100%; min-width:0; box-sizing:border-box; overflow:auto;",
                                         raw_streams_tab::RawStreamsTab { theme: theme.clone() }

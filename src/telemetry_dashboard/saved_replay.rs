@@ -572,6 +572,7 @@ pub(super) fn SavedReplayView(recording: String, theme: ThemeConfig, on_close: E
     let mut buffer = use_signal(|| None::<Buffer>);
     let mut loading = use_signal(|| false);
     let mut message = use_signal(String::new);
+    let mut show_review = use_signal(|| false);
     let id = use_signal(|| recording.clone());
     if *id.peek() != recording {
         let mut id = id;
@@ -746,6 +747,13 @@ pub(super) fn SavedReplayView(recording: String, theme: ThemeConfig, on_close: E
             }
             {content}
             if !message.read().is_empty() { p { role: "status", "{message}" } }
+            // The recording's computed motor values and flight summary (any
+            // recorded mode), with its motor / flight exports.
+            button { r#type: "button", "data-replay-review": "", "aria-expanded": show_review(), onclick: move |_| show_review.set(!show_review()),
+                if show_review() { "Hide the motor & flight summary" } else { "Motor & flight summary / export" } }
+            if show_review() {
+                super::flight_review_view::RecordingReviewPanel { key: "{recording}", theme: theme.clone(), recording: recording.clone(), on_close: move |_| show_review.set(false) }
+            }
         }
     }
 }

@@ -86,6 +86,7 @@ mod igt_view;
 mod launch_site;
 mod apogee_planner;
 mod burn_report_view;
+mod flight_review_view;
 mod fire_archive_view;
 pub(crate) mod proximity_lock;
 mod proximity_lock_view;

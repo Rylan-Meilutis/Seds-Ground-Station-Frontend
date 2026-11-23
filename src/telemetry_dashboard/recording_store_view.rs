@@ -364,7 +364,12 @@ pub(super) fn RecordingStorePanel(
     on_select: EventHandler<String>,
     /// Opens the saved-data replay of a recording id (see `saved_replay`).
     #[props(default)] on_replay: Option<EventHandler<String>>,
+    /// Opens the motor & flight summary of a recording id (see `flight_review_view`).
+    #[props(default)] on_review: Option<EventHandler<String>>,
 ) -> Element {
+    let review = move |id: String| {
+        if let Some(handler) = on_review { handler.call(id); }
+    };
     let replay = move |id: String| {
         on_select.call(id.clone());
         if let Some(handler) = on_replay { handler.call(id); }
@@ -471,6 +476,15 @@ pub(super) fn RecordingStorePanel(
                                 (Err(e), _) | (_, Err(e)) => message.set(e),
                             }
                         }, "Replay range" }
+                        if on_review.is_some() {
+                            button { "data-review-range": "", onclick: move |_| {
+                                match (super::recording_download::input_utc_ms(&range_from()), super::recording_download::input_utc_ms(&range_to())) {
+                                    (Ok(a), Ok(b)) if b > a => review(super::saved_replay::range_id(a, b)),
+                                    (Ok(_), Ok(_)) => message.set("The range must end after it starts.".into()),
+                                    (Err(e), _) | (_, Err(e)) => message.set(e),
+                                }
+                            }, "Motor & flight summary of the range" }
+                        }
                     }
                 }
             }
@@ -509,6 +523,9 @@ pub(super) fn RecordingStorePanel(
                                     if !capture.manifest.board_sd.is_empty() {
                                         button { onclick: { let id = super::saved_replay::merge_sd_id(&capture.id); move |_| replay(id.clone()) }, "Replay with board SD" }
                                         button { onclick: { let id = super::saved_replay::sd_only_id(&capture.id); move |_| replay(id.clone()) }, "Replay board SD only" }
+                                    }
+                                    if on_review.is_some() {
+                                        button { "data-review-open": "{capture.id}", onclick: { let id = capture.id.clone(); move |_| review(id.clone()) }, "Motor & flight summary / export" }
                                     }
                                     button { disabled: busy(), onclick: {
                                         let id = capture.id.clone();
