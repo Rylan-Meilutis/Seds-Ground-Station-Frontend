@@ -32,7 +32,7 @@ try {
  const expected=(699+sequence).toFixed(2)+' psig';await page.getByText(expected,{exact:true}).waitFor({timeout:3000});
  assert(Date.now()-start<15000,'bounded bootstrap and live updates complete promptly');
  const lag=await page.evaluate(()=>window.__lag);assert(lag<1500,'history must not freeze render event loop: '+lag);
- await page.getByRole('button',{name:'Fuel Tank Pressure',exact:true}).click();await page.getByText('42.00',{exact:false}).first().waitFor();
+ await page.getByRole('button',{name:'Ox Tank Pressure',exact:true}).click();await page.getByText('42.00',{exact:false}).first().waitFor();
  assert.deepEqual(errors,[]);await context.close();console.log('PASS actual Wasm:175k-source bounded-history payload, sparsePT/latest retained, live updates catch up after reseed, event-loop maxlag='+Math.round(lag)+'ms');
 }finally{await browser.close();await new Promise(r=>server.close(r));}`;
 try{await import('data:text/javascript;base64,'+Buffer.from(fixture).toString('base64'));}catch(error){console.error(error.name+': '+error.message);process.exitCode=1;}

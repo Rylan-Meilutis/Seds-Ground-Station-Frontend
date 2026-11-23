@@ -492,7 +492,7 @@ try{
   await commandPage.getByRole('button',{name:'Dashboard',exact:true}).click();
   const liveRows=[
     ['LOADCELL_50_WEIGHT_KG','DAQ',[12.34]],['LOADCELL_WEIGHT_KG','DAQ',[987.65]],
-    ['FUEL_TANK_PRESSURE','VB',[720.5]],['LOADCELL_FILL_PERCENT','DAQ',[82.25]],
+    ['OX_TANK_PRESSURE','VB',[720.5]],['LOADCELL_FILL_PERCENT','DAQ',[82.25]],
     ['BATTERY_VOLTAGE','GB',[14.05]],['BATTERY_VOLTAGE','VB',[16.24]],
     ['VALVE_STATE','VB',[0,1,1,0,0,0,0,0]]
   ];

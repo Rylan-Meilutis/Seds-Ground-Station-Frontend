@@ -323,7 +323,7 @@ pub fn demo(seq: u64, now_ms: i64, settings: &WatchSettings, account: Account) -
             ("DESCENT_STATE", 3) => -6.1,
             ("GPS_DATA", 2) => 1480.0 - (t as f64) * 2.4,
             ("GPS_SATELLITE_NUMBER", 0) => 11.0,
-            ("FUEL_TANK_PRESSURE", 0) => 12.0,
+            ("OX_TANK_PRESSURE", 0) => 12.0,
             ("COMBUSTION_CHAMBER_PRESSURE", 0) => 0.0,
             ("LOADCELL_WEIGHT_KG", 0) => 0.4,
             ("LOADCELL_FILL_PERCENT", 0) => 0.0,
@@ -436,7 +436,7 @@ mod tests {
         let telemetry = |dt: &str, _: Option<&str>, i: usize| match (dt, i) {
             ("DESCENT_STATE", 2) => Some((1234.4, 99_800)),
             ("DESCENT_STATE", 3) => Some((-6.15, 99_800)),
-            ("FUEL_TANK_PRESSURE", 0) => Some((812.0, 50_000)),
+            ("OX_TANK_PRESSURE", 0) => Some((812.0, 50_000)),
             _ => None,
         };
         let settings = WatchSettings::default();
@@ -513,7 +513,7 @@ mod tests {
             ("ASCENT_STATE", 4) => Some((900.0, 90_000)),
             ("DESCENT_STATE", 2) => Some((1000.0, 99_000)),
             ("BAROMETER_DATA", 0) => Some((f64::NAN, 99_900)),
-            ("FUEL_TANK_PRESSURE", 0) => Some((-0.2, 50_000)),
+            ("OX_TANK_PRESSURE", 0) => Some((-0.2, 50_000)),
             _ => None,
         };
         let mut settings = WatchSettings::default();

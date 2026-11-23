@@ -976,7 +976,7 @@ mod tests {
             charts_cache_ingest_row(&TelemetryRow {
                 source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
-                data_type: "FUEL_TANK_PRESSURE".to_string(),
+                data_type: "OX_TANK_PRESSURE".to_string(),
                 data_type_id: Default::default(),
                 sender_id: "DAQ".to_string(),
                 sender_id_id: Default::default(),
@@ -1012,7 +1012,7 @@ mod tests {
         }
 
         let series = vec![
-            ("FUEL_TANK_PRESSURE".to_string(), 0),
+            ("OX_TANK_PRESSURE".to_string(), 0),
             ("LOADCELL_WEIGHT_KG".to_string(), 0),
             ("LOADCELL_FILL_PERCENT".to_string(), 0),
         ];

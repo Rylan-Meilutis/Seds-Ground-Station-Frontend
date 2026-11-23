@@ -388,6 +388,14 @@ fn normalize_live_telemetry_row_for_client_clock(
     Some(row)
 }
 
+/// Parses a layout saved on this client (the offline layout cache), renaming
+/// legacy telemetry type names first.
+fn layout_from_saved_json(raw: &str) -> Result<LayoutConfig, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(raw)?;
+    types::canonicalize_legacy_type_names(&mut value);
+    serde_json::from_value(value)
+}
+
 fn normalize_telemetry_rows_for_runtime(rows: &mut [TelemetryRow]) {
     for row in rows {
         if row.received_timestamp_ms == 0 {

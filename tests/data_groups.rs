@@ -61,7 +61,7 @@ mod grouped_views {
             {"id":"BATTERY_VOLTAGE", "label":"Power first in config", "channels":["V"]},
             {"id":"operator-private", "label":"Custom sensor", "channels":["Unspecified"]},
             {"id":"GYRO_DATA", "label":"Gyroscope", "channels":["Roll"]},
-            {"id":"FUEL_TANK_PRESSURE", "label":"Tank", "channels":["Pressure"]}
+            {"id":"OX_TANK_PRESSURE", "label":"Tank", "channels":["Pressure"]}
         ]));
         let result = with_grouped_views(original.clone());
         let labels = result

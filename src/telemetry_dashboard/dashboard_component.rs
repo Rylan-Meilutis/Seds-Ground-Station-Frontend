@@ -41,7 +41,10 @@ fn TelemetryDashboardInner() -> Element {
     let st_warn_ack = use_signal(|| persist::get_or(WARNING_ACK_STORAGE_KEY, "0"));
     let st_err_ack = use_signal(|| persist::get_or(ERROR_ACK_STORAGE_KEY, "0"));
     let st_main_tab = use_signal(|| persist::get_or(&scoped_main_tab_key(), "state"));
-    let st_data_tab = use_signal(|| persist::get_or(DATA_TAB_STORAGE_KEY, "GYRO_DATA"));
+    let st_data_tab = use_signal(|| {
+        let saved = persist::get_or(DATA_TAB_STORAGE_KEY, "GYRO_DATA");
+        types::canonical_data_type(&saved).to_string()
+    });
     let st_base_url = use_signal(|| persist::get_or(BASE_URL_STORAGE_KEY, ""));
     let dashboard_customization = use_signal(load_dashboard_customization);
     let cards = use_signal(custom_dashboard::load_cards);
@@ -790,7 +793,7 @@ fn TelemetryDashboardInner() -> Element {
 
             let cache_key = layout_cache_key_for_base(&base);
             if let Some(cached) = persist::get_string(&cache_key)
-                && let Ok(layout) = serde_json::from_str::<LayoutConfig>(&cached)
+                && let Ok(layout) = layout_from_saved_json(&cached)
                 && let Ok(()) = layout.validate()
             {
                 configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);

@@ -693,8 +693,8 @@ Response type:
     },
     {
       "id": "IADC",
-      "label": "Tank Pressure",
-      "data_type": "FUEL_TANK_PRESSURE",
+      "label": "Ox Tank Pressure",
+      "data_type": "OX_TANK_PRESSURE",
       "channel": "iadc",
       "fit_color": "#a78bfa",
       "raw_label": "Raw",
@@ -1161,7 +1161,8 @@ Generic layout behavior:
 - the Settings UI `Maintenance` tab also includes `Clear Current Data`, which clears current visible telemetry plus the persisted telemetry cache without forcing a reconnect or reseed.
 - the Settings UI `Maintenance` tab also shows rotating frontend debug logs. Operators choose an individual log artifact before using the platform-specific action: `Download Logs` on web, `Share Logs` on mobile, or `View Logs` on desktop.
 - frontend debug logs intentionally omit location coordinates, telemetry payload dumps, passwords, and auth tokens. They are meant to capture UI actions, runtime events, connection transitions, and similar debugging context.
-- state summary fill targets support explicit `fill_target_fluid` and `fill_target_kind` per item. Current legacy inference also exists for `FUEL_TANK_PRESSURE[0]` and `LOADCELL_WEIGHT_KG[0]`, and for those legacy cases the frontend chooses nitrogen vs nitrous target mass/pressure from the current flight state.
+- state summary fill targets support explicit `fill_target_fluid` and `fill_target_kind` per item. Current legacy inference also exists for `OX_TANK_PRESSURE[0]` and `LOADCELL_WEIGHT_KG[0]`, and for those legacy cases the frontend chooses nitrogen vs nitrous target mass/pressure from the current flight state.
+- the valve board's oxidiser tank PT is `OX_TANK_PRESSURE` (f32, psi). It was `FUEL_TANK_PRESSURE` before 2026-11; the backend serves every live, history, replay and export row, layout and calibration config under the new name, and the client also maps the old name when it loads its own saved state (telemetry cache, layout cache, custom dashboard cards, selected data tab, cached calibration layout) and on row ingress (`TelemetryRow::refresh_interned_ids`).
 - `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` should be published by the backend as real derived telemetry. The frontend no longer fabricates calibrated loadcell or fill-percent chart/label data from raw `KG1000`.
 - `LOADCELL_FILL_PERCENT[0]` is expected to use the active fill target for the current flight state. Current frontend/backend behavior is nitrogen target during `PreFill`, `FillTest`, and `NitrogenFill`, and nitrous target otherwise.
 - when `/api/fill_targets` changes, frontend loadcell fill-percentage displays are recomputed immediately from the latest calibrated mass plus the current fill-target snapshot.

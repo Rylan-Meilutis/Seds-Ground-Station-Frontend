@@ -27,7 +27,7 @@ fn family(source: &str) -> Option<Family> {
             source,
             "KG50"
                 | "KG1000"
-                | "FUEL_TANK_PRESSURE"
+                | "OX_TANK_PRESSURE"
                 | "COMBUSTION_CHAMBER_PRESSURE"
                 | "PRESSURE_TRANSDUCER_CALIBRATED"
                 | "VALVE_STATE"

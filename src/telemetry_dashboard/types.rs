@@ -5,6 +5,65 @@ use std::sync::{Arc, Mutex};
 
 pub type FlightState = String;
 
+/// The valve board's oxidiser tank pressure transducer (psi).
+pub const OX_TANK_PRESSURE: &str = "OX_TANK_PRESSURE";
+/// The same PT's former name. Rows, layouts and dashboards saved before the
+/// rename (local caches, offline replay files) still carry it; the client maps
+/// it to [`OX_TANK_PRESSURE`] on row ingress and when saved state is loaded.
+pub const LEGACY_FUEL_TANK_PRESSURE: &str = "FUEL_TANK_PRESSURE";
+
+/// Maps a legacy telemetry type name to its canonical name; any other name is
+/// returned unchanged.
+pub fn canonical_data_type(name: &str) -> &str {
+    if name == LEGACY_FUEL_TANK_PRESSURE {
+        OX_TANK_PRESSURE
+    } else {
+        name
+    }
+}
+
+/// Renames legacy telemetry type names (and the matching human labels) in a
+/// saved layout, view config or replay file. Whole strings only, in values and
+/// object keys. Returns whether anything changed. Mirrors the backend's
+/// `layout::canonicalize_legacy_type_names`.
+pub fn canonicalize_legacy_type_names(value: &mut serde_json::Value) -> bool {
+    fn renamed(text: &str) -> Option<&'static str> {
+        match text {
+            LEGACY_FUEL_TANK_PRESSURE => Some(OX_TANK_PRESSURE),
+            "Fuel Tank Pressure" => Some("Ox Tank Pressure"),
+            "Fuel tank pressure" => Some("Ox tank pressure"),
+            "FUEL TANK PRESSURE" => Some("OX TANK PRESSURE"),
+            _ => None,
+        }
+    }
+    fn walk(v: &mut serde_json::Value, changed: &mut bool) {
+        match v {
+            serde_json::Value::String(text) => {
+                if let Some(new) = renamed(text) {
+                    *text = new.to_string();
+                    *changed = true;
+                }
+            }
+            serde_json::Value::Object(map) => {
+                let legacy: Vec<String> = map.keys().filter(|k| renamed(k).is_some()).cloned().collect();
+                for key in legacy {
+                    let new = renamed(&key).unwrap().to_string();
+                    if let Some(item) = map.remove(&key) {
+                        map.entry(new).or_insert(item);
+                        *changed = true;
+                    }
+                }
+                map.values_mut().for_each(|v| walk(v, changed));
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(|v| walk(v, changed)),
+            _ => {}
+        }
+    }
+    let mut changed = false;
+    walk(value, &mut changed);
+    changed
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
@@ -459,6 +518,34 @@ mod tests {
     use super::display_flight_state;
 
     #[test]
+    fn legacy_fuel_tank_pressure_rows_ingest_as_ox_tank_pressure() {
+        let mut row: super::TelemetryRow = serde_json::from_value(serde_json::json!({
+            "timestamp_ms": 1, "data_type": "FUEL_TANK_PRESSURE", "sender_id": "VB", "values": [512.0]
+        }))
+        .unwrap();
+        assert_eq!(row.interned_data_type_id(), super::intern_telemetry_text("OX_TANK_PRESSURE"));
+        row.refresh_interned_ids();
+        assert_eq!(row.data_type, "OX_TANK_PRESSURE");
+        assert_eq!(row.interned_data_type_id(), super::intern_telemetry_text("OX_TANK_PRESSURE"));
+        assert_eq!(super::canonical_data_type("KG1000"), "KG1000");
+    }
+
+    #[test]
+    fn saved_layouts_rename_the_legacy_ox_tank_type_and_label() {
+        let mut layout = serde_json::json!({"data_tab": {"tabs": [
+            {"id": "FUEL_TANK_PRESSURE", "label": "Fuel Tank Pressure", "channels": ["Tank Pressure"]},
+            {"id": "FUEL_FLOW", "label": "Fuel flow (FUEL_TANK_PRESSURE text)"}
+        ]}, "per_type": {"FUEL_TANK_PRESSURE": {"min": 0}}});
+        assert!(super::canonicalize_legacy_type_names(&mut layout));
+        assert_eq!(layout["data_tab"]["tabs"][0]["id"], "OX_TANK_PRESSURE");
+        assert_eq!(layout["data_tab"]["tabs"][0]["label"], "Ox Tank Pressure");
+        assert_eq!(layout["data_tab"]["tabs"][1]["id"], "FUEL_FLOW");
+        assert_eq!(layout["data_tab"]["tabs"][1]["label"], "Fuel flow (FUEL_TANK_PRESSURE text)");
+        assert_eq!(layout["per_type"]["OX_TANK_PRESSURE"]["min"], 0);
+        assert!(!super::canonicalize_legacy_type_names(&mut layout));
+    }
+
+    #[test]
     fn displays_camel_case_flight_states_with_spaces() {
         assert_eq!(display_flight_state("FillTest"), "Fill Test");
         assert_eq!(display_flight_state("PadIdle"), "Pad Idle");
@@ -491,14 +578,19 @@ pub struct TelemetryRow {
 }
 
 impl TelemetryRow {
+    /// Row ingress: every live, history, cached and replayed row passes here,
+    /// so legacy type names are canonicalized before anything keys on them.
     pub fn refresh_interned_ids(&mut self) {
+        if self.data_type == LEGACY_FUEL_TANK_PRESSURE {
+            self.data_type = OX_TANK_PRESSURE.to_string();
+        }
         self.data_type_id = intern_telemetry_text(&self.data_type);
         self.sender_id_id = intern_telemetry_text(&self.sender_id);
     }
 
     pub fn interned_data_type_id(&self) -> TelemetryTextId {
         if self.data_type_id.is_empty() && !self.data_type.is_empty() {
-            return intern_telemetry_text(&self.data_type);
+            return intern_telemetry_text(canonical_data_type(&self.data_type));
         }
         self.data_type_id
     }

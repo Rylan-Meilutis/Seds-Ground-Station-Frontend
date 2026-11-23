@@ -9,7 +9,7 @@ const module=process.env.PLAYWRIGHT_MODULE?pathToFileURL(path.resolve(process.en
 let fixture=source.slice(0,boundary).replace("process.env.PLAYWRIGHT_MODULE || 'playwright'",JSON.stringify(module));
 fixture=fixture.replace("  if(pathname.startsWith('/api/')){",`  if(pathname==='/api/system/time'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({utc_ms:Date.now(),network_utc_ms:Date.now(),can_set_system_time:false}));return;}
  if(pathname.startsWith('/api/')){`);
-fixture=fixture.replace("const dashboardLayout=example('layout.full');",`const dashboardLayout=example('layout.full');dashboardLayout.data_tab.tabs.push({id:'FUEL_TANK_PRESSURE',label:'Tank pressure',channels:['Pressure'],chart:{enabled:true},chart_groups:null,subtabs:null,boolean_labels:null,channel_boolean_labels:null,channel_formatters:null,show_min_max:null});dashboardLayout.data_tab.tabs.push({id:'SCHEMA_PICKER_TEST',label:'Schema picker sensor',channels:['Value'],chart:null,chart_groups:null,subtabs:null,boolean_labels:null,channel_boolean_labels:null,channel_formatters:null,show_min_max:null});`);
+fixture=fixture.replace("const dashboardLayout=example('layout.full');",`const dashboardLayout=example('layout.full');dashboardLayout.data_tab.tabs.push({id:'OX_TANK_PRESSURE',label:'Tank pressure',channels:['Pressure'],chart:{enabled:true},chart_groups:null,subtabs:null,boolean_labels:null,channel_boolean_labels:null,channel_formatters:null,show_min_max:null});dashboardLayout.data_tab.tabs.push({id:'SCHEMA_PICKER_TEST',label:'Schema picker sensor',channels:['Value'],chart:null,chart_groups:null,subtabs:null,boolean_labels:null,channel_boolean_labels:null,channel_formatters:null,show_min_max:null});`);
 fixture+=`
 try {
  const context=await browser.newContext({viewport:{width:1440,height:1100}});
@@ -20,6 +20,7 @@ try {
   if(!localStorage.getItem(key))localStorage.setItem(key,JSON.stringify([
    {label:'50 kg loadcell',section:'Fill System',data_type:'LOADCELL_50_WEIGHT_KG',sender:'DAQ',index:0,unit:'kg',display:'number',min:0,max:50,visible:true},
    {label:'1000 kg loadcell',section:'Fill System',data_type:'LOADCELL_WEIGHT_KG',sender:'DAQ',index:0,unit:'kg',display:'trend',min:0,max:1000,visible:true},
+   // Saved before the ox tank PT rename: loads as OX_TANK_PRESSURE, relabelled.
    {label:'Tank pressure',section:'Fill System',data_type:'FUEL_TANK_PRESSURE',sender:'VB',index:0,unit:'psi',display:'gauge',min:0,max:1000,visible:true},
    {label:'My offline custom sensor',section:'Custom',data_type:'OFFLINE_CUSTOM_TYPE',sender:'CUSTOM',index:0,unit:'V',display:'number',min:0,max:10,visible:true}
   ]));
@@ -28,7 +29,7 @@ try {
  const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.goto(origin+'/dashboard');await page.getByRole('navigation',{name:'Mission navigation'}).waitFor();
  let sequence=0;
- const send=(dynamic=false)=>{const value=++sequence;const data=['LOADCELL_WEIGHT_KG','LOADCELL_50_WEIGHT_KG','FUEL_TANK_PRESSURE','COMBUSTION_CHAMBER_PRESSURE'].map(data_type=>({timestamp_ms:Date.now(),data_type,sender_id:data_type==='FUEL_TANK_PRESSURE'?'VB':'DAQ',values:[value]}));if(dynamic)data.push({timestamp_ms:Date.now(),data_type:'AAA_RUNTIME_CUSTOM_TYPE',sender_id:'CUSTOM',values:[123]});for(const socket of sockets)socket.send(JSON.stringify({ty:'TelemetryBatch',data}));};
+ const send=(dynamic=false)=>{const value=++sequence;const data=['LOADCELL_WEIGHT_KG','LOADCELL_50_WEIGHT_KG','OX_TANK_PRESSURE','COMBUSTION_CHAMBER_PRESSURE'].map(data_type=>({timestamp_ms:Date.now(),data_type,sender_id:data_type==='OX_TANK_PRESSURE'?'VB':'DAQ',values:[value]}));if(dynamic)data.push({timestamp_ms:Date.now(),data_type:'AAA_RUNTIME_CUSTOM_TYPE',sender_id:'CUSTOM',values:[123]});for(const socket of sockets)socket.send(JSON.stringify({ty:'TelemetryBatch',data}));};
  const timer=setInterval(()=>send(),40);
  try {
   const card=name=>page.locator('.gs26-dashboard-card').filter({has:page.getByText(name,{exact:true})});
@@ -39,7 +40,7 @@ try {
   assert.notEqual(await card('50 kg loadcell').locator('svg[role=img] path').getAttribute('d'),first50);
   assert.notEqual(await card('1000 kg loadcell').locator('svg[role=img] path').getAttribute('d'),first1000);
   for(const name of ['50 kg loadcell','1000 kg loadcell']){const points=await card(name).locator('svg[role=img] path').getAttribute('d');assert(new Set(points.trim().split(/\\s+/).map(point=>point.slice(1).split(',')[1])).size>1,name+' trend must not be flat');}
-  await card('Tank pressure').getByRole('img').waitFor();await card('Chamber pressure').getByRole('img').waitFor();
+  await card('Ox tank pressure').getByRole('img').waitFor();await card('Chamber pressure').getByRole('img').waitFor();
   await page.getByRole('link',{name:'Telemetry',exact:true}).click();
   for(const label of ['Tank pressure','Combustion chamber pressure']){await page.getByRole('button',{name:label,exact:true}).click();await page.locator('canvas[id^=gs26-chart-canvas]').first().waitFor();}
   await page.getByRole('link',{name:'Dashboard',exact:true}).click();

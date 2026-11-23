@@ -509,7 +509,7 @@ mod tests {
         let amp2 = load_cell_capture_guard("KG50", "amp2").unwrap();
         assert_eq!((amp2.rails.low, amp2.rails.high), (-2.4, 2.4));
         assert!(amp2.rails.railed(CLIP_V) && !amp2.rails.railed(1.0));
-        assert!(load_cell_capture_guard("FUEL_TANK_PRESSURE", "amp2").is_none());
+        assert!(load_cell_capture_guard("OX_TANK_PRESSURE", "amp2").is_none());
     }
 
     #[test]
@@ -586,7 +586,7 @@ mod tests {
         assert_eq!(reading_unit("KG1000", "p6_differential"), ReadingUnit::Volts);
         assert_eq!(reading_unit("KG50", "amp2"), ReadingUnit::Volts);
         assert_eq!(reading_unit("KG50", "p6_differential"), ReadingUnit::Millivolts);
-        assert_eq!(reading_unit("FUEL_TANK_PRESSURE", "amp2"), ReadingUnit::Raw);
+        assert_eq!(reading_unit("OX_TANK_PRESSURE", "amp2"), ReadingUnit::Raw);
         let v = ReadingUnit::Volts;
         assert_eq!(v.format(0.2093456, 7), "0.209346 V");
         assert_eq!(v.entry_text(0.2093456, 7), "0.209346");

@@ -8,7 +8,7 @@ if(boundary<0)throw Error('Operation fixture boundary changed');
 const module=process.env.PLAYWRIGHT_MODULE?pathToFileURL(path.resolve(process.env.PLAYWRIGHT_MODULE)).href:import.meta.resolve('playwright');
 let fixture=source.slice(0,boundary).replace("process.env.PLAYWRIGHT_MODULE || 'playwright'",JSON.stringify(module));
 fixture=fixture.replace("const dashboardLayout=example('layout.full');",`const dashboardLayout=JSON.parse(fs.readFileSync(process.env.GS_CHAMBER_LAYOUT,'utf8'));const stamp=Date.now();const pressureRows=[];
-for(let i=0;i<30;i++)for(const [data_type,sender_id,value] of [['KG1000','DAQ',4.25],['LOADCELL_WEIGHT_KG','DAQ',120],['KG50','DAQ',2],['LOADCELL_50_WEIGHT_KG','DAQ',10],['FUEL_TANK_PRESSURE','VB',200],['PRESSURE_TRANSDUCER_CALIBRATED','VB',200],['COMBUSTION_CHAMBER_PRESSURE','DAQ',500],['COMBUSTION_CHAMBER_VOLTAGE','DAQ',2.5]])pressureRows.push({timestamp_ms:stamp-3000+i*100,data_type,sender_id,values:[value+i/100]});`);
+for(let i=0;i<30;i++)for(const [data_type,sender_id,value] of [['KG1000','DAQ',4.25],['LOADCELL_WEIGHT_KG','DAQ',120],['KG50','DAQ',2],['LOADCELL_50_WEIGHT_KG','DAQ',10],['OX_TANK_PRESSURE','VB',200],['PRESSURE_TRANSDUCER_CALIBRATED','VB',200],['COMBUSTION_CHAMBER_PRESSURE','DAQ',500],['COMBUSTION_CHAMBER_VOLTAGE','DAQ',2.5]])pressureRows.push({timestamp_ms:stamp-3000+i*100,data_type,sender_id,values:[value+i/100]});`);
 const extras=fixture.indexOf("for(const id of ['LOADCELL','DAQ'])"),serverStart=fixture.indexOf('\n\nconst server=',extras);
 if(extras>=0&&serverStart>extras)fixture=fixture.slice(0,extras)+fixture.slice(serverStart);
 fixture=fixture.replace("  if(pathname.startsWith('/api/')){",`  if(pathname==='/api/recent'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(pressureRows));return;}
@@ -25,7 +25,7 @@ try {
  assert.equal(await page.getByRole('button',{name:/^Export /}).count(),0,'no global export controls');
  assert.equal(await page.locator('.gs26-operating-mode').count(),0,'mode status is not global');
  await page.getByRole('link',{name:'Data',exact:true}).click();
- for(const label of ['Fuel Tank Pressure','Combustion chamber pressure']) {
+ for(const label of ['Ox Tank Pressure','Combustion chamber pressure']) {
    await page.getByRole('button',{name:label,exact:true}).click();
    await page.locator('canvas[id^=gs26-chart-canvas]').first().waitFor();
    assert(await page.locator('canvas[id^=gs26-chart-canvas]').count()>0,label+' has graph');

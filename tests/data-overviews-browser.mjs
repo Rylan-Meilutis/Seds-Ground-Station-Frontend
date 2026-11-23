@@ -9,12 +9,12 @@ let fixture=source.slice(0,boundary).replace("process.env.PLAYWRIGHT_MODULE || '
 fixture+=`try {
  dashboardLayout.data_tab.tabs = [
   {id:'COMBUSTION_CHAMBER_PRESSURE',label:'Chamber',channels:['Chamber pressure'],chart:{enabled:true}},
-  {id:'FUEL_TANK_PRESSURE',label:'Ox tank',channels:['Tank pressure'],chart:{enabled:true}},
+  {id:'OX_TANK_PRESSURE',label:'Ox tank',channels:['Tank pressure'],chart:{enabled:true}},
   {id:'ASCENT_STATE',label:'Flight',channels:['Altitude','Speed'],chart:{enabled:true}},
   {id:'BATTERY_VOLTAGE',label:'Battery',channels:['Voltage'],chart:{enabled:true}},
   {id:'sensor-views',label:'Multiple views',channels:[],subtabs:[
    {id:'chamber',label:'Chamber view',data_type:'COMBUSTION_CHAMBER_PRESSURE',channels:['Selected chamber'],chart:{enabled:true}},
-   {id:'tank',label:'Tank view',data_type:'FUEL_TANK_PRESSURE',channels:['Selected tank'],chart:{enabled:true}}
+   {id:'tank',label:'Tank view',data_type:'OX_TANK_PRESSURE',channels:['Selected tank'],chart:{enabled:true}}
   ]}
  ];
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
@@ -26,7 +26,7 @@ fixture+=`try {
  await page.getByRole('link',{name:'Telemetry',exact:true}).click();
  const categories=page.getByRole('group',{name:'Data categories',exact:true});
  assert.deepEqual(await categories.getByRole('button').allTextContents(),['Fill overview','Avionics overview','Power overview','Chamber','Ox tank','Flight','Battery','Multiple views','Igniter current sense'],'Combined overviews precede individual sensor tabs');
- const send=()=>{const now=Date.now();socket.send(JSON.stringify({ty:'TelemetryBatch',data:[['COMBUSTION_CHAMBER_PRESSURE','DAQ',[123.25]],['FUEL_TANK_PRESSURE','VB',[456.75]],['ASCENT_STATE','FC',[789.5,12.5]],['BATTERY_VOLTAGE','GB',[14.25]]].map(([data_type,sender_id,values])=>({data_type,sender_id,values,timestamp_ms:now,received_timestamp_ms:now}))}));};
+ const send=()=>{const now=Date.now();socket.send(JSON.stringify({ty:'TelemetryBatch',data:[['COMBUSTION_CHAMBER_PRESSURE','DAQ',[123.25]],['FUEL_TANK_PRESSURE','VB',[456.75]]/*pre-rename name: the client canonicalizes it*/,['ASCENT_STATE','FC',[789.5,12.5]],['BATTERY_VOLTAGE','GB',[14.25]]].map(([data_type,sender_id,values])=>({data_type,sender_id,values,timestamp_ms:now,received_timestamp_ms:now}))}));};
  await page.getByRole('button',{name:'Fill overview',exact:true}).click();send();
  await page.getByText('Chamber · Chamber pressure',{exact:true}).first().waitFor();await page.getByText('Ox tank · Tank pressure',{exact:true}).first().waitFor();
  await page.getByText('123.2500',{exact:true}).first().waitFor();await page.getByText('456.7500',{exact:true}).first().waitFor();

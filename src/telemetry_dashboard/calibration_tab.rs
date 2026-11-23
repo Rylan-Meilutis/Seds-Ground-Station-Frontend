@@ -272,7 +272,10 @@ fn calibration_file_cache_storage_key() -> String {
 
 fn load_cached_calibration_layout() -> Option<CalibrationTabLayout> {
     let raw = persist::get_string(&calibration_layout_cache_storage_key())?;
-    serde_json::from_str::<CalibrationTabLayout>(&raw).ok()
+    let mut value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    // A cache written before the ox tank PT rename names its legacy type.
+    super::types::canonicalize_legacy_type_names(&mut value);
+    serde_json::from_value::<CalibrationTabLayout>(value).ok()
 }
 
 fn save_cached_calibration_layout(layout: &CalibrationTabLayout) {

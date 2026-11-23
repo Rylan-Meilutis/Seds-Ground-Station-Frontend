@@ -3,12 +3,23 @@
 'use strict';
 const MAX_BYTES=64*1024*1024,MAX_ROWS=200000;
 const finite=Number.isFinite;
+// Files saved before the ox tank PT rename name it FUEL_TANK_PRESSURE.
+// Whole strings only; the embedded schema keeps the names it was saved with.
+const LEGACY_NAMES=new Map([['FUEL_TANK_PRESSURE','OX_TANK_PRESSURE'],['Fuel Tank Pressure','Ox Tank Pressure'],['Fuel tank pressure','Ox tank pressure'],['FUEL TANK PRESSURE','OX TANK PRESSURE']]);
+function canonicalNames(v){
+ if(typeof v==='string')return LEGACY_NAMES.get(v)??v;
+ if(Array.isArray(v)){for(let i=0;i<v.length;i++)v[i]=canonicalNames(v[i]);return v;}
+ if(v&&typeof v==='object')for(const k of Object.keys(v)){const x=canonicalNames(v[k]),n=LEGACY_NAMES.get(k);if(n&&!Object.hasOwn(v,n)){delete v[k];v[n]=x;}else v[k]=x;}
+ return v;
+}
 function validate(input){
  if(typeof input==='string'&&new TextEncoder().encode(input).length>MAX_BYTES)throw Error('Replay exceeds 64 MiB.');
  const p=typeof input==='string'?JSON.parse(input):input;
  if(!p||p.format!=='seds-replay'||p.version!==1)throw Error('Choose a SEDS replay v1 file.');
  if(!Array.isArray(p.samples)||p.samples.length>MAX_ROWS||!p.samples.length)throw Error('Replay must contain 1–200,000 saved rows.');
  if(!p.schema||typeof p.schema!=='object'||!p.view_config||typeof p.view_config!=='object'||!p.layout||typeof p.layout!=='object'||!Array.isArray(p.valve_mappings))throw Error('Replay is missing its embedded schema, view configuration, layout or valve mappings.');
+ for(const r of p.samples)if(r&&typeof r==='object'&&LEGACY_NAMES.has(r.data_type))r.data_type=LEGACY_NAMES.get(r.data_type);
+ canonicalNames(p.view_config);canonicalNames(p.layout);canonicalNames(p.valve_mappings);
  const stages=p.view_config.stages||[],ground=p.view_config.ground_systems||[];
  if(!Array.isArray(stages)||!Array.isArray(ground)||stages.length>32||ground.length>128||stages.some(s=>!s||typeof s!=='object'||!Array.isArray(s.components)||s.components.length>128))throw Error('Invalid or too many visual components.');
  const validBinding=b=>b==null||(typeof b==='object'&&!Array.isArray(b)&&typeof b.data_type==='string'&&b.data_type.length>0&&b.data_type.length<=128&&(b.sender_id==null||(typeof b.sender_id==='string'&&b.sender_id.length<=256))&&(b.index===undefined||(Number.isInteger(b.index)&&b.index>=0&&b.index<1024))&&(b.scale==null||finite(b.scale))&&(b.offset==null||finite(b.offset)));
@@ -122,5 +133,5 @@ function mount(root,input){
  timer=setInterval(()=>{if(!root.isConnected){disposed=true;clearInterval(timer);visual?.dispose();return;}const now=performance.now();if(playing){at=Math.min(p.end_ms,at+Math.max(0,Math.min(1000,now-last))*Number(speed.value));if(at>=p.end_ms){playing=false;play.textContent='Play';}render();}last=now;},50);
  render();return {package:p,get visual(){return visual;},seek:n=>{at=Math.max(p.start_ms,Math.min(p.end_ms,n));render();},dispose:()=>{disposed=true;clearInterval(timer);visual?.dispose();}};
 }
-globalThis.GSOfflineReplay={MAX_BYTES,validate,value,state,tankFillFraction,replayValveState,mount};
+globalThis.GSOfflineReplay={MAX_BYTES,LEGACY_NAMES,validate,value,state,tankFillFraction,replayValveState,mount};
 })();

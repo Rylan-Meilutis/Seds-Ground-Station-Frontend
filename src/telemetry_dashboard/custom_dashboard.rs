@@ -65,8 +65,8 @@ fn defaults() -> Vec<Card> {
         ),
         (
             "Fill System",
-            "Tank pressure",
-            "FUEL_TANK_PRESSURE",
+            "Ox tank pressure",
+            "OX_TANK_PRESSURE",
             "VB",
             0,
             "psi",
@@ -374,7 +374,7 @@ fn migrate_default_pressure_cards(cards: &mut Vec<Card>) {
     let default_cards = defaults();
     // A custom dashboard gets no new cards. Recognize the original fill dashboard
     // from its existing named loadcells and tank-pressure source.
-    let legacy_default_layout = ["LOADCELL_50_WEIGHT_KG", "LOADCELL_WEIGHT_KG", "FUEL_TANK_PRESSURE"]
+    let legacy_default_layout = ["LOADCELL_50_WEIGHT_KG", "LOADCELL_WEIGHT_KG", "OX_TANK_PRESSURE"]
         .iter().all(|kind| default_cards.iter().find(|card| card.data_type == *kind).is_some_and(|default| {
             cards.iter().any(|card| card.data_type == default.data_type
                 && card.label == default.label && card.sender == default.sender
@@ -382,10 +382,29 @@ fn migrate_default_pressure_cards(cards: &mut Vec<Card>) {
         }));
     if legacy_default_layout && cards.len() < 32 && !cards.iter().any(|card| card.data_type == "COMBUSTION_CHAMBER_PRESSURE") {
         let chamber = default_cards.iter().find(|card| card.data_type == "COMBUSTION_CHAMBER_PRESSURE").unwrap().clone();
-        let index = cards.iter().position(|card| card.data_type == "FUEL_TANK_PRESSURE").unwrap_or(cards.len());
+        let index = cards.iter().position(|card| card.data_type == "OX_TANK_PRESSURE").unwrap_or(cards.len());
         cards.insert(index, chamber);
     }
 
+}
+
+/// A dashboard saved before the ox tank PT rename names FUEL_TANK_PRESSURE.
+/// Its cards follow the canonical type; the default card's old label (or a
+/// "fuel" label, which was never accurate) becomes the ox tank label. Runs
+/// before the default-layout migrations, which compare against `defaults()`.
+fn migrate_ox_tank_pressure(cards: &mut [Card]) -> bool {
+    let mut changed = false;
+    for card in cards.iter_mut() {
+        if card.data_type != super::types::LEGACY_FUEL_TANK_PRESSURE {
+            continue;
+        }
+        card.data_type = super::types::OX_TANK_PRESSURE.into();
+        if matches!(card.label.as_str(), "Tank pressure" | "Fuel tank pressure" | "Fuel Tank Pressure") {
+            card.label = "Ox tank pressure".into();
+        }
+        changed = true;
+    }
+    changed
 }
 
 pub(super) fn load_cards() -> Vec<Card> {
@@ -395,6 +414,9 @@ pub(super) fn load_cards() -> Vec<Card> {
         .unwrap_or_else(defaults);
     let version = persist::get_string(&format!("{}_defaults_version", storage_key()));
     ensure_ids(&mut cards);
+    if migrate_ox_tank_pressure(&mut cards) {
+        save(&cards);
+    }
     if version.as_deref() != Some("5") {
         if version.as_deref() != Some("4") {
             if version.as_deref() != Some("3") {
@@ -1231,7 +1253,7 @@ mod tests {
         cards.retain(|card| card.data_type != "COMBUSTION_CHAMBER_PRESSURE");
         migrate_default_pressure_cards(&mut cards);
         migrate_default_pressure_cards(&mut cards);
-        let pressure: Vec<_> = cards.iter().filter(|card| matches!(card.data_type.as_str(), "COMBUSTION_CHAMBER_PRESSURE" | "FUEL_TANK_PRESSURE")).collect();
+        let pressure: Vec<_> = cards.iter().filter(|card| matches!(card.data_type.as_str(), "COMBUSTION_CHAMBER_PRESSURE" | "OX_TANK_PRESSURE")).collect();
         assert_eq!(pressure.len(), 2);
         assert!(pressure.iter().all(|card| card.display == "gauge"));
         assert!(pressure.iter().any(|card| card.sender == "DAQ" && card.data_type == "COMBUSTION_CHAMBER_PRESSURE"));
@@ -1240,9 +1262,33 @@ mod tests {
         migrate_default_pressure_cards(&mut custom);
         assert!(custom == before);
         let mut full = vec![defaults()[0].clone(); 30];
-        full.extend(cards.iter().filter(|card| matches!(card.data_type.as_str(), "LOADCELL_WEIGHT_KG" | "FUEL_TANK_PRESSURE")).cloned());
+        full.extend(cards.iter().filter(|card| matches!(card.data_type.as_str(), "LOADCELL_WEIGHT_KG" | "OX_TANK_PRESSURE")).cloned());
         migrate_default_pressure_cards(&mut full);
         assert_eq!(full.len(), 32);
+    }
+
+    #[test]
+    fn dashboards_saved_before_the_ox_tank_rename_follow_the_canonical_type() {
+        // The original default dashboard as saved before the rename.
+        let mut saved = defaults();
+        saved.retain(|card| card.data_type != "COMBUSTION_CHAMBER_PRESSURE");
+        let ox = saved.iter().position(|card| card.data_type == "OX_TANK_PRESSURE").unwrap();
+        saved[ox].data_type = "FUEL_TANK_PRESSURE".into();
+        saved[ox].label = "Tank pressure".into();
+        let mut custom = saved[ox].clone();
+        custom.label = "Run tank".into();
+        saved.push(custom);
+        let raw = serde_json::to_string(&saved).unwrap();
+        let mut cards: Vec<Card> = serde_json::from_str(&raw).unwrap();
+        assert!(migrate_ox_tank_pressure(&mut cards));
+        assert!(!migrate_ox_tank_pressure(&mut cards));
+        assert!(cards.iter().all(|card| card.data_type != "FUEL_TANK_PRESSURE"));
+        assert_eq!(cards[ox].label, "Ox tank pressure");
+        assert_eq!(cards[ox].id, saved[ox].id, "per-phase profiles keep their card");
+        assert_eq!(cards.last().unwrap().label, "Run tank", "an operator's own label is kept");
+        // The default-layout migration still recognises the old dashboard.
+        migrate_default_pressure_cards(&mut cards);
+        assert!(cards.iter().any(|card| card.data_type == "COMBUSTION_CHAMBER_PRESSURE"));
     }
 
     #[test]
@@ -1294,7 +1340,7 @@ mod tests {
         for dt in [
             "LOADCELL_50_WEIGHT_KG",
             "LOADCELL_WEIGHT_KG",
-            "FUEL_TANK_PRESSURE",
+            "OX_TANK_PRESSURE",
             "LOADCELL_FILL_PERCENT",
             "VALVE_STATE",
         ] {

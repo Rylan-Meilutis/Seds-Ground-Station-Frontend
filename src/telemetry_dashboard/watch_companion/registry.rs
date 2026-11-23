@@ -163,10 +163,10 @@ pub const ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         id: "tank_pressure",
-        label: "Tank pressure",
+        label: "Ox tank pressure",
         group: "Propulsion",
         source: Source::Telemetry {
-            channels: &[("FUEL_TANK_PRESSURE", None, 0)],
+            channels: &[("OX_TANK_PRESSURE", None, 0)],
             quantity: Quantity::Pressure("psi"),
             precision: 0,
             stale_after_ms: FAST,

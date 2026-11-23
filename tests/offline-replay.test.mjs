@@ -27,4 +27,20 @@ assert.deepEqual(GSOfflineReplay.validate(JSON.stringify(p)).layout,p.layout);
 for(const change of [x=>x.version=2,x=>x.schema=null,x=>x.valve_mappings[0].index=-1,x=>x.samples[1].id=1,x=>x.samples[0].values=[Infinity],x=>x.view_config.ground_systems=[null],x=>x.view_config.stages=[null],x=>x.view_config.ground_systems[0].binding.scale='bad',x=>x.valve_mappings[0].true_label={bad:true}]){
  const bad=structuredClone(fixture);change(bad);assert.throws(()=>GSOfflineReplay.validate(bad));
 }
+{
+ // A file saved before the ox tank PT rename: rows, bindings and labels follow the new name.
+ const legacy=structuredClone(fixture);
+ legacy.samples.push(sample(5,1000,'FUEL_TANK_PRESSURE',[512]));
+ legacy.view_config.ground_systems.push({id:'ox',label:'Fuel Tank Pressure',kind:'gauge',unit:'psi',min:0,max:1000,binding:{data_type:'FUEL_TANK_PRESSURE',index:0}});
+ legacy.layout.FUEL_TANK_PRESSURE={label:'Fuel tank pressure'};
+ const q=GSOfflineReplay.validate(JSON.stringify(legacy));
+ assert.equal(q.samples.find(r=>r.id===5).data_type,'OX_TANK_PRESSURE');
+ assert.ok(!q.samples.some(r=>r.data_type==='FUEL_TANK_PRESSURE'));
+ assert.equal(q.view_config.ground_systems[1].binding.data_type,'OX_TANK_PRESSURE');
+ assert.equal(q.view_config.ground_systems[1].label,'Ox Tank Pressure');
+ assert.deepEqual(q.layout.OX_TANK_PRESSURE,{label:'Ox tank pressure'});
+ assert.equal(q.layout.FUEL_TANK_PRESSURE,undefined);
+ assert.equal(GSOfflineReplay.state(q,1500).components[1].value,512);
+ assert.equal(q.view_config.ground_systems[0].label,'Fuel tank','other labels are untouched');
+}
 console.log('PASS offline roundtrip, embedded config/schema/units/mappings, no future/live substitution, every valve update, null/stale unknown, malformed refusal');
