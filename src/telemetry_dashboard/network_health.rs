@@ -475,6 +475,12 @@ pub fn NetworkHealthSection(
                                             p { "SD rejected records: {rejected} · Write errors: {report.sd_write_errors.unwrap_or(0)}" }
                                         }
                                         if let Some(overruns)=report.adc_overruns { p { "ADC queue overruns: {overruns}" } }
+                                        for (line, warn) in power_monitor_lines(report) {
+                                            if warn { p { role: "status", style: "color:{theme.warning_text};", "{line}" } } else { p { "{line}" } }
+                                        }
+                                        for (line, warn) in current_sense_lines(report) {
+                                            if warn { p { role: "status", style: "color:{theme.warning_text};", "{line}" } } else { p { "{line}" } }
+                                        }
                                         p { "Diagnostic send refusals: {report.diagnostic_send_failures}" }
                                      }}
                                 } else if row.diagnostics.is_some() { p { "No board health report received yet." } } else { p { "Internal diagnostics unavailable from this firmware." } }                                            }
@@ -505,9 +511,78 @@ fn service_fault_summary(report: &BoardDiagnostics) -> Option<String> {
     })
 }
 
+/// GB/PB LTC2990 power-monitor lines (read-only); `true` marks a warning.
+/// An absent monitor is named on its own line: its readings are not trusted.
+fn power_monitor_lines(report: &BoardDiagnostics) -> Vec<(String, bool)> {
+    let Some(power) = report.power_monitors.as_ref() else { return Vec::new() };
+    let mut lines = Vec::new();
+    for (name, present) in [("Voltage", power.voltage_present), ("Current", power.current_present)] {
+        lines.push(if present {
+            (format!("{name} monitor (LTC2990): answering"), false)
+        } else {
+            (format!("{name} monitor (LTC2990): monitor absent, readings not trusted"), true)
+        });
+    }
+    if power.retry_delay_ms > 0 {
+        lines.push((format!("Power monitor I2C retry every {} s", power.retry_delay_ms.div_ceil(1000)), true));
+    }
+    lines.push(match (power.bus_clears, power.failed_bus_clears) {
+        (Some(clears), Some(failed)) => (
+            format!("Power monitor I2C retries / bus clears / failed clears: {} / {clears} / {failed}", power.retries),
+            failed > 0,
+        ),
+        _ => (format!("Power monitor I2C retries: {}", power.retries), false),
+    });
+    lines
+}
+
+/// AB Hall current-sense lines (read-only); `true` marks a warning.
+fn current_sense_lines(report: &BoardDiagnostics) -> Vec<(String, bool)> {
+    let Some(sense) = report.current_sense.as_ref() else { return Vec::new() };
+    let untrusted = if sense.untrusted.is_empty() { "none".to_string() } else { sense.untrusted.join(", ") };
+    let mut lines = vec![
+        (format!("Current sense untrusted (not acted on): {untrusted}"), false),
+        (format!("Hall mismatch abort: {}", if sense.mismatch_abort_enabled { "compiled in" } else { "off" }), false),
+    ];
+    if !sense.mismatch_latched.is_empty() {
+        lines.push((format!("Current mismatch seen since boot: {}", sense.mismatch_latched.join(", ")), true));
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_monitor_and_current_sense_lines_follow_the_backend_report() {
+        let mut report = BoardDiagnostics::default();
+        assert!(power_monitor_lines(&report).is_empty() && current_sense_lines(&report).is_empty());
+        report = serde_json::from_str(r#"{"version":1,"received_age_ms":0,"uptime_ticks":0,"uptime_frequency_hz":1000,"reset_flags":0,"watchdog_missing_mask":0,"heap_live_bytes":null,"heap_peak_bytes":null,"heap_region_bytes":null,"allocation_failures":null,"admission_refusals":0,"can_rx_drops":null,"can_tx_rejected":null,"uart_rx_drops":null,"tx_queue_high_water":null,"sd_accepted_records":null,"sd_processed_records":null,"sd_rejected_records":null,"sd_flushed_records":null,"sd_write_errors":null,"sd_max_write_ms":null,"adc_overruns":null,"diagnostic_send_failures":0,"power_monitors":{"voltage_present":true,"current_present":false,"retry_delay_ms":4000,"retries":9,"bus_clears":2,"failed_bus_clears":0},"current_sense":{"untrusted":["N2O","N2","Igniter","H-bridge"],"mismatch_abort_enabled":false,"mismatch_latched":["N2"]}}"#).unwrap();
+        assert_eq!(power_monitor_lines(&report), vec![
+            ("Voltage monitor (LTC2990): answering".to_string(), false),
+            ("Current monitor (LTC2990): monitor absent, readings not trusted".to_string(), true),
+            ("Power monitor I2C retry every 4 s".to_string(), true),
+            ("Power monitor I2C retries / bus clears / failed clears: 9 / 2 / 0".to_string(), false),
+        ]);
+        // PB: no bus-clear counters.
+        let pb: BoardDiagnostics = serde_json::from_str(&serde_json::to_string(&BoardDiagnostics {
+            power_monitors: Some(crate::telemetry_dashboard::types::PowerMonitorHealth {
+                voltage_present: false, current_present: true, retry_delay_ms: 0, retries: 3,
+                bus_clears: None, failed_bus_clears: None }),
+            ..Default::default()
+        }).unwrap()).unwrap();
+        assert_eq!(power_monitor_lines(&pb), vec![
+            ("Voltage monitor (LTC2990): monitor absent, readings not trusted".to_string(), true),
+            ("Current monitor (LTC2990): answering".to_string(), false),
+            ("Power monitor I2C retries: 3".to_string(), false),
+        ]);
+        assert_eq!(current_sense_lines(&report), vec![
+            ("Current sense untrusted (not acted on): N2O, N2, Igniter, H-bridge".to_string(), false),
+            ("Hall mismatch abort: off".to_string(), false),
+            ("Current mismatch seen since boot: N2".to_string(), true),
+        ]);
+    }
     #[test]
     fn daq_recording_state_is_never_silently_missing() {
         let mut row = NetworkBoardHealthEntry { sender_id: "DAQ".into(), healthy: true, ..Default::default() };

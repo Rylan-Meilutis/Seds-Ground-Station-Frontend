@@ -337,6 +337,38 @@ pub struct BoardDiagnostics {
     /// DAQ live input faults. Absent on older backends, older DAQ firmware and other boards.
     #[serde(default)]
     pub daq_input: Option<DaqInputHealthStatus>,
+    /// GB/PB LTC2990 power monitors. Absent on older backends/firmware and other boards.
+    #[serde(default)]
+    pub power_monitors: Option<PowerMonitorHealth>,
+    /// AB Hall current-sense trust. Absent on older backends/firmware and other boards.
+    #[serde(default)]
+    pub current_sense: Option<CurrentSenseStatus>,
+}
+
+/// GB/PB power monitors (backend `PowerMonitorHealth`, BOARD_HEALTH "LTC1").
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct PowerMonitorHealth {
+    pub voltage_present: bool,
+    pub current_present: bool,
+    /// Current I2C retry delay, ms; 0 when both monitors answer.
+    pub retry_delay_ms: u32,
+    pub retries: u32,
+    /// GB only; PB has no bus-clear counters.
+    #[serde(default)]
+    pub bus_clears: Option<u32>,
+    #[serde(default)]
+    pub failed_bus_clears: Option<u32>,
+}
+
+/// AB Hall current-sense trust (backend `CurrentSenseStatus`, BOARD_HEALTH "CSN1").
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct CurrentSenseStatus {
+    #[serde(default)]
+    pub untrusted: Vec<String>,
+    #[serde(default)]
+    pub mismatch_abort_enabled: bool,
+    #[serde(default)]
+    pub mismatch_latched: Vec<String>,
 }
 
 /// DAQ input-health block (backend daq_input_health.rs). Millivolts; `None`
