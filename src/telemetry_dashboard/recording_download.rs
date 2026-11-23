@@ -648,6 +648,8 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
     let mut selection_epoch = use_signal(|| 1u64);
     let mut list_owner = use_signal(|| None::<std::rc::Rc<ExportOwner>>);
     let mut query_epoch = use_signal(|| 1u64);
+    // The recording open in the saved-data replay (never live data).
+    let mut replaying = use_signal(|| None::<String>);
     use_future(move || async move {
         loop {
             #[cfg(target_arch = "wasm32")]
@@ -716,7 +718,10 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
             super::recording_store_view::RecordingStorePanel { theme: theme.clone(), on_select: move |id: String| {
                 if id != selected() { downloading.set(false); selection_epoch.set(selection_epoch().saturating_add(1)); selected.set(id); }
                 refresh += 1;
-            } }
+            }, on_replay: move |id: String| replaying.set(Some(id)) }
+            if let Some(id) = replaying() {
+                super::saved_replay::SavedReplayView { key: "{id}", recording: id.clone(), theme: theme.clone(), on_close: move |_| replaying.set(None) }
+            }
             super::burn_report_view::BurnReportsPanel { theme: theme.clone() }
             details { class:"gs-info", summary {"What's included"}
                 div {
@@ -757,6 +762,7 @@ pub fn RecordingDownloads(theme: ThemeConfig) -> Element {
                         if owner.is_current() { status.set(result.unwrap_or_else(|error| format!("Download failed: {error}"))); downloading.set(false); }
                     });
                 }, if downloading() { "Downloading…" } else { "Download full recording CSV" } }
+                button { disabled: selected.read().is_empty(), onclick: move |_| replaying.set(Some(selected())), "Replay selected recording" }
             }
             RecoveryHistoryExport {}
             ChecklistExport {}

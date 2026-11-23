@@ -237,7 +237,18 @@ pub(super) fn RecordingIndicator(status: Signal<super::RecordingStatusMsg>) -> E
 /// Recordings page: ring status, captures grouped by event type, snapshot,
 /// and (administrators) settings and deletion.
 #[component]
-pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<String>) -> Element {
+pub(super) fn RecordingStorePanel(
+    theme: ThemeConfig,
+    on_select: EventHandler<String>,
+    /// Opens the saved-data replay of a recording id (see `saved_replay`).
+    #[props(default)] on_replay: Option<EventHandler<String>>,
+) -> Element {
+    let replay = move |id: String| {
+        on_select.call(id.clone());
+        if let Some(handler) = on_replay { handler.call(id); }
+    };
+    let mut range_from = use_signal(String::new);
+    let mut range_to = use_signal(String::new);
     let authority = neutral_request_owner::use_factory();
     let mut view = use_signal(|| None::<StoreView>);
     let mut message = use_signal(String::new);
@@ -324,6 +335,23 @@ pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<St
                     }
                 }
             }
+            if on_replay.is_some() {
+                details { class: "gs-info", "data-replay-range": "true",
+                    summary { "Replay a time range of the rolling store" }
+                    p { "Replays every rolling segment the range touches as one recording (up to 6 hours), in the station mode recorded at the time." }
+                    div { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:end;",
+                        label { "From (UTC) " input { r#type: "datetime-local", value: "{range_from}", oninput: move |e| range_from.set(e.value()) } }
+                        label { "To (UTC) " input { r#type: "datetime-local", value: "{range_to}", oninput: move |e| range_to.set(e.value()) } }
+                        button { onclick: move |_| {
+                            match (super::recording_download::input_utc_ms(&range_from()), super::recording_download::input_utc_ms(&range_to())) {
+                                (Ok(a), Ok(b)) if b > a => replay(super::saved_replay::range_id(a, b)),
+                                (Ok(_), Ok(_)) => message.set("The range must end after it starts.".into()),
+                                (Err(e), _) | (_, Err(e)) => message.set(e),
+                            }
+                        }, "Replay range" }
+                    }
+                }
+            }
             h4 { "Event captures ({size_label(current.captures_bytes)})" }
             if current.groups.is_empty() { p { "No event captures yet. Launches, aborts and every station sequence are captured automatically." } }
             for group in current.groups.iter() {
@@ -342,6 +370,11 @@ pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<St
                                 }
                                 div { style: "display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;",
                                     button { onclick: { let id = capture.id.clone(); move |_| on_select.call(id.clone()) }, "Select for CSV / report / replay" }
+                                    button { "data-replay-open": "{capture.id}", onclick: { let id = capture.id.clone(); move |_| replay(id.clone()) }, "Replay" }
+                                    if !capture.manifest.board_sd.is_empty() {
+                                        button { onclick: { let id = super::saved_replay::merge_sd_id(&capture.id); move |_| replay(id.clone()) }, "Replay with board SD" }
+                                        button { onclick: { let id = super::saved_replay::sd_only_id(&capture.id); move |_| replay(id.clone()) }, "Replay board SD only" }
+                                    }
                                     button { disabled: busy(), onclick: {
                                         let id = capture.id.clone();
                                         move |_| {
@@ -406,6 +439,7 @@ pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<St
                                     div { key: "{attachment.id}",
                                         "Attached board SD import · {size_label(attachment.bytes)} "
                                         button { onclick: { let id = attachment.id.clone(); move |_| on_select.call(id.clone()) }, "Select" }
+                                        button { onclick: { let id = attachment.id.clone(); move |_| replay(id.clone()) }, "Replay" }
                                     }
                                 }
                             }
@@ -421,6 +455,7 @@ pub(super) fn RecordingStorePanel(theme: ThemeConfig, on_select: EventHandler<St
                         for entry in current.legacy.iter() {
                             li { key: "{entry.id}", "{entry.id} · {size_label(entry.bytes)} "
                                 button { onclick: { let id = entry.id.clone(); move |_| on_select.call(id.clone()) }, "Select" }
+                                button { onclick: { let id = entry.id.clone(); move |_| replay(id.clone()) }, "Replay" }
                             }
                         }
                     }

@@ -211,6 +211,7 @@ fn FireRow(theme: super::layout::ThemeConfig, fire: Fire, can_review: bool, busy
     let supercharge = use_signal(|| fire.supercharge_psi.map(|v| format!("{v}")).unwrap_or_default());
     let mut notes = use_signal(|| fire.review.notes.clone());
     let mut problem = use_signal(|| None::<String>);
+    let mut replaying = use_signal(|| false);
     let id = fire.id.clone();
     let summary_line = format!(
         "{} {} — {} , fill {}",
@@ -273,6 +274,11 @@ fn FireRow(theme: super::layout::ThemeConfig, fire: Fire, can_review: bool, busy
                 Some(Ok(c)) if !c.curve.is_empty() => rsx! { ThrustPlot { curve: c.curve, theme: theme.clone() } },
                 Some(Err(e)) => rsx! { p { class: "gs-notice gs-notice--warn", "Cannot read the thrust curve: {super::igt::refusal(&e)}" } },
                 _ => rsx! {},
+            }
+            button { r#type: "button", class: "gs-btn", "data-fire-replay": "{fire.id}", onclick: move |_| replaying.set(!replaying()),
+                if replaying() { "Close replay" } else { "Replay this fire" } }
+            if replaying() {
+                super::saved_replay::SavedReplayView { recording: super::saved_replay::fire_id(&fire.id), theme: theme.clone(), on_close: move |_| replaying.set(false) }
             }
             if can_review {
                 div { "data-review-controls": "", style: "display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;",
