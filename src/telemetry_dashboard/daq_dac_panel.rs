@@ -205,6 +205,7 @@ pub(super) fn DaqDacPanel(theme: ThemeConfig) -> Element {
                             }
                         }
                     }
+                    super::dac_sim_patch::DacSimPatch { theme: theme.clone() }
                     ValidationSection {
                         theme: theme.clone(),
                         inputs: state.inputs.clone(),
