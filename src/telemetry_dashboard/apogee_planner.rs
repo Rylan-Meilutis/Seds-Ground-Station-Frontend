@@ -14,6 +14,8 @@ pub(crate) const SETTINGS_PATH: &str = "/api/apogee_planner/settings";
 pub(crate) const COMPUTE_PATH: &str = "/api/apogee_planner/compute";
 pub(crate) const APPLY_PATH: &str = "/api/apogee_planner/apply";
 pub(crate) const FETCH_PATH: &str = "/api/apogee_planner/weather/fetch";
+/// Writes the plan's weather into the firmware simulation's plant conditions (admin; simulated-firmware stations).
+pub(crate) const REHEARSE_PATH: &str = "/api/apogee_planner/sim_environment/apply";
 pub(crate) const ORK_PATH: &str = "/api/apogee_planner/ork";
 pub(crate) const CALIBRATE_PATH: &str = "/api/apogee_planner/calibrate_flight";
 /// IREC/SA Cup minimum rail exit speed.
@@ -621,6 +623,11 @@ pub(super) fn ApogeePlannerView(theme: super::layout::ThemeConfig, admin: bool, 
             Ok(Some(next))
         }));
     };
+    let rehearse = move |_| {
+        let owner = factory.capture();
+        let work = super::station_settings_request::post_captured::<_, serde_json::Value>(REHEARSE_PATH, &serde_json::json!({}), owner);
+        run("Plan weather sent to the firmware simulation", Box::pin(async move { work.await.map(|_| None) }));
+    };
     let mut apply = move |plan: Plan| {
         let owner = factory.capture();
         let work = super::station_settings_request::post_captured_no_redirect::<_, Applied>(APPLY_PATH, &ApplyRequest { plan_id: plan.id.clone() }, owner);
@@ -797,6 +804,11 @@ pub(super) fn ApogeePlannerView(theme: super::layout::ThemeConfig, admin: bool, 
                     button { r#type: "button", class: "gs-btn", disabled: !can_send || busy(), onclick: fetch, "Fetch forecast" }
                 }
                 button { r#type: "button", class: "gs-btn gs-btn--primary", "data-compute": "", disabled: !can_send || busy() || dirty, onclick: compute, "Compute" }
+                if admin {
+                    button { r#type: "button", class: "gs-btn", "data-rehearse": "", disabled: busy(),
+                        title: "Stations running simulated firmware only: sets the simulation's ambient temperature and wind to the plan's weather.",
+                        onclick: rehearse, "Rehearse in firmware sim" }
+                }
                 if dirty {
                     span { style: "color:{theme.text_muted};", "Save or discard the settings changes before computing." }
                 }
@@ -1106,6 +1118,7 @@ mod tests {
         assert!(operator.contains("Read only: an administrator"), "{operator}");
         assert!(!operator.contains("Save planner settings") && !operator.contains("Import OpenRocket"));
         assert!(operator.contains("data-compute"));
+        assert!(admin.contains("data-rehearse") && !operator.contains("data-rehearse"), "the firmware-sim rehearsal is admin only");
         let viewer = render(false, false, s);
         assert!(viewer.contains("Command permission is required"));
     }
