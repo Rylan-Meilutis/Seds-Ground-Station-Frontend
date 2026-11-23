@@ -363,11 +363,17 @@ where
             continue;
         };
         if load_cell {
-            let temperature = fresh_temperature().ok_or("Fresh ADC temperature required for load-cell calibration")?;
-            let corrected = thermal_raw(&calibration, &data_type, raw, Some(temperature))
+            // Die temperature is only an input when a thermal correction is
+            // configured for this channel; otherwise it is optional metadata,
+            // so a stale temperature cannot block a load-cell capture.
+            let temperature = fresh_temperature();
+            if thermal_correction_enabled(&calibration, &data_type) && temperature.is_none() {
+                return Err("Fresh ADC temperature required: a temperature correction is enabled for this load cell".to_string());
+            }
+            let corrected = thermal_raw(&calibration, &data_type, raw, temperature)
                 .ok_or("Invalid thermal calibration")?;
             captured_samples.push(corrected);
-            temperatures.push(temperature);
+            temperatures.extend(temperature);
         } else {
             captured_samples.push(raw);
         }
@@ -2032,6 +2038,9 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                     .unwrap_or_default();
                 format!("{expected:.3} kg <- {}{residual}", reading_unit.format(*raw, raw_precision))
             })
+            .chain(calibration_capture::step_consistency_warnings(
+                &display_points.iter().map(|(raw, expected, _)| (*raw, *expected)).collect::<Vec<_>>(),
+            ).into_iter().map(|warning| format!("Warning: {warning}")))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -3352,6 +3361,9 @@ fn fresh_temperature() -> Option<f32> {
     super::fresh_daq_calibration_value("DAQ_ADC_TEMPERATURE", now_ms() as i64)
         .filter(|t| (-40.0..=125.0).contains(t))
 }
+fn thermal_correction_enabled(cfg: &CalibrationFile, channel: &str) -> bool {
+    cfg.thermal.get(thermal_sensor(channel)).is_some_and(|t| t.raw_per_c != 0.0)
+}
 fn thermal_raw(cfg: &CalibrationFile, channel: &str, raw: f32, temperature: Option<f32>) -> Option<f32> {
     let Some(t) = cfg.thermal.get(thermal_sensor(channel)) else { return Some(raw); };
     if t.raw_per_c == 0.0 { return Some(raw); }
@@ -3377,11 +3389,23 @@ mod thermal_calibration_tests {
         let corrected = thermal_raw(&cfg, "ch1", 12., Some(30.)).unwrap();
         assert_eq!(corrected, 10.);
         assert_eq!(thermal_raw(&cfg, "ch1", 12., None), None);
+        assert!(thermal_correction_enabled(&cfg, "ch1"));
         record_temperature_capture(&mut cfg, "KG1000", 0., corrected, Some(30.));
         let saved: CalibrationFile = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(saved.temperature_captures["KG1000"][0].raw, 12.);
         assert_eq!(saved.temperature_captures["KG1000"][0].temperature_c, Some(30.));
         assert_eq!(saved.thermal["KG1000"].raw_per_c, 0.2);
+    }
+
+    #[test]
+    fn without_a_thermal_correction_temperature_is_not_needed() {
+        let cfg = CalibrationFile::default();
+        assert!(!thermal_correction_enabled(&cfg, "ch1"));
+        assert_eq!(thermal_raw(&cfg, "ch1", 12., None), Some(12.));
+        let mut zero = CalibrationFile::default();
+        zero.thermal.insert("KG1000".into(), ThermalCalibration { reference_c: 20., raw_per_c: 0.0, points: vec![] });
+        assert!(!thermal_correction_enabled(&zero, "ch1"));
+        assert_eq!(thermal_raw(&zero, "ch1", 12., None), Some(12.));
     }
 }
 

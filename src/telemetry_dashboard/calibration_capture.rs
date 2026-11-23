@@ -80,6 +80,21 @@ const MAX_OUTLIER_FRACTION: f32 = 0.10;
 const OUTLIER_FLOOR: f32 = 0.000001;
 const OUTLIER_SCALE: f32 = 3.5;
 const TRIM_RATIO: f32 = 0.12;
+/// Largest change between the means of the first and last thirds of one
+/// capture (about 5 s). A reading still settling after a mass is placed, or
+/// creeping through a binding mount, averages to a value that depends on when
+/// the operator pressed Capture; field calibrations showed 5 kg steps reading
+/// 0.43x to 1.35x of the fitted slope. KG1000: 1 mV is about 0.55 kg.
+const KG1000_MAX_SETTLE_V: f64 = 1.0e-3;
+/// P6: 1e-5 V is about 0.23 kg on the field KG50 calibration (~22.8 kg/mV).
+const KG50_P6_MAX_SETTLE_V: f64 = 1.0e-5;
+/// No measured AMP2 KG50 scale: same 0.1% of full scale as its MAD limit.
+const KG50_AMP2_MAX_SETTLE_V: f64 = ADC_FULL_SCALE_V * 0.001;
+/// A calibration step whose sensitivity differs from the whole fit by more
+/// than this factor points at the load path (binding, bypass, seating) or at
+/// an unsettled capture, not at the electronics: at-rest noise is ~0.1 kg.
+const STEP_RATIO_LOW: f32 = 0.8;
+const STEP_RATIO_HIGH: f32 = 1.25;
 
 /// How a sensor reading is shown and entered. Calibration files and the wire
 /// always carry volts for load cells; only the display may use millivolts.
@@ -173,6 +188,8 @@ impl RailLimits {
 pub(super) struct CaptureGuard {
     pub(super) rails: RailLimits,
     pub(super) max_mad: f32,
+    /// Largest first-third to last-third change of the capture mean.
+    pub(super) max_settle: f32,
     pub(super) outlier_floor: f32,
     pub(super) unit: ReadingUnit,
 }
@@ -185,6 +202,7 @@ pub(super) fn load_cell_capture_guard(data_type: &str, kg50_input: &str) -> Opti
         "KG1000" => Some(CaptureGuard {
             rails: RailLimits { low: KG1000_LOW_RAIL_V as f32, high: full_scale },
             max_mad: KG1000_MAX_MAD_V as f32,
+            max_settle: KG1000_MAX_SETTLE_V as f32,
             outlier_floor: amplified_floor,
             unit,
         }),
@@ -193,6 +211,7 @@ pub(super) fn load_cell_capture_guard(data_type: &str, kg50_input: &str) -> Opti
             Some(CaptureGuard {
                 rails: RailLimits { low: -full_scale, high: full_scale },
                 max_mad: KG50_P6_MAX_MAD_V as f32,
+                max_settle: KG50_P6_MAX_SETTLE_V as f32,
                 outlier_floor: OUTLIER_FLOOR,
                 unit,
             })
@@ -200,6 +219,7 @@ pub(super) fn load_cell_capture_guard(data_type: &str, kg50_input: &str) -> Opti
         "KG50" => Some(CaptureGuard {
             rails: RailLimits { low: -full_scale, high: full_scale },
             max_mad: KG50_AMP2_MAX_MAD_V as f32,
+            max_settle: KG50_AMP2_MAX_SETTLE_V as f32,
             outlier_floor: amplified_floor,
             unit,
         }),
@@ -302,6 +322,19 @@ pub(super) fn summarize_capture(
             ));
         }
     }
+    if let Some(guard) = guard {
+        // Isolated outliers are already bounded above; judge the trend on the
+        // samples that enter the average, in capture order.
+        let kept: Vec<f32> = samples.iter().copied().filter(|value| (value - median).abs() <= outlier_limit).collect();
+        let settle = settle_change(&kept);
+        if !(settle.abs() <= guard.max_settle) {
+            return Err(format!(
+                "Capture rejected: the reading was still moving (the last third of the capture differs from the first third by {}, limit {}). Wait for the load to settle; if it keeps creeping, check the mount for binding or a line carrying load. Calibration was not changed.",
+                guard.unit.format_spread(settle),
+                guard.unit.format_spread(guard.max_settle),
+            ));
+        }
+    }
     if filtered.is_empty() {
         filtered = sorted.clone();
     }
@@ -313,6 +346,54 @@ pub(super) fn summarize_capture(
     };
     let mean = usable.iter().copied().sum::<f32>() / usable.len() as f32;
     Ok(CaptureSummary { mean, used: usable.len(), total, rejected, min, max, mad })
+}
+
+/// Mean of the last third of a capture minus the mean of its first third, in
+/// capture order. Zero for captures too short to split.
+pub(super) fn settle_change(samples: &[f32]) -> f32 {
+    let third = samples.len() / 3;
+    if third == 0 {
+        return 0.0;
+    }
+    let mean = |values: &[f32]| values.iter().map(|v| *v as f64).sum::<f64>() / values.len() as f64;
+    (mean(&samples[samples.len() - third..]) - mean(&samples[..third])) as f32
+}
+
+/// Warnings for calibration points whose step-to-step sensitivity disagrees
+/// with the whole least-squares fit. `points` are (reading, kg). Needs three
+/// distinct loads. A consistent load path gives every step the same reading
+/// per kg; a step far from the fit means binding, a load bypass, a seating
+/// change or a capture taken before the reading settled.
+pub(super) fn step_consistency_warnings(points: &[(f32, f32)]) -> Vec<String> {
+    let mut pts: Vec<(f64, f64)> = points
+        .iter()
+        .filter(|(r, k)| r.is_finite() && k.is_finite())
+        .map(|(r, k)| (*r as f64, *k as f64))
+        .collect();
+    pts.sort_by(|a, b| a.1.total_cmp(&b.1));
+    pts.dedup_by(|a, b| (a.1 - b.1).abs() < 1e-6);
+    if pts.len() < 3 {
+        return Vec::new();
+    }
+    let n = pts.len() as f64;
+    let (mk, mr) = (pts.iter().map(|p| p.1).sum::<f64>() / n, pts.iter().map(|p| p.0).sum::<f64>() / n);
+    let sxx: f64 = pts.iter().map(|p| (p.1 - mk).powi(2)).sum();
+    let sxy: f64 = pts.iter().map(|p| (p.1 - mk) * (p.0 - mr)).sum();
+    let slope = sxy / sxx; // reading per kg
+    if !slope.is_finite() || slope == 0.0 {
+        return vec!["The points do not change with load; check the wiring and the load path before using this calibration.".to_string()];
+    }
+    pts.windows(2)
+        .filter_map(|w| {
+            let ratio = ((w[1].0 - w[0].0) / (w[1].1 - w[0].1) / slope) as f32;
+            (!(STEP_RATIO_LOW..=STEP_RATIO_HIGH).contains(&ratio)).then(|| {
+                format!(
+                    "Step {:.3} -> {:.3} kg reads {ratio:.2}x the fitted sensitivity (expected 1.00). Re-capture after the reading settles; if it repeats, check the mount for binding or a line carrying load.",
+                    w[0].1, w[1].1
+                )
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -533,5 +614,46 @@ mod tests {
         assert_eq!(ok.mean, 10.0);
         assert_eq!(ok.rejected, 20);
         assert!(summarize_capture(&[], &[], None).is_err());
+    }
+
+    #[test]
+    fn a_creeping_capture_is_rejected_and_a_steady_one_passes() {
+        let kg1000 = load_cell_capture_guard("KG1000", "amp2").unwrap();
+        let steady = noisy(KG1000_ZERO_V, 2e-5 * K, 200);
+        assert!(summarize_capture(&steady, &steady, Some(&kg1000)).is_ok());
+        // 2 mV (about 1.1 kg) of creep over the capture, well inside the MAD limit.
+        let creep: Vec<f32> = (0..200).map(|i| KG1000_ZERO_V + 2.0e-3 * i as f32 / 199.0).collect();
+        let err = summarize_capture(&creep, &creep, Some(&kg1000)).unwrap_err();
+        assert!(err.contains("still moving") && err.contains("not changed"), "{err}");
+        let p6 = load_cell_capture_guard("KG50", "p6_differential").unwrap();
+        let settling: Vec<f32> = (0..200).map(|i| 0.00419 + 2.0e-5 * i as f32 / 199.0).collect();
+        assert!(summarize_capture(&settling, &settling, Some(&p6)).unwrap_err().contains("still moving"));
+        let p6_steady = noisy(0.00419, 1e-6, 200);
+        assert!(summarize_capture(&p6_steady, &p6_steady, Some(&p6)).is_ok());
+        // Unguarded sensors keep their existing behaviour.
+        assert!(summarize_capture(&creep, &creep, None).is_ok());
+    }
+
+    #[test]
+    fn settle_change_compares_first_and_last_thirds_in_capture_order() {
+        assert_eq!(settle_change(&[1.0, 1.0]), 0.0);
+        assert!((settle_change(&[0.0, 0.0, 5.0, 5.0, 9.0, 9.0]) - 9.0).abs() < 1e-6);
+        assert!((settle_change(&[9.0, 9.0, 5.0, 5.0, 0.0, 0.0]) + 9.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn field_kg50_steps_are_flagged_and_a_linear_kg1000_set_is_not() {
+        // Live GS calibration, 2026-11-22: KG1000 volts per 20.4 kg step.
+        let kg1000 = [(0.24977598, 20.4), (0.28683203, 40.8), (0.32496646, 61.2), (0.36300135, 81.6), (0.398651, 102.0)];
+        assert!(step_consistency_warnings(&kg1000).is_empty());
+        // KG50 on P6, 5 kg steps: 1.35x, 0.43x, 1.30x of the fit.
+        let kg50 = [(0.004191, 5.0), (0.004523, 10.0), (0.004628, 15.0), (0.004947, 20.0)];
+        let warnings = step_consistency_warnings(&kg50);
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[1].contains("10.000 -> 15.000 kg reads 0.4"), "{}", warnings[1]);
+        // The March 2026 points went down, up and down with load.
+        let dead = [(-0.000944579, 2.0), (0.0015112788, 5.0), (-0.0020486573, 20.0)];
+        assert!(!step_consistency_warnings(&dead).is_empty());
+        assert!(step_consistency_warnings(&kg50[..2]).is_empty());
     }
 }
