@@ -26,6 +26,7 @@ pub(super) fn GroundStationSettings(
         // and typed confirmation, not an output action: Actions Disabled does
         // not lock it.
         super::station_mode_settings::StationModeSettings {theme:theme.clone(),inhibited:false}
+        super::firmware_sim_panel::FirmwareSimPanel {theme:theme.clone()}
         for (current_revision, policy_view_key) in [(revision(), super::station_mode_observer::view_key())] {
         StationSettingsBody {key:"station-settings-{current_revision}-{policy_view_key}",layout:layout.clone(),action_policy,fill_targets,calibration_context,abort_only_mode,theme:theme.clone(),on_manage_users,
             on_reload:move |_|revision.set(revision().saturating_add(1)),

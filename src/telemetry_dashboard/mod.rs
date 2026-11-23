@@ -33,6 +33,7 @@ pub mod data_tab;
 mod daq_dac_model;
 mod daq_dac_panel;
 mod daq_dac_preview;
+mod firmware_sim_panel;
 mod igniter_sense_model;
 mod igniter_sense_panel;
 mod detailed_tab;
