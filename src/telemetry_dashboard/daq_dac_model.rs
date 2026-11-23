@@ -43,6 +43,60 @@ pub(super) struct DacChannel {
     pub disable_reason: String,
     #[serde(default)]
     pub sequence: u32,
+    #[serde(default)]
+    pub update_hz: f64,
+    #[serde(default)]
+    pub samples: u32,
+    #[serde(default)]
+    pub phase_deg: f64,
+    #[serde(default)]
+    pub duty_pct: Option<f64>,
+    #[serde(default)]
+    pub ramp_down: bool,
+    #[serde(default)]
+    pub log_sweep: bool,
+    #[serde(default)]
+    pub table_len: u32,
+    #[serde(default)]
+    pub table_crc: String,
+    #[serde(default)]
+    pub table_crc_ok: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct DacTable {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub len: u32,
+    #[serde(default)]
+    pub shape_crc: String,
+    #[serde(default)]
+    pub computed_crc: String,
+    #[serde(default)]
+    pub chunks_received: u32,
+    #[serde(default)]
+    pub chunk_count: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct DacUpload {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub channel: Option<u8>,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub chunks_confirmed: u32,
+    #[serde(default)]
+    pub chunk_count: u32,
+    #[serde(default)]
+    pub resent_chunks: u32,
+    #[serde(default)]
+    pub shape_crc: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -94,6 +148,10 @@ pub(super) struct DacStatus {
     pub channels: Vec<DacChannel>,
     #[serde(default)]
     pub inputs: Vec<DacInput>,
+    #[serde(default)]
+    pub table: Option<DacTable>,
+    #[serde(default)]
+    pub upload: Option<DacUpload>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -204,6 +262,23 @@ pub(super) struct SweepReport {
     pub pass: bool,
     #[serde(default)]
     pub saved_path: Option<String>,
+    /// Frequency-response preset only.
+    #[serde(default)]
+    pub frequency_points: Vec<FrequencyPoint>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(super) struct FrequencyPoint {
+    #[serde(default)]
+    pub frequency_hz: Option<f64>,
+    #[serde(default)]
+    pub expected_amplitude: Option<f64>,
+    #[serde(default)]
+    pub measured_amplitude: Option<f64>,
+    #[serde(default)]
+    pub gain_db: Option<f64>,
+    #[serde(default)]
+    pub samples: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -248,16 +323,24 @@ pub(super) enum Waveform {
     Square,
     Sine,
     Triangle,
+    Sawtooth,
     Staircase,
+    Chirp,
+    Noise,
+    Arbitrary,
 }
 
 impl Waveform {
-    pub(super) const ALL: [Waveform; 5] = [
+    pub(super) const ALL: [Waveform; 9] = [
         Waveform::Dc,
-        Waveform::Square,
         Waveform::Sine,
+        Waveform::Square,
         Waveform::Triangle,
+        Waveform::Sawtooth,
         Waveform::Staircase,
+        Waveform::Chirp,
+        Waveform::Noise,
+        Waveform::Arbitrary,
     ];
     pub(super) fn wire(self) -> &'static str {
         match self {
@@ -265,7 +348,11 @@ impl Waveform {
             Waveform::Square => "square",
             Waveform::Sine => "sine",
             Waveform::Triangle => "triangle",
+            Waveform::Sawtooth => "sawtooth",
             Waveform::Staircase => "staircase",
+            Waveform::Chirp => "chirp",
+            Waveform::Noise => "noise",
+            Waveform::Arbitrary => "arbitrary",
         }
     }
     pub(super) fn label(self) -> &'static str {
@@ -274,7 +361,11 @@ impl Waveform {
             Waveform::Square => "Square",
             Waveform::Sine => "Sine",
             Waveform::Triangle => "Triangle",
+            Waveform::Sawtooth => "Sawtooth / ramp",
             Waveform::Staircase => "Staircase",
+            Waveform::Chirp => "Chirp (frequency sweep)",
+            Waveform::Noise => "Noise",
+            Waveform::Arbitrary => "Custom (equation / WAV)",
         }
     }
     pub(super) fn from_wire(value: &str) -> Option<Self> {
@@ -282,29 +373,34 @@ impl Waveform {
     }
     /// Which inputs the operator fills for this waveform.
     pub(super) fn fields(self) -> WaveFields {
-        match self {
-            Waveform::Dc => WaveFields {
-                amplitude: false,
-                offset: true,
-                frequency: false,
-                steps: false,
-                dwell: false,
-            },
-            Waveform::Square | Waveform::Sine | Waveform::Triangle => WaveFields {
-                amplitude: true,
-                offset: true,
-                frequency: true,
-                steps: false,
-                dwell: false,
-            },
-            Waveform::Staircase => WaveFields {
-                amplitude: true,
-                offset: true,
-                frequency: false,
-                steps: true,
-                dwell: true,
-            },
+        let periodic = matches!(
+            self,
+            Waveform::Square | Waveform::Sine | Waveform::Triangle | Waveform::Sawtooth
+        );
+        WaveFields {
+            amplitude: self != Waveform::Dc,
+            offset: true,
+            frequency: !matches!(self, Waveform::Dc | Waveform::Staircase),
+            steps: self == Waveform::Staircase,
+            dwell: self == Waveform::Staircase,
+            phase: periodic || matches!(self, Waveform::Chirp | Waveform::Arbitrary),
+            duty: self == Waveform::Square,
+            ramp: self == Waveform::Sawtooth,
+            chirp: self == Waveform::Chirp,
+            custom: self == Waveform::Arbitrary,
         }
+    }
+    /// What the frequency field means for this waveform.
+    pub(super) fn frequency_label(self) -> &'static str {
+        match self {
+            Waveform::Chirp => "Start frequency (Hz)",
+            Waveform::Noise => "Sample rate (S/s)",
+            Waveform::Arbitrary => "Frequency, periods/s (Hz)",
+            _ => "Frequency (Hz)",
+        }
+    }
+    pub(super) fn frequency_max(self) -> f64 {
+        if self == Waveform::Noise { 200_000.0 } else { 10_000.0 }
     }
 }
 
@@ -315,6 +411,47 @@ pub(super) struct WaveFields {
     pub frequency: bool,
     pub steps: bool,
     pub dwell: bool,
+    pub phase: bool,
+    pub duty: bool,
+    pub ramp: bool,
+    pub chirp: bool,
+    pub custom: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum CustomKind {
+    #[default]
+    Expression,
+    Wav,
+}
+
+/// The custom-shape part of a draft. The shape is normalized (-1..1); the
+/// amplitude, offset, phase and frequency fields scale and time it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct CustomDraft {
+    pub kind: CustomKind,
+    pub expression: String,
+    /// Shape length; blank lets the GS choose.
+    pub samples: String,
+    pub wav_name: String,
+    pub wav_base64: String,
+    pub wav_normalize: bool,
+    /// WAV playback rate (S/s); blank uses the file's rate.
+    pub wav_rate: String,
+}
+
+impl Default for CustomDraft {
+    fn default() -> Self {
+        Self {
+            kind: CustomKind::Expression,
+            expression: "0.8*sin(2*pi*x) + 0.2*sign(sin(2*pi*5*x))".into(),
+            samples: String::new(),
+            wav_name: String::new(),
+            wav_base64: String::new(),
+            wav_normalize: true,
+            wav_rate: String::new(),
+        }
+    }
 }
 
 /// Operator-entered configuration for one channel, kept as typed text.
@@ -326,6 +463,13 @@ pub(super) struct ConfigDraft {
     pub frequency_hz: String,
     pub steps: String,
     pub dwell_ms: String,
+    pub phase_deg: String,
+    pub duty_pct: String,
+    pub ramp_down: bool,
+    pub frequency_stop_hz: String,
+    pub sweep_s: String,
+    pub log_sweep: bool,
+    pub custom: CustomDraft,
 }
 
 impl Default for ConfigDraft {
@@ -337,6 +481,13 @@ impl Default for ConfigDraft {
             frequency_hz: "0.5".into(),
             steps: "8".into(),
             dwell_ms: "1000".into(),
+            phase_deg: "0".into(),
+            duty_pct: "50".into(),
+            ramp_down: false,
+            frequency_stop_hz: "100".into(),
+            sweep_s: "10".into(),
+            log_sweep: true,
+            custom: CustomDraft::default(),
         }
     }
 }
@@ -378,6 +529,35 @@ impl ConfigDraft {
             }
             if let Some(v) = num(desired, "dwell_ms") {
                 draft.dwell_ms = number_text(v.round());
+            }
+            if let Some(v) = num(desired, "phase_deg") {
+                draft.phase_deg = number_text(v);
+            }
+            if let Some(v) = num(desired, "duty_pct") {
+                draft.duty_pct = number_text(v);
+            }
+            if let Some(v) = num(desired, "frequency_stop_hz") {
+                draft.frequency_stop_hz = number_text(v);
+            }
+            if let Some(v) = num(desired, "sweep_s") {
+                draft.sweep_s = number_text(v);
+            }
+            draft.ramp_down = desired.get("ramp_down").and_then(Value::as_bool).unwrap_or(false);
+            if let Some(v) = desired.get("log_sweep").and_then(Value::as_bool) {
+                draft.log_sweep = v;
+            }
+            if let Some(custom) = desired.get("custom").filter(|c| c.is_object()) {
+                match custom.get("kind").and_then(Value::as_str) {
+                    Some("expression") => {
+                        draft.custom.kind = CustomKind::Expression;
+                        if let Some(e) = custom.get("expression").and_then(Value::as_str) {
+                            draft.custom.expression = e.to_string();
+                        }
+                    }
+                    // The station keeps no WAV data; re-open the file to change it.
+                    Some("wav") => draft.custom.kind = CustomKind::Wav,
+                    _ => {}
+                }
             }
         } else if channel.active {
             if let Some(w) = Waveform::from_wire(&channel.waveform) {
@@ -423,12 +603,12 @@ fn parse_whole(text: &str, name: &str, min: u32, max: u32) -> Result<u32, String
     }
 }
 
-/// Body for `POST /api/daq/dac/config`. Every key is sent; fields the chosen
-/// waveform does not use carry neutral values that the GS ignores. Range
-/// clamping is the GS's job (it reports `clamped`); this only rejects text
-/// that is not a usable number.
+/// Body for `POST /api/daq/dac/config` (and `/preview`). Range clamping is
+/// the GS's job (it reports `clamped`); this only rejects text that is not a
+/// usable number. Every key the waveform uses is sent.
 pub(super) fn config_body(channel: u8, draft: &ConfigDraft) -> Result<Value, String> {
-    let fields = draft.waveform.fields();
+    let w = draft.waveform;
+    let fields = w.fields();
     let offset = parse_finite(&draft.offset_v, "Offset")?;
     let amplitude = if fields.amplitude {
         let value = parse_finite(&draft.amplitude_v, "Amplitude")?;
@@ -439,34 +619,109 @@ pub(super) fn config_body(channel: u8, draft: &ConfigDraft) -> Result<Value, Str
     } else {
         0.0
     };
-    let frequency = if fields.frequency {
+    // A WAV clip may leave the frequency blank: its playback rate sets it.
+    let wav_without_rate = fields.custom
+        && draft.custom.kind == CustomKind::Wav
+        && draft.frequency_hz.trim().is_empty();
+    let frequency = if fields.frequency && !wav_without_rate {
         let value = parse_finite(&draft.frequency_hz, "Frequency")?;
         if value <= 0.0 {
             return Err("Frequency must be above 0 Hz".into());
         }
-        value
+        Some(value)
     } else {
-        0.0
+        None
     };
-    let steps = if fields.steps {
-        parse_whole(&draft.steps, "Steps", 2, 32)?
-    } else {
-        2
-    };
-    let dwell = if fields.dwell {
-        parse_whole(&draft.dwell_ms, "Dwell", 10, 20_000)?
-    } else {
-        1000
-    };
-    Ok(json!({
+    let mut body = json!({
         "channel": channel,
-        "waveform": draft.waveform.wire(),
+        "waveform": w.wire(),
         "amplitude_v": amplitude,
         "offset_v": offset,
-        "frequency_hz": frequency,
-        "steps": steps,
-        "dwell_ms": dwell,
-    }))
+    });
+    match frequency {
+        Some(f) => body["frequency_hz"] = json!(f),
+        None if !fields.custom => body["frequency_hz"] = json!(0.0),
+        None => {}
+    }
+    if !fields.custom {
+        body["steps"] = json!(if fields.steps { parse_whole(&draft.steps, "Steps", 2, 256)? } else { 2 });
+        body["dwell_ms"] =
+            json!(if fields.dwell { parse_whole(&draft.dwell_ms, "Dwell", 10, 20_000)? } else { 1000 });
+    }
+    if fields.phase {
+        body["phase_deg"] = json!(parse_finite(&draft.phase_deg, "Phase")?);
+    }
+    if fields.duty {
+        let duty = parse_finite(&draft.duty_pct, "Duty")?;
+        if !(1.0..=99.0).contains(&duty) {
+            return Err("Duty must be 1..99 %".into());
+        }
+        body["duty_pct"] = json!(duty);
+    }
+    if fields.ramp && draft.ramp_down {
+        body["ramp_down"] = json!(true);
+    }
+    if fields.chirp {
+        let stop = parse_finite(&draft.frequency_stop_hz, "Stop frequency")?;
+        if stop <= 0.0 {
+            return Err("Stop frequency must be above 0 Hz".into());
+        }
+        let sweep = parse_finite(&draft.sweep_s, "Sweep time")?;
+        if sweep <= 0.0 {
+            return Err("Sweep time must be above 0 s".into());
+        }
+        body["frequency_stop_hz"] = json!(stop);
+        body["sweep_s"] = json!(sweep);
+        if draft.log_sweep {
+            body["log_sweep"] = json!(true);
+        }
+    }
+    if fields.custom {
+        body["custom"] = custom_body(&draft.custom)?;
+    }
+    Ok(body)
+}
+
+fn custom_body(custom: &CustomDraft) -> Result<Value, String> {
+    let samples = if custom.samples.trim().is_empty() {
+        None
+    } else {
+        Some(parse_whole(&custom.samples, "Shape samples", 16, 512)?)
+    };
+    let mut body = match custom.kind {
+        CustomKind::Expression => {
+            let expression = custom.expression.trim();
+            if expression.is_empty() {
+                return Err("Enter an equation f(x), x in [0, 1)".into());
+            }
+            if expression.chars().count() > 512 {
+                return Err("The equation is longer than 512 characters".into());
+            }
+            json!({ "kind": "expression", "expression": expression })
+        }
+        CustomKind::Wav => {
+            if custom.wav_base64.is_empty() {
+                return Err("Open a WAV file first".into());
+            }
+            let mut body = json!({
+                "kind": "wav",
+                "data_base64": custom.wav_base64,
+                "normalize": custom.wav_normalize,
+            });
+            if !custom.wav_rate.trim().is_empty() {
+                let rate = parse_finite(&custom.wav_rate, "Playback rate")?;
+                if !(1.0..=200_000.0).contains(&rate) {
+                    return Err("Playback rate must be 1..200000 S/s".into());
+                }
+                body["playback_rate_hz"] = json!(rate);
+            }
+            body
+        }
+    };
+    if let Some(n) = samples {
+        body["samples"] = json!(n);
+    }
+    Ok(body)
 }
 
 /// Local note when the requested span leaves the reachable connector range.
@@ -562,11 +817,13 @@ pub(super) fn sweep_body(
     polarity: Polarity,
     steps: &str,
     dwell_ms: &str,
+    preset: SweepPreset,
 ) -> Result<Value, String> {
     if target.is_empty() {
         return Err("Choose a target input first".into());
     }
     let mut body = validation_body(Some(target), channel, attenuation, polarity)?;
+    body["preset"] = json!(preset.wire());
     if !steps.trim().is_empty() {
         body["steps"] = json!(parse_whole(steps, "Sweep steps", 2, 101)?);
     }
@@ -574,6 +831,35 @@ pub(super) fn sweep_body(
         body["dwell_ms"] = json!(parse_whole(dwell_ms, "Sweep dwell", 100, 60_000)?);
     }
     Ok(body)
+}
+
+/// Validation sweep presets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SweepPreset {
+    /// DC steps across the input's range, with a line fit.
+    #[default]
+    Linearity,
+    /// Log-spaced sines up to a quarter of the stream rate, gain per point.
+    FrequencyResponse,
+}
+
+impl SweepPreset {
+    pub(super) const ALL: [SweepPreset; 2] = [SweepPreset::Linearity, SweepPreset::FrequencyResponse];
+    pub(super) fn wire(self) -> &'static str {
+        match self {
+            SweepPreset::Linearity => "linearity",
+            SweepPreset::FrequencyResponse => "frequency_response",
+        }
+    }
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            SweepPreset::Linearity => "Step linearity (DC steps)",
+            SweepPreset::FrequencyResponse => "Frequency response (sine steps)",
+        }
+    }
+    pub(super) fn from_wire(value: &str) -> Self {
+        Self::ALL.into_iter().find(|p| p.wire() == value).unwrap_or_default()
+    }
 }
 
 /// Why enabling/configuring/sweeping is unavailable, or `None` when it may go.
@@ -870,7 +1156,7 @@ mod tests {
         for w in Waveform::ALL {
             assert_eq!(Waveform::from_wire(w.wire()), Some(w));
         }
-        assert_eq!(Waveform::from_wire("sawtooth"), None);
+        assert_eq!(Waveform::from_wire("ramp"), None);
     }
 
     #[test]
@@ -882,6 +1168,7 @@ mod tests {
             frequency_hz: "".into(),
             steps: "x".into(),
             dwell_ms: "".into(),
+            ..ConfigDraft::default()
         };
         assert_eq!(
             config_body(1, &draft).unwrap(),
@@ -895,7 +1182,7 @@ mod tests {
         assert_eq!(
             config_body(0, &sine).unwrap(),
             json!({"channel": 0, "waveform": "sine", "amplitude_v": 1.0, "offset_v": 2.0,
-                   "frequency_hz": 0.5, "steps": 2, "dwell_ms": 1000})
+                   "frequency_hz": 0.5, "steps": 2, "dwell_ms": 1000, "phase_deg": 0.0})
         );
         let stairs = ConfigDraft {
             waveform: Waveform::Staircase,
@@ -938,10 +1225,10 @@ mod tests {
         assert!(
             bad(ConfigDraft {
                 waveform: Waveform::Staircase,
-                steps: "40".into(),
+                steps: "400".into(),
                 ..Default::default()
             })
-            .contains("2..32")
+            .contains("2..256")
         );
         assert!(
             bad(ConfigDraft {
@@ -1016,15 +1303,17 @@ mod tests {
         );
         assert!(validation_body(Some("sar1"), 0, "0", Polarity::SMinus).is_err());
         assert_eq!(
-            sweep_body("sar1", 0, "1", Polarity::SMinus, "", " ").unwrap(),
-            json!({"target": "sar1", "channel": 0, "attenuation": 1.0})
+            sweep_body("sar1", 0, "1", Polarity::SMinus, "", " ", SweepPreset::Linearity).unwrap(),
+            json!({"target": "sar1", "channel": 0, "attenuation": 1.0, "preset": "linearity"})
         );
         assert_eq!(
-            sweep_body("sar1", 1, "1", Polarity::SMinus, "11", "3000").unwrap(),
-            json!({"target": "sar1", "channel": 1, "attenuation": 1.0, "steps": 11, "dwell_ms": 3000})
+            sweep_body("sar1", 1, "1", Polarity::SMinus, "11", "3000", SweepPreset::FrequencyResponse).unwrap(),
+            json!({"target": "sar1", "channel": 1, "attenuation": 1.0, "steps": 11, "dwell_ms": 3000, "preset": "frequency_response"})
         );
-        assert!(sweep_body("", 0, "1", Polarity::SMinus, "", "").is_err());
-        assert!(sweep_body("sar1", 0, "1", Polarity::SMinus, "1", "").is_err());
+        assert!(sweep_body("", 0, "1", Polarity::SMinus, "", "", SweepPreset::Linearity).is_err());
+        assert!(sweep_body("sar1", 0, "1", Polarity::SMinus, "1", "", SweepPreset::Linearity).is_err());
+        assert_eq!(SweepPreset::from_wire("frequency_response"), SweepPreset::FrequencyResponse);
+        assert_eq!(SweepPreset::from_wire("?"), SweepPreset::Linearity);
         assert_eq!(Polarity::from_wire("s_plus"), Polarity::SPlus);
         assert_eq!(Polarity::from_wire("anything"), Polarity::SMinus);
     }
@@ -1171,5 +1460,78 @@ mod tests {
         };
         let g = plot_geometry(&flat, 220.0, 120.0, 10.0).unwrap();
         assert!(g.y_min < 1.0 && g.y_max > 1.0);
+    }
+
+    #[test]
+    fn new_waveforms_send_their_parameters() {
+        let square = ConfigDraft { waveform: Waveform::Square, duty_pct: "25".into(), phase_deg: "90".into(), ..ConfigDraft::default() };
+        let body = config_body(0, &square).unwrap();
+        assert_eq!((body["duty_pct"].as_f64(), body["phase_deg"].as_f64()), (Some(25.0), Some(90.0)));
+        assert!(config_body(0, &ConfigDraft { duty_pct: "0".into(), ..square.clone() }).is_err());
+        let saw = ConfigDraft { waveform: Waveform::Sawtooth, ramp_down: true, ..ConfigDraft::default() };
+        assert_eq!(config_body(0, &saw).unwrap()["ramp_down"], true);
+        let chirp = ConfigDraft { waveform: Waveform::Chirp, frequency_hz: "10".into(), frequency_stop_hz: "1000".into(), sweep_s: "5".into(), ..ConfigDraft::default() };
+        let body = config_body(1, &chirp).unwrap();
+        assert_eq!((body["frequency_stop_hz"].as_f64(), body["sweep_s"].as_f64(), body["log_sweep"].as_bool()), (Some(1000.0), Some(5.0), Some(true)));
+        assert!(config_body(1, &ConfigDraft { sweep_s: "0".into(), ..chirp }).is_err());
+        let noise = ConfigDraft { waveform: Waveform::Noise, frequency_hz: "50000".into(), ..ConfigDraft::default() };
+        assert_eq!(config_body(0, &noise).unwrap()["frequency_hz"], 50000.0);
+        assert_eq!(Waveform::Noise.frequency_max(), 200_000.0);
+        assert_eq!(Waveform::Noise.frequency_label(), "Sample rate (S/s)");
+        let stairs = ConfigDraft { waveform: Waveform::Staircase, steps: "256".into(), ..ConfigDraft::default() };
+        assert_eq!(config_body(0, &stairs).unwrap()["steps"], 256);
+        assert!(config_body(0, &ConfigDraft { steps: "257".into(), ..stairs }).is_err());
+        for w in Waveform::ALL {
+            assert_eq!(Waveform::from_wire(w.wire()), Some(w));
+        }
+    }
+
+    #[test]
+    fn custom_shapes_use_the_same_controls() {
+        let draft = ConfigDraft {
+            waveform: Waveform::Arbitrary,
+            amplitude_v: "2".into(),
+            offset_v: "3.2".into(),
+            frequency_hz: "50".into(),
+            phase_deg: "45".into(),
+            ..ConfigDraft::default()
+        };
+        let body = config_body(0, &draft).unwrap();
+        assert_eq!(body["waveform"], "arbitrary");
+        assert_eq!((body["amplitude_v"].as_f64(), body["offset_v"].as_f64(), body["frequency_hz"].as_f64(), body["phase_deg"].as_f64()), (Some(2.0), Some(3.2), Some(50.0), Some(45.0)));
+        assert_eq!(body["custom"]["kind"], "expression");
+        assert!(body.get("steps").is_none() && body.get("duty_pct").is_none());
+        let mut blank = draft.clone();
+        blank.custom.expression = "  ".into();
+        assert!(config_body(0, &blank).is_err());
+        blank.custom.expression = "x".repeat(513);
+        assert!(config_body(0, &blank).is_err());
+        let mut sized = draft.clone();
+        sized.custom.samples = "128".into();
+        assert_eq!(config_body(0, &sized).unwrap()["custom"]["samples"], 128);
+        sized.custom.samples = "1024".into();
+        assert!(config_body(0, &sized).is_err());
+        // WAV: blank frequency means "from the playback rate".
+        let mut wav = draft.clone();
+        wav.custom.kind = CustomKind::Wav;
+        assert!(config_body(0, &wav).unwrap_err().contains("Open a WAV"));
+        wav.custom.wav_base64 = "UklGRg==".into();
+        wav.frequency_hz = "".into();
+        wav.custom.wav_rate = "8000".into();
+        let body = config_body(0, &wav).unwrap();
+        assert!(body.get("frequency_hz").is_none());
+        assert_eq!(body["custom"], json!({"kind": "wav", "data_base64": "UklGRg==", "normalize": true, "playback_rate_hz": 8000.0}));
+        wav.custom.wav_rate = "300000".into();
+        assert!(config_body(0, &wav).is_err());
+        // A kept-alive custom request reloads into the draft (no WAV data is kept).
+        let channel: DacChannel = serde_json::from_value(json!({
+            "channel": 0, "active": true, "waveform": "arbitrary",
+            "desired": {"channel": 0, "waveform": "arbitrary", "amplitude_v": 1.0, "offset_v": 3.0, "frequency_hz": 5.0,
+                        "phase_deg": 30.0, "custom": {"kind": "expression", "expression": "sin(2*pi*x)"}},
+            "samples": 512, "update_hz": 2560.0, "table_crc": "A7B93781", "table_crc_ok": true
+        })).unwrap();
+        let d = ConfigDraft::from_channel(&channel);
+        assert_eq!((d.waveform, d.custom.expression.as_str(), d.phase_deg.as_str()), (Waveform::Arbitrary, "sin(2*pi*x)", "30"));
+        assert_eq!((channel.samples, channel.table_crc_ok), (512, Some(true)));
     }
 }

@@ -3,11 +3,16 @@
 //! a looped-back input and runs the DC sweep. The GS owns gating, clamping
 //! and the keepalive lease; this view only requests and reports.
 use super::daq_dac_model::{
-    CHANNEL_LABELS, ConfigDraft, DacChannel, DacInput, DacStatus, Polarity, SweepReport,
-    SweepStatus, Validation, ValidationAnalysis, Waveform, accepted_reply, clamped_text,
+    CHANNEL_LABELS, ConfigDraft, CustomKind, DacChannel, DacInput, DacStatus, DacUpload, Polarity,
+    SweepPreset, SweepReport, SweepStatus, Validation, ValidationAnalysis, Waveform,
+    accepted_reply, clamped_text,
     config_body, daq_state_text, disable_block_reason, disable_body, disable_reason_text,
     enable_block_reason, fmt_opt, operator_error, plot_geometry, range_hint, result_text,
     status_age_text, sweep_body, sweep_progress_text, validation_body,
+};
+use super::daq_dac_preview::{
+    Preview, STOP_AUDIO_SCRIPT, WAV_MAX_BYTES, achieved_text, audio_note, audio_preview,
+    play_script, preview_plot, wav_to_base64,
 };
 use super::data_chart::{SeriesSwatch, series_color};
 use super::layout::ThemeConfig;
@@ -193,6 +198,7 @@ pub(super) fn DaqDacPanel(theme: ThemeConfig) -> Element {
                                 index,
                                 channel: state.channels.iter().find(|c| c.channel as usize == index).cloned(),
                                 connector_range: state.connector_range_v,
+                                upload: state.upload.clone().filter(|u| u.channel == Some(index as u8)),
                                 drafts,
                                 enable_block: enable_block.clone(),
                                 disable_block: disable_block.clone(),
@@ -314,11 +320,40 @@ fn ChannelCard(
     index: usize,
     channel: Option<DacChannel>,
     connector_range: Option<[f64; 2]>,
+    upload: Option<DacUpload>,
     drafts: Signal<[ConfigDraft; 2]>,
     enable_block: Option<String>,
     disable_block: Option<String>,
 ) -> Element {
     let mut drafts = drafts;
+    let mut preview = use_signal(|| None::<Result<Preview, String>>);
+    let mut preview_gen = use_signal(|| 0_u64);
+    let audio_message = use_signal(String::new);
+    // Debounced GS preview of the current draft: the exact table, achieved
+    // frequency and warnings, before anything is sent to the DAQ.
+    use_effect(move || {
+        let draft = drafts.read()[index].clone();
+        let generation = *preview_gen.peek() + 1;
+        preview_gen.set(generation);
+        match config_body(index as u8, &draft) {
+            Err(error) => preview.set(Some(Err(error))),
+            Ok(body) => {
+                spawn(async move {
+                    sleep_ms(400).await;
+                    if *preview_gen.peek() != generation {
+                        return;
+                    }
+                    post_json("/api/daq/dac/preview", body, move |result| {
+                        if *preview_gen.peek() == generation {
+                            preview.set(Some(result.and_then(|v| {
+                                serde_json::from_value::<Preview>(v).map_err(|e| e.to_string())
+                            })));
+                        }
+                    });
+                });
+            }
+        }
+    });
     let mut message = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let draft = drafts.read()[index].clone();
@@ -367,6 +402,20 @@ fn ChannelCard(
                             rsx! { "{detail}" }
                         }
                     }
+                    if applied.samples > 0 {
+                        dt { "Table" }
+                        dd { style: "margin:0;",
+                            {
+                                let rate = if applied.update_hz > 0.0 { format!(" at {:.4} kS/s", applied.update_hz / 1000.0) } else { String::new() };
+                                let check = match applied.table_crc_ok {
+                                    Some(true) => " ✓ matches the GS",
+                                    Some(false) => " ✗ differs from the GS",
+                                    None => "",
+                                };
+                                rsx! { "{applied.samples} samples{rate} · CRC {applied.table_crc}{check}" }
+                            }
+                        }
+                    }
                     dt { "Output / readback" }
                     dd { style: "margin:0;", "{fmt_opt(applied.output_v, 3)} V / {fmt_opt(applied.readback_v, 3)} V" }
                     dt { "Last result" }
@@ -413,15 +462,16 @@ fn ChannelCard(
                 }
                 if fields.frequency {
                     label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
-                        "Frequency (Hz)"
-                        input { r#type: "number", step: "any", min: "0.01", max: "1000", style: "{field}", disabled: enable_disabled,
+                        "{draft.waveform.frequency_label()}"
+                        input { r#type: "number", step: "any", min: "0.01", max: "{draft.waveform.frequency_max()}", style: "{field}", disabled: enable_disabled,
+                            placeholder: if fields.custom && draft.custom.kind == CustomKind::Wav { "from playback rate" } else { "" },
                             value: "{draft.frequency_hz}", oninput: set(|d, v| d.frequency_hz = v) }
                     }
                 }
                 if fields.steps {
                     label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
-                        "Steps (2–32)"
-                        input { r#type: "number", step: "1", min: "2", max: "32", style: "{field}", disabled: enable_disabled,
+                        "Steps (2–256)"
+                        input { r#type: "number", step: "1", min: "2", max: "256", style: "{field}", disabled: enable_disabled,
                             value: "{draft.steps}", oninput: set(|d, v| d.steps = v) }
                     }
                 }
@@ -430,6 +480,67 @@ fn ChannelCard(
                         "Dwell per step (ms)"
                         input { r#type: "number", step: "1", min: "10", max: "20000", style: "{field}", disabled: enable_disabled,
                             value: "{draft.dwell_ms}", oninput: set(|d, v| d.dwell_ms = v) }
+                    }
+                }
+                if fields.phase {
+                    label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                        "Start phase (°)"
+                        input { r#type: "number", step: "any", style: "{field}", disabled: enable_disabled,
+                            value: "{draft.phase_deg}", oninput: set(|d, v| d.phase_deg = v) }
+                    }
+                }
+                if fields.duty {
+                    label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                        "Duty, high (%)"
+                        input { r#type: "number", step: "any", min: "1", max: "99", style: "{field}", disabled: enable_disabled,
+                            value: "{draft.duty_pct}", oninput: set(|d, v| d.duty_pct = v) }
+                    }
+                }
+                if fields.ramp {
+                    label { style: "display:flex; align-items:center; gap:6px; font-size:12px;",
+                        input { r#type: "checkbox", disabled: enable_disabled, checked: draft.ramp_down,
+                            onchange: move |event| { drafts.write()[index].ramp_down = event.checked(); } }
+                        "Ramp down"
+                    }
+                }
+                if fields.chirp {
+                    label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                        "Stop frequency (Hz)"
+                        input { r#type: "number", step: "any", min: "0.01", max: "10000", style: "{field}", disabled: enable_disabled,
+                            value: "{draft.frequency_stop_hz}", oninput: set(|d, v| d.frequency_stop_hz = v) }
+                    }
+                    label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                        "Sweep time (s)"
+                        input { r#type: "number", step: "any", min: "0.1", max: "600", style: "{field}", disabled: enable_disabled,
+                            value: "{draft.sweep_s}", oninput: set(|d, v| d.sweep_s = v) }
+                    }
+                    label { style: "display:flex; align-items:center; gap:6px; font-size:12px;",
+                        input { r#type: "checkbox", disabled: enable_disabled, checked: draft.log_sweep,
+                            onchange: move |event| { drafts.write()[index].log_sweep = event.checked(); } }
+                        "Logarithmic sweep"
+                    }
+                }
+            }
+            if fields.custom {
+                CustomEditor { theme: theme.clone(), index, drafts, disabled: enable_disabled }
+            }
+            PreviewBox {
+                theme: theme.clone(),
+                preview: preview(),
+                connector_range,
+                audio_message,
+                chirp_stop: draft.frequency_stop_hz.trim().parse::<f64>().ok().filter(|_| draft.waveform == Waveform::Chirp),
+            }
+            if let Some(u) = upload.filter(|u| !u.state.is_empty() && u.state != "idle") {
+                span { role: "status", style: "font-size:12px; color:{theme.text_secondary};",
+                    {
+                        let crc = u.shape_crc.clone().unwrap_or_default();
+                        let text = match u.state.as_str() {
+                            "running" => format!("Uploading shape {crc}: {} of {} chunks confirmed ({}){}.", u.chunks_confirmed, u.chunk_count,
+                                u.phase.clone().unwrap_or_default(), if u.resent_chunks > 0 { format!(", {} resent", u.resent_chunks) } else { String::new() }),
+                            _ => u.message.clone().unwrap_or_else(|| format!("Upload {}", u.state)),
+                        };
+                        rsx! { "{text}" }
                     }
                 }
             }
@@ -526,6 +637,7 @@ fn ValidationSection(
     let mut message = use_signal(String::new);
     let mut sweep_message = use_signal(String::new);
     let mut sweep_steps = use_signal(String::new);
+    let mut sweep_preset = use_signal(SweepPreset::default);
     let mut sweep_dwell = use_signal(String::new);
     let selected_id = target();
     let selected = inputs.iter().find(|i| i.id == selected_id).cloned();
@@ -645,9 +757,19 @@ fn ValidationSection(
             }
             h4 { style: "margin:8px 0 0; font-size:14px;", "DC sweep" }
             span { style: "font-size:12px; color:{theme.text_secondary};",
-                "Steps DC levels across the target's valid range (5–95 %, limited to what the DAC reaches), waits for the DAQ to confirm each level, then fits measured against expected. Uses the target, channel and k above."
+                "Step linearity steps DC levels across the target's valid range (5–95 %, limited to what the DAC reaches), waits for the DAQ to confirm each level, then fits measured against expected. Frequency response steps a sine through log-spaced frequencies up to a quarter of the target's stream rate and fits the gain at each achieved frequency (pass: within ±3 dB). Both use the target, channel and k above."
             }
             div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap:6px;",
+                label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                    "Preset"
+                    select { style: "{field}", disabled: sweep_block.is_some(),
+                        value: "{sweep_preset().wire()}",
+                        onchange: move |event| sweep_preset.set(SweepPreset::from_wire(&event.value())),
+                        for preset in SweepPreset::ALL {
+                            option { value: "{preset.wire()}", selected: preset == sweep_preset(), "{preset.label()}" }
+                        }
+                    }
+                }
                 label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
                     "Steps (blank = default)"
                     input { r#type: "number", step: "1", min: "2", style: "{field}", disabled: sweep_block.is_some(),
@@ -662,7 +784,7 @@ fn ValidationSection(
             div { style: "display:flex; gap:8px; flex-wrap:wrap; align-items:center;",
                 button { r#type: "button", style: "{button_style(&theme)}", disabled: sweep_block.is_some(),
                     onclick: move |_| {
-                        let body = match sweep_body(&target.peek(), *val_channel.peek(), &attenuation.peek(), *polarity.peek(), &sweep_steps.peek(), &sweep_dwell.peek()) {
+                        let body = match sweep_body(&target.peek(), *val_channel.peek(), &attenuation.peek(), *polarity.peek(), &sweep_steps.peek(), &sweep_dwell.peek(), *sweep_preset.peek()) {
                             Ok(body) => body,
                             Err(error) => { sweep_message.set(error); return; }
                         };
@@ -862,8 +984,210 @@ fn SweepReportView(theme: ThemeConfig, report: SweepReport, unit: String) -> Ele
                     }
                 }
             }
+            if !report.frequency_points.is_empty() {
+                div { style: "overflow-x:auto;",
+                    table { style: "border-collapse:collapse; font-size:12px; min-width:100%;",
+                        thead { tr {
+                            th { style: "{head}", "Frequency (Hz)" }
+                            th { style: "{head}", "Expected amplitude ({unit})" }
+                            th { style: "{head}", "Measured amplitude" }
+                            th { style: "{head}", "Gain (dB)" }
+                            th { style: "{head}", "Samples" }
+                        } }
+                        tbody {
+                            for point in report.frequency_points.iter() {
+                                tr {
+                                    td { style: "{cell}", "{fmt_opt(point.frequency_hz, 4)}" }
+                                    td { style: "{cell}", "{fmt_opt(point.expected_amplitude, 4)}" }
+                                    td { style: "{cell}", "{fmt_opt(point.measured_amplitude, 4)}" }
+                                    td { style: "{cell}", "{fmt_opt(point.gain_db, 2)}" }
+                                    td { style: "{cell}", "{point.samples}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(path) = report.saved_path.as_ref() {
                 span { style: "font-size:12px; color:{theme.text_secondary};", "Saved: {path}" }
+            }
+        }
+    }
+}
+
+#[component]
+fn CustomEditor(theme: ThemeConfig, index: usize, drafts: Signal<[ConfigDraft; 2]>, disabled: bool) -> Element {
+    let mut drafts = drafts;
+    let mut file_message = use_signal(String::new);
+    let custom = drafts.read()[index].custom.clone();
+    let field = field_style(&theme);
+    rsx! {
+        div { style: "display:flex; flex-direction:column; gap:6px; padding:8px; border:1px dashed {theme.border}; border-radius:6px;",
+            p { style: "margin:0; font-size:12px; color:{theme.text_secondary};",
+                "A custom shape is normalized to −1..1 over one period. The amplitude, offset, phase and frequency above scale and time it on the DAQ: output = offset + amplitude × f(x + phase). Changing them needs no new upload."
+            }
+            label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                "Source"
+                select { style: "{field}", disabled,
+                    value: if custom.kind == CustomKind::Wav { "wav" } else { "expression" },
+                    onchange: move |event| {
+                        drafts.write()[index].custom.kind = if event.value() == "wav" { CustomKind::Wav } else { CustomKind::Expression };
+                    },
+                    option { value: "expression", selected: custom.kind == CustomKind::Expression, "Equation f(x)" }
+                    option { value: "wav", selected: custom.kind == CustomKind::Wav, "WAV file (audio)" }
+                }
+            }
+            if custom.kind == CustomKind::Expression {
+                label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                    "f(x), x in [0, 1); returns −1..1"
+                    textarea { style: "{field} font-family:monospace; min-height:56px;", disabled, maxlength: "512",
+                        spellcheck: "false", "aria-label": "Waveform equation",
+                        value: "{custom.expression}",
+                        oninput: move |event| { drafts.write()[index].custom.expression = event.value(); } }
+                }
+                span { style: "font-size:11px; color:{theme.text_muted};",
+                    "Variables: x (0..1), t = x/f (s), n, N, T, f, fs. Constants: pi, tau, e. Functions: sin cos tan asin acos atan atan2 sinh cosh tanh abs sign sqrt exp log ln log10 log2 floor ceil round trunc frac mod pow min max clamp step. Operators: + − * / % ^. An equation of t is re-sampled and re-uploaded when the frequency changes."
+                }
+            } else {
+                label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                    "WAV file (PCM or float, at most 1 MiB; a short clip)"
+                    input { r#type: "file", accept: ".wav,audio/wav,audio/x-wav", disabled, "aria-label": "Open WAV file",
+                        onchange: move |event| {
+                            let Some(file) = event.files().first().cloned() else { return; };
+                            spawn(async move {
+                                let name = file.name();
+                                let result = async {
+                                    if file.size() > WAV_MAX_BYTES as u64 {
+                                        return Err(format!("{name} is larger than 1 MiB."));
+                                    }
+                                    let bytes = file.read_bytes().await.map_err(|e| e.to_string())?;
+                                    wav_to_base64(&bytes, WAV_MAX_BYTES)
+                                }.await;
+                                match result {
+                                    Ok(data) => {
+                                        let mut all = drafts.write();
+                                        all[index].custom.wav_base64 = data;
+                                        all[index].custom.wav_name = name.clone();
+                                        file_message.set(format!("Loaded {name}."));
+                                    }
+                                    Err(error) => file_message.set(error),
+                                }
+                            });
+                        } }
+                }
+                if !custom.wav_name.is_empty() {
+                    span { style: "font-size:12px;", "File: {custom.wav_name}" }
+                }
+                div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 130px), 1fr)); gap:6px;",
+                    label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px;",
+                        "Playback rate (S/s)"
+                        input { r#type: "number", step: "any", min: "1", max: "200000", style: "{field}", disabled, placeholder: "file rate",
+                            value: "{custom.wav_rate}", oninput: move |event| { drafts.write()[index].custom.wav_rate = event.value(); } }
+                    }
+                    label { style: "display:flex; align-items:center; gap:6px; font-size:12px;",
+                        input { r#type: "checkbox", disabled, checked: custom.wav_normalize,
+                            onchange: move |event| { drafts.write()[index].custom.wav_normalize = event.checked(); } }
+                        "Normalize to peak"
+                    }
+                }
+            }
+            label { style: "display:flex; flex-direction:column; gap:2px; font-size:12px; max-width:200px;",
+                "Shape samples (16–512, blank = auto)"
+                input { r#type: "number", step: "2", min: "16", max: "512", style: "{field}", disabled,
+                    value: "{custom.samples}", oninput: move |event| { drafts.write()[index].custom.samples = event.value(); } }
+            }
+            if !file_message().is_empty() {
+                span { role: "status", style: "font-size:12px;", "{file_message}" }
+            }
+        }
+    }
+}
+
+#[component]
+fn PreviewBox(
+    theme: ThemeConfig,
+    preview: Option<Result<Preview, String>>,
+    connector_range: Option<[f64; 2]>,
+    audio_message: Signal<String>,
+    chirp_stop: Option<f64>,
+) -> Element {
+    let mut audio_message = audio_message;
+    let range = connector_range.unwrap_or([0.4, 6.2]);
+    let Some(preview) = preview else {
+        return rsx! { span { style: "font-size:12px; color:{theme.text_muted};", "Preview loading…" } };
+    };
+    let preview = match preview {
+        Ok(p) => p,
+        Err(error) => {
+            return rsx! {
+                p { role: "alert", style: "margin:0; font-size:12px; color:{theme.error_text};", "Preview: {error}" }
+            };
+        }
+    };
+    let plot = preview_plot(&preview.connector_v, range, PLOT_W, 120.0, 6.0);
+    let readout = achieved_text(&preview);
+    let upload = match preview.upload_needed {
+        Some(true) => Some(format!("Starting uploads this shape (CRC {}) first.", preview.shape_crc.clone().unwrap_or_default())),
+        Some(false) => Some("The DAQ already holds this shape: starting only re-scales it.".to_string()),
+        None => None,
+    };
+    let stroke = series_color(0);
+    let for_audio = preview.clone();
+    rsx! {
+        div { style: "display:flex; flex-direction:column; gap:4px;",
+            if let Some(plot) = plot {
+                svg { view_box: "0 0 {PLOT_W} 120", width: "100%", style: "max-width:100%; background:{theme.panel_background}; border-radius:6px;",
+                    role: "img", "aria-label": "Preview of two periods at the P10 connector",
+                    line { x1: "0", x2: "{PLOT_W}", y1: "{plot.lo_y}", y2: "{plot.lo_y}", stroke: "{theme.border}", "stroke-dasharray": "4 4" }
+                    line { x1: "0", x2: "{PLOT_W}", y1: "{plot.hi_y}", y2: "{plot.hi_y}", stroke: "{theme.border}", "stroke-dasharray": "4 4" }
+                    path { d: "{plot.path}", fill: "none", stroke: "{stroke}", "stroke-width": "1.5" }
+                }
+                span { style: "font-size:11px; color:{theme.text_muted};",
+                    "Two periods at P10, {plot.y_min:.2} to {plot.y_max:.2} V; dashed lines: reachable {range[0]:.1} to {range[1]:.1} V."
+                }
+            }
+            span { role: "status", style: "font-size:13px;", "{readout} · table CRC {preview.table_crc}" }
+            if let Some(duty) = preview.duty_achieved_pct {
+                span { style: "font-size:12px;", "Achieved duty {duty:.2} %" }
+            }
+            if let Some(text) = upload {
+                span { style: "font-size:12px; color:{theme.text_secondary};", "{text}" }
+            }
+            if let Some(text) = clamped_text(&preview.clamped) {
+                span { style: "font-size:12px; color:{theme.warning_text};", "GS {text}." }
+            }
+            for warning in preview.warnings.iter() {
+                span { style: "font-size:12px; color:{theme.warning_text};", "{warning}" }
+            }
+            div { style: "display:flex; gap:8px; flex-wrap:wrap; align-items:center;",
+                button { r#type: "button", style: "{button_style(&theme)}",
+                    disabled: preview.waveform == "dc" || preview.connector_v.is_empty(),
+                    onclick: move |_| {
+                        match audio_preview(&for_audio, chirp_stop, 2.0) {
+                            Some(audio) => {
+                                let note = audio_note(&audio);
+                                let script = play_script(&audio);
+                                spawn(async move {
+                                    let result = document::eval(&script).join::<String>().await;
+                                    audio_message.set(match result {
+                                        Ok(r) if r == "ok" => note,
+                                        Ok(r) => r,
+                                        Err(e) => format!("Audio preview failed: {e}"),
+                                    });
+                                });
+                            }
+                            None => audio_message.set("Nothing to play.".into()),
+                        }
+                    },
+                    "Listen (2 s)"
+                }
+                button { r#type: "button", style: "{button_style(&theme)}",
+                    onclick: move |_| { document::eval(STOP_AUDIO_SCRIPT); audio_message.set(String::new()); },
+                    "Stop sound"
+                }
+                if !audio_message().is_empty() {
+                    span { role: "status", style: "font-size:12px;", "{audio_message}" }
+                }
             }
         }
     }
@@ -929,12 +1253,12 @@ mod tests {
             rsx! {
                 ChannelCard {
                     theme: ThemeConfig::default(), index: 0, channel: state.channels[0].clone(),
-                    connector_range: state.connector_range_v, drafts,
+                    connector_range: state.connector_range_v, upload: None, drafts,
                     enable_block: enable_block_reason(Some(&state), true, false), disable_block: None,
                 }
             }
         });
-        assert!(html.contains("Steps (2–32)") && html.contains("Dwell per step"));
+        assert!(html.contains("Steps (2–256)") && html.contains("Dwell per step"));
         assert!(!html.contains("Frequency (Hz)"));
         assert!(html.contains("Clamped: amplitude"));
         let apply = html.split(">Apply<").next().unwrap();
@@ -989,5 +1313,54 @@ mod tests {
         assert!(html.contains("above a quarter"));
         assert!(html.contains("SWEEP FAILED") && html.contains("FAIL"));
         assert!(html.contains("recordings/r/daq_dac_sweep_1.json"));
+    }
+
+    #[test]
+    fn custom_waveform_shows_the_equation_editor_preview_and_upload_progress() {
+        let html = render(|| {
+            let state = status();
+            let mut drafts = use_signal(|| [ConfigDraft::default(), ConfigDraft::default()]);
+            use_hook(|| drafts.write()[0].waveform = Waveform::Arbitrary);
+            rsx! {
+                ChannelCard {
+                    theme: ThemeConfig::default(), index: 0, channel: state.channels[0].clone(),
+                    connector_range: state.connector_range_v,
+                    upload: Some(DacUpload { state: "running".into(), channel: Some(0), phase: Some("repair".into()),
+                        chunks_confirmed: 10, chunk_count: 16, resent_chunks: 2, shape_crc: Some("79119F9E".into()), message: None }),
+                    drafts,
+                    enable_block: None, disable_block: None,
+                }
+            }
+        });
+        assert!(html.contains("f(x), x in [0, 1); returns −1..1"));
+        assert!(html.contains("0.8*sin(2*pi*x)"));
+        assert!(html.contains("Frequency, periods/s (Hz)") && html.contains("Start phase"));
+        assert!(html.contains("Amplitude, peak (V)"));
+        assert!(html.contains("Uploading shape 79119F9E: 10 of 16 chunks confirmed (repair), 2 resent."));
+        assert!(html.contains("Preview loading"));
+        assert!(!html.contains("Duty, high"));
+    }
+
+    #[test]
+    fn preview_box_shows_readout_plot_warnings_and_listen() {
+        let html = render(|| {
+            let preview: Preview = serde_json::from_value(serde_json::json!({
+                "waveform": "arbitrary", "samples": 4, "update_hz": 400.0, "frequency_hz": 100.0,
+                "requested_frequency_hz": 100.0, "frequency_error_ppm": 0.0, "table_crc": "A7B93781",
+                "shape_crc": "79119F9E", "upload_needed": true, "connector_v": [3.2, 5.2, 3.2, 1.2],
+                "clamped": ["amplitude"], "warnings": ["3 of 4 shape samples were outside the normalized -1..1 range and were clipped."]
+            })).unwrap();
+            let audio = use_signal(String::new);
+            rsx! { PreviewBox { theme: ThemeConfig::default(), preview: Some(Ok(preview.clone())), connector_range: Some([0.4, 6.2]), audio_message: audio, chirp_stop: None } }
+        });
+        assert!(html.contains("Achieved 100 Hz (+0.0 ppm) · 4 samples/period at 0.4000 kS/s · table CRC A7B93781"));
+        assert!(html.contains("Starting uploads this shape (CRC 79119F9E) first."));
+        assert!(html.contains("clipped") && html.contains("GS Clamped: amplitude"));
+        assert!(html.contains("<path") && html.contains("Listen (2 s)"));
+        let err = render(|| {
+            let audio = use_signal(String::new);
+            rsx! { PreviewBox { theme: ThemeConfig::default(), preview: Some(Err("Unknown function \"os\" (at character 10)".into())), connector_range: None, audio_message: audio, chirp_stop: None } }
+        });
+        assert!(err.contains("Preview: Unknown function"));
     }
 }
