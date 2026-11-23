@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use serde_json::{Value, json};
 
 const VALVES: [&str; 5] = ["nitrogen", "nitrous", "vent", "dump", "pilot"];
-const FAULTS: [(&str, &str); 7] = [
+const FAULTS: [(&str, &str); 8] = [
     ("dead_tank_pt", "Dead tank PT (open input)"),
     ("dead_chamber_pt", "Dead chamber PT"),
     ("radio_drop", "Radio link drop"),
@@ -16,6 +16,7 @@ const FAULTS: [(&str, &str); 7] = [
     ("kg50_open_lead", "KG50 open lead"),
     ("kg1000_open_lead", "KG1000 open lead"),
     ("fc_sd_missing", "FC SD card missing"),
+    ("gps_no_fix", "GPS no fix"),
 ];
 
 async fn sleep_ms(ms: u32) {
@@ -43,6 +44,8 @@ pub(super) struct ControlDraft {
     /// valve -> "" (follows the board), "open" or "closed"
     pub stuck: Vec<(String, String)>,
     pub igt_dataset: String,
+    /// Winds aloft pushed by the apogee planner: kept as sent.
+    pub wind_levels: Option<Value>,
 }
 fn num(v: Option<&Value>, default: f64) -> String {
     let x = v.and_then(Value::as_f64).unwrap_or(default);
@@ -75,6 +78,7 @@ impl ControlDraft {
                 .map(|v| (v.to_string(), control.pointer(&format!("/faults/stuck_valves/{v}")).and_then(Value::as_str).unwrap_or("").to_string()))
                 .collect(),
             igt_dataset: control.pointer("/igt/dataset").and_then(Value::as_str).unwrap_or("").to_string(),
+            wind_levels: control.pointer("/conditions/wind_levels").cloned(),
         }
     }
     /// The control document, or why the draft cannot be sent.
@@ -108,6 +112,9 @@ impl ControlDraft {
             "loads": {"kg50_kg": f("KG50 mass", &self.kg50_kg, 0.0, 60.0)?, "kg1000_kg": f("KG1000 mass", &self.kg1000_kg, 0.0, 1200.0)?},
             "faults": Value::Object(faults),
         });
+        if let Some(levels) = &self.wind_levels {
+            body["conditions"]["wind_levels"] = levels.clone();
+        }
         if !self.igt_dataset.is_empty() {
             body["igt"] = json!({"dataset": self.igt_dataset});
         }
@@ -194,6 +201,10 @@ pub(super) fn FirmwareSimView(theme: ThemeConfig, status: Value, admin: bool, dr
                 div {"Flight " b{"{g(\"/flight/phase\")}"} " {g(\"/flight/altitude_m\")} m, {g(\"/flight/velocity_m_s\")} m/s, apogee {g(\"/flight/apogee_m\")} m"}
                 div {"Conditions {g(\"/conditions\")}"}
             }
+            p {style:"margin:4px 0;", "FC SD card: "
+                {status.pointer("/sd_card/dataset").and_then(Value::as_str).map(|d| format!("IGT dataset {d}")).unwrap_or_else(|| "blank".into())}
+                {status.pointer("/sd_card/note").and_then(Value::as_str).map(|n| format!(" ({n})")).unwrap_or_default()}
+            }
             details { summary {"Plant events"} ul { for e in events.iter() { li {"{e}"} } } }
             if admin {
                 if let Some(cur) = d.clone() {
@@ -233,7 +244,7 @@ pub(super) fn FirmwareSimView(theme: ThemeConfig, status: Value, admin: bool, dr
                             }
                         }
                         if !datasets.is_empty() {
-                            label {style:"display:block; margin-top:8px;", "IGT dataset on the FC SD card "
+                            label {style:"display:block; margin-top:8px;", "IGT dataset on the FC SD card (swap: tick FC SD card missing and apply, pick the dataset, untick and apply, then Retry SD) "
                                 select {value:"{cur.igt_dataset}", onchange: move |e| { if let Some(x) = draft.write().as_mut() { x.igt_dataset = e.value(); } },
                                     option {value:"", "none"}
                                     for name in datasets.iter() { option {key:"{name}", value:"{name}", "{name}"} }
