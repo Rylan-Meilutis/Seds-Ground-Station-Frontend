@@ -126,7 +126,7 @@ fn field_style(theme: &ThemeConfig) -> String {
 pub(super) fn FirmwareSimPanel(theme: ThemeConfig) -> Element {
     let mut status = use_signal(|| None::<Value>);
     let mut draft = use_signal(|| None::<ControlDraft>);
-    let mut message = use_signal(String::new);
+    let message = use_signal(String::new);
     use_future(move || async move {
         loop {
             if let Ok(next) = super::http_get_json::<Value>("/api/firmware-sim").await {
